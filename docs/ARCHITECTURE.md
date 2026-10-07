@@ -201,9 +201,30 @@ device's sample format. It clamps to between -1 and 1 and turns non-finite
 samples into silence, to protect ears and speakers. Offline renders aren't
 clamped, so files keep exactly what the graph produced.
 
-**Data going back to the UI** (meter levels, scope buffers, playhead
-position, cache-render progress) will go through SPSC ring buffers or atomics,
-which the UI reads every frame.
+**Data going back to the UI** goes through a `Telemetry` hub
+(`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
+
+- **Opening a channel:** a reporting node type, such as Meter or Scope, holds
+  a handle to the hub. When it instantiates a node, off the audio thread, it
+  opens a channel under the node's ID (`Setup::node`), keeps the writing end
+  in the instance, and the hub keeps the reading end. Instantiating under the
+  same ID again replaces the channel, so the hub always follows the newest
+  instance, and carried-over instances keep theirs.
+- **Meters** are atomics per channel. The audio thread raises the peak with
+  `fetch_max` on the float's bits (integer order is float order for
+  non-negative floats) and stores the smoothed RMS. The UI takes the peak,
+  resetting it, so it sees the highest peak since its last frame.
+- **Scopes** are `rtrb` SPSC ring buffers of interleaved frames, holding about
+  a second. When the ring is full, new frames are dropped whole, so channels
+  stay aligned; the UI keeps the most recent frames it has read.
+- **Locking:** only the hub's map of channels has a lock, and only the UI and
+  plan building take it. The writing ends never lock or allocate, which
+  `realtime.rs` checks.
+- **One hub per engine:** two engines instantiating the same graph from one
+  hub (live playback and an offline export, say) would replace each other's
+  channels, so an export should use a registry with its own hub.
+- `noodle_nodes::register_all` creates the hub and returns it. Playhead
+  position and cache-render progress will use the same hub.
 
 Blocks have a fixed maximum size, and a longer device buffer is rendered as
 several blocks. Events inside a block are sample-accurate.

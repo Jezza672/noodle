@@ -275,6 +275,7 @@ fn instantiate(
     max_frames: usize,
 ) -> Result<Box<dyn Node>, NodeError> {
     let setup = Setup {
+        node: scheduled.id,
         config: &scheduled.config,
         sample_rate,
         max_frames,
