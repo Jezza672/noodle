@@ -113,8 +113,7 @@ The **Project** is the single source of truth. It holds one global graph:
   They're part of the project, so they're saved and undoable, but they're
   layout only and never reach the engine.
 - **Group nodes** (`noodle.group`) contain a subgraph and expose ports through
-  it. A **track** is a group node with a clip source feeding its subgraph.
-  Buses and sends are just wires.
+  it. Buses and sends are just wires.
   - **One graph.** A node's `parent` says which group it's inside. Wires only
     join nodes with the same parent, so the editor shows one level at a time.
   - **Ports.** A group's ports are the boundary nodes inside it: a
@@ -122,15 +121,42 @@ The **Project** is the single source of truth. It holds one global graph:
     `noodle.group.output` (input port `in`) per output, named by their `name`
     config. In M2's first cut they're structure only, so they need no
     registry entry and flatten drops them.
-  - **Boundary parameters (decided, not built yet).** The track design gives
-    a group's input and output nodes parameters such as gain and mute. When
-    that lands, flatten will keep a boundary node that has any parameter set
+  - **Boundary parameters (decided, not built yet).** Every group's input
+    and output nodes carry gain, mute and solo parameters (see Tracks below).
+    When that lands, flatten will keep a boundary node that has any parameter set
     or wired, as a real gain stage in the flat graph, and keep dropping the
     rest. So a group whose controls are at their defaults still costs
     nothing and renders bit-for-bit like the flat patch, and one with a
     non-default gain costs one gain stage. The tracks work builds this.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
+- **Tracks** are group nodes of a particular shape (a steering decision from
+  the project's owner):
+  - **One kind of track.** Every track takes clips of both kinds, MIDI and
+    audio, mixed in the same track. There are no audio tracks and MIDI
+    tracks.
+  - **The track input node** (`noodle.track.input`) sits inside the group. It
+    has two outputs, `audio` and `midi`, and the transport plays the track's
+    clips out of them at the right times: audio clips out of `audio`, MIDI
+    clips out of `midi`. (The `midi` output is an events signal, which arrives
+    with M3; until then it exists and stays empty.)
+  - **Creating a track** creates the group, its track input node and the
+    group's output node in one step, with the input's `audio` output wired
+    into the group's output by default. Undo removes all of it.
+  - **Group input and output nodes carry the track's controls** as
+    parameters: gain, mute, solo and the like. The track's gain, mute and
+    solo buttons in the arrangement view and the mixer show and set those
+    parameters. Gain and mute are ordinary runtime parameters, so they can be
+  automated and wired like any other. Solo is the exception (below).
+  - Every group gets such an input and output node, not only tracks, so a
+    nested group has the same controls.
+  - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
+    that are not soloed. For M2 it is read **at compile time** from the solo
+    parameters, which gives every track a mute stage derived from them. So
+    solo can't be automated or wired (lanes and wires into a solo parameter
+    are refused with a diagnostic), and toggling it recompiles, which costs
+    the usual short fade. A runtime solo, driven by one shared "any solo"
+    value so it could be automated, can come later if it is wanted.
 - The timeline and mixer are **views over the graph**, not separate structures.
   The mixer shows each track group's output gain, pan and send nodes, and the
   timeline shows the clips that feed each track.
@@ -293,18 +319,22 @@ choice for when the device is back.
 
 **Device input** is off unless `AudioConfig::input` picks a device, since
 opening a microphone can prompt for permission. It runs at the output's
-sample rate, since there's no resampling yet. An input device that can't
-(or can't be opened at all) doesn't stop playback: Input nodes stay
-silent and `Playback::input_problem` says why. The input stream picks its
-own buffer size and starts before the output, and the feed doesn't count
-a shortfall as a glitch until input has first arrived. cpal runs input and output as separate streams, so input crosses
+sample rate, since there's no resampling yet. An input device that can't (or
+can't be opened at all) doesn't stop playback: Input nodes stay silent and
+`Playback::input_problem` says why. The input stream picks its own buffer
+size and starts before the output, and the feed doesn't count a shortfall as
+a glitch until input has first arrived. The streams also fail separately:
+`Health::errors` says which stream each error came from, and a fatal error
+on the input (the device unplugged, say) leaves Input nodes silent and the
+status bar saying "No input", while only a fatal output error stops
+playback. cpal runs input and output as separate streams, so input crosses
 between their callbacks through an SPSC ring (`noodle-io/src/input.rs`):
 `Capture` fills it, and the `DeviceWriter`'s `Feed` takes one engine block
-at a time. Unless both are the same device, their clocks drift apart. A
-slow input runs dry, and the gap is silence. A fast input builds a
-backlog, so the feed watches the smallest backlog over each half second
-and drops whatever was beyond a small margin. Both count as input
-glitches in `Health`.
+at a time. Unless both are the same device, their clocks drift apart. A slow
+input runs dry, and the gap is silence. A fast input builds a backlog, so
+the feed watches the smallest backlog over each half second and drops
+whatever was beyond a small margin. Both count as input glitches in
+`Health`, a gap once however many engine blocks it spans.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
@@ -363,9 +393,128 @@ several blocks. Events inside a block are sample-accurate.
 ## Time and transport (M2)
 
 The transport gives every block a timeline position in samples, plus the
-musical position (bars, beats, tempo) from the tempo map. Clip player nodes
+musical position (bars, beats, tempo) from the tempo map. Track input nodes
 and tempo-synced nodes read it. A graph with no transport, such as a live
 patch, runs on free-running time.
+
+### Representing time
+
+Settled for M2 (Phase 0):
+
+- **The document counts in ticks.** A `Tick` is an integer, 960 to a quarter
+  note. Clip starts, loop points and automation points are ticks, so a
+  project edited in bars and beats stays put when the tempo changes.
+- **The engine counts in samples.** The transport position is a sample
+  count (`u64`) at the engine's rate, and `Processor::process` never sees a
+  tick. Where a node wants the musical position it reads it from the block's
+  timeline info, which carries the tick (as `f64`, with the fraction), the
+  tempo and the time signature at the start of the block.
+- **The tempo map converts between them.** It is a list of tempo changes
+  (a tick and a BPM, with steps, not ramps) and time signature changes (a
+  bar and a numerator over a denominator). It lives in the project, because
+  it is edited and undone like anything else. The engine gets a compiled copy:
+  a table of segments with the sample position each starts at, searched
+  without allocating, and swapped like a plan when the map changes.
+- **Audio doesn't stretch with the tempo.** An audio clip stores its start in
+  ticks but its source offset and length in the file's own samples, so a
+  tempo change moves it without changing how it sounds. (Warping to the
+  tempo is a later feature and would be a property of the clip.)
+- **Tempo is keyed to ticks, signatures to bars.** Editing an early time
+  signature moves the bar lines but not the tempo changes after it, which
+  stay at their place in the music. That is what a signature edit means: the
+  bars change, the music underneath doesn't. Later signature changes follow
+  their bar number, so they move in ticks along with the bar lines.
+- **Nothing starts before tick 0.** Clip starts and lane points can't be
+  negative, so there is no pre-roll in M2.
+- **The engine never calls the tempo map per sample.** Its lookups walk the
+  list of changes, which is fine for the UI. The engine uses the compiled
+  table (a binary search per block) and steps through a segment by adding.
+- **Rounding.** Tick to sample rounds to the nearest sample. Sample to tick
+  is only needed for display and for nodes reading the musical position, so
+  it is a float.
+
+### Playing along the timeline
+
+- **Blocks.** The transport splits a block at the loop end, so a block never
+  crosses the wrap. It does not split at tempo changes: the block's timeline
+  info carries the tick and tempo at its start, so a tempo change reaches
+  tempo-synced nodes at the next block. That lag is bounded by `max_frames`
+  (512 in the app, about 11 ms at 48 kHz), which is fine for LFOs and delays.
+  Track inputs work in samples and aren't affected.
+- **Editing the tempo map or a clip while playing.** The playhead keeps its
+  tick, since that is what the user sees. Three things make that work:
+  - **The new sample position is computed on the audio thread**, when the
+    plan is installed, from the playhead's tick under the old map and the
+    new map's table. The playhead moves while the UI thread builds the plan,
+    so working it out on the UI thread would be racy.
+  - **The plan is marked as a discontinuity** when installing it changes
+    what is heard at the playhead: its sample position moves, or the schedule
+    of a clip that is playing (or about to, within a block) changes. A clip
+    edited far from the playhead, or a tempo edit after it, changes nothing
+    audible and installs seamlessly. Steps of one drag don't each trigger a
+    fresh fade while one is still running. Today only a
+    change to the audible wiring makes a plan non-seamless (and so gets the 5
+    ms structural-edit fade); the discontinuity flag joins that, so a tempo
+    or clip edit fades out and back in rather than jumping.
+  - **A schedule reaches a carried-over track input without rebuilding it.**
+    Instances are carried over by their `NodeKey` (type, config, shapes), and
+    the schedule is not part of it: rebuilding would throw away the decoder
+    and streaming state mid-clip. The schedule is handed over lock-free, like
+    parameter cells, and the node switches at the start of a block.
+
+### Clips
+
+Clips are part of the project, not of the graph, like frames. A clip says
+which track input node plays it (`node`), where it starts, and what it
+contains. A clip's content is audio (which part of which file) or, from M3,
+MIDI, and one track holds both kinds. M2 builds the audio side; MIDI clips
+themselves arrive with M3, and the data model leaves room for them. The track itself is a group node, so
+the arrangement view reads the track input node's clips.
+Compiling turns the clips into the schedule the node follows, sorted by
+start; the node only reads that. Clip commands are undoable like any other.
+
+- **Overlaps.** A clip's length is in samples and its start in ticks, so
+  slowing the tempo can make audio clips on one track overlap. A track plays
+  one audio clip at a time: the one that started last (the higher ID on a
+  tie), and the earlier clip is cut where the later one begins. This holds per
+  kind: an audio clip and a MIDI clip on the same track play together. There is no automatic
+  crossfade; a clip's own fades apply. The arrangement view stops you
+  placing clips on top of each other, so overlaps only come from tempo edits.
+- **Nodes that go.** Removing a node removes the clips it plays (a track input node) and the lanes
+  driving its inputs, in the same undo step. Node IDs don't change when a
+  node moves in or out of a group, so those clips and lanes stay valid. A lane
+  whose port no longer exists (a config change removed it) is not a load
+  error but a diagnostic when compiling.
+
+## Automation (M2)
+
+Settled for M2 (Phase 0): **an automation lane is an implicit source wired
+into a parameter port.** It is not a clip and not a node the user wires.
+
+- A lane is part of the project: a target (`node` and parameter key) and a
+  list of points. A point is a tick, a value and the curve to the next point
+  (hold or linear to start with). Before the first point the lane holds the
+  first value, and after the last it holds the last.
+- When the compiler meets a lane, it adds an internal automation node that
+  reads the transport position and writes the lane's value into the target
+  port, as a wire would. So a lane modulates exactly what a wire does, with
+  the same signal shape, and nodes need no support for it.
+- **Lane and wire.** A wire replaces a parameter's value (see Nodes), so a
+  wire into an automated parameter wins, and the lane is greyed with a
+  diagnostic. Two sources into one input were never allowed anyway.
+- **Without a transport** (a live patch) the lane holds its first value.
+- **Hold steps are ramped by the automation node.** An unconnected input
+  smooths its own value changes, but a lane is wired in, so its samples reach
+  the node as they are. The internal automation node therefore ramps the
+  jump at each hold step over the same smoothing length the target would have
+  used, so a stepped lane doesn't click.
+- **The parameter widget.** For a parameter with a lane, the widget shows the
+  lane's value at the playhead and is greyed like a wired parameter. The lane
+  is edited as a lane.
+- The lane evaluates per sample for linear segments and flags the signal
+  constant for hold segments, so a stepped lane costs nothing.
+- Lanes are drawn by the arrangement view under their track, and in the
+  properties panel next to the parameter they target.
 
 ## Caching (M4)
 
@@ -387,7 +536,11 @@ function of the timeline: everything upstream is deterministic and nothing
 depends on live input or a device. The compiler marks this per node. An
 offline node with a non-cacheable input is a compile error.
 
-**Cache keys.** Keys are computed Merkle-style:
+**Cache keys.** Keys are computed Merkle-style. The hash includes the
+timeline: the tempo map, the clips a track input plays, and the points of any lane
+driving the node, so freezes go stale when they change. An audio source in the key is its
+content hash, like any source file, so replacing a file under the same name
+invalidates it.
 
 ```
 key(node) = hash(type_id, type_version, params, sample_rate, range, key(inputs)…)
@@ -521,7 +674,3 @@ through the telemetry API.
   - **M4:** streaming offline renders.
 - The project file format. RON or JSON for readable diffs, with audio stored
   alongside.
-- The automation model: automation lanes as clip-like sources feeding
-  parameter ports, or as a separate mechanism.
-- Representing time: sample positions plus a tempo map, or musical ticks as
-  the main unit.

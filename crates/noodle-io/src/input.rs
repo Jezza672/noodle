@@ -51,6 +51,7 @@ pub fn input_path(
         trim_every: ((sample_rate * TRIM_SECONDS) as usize).max(1),
         since_trim: 0,
         primed: false,
+        short: false,
         least_backlog: usize::MAX,
         glitches,
     };
@@ -99,6 +100,8 @@ pub struct Feed {
     since_trim: usize,
     /// Input has arrived at least once.
     primed: bool,
+    /// The last read came up short, so a gap is already being counted.
+    short: bool,
     /// The smallest backlog, in frames, left after a read since the last
     /// check.
     least_backlog: usize,
@@ -118,9 +121,13 @@ impl Feed {
         let available = self.consumer.slots().min(len);
         // Until the input stream's first callback, there's nothing to miss.
         self.primed |= available > 0;
-        if available < len && self.primed {
+        // A late input callback leaves several blocks short, one after the
+        // other, but it's one gap in the sound: count it once, when it starts.
+        let short = available < len && self.primed;
+        if short && !self.short {
             self.glitches.fetch_add(1, Ordering::Relaxed);
         }
+        self.short = short;
         if let Ok(chunk) = self.consumer.read_chunk(available) {
             let (first, second) = chunk.as_slices();
             block[..first.len()].copy_from_slice(first);
@@ -162,7 +169,8 @@ impl Health {
     /// Input glitches so far: input that was dropped because the output
     /// wasn't taking it, gaps filled with silence because the input device
     /// was late, and backlog trimmed because it was early. Each is an
-    /// audible discontinuity in the input.
+    /// audible discontinuity in the input. A gap counts once, however many
+    /// engine blocks it spans.
     pub fn input_glitches(&self) -> u64 {
         self.input_glitches.load(Ordering::Relaxed)
     }
@@ -214,6 +222,51 @@ mod tests {
         assert_eq!(glitches(&counter), 0);
         assert_eq!(feed.read(4), [5.0, 6.0, 0.0, 0.0]);
         assert_eq!(glitches(&counter), 1);
+    }
+
+    #[test]
+    fn one_late_callback_is_one_glitch_however_many_blocks_it_spans() {
+        // The engine takes 64 frames at a time; a 256-frame callback is late.
+        let (mut capture, mut feed, counter) = path(1, 64);
+        capture.capture(&[0.5f32; 256]);
+        for _ in 0..4 {
+            feed.read(64);
+        }
+        assert_eq!(glitches(&counter), 0);
+        for _ in 0..4 {
+            assert_eq!(feed.read(64), [0.0; 64]);
+        }
+        assert_eq!(glitches(&counter), 1, "one gap, spanning four blocks");
+    }
+
+    #[test]
+    fn a_gap_that_runs_on_from_a_partial_block_is_still_one_glitch() {
+        let (mut capture, mut feed, counter) = path(1, 4);
+        capture.capture(&[1.0f32; 6]);
+        feed.read(4);
+        // Two frames short, then nothing at all.
+        for _ in 0..3 {
+            feed.read(4);
+        }
+        assert_eq!(glitches(&counter), 1);
+    }
+
+    #[test]
+    fn each_gap_is_counted_once() {
+        let (mut capture, mut feed, counter) = path(1, 4);
+        capture.capture(&[1.0f32; 4]);
+        feed.read(4);
+        feed.read(4);
+        feed.read(4);
+        assert_eq!(glitches(&counter), 1);
+        // The input comes back, then goes late again.
+        capture.capture(&[1.0f32; 8]);
+        feed.read(4);
+        feed.read(4);
+        assert_eq!(glitches(&counter), 1, "no gap while input is arriving");
+        feed.read(4);
+        feed.read(4);
+        assert_eq!(glitches(&counter), 2);
     }
 
     #[test]
