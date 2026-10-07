@@ -125,6 +125,7 @@ impl App {
         self.confirm_dialog(ui.ctx(), &mut actions);
         if let Some(config) = self.devices.show(ui.ctx()) {
             self.session.set_audio_config(config);
+            crate::prefs::remember_audio(self.session.audio_config());
         }
         self.editor.retain_existing(&self.session);
         self.update_title(ui.ctx());
@@ -542,6 +543,9 @@ mod tests {
 
     #[test]
     fn audio_settings_open_from_the_shortcut_and_reach_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = dir.path().join("prefs.ron");
+        crate::prefs::init(prefs.clone());
         let mut app = empty();
         app.devices = no_devices();
         let mut harness = harness(app);
@@ -561,6 +565,8 @@ mod tests {
         let session = harness.state().session();
         assert_eq!(session.audio_config().buffer_size, Some(256));
         assert!(!session.is_playing());
+        let saved = crate::prefs::load(&prefs).unwrap();
+        assert_eq!(saved.audio.buffer_size, Some(256));
     }
 
     #[test]

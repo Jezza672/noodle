@@ -346,11 +346,23 @@ impl Session {
         if self.audio.is_some() {
             return;
         }
-        match noodle_io::play(&self.audio_config, MAX_FRAMES) {
+        let mut started = noodle_io::play(&self.audio_config, MAX_FRAMES);
+        let mut fell_back = None;
+        // A saved device that's been unplugged, or a rate it no longer
+        // takes, shouldn't stop the app making sound. The setting is kept
+        // for when the device is back.
+        if let Err(error) = &started
+            && let Some(defaults) = fallback(&self.audio_config)
+            && let Ok(playing) = noodle_io::play(&defaults, MAX_FRAMES)
+        {
+            fell_back = Some(on_default_output(error));
+            started = Ok(playing);
+        }
+        match started {
             Ok((playback, controller)) => {
                 // Playback carries on without input rather than failing.
                 // The status bar keeps saying so; see `input_problem`.
-                self.message = playback.input_problem().map(no_input);
+                self.message = fell_back.or_else(|| playback.input_problem().map(no_input));
                 self.audio = Some(Audio {
                     playback,
                     controller,
@@ -466,6 +478,20 @@ fn no_input(error: &AudioError) -> String {
     format!("Playing without input: {error}")
 }
 
+fn on_default_output(error: &AudioError) -> String {
+    format!("Playing on the default output: {error}")
+}
+
+/// What to try when the chosen output settings can't play: the system's
+/// defaults, keeping the input. `None` if that's what was tried.
+fn fallback(config: &AudioConfig) -> Option<AudioConfig> {
+    let defaults = AudioConfig {
+        input: config.input.clone(),
+        ..AudioConfig::default()
+    };
+    (defaults != *config).then_some(defaults)
+}
+
 #[derive(Debug)]
 pub enum FileError {
     Read(PathBuf, std::io::Error),
@@ -485,7 +511,7 @@ impl std::error::Error for FileError {}
 
 /// Writes to a temporary file next to `path`, then renames it into place, so
 /// a failed save (a full disk, say) never destroys the last good copy.
-fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     let mut temp = path.as_os_str().to_owned();
     temp.push(".saving");
     let temp = PathBuf::from(temp);
@@ -513,6 +539,29 @@ mod tests {
     use noodle_engine::OUTPUT_ID;
 
     use super::*;
+
+    #[test]
+    fn falling_back_keeps_the_input_and_drops_the_output_choices() {
+        let chosen = AudioConfig {
+            host: Some("jack".into()),
+            output: Some("jack:system".into()),
+            input: noodle_io::InputChoice::Default,
+            sample_rate: Some(96_000),
+            buffer_size: Some(64),
+        };
+        assert_eq!(
+            fallback(&chosen),
+            Some(AudioConfig {
+                input: noodle_io::InputChoice::Default,
+                ..AudioConfig::default()
+            })
+        );
+        let defaults = AudioConfig {
+            input: noodle_io::InputChoice::Default,
+            ..AudioConfig::default()
+        };
+        assert_eq!(fallback(&defaults), None);
+    }
 
     fn temp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("noodle-app-{}-{name}", std::process::id()))

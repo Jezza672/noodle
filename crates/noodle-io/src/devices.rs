@@ -14,6 +14,7 @@ use cpal::{
     BufferSize, DeviceId, HostId, SampleFormat, SupportedBufferSize, SupportedStreamConfig,
     SupportedStreamConfigRange,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::DeviceError;
 
@@ -23,7 +24,11 @@ use crate::DeviceError;
 /// Hosts and devices are stored by their stable IDs, so a saved choice
 /// finds the same device after a restart, and still works if its display
 /// name changes.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// It's saved in the app's preferences, so missing fields take their
+/// defaults when it's read back, and new fields can be added.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AudioConfig {
     /// The audio API, by [`HostInfo::id`] (e.g. `alsa`, `jack`, `wasapi`,
     /// `asio`), for default devices. `None` uses the platform's default. A
@@ -43,7 +48,7 @@ pub struct AudioConfig {
 
 /// Which device, if any, records into Input nodes. Off by default, since
 /// opening a microphone can ask the user for permission.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputChoice {
     #[default]
     Off,

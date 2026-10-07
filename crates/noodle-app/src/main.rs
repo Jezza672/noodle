@@ -4,6 +4,7 @@
 mod app;
 mod devices;
 mod editor;
+mod prefs;
 mod properties;
 mod session;
 mod theme;
@@ -15,7 +16,7 @@ use crate::app::App;
 use crate::session::{Nodes, Session};
 
 fn main() -> ExitCode {
-    let session = match std::env::args_os().nth(1) {
+    let mut session = match std::env::args_os().nth(1) {
         Some(path) => match Session::open(Nodes::all(), path.as_ref()) {
             Ok(session) => session,
             Err(error) => {
@@ -25,6 +26,9 @@ fn main() -> ExitCode {
         },
         None => Session::new(Nodes::all()),
     };
+    if let Some(path) = prefs::default_path() {
+        session.set_audio_config(prefs::init(path).audio);
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Noodle")
