@@ -818,6 +818,20 @@ through the telemetry API.
 - **Config fields** (`ConfigField`) only commit when a drag or typing
   finishes, because changing config recompiles the node.
 
+### Mixer
+
+The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view
+over the project and keeps no state of its own. It has one strip per
+top-level group, in the order they were made, named by the group's `name`
+config. A strip reads the group's gain, mute and solo from its boundary
+nodes (`Graph::group_controls`) and a fader move, a mute or a solo click is
+a `SetParam` on the node `Graph::control_node` picks, so it is undoable like
+any edit and one drag is one undo step. The reading under the fader resets
+the gain to 0 dB. Solo mutes the other tracks as the compiler reads it
+(`Graph::solo_muted`), so a strip silenced by another's solo shows that, and
+its mute and solo buttons stay live. Turning solo off clears it on every
+boundary node of the group, since any can hold it. There are no meters yet.
+
 ## Testing
 
 - **Golden renders:** render test graphs offline and compare against stored
