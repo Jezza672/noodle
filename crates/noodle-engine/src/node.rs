@@ -301,11 +301,36 @@ pub struct Context {
     pub transport: Transport,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Where the timeline is at the start of a block. Without a timeline (a live
+/// patch), `position` just counts samples and the musical fields stay at
+/// their defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transport {
+    /// Whether the transport is playing. A stopped transport holds its
+    /// position, and the graph keeps rendering.
     pub playing: bool,
     /// Timeline position of the block's first frame, in samples.
     pub position: u64,
+    /// The same position in ticks, 960 to a quarter note, fractions included.
+    pub tick: f64,
+    /// The tempo at the block's start, in quarter notes per minute. A tempo
+    /// change inside the block reaches nodes at the next block.
+    pub bpm: f64,
+    /// The time signature at the block's start.
+    pub signature: noodle_core::TimeSignature,
+}
+
+impl Default for Transport {
+    /// Stopped at the start, at 120 beats per minute in 4/4.
+    fn default() -> Self {
+        Self {
+            playing: false,
+            position: 0,
+            tick: 0.0,
+            bpm: 120.0,
+            signature: noodle_core::TimeSignature::COMMON,
+        }
+    }
 }
 
 /// A node's inputs and outputs for one block, indexed in [`Layout`] order.

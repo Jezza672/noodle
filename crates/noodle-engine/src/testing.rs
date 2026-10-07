@@ -167,6 +167,7 @@ impl Harness {
             transport: Transport {
                 playing: true,
                 position: self.position,
+                ..Transport::default()
             },
         };
         match &mut self.instance {

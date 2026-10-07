@@ -4,6 +4,7 @@
 //! callback does and can be tested without a device, and [`play`] only finds
 //! the device and wires the writer into its callback.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -17,7 +18,8 @@ use crate::devices::{
     AudioConfig, AudioError, Chosen, Direction, InputChoice, choose_config, device_name,
     find_device, host_for,
 };
-use crate::input::{Capture, Feed, input_path};
+use crate::input::{Capture, Feed, recordable_input_path};
+use crate::record::{RecordError, Recorder, Take};
 
 pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
 
@@ -120,6 +122,9 @@ impl DeviceWriter {
 pub struct Playback {
     fade: Arc<Fade>,
     _stream: cpal::Stream,
+    /// Dropped before the input stream, so a recording in progress is
+    /// finished while the input is still running.
+    recorder: Option<Recorder>,
     _input_stream: Option<cpal::Stream>,
     device: String,
     input: Option<(String, usize)>,
@@ -168,6 +173,30 @@ impl Playback {
 
     pub fn settings(&self) -> Settings {
         self.settings
+    }
+
+    /// Starts recording the input to a WAV file at `path`. Input that
+    /// arrived before this call isn't included.
+    pub fn start_recording(&mut self, path: &Path) -> Result<(), RecordError> {
+        self.recorder
+            .as_mut()
+            .ok_or(RecordError::NoInput)?
+            .start(path)
+    }
+
+    /// Stops recording and finishes the file.
+    pub fn stop_recording(&mut self) -> Result<Take, RecordError> {
+        self.recorder
+            .as_mut()
+            .ok_or(RecordError::NotRecording)?
+            .stop()
+    }
+
+    /// Whether a recording is running. A recording that failed (the disk
+    /// filled up, say) stops being one; [`stop_recording`](Self::stop_recording)
+    /// says why.
+    pub fn is_recording(&self) -> bool {
+        self.recorder.as_ref().is_some_and(Recorder::is_recording)
     }
 
     /// The devices' health since playback started. Check it regularly, e.g.
@@ -307,9 +336,9 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
             .and_then(open_host)
             .and_then(|host| open_input(&host, id, &settings, &mut health));
             match opened {
-                Ok((stream, name, channels, feed)) => (
+                Ok((stream, name, channels, feed, recorder)) => (
                     DeviceWriter::with_input(processor, feed),
-                    Some((stream, name, channels)),
+                    Some((stream, name, channels, recorder)),
                 ),
                 Err(error) => {
                     input_problem = Some(error);
@@ -335,21 +364,22 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
         format => return Err(AudioError::UnsupportedFormat(format)),
     }?;
     // Input first, so the output finds some waiting.
-    let (input_stream, input) = match input {
-        Some((input_stream, name, channels)) => match input_stream.play() {
-            Ok(()) => (Some(input_stream), Some((name, channels))),
+    let (input_stream, input, recorder) = match input {
+        Some((input_stream, name, channels, recorder)) => match input_stream.play() {
+            Ok(()) => (Some(input_stream), Some((name, channels)), Some(recorder)),
             Err(error) => {
                 input_problem = Some(error.into());
-                (None, None)
+                (None, None, None)
             }
         },
-        None => (None, None),
+        None => (None, None, None),
     };
     stream.play()?;
     Ok((
         Playback {
             fade,
             _stream: stream,
+            recorder,
             _input_stream: input_stream,
             device: name,
             input,
@@ -385,7 +415,7 @@ fn open_input(
     id: Option<&str>,
     settings: &Settings,
     health: &mut Health,
-) -> Result<(cpal::Stream, String, usize, Feed), AudioError> {
+) -> Result<(cpal::Stream, String, usize, Feed, Recorder), AudioError> {
     let device = find_device(host, id, Direction::Input)?;
     let name = device_name(&device);
     let ranges: Vec<_> = device.supported_input_configs()?.collect();
@@ -398,7 +428,7 @@ fn open_input(
         None,
     )?;
     let channels = usize::from(config.channels);
-    let (capture, feed) = input_path(
+    let (capture, feed, recorder) = recordable_input_path(
         channels,
         settings.sample_rate,
         settings.max_frames,
@@ -418,7 +448,7 @@ fn open_input(
         SampleFormat::U32 => record::<u32>(&device, config, capture, on_error),
         format => return Err(AudioError::UnsupportedFormat(format)),
     }?;
-    Ok((stream, name, channels, feed))
+    Ok((stream, name, channels, feed, recorder))
 }
 
 fn record<T: SizedSample>(
@@ -454,6 +484,7 @@ fn open<T: SizedSample + FromSample<f32>>(
 
 #[cfg(test)]
 mod tests {
+    use crate::input::input_path;
     use noodle_core::{Command, Connection, Endpoint, Node, Project};
     use noodle_engine::{INPUT_ID, OUTPUT_ID, Registry};
 

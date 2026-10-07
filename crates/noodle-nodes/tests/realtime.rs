@@ -339,3 +339,44 @@ fn changing_the_audible_path_mid_render_does_not_click() {
         .fold(0.0, f32::max);
     assert!(jump < steady * 1.5, "jump of {jump}, steady {steady}");
 }
+
+#[test]
+fn the_transport_never_allocates_on_the_audio_thread() {
+    use noodle_core::{TempoMap, Tick, TimeSignature};
+
+    let (mut s, ..) = busy_session();
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+
+    for round in 0..12 {
+        // UI thread: allowed to allocate.
+        match round % 4 {
+            0 => transport.seek(Tick(100 * round)),
+            1 => transport.set_loop(Some((Tick(0), Tick(960 * (1 + round))))),
+            2 => {
+                let bpm = 80.0 + 7.0 * round as f64;
+                let map = TempoMap::constant(bpm, TimeSignature::COMMON).unwrap();
+                s.controller.set_tempo_map(&map);
+            }
+            _ => {
+                transport.stop();
+                transport.seek(Tick(480));
+                transport.play();
+                transport.set_loop(None);
+            }
+        }
+        s.controller.maintain();
+
+        // Audio thread: seeks, loop wraps and tempo swaps all happen here.
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the audio thread in round {round}"
+        );
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
+}
