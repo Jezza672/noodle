@@ -5,16 +5,24 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EditError, Frame, FrameId, Graph, NodeId};
+use crate::{
+    AutomationLane, Clip, ClipId, EditError, Endpoint, Frame, FrameId, Graph, LaneId, NodeId,
+    TempoMap,
+};
 
-/// Everything that gets saved: the graph, and the frames drawn around parts of
-/// it. Change it through a [`History`](crate::History), so every change can
+/// Everything that gets saved: the graph, the frames drawn around parts of
+/// it, and the timeline: tempo map, clips and automation lanes. Change it through a [`History`](crate::History), so every change can
 /// be undone.
 #[derive(Clone, Debug)]
 pub struct Project {
     graph: Graph,
     frames: BTreeMap<FrameId, Frame>,
     next_frame_id: u64,
+    tempo_map: TempoMap,
+    clips: BTreeMap<ClipId, Clip>,
+    next_clip_id: u64,
+    lanes: BTreeMap<LaneId, AutomationLane>,
+    next_lane_id: u64,
 }
 
 impl Default for Project {
@@ -23,6 +31,11 @@ impl Default for Project {
             graph: Graph::default(),
             frames: BTreeMap::new(),
             next_frame_id: 1,
+            tempo_map: TempoMap::default(),
+            clips: BTreeMap::new(),
+            next_clip_id: 1,
+            lanes: BTreeMap::new(),
+            next_lane_id: 1,
         }
     }
 }
@@ -31,7 +44,11 @@ impl Default for Project {
 /// they'd hand out next.
 impl PartialEq for Project {
     fn eq(&self, other: &Self) -> bool {
-        self.graph == other.graph && self.frames == other.frames
+        self.graph == other.graph
+            && self.frames == other.frames
+            && self.tempo_map == other.tempo_map
+            && self.clips == other.clips
+            && self.lanes == other.lanes
     }
 }
 
@@ -42,12 +59,25 @@ struct ProjectFile {
     graph: Graph,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     frames: BTreeMap<FrameId, Frame>,
+    #[serde(default, skip_serializing_if = "is_default_tempo_map")]
+    tempo_map: TempoMap,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    clips: BTreeMap<ClipId, Clip>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    lanes: BTreeMap<LaneId, AutomationLane>,
+}
+
+/// The clips and lanes that went with a node.
+pub(crate) type Dependents = (Vec<(ClipId, Clip)>, Vec<(LaneId, AutomationLane)>);
+
+fn is_default_tempo_map(map: &TempoMap) -> bool {
+    *map == TempoMap::default()
 }
 
 impl Project {
     /// The current file format version. Bump it when the format changes in a
     /// way older versions can't read, and migrate older files when loading.
-    pub const FORMAT: u32 = 1;
+    pub const FORMAT: u32 = 2;
 
     pub fn new() -> Self {
         Self::default()
@@ -110,6 +140,169 @@ impl Project {
         self.frames.get_mut(&id).ok_or(EditError::NoSuchFrame(id))
     }
 
+    pub fn tempo_map(&self) -> &TempoMap {
+        &self.tempo_map
+    }
+
+    pub(crate) fn replace_tempo_map(&mut self, map: TempoMap) -> TempoMap {
+        std::mem::replace(&mut self.tempo_map, map)
+    }
+
+    pub fn clip(&self, id: ClipId) -> Option<&Clip> {
+        self.clips.get(&id)
+    }
+
+    pub fn clips(&self) -> impl Iterator<Item = (ClipId, &Clip)> {
+        self.clips.iter().map(|(&id, clip)| (id, clip))
+    }
+
+    /// The clips a clip player node plays, in ID order.
+    pub fn clips_on(&self, player: NodeId) -> impl Iterator<Item = (ClipId, &Clip)> {
+        self.clips().filter(move |(_, clip)| clip.player == player)
+    }
+
+    /// Reserves an ID for a clip that's about to be added.
+    pub fn new_clip_id(&mut self) -> ClipId {
+        let id = self.next_clip_id();
+        self.next_clip_id += 1;
+        id
+    }
+
+    /// The ID [`new_clip_id`](Self::new_clip_id) would return next.
+    pub fn next_clip_id(&self) -> ClipId {
+        ClipId(self.next_clip_id)
+    }
+
+    fn check_clip(&self, id: ClipId, clip: &Clip) -> Result<(), EditError> {
+        if let Some(problem) = clip.problem() {
+            return Err(EditError::InvalidClip(id, problem));
+        }
+        if self.graph.node(clip.player).is_none() {
+            return Err(EditError::NoSuchNode(clip.player));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn insert_clip(&mut self, id: ClipId, clip: Clip) -> Result<(), EditError> {
+        if self.clips.contains_key(&id) {
+            return Err(EditError::ClipExists(id));
+        }
+        self.check_clip(id, &clip)?;
+        self.clips.insert(id, clip);
+        self.next_clip_id = self.next_clip_id.max(id.0 + 1);
+        Ok(())
+    }
+
+    pub(crate) fn remove_clip(&mut self, id: ClipId) -> Result<Clip, EditError> {
+        self.clips.remove(&id).ok_or(EditError::NoSuchClip(id))
+    }
+
+    pub(crate) fn replace_clip(&mut self, id: ClipId, clip: Clip) -> Result<Clip, EditError> {
+        if !self.clips.contains_key(&id) {
+            return Err(EditError::NoSuchClip(id));
+        }
+        self.check_clip(id, &clip)?;
+        Ok(std::mem::replace(
+            self.clips.get_mut(&id).expect("checked"),
+            clip,
+        ))
+    }
+
+    pub fn lane(&self, id: LaneId) -> Option<&AutomationLane> {
+        self.lanes.get(&id)
+    }
+
+    pub fn lanes(&self) -> impl Iterator<Item = (LaneId, &AutomationLane)> {
+        self.lanes.iter().map(|(&id, lane)| (id, lane))
+    }
+
+    /// The lane driving an input, if there is one.
+    pub fn lane_for(&self, target: &Endpoint) -> Option<(LaneId, &AutomationLane)> {
+        self.lanes().find(|(_, lane)| lane.target == *target)
+    }
+
+    /// Reserves an ID for a lane that's about to be added.
+    pub fn new_lane_id(&mut self) -> LaneId {
+        let id = self.next_lane_id();
+        self.next_lane_id += 1;
+        id
+    }
+
+    /// The ID [`new_lane_id`](Self::new_lane_id) would return next.
+    pub fn next_lane_id(&self) -> LaneId {
+        LaneId(self.next_lane_id)
+    }
+
+    /// A lane is fine if its points are, its node exists, and no other lane
+    /// drives the same input.
+    fn check_lane(&self, id: LaneId, lane: &AutomationLane) -> Result<(), EditError> {
+        if let Some(problem) = lane.problem() {
+            return Err(EditError::InvalidLane(id, problem));
+        }
+        if self.graph.node(lane.target.node).is_none() {
+            return Err(EditError::NoSuchNode(lane.target.node));
+        }
+        match self.lane_for(&lane.target) {
+            Some((other, _)) if other != id => {
+                Err(EditError::LaneTargetTaken(lane.target.clone(), other))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn insert_lane(
+        &mut self,
+        id: LaneId,
+        lane: AutomationLane,
+    ) -> Result<(), EditError> {
+        if self.lanes.contains_key(&id) {
+            return Err(EditError::LaneExists(id));
+        }
+        self.check_lane(id, &lane)?;
+        self.lanes.insert(id, lane);
+        self.next_lane_id = self.next_lane_id.max(id.0 + 1);
+        Ok(())
+    }
+
+    pub(crate) fn remove_lane(&mut self, id: LaneId) -> Result<AutomationLane, EditError> {
+        self.lanes.remove(&id).ok_or(EditError::NoSuchLane(id))
+    }
+
+    pub(crate) fn replace_lane(
+        &mut self,
+        id: LaneId,
+        lane: AutomationLane,
+    ) -> Result<AutomationLane, EditError> {
+        if !self.lanes.contains_key(&id) {
+            return Err(EditError::NoSuchLane(id));
+        }
+        self.check_lane(id, &lane)?;
+        Ok(std::mem::replace(
+            self.lanes.get_mut(&id).expect("checked"),
+            lane,
+        ))
+    }
+
+    /// Takes out what hangs off a node that's going: the clips it plays and
+    /// the lanes driving its inputs.
+    pub(crate) fn remove_dependents(&mut self, node: NodeId) -> Dependents {
+        let clip_ids: Vec<_> = self.clips_on(node).map(|(id, _)| id).collect();
+        let lane_ids: Vec<_> = self
+            .lanes()
+            .filter(|(_, lane)| lane.target.node == node)
+            .map(|(id, _)| id)
+            .collect();
+        let clips = clip_ids
+            .into_iter()
+            .map(|id| (id, self.clips.remove(&id).expect("just found")))
+            .collect();
+        let lanes = lane_ids
+            .into_iter()
+            .map(|id| (id, self.lanes.remove(&id).expect("just found")))
+            .collect();
+        (clips, lanes)
+    }
+
     /// The project as RON, the text format project files use: it's readable
     /// and diffs well.
     pub fn to_ron(&self) -> String {
@@ -117,6 +310,9 @@ impl Project {
             format: Self::FORMAT,
             graph: self.graph.clone(),
             frames: self.frames.clone(),
+            tempo_map: self.tempo_map.clone(),
+            clips: self.clips.clone(),
+            lanes: self.lanes.clone(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -129,11 +325,25 @@ impl Project {
             return Err(LoadError::NewerFormat(file.format));
         }
         let next_frame_id = file.frames.keys().last().map_or(1, |id| id.0 + 1);
-        Ok(Self {
+        let next_clip_id = file.clips.keys().last().map_or(1, |id| id.0 + 1);
+        let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
+        let project = Self {
             graph: file.graph,
             frames: file.frames,
             next_frame_id,
-        })
+            tempo_map: file.tempo_map,
+            clips: file.clips,
+            next_clip_id,
+            lanes: file.lanes,
+            next_lane_id,
+        };
+        for (id, clip) in &project.clips {
+            project.check_clip(*id, clip).map_err(LoadError::Broken)?;
+        }
+        for (id, lane) in &project.lanes {
+            project.check_lane(*id, lane).map_err(LoadError::Broken)?;
+        }
+        Ok(project)
     }
 }
 
@@ -142,6 +352,9 @@ pub enum LoadError {
     /// Bad syntax, or contents that don't make sense, such as a connection to
     /// a node that doesn't exist.
     Invalid(ron::error::SpannedError),
+    /// A clip or lane that can't be in a project, such as one for a node that
+    /// doesn't exist.
+    Broken(EditError),
     /// Saved by a newer version of Noodle.
     NewerFormat(u32),
 }
@@ -150,6 +363,7 @@ impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(error) => error.fmt(f),
+            Self::Broken(error) => error.fmt(f),
             Self::NewerFormat(format) => write!(
                 f,
                 "this project was saved in format {format} by a newer version; \
@@ -318,5 +532,279 @@ mod tests {
             Project::from_ron(&text),
             Err(LoadError::NewerFormat(99))
         ));
+    }
+
+    // The timeline: tempo map, clips and automation lanes.
+
+    use crate::{
+        AutomationLane, AutomationPoint, Clip, ClipId, Curve, LaneId, SignatureChange, TempoChange,
+        TempoMap, Tick, TimeSignature,
+    };
+
+    fn apply(project: &mut Project, history: &mut History, command: Command) {
+        history.apply(project, command).unwrap();
+    }
+
+    /// A project with a player node, a clip on it and a lane driving it.
+    fn with_timeline() -> (Project, History, NodeId, ClipId, LaneId) {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let player = project.new_node_id();
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddNode {
+                id: player,
+                node: Node::new("noodle.clip.player"),
+            },
+        );
+        let clip = project.new_clip_id();
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddClip {
+                id: clip,
+                clip: Clip::new(player, Tick(960), "kick.wav", 48_000),
+            },
+        );
+        let lane = project.new_lane_id();
+        let points = vec![AutomationPoint {
+            tick: Tick(0),
+            value: 0.5,
+            curve: Curve::Linear,
+        }];
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddLane {
+                id: lane,
+                lane: AutomationLane::new(Endpoint::new(player, "gain"), points),
+            },
+        );
+        (project, history, player, clip, lane)
+    }
+
+    #[test]
+    fn the_timeline_round_trips_through_ron() {
+        let (mut project, mut history, player, clip, _) = with_timeline();
+        let map = TempoMap::new(
+            vec![
+                TempoChange {
+                    tick: Tick(0),
+                    bpm: 96.5,
+                },
+                TempoChange {
+                    tick: Tick(7680),
+                    bpm: 140.0,
+                },
+            ],
+            vec![SignatureChange {
+                bar: 0,
+                signature: TimeSignature {
+                    numerator: 7,
+                    denominator: 8,
+                },
+            }],
+        )
+        .unwrap();
+        apply(&mut project, &mut history, Command::SetTempoMap(map));
+        let text = project.to_ron();
+        let loaded = Project::from_ron(&text).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.clip(clip).unwrap().player, player);
+        assert_eq!(loaded.to_ron(), text);
+        // New IDs carry on after the loaded ones.
+        assert_eq!(loaded.next_clip_id(), ClipId(clip.0 + 1));
+    }
+
+    #[test]
+    fn a_project_without_a_timeline_writes_none_and_reads_old_files() {
+        let text = Project::new().to_ron();
+        assert!(!text.contains("tempo_map"), "{text}");
+        assert!(!text.contains("clips"), "{text}");
+        // A format 1 file, from before the timeline.
+        let project = Project::from_ron(HAND_WRITTEN).unwrap();
+        assert_eq!(*project.tempo_map(), TempoMap::default());
+        assert_eq!(project.clips().count(), 0);
+        assert_eq!(project.lanes().count(), 0);
+    }
+
+    #[test]
+    fn a_clip_or_lane_for_a_missing_node_is_refused_on_load() {
+        let (project, ..) = with_timeline();
+        let text = project.to_ron();
+        assert!(Project::from_ron(&text).is_ok());
+        let no_player = text.replace("player: 1", "player: 9");
+        assert!(matches!(
+            Project::from_ron(&no_player),
+            Err(LoadError::Broken(EditError::NoSuchNode(NodeId(9))))
+        ));
+        let no_target = text.replace("node: 1", "node: 9");
+        assert!(matches!(
+            Project::from_ron(&no_target),
+            Err(LoadError::Broken(EditError::NoSuchNode(NodeId(9))))
+        ));
+    }
+
+    #[test]
+    fn removing_a_node_takes_its_clips_and_lanes_and_undo_brings_them_back() {
+        let (mut project, mut history, player, clip, lane) = with_timeline();
+        let before = project.clone();
+        apply(
+            &mut project,
+            &mut history,
+            Command::RemoveNode { id: player },
+        );
+        assert!(project.clip(clip).is_none());
+        assert!(project.lane(lane).is_none());
+        assert_eq!(project.clips_on(player).count(), 0);
+
+        history.undo(&mut project).unwrap();
+        assert_eq!(project, before);
+        assert_eq!(project.clip(clip).unwrap().source, "kick.wav");
+        history.redo(&mut project).unwrap();
+        assert!(project.clip(clip).is_none());
+    }
+
+    #[test]
+    fn clips_are_checked_when_added_or_changed() {
+        let (mut project, _, player, clip, _) = with_timeline();
+        let add = |project: &mut Project, id, clip| Command::AddClip { id, clip }.apply(project);
+        let id = project.new_clip_id();
+        let good = Clip::new(player, Tick(0), "a.wav", 10);
+
+        assert_eq!(
+            add(&mut project, clip, good.clone()),
+            Err(EditError::ClipExists(clip))
+        );
+        let ghost = Clip::new(NodeId(77), Tick(0), "a.wav", 10);
+        assert_eq!(
+            add(&mut project, id, ghost),
+            Err(EditError::NoSuchNode(NodeId(77)))
+        );
+        for bad in [
+            Clip::new(player, Tick(-1), "a.wav", 10),
+            Clip::new(player, Tick(0), "a.wav", 0),
+            Clip::new(player, Tick(0), "", 10),
+            Clip {
+                gain: f32::NAN,
+                ..good.clone()
+            },
+            Clip {
+                gain: -1.0,
+                ..good.clone()
+            },
+            Clip {
+                fade_in: 6,
+                fade_out: 5,
+                ..good.clone()
+            },
+        ] {
+            assert!(
+                matches!(
+                    add(&mut project, id, bad.clone()),
+                    Err(EditError::InvalidClip(..))
+                ),
+                "{bad:?}"
+            );
+            let set = Command::SetClip {
+                id: clip,
+                clip: bad,
+            }
+            .apply(&mut project);
+            assert!(matches!(set, Err(EditError::InvalidClip(..))));
+        }
+        assert_eq!(project.clip(clip).unwrap().source, "kick.wav", "unchanged");
+        assert!(add(&mut project, id, good).is_ok());
+        assert_eq!(
+            Command::RemoveClip { id: ClipId(99) }.apply(&mut project),
+            Err(EditError::NoSuchClip(ClipId(99)))
+        );
+    }
+
+    #[test]
+    fn one_lane_drives_an_input() {
+        let (mut project, _, player, _, lane) = with_timeline();
+        let other = project.new_lane_id();
+        let same_input = AutomationLane::new(Endpoint::new(player, "gain"), vec![]);
+        assert_eq!(
+            Command::AddLane {
+                id: other,
+                lane: same_input
+            }
+            .apply(&mut project),
+            Err(EditError::LaneTargetTaken(
+                Endpoint::new(player, "gain"),
+                lane
+            ))
+        );
+        // Another input is fine, and so is the lane replacing itself.
+        let elsewhere = AutomationLane::new(Endpoint::new(player, "pan"), vec![]);
+        Command::AddLane {
+            id: other,
+            lane: elsewhere,
+        }
+        .apply(&mut project)
+        .unwrap();
+        let again = project.lane(lane).unwrap().clone();
+        Command::SetLane {
+            id: lane,
+            lane: again,
+        }
+        .apply(&mut project)
+        .unwrap();
+        // But it can't be moved onto the other's input.
+        let onto = AutomationLane::new(Endpoint::new(player, "pan"), vec![]);
+        assert!(matches!(
+            Command::SetLane {
+                id: lane,
+                lane: onto
+            }
+            .apply(&mut project),
+            Err(EditError::LaneTargetTaken(..))
+        ));
+        assert_eq!(
+            project.lane_for(&Endpoint::new(player, "gain")).unwrap().0,
+            lane
+        );
+    }
+
+    #[test]
+    fn dragging_a_clip_is_one_undo_step() {
+        let (mut project, mut history, _, clip, _) = with_timeline();
+        let original = project.clip(clip).unwrap().clone();
+        history.begin_group();
+        for tick in [1000, 1100, 1200] {
+            let moved = Clip {
+                start: Tick(tick),
+                ..original.clone()
+            };
+            apply(
+                &mut project,
+                &mut history,
+                Command::SetClip {
+                    id: clip,
+                    clip: moved,
+                },
+            );
+        }
+        history.end_group();
+        assert_eq!(project.clip(clip).unwrap().start, Tick(1200));
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.clip(clip).unwrap(), &original);
+    }
+
+    #[test]
+    fn a_tempo_change_undoes() {
+        let (mut project, mut history, ..) = with_timeline();
+        let fast = TempoMap::constant(180.0, TimeSignature::COMMON).unwrap();
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetTempoMap(fast.clone()),
+        );
+        assert_eq!(*project.tempo_map(), fast);
+        history.undo(&mut project).unwrap();
+        assert_eq!(*project.tempo_map(), TempoMap::default());
     }
 }
