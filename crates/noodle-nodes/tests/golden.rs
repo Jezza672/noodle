@@ -52,6 +52,11 @@ fn examples_match_their_golden_renders() {
             "{name}: {:?}",
             rendered.diagnostics
         );
+        // Before anything else, so a NaN can never be saved as a golden, and
+        // because NaN would pass both the checks below.
+        if let Some(i) = rendered.samples.iter().position(|x| !x.is_finite()) {
+            panic!("{name}: sample {i} is {}", rendered.samples[i]);
+        }
         assert!(
             rendered.samples.iter().any(|&x| x != 0.0),
             "{name} is silent"
@@ -75,7 +80,7 @@ fn examples_match_their_golden_renders() {
             .iter()
             .zip(&expected.samples)
             .enumerate()
-            .find(|(_, (got, want))| (*got - *want).abs() > TOLERANCE)
+            .find(|(_, (got, want))| !want.is_finite() || (*got - *want).abs() > TOLERANCE)
         {
             failures.push(format!("{name}: sample {i} is {got}, expected {want}"));
         }

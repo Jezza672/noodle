@@ -33,6 +33,6 @@ pub use noodle_core::{Config, Value};
 pub use offline::{Cancelled, OfflineNode, Progress};
 pub use param::{ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
-pub use render::{Render, render};
+pub use render::{Render, RenderError, render};
 pub use runtime::{Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};

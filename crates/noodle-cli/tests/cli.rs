@@ -38,3 +38,20 @@ fn reports_a_missing_project() {
         "{stderr}"
     );
 }
+
+#[test]
+fn rejects_a_render_too_long_to_count() {
+    let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/sine.ron");
+    let output = Path::new(env!("CARGO_TARGET_TMPDIR")).join("never.wav");
+    let result = noodle(&[
+        "render",
+        project.to_str().unwrap(),
+        output.to_str().unwrap(),
+        "--seconds",
+        "1e300",
+    ]);
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("seconds: too long"), "{stderr}");
+    assert!(!output.exists());
+}

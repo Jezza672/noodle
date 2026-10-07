@@ -95,28 +95,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 
 ## What's next
 
-0. **Start here: finish PR #3** (branch `m0/offline-render`, still open).
-   Its Linux CI passed. Copilot left two comments, and the user wants both
-   fixed on that branch before it's merged:
-   - **Very long renders.** In `crates/noodle-engine/src/render.rs`,
-     `frames * settings.channels` can overflow, and a huge but valid length
-     makes the allocation abort the process. Use `checked_mul` and
-     `Vec::try_reserve_exact`, and return a new `RenderError::TooLong`
-     (wrapping `SettingsError` too) instead of `SettingsError`. In
-     `crates/noodle-cli/src/main.rs`, `(seconds * rate).round() as usize`
-     silently saturates, so reject durations above `usize::MAX as f64`. Add
-     tests: overflow (`usize::MAX / 2 + 1` frames × 2 channels), too many
-     bytes (`usize::MAX / 4` frames, mono), and the CLI with `--seconds 1e300`.
-   - **NaNs pass the golden test.** In `crates/noodle-nodes/tests/golden.rs`,
-     NaN passes both the "not silent" check and the tolerance check. Assert
-     that rendered samples are finite *before* the `UPDATE_GOLDEN` branch, so
-     a NaN can never be saved as a golden. Report non-finite expected samples
-     too. (Clippy rejects `!(a <= b)` on floats, so check finiteness
-     explicitly rather than inverting the comparison.)
-
-   Then leave a PR comment summarising the fixes, wait for Linux CI, and
-   squash-merge.
-1. **Finish M0 with live audio:** cpal output in `noodle-io` driving
+1. **Start here: finish M0 with live audio:** cpal output in `noodle-io` driving
    `Processor::process`, and a `noodle play <project>` command (play until
    Ctrl-C). Keep the device code thin, because cloud sessions have no audio
    device. Test everything up to the device boundary, and ask the user to try

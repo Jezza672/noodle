@@ -64,7 +64,13 @@ fn run(command: Command) -> Result<(), String> {
                 max_frames: 512,
                 channels,
             };
-            let frames = (seconds * f64::from(sample_rate)).round() as usize;
+            // `as` saturates, so a huge length would quietly be truncated.
+            // `usize::MAX as f64` rounds up to 2^64, which doesn't fit.
+            let frames = (seconds * f64::from(sample_rate)).round();
+            if frames >= usize::MAX as f64 {
+                return Err(format!("can't render {seconds} seconds: too long"));
+            }
+            let frames = frames as usize;
             let rendered = render(project.graph(), &registry(), settings, frames)
                 .map_err(|error| error.to_string())?;
             for diagnostic in &rendered.diagnostics {
