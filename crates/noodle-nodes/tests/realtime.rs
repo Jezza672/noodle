@@ -8,7 +8,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
-use noodle_engine::{Controller, OUTPUT_ID, Processor, Registry, Settings, Telemetry, engine};
+use noodle_engine::{
+    Controller, OUTPUT_ID, Processor, Registry, ScopeView, Settings, Telemetry, engine,
+};
 use noodle_io::DeviceWriter;
 
 /// Counts allocations and frees made while the current thread is marked as
@@ -140,6 +142,7 @@ fn rendering_never_allocates_even_while_editing() {
     let (mut s, gain, mix, meter, scope) = busy_session();
     // Longer than max_frames, so each call renders several blocks.
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut view = ScopeView::default();
 
     for round in 0..12 {
         // UI thread: allowed to allocate.
@@ -184,8 +187,11 @@ fn rendering_never_allocates_even_while_editing() {
         // UI thread: the meter and scope have reported.
         let levels = s.telemetry.meter(meter).unwrap();
         assert!(levels[0].peak > 0.0, "no meter level in round {round}");
-        let scoped = s.telemetry.scope(scope, |scope| scope.samples().len());
-        assert!(scoped.unwrap() > 0, "no scope samples in round {round}");
+        assert!(s.telemetry.read_scope(scope, &mut view));
+        assert!(
+            !view.samples().is_empty(),
+            "no scope samples in round {round}"
+        );
     }
 
     assert!(out.iter().all(|x| x.is_finite()));
@@ -237,4 +243,22 @@ fn swapping_plans_mid_render_is_seamless() {
 
     assert!(expected.iter().any(|&x| x != 0.0));
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn deleting_a_view_node_closes_its_channel() {
+    let (mut s, _, _, meter, scope) = busy_session();
+    let mut out = vec![0.0; 256 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    assert!(s.telemetry.meter(meter).is_some());
+
+    s.edit(Command::RemoveNode { id: meter });
+    s.update();
+    // The audio thread installs the new plan and hands back the old one,
+    // which the controller frees, dropping the meter's writer.
+    s.processor.process(&mut out);
+    s.controller.maintain();
+
+    assert!(s.telemetry.meter(meter).is_none());
+    assert!(s.telemetry.read_scope(scope, &mut ScopeView::default()));
 }

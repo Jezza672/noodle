@@ -216,10 +216,14 @@ clamped, so files keep exactly what the graph produced.
   resetting it, so it sees the highest peak since its last frame.
 - **Scopes** are `rtrb` SPSC ring buffers of interleaved frames, holding about
   a second. When the ring is full, new frames are dropped whole, so channels
-  stay aligned; the UI keeps the most recent frames it has read.
+  stay aligned. The hub keeps the most recent second it has read in a
+  fixed-size ring, and the UI copies it into a `ScopeView` it reuses.
 - **Locking:** only the hub's map of channels has a lock, and only the UI and
-  plan building take it. The writing ends never lock or allocate, which
-  `realtime.rs` checks.
+  plan building take it, never while running caller code. The writing ends
+  never lock or allocate, which `realtime.rs` checks.
+- **Closing:** every use of the hub closes channels whose writing end has
+  been dropped. That happens when the controller frees a deleted node's
+  instance, so the hub needs no hook into graph edits.
 - **One hub per engine:** two engines instantiating the same graph from one
   hub (live playback and an offline export, say) would replace each other's
   channels, so an export should use a registry with its own hub.

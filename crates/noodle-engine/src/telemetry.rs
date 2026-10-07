@@ -17,6 +17,9 @@
 //!   behind and the ring is full, the newest frames are dropped.
 //!
 //! Only the hub itself has a lock, and only the UI and plan building touch it.
+//! Every use of the hub closes the channels whose writing end is gone, which
+//! happens once the controller frees the instance, e.g. after the node is
+//! deleted, so the hub never holds more than the live nodes' channels.
 //!
 //! Instantiating a node again under the same ID, for example when its config
 //! changes, replaces its channel, so the hub always holds the newest
@@ -24,7 +27,7 @@
 //! one hub (say, live playback and an offline export) would fight over the
 //! channels, so give an export a registry with its own hub.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -43,6 +46,15 @@ struct Channels {
     scopes: HashMap<NodeId, ScopeReader>,
 }
 
+impl Channels {
+    /// Closes the channels whose writing end has been dropped.
+    fn prune(&mut self) {
+        self.meters.retain(|_, cells| Arc::strong_count(cells) > 1);
+        self.scopes
+            .retain(|_, reader| !reader.consumer.is_abandoned());
+    }
+}
+
 impl Telemetry {
     pub fn new() -> Self {
         Self::default()
@@ -50,9 +62,12 @@ impl Telemetry {
 
     fn lock(&self) -> MutexGuard<'_, Channels> {
         // The hub holds no invariants a panic could break, so carry on.
-        self.inner
+        let mut channels = self
+            .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        channels.prune();
+        channels
     }
 
     /// Opens a meter channel for `node` with one level per channel, replacing
@@ -75,8 +90,8 @@ impl Telemetry {
         let reader = ScopeReader {
             consumer,
             channels,
-            history: Vec::with_capacity(capacity * channels),
-            capacity,
+            history: VecDeque::with_capacity(capacity * channels),
+            max: capacity * channels,
         };
         self.lock().scopes.insert(node, reader);
         ScopeWriter { producer, channels }
@@ -91,21 +106,20 @@ impl Telemetry {
         Some(cells.0.iter().map(LevelCells::take).collect())
     }
 
-    /// Reads any new samples into `node`'s scope and passes it to `f`, or
-    /// returns `None` if the node has no scope.
-    pub fn scope<R>(&self, node: NodeId, f: impl FnOnce(&ScopeReader) -> R) -> Option<R> {
+    /// Copies `node`'s most recent scope frames into `view`, reusing its
+    /// memory. Returns false, leaving `view` alone, if the node has no scope.
+    pub fn read_scope(&self, node: NodeId, view: &mut ScopeView) -> bool {
         let mut channels = self.lock();
-        let reader = channels.scopes.get_mut(&node)?;
+        let Some(reader) = channels.scopes.get_mut(&node) else {
+            return false;
+        };
         reader.drain();
-        Some(f(reader))
-    }
-
-    /// Closes the channels of nodes for which `keep` returns false, e.g. nodes
-    /// deleted from the graph.
-    pub fn retain(&self, mut keep: impl FnMut(NodeId) -> bool) {
-        let mut channels = self.lock();
-        channels.meters.retain(|&id, _| keep(id));
-        channels.scopes.retain(|&id, _| keep(id));
+        view.channels = reader.channels;
+        view.samples.clear();
+        let (front, back) = reader.history.as_slices();
+        view.samples.extend_from_slice(front);
+        view.samples.extend_from_slice(back);
+        true
     }
 }
 
@@ -193,43 +207,59 @@ impl ScopeWriter {
     }
 }
 
-/// The UI's end of a scope channel: the most recent frames received.
-pub struct ScopeReader {
+/// The hub's end of a scope channel.
+struct ScopeReader {
     consumer: rtrb::Consumer<f32>,
     channels: usize,
-    /// Interleaved, oldest first, at most `capacity` frames.
-    history: Vec<f32>,
-    capacity: usize,
+    /// The most recent samples, interleaved, oldest first.
+    history: VecDeque<f32>,
+    /// The most samples `history` keeps: the ring's size, a whole number of
+    /// frames.
+    max: usize,
 }
 
 impl ScopeReader {
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
-
-    /// The most recent frames, interleaved, oldest first.
-    pub fn samples(&self) -> &[f32] {
-        &self.history
-    }
-
-    /// The most recent samples of one channel, oldest first.
-    pub fn channel(&self, channel: usize) -> impl Iterator<Item = f32> + '_ {
-        self.history
-            .iter()
-            .skip(channel)
-            .step_by(self.channels)
-            .copied()
-    }
-
     fn drain(&mut self) {
         let Ok(chunk) = self.consumer.read_chunk(self.consumer.slots()) else {
             return;
         };
-        self.history.extend(chunk);
-        let max = self.capacity * self.channels;
-        if self.history.len() > max {
-            self.history.drain(..self.history.len() - max);
-        }
+        let max = self.max;
+        // Only whole frames are ever written, so this keeps channels aligned.
+        let skip = chunk.len().saturating_sub(max);
+        let excess = (self.history.len() + chunk.len() - skip).saturating_sub(max);
+        self.history.drain(..excess);
+        self.history.extend(chunk.into_iter().skip(skip));
+    }
+}
+
+/// A copy of a scope's most recent frames, for the UI to draw. Keep one per
+/// scope and refill it with [`Telemetry::read_scope`] to reuse its memory.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeView {
+    channels: usize,
+    samples: Vec<f32>,
+}
+
+impl ScopeView {
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// The frames, interleaved, oldest first.
+    pub fn samples(&self) -> &[f32] {
+        &self.samples
+    }
+
+    /// One channel's samples, oldest first, or `None` if there's no such
+    /// channel.
+    pub fn channel(&self, channel: usize) -> Option<impl Iterator<Item = f32> + '_> {
+        (channel < self.channels).then(|| {
+            self.samples
+                .iter()
+                .skip(channel)
+                .step_by(self.channels)
+                .copied()
+        })
     }
 }
 
@@ -307,24 +337,32 @@ mod tests {
         assert_eq!(telemetry.meter(NODE).unwrap()[0].peak, 0.5);
     }
 
+    fn read(telemetry: &Telemetry) -> ScopeView {
+        let mut view = ScopeView::default();
+        assert!(telemetry.read_scope(NODE, &mut view));
+        view
+    }
+
     #[test]
     fn scope_keeps_the_latest_frames() {
         let telemetry = Telemetry::new();
         let mut writer = telemetry.open_scope(NODE, 2, 4);
         assert_eq!(writer.write(3, |f, c| (f * 10 + c) as f32), 3);
-        telemetry.scope(NODE, |_| ()).unwrap();
+        read(&telemetry);
         assert_eq!(writer.write(3, |f, c| (100 + f * 10 + c) as f32), 3);
 
-        telemetry
-            .scope(NODE, |scope| {
-                assert_eq!(
-                    scope.samples(),
-                    [20.0, 21.0, 100.0, 101.0, 110.0, 111.0, 120.0, 121.0]
-                );
-                let right: Vec<f32> = scope.channel(1).collect();
-                assert_eq!(right, [21.0, 101.0, 111.0, 121.0]);
-            })
-            .unwrap();
+        let view = read(&telemetry);
+        assert_eq!(
+            view.samples(),
+            [20.0, 21.0, 100.0, 101.0, 110.0, 111.0, 120.0, 121.0]
+        );
+        let right: Vec<f32> = view.channel(1).unwrap().collect();
+        assert_eq!(right, [21.0, 101.0, 111.0, 121.0]);
+        assert!(view.channel(2).is_none());
+
+        // A full ring's worth replaces the history outright.
+        assert_eq!(writer.write(4, |f, c| (200 + f * 10 + c) as f32), 4);
+        assert_eq!(read(&telemetry).samples()[..2], [200.0, 201.0]);
     }
 
     #[test]
@@ -335,15 +373,14 @@ mod tests {
         // Only one frame's room is left.
         assert_eq!(writer.write(3, |_, _| 2.0), 1);
         assert_eq!(writer.write(3, |_, _| 3.0), 0);
-        telemetry
-            .scope(NODE, |scope| {
-                assert_eq!(scope.samples(), [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0]);
-            })
-            .unwrap();
+        assert_eq!(
+            read(&telemetry).samples(),
+            [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0]
+        );
     }
 
     #[test]
-    fn reopening_replaces_and_retain_closes() {
+    fn reopening_replaces() {
         let telemetry = Telemetry::new();
         let old = telemetry.open_meter(NODE, 1);
         let new = telemetry.open_meter(NODE, 1);
@@ -362,10 +399,20 @@ mod tests {
             },
         );
         assert_eq!(telemetry.meter(NODE).unwrap()[0].peak, 0.1);
+    }
 
-        telemetry.open_scope(NODE, 1, 4);
-        telemetry.retain(|id| id != NODE);
+    #[test]
+    fn dropping_the_writer_closes_the_channel() {
+        let telemetry = Telemetry::new();
+        let meter = telemetry.open_meter(NODE, 1);
+        let scope = telemetry.open_scope(NODE, 1, 4);
+        assert!(telemetry.meter(NODE).is_some());
+        assert!(telemetry.read_scope(NODE, &mut ScopeView::default()));
+
+        drop((meter, scope));
         assert!(telemetry.meter(NODE).is_none());
-        assert!(telemetry.scope(NODE, |_| ()).is_none());
+        assert!(!telemetry.read_scope(NODE, &mut ScopeView::default()));
+        let channels = telemetry.lock();
+        assert!(channels.meters.is_empty() && channels.scopes.is_empty());
     }
 }

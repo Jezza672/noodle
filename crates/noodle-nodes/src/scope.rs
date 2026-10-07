@@ -66,7 +66,7 @@ impl Node for ScopeNode {
 mod tests {
     use super::*;
     use noodle_engine::testing::Harness;
-    use noodle_engine::{NodeId, Shape};
+    use noodle_engine::{NodeId, ScopeView, Shape};
 
     #[test]
     fn sends_frames_with_voices_summed() {
@@ -85,9 +85,8 @@ mod tests {
         input.lane_mut(1, 1).copy_from_slice(&[-1.0, -2.0, -3.0]);
         h.run(3).unwrap();
 
-        let samples = telemetry
-            .scope(NodeId(0), |scope| scope.samples().to_vec())
-            .unwrap();
-        assert_eq!(samples, [11.0, -1.0, 22.0, -2.0, 33.0, -3.0]);
+        let mut view = ScopeView::default();
+        assert!(telemetry.read_scope(NodeId(0), &mut view));
+        assert_eq!(view.samples(), [11.0, -1.0, 22.0, -2.0, 33.0, -3.0]);
     }
 }
