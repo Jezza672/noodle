@@ -19,6 +19,9 @@ impl Meter {
 
 const IN: usize = 0;
 
+/// A mean square below this (-300 dB RMS) is flushed to zero.
+const TINY: f32 = 1e-30;
+
 /// How quickly the RMS level follows the signal, as for a VU meter.
 const RMS_TIME_SECONDS: f32 = 0.3;
 
@@ -67,7 +70,9 @@ impl Node for MeterNode {
                 *mean_square += self.coefficient * (x * x - *mean_square);
             }
             // Recover from a NaN or infinity once the input does.
-            if !mean_square.is_finite() {
+            // Flush a level too small to matter, so silence doesn't leave it
+            // decaying through the slow subnormals (see `svf.rs`).
+            if !mean_square.is_finite() || *mean_square < TINY {
                 *mean_square = 0.0;
             }
             let level = Level {
@@ -150,5 +155,30 @@ mod tests {
         h.run(4).unwrap();
         let level = telemetry.meter(NODE).unwrap()[0];
         assert!(level.rms.is_finite() && level.rms > 0.0, "{level:?}");
+    }
+
+    /// Without the engine's flush-to-zero, as the harness runs it.
+    #[test]
+    fn silence_decays_to_zero_not_to_subnormals() {
+        let telemetry = Telemetry::new();
+        // A low rate, so the level decays past the subnormals in few samples.
+        let rate = 1000.0;
+        let frames = 1000;
+        let mut h = Harness::new(
+            &Meter::new(&telemetry),
+            &Config::new(),
+            &[(IN, Shape::MONO)],
+            rate,
+            frames,
+        )
+        .unwrap();
+        h.input(IN, frames).fill(1.0);
+        h.run(frames).unwrap();
+        h.input(IN, frames).fill(0.0);
+        // 60 s: 200 time constants, far past where f32 underflows.
+        for _ in 0..60 {
+            h.run(frames).unwrap();
+        }
+        assert_eq!(telemetry.meter(NODE).unwrap()[0].rms, 0.0);
     }
 }

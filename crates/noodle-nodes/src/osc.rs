@@ -71,6 +71,7 @@ impl LaneKernel for SineKernel {
             *out = (*phase * TAU).sin();
             *phase = (*phase + f * seconds_per_sample).rem_euclid(1.0);
         }
+        recover(phase);
     }
 }
 
@@ -102,6 +103,15 @@ impl LaneKernel for SawKernel {
             *out = 2.0 * *phase - 1.0 - poly_blep(*phase, step.abs());
             *phase = (*phase + step).rem_euclid(1.0);
         }
+        recover(phase);
+    }
+}
+
+/// Restarts a phase that an infinite or NaN frequency made NaN, which would
+/// otherwise stay NaN for good. Once per block is enough.
+fn recover(phase: &mut f32) {
+    if !phase.is_finite() {
+        *phase = 0.0;
     }
 }
 
@@ -169,6 +179,22 @@ mod tests {
         assert!((out[36] - 0.5).abs() < 1e-4);
         // At the wrap, PolyBLEP lands halfway instead of jumping.
         assert!(out[48].abs() < 1e-4);
+    }
+
+    #[test]
+    fn oscillators_recover_from_an_infinite_frequency() {
+        for node in [&Sine as &dyn NodeType, &Saw] {
+            let connected = [(FREQUENCY, Shape::MONO)];
+            let mut h = Harness::new(node, &Config::new(), &connected, 48_000.0, 64).unwrap();
+            let mut frequency = h.input(FREQUENCY, 64);
+            frequency.fill(440.0);
+            frequency.lane_mut(0, 0)[10] = f32::INFINITY;
+            h.run(64).unwrap();
+            h.input(FREQUENCY, 64).fill(440.0);
+            h.run(64).unwrap();
+            let out = h.output(OUT).lane(0, 0);
+            assert!(out.iter().all(|x| x.is_finite()), "{}", node.info().id);
+        }
     }
 
     #[test]
