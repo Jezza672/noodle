@@ -79,7 +79,10 @@ arrangement on top, and the selected track's node graph below.
 
 - **Transport:** play, stop, loop, tempo map and time signature.
 - Group nodes, with Tab to enter and leave them.
-- Tracks as group nodes, fed by clip player nodes.
+- Tracks as group nodes. Every track takes MIDI and audio clips alike: a
+  track input node with `audio` and `midi` outputs, wired by default into the
+  group's output node. Group input and output nodes carry gain, mute and solo
+  as parameters, which the track's buttons show.
 - Importing audio clips: symphonia decoding, resampling, and disk streaming
   on a worker thread.
 - **Arrangement view:** tracks, and moving, trimming and fading clips.
