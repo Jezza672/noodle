@@ -6,13 +6,27 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// A float compares by its bits, so a NaN equals itself and a project always
+/// equals its own copy.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
     Text(String),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Text(a), Self::Text(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl Value {

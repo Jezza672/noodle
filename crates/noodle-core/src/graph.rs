@@ -24,13 +24,23 @@ impl fmt::Display for NodeId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Floats compare by their bits, so a NaN position equals itself and a
+/// project always equals its own copy. (A NaN can come from a hand-edited
+/// file, and one that never equalled itself would stay unsaved forever.)
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Position {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+impl PartialEq for Position {
+    fn eq(&self, other: &Self) -> bool {
+        self.x.to_bits() == other.x.to_bits() && self.y.to_bits() == other.y.to_bits()
+    }
+}
+
+/// Parameters compare by their bits, like [`Position`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     /// The node type's ID, e.g. `"noodle.osc.sine"`.
     #[serde(rename = "type")]
@@ -44,6 +54,20 @@ pub struct Node {
     /// Where the node sits in the editor.
     #[serde(default)]
     pub position: Position,
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_id == other.type_id
+            && self.config == other.config
+            && self.position == other.position
+            && self.params.len() == other.params.len()
+            && self
+                .params
+                .iter()
+                .zip(&other.params)
+                .all(|((a, x), (b, y))| a == b && x.to_bits() == y.to_bits())
+    }
 }
 
 impl Node {
