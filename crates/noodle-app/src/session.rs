@@ -29,10 +29,6 @@ pub enum Saved {
 
 /// A change a view wants made.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the editor and properties panel are placeholders")
-)]
 pub enum Edit {
     /// One undo step.
     Apply(Command),

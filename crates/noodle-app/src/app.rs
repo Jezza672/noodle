@@ -407,7 +407,7 @@ mod tests {
 
         harness.get_by_label("Sine (#1)").click();
         harness.run();
-        harness.get_by_label("frequency: 220");
+        harness.get_by_label("Frequency");
     }
 
     #[test]
