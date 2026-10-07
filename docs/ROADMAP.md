@@ -10,7 +10,7 @@ The graph engine works end to end without a UI.
 **Status:** everything is built, including cpal output and the `noodle render`
 and `noodle play` commands. `noodle play` swaps edits to the file in while it
 plays. What's left is checking the "done when" below: listening on macOS, and
-an all-platform CI run.
+the tests on all three platforms (Linux and Windows on CI, macOS on a Mac).
 
 - **CI:** GitHub Actions running fmt, clippy and tests on macOS, Windows and Linux.
 - **`noodle-core`:**

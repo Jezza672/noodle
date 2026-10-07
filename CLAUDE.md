@@ -73,13 +73,15 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 - **CI minutes are metered** because the repo is private, with macOS counting
   10× and Windows 2×.
   - Pushes and PRs run **Linux only**.
-  - The all-platform run is triggered **by hand**
+  - The Windows run is triggered **by hand**
     (`gh workflow run CI --ref main`, or the GitHub MCP's workflow-run
     tool), **once each milestone's code is merged**. The user confirmed
-    this for M0 on 2026-10-07.
-  - macOS used to be tested locally on the user's Mac. A cloud session can't
-    do that, so if a change could behave differently on macOS (device code,
-    for example), ask the user to run the tests locally.
+    this for M0 on 2026-10-07. It runs Linux and Windows.
+  - **macOS runs on the user's Mac, not on Actions.** The Mac is connected
+    to the Claude project, so a cloud session can start a Remote Control
+    session there to run fmt, clippy and the tests on a branch, and a short
+    `noodle play`. Do that for each milestone, and for any change that could
+    behave differently on macOS (device code, for example).
 - **Copilot reviews every PR automatically,** about 2–3 minutes after it's
   opened. Wait for the review before merging.
   - Decide whether you agree with each comment.
@@ -98,7 +100,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 ## What's next
 
 1. **Start here: confirm M0 is done.** cpal output and `noodle play` are
-   built. M0's "done when" still needs two things only the user can do: hear
-   `noodle play` on their Mac (including an edit swapped in while it plays),
-   and an all-platform CI run. Then mark M0 done in ROADMAP.md.
+   built. M0's "done when" still needs: the tests passing on the user's Mac,
+   the user hearing `noodle play` there (including an edit swapped in while
+   it plays), and the Windows CI run. Then mark M0 done in ROADMAP.md.
 2. **Start M1:** the egui app shell and node editor. See the roadmap.
