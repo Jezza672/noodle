@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::{Connection, Endpoint, Node, NodeId, Position, Project, Value};
+use crate::{Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -36,6 +36,19 @@ pub enum Command {
         node: NodeId,
         position: Position,
     },
+    AddFrame {
+        id: FrameId,
+        frame: Frame,
+    },
+    /// Leaves the nodes inside the frame where they are.
+    RemoveFrame {
+        id: FrameId,
+    },
+    /// Replaces the frame's label, position and size.
+    SetFrame {
+        id: FrameId,
+        frame: Frame,
+    },
     /// Applied in order, as one step. If any command fails, none take effect.
     Batch(Vec<Command>),
 }
@@ -61,6 +74,22 @@ impl Command {
             }
             inverses.reverse();
             return Ok(Command::Batch(inverses));
+        }
+
+        match self {
+            Command::AddFrame { id, frame } => {
+                project.insert_frame(id, frame)?;
+                return Ok(Command::RemoveFrame { id });
+            }
+            Command::RemoveFrame { id } => {
+                let frame = project.remove_frame(id)?;
+                return Ok(Command::AddFrame { id, frame });
+            }
+            Command::SetFrame { id, frame } => {
+                let old = std::mem::replace(project.frame_mut(id)?, frame);
+                return Ok(Command::SetFrame { id, frame: old });
+            }
+            _ => {}
         }
 
         let graph = project.graph_mut();
@@ -117,7 +146,10 @@ impl Command {
                     position: old,
                 }
             }
-            Command::Batch(_) => unreachable!("handled above"),
+            Command::Batch(_)
+            | Command::AddFrame { .. }
+            | Command::RemoveFrame { .. }
+            | Command::SetFrame { .. } => unreachable!("handled above"),
         })
     }
 }
@@ -130,6 +162,8 @@ pub enum EditError {
     /// Only possible in a project file, since connecting an input that's
     /// already connected replaces the old connection.
     ConnectedTwice(Endpoint),
+    NoSuchFrame(FrameId),
+    FrameExists(FrameId),
 }
 
 impl fmt::Display for EditError {
@@ -139,6 +173,8 @@ impl fmt::Display for EditError {
             Self::NodeExists(id) => write!(f, "there's already a node {id}"),
             Self::NotConnected(input) => write!(f, "nothing is connected to {input}"),
             Self::ConnectedTwice(input) => write!(f, "{input} has more than one connection"),
+            Self::NoSuchFrame(id) => write!(f, "there's no {id}"),
+            Self::FrameExists(id) => write!(f, "there's already a {id}"),
         }
     }
 }
@@ -238,6 +274,45 @@ mod tests {
         id
     }
 
+    fn frame(label: &str) -> Frame {
+        Frame {
+            label: label.into(),
+            position: Position { x: -10.0, y: 5.0 },
+            width: 300.0,
+            height: 200.0,
+        }
+    }
+
+    #[test]
+    fn frame_ids_are_not_reused_and_clash_cleanly() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let id = p.new_frame_id();
+        h.apply(
+            &mut p,
+            Command::AddFrame {
+                id,
+                frame: frame("A"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            h.apply(
+                &mut p,
+                Command::AddFrame {
+                    id,
+                    frame: frame("B")
+                }
+            ),
+            Err(EditError::FrameExists(id))
+        );
+        h.apply(&mut p, Command::RemoveFrame { id }).unwrap();
+        assert_ne!(p.new_frame_id(), id);
+        assert_eq!(
+            h.apply(&mut p, Command::RemoveFrame { id }),
+            Err(EditError::NoSuchFrame(id))
+        );
+    }
+
     fn connect(from: NodeId, from_port: &str, to: NodeId, to_port: &str) -> Command {
         Command::Connect(Connection {
             from: Endpoint::new(from, from_port),
@@ -312,6 +387,15 @@ mod tests {
             Command::Disconnect {
                 input: Endpoint::new(mix, "in2"),
             },
+            Command::AddFrame {
+                id: FrameId(1),
+                frame: frame("Synth"),
+            },
+            Command::SetFrame {
+                id: FrameId(1),
+                frame: frame("Voice"),
+            },
+            Command::RemoveFrame { id: FrameId(1) },
             Command::RemoveNode { id: a },
         ];
         for command in commands {

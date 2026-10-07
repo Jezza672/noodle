@@ -114,12 +114,14 @@ fn busy_session() -> (Session, NodeId, NodeId) {
     let gain = s.add(Node::new("noodle.util.gain"));
     let other = s.add(Node::new("noodle.osc.sine").with_param("frequency", 330.0));
     let mix = s.add(Node::new("noodle.util.mix"));
+    let reroute = s.add(Node::new("noodle.util.reroute"));
     let voices = s.add(Node::new("noodle.poly.voice_mix"));
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(sine, "out", svf, "in");
     s.wire(lfo, "out", svf, "resonance");
     s.wire(svf, "low", gain, "in");
-    s.wire(gain, "out", mix, "in1");
+    s.wire(gain, "out", reroute, "in");
+    s.wire(reroute, "out", mix, "in1");
     s.wire(other, "out", mix, "in2");
     s.wire(mix, "out", voices, "in");
     s.wire(voices, "out", output, "in");

@@ -1,16 +1,38 @@
 //! The whole project, and saving and loading it.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Graph, NodeId};
+use crate::{EditError, Frame, FrameId, Graph, NodeId};
 
-/// Everything that gets saved. For now that's just the graph. Change it
-/// through a [`History`](crate::History), so every change can be undone.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Everything that gets saved: the graph, and the frames drawn around parts of
+/// it. Change it through a [`History`](crate::History), so every change can
+/// be undone.
+#[derive(Clone, Debug)]
 pub struct Project {
     graph: Graph,
+    frames: BTreeMap<FrameId, Frame>,
+    next_frame_id: u64,
+}
+
+impl Default for Project {
+    fn default() -> Self {
+        Self {
+            graph: Graph::default(),
+            frames: BTreeMap::new(),
+            next_frame_id: 1,
+        }
+    }
+}
+
+/// Like [`Graph`], two projects are equal if their contents are, whichever IDs
+/// they'd hand out next.
+impl PartialEq for Project {
+    fn eq(&self, other: &Self) -> bool {
+        self.graph == other.graph && self.frames == other.frames
+    }
 }
 
 /// How a project is laid out on disk.
@@ -18,6 +40,8 @@ pub struct Project {
 struct ProjectFile {
     format: u32,
     graph: Graph,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    frames: BTreeMap<FrameId, Frame>,
 }
 
 impl Project {
@@ -42,12 +66,50 @@ impl Project {
         self.graph.new_id()
     }
 
+    pub fn frame(&self, id: FrameId) -> Option<&Frame> {
+        self.frames.get(&id)
+    }
+
+    pub fn frames(&self) -> impl Iterator<Item = (FrameId, &Frame)> {
+        self.frames.iter().map(|(&id, frame)| (id, frame))
+    }
+
+    /// Reserves an ID for a frame that's about to be added.
+    pub fn new_frame_id(&mut self) -> FrameId {
+        let id = self.next_frame_id();
+        self.next_frame_id += 1;
+        id
+    }
+
+    /// The ID [`new_frame_id`](Self::new_frame_id) would return next.
+    pub fn next_frame_id(&self) -> FrameId {
+        FrameId(self.next_frame_id)
+    }
+
+    pub(crate) fn insert_frame(&mut self, id: FrameId, frame: Frame) -> Result<(), EditError> {
+        if self.frames.contains_key(&id) {
+            return Err(EditError::FrameExists(id));
+        }
+        self.frames.insert(id, frame);
+        self.next_frame_id = self.next_frame_id.max(id.0 + 1);
+        Ok(())
+    }
+
+    pub(crate) fn remove_frame(&mut self, id: FrameId) -> Result<Frame, EditError> {
+        self.frames.remove(&id).ok_or(EditError::NoSuchFrame(id))
+    }
+
+    pub(crate) fn frame_mut(&mut self, id: FrameId) -> Result<&mut Frame, EditError> {
+        self.frames.get_mut(&id).ok_or(EditError::NoSuchFrame(id))
+    }
+
     /// The project as RON, the text format project files use: it's readable
     /// and diffs well.
     pub fn to_ron(&self) -> String {
         let file = ProjectFile {
             format: Self::FORMAT,
             graph: self.graph.clone(),
+            frames: self.frames.clone(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -59,7 +121,12 @@ impl Project {
         if file.format > Self::FORMAT {
             return Err(LoadError::NewerFormat(file.format));
         }
-        Ok(Self { graph: file.graph })
+        let next_frame_id = file.frames.keys().last().map_or(1, |id| id.0 + 1);
+        Ok(Self {
+            graph: file.graph,
+            frames: file.frames,
+            next_frame_id,
+        })
     }
 }
 
@@ -91,7 +158,10 @@ impl std::error::Error for LoadError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Command, Config, Connection, Endpoint, History, Node, NodeId, Value};
+    use crate::{
+        Command, Config, Connection, Endpoint, Frame, FrameId, History, Node, NodeId, Position,
+        Value,
+    };
 
     const HAND_WRITTEN: &str = r#"
         (
@@ -145,8 +215,36 @@ mod tests {
             )
             .unwrap();
 
+        let frame = Frame {
+            label: "Drums".into(),
+            position: Position { x: -20.0, y: -40.0 },
+            width: 400.0,
+            height: 250.5,
+        };
+        let frame_id = project.new_frame_id();
+        history
+            .apply(
+                &mut project,
+                Command::AddFrame {
+                    id: frame_id,
+                    frame,
+                },
+            )
+            .unwrap();
+
         let text = project.to_ron();
-        assert_eq!(Project::from_ron(&text).unwrap(), project, "{text}");
+        let loaded = Project::from_ron(&text).unwrap();
+        assert_eq!(loaded, project, "{text}");
+        assert!(loaded.frame(frame_id).is_some(), "{text}");
+    }
+
+    #[test]
+    fn new_frame_ids_follow_the_highest_loaded_id() {
+        let text = HAND_WRITTEN.trim_end().trim_end_matches(')').to_string()
+            + r#"frames: { 4: (label: "A", position: (x: 0.0, y: 0.0), width: 10.0, height: 10.0) }, )"#;
+        let mut project = Project::from_ron(&text).unwrap();
+        assert_eq!(project.frame(FrameId(4)).unwrap().label, "A");
+        assert_eq!(project.new_frame_id(), FrameId(5));
     }
 
     #[test]
