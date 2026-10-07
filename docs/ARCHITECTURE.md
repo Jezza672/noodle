@@ -370,9 +370,25 @@ Settled for M2 (Phase 0):
   ticks but its source offset and length in the file's own samples, so a
   tempo change moves it without changing how it sounds. (Warping to the
   tempo is a later feature and would be a property of the clip.)
+- **Tempo is keyed to ticks, signatures to bars.** Editing an early time
+  signature moves the bar lines but not the tempo changes after it, which
+  stay at their place in the music. That is what a signature edit means: the
+  bars change, the music underneath doesn't.
 - **Rounding.** Tick to sample rounds to the nearest sample. Sample to tick
   is only needed for display and for nodes reading the musical position, so
   it is a float.
+
+### Playing along the timeline
+
+- **Blocks.** The transport splits a block at the loop end, so a block never
+  crosses the wrap. It does not split at tempo changes: the block's timeline
+  info carries the tick and tempo at its start, so a tempo change reaches
+  tempo-synced nodes at the next block (a millisecond or so). Clip players
+  work in samples and aren't affected.
+- **Editing the tempo map while playing.** The playhead keeps its tick. The
+  transport recomputes its sample position from the new map, and clip
+  players get their new schedule in the next plan, crossing over with the
+  usual 5 ms structural-edit fade.
 
 ### Clips
 
@@ -382,6 +398,18 @@ starts, and which part of which source it plays. The track itself is a group
 node, so the arrangement view reads the track's players and their clips.
 Compiling turns a player's clips into the schedule the node follows, sorted
 by start; the node only reads that. Clip commands are undoable like any other.
+
+- **Overlaps.** A clip's length is in samples and its start in ticks, so
+  slowing the tempo can make clips on one player overlap. A player plays one
+  clip at a time: the one that started last (the higher ID on a tie), and the
+  earlier clip is cut where the later one begins. There is no automatic
+  crossfade; a clip's own fades apply. The arrangement view stops you
+  placing clips on top of each other, so overlaps only come from tempo edits.
+- **Nodes that go.** Removing a node removes the clips it plays and the lanes
+  driving its inputs, in the same undo step. Node IDs don't change when a
+  node moves in or out of a group, so those clips and lanes stay valid. A lane
+  whose port no longer exists (a config change removed it) is not a load
+  error but a diagnostic when compiling.
 
 ## Automation (M2)
 
@@ -400,6 +428,11 @@ into a parameter port.** It is not a clip and not a node the user wires.
   wire into an automated parameter wins, and the lane is greyed with a
   diagnostic. Two sources into one input were never allowed anyway.
 - **Without a transport** (a live patch) the lane holds its first value.
+- **Hold steps aren't smoothed.** Parameters already smooth their own changes,
+  so a stepped lane doesn't click.
+- **The parameter widget.** For a parameter with a lane, the widget shows the
+  lane's value at the playhead and is greyed like a wired parameter. The lane
+  is edited as a lane.
 - The lane evaluates per sample for linear segments and flags the signal
   constant for hold segments, so a stepped lane costs nothing.
 - Lanes are drawn by the arrangement view under their track, and in the
@@ -425,7 +458,9 @@ function of the timeline: everything upstream is deterministic and nothing
 depends on live input or a device. The compiler marks this per node. An
 offline node with a non-cacheable input is a compile error.
 
-**Cache keys.** Keys are computed Merkle-style:
+**Cache keys.** Keys are computed Merkle-style. The hash includes the
+timeline: the tempo map, the clips a player plays, and the points of any lane
+driving the node, so freezes go stale when they change.
 
 ```
 key(node) = hash(type_id, type_version, params, sample_rate, range, key(inputs)…)
