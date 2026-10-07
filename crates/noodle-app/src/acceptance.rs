@@ -266,6 +266,25 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     play_for(&mut h, Duration::from_millis(200));
     assert_eq!(playhead(&h), Tick(0));
 
+    // A new project starts at the beginning, running. The null device isn't
+    // clocked, so the playhead runs far ahead; it should drop back.
+    h.state().session().set_transport_running(true);
+    play_for(&mut h, Duration::from_millis(200));
+    h.state().session().set_transport_running(false);
+    play_for(&mut h, Duration::from_millis(100));
+    let far = playhead(&h);
+    h.state_mut().session_mut().new_project();
+    let mut lowest = far;
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(2));
+        lowest = lowest.min(playhead(&h));
+    }
+    assert!(
+        lowest < Tick(far.0 / 2),
+        "rewound from {far:?}, lowest {lowest:?}"
+    );
+    assert!(h.state().session().transport_running());
+
     // A tempo edit reaches the engine.
     let fast = TempoMap::constant(240.0, TimeSignature::COMMON).unwrap();
     h.state_mut()

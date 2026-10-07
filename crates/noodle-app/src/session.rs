@@ -351,6 +351,13 @@ impl Session {
         self.dirty = false;
         self.message = None;
         self.recompile();
+        // A new project starts from its beginning, running, whatever the
+        // last one's playhead was doing.
+        if let Some(audio) = &self.audio {
+            let transport = audio.controller.transport();
+            transport.seek(Tick(0));
+            transport.play();
+        }
     }
 
     pub fn is_playing(&self) -> bool {
