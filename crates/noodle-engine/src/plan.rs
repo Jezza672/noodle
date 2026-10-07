@@ -48,6 +48,8 @@ pub(crate) struct PlanInfo {
     values: HashMap<(NodeId, String), usize>,
     /// Every node the output depends on, with what feeds each of its inputs.
     audible: Wiring,
+    /// Nodes that failed to instantiate and play silence instead.
+    silent: HashSet<NodeId>,
 }
 
 /// For each node, where each of its inputs (signal inputs, then event
@@ -151,6 +153,7 @@ pub(crate) fn build(
         nodes: HashMap::new(),
         values: HashMap::new(),
         audible: HashMap::new(),
+        silent: HashSet::new(),
     };
     let mut nodes = Vec::with_capacity(schedule.nodes.len());
     let mut values = Vec::new();
@@ -188,6 +191,7 @@ pub(crate) fn build(
             None => match instantiate(&scheduled, sample_rate, max_frames) {
                 Ok(node) => (Some(node), true),
                 Err(error) => {
+                    info.silent.insert(id);
                     diagnostics.push(Diagnostic::node(id, Problem::Node(error)));
                     (Some(Box::new(Silence) as Box<dyn Node>), false)
                 }
@@ -294,7 +298,12 @@ pub(crate) fn build(
 
     info.audible = audible_wiring(&wiring, &nodes);
     let seamless = previous.is_some_and(|p| p.audible == info.audible)
-        && info.audible.keys().all(|id| carried_ids.contains(id));
+        && info.audible.keys().all(|id| {
+            // A node that was silent and still is sounds the same, though
+            // it's rebuilt each time.
+            carried_ids.contains(id)
+                || (info.silent.contains(id) && previous.is_some_and(|p| p.silent.contains(id)))
+        });
 
     let plan = Plan {
         generation,

@@ -680,6 +680,27 @@ fn a_failed_node_is_retried_and_reported_until_it_works() {
 }
 
 #[test]
+fn a_failed_node_on_the_output_path_does_not_fade_every_update() {
+    let mut rig = Rig::new(SETTINGS);
+    let failing = rig.add("failing");
+    let offset = rig.add("offset");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(failing, offset, "in");
+    rig.wire(offset, output, "in");
+    rig.update();
+    rig.render(2);
+    // An edit elsewhere: the failed node is retried, but it's still silent.
+    rig.add("counter");
+    rig.edit(Command::SetParam {
+        node: offset,
+        key: "offset".into(),
+        value: Some(2.0),
+    });
+    rig.update();
+    assert_eq!(rig.render(4), [0.5, 1.0, 1.5, 2.0]);
+}
+
+#[test]
 fn a_failure_is_reported_on_every_update() {
     let mut rig = Rig::new(SETTINGS);
     rig.add("failing");
