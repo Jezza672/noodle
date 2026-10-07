@@ -86,6 +86,7 @@ pub struct Playback {
     _input_stream: Option<cpal::Stream>,
     device: String,
     input: Option<(String, usize)>,
+    input_problem: Option<AudioError>,
     settings: Settings,
     health: Health,
 }
@@ -100,6 +101,11 @@ impl Playback {
         self.input
             .as_ref()
             .map(|(name, channels)| (name.as_str(), *channels))
+    }
+
+    /// Why input isn't on, if it was asked for and couldn't be opened.
+    pub fn input_problem(&self) -> Option<&AudioError> {
+        self.input_problem.as_ref()
     }
 
     pub fn settings(&self) -> Settings {
@@ -187,7 +193,9 @@ impl Reporter {
 /// Starts an engine playing on an output device, chosen by `choice`, with
 /// `max_frames` frames per engine block. The channel count is the device's.
 /// If `choice` turns input on, the input device records into Input nodes at
-/// the output's sample rate, which it must support. Send the engine graphs
+/// the output's sample rate. Input that can't be opened, e.g. because the
+/// device doesn't support that rate, leaves Input nodes silent rather than
+/// failing: see [`Playback::input_problem`]. Send the engine graphs
 /// with the returned [`Controller`].
 ///
 /// Errors while playing are reported through [`Playback::health`].
@@ -215,19 +223,30 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
     let (controller, processor) = engine(settings)?;
     let mut health = Health::new();
 
+    // Input that can't be opened doesn't stop the sound: playback goes on
+    // without it, and says why.
+    let mut input_problem = None;
     let (writer, input) = match choice_id(&choice.input) {
         None => (DeviceWriter::new(processor), None),
         Some(id) => {
             // A chosen input device opens on its own host. The default one
             // comes from the output's host.
-            let input_host = match id {
-                Some(_) => open_host(host_for(choice.host.as_deref(), id, Direction::Input)?)?,
-                None => open_host(host_id)?,
-            };
-            let (stream, name, channels, feed) =
-                open_input(&input_host, id, &settings, choice.buffer_size, &mut health)?;
-            let writer = DeviceWriter::with_input(processor, feed);
-            (writer, Some((stream, name, channels)))
+            let opened = match id {
+                Some(_) => host_for(choice.host.as_deref(), id, Direction::Input),
+                None => Ok(host_id),
+            }
+            .and_then(open_host)
+            .and_then(|host| open_input(&host, id, &settings, &mut health));
+            match opened {
+                Ok((stream, name, channels, feed)) => (
+                    DeviceWriter::with_input(processor, feed),
+                    Some((stream, name, channels)),
+                ),
+                Err(error) => {
+                    input_problem = Some(error);
+                    (DeviceWriter::new(processor), None)
+                }
+            }
         }
     };
     let mut reporter = health.reporter();
@@ -245,20 +264,25 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
         SampleFormat::U32 => open::<u32>(&device, config, writer, on_error),
         format => return Err(AudioError::UnsupportedFormat(format)),
     }?;
-    stream.play()?;
+    // Input first, so the output finds some waiting.
     let (input_stream, input) = match input {
-        Some((stream, name, channels)) => {
-            stream.play()?;
-            (Some(stream), Some((name, channels)))
-        }
+        Some((input_stream, name, channels)) => match input_stream.play() {
+            Ok(()) => (Some(input_stream), Some((name, channels))),
+            Err(error) => {
+                input_problem = Some(error.into());
+                (None, None)
+            }
+        },
         None => (None, None),
     };
+    stream.play()?;
     Ok((
         Playback {
             _stream: stream,
             _input_stream: input_stream,
             device: name,
             input,
+            input_problem,
             settings,
             health,
         },
@@ -289,7 +313,6 @@ fn open_input(
     host: &cpal::Host,
     id: Option<&str>,
     settings: &Settings,
-    buffer_size: Option<u32>,
     health: &mut Health,
 ) -> Result<(cpal::Stream, String, usize, Feed), AudioError> {
     let device = find_device(host, id, Direction::Input)?;
@@ -299,7 +322,9 @@ fn open_input(
         &ranges,
         device.default_input_config()?,
         Some(settings.sample_rate as u32),
-        buffer_size,
+        // The ring decouples the two callbacks, so the input can use
+        // whatever buffer size suits it.
+        None,
     )?;
     let channels = usize::from(config.channels);
     let (capture, feed) = input_path(

@@ -190,6 +190,9 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     if let Some((device, channels)) = playback.input() {
         eprintln!("Recording from {device} ({channels} channels).");
     }
+    if let Some(problem) = playback.input_problem() {
+        eprintln!("warning: playing without input: {problem}");
+    }
 
     let mut underruns = 0;
     let mut input_glitches = 0;

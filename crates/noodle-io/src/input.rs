@@ -50,6 +50,7 @@ pub fn input_path(
         scratch: vec![0.0; max_frames * channels].into_boxed_slice(),
         trim_every: ((sample_rate * TRIM_SECONDS) as usize).max(1),
         since_trim: 0,
+        primed: false,
         least_backlog: usize::MAX,
         glitches,
     };
@@ -96,6 +97,8 @@ pub struct Feed {
     /// Frames between backlog checks.
     trim_every: usize,
     since_trim: usize,
+    /// Input has arrived at least once.
+    primed: bool,
     /// The smallest backlog, in frames, left after a read since the last
     /// check.
     least_backlog: usize,
@@ -113,7 +116,9 @@ impl Feed {
         let len = frames * self.channels;
         let block = &mut self.scratch[..len];
         let available = self.consumer.slots().min(len);
-        if available < len {
+        // Until the input stream's first callback, there's nothing to miss.
+        self.primed |= available > 0;
+        if available < len && self.primed {
             self.glitches.fetch_add(1, Ordering::Relaxed);
         }
         if let Ok(chunk) = self.consumer.read_chunk(available) {
@@ -188,6 +193,17 @@ mod tests {
         let max = f32::from_sample(i16::MAX);
         assert_eq!(feed.read(3), [max, 0.0, -1.0, 0.5, 0.25, -0.25]);
         assert_eq!(glitches(&counter), 0);
+    }
+
+    #[test]
+    fn waiting_for_the_first_input_is_not_a_glitch() {
+        let (mut capture, mut feed, counter) = path(1, 4);
+        assert_eq!(feed.read(4), [0.0; 4]);
+        assert_eq!(feed.read(4), [0.0; 4]);
+        assert_eq!(glitches(&counter), 0);
+        capture.capture(&[1.0f32, 2.0]);
+        assert_eq!(feed.read(4), [1.0, 2.0, 0.0, 0.0]);
+        assert_eq!(glitches(&counter), 1, "short once input has started");
     }
 
     #[test]
