@@ -207,9 +207,13 @@ clamped, so files keep exactly what the graph produced.
 - **Opening a channel:** a reporting node type, such as Meter or Scope, holds
   a handle to the hub. When it instantiates a node, off the audio thread, it
   opens a channel under the node's ID (`Setup::node`), keeps the writing end
-  in the instance, and the hub keeps the reading end. Instantiating under the
-  same ID again replaces the channel, so the hub always follows the newest
-  instance, and carried-over instances keep theirs.
+  in the instance, and the hub keeps the reading end. Carried-over instances
+  keep their channels.
+- **Following the playing instance:** instances are made when a plan is
+  built, before it reaches the audio thread, and a plan can be dropped
+  unsent, so a node can have several channels open. The hub reads the newest
+  one that has been written to (falling back to the newest), which is
+  always the instance that's playing.
 - **Meters** are atomics per channel. The audio thread raises the peak with
   `fetch_max` on the float's bits (integer order is float order for
   non-negative floats) and stores the smoothed RMS. The UI takes the peak,
@@ -225,8 +229,8 @@ clamped, so files keep exactly what the graph produced.
   been dropped. That happens when the controller frees a deleted node's
   instance, so the hub needs no hook into graph edits.
 - **One hub per engine:** two engines instantiating the same graph from one
-  hub (live playback and an offline export, say) would replace each other's
-  channels, so an export should use a registry with its own hub.
+  hub (live playback and an offline export, say) would both look like they
+  were playing, so an export should use a registry with its own hub.
 - `noodle_nodes::register_all` creates the hub and returns it. Playhead
   position and cache-render progress will use the same hub.
 

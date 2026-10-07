@@ -21,14 +21,20 @@
 //! happens once the controller frees the instance, e.g. after the node is
 //! deleted, so the hub never holds more than the live nodes' channels.
 //!
-//! Instantiating a node again under the same ID, for example when its config
-//! changes, replaces its channel, so the hub always holds the newest
-//! instance's. That also means two engines instantiating the same graph from
-//! one hub (say, live playback and an offline export) would fight over the
-//! channels, so give an export a registry with its own hub.
+//! A node can have several channels open at once, because instances are
+//! created when a plan is built, before it reaches the audio thread, and a
+//! plan can be thrown away unsent (or its instance never take over, if a
+//! later plan carries over the older one). The hub reads the newest channel
+//! that has been written to, falling back to the newest, and closes the others
+//! once their instances are freed. So readings follow whichever instance is
+//! actually playing.
+//!
+//! Two engines instantiating the same graph from one hub (say, live playback
+//! and an offline export) would both look live, so give an export a registry
+//! with its own hub.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use noodle_core::NodeId;
@@ -40,19 +46,31 @@ pub struct Telemetry {
     inner: Arc<Mutex<Channels>>,
 }
 
+/// Each node's open channels, oldest first.
 #[derive(Default)]
 struct Channels {
-    meters: HashMap<NodeId, Arc<MeterCells>>,
-    scopes: HashMap<NodeId, ScopeReader>,
+    meters: HashMap<NodeId, Vec<Arc<MeterCells>>>,
+    scopes: HashMap<NodeId, Vec<ScopeReader>>,
 }
 
 impl Channels {
     /// Closes the channels whose writing end has been dropped.
     fn prune(&mut self) {
-        self.meters.retain(|_, cells| Arc::strong_count(cells) > 1);
-        self.scopes
-            .retain(|_, reader| !reader.consumer.is_abandoned());
+        self.meters.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
+        self.scopes.retain(|_, list| {
+            list.retain(|reader| !reader.consumer.is_abandoned());
+            !list.is_empty()
+        });
     }
+}
+
+/// The channel to read from `list` (oldest first): the newest one written to,
+/// or else the newest.
+fn live<T>(list: &[T], written: impl Fn(&T) -> bool) -> Option<&T> {
+    list.iter().rev().find(|c| written(c)).or(list.last())
 }
 
 impl Telemetry {
@@ -70,19 +88,24 @@ impl Telemetry {
         channels
     }
 
-    /// Opens a meter channel for `node` with one level per channel, replacing
-    /// any it had. Call this when instantiating, not on the audio thread.
+    /// Opens a meter channel for `node` with one level per channel. Call this
+    /// when instantiating, not on the audio thread.
     pub fn open_meter(&self, node: NodeId, channels: usize) -> MeterWriter {
-        let cells = Arc::new(MeterCells(
-            (0..channels).map(|_| LevelCells::default()).collect(),
-        ));
-        self.lock().meters.insert(node, cells.clone());
+        let cells = Arc::new(MeterCells {
+            levels: (0..channels).map(|_| LevelCells::default()).collect(),
+            written: AtomicBool::new(false),
+        });
+        self.lock()
+            .meters
+            .entry(node)
+            .or_default()
+            .push(cells.clone());
         MeterWriter(cells)
     }
 
     /// Opens a scope channel for `node` that buffers up to `capacity` frames of
-    /// `channels` samples each, replacing any it had. Call this when
-    /// instantiating, not on the audio thread.
+    /// `channels` samples each. Call this when instantiating, not on the audio
+    /// thread.
     pub fn open_scope(&self, node: NodeId, channels: usize, capacity: usize) -> ScopeWriter {
         let channels = channels.max(1);
         let capacity = capacity.max(1);
@@ -92,8 +115,9 @@ impl Telemetry {
             channels,
             history: VecDeque::with_capacity(capacity * channels),
             max: capacity * channels,
+            written: false,
         };
-        self.lock().scopes.insert(node, reader);
+        self.lock().scopes.entry(node).or_default().push(reader);
         ScopeWriter { producer, channels }
     }
 
@@ -102,18 +126,22 @@ impl Telemetry {
     /// should poll a meter.
     pub fn meter(&self, node: NodeId) -> Option<Vec<Level>> {
         let channels = self.lock();
-        let cells = channels.meters.get(&node)?;
-        Some(cells.0.iter().map(LevelCells::take).collect())
+        let list = channels.meters.get(&node)?;
+        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+        Some(cells.levels.iter().map(LevelCells::take).collect())
     }
 
     /// Copies `node`'s most recent scope frames into `view`, reusing its
     /// memory. Returns false, leaving `view` alone, if the node has no scope.
     pub fn read_scope(&self, node: NodeId, view: &mut ScopeView) -> bool {
         let mut channels = self.lock();
-        let Some(reader) = channels.scopes.get_mut(&node) else {
+        let Some(list) = channels.scopes.get_mut(&node) else {
             return false;
         };
-        reader.drain();
+        list.iter_mut().for_each(ScopeReader::drain);
+        let Some(reader) = live(list, |reader| reader.written) else {
+            return false;
+        };
         view.channels = reader.channels;
         view.samples.clear();
         let (front, back) = reader.history.as_slices();
@@ -132,7 +160,11 @@ pub struct Level {
     pub rms: f32,
 }
 
-struct MeterCells(Box<[LevelCells]>);
+struct MeterCells {
+    levels: Box<[LevelCells]>,
+    /// Set once the writer has reported, which shows its instance is playing.
+    written: AtomicBool,
+}
 
 #[derive(Default)]
 struct LevelCells {
@@ -156,15 +188,16 @@ pub struct MeterWriter(Arc<MeterCells>);
 
 impl MeterWriter {
     pub fn channels(&self) -> usize {
-        self.0.0.len()
+        self.0.levels.len()
     }
 
     /// Reports one block's level for `channel`. Negative and NaN levels count
     /// as zero. Out-of-range channels are ignored.
     pub fn write(&self, channel: usize, level: Level) {
-        let Some(cells) = self.0.0.get(channel) else {
+        let Some(cells) = self.0.levels.get(channel) else {
             return;
         };
+        self.0.written.store(true, Ordering::Relaxed);
         cells
             .peak
             .fetch_max(non_negative(level.peak).to_bits(), Ordering::Relaxed);
@@ -216,6 +249,9 @@ struct ScopeReader {
     /// The most samples `history` keeps: the ring's size, a whole number of
     /// frames.
     max: usize,
+    /// Whether anything has arrived, which shows the writer's instance is
+    /// playing.
+    written: bool,
 }
 
 impl ScopeReader {
@@ -225,6 +261,7 @@ impl ScopeReader {
         };
         let max = self.max;
         // Only whole frames are ever written, so this keeps channels aligned.
+        self.written |= !chunk.is_empty();
         let skip = chunk.len().saturating_sub(max);
         let excess = (self.history.len() + chunk.len() - skip).saturating_sub(max);
         self.history.drain(..excess);
@@ -379,26 +416,44 @@ mod tests {
         );
     }
 
+    fn peak(peak: f32) -> Level {
+        Level { peak, rms: 0.0 }
+    }
+
     #[test]
-    fn reopening_replaces() {
+    fn meters_follow_the_playing_instance() {
         let telemetry = Telemetry::new();
-        let old = telemetry.open_meter(NODE, 1);
-        let new = telemetry.open_meter(NODE, 1);
-        old.write(
-            0,
-            Level {
-                peak: 0.9,
-                rms: 0.0,
-            },
-        );
-        new.write(
-            0,
-            Level {
-                peak: 0.1,
-                rms: 0.0,
-            },
-        );
-        assert_eq!(telemetry.meter(NODE).unwrap()[0].peak, 0.1);
+        let read = || telemetry.meter(NODE).unwrap()[0].peak;
+        let playing = telemetry.open_meter(NODE, 1);
+        playing.write(0, peak(0.9));
+
+        // A rebuilt instance that hasn't started playing yet.
+        let pending = telemetry.open_meter(NODE, 1);
+        assert_eq!(read(), 0.9);
+        // Its plan is thrown away, so the older instance plays on.
+        drop(pending);
+        playing.write(0, peak(0.8));
+        assert_eq!(read(), 0.8);
+
+        // A rebuilt instance that does take over.
+        let rebuilt = telemetry.open_meter(NODE, 1);
+        rebuilt.write(0, peak(0.1));
+        playing.write(0, peak(0.7));
+        assert_eq!(read(), 0.1);
+        drop(playing);
+        assert_eq!(telemetry.lock().meters[&NODE].len(), 1);
+    }
+
+    #[test]
+    fn scopes_follow_the_playing_instance() {
+        let telemetry = Telemetry::new();
+        let mut playing = telemetry.open_scope(NODE, 1, 4);
+        playing.write(1, |_, _| 1.0);
+        let mut pending = telemetry.open_scope(NODE, 1, 4);
+        assert_eq!(read(&telemetry).samples(), [1.0]);
+
+        pending.write(1, |_, _| 2.0);
+        assert_eq!(read(&telemetry).samples(), [2.0]);
     }
 
     #[test]

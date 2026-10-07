@@ -24,7 +24,9 @@ pub use voice_mix::VoiceMix;
 use noodle_engine::{Registry, Telemetry};
 
 /// Registers every built-in node type. Returns the telemetry hub that the
-/// view nodes (Meter, Scope) report to, for the UI to read.
+/// view nodes (Meter, Scope) report to, for the UI to read. Without it, they
+/// still run but nothing can read them.
+#[must_use = "the view nodes report to this hub; keep it to read them"]
 pub fn register_all(registry: &mut Registry) -> Telemetry {
     let telemetry = Telemetry::new();
     registry.register(Sine);
@@ -45,6 +47,6 @@ mod tests {
     #[test]
     fn ids_are_unique() {
         // `register` panics on a duplicate ID.
-        super::register_all(&mut noodle_engine::Registry::new());
+        let _ = super::register_all(&mut noodle_engine::Registry::new());
     }
 }
