@@ -414,6 +414,25 @@ Settled for M2 (Phase 0):
   is only needed for display and for nodes reading the musical position, so
   it is a float.
 
+### The engine's transport
+
+- `Controller::transport()` gives a `TransportControl`: play, stop, seek (to
+  a tick), loop (between two ticks) and the playhead in samples. They are
+  shared atomics, so a UI thread sets them and the audio thread reads them
+  without a lock. A new transport is playing from sample 0, so a live patch
+  runs on free-running time as before. Stopping holds the position and tells
+  nodes `playing` is false, and the graph keeps rendering.
+- `Controller::set_tempo_map` builds a `TempoTable` (the compiled map) and
+  sends it over a queue, like a plan. The audio thread gets the tick from
+  the sample position by binary search, and nodes read `tick`, `bpm` and
+  `signature` from `Context::transport`.
+- Seeks, and tempo maps that move the playhead, wait for the output to fade
+  out (the same 5 ms fade a non-seamless plan uses), jump while it is silent,
+  reset every node, and fade back in. A tempo map that leaves the playhead
+  where it is (at the start, say) goes in at once. Old tables are sent back
+  to the controller to be freed.
+- A block ends exactly at the loop end, and the playhead wraps there.
+
 ### Playing along the timeline
 
 - **Blocks.** The transport splits a block at the loop end, so a block never

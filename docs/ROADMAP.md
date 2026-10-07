@@ -49,7 +49,8 @@ panels, files, undo/redo and play/stop), the node editor with parameter
 widgets on the nodes, the properties panel, the Scope, Meter and Input
 nodes (drawn live on their nodes), and the audio settings dialog (File →
 Audio Settings…). An end-to-end test follows the "done when" line below
-through the app. Left: a review pass, and the listening check on a Mac.
+through the app. The review pass is done and its fixes are merged, and CI
+passes on Linux and Windows. Left: the listening check on a Mac.
 
 - eframe app shell with Blender-style dark theme and panel layout.
 - **Node editor:**
@@ -72,8 +73,10 @@ with no glitches, save it, and reopen it exactly as it was.
 
 It becomes a DAW.
 
-**Status:** Phase 0 is settled: the time model and the automation model are
-in [ARCHITECTURE.md](ARCHITECTURE.md), and the core types are next. The
+**Status:** Phase 0 is done: the time and automation models are in
+[ARCHITECTURE.md](ARCHITECTURE.md), and the core types (tempo map, clips,
+automation lanes) are in the project. The engine's transport is next: play,
+stop, seek, loop and a tempo table, then the app's transport bar. The
 arrangement view follows the Studio direction: inspector on the left, the
 arrangement on top, and the selected track's node graph below.
 

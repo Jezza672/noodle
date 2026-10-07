@@ -8,12 +8,15 @@
 
 use std::fmt;
 use std::mem;
+use std::sync::Arc;
 
-use noodle_core::{Graph, NodeId};
+use noodle_core::{Graph, NodeId, TempoMap};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::denormals::Flush;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
+use crate::tempo::TempoTable;
+use crate::transport::TransportControl;
 use crate::{Context, Diagnostic, Registry, Transport, compile};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
@@ -69,11 +72,15 @@ const PLAN_QUEUE: usize = 4;
 /// and back in after it.
 const FADE_SECONDS: f32 = 0.005;
 const RETURN_QUEUE: usize = 8;
+const TEMPO_QUEUE: usize = 4;
 
 pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsError> {
     settings.validate()?;
     let (plans, incoming) = RingBuffer::new(PLAN_QUEUE);
     let (returns, returned) = RingBuffer::new(RETURN_QUEUE);
+    let (tempo_out, tempo_in) = RingBuffer::new(TEMPO_QUEUE);
+    let (tempo_returns, tempo_returned) = RingBuffer::new(TEMPO_QUEUE);
+    let control = TransportControl::new();
     let controller = Controller {
         settings,
         plans,
@@ -82,6 +89,11 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         sent: None,
         next_generation: 0,
         cells: Cells::new(),
+        control: control.clone(),
+        tempo_map: TempoMap::default(),
+        tempo_out,
+        tempo_returned,
+        tempo_pending: None,
     };
     let fade_len = ((settings.sample_rate * FADE_SECONDS).round() as usize).max(1);
     let processor = Processor {
@@ -94,6 +106,12 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         incoming,
         returns,
         position: 0,
+        control,
+        table: Box::new(TempoTable::new(&TempoMap::default(), settings.sample_rate)),
+        tempo_in,
+        tempo_returns,
+        seen_seek: 0,
+        pending_seek: None,
     };
     Ok((controller, processor))
 }
@@ -109,11 +127,36 @@ pub struct Controller {
     sent: Option<PlanInfo>,
     next_generation: u64,
     cells: Cells,
+    control: Arc<TransportControl>,
+    tempo_map: TempoMap,
+    tempo_out: Producer<Box<TempoTable>>,
+    tempo_returned: Consumer<Box<TempoTable>>,
+    /// A tempo table waiting for room in the queue. A newer one replaces it.
+    tempo_pending: Option<Box<TempoTable>>,
 }
 
 impl Controller {
     pub fn settings(&self) -> Settings {
         self.settings
+    }
+
+    /// Play, stop, seek and loop. The handle can go to other threads.
+    pub fn transport(&self) -> Arc<TransportControl> {
+        self.control.clone()
+    }
+
+    /// The tempo map the engine is using.
+    pub fn tempo_map(&self) -> &TempoMap {
+        &self.tempo_map
+    }
+
+    /// Switches the engine to a new tempo map. The playhead keeps its tick,
+    /// so its place in the music stays put and its place in time moves. If
+    /// that moves it, the output fades out and back in around the change.
+    pub fn set_tempo_map(&mut self, map: &TempoMap) {
+        self.tempo_map = map.clone();
+        self.tempo_pending = Some(Box::new(TempoTable::new(map, self.settings.sample_rate)));
+        self.send_tempo();
     }
 
     /// Compiles `graph` and sends the result to the audio thread. Nodes that
@@ -159,11 +202,24 @@ impl Controller {
     pub fn maintain(&mut self) {
         self.free_returned();
         self.send_pending();
+        self.send_tempo();
     }
 
     fn free_returned(&mut self) {
         while let Ok(plan) = self.returned.pop() {
             drop(plan);
+        }
+        while let Ok(table) = self.tempo_returned.pop() {
+            drop(table);
+        }
+    }
+
+    fn send_tempo(&mut self) {
+        self.free_returned();
+        if let Some(table) = self.tempo_pending.take()
+            && let Err(PushError::Full(table)) = self.tempo_out.push(table)
+        {
+            self.tempo_pending = Some(table);
         }
     }
 
@@ -183,7 +239,8 @@ impl Controller {
 /// A plan that changes what's audible (a node on the output's path is added,
 /// removed, rewired or rebuilt) would switch the sound abruptly and click. So
 /// the processor fades the output out over a few milliseconds, installs the
-/// plan, and fades back in. Other plans go in at once.
+/// plan, and fades back in. Other plans go in at once. A seek, and a tempo map
+/// that moves the playhead, are handled the same way.
 pub struct Processor {
     settings: Settings,
     plan: Option<Box<Plan>>,
@@ -197,7 +254,16 @@ pub struct Processor {
     flush: Flush,
     incoming: Consumer<Box<Plan>>,
     returns: Producer<Box<Plan>>,
+    /// Timeline position of the next frame, in samples.
     position: u64,
+    control: Arc<TransportControl>,
+    table: Box<TempoTable>,
+    tempo_in: Consumer<Box<TempoTable>>,
+    tempo_returns: Producer<Box<TempoTable>>,
+    /// The last seek counted.
+    seen_seek: u64,
+    /// A seek waiting for the output to go silent.
+    pending_seek: Option<noodle_core::Tick>,
 }
 
 impl Processor {
@@ -247,10 +313,19 @@ impl Processor {
         let mut input_rest = input.samples;
         while !rest.is_empty() {
             self.install_new_plans();
+            let playing = self.control.is_playing();
+            let looping = self.loop_samples();
             let mut frames = (rest.len() / channels).min(max_frames);
             if self.fading_out && self.level > 0 {
                 // End the chunk where the fade does, so the plan goes in there.
                 frames = frames.min(self.level);
+            }
+            if let Some((_, end)) = looping
+                && playing
+                && self.position < end
+            {
+                // End the chunk at the loop's end, so the wrap is exact.
+                frames = frames.min((end - self.position).min(max_frames as u64) as usize);
             }
             let (chunk, tail) = mem::take(&mut rest).split_at_mut(frames * channels);
             rest = tail;
@@ -263,12 +338,16 @@ impl Processor {
 
             match &mut self.plan {
                 Some(plan) => {
+                    let tick = self.table.tick_at(self.position);
                     let ctx = Context {
                         sample_rate,
                         frames,
                         transport: Transport {
-                            playing: true,
+                            playing,
                             position: self.position,
+                            tick,
+                            bpm: self.table.bpm_at(tick),
+                            signature: self.table.signature_at(tick),
                         },
                     };
                     plan.run(&ctx, input_chunk, chunk, channels);
@@ -276,8 +355,24 @@ impl Processor {
                 None => chunk.fill(0.0),
             }
             self.apply_fade(chunk, channels);
-            self.position += frames as u64;
+            if playing {
+                self.position += frames as u64;
+                if let Some((start, end)) = looping
+                    && self.position == end
+                {
+                    self.position = start;
+                }
+            }
         }
+        self.control.publish(self.position);
+    }
+
+    /// The loop's start and end in samples, if it's on and not empty.
+    fn loop_samples(&self) -> Option<(u64, u64)> {
+        let (start, end) = self.control.loop_range()?;
+        let start = self.table.sample_at_tick(start);
+        let end = self.table.sample_at_tick(end);
+        (start < end).then_some((start, end))
     }
 
     /// Installs queued plans in order, sending each replaced plan back to be
@@ -289,6 +384,10 @@ impl Processor {
     /// in.
     fn install_new_plans(&mut self) {
         let silent = self.level == 0;
+        let jump_waiting = self.install_time_changes(silent);
+        if jump_waiting {
+            self.fading_out = true;
+        }
         while self.returns.slots() > 0 {
             let Ok(next) = self.incoming.peek() else {
                 break;
@@ -310,8 +409,56 @@ impl Processor {
         }
         // If the return queue filled up, stay silent until every waiting plan
         // is in.
-        if silent && self.incoming.is_empty() {
+        if silent && self.incoming.is_empty() && !jump_waiting {
             self.fading_out = false;
+        }
+    }
+
+    /// Applies a seek, and a new tempo table, which jump the playhead and so
+    /// click unless the output is silent: they wait for it, and the output
+    /// fades out meanwhile. A tempo table that leaves the playhead where it
+    /// is goes in at once. Returns whether anything is still waiting.
+    fn install_time_changes(&mut self, silent: bool) -> bool {
+        if let Some(tick) = self.control.take_seek(&mut self.seen_seek) {
+            self.pending_seek = Some(tick);
+        }
+        if let Some(tick) = self.pending_seek {
+            if !silent {
+                return true;
+            }
+            self.position = self.table.sample_at_tick(tick);
+            self.pending_seek = None;
+            self.reset_nodes();
+        }
+        while self.tempo_returns.slots() > 0 {
+            let Ok(next) = self.tempo_in.peek() else {
+                break;
+            };
+            // The playhead keeps its tick, so its sample position moves.
+            let tick = self.table.tick_at(self.position);
+            let position = next.sample_at(tick);
+            let moves = position != self.position;
+            if moves && !silent {
+                return true;
+            }
+            let Ok(new) = self.tempo_in.pop() else {
+                break;
+            };
+            let old = mem::replace(&mut self.table, new);
+            let pushed = self.tempo_returns.push(old);
+            debug_assert!(pushed.is_ok(), "checked for room above");
+            if moves {
+                self.position = position;
+                self.reset_nodes();
+            }
+        }
+        // A table is still waiting only if the return queue is full.
+        !self.tempo_in.is_empty()
+    }
+
+    fn reset_nodes(&mut self) {
+        if let Some(plan) = &mut self.plan {
+            plan.reset_nodes();
         }
     }
 

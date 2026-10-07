@@ -18,7 +18,9 @@ mod render;
 mod runtime;
 mod signal;
 mod telemetry;
+mod tempo;
 pub mod testing;
+mod transport;
 
 pub use builtin::{INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_ID, Output};
 pub use compile::{
@@ -39,3 +41,5 @@ pub use render::{Render, RenderError, render};
 pub use runtime::{Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{Level, MeterReader, MeterWriter, ScopeView, ScopeWriter, Telemetry};
+pub use tempo::TempoTable;
+pub use transport::TransportControl;

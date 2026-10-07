@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use noodle_core::{Command, Config, Connection, Endpoint, Node as ProjectNode, Project, Value};
+use noodle_core::{
+    Command, Config, Connection, Endpoint, Node as ProjectNode, Project, TempoMap, Value,
+};
 
 use super::*;
 use crate::{
@@ -361,6 +363,61 @@ impl Node for SubnormalNode {
     }
 }
 
+/// Outputs what the transport says, chosen by config `what`.
+struct Probe;
+
+const WHAT: ConfigInfo = ConfigInfo::int("what", "What", 0);
+
+/// The values `what` can take.
+const POSITION: i64 = 0;
+const TICK: i64 = 1;
+const BPM: i64 = 2;
+const PLAYING: i64 = 3;
+const SINCE_RESET: i64 = 4;
+
+impl NodeType for Probe {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("probe");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().output("out", "Out"))
+    }
+
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(ProbeNode {
+            what: WHAT.get_int(setup.config),
+            since_reset: 0,
+        }))
+    }
+}
+
+struct ProbeNode {
+    what: i64,
+    since_reset: u32,
+}
+
+impl Node for ProbeNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let transport = ctx.transport;
+        for (i, sample) in io.outputs[0].lane_mut(0, 0).iter_mut().enumerate() {
+            *sample = match self.what {
+                POSITION => (transport.position + i as u64) as f32,
+                TICK => transport.tick as f32,
+                BPM => transport.bpm as f32,
+                PLAYING => f32::from(u8::from(transport.playing)),
+                _ => (self.since_reset + i as u32) as f32,
+            };
+        }
+        self.since_reset += ctx.frames as u32;
+    }
+
+    fn reset(&mut self) {
+        self.since_reset = 0;
+    }
+}
+
 fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     let mut registry = Registry::with_builtins();
     registry.register(Counter);
@@ -373,6 +430,7 @@ fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     registry.register(NoteThru);
     registry.register(NoteProbe);
     registry.register(Subnormal);
+    registry.register(Probe);
     registry
 }
 
@@ -913,4 +971,208 @@ fn an_input_node_needs_a_sensible_channel_count() {
         });
         assert_eq!(rig.update().len(), 1, "{channels} channels");
     }
+}
+
+// The transport.
+
+/// A probe reporting `what`, wired to the output.
+fn probe_rig(what: i64) -> Rig {
+    let mut rig = Rig::new(SETTINGS);
+    let probe = rig.add("probe");
+    rig.edit(Command::SetConfig {
+        node: probe,
+        key: "what".into(),
+        value: Some(Value::Int(what)),
+    });
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(probe, output, "in");
+    assert!(rig.update().is_empty());
+    rig
+}
+
+fn ticks(n: i64) -> noodle_core::Tick {
+    noodle_core::Tick(n)
+}
+
+#[test]
+fn a_new_transport_plays_and_counts_samples() {
+    let mut rig = probe_rig(POSITION);
+    let want: Vec<f32> = (0..10).map(|i| i as f32).collect();
+    assert_eq!(rig.render(10), want);
+    assert_eq!(rig.controller.transport().position(), 10);
+}
+
+#[test]
+fn a_stopped_transport_holds_its_position_but_the_graph_keeps_rendering() {
+    let mut rig = probe_rig(PLAYING);
+    let transport = rig.controller.transport();
+    assert_eq!(rig.render(4), [1.0; 4]);
+    transport.stop();
+    assert!(!transport.is_playing());
+    assert_eq!(rig.render(8), [0.0; 8], "nodes are told it has stopped");
+    assert_eq!(transport.position(), 4);
+    transport.play();
+    assert_eq!(rig.render(4), [1.0; 4]);
+    assert_eq!(transport.position(), 8);
+}
+
+#[test]
+fn seeking_fades_out_jumps_and_fades_back_in_with_nodes_reset() {
+    let mut rig = probe_rig(SINCE_RESET);
+    let transport = rig.controller.transport();
+    rig.render(8);
+    // 480 ticks is a quarter of a second at 120 bpm: 250 samples.
+    transport.seek(ticks(480));
+    let out = rig.render(20);
+    // The output fades over FADE frames, jumps at silence, and comes back.
+    assert_eq!(out[FADE], 0.0, "silent at the jump");
+    // The jump is at frame 5 of this render, so the playhead was 8 + 5 then.
+    assert_eq!(transport.position(), 250 + 20 - FADE as u64);
+    // The probe was reset at the jump: it counts the frames since.
+    assert_eq!(out[19], (20 - FADE - 1) as f32);
+}
+
+#[test]
+fn a_seek_while_stopped_moves_the_playhead() {
+    let mut rig = probe_rig(POSITION);
+    let transport = rig.controller.transport();
+    rig.render(4);
+    transport.stop();
+    transport.seek(ticks(960));
+    rig.render(20);
+    assert_eq!(transport.position(), 500, "a quarter note is half a second");
+    transport.play();
+    let out = rig.render(20);
+    assert_eq!(out[19], 519.0);
+}
+
+#[test]
+fn seeking_before_the_start_goes_to_the_start() {
+    let mut rig = probe_rig(POSITION);
+    let transport = rig.controller.transport();
+    rig.render(8);
+    transport.seek(ticks(-960));
+    rig.render(12);
+    assert_eq!(transport.position(), 12 - FADE as u64);
+}
+
+#[test]
+fn a_loop_wraps_exactly_at_its_end() {
+    let mut rig = probe_rig(POSITION);
+    // 480 ticks is 250 samples; blocks are 4, so the wrap is mid-block.
+    rig.controller
+        .transport()
+        .set_loop(Some((ticks(0), ticks(480))));
+    let out = rig.render(600);
+    for (i, &x) in out.iter().enumerate() {
+        assert_eq!(x, (i % 250) as f32, "frame {i}");
+    }
+}
+
+#[test]
+fn a_loop_can_start_after_the_start() {
+    let mut rig = probe_rig(POSITION);
+    // 250 samples to 500.
+    rig.controller
+        .transport()
+        .set_loop(Some((ticks(480), ticks(960))));
+    let out = rig.render(600);
+    assert_eq!(out[499], 499.0);
+    assert_eq!(out[500], 250.0);
+    assert_eq!(out[599], 349.0);
+}
+
+#[test]
+fn an_empty_loop_is_no_loop_and_loops_turn_off() {
+    let mut rig = probe_rig(POSITION);
+    let transport = rig.controller.transport();
+    transport.set_loop(Some((ticks(480), ticks(480))));
+    assert_eq!(rig.render(300)[299], 299.0);
+    transport.set_loop(Some((ticks(0), ticks(960))));
+    transport.set_loop(None);
+    assert_eq!(rig.render(300)[299], 599.0);
+}
+
+#[test]
+fn nodes_see_the_musical_position() {
+    let mut rig = probe_rig(TICK);
+    // 960 ticks a half second at 120 bpm, so a tick is 1000 * 0.5 / 960
+    // samples, and the first block starts at tick 0.
+    let first = rig.render(4);
+    assert_eq!(first[0], 0.0);
+    let second = rig.render(4);
+    assert!(
+        (second[0] - 4.0 * 960.0 / 500.0).abs() < 1e-4,
+        "{}",
+        second[0]
+    );
+}
+
+#[test]
+fn a_tempo_change_reaches_nodes() {
+    let mut rig = probe_rig(BPM);
+    assert_eq!(rig.render(4)[0], 120.0);
+    let map = TempoMap::constant(90.0, noodle_core::TimeSignature::COMMON).unwrap();
+    rig.controller.set_tempo_map(&map);
+    // The playhead is past the start, so it moves and the output fades.
+    let out = rig.render(20);
+    assert_eq!(out[19], 90.0);
+}
+
+#[test]
+fn a_tempo_change_at_the_start_goes_in_without_a_fade() {
+    let mut rig = probe_rig(BPM);
+    let map = TempoMap::constant(90.0, noodle_core::TimeSignature::COMMON).unwrap();
+    rig.controller.set_tempo_map(&map);
+    assert_eq!(rig.render(8), [90.0; 8], "no dip, from the first block");
+}
+
+#[test]
+fn a_tempo_change_keeps_the_playheads_tick() {
+    let mut rig = probe_rig(POSITION);
+    let transport = rig.controller.transport();
+    transport.stop();
+    transport.seek(ticks(480));
+    rig.render(20);
+    assert_eq!(transport.position(), 250);
+    // Half the tempo takes twice as long to get to the same tick.
+    let map = TempoMap::constant(60.0, noodle_core::TimeSignature::COMMON).unwrap();
+    rig.controller.set_tempo_map(&map);
+    rig.render(20);
+    assert_eq!(transport.position(), 500);
+}
+
+#[test]
+fn the_tempo_map_the_controller_reports_is_the_last_one_set() {
+    let mut rig = probe_rig(BPM);
+    assert_eq!(*rig.controller.tempo_map(), TempoMap::default());
+    let map = TempoMap::constant(90.0, noodle_core::TimeSignature::COMMON).unwrap();
+    rig.controller.set_tempo_map(&map);
+    assert_eq!(*rig.controller.tempo_map(), map);
+}
+
+#[test]
+fn old_tempo_tables_are_freed_by_the_controller() {
+    let mut rig = probe_rig(BPM);
+    for bpm in [100.0, 110.0, 120.0, 130.0, 140.0, 150.0] {
+        let map = TempoMap::constant(bpm, noodle_core::TimeSignature::COMMON).unwrap();
+        rig.controller.set_tempo_map(&map);
+        rig.render(8);
+        rig.controller.maintain();
+    }
+    assert_eq!(rig.render(8)[7], 150.0);
+}
+
+#[test]
+fn a_tempo_change_that_moves_the_playhead_fades_the_output() {
+    let mut rig = probe_rig(PLAYING);
+    rig.render(8);
+    let map = TempoMap::constant(90.0, noodle_core::TimeSignature::COMMON).unwrap();
+    rig.controller.set_tempo_map(&map);
+    let out = rig.render(20);
+    // Out over FADE frames, silent at the jump, and back in.
+    assert!((out[0] - 0.8).abs() < 1e-6, "{out:?}");
+    assert_eq!(out[FADE - 1], 0.0, "{out:?}");
+    assert!(out[FADE] > 0.0 && out[FADE] < 1.0, "{out:?}");
+    assert_eq!(out[19], 1.0);
 }
