@@ -72,6 +72,7 @@ struct Param {
     info: ParamInfo,
     value: f32,
     rect: Rect,
+    id: egui::Id,
     log: Vec<(Option<ParamEdit>, Gesture)>,
 }
 
@@ -82,6 +83,7 @@ impl Param {
             info,
             value,
             rect: Rect::NOTHING,
+            id: egui::Id::NULL,
             log: Vec::new(),
         }
     }
@@ -92,6 +94,7 @@ impl Param {
                 .width(WIDTH)
                 .show(ui);
             self.rect = out.response.rect;
+            self.id = out.response.id;
             match out.edit {
                 Some(ParamEdit::Set(v)) => self.value = v,
                 Some(ParamEdit::Reset) => self.value = self.info.default,
@@ -341,4 +344,80 @@ fn show_at_fills_the_rect_and_zoom_scales_the_height() {
     });
     assert_eq!(placed, target);
     assert_eq!(zoomed.height(), normal.height() * 2.0);
+}
+
+#[test]
+fn the_keyboard_can_change_and_type_values() {
+    let mut h = Harness::new();
+    let mut p = Param::new(ParamInfo::new(0.0, 100.0, 50.0));
+    p.frame(&mut h, vec![]);
+    // Tab focuses the field; arrows move a hundredth of the travel.
+    p.frame(&mut h, vec![key(Key::Tab)]);
+    p.frame(&mut h, vec![key(Key::ArrowRight), key(Key::ArrowRight)]);
+    assert!(close(p.value, 52.0), "{}", p.value);
+    p.frame(&mut h, vec![key(Key::ArrowLeft)]);
+    assert!(close(p.value, 51.0), "{}", p.value);
+
+    // Enter starts typing.
+    p.frame(&mut h, vec![key(Key::Enter)]);
+    p.frame(&mut h, vec![]);
+    p.frame(&mut h, vec![]);
+    let select_all = key_with(Modifiers::COMMAND, Key::A);
+    p.frame(&mut h, vec![select_all, Event::Text("20".into())]);
+    p.frame(&mut h, vec![key(Key::Enter)]);
+    assert_eq!(p.value, 20.0);
+}
+
+#[test]
+fn assistive_tech_can_step_values() {
+    use egui::accesskit::{Action, ActionRequest, TreeId};
+    let mut h = Harness::new();
+    h.ctx.enable_accesskit();
+    let mut info = ParamInfo::choice(Vec::<&str>::new());
+    info.max = 4.0;
+    let mut p = Param::new(info);
+    p.frame(&mut h, vec![]);
+    let request = |action| {
+        Event::AccessKitActionRequest(ActionRequest {
+            action,
+            target_tree: TreeId::ROOT,
+            target_node: p.id.accesskit_id(),
+            data: None,
+        })
+    };
+    let (up, down) = (request(Action::Increment), request(Action::Decrement));
+    p.frame(&mut h, vec![up.clone(), up]);
+    assert_eq!(p.value, 2.0);
+    p.frame(&mut h, vec![down]);
+    assert_eq!(p.value, 1.0);
+}
+
+#[test]
+fn backspace_resets_a_drop_down_too() {
+    let mut h = Harness::new();
+    let mut p = Param::new(ParamInfo::choice(["Sine", "Saw", "Square"]));
+    p.value = 2.0;
+    p.frame(&mut h, vec![]);
+    p.frame(&mut h, vec![Event::PointerMoved(p.rect.center())]);
+    p.frame(&mut h, vec![key(Key::Backspace)]);
+    assert_eq!(p.log.last().unwrap().0, Some(ParamEdit::Reset));
+    assert_eq!(p.value, 0.0);
+}
+
+#[test]
+fn a_focused_checkbox_commits_when_toggled() {
+    const FLAG: ConfigInfo = ConfigInfo {
+        key: "flag",
+        name: "Flag",
+        default: Value::Bool(false),
+    };
+    let mut h = Harness::new();
+    let mut edits = Vec::new();
+    // Tab to the checkbox, then toggle it with Space while it keeps focus.
+    for events in [vec![], vec![key(Key::Tab)], vec![key(Key::Space)], vec![]] {
+        h.frame(events, |ui| {
+            edits.extend(ConfigField::new(&FLAG, None).show(ui).edit);
+        });
+    }
+    assert_eq!(edits, [ConfigEdit::Set(Value::Bool(true))]);
 }

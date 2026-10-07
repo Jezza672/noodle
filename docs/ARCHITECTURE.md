@@ -329,7 +329,9 @@ through the telemetry API.
   of Blender's number fields. The fill follows the taper, so a log
   frequency field puts 200 Hz a third of the way along 20 Hz to 20 kHz.
   Drag to change (Shift for fine control), click to type, Backspace while
-  hovering or the right-click menu to reset.
+  hovering or the right-click menu to reset. With keyboard focus, the
+  arrow keys nudge the value and Enter starts typing; AccessKit's increment
+  and decrement actions work too.
 - **Drop-downs** for stepped parameters with labels.
 - **Units:** values are stored in the unit they're shown in (a 0 to 100
   `Percent` parameter shows 50 as "50.0 %"). Hz and seconds switch to kHz

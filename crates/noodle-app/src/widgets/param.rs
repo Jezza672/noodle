@@ -236,6 +236,40 @@ impl<'a> ParamField<'a> {
             ui.data_mut(|d| d.remove::<f32>(drag_id));
         }
 
+        // Keyboard and assistive tech: arrows (or AccessKit's increment and
+        // decrement) nudge the value while the field has focus, so a mouse is
+        // never required.
+        let focused = response.has_focus();
+        if focused {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+        }
+        let nudges = ui.input(|i| {
+            use egui::accesskit::Action;
+            let mut nudges = i.num_accesskit_action_requests(id, Action::Increment) as i32
+                - i.num_accesskit_action_requests(id, Action::Decrement) as i32;
+            if focused {
+                nudges += i.num_presses(Key::ArrowRight) as i32;
+                nudges -= i.num_presses(Key::ArrowLeft) as i32;
+            }
+            nudges
+        });
+        if nudges != 0 {
+            let value = self.nudged(nudges, ui.input(|i| i.modifiers.shift));
+            if value != self.value {
+                edit = Some(ParamEdit::Set(value));
+                response.mark_changed();
+            }
+        }
+        // A focused field also counts as clicked when Enter or Space is
+        // pressed, so this starts typing from the keyboard too.
         if response.clicked() {
             let text = format_value(self.info, self.value);
             ui.data_mut(|d| {
@@ -251,10 +285,7 @@ impl<'a> ParamField<'a> {
             ui.ctx().request_repaint();
         }
 
-        if response.hovered()
-            && ui.memory(|m| m.focused().is_none())
-            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace))
-        {
+        if wants_reset(ui, &response) {
             edit = Some(ParamEdit::Reset);
         }
         response.context_menu(|ui| {
@@ -269,6 +300,13 @@ impl<'a> ParamField<'a> {
             let mut info = WidgetInfo::slider(enabled, f64::from(self.value), self.label);
             info.current_text_value = Some(format_value(self.info, self.value));
             info
+        });
+        ui.ctx().accesskit_node_builder(id, |node| {
+            use egui::accesskit::Action;
+            node.set_min_numeric_value(f64::from(self.info.min));
+            node.set_max_numeric_value(f64::from(self.info.max));
+            node.add_action(Action::Increment);
+            node.add_action(Action::Decrement);
         });
         self.paint_slider(ui, rect, &response);
         let response = response
@@ -339,7 +377,12 @@ impl<'a> ParamField<'a> {
             }
             painter.rect_filled(fill, radius, color);
         }
-        painter.rect_stroke(rect, radius, visuals.bg_stroke, StrokeKind::Inside);
+        let stroke = if response.has_focus() {
+            ui.visuals().selection.stroke
+        } else {
+            visuals.bg_stroke
+        };
+        painter.rect_stroke(rect, radius, stroke, StrokeKind::Inside);
 
         let font = self.font(ui);
         let color = visuals.text_color();
@@ -389,6 +432,9 @@ impl<'a> ParamField<'a> {
             edit = Some(ParamEdit::Set(selected as f32));
             response.mark_changed();
         }
+        if wants_reset(ui, &response) {
+            edit = Some(ParamEdit::Reset);
+        }
         response.context_menu(|ui| {
             if ui.button("Reset to default").clicked() {
                 edit = Some(ParamEdit::Reset);
@@ -402,6 +448,17 @@ impl<'a> ParamField<'a> {
         }
     }
 
+    /// The value `nudges` keyboard steps away: one step for stepped
+    /// parameters, else a hundredth of the travel (a thousandth with Shift).
+    fn nudged(&self, nudges: i32, fine: bool) -> f32 {
+        if taper::is_stepped(self.info) {
+            return taper::clamp(self.info, self.value + nudges as f32);
+        }
+        let step = if fine { 0.001 } else { 0.01 };
+        let position = taper::to_normalized(self.info, self.value) + nudges as f32 * step;
+        taper::from_normalized(self.info, position)
+    }
+
     fn tooltip(&self) -> String {
         let info = self.info;
         let mut text = String::new();
@@ -412,8 +469,8 @@ impl<'a> ParamField<'a> {
         text.push_str(&format!("Default: {}", format_value(info, info.default)));
         if !matches!(&info.kind, ParamKind::Stepped { labels } if !labels.is_empty()) {
             text.push_str(&format!(
-                "\nRange: {} to {}\nDrag to change, Shift for fine control, click to type, \
-                 Backspace to reset",
+                "\nRange: {} to {}\nDrag or use the arrow keys to change, Shift for fine control, click \
+                 or Enter to type, Backspace to reset",
                 format_value(info, info.min),
                 format_value(info, info.max)
             ));
@@ -430,4 +487,12 @@ struct Typing {
     /// leaves the value alone, rather than rounding it to what was shown.
     original: String,
     focused: bool,
+}
+
+/// Backspace resets a field while the pointer is over it (and nothing else is
+/// being typed into) or while it has keyboard focus.
+fn wants_reset(ui: &Ui, response: &Response) -> bool {
+    let focus = ui.memory(|m| m.focused());
+    let targeted = response.has_focus() || (response.hovered() && focus.is_none());
+    targeted && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace))
 }

@@ -120,7 +120,9 @@ fn edit_value(ui: &mut Ui, id: Id, committed: &Value) -> (Response, Option<Value
         Value::Text(text) => ui.add(TextEdit::singleline(text).id(id.with("text"))),
     };
 
-    if response.dragged() || response.has_focus() {
+    // A checkbox commits as soon as it's toggled, even while it has focus.
+    let typing = response.has_focus() && !matches!(committed, Value::Bool(_));
+    if response.dragged() || typing {
         ui.data_mut(|d| d.insert_temp(pending_id, value));
         return (response, None);
     }
