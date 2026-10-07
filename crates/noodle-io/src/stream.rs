@@ -71,6 +71,9 @@ struct Shared {
     stop: AtomicBool,
     underruns: AtomicU64,
     failed: AtomicBool,
+    /// The clip frame where the audio really ends, if that is before the
+    /// length the clip asked for (a file that is shorter than it said).
+    end: AtomicU64,
 }
 
 /// The audio-thread end of a stream. Every method is real-time safe.
@@ -123,6 +126,7 @@ pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), Decod
         stop: AtomicBool::new(false),
         underruns: AtomicU64::new(0),
         failed: AtomicBool::new(false),
+        end: AtomicU64::new(u64::MAX),
     });
     let source = Source::new(decoder, spec.offset, length, ratio, total)?;
     let worker = {
@@ -209,7 +213,8 @@ impl ClipStream {
     /// the rest.
     pub fn read(&mut self, out: &mut [f32]) -> usize {
         let channels = self.channels;
-        let want = (out.len() / channels).min((self.total - self.position) as usize);
+        self.total = self.total.min(self.shared.end.load(Ordering::Relaxed));
+        let want = (out.len() / channels).min(self.total.saturating_sub(self.position) as usize);
         let mut done = 0;
         while done < want {
             if self.current.is_none() && !self.next_chunk(self.position + done as u64) {
@@ -279,7 +284,10 @@ fn run(mut source: Source, mut spent: Consumer<Chunk>, mut full: Producer<Chunk>
         };
         chunk.start = source.position();
         match source.fill(&mut chunk.data) {
-            Ok(frames) => chunk.frames = frames,
+            Ok(frames) => {
+                chunk.frames = frames;
+                shared.end.fetch_min(source.total, Ordering::Relaxed);
+            }
             Err(_) => {
                 shared.failed.store(true, Ordering::Relaxed);
                 return;
@@ -426,7 +434,7 @@ impl Source {
     fn fill(&mut self, data: &mut [f32]) -> Result<usize, DecodeError> {
         let channels = self.channels;
         let want = (data.len() / channels)
-            .min((self.total - self.position) as usize)
+            .min(self.total.saturating_sub(self.position) as usize)
             .min(CHUNK_FRAMES);
         while (self.output.len() - self.output_used) / channels < want {
             if !self.produce()? {
@@ -721,6 +729,22 @@ mod tests {
         }
         assert!(total <= 4 * CHUNK_FRAMES);
         assert!(stream.underruns() > 0);
+    }
+
+    #[test]
+    fn a_worker_that_finds_the_file_ends_early_shortens_the_clip() {
+        let (path, _) = ramp_file("stream-early-end.wav", 20_000, 48_000);
+        let (mut stream, _worker) = open_stream(spec(&path, 48_000, 0, 20_000)).unwrap();
+        read_all(&mut stream, 3_000);
+        // What the worker records when the decoder runs out before the clip.
+        stream.shared.end.store(3_500, Ordering::Relaxed);
+        let mut out = vec![0.0; 2 * 4_000];
+        let before = stream.underruns();
+        let got = read_all(&mut stream, 4_000).len() / 2;
+        assert_eq!(got, 500);
+        assert_eq!(stream.total_frames(), 3_500);
+        assert_eq!(stream.read(&mut out), 0);
+        assert_eq!(stream.underruns(), before, "the end is not an underrun");
     }
 
     #[test]
