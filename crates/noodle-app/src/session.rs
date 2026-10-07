@@ -19,10 +19,6 @@ const MAX_FRAMES: usize = 512;
 
 /// A change a view wants made.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the editor and properties panel are placeholders")
-)]
 pub enum Edit {
     /// One undo step.
     Apply(Command),
@@ -109,7 +105,6 @@ impl Session {
     /// or pasting. Each call gives a different ID, even before the nodes are
     /// added, so a view can wire up several new nodes in one batch. IDs that
     /// end up unused are harmless.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the editor is a placeholder"))]
     pub fn new_node_id(&self) -> NodeId {
         let id = self.next_id.get().max(self.project.next_node_id().0);
         self.next_id.set(id + 1);

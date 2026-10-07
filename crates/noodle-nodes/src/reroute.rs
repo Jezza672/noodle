@@ -52,10 +52,20 @@ mod tests {
 
     #[test]
     fn passes_its_input_through() {
-        let mut h =
-            Harness::new(&Reroute, &Config::new(), &[(IN, Shape::STEREO)], 48_000.0, 4).unwrap();
-        h.input(IN, 4).lane_mut(0, 0).copy_from_slice(&[0.1, -0.2, 0.3, -0.4]);
-        h.input(IN, 4).lane_mut(0, 1).copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let mut h = Harness::new(
+            &Reroute,
+            &Config::new(),
+            &[(IN, Shape::STEREO)],
+            48_000.0,
+            4,
+        )
+        .unwrap();
+        h.input(IN, 4)
+            .lane_mut(0, 0)
+            .copy_from_slice(&[0.1, -0.2, 0.3, -0.4]);
+        h.input(IN, 4)
+            .lane_mut(0, 1)
+            .copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
         h.run(4).unwrap();
 
         let out = h.output(OUT);
