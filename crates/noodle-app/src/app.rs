@@ -71,7 +71,9 @@ impl Action {
     }
 
     /// Whether a focused text field gets its key first. Space types a
-    /// space, and Cmd+Z undoes the text, not the project edit before it.
+    /// space, and Cmd+Z undoes the text, not the project edit before it. The
+    /// others (New, Open, Save and the rest) are chords a text field has no
+    /// use for; a new shortcut should ask which kind it is.
     fn yields_to_text(self) -> bool {
         matches!(self, Self::TogglePlayback | Self::Undo | Self::Redo)
     }
