@@ -113,10 +113,11 @@ impl MeterChannel {
             self.hold = level.peak;
             self.hold_age = 0.0;
         } else {
+            // Once the hold has run out, the marker follows the falling peak
+            // until a new peak reaches it.
             self.hold_age += dt;
             if self.hold_age > PEAK_HOLD_SECONDS {
                 self.hold = self.peak;
-                self.hold_age = 0.0;
             }
         }
     }
@@ -128,14 +129,20 @@ fn meter_fraction(amplitude: f32) -> f32 {
     ((db - METER_FLOOR_DB) / (METER_CEILING_DB - METER_FLOOR_DB)).clamp(0.0, 1.0)
 }
 
+/// The gap between a meter's bars and their height, for `count` bars in
+/// `height`. Gaps shrink with many channels, so every bar keeps some height.
+fn meter_bars(height: f32, count: usize, zoom: f32) -> (f32, f32) {
+    let count = count.max(1) as f32;
+    let gap = (2.0 * zoom).min(height / (3.0 * count + 1.0));
+    (gap, (height - gap * (count + 1.0)) / count)
+}
+
 /// Horizontal bars, one per channel: the RMS level filled, the peak as a bar
 /// tip, and the held peak as a tick that turns red above 0 dB.
 fn meter(painter: &Painter, area: Rect, zoom: f32, channels: Option<&Vec<MeterChannel>>) {
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
     let channels = channels.map_or(&[][..], Vec::as_slice);
-    let count = channels.len().max(1) as f32;
-    let gap = 2.0 * zoom;
-    let bar_height = (area.height() - gap * (count + 1.0)) / count;
+    let (gap, bar_height) = meter_bars(area.height(), channels.len(), zoom);
     let x_at = |amplitude: f32| area.left() + area.width() * meter_fraction(amplitude);
 
     for (i, channel) in channels.iter().enumerate() {
@@ -219,6 +226,11 @@ fn scope(painter: &Painter, area: Rect, zoom: f32, view: Option<&ScopeView>) {
     }
 }
 
+/// How far back, in windows, the scope looks for a crossing to trigger on.
+/// Four windows of 1024 frames catch tones down to about 12 Hz at 48 kHz,
+/// without showing audio much older than that.
+const TRIGGER_SEARCH_WINDOWS: usize = 4;
+
 /// The first frame to show of `window` frames, so a steady waveform holds
 /// still: the latest rising zero crossing of channel 0 that leaves a full
 /// window after it, or else the start of the latest window.
@@ -227,7 +239,7 @@ fn trigger(view: &ScopeView, window: usize) -> usize {
     let samples = view.samples();
     let frames = samples.len() / channels;
     let latest = frames.saturating_sub(window);
-    let first = latest.saturating_sub(window);
+    let first = latest.saturating_sub(window * TRIGGER_SEARCH_WINDOWS);
     let at = |frame: usize| samples[frame * channels];
     (first.max(1)..=latest)
         .rev()
@@ -270,6 +282,16 @@ mod tests {
     }
 
     #[test]
+    fn meter_bars_fit_any_channel_count() {
+        for count in [0, 1, 2, 10, 64] {
+            let (gap, bar) = meter_bars(22.0, count, 1.0);
+            assert!(gap > 0.0 && bar > 0.0, "{count} channels");
+            let used = gap * (count.max(1) + 1) as f32 + bar * count.max(1) as f32;
+            assert!((used - 22.0).abs() < 1e-3, "{count} channels");
+        }
+    }
+
+    #[test]
     fn peaks_fall_and_holds_expire() {
         let mut channel = MeterChannel::default();
         channel.update(
@@ -289,11 +311,15 @@ mod tests {
         assert_eq!(channel.hold, 1.0);
         assert_eq!(channel.rms, 0.0);
 
-        // Past the hold time, the hold drops to the peak.
+        // Past the hold time, the hold follows the falling peak, every frame.
         for _ in 0..6 {
             channel.update(Level::default(), 0.1);
         }
         assert!(channel.hold < 0.1, "{channel:?}");
+        for _ in 0..3 {
+            channel.update(Level::default(), 0.1);
+            assert_eq!(channel.hold, channel.peak, "{channel:?}");
+        }
     }
 
     fn sine_view(frames: usize, period: usize, phase: usize) -> ScopeView {
@@ -318,6 +344,17 @@ mod tests {
             assert!(s[start - 1] < 0.0 && s[start] >= 0.0, "phase {phase}");
             assert!(start + 1024 <= 4096, "phase {phase}");
             assert!(start >= 4096 - 1024 - 64, "should be recent, phase {phase}");
+        }
+    }
+
+    #[test]
+    fn trigger_holds_low_tones_still() {
+        // A period of 2000 frames is longer than the window, about 24 Hz.
+        for phase in [0, 500, 1000, 1500, 1999] {
+            let view = sine_view(48_000, 2000, phase);
+            let start = trigger(&view, 1024);
+            let s = view.samples();
+            assert!(s[start - 1] < 0.0 && s[start] >= 0.0, "phase {phase}");
         }
     }
 
