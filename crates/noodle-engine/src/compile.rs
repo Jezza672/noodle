@@ -176,7 +176,10 @@ struct Wire {
     input: Endpoint,
 }
 
+/// Compiles a project's graph. Groups are flattened first, so the schedule
+/// only ever contains the nodes inside them.
 pub fn compile(graph: &Graph, registry: &Registry) -> (Schedule, Vec<Diagnostic>) {
+    let graph = &*crate::flatten::flatten(graph);
     let mut diagnostics = Vec::new();
     let mut candidates = resolve_nodes(graph, registry, &mut diagnostics);
     let wires = resolve_wires(graph, &candidates, &mut diagnostics);
