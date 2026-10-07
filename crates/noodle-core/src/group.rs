@@ -64,6 +64,13 @@ impl Default for Controls {
 }
 
 impl Node {
+    /// Whether a gain or mute has been set on this node, even to its
+    /// default. A set control keeps the node's stage in the compiled graph,
+    /// so moving it again changes a parameter and not the graph's shape.
+    pub fn has_gain_or_mute(&self) -> bool {
+        self.params.contains_key(GAIN) || self.params.contains_key(MUTE)
+    }
+
     /// This node's gain, mute and solo parameters. Meaningful for boundary
     /// nodes.
     pub fn controls(&self) -> Controls {
@@ -180,27 +187,75 @@ impl Graph {
 
     /// The groups that soloing silences. Among the groups sharing a parent
     /// (the tracks of one level), if any is soloed, or has a soloed group
-    /// inside it, every one that isn't is muted. Plain nodes are left alone.
+    /// inside it, every one that isn't is muted, except those the soloed
+    /// groups feed: whatever a soloed track routes into (a reverb return, a
+    /// bus) stays audible, as in a mixer's implicit solo. "Feeds" follows
+    /// wires through any nodes at that level. Plain nodes are left alone.
     /// Soloing is read here, from the project, rather than at run time, so it
     /// can't be automated.
     pub fn solo_muted(&self) -> std::collections::BTreeSet<NodeId> {
+        use std::collections::BTreeSet;
         let groups: Vec<(NodeId, Option<NodeId>)> = self
             .nodes()
             .filter(|(_, node)| node.type_id == GROUP)
             .map(|(id, node)| (id, node.parent))
             .collect();
-        let mut muted = std::collections::BTreeSet::new();
+        let wires: Vec<(NodeId, NodeId)> = self
+            .connections()
+            .map(|c| (c.from.node, c.to.node))
+            .collect();
+        let mut muted = BTreeSet::new();
+        let mut done = BTreeSet::new();
         for &(_, parent) in &groups {
-            let siblings = groups.iter().filter(|(_, p)| *p == parent);
-            if siblings.clone().any(|&(id, _)| self.has_solo_inside(id)) {
-                muted.extend(
-                    siblings
-                        .map(|&(id, _)| id)
-                        .filter(|&id| !self.has_solo_inside(id)),
-                );
+            if !done.insert(parent) {
+                continue;
             }
+            let siblings: Vec<NodeId> = groups
+                .iter()
+                .filter(|(_, p)| *p == parent)
+                .map(|&(id, _)| id)
+                .collect();
+            let mut audible: BTreeSet<NodeId> = siblings
+                .iter()
+                .copied()
+                .filter(|&id| self.has_solo_inside(id))
+                .collect();
+            if audible.is_empty() {
+                continue;
+            }
+            // Everything downstream of a soloed group.
+            loop {
+                let before = audible.len();
+                for &(from, to) in &wires {
+                    if audible.contains(&from) {
+                        audible.insert(to);
+                    }
+                }
+                if audible.len() == before {
+                    break;
+                }
+            }
+            muted.extend(siblings.into_iter().filter(|id| !audible.contains(id)));
         }
         muted
+    }
+
+    /// Whether solo has been used on the groups beside this one (or on it):
+    /// any of them has a solo parameter set, even to off. While it has, the
+    /// compiler keeps a mute stage on each of them, so soloing and unsoloing
+    /// change a parameter rather than the shape of the graph.
+    pub fn solo_in_use(&self, group: NodeId) -> bool {
+        let Some(parent) = self.node(group).map(|n| n.parent) else {
+            return false;
+        };
+        self.nodes()
+            .filter(|(_, n)| n.type_id == GROUP && n.parent == parent)
+            .any(|(id, _)| {
+                self.children(Some(id)).any(|(_, b)| {
+                    matches!(b.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT)
+                        && b.params.contains_key(SOLO)
+                })
+            })
     }
 
     /// Whether any boundary node of this group has solo on.
@@ -672,5 +727,24 @@ mod tests {
         // Nothing inside bus2 is soloed, so its track isn't muted separately
         // (the bus is, which silences it).
         assert!(!muted.contains(&track3));
+    }
+
+    #[test]
+    fn what_a_soloed_group_feeds_stays_audible() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (vocal, vocal_out) = group_with_ports(&mut project, &mut history, None);
+        let (drums, _) = group_with_ports(&mut project, &mut history, None);
+        let (reverb, _) = group_with_ports(&mut project, &mut history, None);
+        let (master, _) = group_with_ports(&mut project, &mut history, None);
+        // vocal -> a mixer node -> reverb -> master; drums -> master.
+        let mix = add(&mut project, &mut history, Node::new("mix"));
+        wire(&mut project, &mut history, (vocal, "p"), (mix, "in1"));
+        wire(&mut project, &mut history, (mix, "out"), (reverb, "p"));
+        wire(&mut project, &mut history, (reverb, "p"), (master, "p"));
+        wire(&mut project, &mut history, (drums, "p"), (master, "p2"));
+        set(&mut project, &mut history, vocal_out, SOLO, 1.0);
+        // Only the drums, which the vocal doesn't feed, are silenced.
+        assert_eq!(project.graph().solo_muted(), [drums].into());
     }
 }

@@ -123,14 +123,20 @@ The **Project** is the single source of truth. It holds one global graph:
     registry entry and flatten drops them.
   - **Boundary parameters.** Every group's input and output nodes carry
     gain (dB), mute and solo as ordinary node parameters (`Node::controls`,
-    `Graph::group_controls`). Flatten keeps a boundary node whose gain is off
-    0 dB, or that is muted (by its own mute or by solo, below), as a
-    `noodle.group.stage` node under the boundary node's ID, so a lane aimed at
-    the boundary node reaches it, and drops the rest. So a group left at its
-    defaults costs nothing and renders bit-for-bit like the flat patch, and
-    one with a gain or mute costs one stage. Mute is a smoothed 0 to 1
-    parameter, so it ramps rather than clicks. Boundary nodes have no
-    parameter ports in the editor yet, so wiring into them waits for that.
+    `Graph::group_controls`). Flatten keeps a boundary node as a
+    `noodle.group.stage` node, under the boundary node's ID so a lane aimed
+    at it reaches it, once its gain or mute has been set at all (even back to
+    its default) or it is muted, and drops the rest. So a group nobody has
+    touched costs nothing and renders bit-for-bit like the flat patch, and a
+    touched one costs a stage that is exact at unity. The stage stays once
+    set because adding or removing a node in the audible path makes the
+    engine fade the whole output out and in (5 ms each way): the first touch
+    of a control on a group costs that one fade, and after that gain, mute and
+    solo are parameter changes. Mute is a smoothed 0 to 1 parameter, so it
+    ramps rather than clicks. A control reset should write the default, not
+    remove the parameter, or the stage goes and the fade comes back. Boundary
+    nodes have no parameter ports in the editor yet, so wiring into them
+    waits for that.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
@@ -155,14 +161,20 @@ The **Project** is the single source of truth. It holds one global graph:
     nested group has the same controls.
   - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
     that are not soloed. It is read **at compile time** from the solo
-    parameters (`Graph::solo_muted`), which gives every muted track a stage
-    with mute on. Among the groups sharing a parent, if any is soloed or has
-    a soloed group inside it, every group without one is muted. So soloing a
-    track inside a bus mutes that bus's other tracks and the other buses, and
-    keeps its own bus audible. Plain nodes are never muted by solo. Solo
-    can't be automated or wired (lanes and wires into a solo parameter are
-    refused with a diagnostic once lanes compile), and toggling it
-    recompiles, which costs the usual short fade. A runtime solo, driven by
+    parameters (`Graph::solo_muted`). Among the groups sharing a parent, if
+    any is soloed or has a soloed group inside it, every group is muted
+    except the soloed ones and whatever they feed (found by following wires
+    from a soloed group through any nodes at that level), so a reverb return
+    or bus a soloed track sends to stays audible. Soloing a track inside a
+    bus mutes that bus's other tracks and the buses the track doesn't feed,
+    and keeps its own bus audible. Plain nodes are never muted by solo. The
+    mute goes on the group's outputs (its inputs if it has none), which is
+    enough to silence it. Once any group on a level has a solo parameter set,
+    even to off, every group there keeps a stage, so soloing and unsoloing
+    change parameters and not the shape of the graph. Solo can't be
+    automated or wired (lanes and wires into a solo parameter are refused
+    with a diagnostic once lanes compile), and a lane that interpolated mute
+    or solo would flicker around the 0.5 threshold. A runtime solo, driven by
     one shared "any solo" value so it could be automated, can come later if
     it is wanted.
 - The timeline and mixer are **views over the graph**, not separate structures.

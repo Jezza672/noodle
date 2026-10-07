@@ -419,3 +419,76 @@ fn group_stages_never_allocate_while_controls_change() {
         assert!(out.iter().all(|x| x.is_finite()));
     }
 }
+
+/// Two tracks into a mix: a silent one and a 440 Hz one, each a group with
+/// the track's gain on its output node. Returns the session and the silent
+/// track's output node.
+fn two_tracks_session(touch_first: bool) -> (Session, NodeId) {
+    use noodle_core::group::group_nodes;
+
+    let mut s = Session::new();
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(mix, "out", output, "in");
+    let mut outputs = Vec::new();
+    for (i, hz) in [0.0, 440.0].into_iter().enumerate() {
+        let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        let gain = s.add(Node::new("noodle.util.gain"));
+        s.wire(sine, "out", gain, "in");
+        s.wire(gain, "out", mix, ["in1", "in2"][i]);
+        let (group, command) = group_nodes(&mut s.project, &[gain]).unwrap();
+        command.apply(&mut s.project).unwrap();
+        outputs.push(s.project.graph().group_ports(group).outputs[0].node);
+    }
+    if touch_first {
+        // Set to what they already are: the stage appears now, in the plan
+        // the engine starts with.
+        s.edit(Command::SetParam {
+            node: outputs[0],
+            key: "mute".into(),
+            value: Some(0.0),
+        });
+    }
+    s.update();
+    (s, outputs[0])
+}
+
+/// The lowest per-block peak of the left channel while `edit` is applied to a
+/// running session, over blocks of 64 frames.
+fn lowest_peak_across(touch_first: bool, edit: impl FnOnce(&mut Session, NodeId)) -> f32 {
+    let (mut s, muted_track) = two_tracks_session(touch_first);
+    let mut block = vec![0.0; 64 * SETTINGS.channels];
+    for _ in 0..20 {
+        s.processor.process(&mut block);
+    }
+    edit(&mut s, muted_track);
+    s.update();
+    let mut lowest = f32::MAX;
+    for _ in 0..40 {
+        s.processor.process(&mut block);
+        let peak = block
+            .chunks(SETTINGS.channels)
+            .map(|frame| frame[0].abs())
+            .fold(0.0, f32::max);
+        lowest = lowest.min(peak);
+    }
+    lowest
+}
+
+#[test]
+fn muting_a_track_whose_stage_is_in_place_does_not_dip_the_others() {
+    let mute = |s: &mut Session, node| {
+        s.edit(Command::SetParam {
+            node,
+            key: "mute".into(),
+            value: Some(1.0),
+        });
+    };
+    // The stage already exists, so muting is a parameter change.
+    let lowest = lowest_peak_across(true, mute);
+    assert!(lowest > 0.3, "the playing track dipped to {lowest}");
+    // The first touch adds the stage, which fades the whole output once. This
+    // is what the test above guards against, and shows it can fail.
+    let first = lowest_peak_across(false, mute);
+    assert!(first < 0.2, "expected the structural fade, lowest {first}");
+}

@@ -91,6 +91,14 @@ pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
 
 /// The boundary nodes that stay in the flat graph, as the stage nodes that
 /// replace them.
+///
+/// A stage stays when its gain or mute is off its default, and also once
+/// either has been set at all (even back to its default): adding or removing
+/// a node in the audible path makes the engine fade the whole output out and
+/// in, so a control that is moved again has to find its stage in place, and
+/// then moving it is only a parameter change. Soloing works the same way:
+/// the muted tracks get their stages at their outputs, and while solo is in
+/// use on a level, every group on it keeps one.
 fn stages(graph: &Graph) -> BTreeMap<NodeId, Node> {
     let muted_by_solo = graph.solo_muted();
     graph
@@ -99,8 +107,14 @@ fn stages(graph: &Graph) -> BTreeMap<NodeId, Node> {
         .filter_map(|(id, node)| {
             let controls = node.controls();
             let group = node.parent?;
-            let mute = controls.mute || muted_by_solo.contains(&group);
-            if controls.gain_db == 0.0 && !mute {
+            // Solo mutes at a group's outputs, which is enough to silence
+            // it. A group with none is muted at its inputs.
+            let solo_here =
+                node.type_id == GROUP_OUTPUT || graph.group_ports(group).outputs.is_empty();
+            let by_solo = solo_here && muted_by_solo.contains(&group);
+            let keep_for_solo = solo_here && graph.solo_in_use(group);
+            let mute = controls.mute || by_solo;
+            if !(node.has_gain_or_mute() || mute || keep_for_solo) {
                 return None;
             }
             let mut stage = Node::new(GROUP_STAGE);
@@ -310,14 +324,32 @@ mod tests {
     }
 
     #[test]
-    fn controls_at_their_defaults_cost_nothing() {
+    fn controls_nobody_touched_cost_nothing() {
+        let (project, _, _, _, _) = grouped();
+        let flat = flatten(project.graph());
+        assert_eq!(flat.nodes().count(), 3);
+        assert!(flat.nodes().all(|(_, n)| n.type_id != GROUP_STAGE));
+    }
+
+    #[test]
+    fn a_control_set_back_to_its_default_keeps_its_stage() {
+        // So that moving it again is a parameter change, not a change to the
+        // shape of the graph, which would fade the whole output.
         let (mut project, mut history, _, input, output) = grouped();
-        let flat_before = flatten(project.graph()).into_owned();
-        // Set to what they already are.
+        set(&mut project, &mut history, output, GAIN, -6.0);
         set(&mut project, &mut history, output, GAIN, 0.0);
         set(&mut project, &mut history, input, MUTE, 0.0);
-        assert_eq!(flatten(project.graph()).as_ref(), &flat_before);
-        assert_eq!(flat_before.nodes().count(), 3);
+        let flat = flatten(project.graph());
+        for id in [input, output] {
+            let stage = flat.node(id).expect("kept");
+            assert_eq!((stage.params[GAIN], stage.params[MUTE]), (0.0, 0.0));
+        }
+        assert_eq!(flat.nodes().count(), 5);
+        // The stages are transparent: wired through, nothing else changed.
+        assert_eq!(
+            flat.source(&Endpoint::new(NodeId(3), "in")),
+            Some(&Endpoint::new(output, "out"))
+        );
     }
 
     #[test]
@@ -413,17 +445,34 @@ mod tests {
     }
 
     #[test]
-    fn soloing_a_track_mutes_the_others() {
+    fn soloing_a_track_mutes_the_others_at_their_outputs() {
         let (mut project, mut history, _, [a, b]) = two_tracks();
         assert_eq!(flatten(project.graph()).nodes().count(), 4);
         set(&mut project, &mut history, a, SOLO, 1.0);
         let flat = flatten(project.graph());
-        assert!(flat.node(a).is_none(), "the soloed track plays untouched");
-        let stage = flat.node(b).expect("the other track is muted");
-        assert_eq!(
-            (stage.type_id.as_str(), stage.params[MUTE]),
-            (GROUP_STAGE, 1.0)
-        );
+        let muted = |id| flat.node(id).map(|n| n.params[MUTE]);
+        assert_eq!(muted(b), Some(1.0), "the other track is muted");
+        assert_eq!(muted(a), Some(0.0), "the soloed track has a stage, open");
+        // Muting at the output is enough: the inputs have no stage.
+        let inputs = [NodeId(a.0 - 1), NodeId(b.0 - 1)];
+        assert!(inputs.iter().all(|&id| flat.node(id).is_none()));
+        assert_eq!(flat.node(b).unwrap().type_id, GROUP_STAGE);
+    }
+
+    #[test]
+    fn unsoloing_keeps_the_stages_so_toggling_solo_is_a_parameter_change() {
+        let (mut project, mut history, _, [a, b]) = two_tracks();
+        set(&mut project, &mut history, a, SOLO, 1.0);
+        let shape = |project: &Project| {
+            let flat = flatten(project.graph());
+            let ids: Vec<_> = flat.nodes().map(|(id, _)| id).collect();
+            (ids, flat.connections().collect::<Vec<_>>())
+        };
+        let soloed = shape(&project);
+        set(&mut project, &mut history, a, SOLO, 0.0);
+        let flat = flatten(project.graph());
+        assert_eq!(shape(&project), soloed);
+        assert_eq!(flat.node(b).unwrap().params[MUTE], 0.0);
     }
 
     #[test]
@@ -431,7 +480,9 @@ mod tests {
         let (mut project, mut history, _, [a, b]) = two_tracks();
         set(&mut project, &mut history, a, SOLO, 1.0);
         set(&mut project, &mut history, b, SOLO, 1.0);
-        assert_eq!(flatten(project.graph()).nodes().count(), 4);
+        let flat = flatten(project.graph());
+        assert_eq!(flat.node(a).unwrap().params[MUTE], 0.0);
+        assert_eq!(flat.node(b).unwrap().params[MUTE], 0.0);
     }
 
     #[test]
