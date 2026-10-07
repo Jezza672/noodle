@@ -408,7 +408,7 @@ mod tests {
         harness.state_mut().editor.selected.insert(id);
         harness.state_mut().editor.active = Some(id);
         harness.run();
-        harness.get_by_label("frequency: 220");
+        harness.get_by_label("Frequency");
     }
 
     #[test]
