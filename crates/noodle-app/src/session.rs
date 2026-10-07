@@ -88,7 +88,33 @@ pub struct Session {
 struct Audio {
     playback: Playback,
     controller: Controller,
+    /// The counts last reported to the user.
+    reported: Glitches,
+}
+
+/// Running totals of audible trouble since playback started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Glitches {
+    /// The output device ran dry.
     underruns: u64,
+    /// Input arrived late or early, or the engine wasn't taking it.
+    input: u64,
+}
+
+impl Glitches {
+    /// A message about whatever has grown since `self`, which then catches
+    /// up to `now`.
+    fn report(&mut self, now: Self) -> Option<String> {
+        let mut parts = Vec::new();
+        if now.underruns > self.underruns {
+            parts.push(format!("{} underruns", now.underruns));
+        }
+        if now.input > self.input {
+            parts.push(format!("{} input glitches", now.input));
+        }
+        *self = now;
+        (!parts.is_empty()).then(|| format!("{} since playback started", parts.join(", ")))
+    }
 }
 
 impl Session {
@@ -334,13 +360,14 @@ impl Session {
         }
         match noodle_io::play(&self.audio_config, MAX_FRAMES) {
             Ok((playback, controller)) => {
+                // Playback carries on without input rather than failing.
+                self.message = playback.input_problem().map(no_input);
                 self.audio = Some(Audio {
                     playback,
                     controller,
-                    underruns: 0,
+                    reported: Glitches::default(),
                 });
                 self.recompile();
-                self.message = None;
             }
             Err(error) => self.message = Some(play_error(&error)),
         }
@@ -366,10 +393,12 @@ impl Session {
                 self.message = Some(error.to_string());
             }
         }
-        let underruns = health.underruns();
-        if underruns > audio.underruns {
-            audio.underruns = underruns;
-            self.message = Some(format!("{underruns} underruns since playback started"));
+        let now = Glitches {
+            underruns: health.underruns(),
+            input: health.input_glitches(),
+        };
+        if let Some(message) = audio.reported.report(now) {
+            self.message = Some(message);
         }
         if let Some(message) = stopped {
             self.audio = None;
@@ -431,6 +460,10 @@ impl Effect {
 
 fn play_error(error: &AudioError) -> String {
     format!("Can't play: {error}")
+}
+
+fn no_input(error: &AudioError) -> String {
+    format!("Playing without input: {error}")
 }
 
 #[derive(Debug)]
@@ -741,5 +774,36 @@ mod tests {
         assert_eq!(session.audio_config(), &config);
         assert!(!session.is_playing());
         assert_eq!(session.message(), None);
+    }
+
+    #[test]
+    fn glitches_are_reported_once_each_time_they_grow() {
+        let mut reported = Glitches::default();
+        assert_eq!(reported.report(Glitches::default()), None);
+        let underruns = Glitches {
+            underruns: 2,
+            input: 0,
+        };
+        assert_eq!(
+            reported.report(underruns).as_deref(),
+            Some("2 underruns since playback started")
+        );
+        assert_eq!(reported.report(underruns), None, "already reported");
+        let both = Glitches {
+            underruns: 3,
+            input: 1,
+        };
+        assert_eq!(
+            reported.report(both).as_deref(),
+            Some("3 underruns, 1 input glitches since playback started")
+        );
+        let input = Glitches {
+            underruns: 3,
+            input: 4,
+        };
+        assert_eq!(
+            reported.report(input).as_deref(),
+            Some("4 input glitches since playback started")
+        );
     }
 }
