@@ -340,6 +340,19 @@ the smallest backlog over each half second and drops whatever was beyond a
 small margin. Both count as input glitches in `Health`, a gap once however
 many engine blocks it spans.
 
+**Recording** takes a second copy of the input. `RecordTap`, inside the
+input callback (`Capture`), queues samples into its own ring while recording
+is on, and a writer thread (`noodle-io/src/record.rs`) writes them to a
+32-bit float WAV, so the callback never touches the disk and recording
+doesn't depend on the output. `Playback::start_recording` and
+`stop_recording` switch it with a flag: no stream is rebuilt and nothing is
+allocated on the audio thread. The file's header is refreshed about once a
+second, so a crash loses little, and a `Take` reports the frames written and
+any input dropped because the disk stalled. The file is at the input's
+channel count and the engine's rate, and starts at the moment of the call:
+aligning it with the timeline, and with the input's latency, is the
+transport's job.
+
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
 
