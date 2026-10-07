@@ -86,6 +86,15 @@ pub mod editor {
     pub const FRAME: Color32 = Color32::from_rgba_premultiplied(60, 60, 60, 120);
     pub const BOX_SELECT: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
     pub const CUT: Color32 = Color32::from_rgb(230, 70, 60);
+    /// Behind a node's body, such as a meter or scope.
+    pub const BODY: Color32 = Color32::from_gray(24);
+    pub const METER_RMS: Color32 = Color32::from_rgb(80, 190, 110);
+    /// The part of a meter's bar between the RMS level and the peak.
+    pub const METER_PEAK: Color32 = Color32::from_rgb(40, 95, 55);
+    /// The held peak, once it's above 0 dB.
+    pub const METER_OVER: Color32 = Color32::from_rgb(230, 70, 60);
+    pub const SCOPE_TRACE: Color32 = Color32::from_rgb(99, 199, 255);
+    pub const SCOPE_AXIS: Color32 = Color32::from_gray(50);
 
     /// Header colours by node category, like Blender's.
     pub fn header(category: &str) -> Color32 {
@@ -96,6 +105,7 @@ pub mod editor {
             "Input/Output" => Color32::from_rgb(130, 50, 50),
             "Polyphony" => Color32::from_rgb(120, 90, 40),
             "Offline" => Color32::from_rgb(90, 90, 40),
+            "Views" => Color32::from_rgb(60, 100, 60),
             _ => Color32::from_gray(70),
         }
     }

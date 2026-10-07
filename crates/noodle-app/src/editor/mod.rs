@@ -68,6 +68,8 @@ pub struct EditorState {
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
+    /// What meters and scopes show.
+    bodies: body::Bodies,
 }
 
 impl Default for EditorState {
@@ -81,6 +83,7 @@ impl Default for EditorState {
             gesture: Gesture::Idle,
             search: None,
             rename: None,
+            bodies: body::Bodies::default(),
         }
     }
 }
@@ -184,6 +187,14 @@ enum Hit {
 
 /// Draws the editor and returns the edits the user made.
 pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Vec<Edit> {
+    let dt = ui.input(|i| i.stable_dt);
+    state
+        .bodies
+        .update(session.telemetry(), session.project(), dt);
+    // Meters and scopes move with the audio, so keep drawing while it plays.
+    if session.is_playing() && state.bodies.is_live() {
+        ui.ctx().request_repaint();
+    }
     let mut new_node_id = || session.new_node_id();
     let mut new_frame_id = || session.new_frame_id();
     show_project(

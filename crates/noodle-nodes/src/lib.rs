@@ -13,13 +13,13 @@ mod svf;
 mod voice_mix;
 
 pub use gain::Gain;
-pub use meter::Meter;
+pub use meter::{METER_ID, Meter};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use osc::{Saw, Sine};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverse::Reverse;
-pub use scope::Scope;
+pub use scope::{SCOPE_ID, Scope};
 pub use svf::Svf;
 pub use voice_mix::VoiceMix;
 
