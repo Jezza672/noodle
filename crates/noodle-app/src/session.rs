@@ -11,8 +11,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use noodle_core::{Command, EditError, History, NodeId, Project};
-use noodle_engine::{Controller, Diagnostic, Registry, compile};
-use noodle_io::{OutputError, Playback};
+use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
+use noodle_io::{AudioConfig, AudioError, Playback};
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
 const MAX_FRAMES: usize = 512;
@@ -42,10 +42,31 @@ pub enum Edit {
     EndDrag,
 }
 
+/// The node types a session can use, and the hub their telemetry (meters,
+/// scopes) reports to.
+pub struct Nodes {
+    pub registry: Registry,
+    pub telemetry: Telemetry,
+}
+
+impl Nodes {
+    /// Every node type the app offers.
+    pub fn all() -> Self {
+        let mut registry = Registry::with_builtins();
+        let telemetry = noodle_nodes::register_all(&mut registry);
+        Self {
+            registry,
+            telemetry,
+        }
+    }
+}
+
 pub struct Session {
     project: Project,
     history: History,
     registry: Registry,
+    #[expect(dead_code, reason = "meters and scopes aren't drawn yet")]
+    telemetry: Telemetry,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
     /// The project as it was last saved or loaded, to tell whether it has
@@ -56,6 +77,8 @@ pub struct Session {
     /// `&Session`, so it's a `Cell`.
     next_id: Cell<u64>,
     diagnostics: Vec<Diagnostic>,
+    /// The device to play on.
+    audio_config: AudioConfig,
     audio: Option<Audio>,
     /// Something the user should know, such as a failed save, shown until the
     /// next one replaces it.
@@ -70,25 +93,31 @@ struct Audio {
 
 impl Session {
     /// An empty, unsaved project.
-    pub fn new(registry: Registry) -> Self {
-        Self::with_project(registry, Project::new(), None)
+    pub fn new(nodes: Nodes) -> Self {
+        Self::with_project(nodes, Project::new(), None)
     }
 
-    pub fn open(registry: Registry, path: &Path) -> Result<Self, FileError> {
+    pub fn open(nodes: Nodes, path: &Path) -> Result<Self, FileError> {
         let project = load(path)?;
-        Ok(Self::with_project(registry, project, Some(path.to_owned())))
+        Ok(Self::with_project(nodes, project, Some(path.to_owned())))
     }
 
-    fn with_project(registry: Registry, project: Project, path: Option<PathBuf>) -> Self {
+    fn with_project(nodes: Nodes, project: Project, path: Option<PathBuf>) -> Self {
+        let Nodes {
+            registry,
+            telemetry,
+        } = nodes;
         let mut session = Self {
             saved: Project::new(),
             project: Project::new(),
             history: History::new(),
             registry,
+            telemetry,
             path: None,
             dirty: false,
             next_id: Cell::new(0),
             diagnostics: Vec::new(),
+            audio_config: AudioConfig::default(),
             audio: None,
             message: None,
         };
@@ -102,6 +131,32 @@ impl Session {
 
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Where meter and scope nodes report what they measure.
+    #[expect(dead_code, reason = "meters and scopes aren't drawn yet")]
+    pub fn telemetry(&self) -> &Telemetry {
+        &self.telemetry
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the device picker isn't built yet")
+    )]
+    pub fn audio_config(&self) -> &AudioConfig {
+        &self.audio_config
+    }
+
+    /// Chooses the device to play on. If playing, playback restarts there.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the device picker isn't built yet")
+    )]
+    pub fn set_audio_config(&mut self, config: AudioConfig) {
+        self.audio_config = config;
+        if self.audio.take().is_some() {
+            self.play();
+        }
     }
 
     /// The window title's name for the project.
@@ -277,7 +332,7 @@ impl Session {
         if self.audio.is_some() {
             return;
         }
-        match noodle_io::play(MAX_FRAMES) {
+        match noodle_io::play(&self.audio_config, MAX_FRAMES) {
             Ok((playback, controller)) => {
                 self.audio = Some(Audio {
                     playback,
@@ -374,7 +429,7 @@ impl Effect {
     }
 }
 
-fn play_error(error: &OutputError) -> String {
+fn play_error(error: &AudioError) -> String {
     format!("Can't play: {error}")
 }
 
@@ -426,12 +481,6 @@ mod tests {
 
     use super::*;
 
-    fn registry() -> Registry {
-        let mut registry = Registry::with_builtins();
-        noodle_nodes::register_all(&mut registry);
-        registry
-    }
-
     fn temp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("noodle-app-{}-{name}", std::process::id()))
     }
@@ -455,7 +504,7 @@ mod tests {
 
     #[test]
     fn edits_can_be_undone_and_redone() {
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
         assert!(session.can_undo());
         session.undo();
@@ -466,7 +515,7 @@ mod tests {
 
     #[test]
     fn a_drag_is_one_undo_step() {
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
         let set = |value| {
             Edit::Drag(Command::SetParam {
@@ -486,7 +535,7 @@ mod tests {
 
     #[test]
     fn diagnostics_follow_structural_edits() {
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         assert!(session.diagnostics().is_empty());
         add(&mut session, Node::new("no.such.type"));
         assert_eq!(session.diagnostics().len(), 1);
@@ -496,7 +545,7 @@ mod tests {
 
     #[test]
     fn a_failed_edit_is_reported_and_skipped() {
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         session.edit([Edit::Apply(Command::RemoveNode { id: NodeId(42) })]);
         assert!(
             session
@@ -509,7 +558,7 @@ mod tests {
     #[test]
     fn tracks_unsaved_changes() {
         let path = temp("dirty.ron");
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         assert!(!session.is_dirty());
         assert_eq!(session.save(), Saved::NoFile);
 
@@ -536,7 +585,7 @@ mod tests {
     #[test]
     fn saved_projects_load_back() {
         let path = temp("round-trip.ron");
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
         let output = add(&mut session, Node::new(OUTPUT_ID));
         session.edit([Edit::Apply(Command::Connect(Connection {
@@ -545,7 +594,7 @@ mod tests {
         }))]);
         session.save_as(&path);
 
-        let opened = Session::open(registry(), &path).unwrap();
+        let opened = Session::open(Nodes::all(), &path).unwrap();
         assert_eq!(opened.project(), session.project());
         assert!(!opened.is_dirty() && !opened.can_undo());
         std::fs::remove_file(path).unwrap();
@@ -555,18 +604,18 @@ mod tests {
     fn a_bad_file_keeps_the_current_project() {
         let path = temp("bad.ron");
         std::fs::write(&path, "not a project").unwrap();
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
         assert!(!session.load(&path));
         assert!(session.project().graph().node(sine).is_some());
         assert!(session.message().is_some_and(|m| m.contains("Can't load")));
-        assert!(Session::open(registry(), &path).is_err());
+        assert!(Session::open(Nodes::all(), &path).is_err());
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn node_ids_are_unique_even_before_use() {
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         let existing = add(&mut session, Node::new("noodle.osc.sine"));
         let (a, b) = (session.new_node_id(), session.new_node_id());
         assert!(a != b && a != existing && b != existing);
@@ -597,7 +646,7 @@ mod tests {
 
     #[test]
     fn a_new_project_starts_clean() {
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         add(&mut session, Node::new("no.such.type"));
         session.new_project();
         assert_eq!(session.project(), &Project::new());
@@ -653,7 +702,7 @@ mod tests {
     fn saving_replaces_the_file_whole() {
         let path = temp("atomic.ron");
         std::fs::write(&path, "old").unwrap();
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         session.save_as(&path);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -670,7 +719,7 @@ mod tests {
         // Saving into a directory that doesn't exist fails before touching
         // anything.
         let path = temp("missing-dir").join("project.ron");
-        let mut session = Session::new(registry());
+        let mut session = Session::new(Nodes::all());
         add(&mut session, Node::new("noodle.osc.sine"));
         session.save_as(&path);
         assert!(session.is_dirty());
@@ -679,5 +728,18 @@ mod tests {
                 .message()
                 .is_some_and(|m| m.contains("Couldn't save"))
         );
+    }
+
+    #[test]
+    fn choosing_a_device_while_stopped_does_not_play() {
+        let mut session = Session::new(Nodes::all());
+        let config = AudioConfig {
+            output: Some("missing".into()),
+            ..AudioConfig::default()
+        };
+        session.set_audio_config(config.clone());
+        assert_eq!(session.audio_config(), &config);
+        assert!(!session.is_playing());
+        assert_eq!(session.message(), None);
     }
 }

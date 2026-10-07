@@ -31,7 +31,7 @@ fn examples_match_their_golden_renders() {
     let golden = root.join("tests/golden");
     let update = env::var_os("UPDATE_GOLDEN").is_some();
     let mut registry = Registry::with_builtins();
-    noodle_nodes::register_all(&mut registry);
+    let _telemetry = noodle_nodes::register_all(&mut registry);
 
     let mut projects: Vec<PathBuf> = fs::read_dir(root.join("../../examples"))
         .unwrap()

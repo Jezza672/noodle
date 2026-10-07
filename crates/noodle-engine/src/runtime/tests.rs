@@ -334,6 +334,33 @@ impl Node for NoteProbeNode {
     }
 }
 
+/// Outputs a subnormal float, computed at run time.
+struct Subnormal;
+
+impl NodeType for Subnormal {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("subnormal");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().output("out", "Out"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(SubnormalNode))
+    }
+}
+
+struct SubnormalNode;
+
+impl Node for SubnormalNode {
+    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        let tiny = std::hint::black_box(f32::MIN_POSITIVE) * std::hint::black_box(0.25);
+        io.outputs[0].fill(tiny);
+    }
+}
+
 fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     let mut registry = Registry::with_builtins();
     registry.register(Counter);
@@ -345,6 +372,7 @@ fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     registry.register(NoteSource);
     registry.register(NoteThru);
     registry.register(NoteProbe);
+    registry.register(Subnormal);
     registry
 }
 
@@ -743,6 +771,31 @@ fn events_reach_every_consumer_and_are_cleared_each_block() {
         rig.render(8),
         [10201.0, 0.0, 0.0, 0.0, 0.0, 20402.0, 0.0, 0.0]
     );
+}
+
+#[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn subnormals_are_flushed_while_processing() {
+    let mut rig = Rig::new(SETTINGS);
+    let subnormal = rig.add("subnormal");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(subnormal, output, "in");
+    rig.update();
+    assert_eq!(rig.render(2), [0.0; 2]);
+    // The thread's own mode is back afterwards.
+    let tiny = std::hint::black_box(f32::MIN_POSITIVE) * std::hint::black_box(0.25);
+    assert!(tiny.is_subnormal());
+}
+
+#[test]
+fn non_finite_parameter_values_are_ignored() {
+    let (mut rig, offset) = offset_rig();
+    rig.controller.set_param(offset, "offset", f32::INFINITY);
+    assert_eq!(rig.render(2), [0.0; 2]);
+    rig.controller.set_param(offset, "offset", f32::NAN);
+    assert_eq!(rig.render(2), [0.0; 2]);
+    rig.controller.set_param(offset, "offset", 1.0);
+    assert_eq!(rig.render(4), [0.25, 0.5, 0.75, 1.0]);
 }
 
 #[test]
