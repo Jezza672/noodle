@@ -11,5 +11,7 @@ pub use devices::{
     Direction, HostInfo, InputChoice, capabilities, choose_config, devices, hosts,
 };
 pub use input::{Capture, Feed, input_path};
-pub use output::{DeviceError, DeviceErrorKind, DeviceWriter, Health, Playback, is_fatal, play};
+pub use output::{
+    DeviceError, DeviceErrorKind, DeviceWriter, Health, Playback, Stream, is_fatal, play,
+};
 pub use wav::{Audio, WavError, read_wav, write_wav};
