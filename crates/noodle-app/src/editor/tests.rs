@@ -996,3 +996,250 @@ fn a_node_in_front_hides_the_sockets_behind_it() {
     );
     assert_eq!(h.state().session.project().graph().connections().count(), 0);
 }
+
+fn param(h: &H, node: NodeId, key: &str) -> Option<f32> {
+    let graph = h.state().session.project().graph();
+    graph.node(node).unwrap().params.get(key).copied()
+}
+
+/// The middle of a parameter's field on its node.
+fn field(h: &H, node: NodeId, key: &str) -> Pos2 {
+    let scene = scene(h);
+    let row = scene
+        .node(node)
+        .unwrap()
+        .port(Side::Input, key)
+        .unwrap()
+        .row;
+    screen(h, row.center())
+}
+
+#[test]
+fn a_parameter_is_dragged_on_its_node_as_one_undo_step() {
+    let mut h = rig();
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    h.run();
+    let start = field(&h, gain, "gain");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(10.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    let value = param(&h, gain, "gain").expect("the drag set the gain");
+    assert!(value > 0.0, "dragged right, so up from 0 dB: {value}");
+    // The node stayed put, and nothing else was selected.
+    assert_eq!(position(&h, gain), Position { x: 0.0, y: 0.0 });
+    assert!(h.state().editor.selected.is_empty());
+    assert!(matches!(h.state().log.last(), Some(Edit::EndDrag)));
+
+    h.state_mut().session.undo();
+    assert_eq!(param(&h, gain, "gain"), None);
+}
+
+#[test]
+fn a_wired_parameter_has_no_field() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    h.run();
+    assert_eq!(h.query_all_by_label("Gain").count(), 1);
+    connect(&mut h, sine, "out", gain, "gain");
+    h.run();
+    assert_eq!(h.query_all_by_label("Gain").count(), 0);
+}
+
+#[test]
+fn a_node_in_front_takes_the_clicks_on_the_fields_behind_it() {
+    let mut h = rig();
+    let back = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    h.run();
+    let start = field(&h, back, "gain");
+    let row = scene(&h)
+        .node(back)
+        .unwrap()
+        .port(Side::Input, "gain")
+        .unwrap()
+        .row;
+    // Selected, so drawn on top, with its header over the back node's field.
+    let front = add(
+        &mut h,
+        Node::new("noodle.osc.sine").at(-20.0, row.top() - 8.0),
+    );
+    h.state_mut().editor.selected.insert(front);
+    h.run();
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(10.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    assert_eq!(param(&h, back, "gain"), None);
+    assert_eq!(position(&h, front).x, 20.0);
+}
+
+#[test]
+fn a_field_drag_hidden_by_zooming_out_still_ends_its_undo_step() {
+    let mut h = rig();
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    h.run();
+    let start = field(&h, gain, "gain");
+    h.event(Event::PointerMoved(start));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: start,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    for dx in [10.0, 40.0] {
+        h.event(Event::PointerMoved(start + Vec2::new(dx, 0.0)));
+        h.step();
+    }
+    assert!(param(&h, gain, "gain").is_some());
+    // Too small for fields, so the dragged one disappears.
+    h.state_mut().editor.view.zoom = 0.3;
+    h.event(Event::PointerMoved(start + Vec2::new(50.0, 0.0)));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: start + Vec2::new(50.0, 0.0),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    assert!(matches!(h.state().log.last(), Some(Edit::EndDrag)));
+
+    // So a node move afterwards is an undo step of its own.
+    h.state_mut().editor.view.zoom = 1.0;
+    h.run();
+    let start = title(&h, gain);
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(20.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    h.state_mut().session.undo();
+    assert_eq!(position(&h, gain), Position::default());
+    assert!(
+        param(&h, gain, "gain").is_some(),
+        "only the move was undone"
+    );
+}
+
+#[test]
+fn middle_drag_on_a_field_pans() {
+    let mut h = rig();
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    h.run();
+    let before = screen(&h, Pos2::ZERO);
+    let start = field(&h, gain, "gain");
+    drag(
+        &mut h,
+        PointerButton::Middle,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(20.0, 0.0),
+            start + Vec2::new(60.0, 25.0),
+        ],
+    );
+    assert!((screen(&h, Pos2::ZERO) - (before + Vec2::new(60.0, 25.0))).length() < 0.01);
+    assert_eq!(param(&h, gain, "gain"), None);
+    assert!(h.state().log.is_empty(), "{:?}", h.state().log);
+}
+
+#[test]
+fn ctrl_right_drag_from_a_field_cuts() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let start = field(&h, gain, "gain");
+    let rect = scene(&h).node(gain).unwrap().rect;
+    let past = screen(
+        &h,
+        Pos2::new(rect.left() - 100.0, rect.top() + 24.0 + 22.0 + 1.0),
+    );
+    drag(
+        &mut h,
+        PointerButton::Secondary,
+        Modifiers::COMMAND,
+        &[start, start.lerp(past, 0.3), start.lerp(past, 0.7), past],
+    );
+    assert_eq!(source(&h, gain, "in"), None);
+    assert_eq!(param(&h, gain, "gain"), None);
+}
+
+#[test]
+fn a_socket_sticking_out_of_a_node_in_front_beats_a_field_behind() {
+    let mut h = rig();
+    let back = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 200.0));
+    let front = add(
+        &mut h,
+        Node::new("noodle.util.gain").at(NODE_WIDTH - 7.0, 22.0),
+    );
+    h.state_mut().editor.selected.insert(front);
+    h.run();
+    let socket = socket(&h, front, Side::Input, "in");
+    let start = socket - Vec2::new(4.0, 0.0);
+    let field = field(&h, back, "gain");
+    assert!(
+        (start.y - field.y).abs() < 9.0 && start.x < field.x + NODE_WIDTH / 2.0 - 10.0,
+        "the start is on the back node's field"
+    );
+    let to = super::tests::socket(&h, sine, Side::Output, "out");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[start, start.lerp(to, 0.5), to],
+    );
+    assert_eq!(param(&h, back, "gain"), None);
+    assert_eq!(source(&h, front, "in"), Some(Endpoint::new(sine, "out")));
+}
+
+#[test]
+fn a_field_drag_carries_on_over_a_node_in_front() {
+    let dragged = |with_front: bool| {
+        let mut h = rig();
+        let gain = add(
+            &mut h,
+            Node::new("noodle.util.gain")
+                .at(0.0, 0.0)
+                .with_param("gain", -60.0),
+        );
+        if with_front {
+            // Over the right half of the field, where the drag ends.
+            let front = add(&mut h, Node::new("noodle.osc.sine").at(80.0, 40.0));
+            h.state_mut().editor.selected.insert(front);
+        }
+        h.run();
+        let start = field(&h, gain, "gain") - Vec2::new(40.0, 0.0);
+        let path: Vec<Pos2> = (0..=6)
+            .map(|i| start + Vec2::new(i as f32 * 10.0, 0.0))
+            .collect();
+        drag(&mut h, PointerButton::Primary, Modifiers::NONE, &path);
+        assert!(matches!(h.state().log.last(), Some(Edit::EndDrag)));
+        param(&h, gain, "gain").unwrap()
+    };
+    let unobstructed = dragged(false);
+    assert!(
+        -60.0 < unobstructed && unobstructed < 24.0,
+        "{unobstructed}"
+    );
+    assert_eq!(dragged(true), unobstructed);
+}

@@ -121,10 +121,6 @@ impl<'a> ParamField<'a> {
 
     /// The smaller version drawn on a node's body: smaller text, and
     /// drop-downs without their label.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "for the node editor, which lands separately")
-    )]
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
         self
@@ -148,10 +144,6 @@ impl<'a> ParamField<'a> {
     }
 
     /// Scales the text and height, for drawing inside a zoomed canvas.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "for the node editor, which lands separately")
-    )]
     pub fn zoom(mut self, zoom: f32) -> Self {
         self.zoom = zoom;
         self
@@ -160,10 +152,6 @@ impl<'a> ParamField<'a> {
     /// Shows the field filling `rect`, in screen space, e.g. a row of a node
     /// body that the editor has already laid out and scaled. Combine with
     /// [`zoom`](Self::zoom) so the text scales too.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "for the node editor, which lands separately")
-    )]
     pub fn show_at(mut self, ui: &mut Ui, rect: Rect) -> ParamOutput {
         self.width = Some(rect.width());
         self.height = Some(rect.height());
