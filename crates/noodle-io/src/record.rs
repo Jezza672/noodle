@@ -103,7 +103,10 @@ impl RecordTap {
         if !self.armed.load(Ordering::Relaxed) {
             return;
         }
-        debug_assert!(input.len() % self.channels == 0, "input is whole frames");
+        debug_assert!(
+            input.len().is_multiple_of(self.channels),
+            "input is whole frames"
+        );
         let fits = input.len().min(self.producer.slots());
         if fits < input.len() {
             self.dropped
