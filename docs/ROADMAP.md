@@ -43,6 +43,10 @@ platforms.
 
 The first build that feels like the product.
 
+**Status:** the app shell is in: the window, the theme, the panels, files,
+undo/redo and play/stop. The node editor and the parameter widgets are
+placeholders. The rest is being built in parallel.
+
 - eframe app shell with Blender-style dark theme and panel layout.
 - **Node editor:**
   - Pan and zoom.

@@ -44,7 +44,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-nodes` | Built-in nodes. Integration tests: `realtime.rs`, `golden.rs`. |
 | `noodle-io` | WAV files, and output through cpal (`DeviceWriter`, `play`). MIDI and streaming later. |
 | `noodle-cli` | The `noodle` command: `render`, and `play` (reloads the file when it changes). |
-| `noodle-app` | The egui app (M1). Just a placeholder so far. |
+| `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`. |
 
 ## Rules the code relies on
 

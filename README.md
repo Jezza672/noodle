@@ -17,6 +17,7 @@ no UI yet. See the [roadmap](docs/ROADMAP.md).
 You need a stable Rust toolchain (via [rustup](https://rustup.rs)).
 
 ```sh
+cargo run -p noodle-app -- examples/vibrato.ron
 cargo run -p noodle-cli -- play examples/vibrato.ron
 cargo run -p noodle-cli -- render examples/vibrato.ron vibrato.wav
 ```
