@@ -161,10 +161,10 @@ fn build_a_patch_play_and_tweak_it_save_and_reopen_it() {
     let mut h = harness(App::new(session));
 
     // Build: a sine wired into the output, all through the editor.
-    let sine = add_node(&mut h, Pos2::new(250.0, 250.0), "sine");
-    let output = add_node(&mut h, Pos2::new(650.0, 300.0), "output");
+    let sine = add_node(&mut h, Pos2::new(250.0, 400.0), "sine");
+    let output = add_node(&mut h, Pos2::new(650.0, 430.0), "output");
     // A meter shows the sound really goes through the engine.
-    let meter = add_node(&mut h, Pos2::new(650.0, 500.0), "meter");
+    let meter = add_node(&mut h, Pos2::new(650.0, 560.0), "meter");
     wire(&mut h, (sine, "out"), (output, "in"));
     wire(&mut h, (sine, "out"), (meter, "in"));
     {

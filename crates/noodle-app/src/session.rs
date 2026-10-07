@@ -174,6 +174,11 @@ impl Session {
         }
     }
 
+    /// The folder the project file is in, which audio files are relative to.
+    pub fn directory(&self) -> Option<&Path> {
+        self.path.as_deref()?.parent()
+    }
+
     /// The window title's name for the project.
     pub fn name(&self) -> String {
         match &self.path {

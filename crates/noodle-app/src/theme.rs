@@ -107,3 +107,35 @@ pub mod editor {
         }
     }
 }
+
+/// The arrangement view's colours and sizes.
+pub mod timeline {
+    use egui::Color32;
+
+    /// The track headers' width, and the ruler's and a lane's height.
+    pub const HEADER_WIDTH: f32 = 150.0;
+    pub const RULER_HEIGHT: f32 = 22.0;
+    pub const LANE_HEIGHT: f32 = 64.0;
+    /// The height the arrangement starts at, above the node editor.
+    pub const DEFAULT_HEIGHT: f32 = 240.0;
+
+    pub const BACKGROUND: Color32 = Color32::from_gray(26);
+    pub const LANE_EVEN: Color32 = Color32::from_gray(30);
+    pub const LANE_ODD: Color32 = Color32::from_gray(33);
+    pub const HEADER: Color32 = Color32::from_gray(42);
+    pub const RULER: Color32 = Color32::from_gray(38);
+    pub const BAR_LINE: Color32 = Color32::from_gray(62);
+    pub const BEAT_LINE: Color32 = Color32::from_gray(40);
+    pub const TEXT: Color32 = Color32::from_gray(215);
+    pub const TEXT_WEAK: Color32 = Color32::from_gray(140);
+    pub const PLAYHEAD: Color32 = Color32::from_rgb(255, 214, 90);
+    pub const SELECTED: Color32 = Color32::WHITE;
+    pub const MISSING: Color32 = Color32::from_rgb(230, 70, 60);
+
+    /// A track's clip colour, spread around the colour wheel so neighbouring
+    /// tracks differ.
+    pub fn track_colour(index: usize) -> Color32 {
+        let hue = (index as f32 * 0.17 + 0.52).fract();
+        egui::ecolor::Hsva::new(hue, 0.45, 0.62, 1.0).into()
+    }
+}

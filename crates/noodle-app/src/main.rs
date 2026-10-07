@@ -10,6 +10,7 @@ mod prefs;
 mod properties;
 mod session;
 mod theme;
+mod timeline;
 mod widgets;
 
 use std::process::ExitCode;
