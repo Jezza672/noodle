@@ -229,10 +229,11 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
     let (writer, input) = match choice_id(&choice.input) {
         None => (DeviceWriter::new(processor), None),
         Some(id) => {
-            // A chosen input device opens on its own host. The default one
+            // A chosen input device opens on its own host, which may differ
+            // from the output's (JACK in, ALSA out, say). The default one
             // comes from the output's host.
             let opened = match id {
-                Some(_) => host_for(choice.host.as_deref(), id, Direction::Input),
+                Some(_) => host_for(None, id, Direction::Input),
                 None => Ok(host_id),
             }
             .and_then(open_host)

@@ -27,7 +27,8 @@ use crate::DeviceError;
 pub struct AudioConfig {
     /// The audio API, by [`HostInfo::id`] (e.g. `alsa`, `jack`, `wasapi`,
     /// `asio`), for default devices. `None` uses the platform's default. A
-    /// device ID names its own host, which this must agree with if given.
+    /// device ID names its own host: the output's must agree with this if
+    /// it's given, and an input device may be on any host.
     pub host: Option<String>,
     /// The output device, by [`DeviceInfo::id`]. `None` uses the host's
     /// default.
