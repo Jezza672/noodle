@@ -40,7 +40,7 @@ fn rig_with(with_button: bool) -> H {
         .build_ui_state(
             move |ui, rig: &mut Rig| {
                 if with_button {
-                    ui.button("Elsewhere");
+                    let _ = ui.button("Elsewhere");
                 }
                 let edits = show(ui, &mut rig.editor, &rig.session);
                 rig.log.extend(edits.iter().cloned());
