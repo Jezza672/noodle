@@ -52,18 +52,18 @@ pub fn entries(registry: &Registry, query: &str, in_group: bool) -> Vec<Entry> {
                 choice: Choice::Node(info.id),
             }
         })
-        .chain([
-            Entry {
-                name: "Frame",
-                category: "Layout",
-                choice: Choice::Frame,
-            },
-            Entry {
-                name: "Group",
-                category: "Group",
-                choice: Choice::Node(GROUP),
-            },
-        ])
+        .chain([Entry {
+            name: "Group",
+            category: "Group",
+            choice: Choice::Node(GROUP),
+        }])
+        // Frames belong to the top level for now, so inside a group there
+        // would be nowhere to see or delete one.
+        .chain((!in_group).then_some(Entry {
+            name: "Frame",
+            category: "Layout",
+            choice: Choice::Frame,
+        }))
         .chain(
             in_group
                 .then_some([
@@ -228,6 +228,17 @@ mod tests {
         assert_eq!(outside.len(), 1);
         let inside = entries(&registry, "group", true);
         assert_eq!(inside.len(), 3);
+        // Frames are only offered at the top level.
+        assert!(
+            entries(&registry, "frame", false)
+                .iter()
+                .any(|e| e.name == "Frame")
+        );
+        assert!(
+            entries(&registry, "frame", true)
+                .iter()
+                .all(|e| e.name != "Frame")
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@
 //! | X, Delete | Delete the selection |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
 //! | A, Alt+A | Select all, select none |
-//! | Ctrl+J | Put the selected nodes in a new frame |
+//! | Ctrl+J | Put the selected nodes in a new frame (top level only) |
 //! | Ctrl+G | Fold the selected nodes into a new group |
 //! | Tab | Enter the selected group, or leave the current one |
 //! | Double-click a group | Enter it |
@@ -79,6 +79,10 @@ pub struct EditorState {
     /// The group being edited, or `None` for the top level. The editor shows
     /// only the nodes directly inside it.
     pub group: Option<NodeId>,
+    /// The groups from the top down to `group`, as of the last frame, so if
+    /// `group` vanishes (an undo) the editor can land on the nearest group
+    /// that survives.
+    path: Vec<NodeId>,
     /// Where each level's view was left, so leaving a group puts the view
     /// back. Keyed by the group, `None` for the top level.
     views: BTreeMap<Option<NodeId>, View>,
@@ -99,6 +103,7 @@ impl Default for EditorState {
             selected_frames: BTreeSet::new(),
             view: View::default(),
             group: None,
+            path: Vec::new(),
             views: BTreeMap::new(),
             canvas: Rect::NOTHING,
             gesture: Gesture::Idle,
@@ -123,10 +128,28 @@ impl EditorState {
 
     fn retain_in(&mut self, project: &Project) {
         let graph = project.graph();
-        // E.g. an undo removed the group being edited: go back to the top.
+        // E.g. an undo removed the group being edited: land on the nearest
+        // group that's left, or the top level.
         if self.group.is_some_and(|g| graph.node(g).is_none()) {
-            self.group = None;
+            self.group = self
+                .path
+                .iter()
+                .rev()
+                .copied()
+                .find(|&g| graph.node(g).is_some());
+            self.view = self.views.remove(&self.group).unwrap_or_default();
+            self.gesture = Gesture::Idle;
+            self.search = None;
+            self.rename = None;
         }
+        self.path = match self.group {
+            Some(g) => {
+                let mut path = graph.ancestors(g);
+                path.push(g);
+                path
+            }
+            None => Vec::new(),
+        };
         self.views
             .retain(|group, _| group.is_none_or(|g| graph.node(g).is_some()));
         self.selected.retain(|&id| graph.node(id).is_some());
@@ -1072,7 +1095,7 @@ fn keyboard(
     if pressed(Modifiers::ALT, Key::A) {
         state.clear_selection();
     }
-    if pressed(Modifiers::COMMAND, Key::J) {
+    if pressed(Modifiers::COMMAND, Key::J) && state.group.is_none() {
         frame_selection(state, f, inputs, edits);
     }
     if pressed(Modifiers::COMMAND, Key::G) {

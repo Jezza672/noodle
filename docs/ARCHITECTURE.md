@@ -641,7 +641,15 @@ style. It has these views:
 
 - **Node editor** (`noodle-app/src/editor`): pan and zoom, Shift+A to search
   for and add a node, box select, drag to connect, Ctrl+right-drag to cut
-  wires, reroute points, frames, and Tab to enter and leave a group (M2).
+  wires, reroute points, frames, and groups: Tab (or a double-click) enters the selected group
+  and leaves the current one, Ctrl+G folds the selection into a group, and a
+  breadcrumb leads back up. Inside a group the editor shows only that level;
+  frames are top-level only for now.
+  - **Tab and focus.** The canvas holds focus and asks egui to pass it Tab,
+    which egui otherwise uses to move focus, so Tab can't leave the canvas by
+    keyboard. `app.rs` knows the canvas isn't a text field, so the app's
+    shortcuts still work. `group_nodes` takes a shared `&Project` and an ID
+    allocator, so the editor can call it while the session owns the project.
   - **A custom canvas**, not `egui-snarl`, so the interactions can follow
     Blender's exactly: picking a wire up off an input, cutting and rerouting
     with a stroke, frames that carry their nodes. The full list of inputs is
