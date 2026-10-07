@@ -368,18 +368,44 @@ fn navigate(
     }
 }
 
+/// How close to one of `node`'s sockets counts as on it, in screen points.
+/// Smaller when zoomed out, so neighbouring sockets don't overlap and a
+/// reroute keeps a middle that can be grabbed to move it.
+fn socket_reach(f: &Frame_<'_>, node: &layout::NodeGeom) -> f32 {
+    let limit = if node.reroute {
+        layout::REROUTE_SIZE.x / 4.0
+    } else {
+        layout::ROW_HEIGHT / 2.0
+    };
+    SOCKET_REACH.min(f.t.scale(limit))
+}
+
+/// The socket of `node` nearest `p`, if any is within reach.
+fn nearest_socket<'n>(
+    f: &Frame_<'_>,
+    node: &'n layout::NodeGeom,
+    p: Pos2,
+    filter: impl Fn(&layout::PortGeom) -> bool,
+) -> Option<&'n layout::PortGeom> {
+    let reach = socket_reach(f, node);
+    node.ports
+        .iter()
+        .filter(|port| filter(port))
+        .map(|port| (f.t.to_screen(port.socket).distance(p), port))
+        .filter(|&(distance, _)| distance <= reach)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, port)| port)
+}
+
 fn hit(f: &Frame_<'_>, p: Pos2) -> Hit {
-    for &i in f.order.iter().rev() {
-        let node = &f.scene.nodes[i];
-        for port in &node.ports {
-            if f.t.to_screen(port.socket).distance(p) <= SOCKET_REACH {
-                return Hit::Port(Endpoint::new(node.id, port.key.clone()), port.side);
-            }
-        }
-    }
     let g = f.t.to_graph(p);
+    // Topmost first, each node's sockets with its body, so a node in front
+    // hides the sockets of nodes behind it.
     for &i in f.order.iter().rev() {
         let node = &f.scene.nodes[i];
+        if let Some(port) = nearest_socket(f, node, p, |_| true) {
+            return Hit::Port(Endpoint::new(node.id, port.key.clone()), port.side);
+        }
         if node.rect.contains(g) {
             return Hit::Node(node.id);
         }
@@ -420,9 +446,16 @@ fn drop_target(
             .ports
             .iter()
             .filter(|port| port.side != side && compatible(&port.kind));
-        if let Some(port) = candidates.clone().find(|port| {
-            port.row.contains(g) || f.t.to_screen(port.socket).distance(p) <= SOCKET_REACH
-        }) {
+        // The row under the pointer, then the nearest socket in reach.
+        let target = candidates
+            .clone()
+            .find(|port| port.row.contains(g))
+            .or_else(|| {
+                nearest_socket(f, node, p, |port| {
+                    port.side != side && compatible(&port.kind)
+                })
+            });
+        if let Some(port) = target {
             return Some(Endpoint::new(node.id, port.key.clone()));
         }
         if node.rect.contains(g) {
@@ -491,6 +524,10 @@ fn pointer(
     if response.drag_stopped() {
         let gesture = std::mem::take(&mut state.gesture);
         if let Some(p) = latest {
+            // The pointer may have moved in the same frame it was released.
+            state.gesture = gesture;
+            drag(state, f, p, edits);
+            let gesture = std::mem::take(&mut state.gesture);
             finish(state, f, gesture, p, inputs, edits);
         }
     }
@@ -763,7 +800,9 @@ fn finish(
                 state.active = state.selected.iter().next_back().copied();
             }
         }
-        Gesture::Stroke { points, action } => {
+        Gesture::Stroke { mut points, action } => {
+            // Always end where the pointer was released, however close.
+            points.push(f.t.to_graph(p));
             let commands = stroke(f, &points, action, inputs);
             if !commands.is_empty() {
                 edits.push(Edit::Apply(Command::Batch(commands)));
