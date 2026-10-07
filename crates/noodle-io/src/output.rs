@@ -5,7 +5,7 @@
 //! the device and wires the writer into its callback.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -46,6 +46,9 @@ const FADE_OUT: Duration = Duration::from_millis(10);
 struct Fade {
     stop: AtomicBool,
     done: AtomicBool,
+    /// The most frames the callback has been asked for at once, which is how
+    /// much the device queues ahead of what it is playing.
+    period: AtomicU32,
 }
 
 impl DeviceWriter {
@@ -78,6 +81,9 @@ impl DeviceWriter {
     /// becomes silence, so a misbehaving graph can't blast the speakers.
     pub fn write<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
         let channels = self.processor.settings().channels;
+        self.fade
+            .period
+            .fetch_max((output.len() / channels) as u32, Ordering::Relaxed);
         for chunk in output.chunks_mut(self.scratch.len()) {
             let scratch = &mut self.scratch[..chunk.len()];
             match &mut self.input {
@@ -131,6 +137,14 @@ impl Drop for Playback {
         let deadline = Instant::now() + FADE_OUT + Duration::from_millis(100);
         while !self.fade.done.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
+        }
+        // The ramp is queued behind the audio already in the device's buffer,
+        // and closing the stream throws the queue away. Let that play out
+        // first: two periods, as devices queue about that much.
+        if self.fade.done.load(Ordering::Acquire) {
+            let frames = self.fade.period.load(Ordering::Relaxed) as f32;
+            let queued = Duration::from_secs_f32(2.0 * frames / self.settings.sample_rate);
+            std::thread::sleep(queued.min(Duration::from_millis(500)));
         }
     }
 }
@@ -563,6 +577,15 @@ mod tests {
         assert!(biggest_step < 0.5 / 400.0, "{biggest_step}");
         assert!(faded.iter().rev().take(2 * 100).all(|&x| x == 0.0));
         assert!(writer.fade.done.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn the_writer_notes_how_much_the_device_asks_for_at_once() {
+        let mut writer = writer(0.0);
+        writer.write(&mut vec![0.0f32; 32 * 2]);
+        writer.write(&mut vec![0.0f32; 150 * 2]);
+        writer.write(&mut [0.0f32; 10 * 2]);
+        assert_eq!(writer.fade.period.load(Ordering::Relaxed), 150);
     }
 
     #[test]
