@@ -122,7 +122,8 @@ impl DeviceWriter {
 pub struct Playback {
     fade: Arc<Fade>,
     _stream: cpal::Stream,
-    /// Dropped before the streams, so a recording in progress is finished.
+    /// Dropped before the input stream, so a recording in progress is
+    /// finished while the input is still running.
     recorder: Option<Recorder>,
     _input_stream: Option<cpal::Stream>,
     device: String,

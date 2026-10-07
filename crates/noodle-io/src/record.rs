@@ -87,6 +87,7 @@ pub struct Take {
 /// The input callback's end: queues samples while recording is on.
 pub struct RecordTap {
     producer: Producer<f32>,
+    channels: usize,
     armed: Arc<AtomicBool>,
     /// Samples that didn't fit.
     dropped: Arc<AtomicU64>,
@@ -102,6 +103,7 @@ impl RecordTap {
         if !self.armed.load(Ordering::Relaxed) {
             return;
         }
+        debug_assert!(input.len() % self.channels == 0, "input is whole frames");
         let fits = input.len().min(self.producer.slots());
         if fits < input.len() {
             self.dropped
@@ -164,6 +166,7 @@ fn record_path_with(
     let dropped = Arc::new(AtomicU64::new(0));
     let tap = RecordTap {
         producer,
+        channels,
         armed: Arc::clone(&armed),
         dropped: Arc::clone(&dropped),
     };
