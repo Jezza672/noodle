@@ -19,11 +19,21 @@ impl fmt::Display for FrameId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// The size compares by its bits, like [`Position`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub label: String,
     /// The top-left corner, in the same coordinates as node positions.
     pub position: Position,
     pub width: f32,
     pub height: f32,
+}
+
+impl PartialEq for Frame {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label
+            && self.position == other.position
+            && self.width.to_bits() == other.width.to_bits()
+            && self.height.to_bits() == other.height.to_bits()
+    }
 }

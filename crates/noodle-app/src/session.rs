@@ -521,13 +521,21 @@ impl std::error::Error for FileError {}
 
 /// Writes to a temporary file next to `path`, then renames it into place, so
 /// a failed save (a full disk, say) never destroys the last good copy.
+///
+/// Saving through a symlink writes the file it points to and keeps the link,
+/// and the file keeps its permissions.
 pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    // A path that doesn't exist yet can't be resolved; it's created as it is.
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     let mut temp = path.as_os_str().to_owned();
     temp.push(".saving");
     let temp = PathBuf::from(temp);
     let result = (|| {
         let mut file = std::fs::File::create(&temp)?;
         std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        if let Ok(old) = std::fs::metadata(path) {
+            file.set_permissions(old.permissions())?;
+        }
         file.sync_all()?;
         std::fs::rename(&temp, path)
     })();
@@ -549,6 +557,25 @@ mod tests {
     use noodle_engine::OUTPUT_ID;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_symlink_keeps_the_link_and_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.ron");
+        let link = dir.path().join("link.ron");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_atomically(&link, "new").unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640);
+    }
 
     #[test]
     fn falling_back_keeps_the_input_and_drops_the_output_choices() {
@@ -603,6 +630,28 @@ mod tests {
         assert!(session.project().graph().node(sine).is_none());
         session.redo();
         assert!(session.project().graph().node(sine).is_some());
+    }
+
+    #[test]
+    fn a_nan_parameter_does_not_keep_the_project_dirty() {
+        let mut session = Session::new(Nodes::all());
+        let sine = add(
+            &mut session,
+            Node::new("noodle.osc.sine").with_param("frequency", f32::NAN),
+        );
+        let path = temp("nan.ron");
+        session.save_as(&path);
+        assert!(!session.is_dirty());
+        session.edit([Edit::Drag(Command::SetParam {
+            node: sine,
+            key: "frequency".into(),
+            value: Some(1.0),
+        })]);
+        session.edit([Edit::EndDrag]);
+        assert!(session.is_dirty());
+        session.undo();
+        assert!(!session.is_dirty(), "undone back to the saved state");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
