@@ -139,7 +139,8 @@ mod tests {
     fn flattening_a_grouped_chain_gives_the_original_wiring() {
         let (mut project, mut history, [_, gain, _]) = chain();
         let flat_before = project.graph().clone();
-        let (_, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (_, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         assert_ne!(project.graph(), &flat_before);
         assert_eq!(flatten(project.graph()).as_ref(), &flat_before);
@@ -149,9 +150,11 @@ mod tests {
     fn nested_groups_flatten_through_every_level() {
         let (mut project, mut history, [_, gain, _]) = chain();
         let flat_before = project.graph().clone();
-        let (inner, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (inner, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
-        let (_, command) = group_nodes(&mut project, &[inner]).unwrap();
+        let (_, command) =
+            group_nodes(&project.clone(), &[inner], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         assert_eq!(flatten(project.graph()).as_ref(), &flat_before);
     }
@@ -159,7 +162,8 @@ mod tests {
     #[test]
     fn an_unconnected_group_input_leaves_the_inner_input_unwired() {
         let (mut project, mut history, [osc, gain, _]) = chain();
-        let (_, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (_, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let group = project
             .graph()

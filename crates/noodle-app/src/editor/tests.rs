@@ -83,7 +83,11 @@ fn screen(h: &H, p: Pos2) -> Pos2 {
 
 fn scene(h: &H) -> Scene {
     let session = &h.state().session;
-    Scene::build(session.project(), session.registry())
+    Scene::build(
+        session.project(),
+        session.registry(),
+        h.state().editor.group,
+    )
 }
 
 fn socket(h: &H, node: NodeId, side: Side, key: &str) -> Pos2 {
@@ -1340,4 +1344,123 @@ fn a_field_drag_carries_on_over_a_node_in_front() {
         "{unobstructed}"
     );
     assert_eq!(dragged(true), unobstructed);
+}
+
+/// Selects `ids`, then Ctrl+G; returns the new group.
+fn group_selection(h: &mut H, ids: &[NodeId]) -> NodeId {
+    let p = title(h, ids[0]);
+    click(h, p, Modifiers::NONE);
+    for &id in &ids[1..] {
+        let p = title(h, id);
+        click(h, p, Modifiers::SHIFT);
+    }
+    let p = empty_space(h);
+    press(h, p, Modifiers::COMMAND, Key::G);
+    let selected = &h.state().editor.selected;
+    assert_eq!(selected.len(), 1, "the new group is selected");
+    *selected.first().unwrap()
+}
+
+#[test]
+fn ctrl_g_groups_the_selection_and_tab_goes_in_and_out() {
+    let mut h = rig();
+    let (sine, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    h.run();
+
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.node(gain).unwrap().parent, Some(group));
+    // At the top level: the sine and the group, with the sine wired to the
+    // group's input.
+    let top = scene(&h);
+    assert!(top.node(sine).is_some() && top.node(group).is_some());
+    assert!(top.node(gain).is_none());
+    assert_eq!(top.wires.len(), 1);
+    assert!(top.node(group).unwrap().port(Side::Input, "in1").is_some());
+
+    // Tab goes in: the gain and its group input show, the sine doesn't.
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().editor.group, Some(group));
+    let inside = scene(&h);
+    assert!(inside.node(gain).is_some());
+    assert!(inside.node(sine).is_none());
+    assert_eq!(inside.nodes.len(), 2, "the gain and the group input");
+    assert_eq!(inside.wires.len(), 1);
+
+    // Tab again goes out, with the group selected, ready to go back in.
+    press(&mut h, p, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().editor.group, None);
+    assert!(h.state().editor.selected.contains(&group));
+    press(&mut h, p, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().editor.group, Some(group));
+}
+
+#[test]
+fn nodes_added_inside_a_group_belong_to_it() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::Tab);
+
+    press(&mut h, p, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("group output".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+
+    let graph = h.state().session.project().graph();
+    let ports = graph.group_ports(group);
+    assert_eq!(ports.outputs.len(), 1);
+    assert_eq!(ports.outputs[0].name, "out1");
+    let node = graph.node(ports.outputs[0].node).unwrap();
+    assert_eq!(node.parent, Some(group));
+}
+
+#[test]
+fn double_clicking_a_group_enters_it_and_the_breadcrumb_leads_back() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    h.run();
+    let p = title(&h, group);
+    click(&mut h, p, Modifiers::NONE);
+    click(&mut h, p, Modifiers::NONE);
+    h.run();
+    assert_eq!(h.state().editor.group, Some(group));
+
+    h.get_by_label("Project").click();
+    h.run();
+    assert_eq!(h.state().editor.group, None);
+    assert!(h.state().editor.selected.contains(&group));
+}
+
+#[test]
+fn undoing_the_grouping_while_inside_goes_back_to_the_top() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().editor.group, Some(group));
+    h.state_mut().session.undo();
+    h.run();
+    assert_eq!(h.state().editor.group, None);
+    assert!(scene(&h).node(gain).is_some());
+}
+
+#[test]
+fn deleting_a_group_removes_what_is_inside_and_undo_brings_it_back() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::X);
+    let graph = h.state().session.project().graph();
+    assert!(graph.node(group).is_none() && graph.node(gain).is_none());
+    h.state_mut().session.undo();
+    h.run();
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.node(gain).unwrap().parent, Some(group));
 }

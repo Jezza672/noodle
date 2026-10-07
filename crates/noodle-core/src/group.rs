@@ -147,9 +147,14 @@ impl Graph {
 /// selection now passes through a boundary node: one input per distinct
 /// source outside, and one output per distinct source inside, named `in1`,
 /// `in2`, … and `out1`, `out2`, … in wire order.
+///
+/// `new_id` hands out the IDs of the new nodes, e.g.
+/// [`Project::new_node_id`]. It's a closure so the editor can use it with
+/// only a shared borrow of the project.
 pub fn group_nodes(
-    project: &mut Project,
+    project: &Project,
     nodes: &[NodeId],
+    mut new_id: impl FnMut() -> NodeId,
 ) -> Result<(NodeId, Command), EditError> {
     let first = *nodes.first().ok_or(EditError::NothingToGroup)?;
     let graph = project.graph();
@@ -193,7 +198,7 @@ pub fn group_nodes(
         .cloned()
         .collect();
 
-    let group = project.new_node_id();
+    let group = new_id();
     let mut cmds = Vec::new();
     for c in &touching {
         cmds.push(Command::Disconnect {
@@ -232,7 +237,7 @@ pub fn group_nodes(
     for c in &crossing {
         if inside.contains(&c.to.node) {
             if !inputs.contains_key(&c.from) {
-                let id = project.new_node_id();
+                let id = new_id();
                 let name = format!("in{}", inputs.len() + 1);
                 let at = Position {
                     x: centre.0 - 300.0,
@@ -254,7 +259,7 @@ pub fn group_nodes(
             });
         } else {
             if !outputs.contains_key(&c.from) {
-                let id = project.new_node_id();
+                let id = new_id();
                 let name = format!("out{}", outputs.len() + 1);
                 let at = Position {
                     x: centre.0 + 300.0,
@@ -323,7 +328,8 @@ mod tests {
     #[test]
     fn grouping_routes_crossing_wires_through_boundary_nodes() {
         let (mut project, mut history, [osc, gain, out]) = chain();
-        let (group, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let graph = project.graph();
 
@@ -357,7 +363,8 @@ mod tests {
     fn grouping_is_one_undo_step() {
         let (mut project, mut history, [_, gain, _]) = chain();
         let before = project.clone();
-        let (_, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (_, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         assert_ne!(project, before);
         assert!(history.undo(&mut project).unwrap());
@@ -369,10 +376,13 @@ mod tests {
     #[test]
     fn a_groups_own_boundary_nodes_cannot_be_grouped() {
         let (mut project, mut history, [_, gain, _]) = chain();
-        let (group, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let boundary = project.graph().group_ports(group).inputs[0].node;
-        let result = group_nodes(&mut project, &[gain, boundary]);
+        let result = group_nodes(&project.clone(), &[gain, boundary], || {
+            project.new_node_id()
+        });
         assert_eq!(result.unwrap_err(), EditError::BoundaryNode(boundary));
     }
 
@@ -385,7 +395,8 @@ mod tests {
         let b = add(&mut project, &mut history, Node::new("mix"));
         wire(&mut project, &mut history, (osc, "out"), (a, "in"));
         wire(&mut project, &mut history, (osc, "out"), (b, "in"));
-        let (group, command) = group_nodes(&mut project, &[a, b]).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[a, b], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         assert_eq!(project.graph().group_ports(group).inputs.len(), 1);
     }
@@ -393,7 +404,8 @@ mod tests {
     #[test]
     fn wires_between_groups_are_refused() {
         let (mut project, mut history, [osc, gain, _]) = chain();
-        let (_, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (_, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         // gain is now inside a group; osc isn't.
         let error = history
@@ -411,7 +423,8 @@ mod tests {
     #[test]
     fn removing_a_group_removes_its_contents_and_undo_restores_them() {
         let (mut project, mut history, [_, gain, _]) = chain();
-        let (group, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let grouped = project.clone();
         history
@@ -427,9 +440,11 @@ mod tests {
     #[test]
     fn nested_groups_remove_and_restore() {
         let (mut project, mut history, [_, gain, _]) = chain();
-        let (inner, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (inner, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
-        let (outer, command) = group_nodes(&mut project, &[inner]).unwrap();
+        let (outer, command) =
+            group_nodes(&project.clone(), &[inner], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let graph = project.graph();
         assert_eq!(graph.ancestors(gain), vec![outer, inner]);
@@ -446,7 +461,8 @@ mod tests {
     #[test]
     fn a_group_cannot_move_inside_itself_or_a_non_group() {
         let (mut project, mut history, [osc, gain, _]) = chain();
-        let (group, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let inside = |p, parent| Command::SetParent {
             node: p,
@@ -466,7 +482,8 @@ mod tests {
     fn round_trips_through_ron_and_loads_children_before_their_group() {
         let (mut project, mut history, [_, gain, _]) = chain();
         // The group gets a higher ID than its contents, as when grouping.
-        let (_, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (_, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let text = project.to_ron();
         assert_eq!(Project::from_ron(&text).unwrap(), project, "{text}");

@@ -39,11 +39,16 @@ fn a_grouped_vibrato_sounds_the_same_as_the_flat_one() {
     // oscillator with the output gain (5), so signals cross one group on the
     // way out and two on the way in.
     let ids = |ns: &[u64]| ns.iter().map(|&n| NodeId(n)).collect::<Vec<_>>();
-    let (_, command) = group_nodes(&mut project, &ids(&[1, 2, 3])).unwrap();
+    let (_, command) =
+        group_nodes(&project.clone(), &ids(&[1, 2, 3]), || project.new_node_id()).unwrap();
     history.apply(&mut project, command).unwrap();
-    let (osc, command) = group_nodes(&mut project, &ids(&[4])).unwrap();
+    let (osc, command) =
+        group_nodes(&project.clone(), &ids(&[4]), || project.new_node_id()).unwrap();
     history.apply(&mut project, command).unwrap();
-    let (_, command) = group_nodes(&mut project, &[osc, NodeId(5)]).unwrap();
+    let (_, command) = group_nodes(&project.clone(), &[osc, NodeId(5)], || {
+        project.new_node_id()
+    })
+    .unwrap();
     history.apply(&mut project, command).unwrap();
     assert!(project.graph().ancestors(NodeId(4)).len() == 2);
 

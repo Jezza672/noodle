@@ -166,7 +166,10 @@ impl App {
 
     fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
         // A text field keeps the keys it uses itself.
-        let typing = ctx.egui_wants_keyboard_input();
+        // The editor canvas holds focus so it can receive Tab, and isn't a
+        // text field.
+        let typing = ctx.egui_wants_keyboard_input()
+            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.

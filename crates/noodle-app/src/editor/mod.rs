@@ -19,6 +19,9 @@
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame |
+//! | Ctrl+G | Fold the selected nodes into a new group |
+//! | Tab | Enter the selected group, or leave the current one |
+//! | Double-click a group | Enter it |
 //! | Double-click a frame title, F2 | Rename the frame |
 //!
 //! Each frame the editor rebuilds where everything goes from the project (see
@@ -36,6 +39,7 @@ mod wire;
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
+use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
 use noodle_engine::{Diagnostic, Location, Registry};
 use noodle_nodes::REROUTE_ID;
@@ -59,6 +63,12 @@ const DUPLICATE_FRAME_GAP: f32 = 20.0;
 const FRAME_MARGIN: f32 = 20.0;
 const MIN_FRAME_SIZE: Vec2 = Vec2::new(80.0, 60.0);
 
+/// The canvas's widget ID. The app needs it to tell the canvas having focus
+/// (so it receives Tab) from a text field having it.
+pub fn canvas_id() -> egui::Id {
+    egui::Id::new("noodle-editor-canvas")
+}
+
 /// What the editor remembers between frames.
 pub struct EditorState {
     pub selected: BTreeSet<NodeId>,
@@ -66,6 +76,12 @@ pub struct EditorState {
     pub active: Option<NodeId>,
     pub selected_frames: BTreeSet<FrameId>,
     pub view: View,
+    /// The group being edited, or `None` for the top level. The editor shows
+    /// only the nodes directly inside it.
+    pub group: Option<NodeId>,
+    /// Where each level's view was left, so leaving a group puts the view
+    /// back. Keyed by the group, `None` for the top level.
+    views: BTreeMap<Option<NodeId>, View>,
     /// Where the canvas was last drawn, on screen.
     canvas: Rect,
     gesture: Gesture,
@@ -82,6 +98,8 @@ impl Default for EditorState {
             active: None,
             selected_frames: BTreeSet::new(),
             view: View::default(),
+            group: None,
+            views: BTreeMap::new(),
             canvas: Rect::NOTHING,
             gesture: Gesture::Idle,
             search: None,
@@ -105,12 +123,34 @@ impl EditorState {
 
     fn retain_in(&mut self, project: &Project) {
         let graph = project.graph();
+        // E.g. an undo removed the group being edited: go back to the top.
+        if self.group.is_some_and(|g| graph.node(g).is_none()) {
+            self.group = None;
+        }
+        self.views
+            .retain(|group, _| group.is_none_or(|g| graph.node(g).is_some()));
         self.selected.retain(|&id| graph.node(id).is_some());
         if self.active.is_some_and(|id| !self.selected.contains(&id)) {
             self.active = None;
         }
         self.selected_frames
             .retain(|&id| project.frame(id).is_some());
+    }
+
+    /// Shows the inside of `group`, or the top level for `None`, with
+    /// `select` selected (the group just left, say).
+    fn enter(&mut self, group: Option<NodeId>, select: Option<NodeId>) {
+        let left = std::mem::take(&mut self.view);
+        self.views.insert(self.group, left);
+        self.view = self.views.remove(&group).unwrap_or_default();
+        self.group = group;
+        self.gesture = Gesture::Idle;
+        self.search = None;
+        self.rename = None;
+        self.clear_selection();
+        if let Some(id) = select {
+            self.select_only([id]);
+        }
     }
 
     fn select_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
@@ -266,9 +306,28 @@ struct Frame_<'a> {
 fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'_>) -> Vec<Edit> {
     let project = inputs.project;
     state.retain_in(project);
-    let (canvas, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    let (canvas, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+    let response = ui.interact(canvas, canvas_id(), Sense::click_and_drag());
     state.canvas = canvas;
-    let scene = Scene::build(project, inputs.registry);
+    // Tab is how egui moves focus, so the canvas has to hold focus, and say
+    // it wants Tab, for the editor to be given it.
+    if response.hovered() && ui.memory(|m| m.focused().is_none()) {
+        response.request_focus();
+    }
+    if response.has_focus() {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: false,
+                    vertical_arrows: false,
+                    escape: false,
+                },
+            );
+        });
+    }
+    let scene = Scene::build(project, inputs.registry, state.group);
     let problems = Problems::new(inputs.diagnostics);
     let mut edits = Vec::new();
 
@@ -298,7 +357,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         && state.search.is_none()
         && state.rename.is_none()
         && ui.ctx().dragged_id().is_none()
-        && !ui.ctx().egui_wants_keyboard_input()
+        && (!ui.ctx().egui_wants_keyboard_input() || response.has_focus())
     {
         keyboard(ui, state, &f, canvas, &mut inputs, &mut edits);
     }
@@ -336,6 +395,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             hint,
         );
     }
+    breadcrumb(ui, state, project, canvas);
     popups(ui, state, &f, &mut inputs, &mut edits);
 
     if response.hovered()
@@ -591,10 +651,17 @@ fn pointer(
     }
     if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = latest
-        && let Hit::FrameHeader(id) = hit(f, p)
     {
-        start_rename(state, f.project, id);
+        match hit(f, p) {
+            Hit::FrameHeader(id) => start_rename(state, f.project, id),
+            Hit::Node(id) if is_group(f.project, id) => state.enter(Some(id), None),
+            _ => {}
+        }
     }
+}
+
+fn is_group(project: &Project, id: NodeId) -> bool {
+    project.graph().node(id).is_some_and(|n| n.type_id == GROUP)
 }
 
 fn start_primary_drag(
@@ -972,7 +1039,11 @@ fn keyboard(
         .unwrap_or(canvas.center());
 
     if pressed(Modifiers::SHIFT, Key::A) {
-        state.search = Some(Search::new(f.t.to_graph(pointer), pointer));
+        state.search = Some(Search::new(
+            f.t.to_graph(pointer),
+            pointer,
+            state.group.is_some(),
+        ));
     }
     if pressed(Modifiers::NONE, Key::X) || pressed(Modifiers::NONE, Key::Delete) {
         let commands: Vec<Command> = state
@@ -1003,6 +1074,12 @@ fn keyboard(
     }
     if pressed(Modifiers::COMMAND, Key::J) {
         frame_selection(state, f, inputs, edits);
+    }
+    if pressed(Modifiers::COMMAND, Key::G) {
+        group_selection(state, f, inputs, edits);
+    }
+    if pressed(Modifiers::NONE, Key::Tab) {
+        enter_or_leave(state, f.project);
     }
     if pressed(Modifiers::NONE, Key::F2)
         && state.selected_frames.len() == 1
@@ -1038,6 +1115,11 @@ fn duplicate(
     let mut commands = Vec::new();
     for &id in &nodes {
         let Some(node) = graph.node(id) else { continue };
+        // A copied group would be empty, and a copied group port would
+        // clash with the original's name.
+        if matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT) {
+            continue;
+        }
         let copy = (inputs.new_node_id)();
         copies.insert(id, copy);
         let mut node = node.clone();
@@ -1090,6 +1172,110 @@ fn duplicate(
     state.select_only(nodes);
     state.active = active.or(state.active);
     state.selected_frames = frames;
+}
+
+/// While inside a group, the path to it, top left: click a name to go back
+/// up to that level.
+fn breadcrumb(ui: &egui::Ui, state: &mut EditorState, project: &Project, canvas: Rect) {
+    let Some(current) = state.group else { return };
+    let graph = project.graph();
+    let mut path: Vec<Option<NodeId>> = vec![None];
+    path.extend(graph.ancestors(current).into_iter().map(Some));
+    path.push(Some(current));
+    let mut go = None;
+    egui::Area::new(egui::Id::new("noodle-editor-breadcrumb"))
+        .fixed_pos(canvas.min + Vec2::new(8.0, 8.0))
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (i, &level) in path.iter().enumerate() {
+                        if i > 0 {
+                            ui.weak("›");
+                        }
+                        let label = match level {
+                            None => "Project".to_owned(),
+                            Some(id) => layout::group_title(graph, id),
+                        };
+                        let here = i == path.len() - 1;
+                        let button = ui.add_enabled(!here, egui::Button::new(label).frame(false));
+                        if button.clicked() {
+                            go = Some(level);
+                        }
+                    }
+                    ui.weak("(Tab leaves)");
+                });
+            });
+        });
+    if let Some(level) = go {
+        // Select the group we came out of, as Tab does.
+        let came_from = path
+            .iter()
+            .position(|&l| l == level)
+            .and_then(|i| path.get(i + 1).copied().flatten());
+        state.enter(level, came_from);
+    }
+}
+
+/// Folds the selected nodes into a new group.
+fn group_selection(
+    state: &mut EditorState,
+    f: &Frame_<'_>,
+    inputs: &mut Inputs<'_>,
+    edits: &mut Vec<Edit>,
+) {
+    let selected: Vec<NodeId> = state.selected.iter().copied().collect();
+    if let Ok((id, command)) = group::group_nodes(f.project, &selected, &mut *inputs.new_node_id) {
+        edits.push(Edit::Apply(command));
+        state.select_only([id]);
+    }
+}
+
+/// Tab: enters the one selected group, or else leaves the current group,
+/// selecting it in its parent so Tab again goes back in.
+fn enter_or_leave(state: &mut EditorState, project: &Project) {
+    let graph = project.graph();
+    let selected_group = match state.selected.iter().collect::<Vec<_>>()[..] {
+        [&id] if graph.node(id).is_some_and(|n| n.type_id == GROUP) => Some(id),
+        _ => None,
+    };
+    if let Some(id) = selected_group {
+        state.enter(Some(id), None);
+    } else if let Some(current) = state.group {
+        let parent = graph.node(current).and_then(|n| n.parent);
+        state.enter(parent, Some(current));
+    }
+}
+
+/// A name for a new group input or output that no other port of the same
+/// kind in the group has: `in1`, `in2`, … or `out1`, `out2`, …
+fn free_port_name(project: &Project, group: Option<NodeId>, type_id: &str) -> String {
+    let graph = project.graph();
+    let (prefix, taken): (_, Vec<String>) = match group {
+        Some(g) if type_id == GROUP_INPUT => (
+            "in",
+            graph
+                .group_ports(g)
+                .inputs
+                .into_iter()
+                .map(|p| p.name)
+                .collect(),
+        ),
+        Some(g) => (
+            "out",
+            graph
+                .group_ports(g)
+                .outputs
+                .into_iter()
+                .map(|p| p.name)
+                .collect(),
+        ),
+        None => ("port", Vec::new()),
+    };
+    (1..)
+        .map(|n| format!("{prefix}{n}"))
+        .find(|name| !taken.contains(name))
+        .expect("an unbounded range has a free name")
 }
 
 /// Puts a new frame around the selected nodes.
@@ -1153,10 +1339,19 @@ fn popups(
                 match choice {
                     Choice::Node(type_id) => {
                         let id = (inputs.new_node_id)();
-                        edits.push(Edit::Apply(Command::AddNode {
-                            id,
-                            node: Node::new(type_id).at(at.x, at.y),
-                        }));
+                        let mut node = Node::new(type_id).at(at.x, at.y);
+                        node.parent = state.group;
+                        if matches!(type_id, GROUP_INPUT | GROUP_OUTPUT) {
+                            node.config = noodle_core::Config::new().with(
+                                group::PORT_NAME,
+                                noodle_core::Value::Text(free_port_name(
+                                    f.project,
+                                    state.group,
+                                    type_id,
+                                )),
+                            );
+                        }
+                        edits.push(Edit::Apply(Command::AddNode { id, node }));
                         state.select_only([id]);
                     }
                     Choice::Frame => {
@@ -1268,7 +1463,7 @@ pub(crate) fn socket_on_screen(
     key: &str,
 ) -> Option<Pos2> {
     let side = if output { Side::Output } else { Side::Input };
-    let scene = Scene::build(session.project(), session.registry());
+    let scene = Scene::build(session.project(), session.registry(), state.group);
     let socket = scene.node(node)?.port(side, key)?.socket;
     Some(state.view.on(state.canvas).to_screen(socket))
 }
