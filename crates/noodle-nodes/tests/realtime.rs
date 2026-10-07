@@ -1,0 +1,210 @@
+//! The engine's real-time guarantees, checked with the real node library:
+//! rendering never allocates or frees memory, even while parameters change and
+//! new plans are swapped in, and swapping plans doesn't disturb the sound.
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+
+use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
+use noodle_engine::{Controller, OUTPUT_ID, Processor, Registry, Settings, engine};
+
+/// Counts allocations and frees made while the current thread is marked as
+/// real-time.
+struct Guarded;
+
+thread_local! {
+    static REALTIME: Cell<bool> = const { Cell::new(false) };
+    static VIOLATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn note() {
+    let _ = REALTIME.try_with(|realtime| {
+        if realtime.get() {
+            VIOLATIONS.with(|v| v.set(v.get() + 1));
+        }
+    });
+}
+
+unsafe impl GlobalAlloc for Guarded {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note();
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        note();
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        note();
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Guarded = Guarded;
+
+/// Runs `f` as if on the audio thread, returning how many times it allocated
+/// or freed memory.
+fn realtime(f: impl FnOnce()) -> usize {
+    REALTIME.set(true);
+    f();
+    REALTIME.set(false);
+    VIOLATIONS.replace(0)
+}
+
+const SETTINGS: Settings = Settings {
+    sample_rate: 48_000.0,
+    max_frames: 256,
+    channels: 2,
+};
+
+struct Session {
+    project: Project,
+    registry: Registry,
+    controller: Controller,
+    processor: Processor,
+}
+
+impl Session {
+    fn new() -> Self {
+        let mut registry = Registry::with_builtins();
+        noodle_nodes::register_all(&mut registry);
+        let (controller, processor) = engine(SETTINGS);
+        Self {
+            project: Project::new(),
+            registry,
+            controller,
+            processor,
+        }
+    }
+
+    fn add(&mut self, node: Node) -> NodeId {
+        let id = self.project.new_node_id();
+        self.edit(Command::AddNode { id, node });
+        id
+    }
+
+    fn wire(&mut self, from: NodeId, from_port: &str, to: NodeId, to_port: &str) {
+        self.edit(Command::Connect(Connection {
+            from: Endpoint::new(from, from_port),
+            to: Endpoint::new(to, to_port),
+        }));
+    }
+
+    fn edit(&mut self, command: Command) {
+        command.apply(&mut self.project).unwrap();
+    }
+
+    fn update(&mut self) {
+        let diagnostics = self.controller.update(self.project.graph(), &self.registry);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+}
+
+/// sine → filter → gain → mix (with a second sine) → voice mix → output,
+/// with an LFO on the filter cutoff.
+fn busy_session() -> (Session, NodeId, NodeId) {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let lfo = s.add(Node::new("noodle.osc.sine").with_param("frequency", 2.0));
+    let svf = s.add(Node::new("noodle.filter.svf"));
+    let gain = s.add(Node::new("noodle.util.gain"));
+    let other = s.add(Node::new("noodle.osc.sine").with_param("frequency", 330.0));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let voices = s.add(Node::new("noodle.poly.voice_mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", svf, "in");
+    s.wire(lfo, "out", svf, "resonance");
+    s.wire(svf, "low", gain, "in");
+    s.wire(gain, "out", mix, "in1");
+    s.wire(other, "out", mix, "in2");
+    s.wire(mix, "out", voices, "in");
+    s.wire(voices, "out", output, "in");
+    s.update();
+    (s, gain, mix)
+}
+
+#[test]
+fn rendering_never_allocates_even_while_editing() {
+    let (mut s, gain, mix) = busy_session();
+    // Longer than max_frames, so each call renders several blocks.
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+
+    for round in 0..12 {
+        // UI thread: allowed to allocate.
+        let db = -(round as f32);
+        s.edit(Command::SetParam {
+            node: gain,
+            key: "gain".into(),
+            value: Some(db),
+        });
+        s.controller.set_param(gain, "gain", db);
+        match round % 3 {
+            // A new node: everything else carries over.
+            1 => {
+                s.add(Node::new("noodle.osc.sine"));
+                s.update();
+            }
+            // A config change: the mix is rebuilt.
+            2 => {
+                let inputs = 2 + round / 3;
+                s.edit(Command::SetConfig {
+                    node: mix,
+                    key: "inputs".into(),
+                    value: Some(Value::Int(inputs as i64)),
+                });
+                s.update();
+            }
+            _ => {}
+        }
+        s.controller.maintain();
+
+        // Audio thread: installs any new plan, then renders.
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the audio thread in round {round}"
+        );
+    }
+
+    assert!(out.iter().all(|x| x.is_finite()));
+    assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
+}
+
+#[test]
+fn swapping_plans_mid_render_is_seamless() {
+    let session = || {
+        let mut s = Session::new();
+        let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 440.0));
+        let gain = s.add(Node::new("noodle.util.gain").with_param("gain", -6.0));
+        let output = s.add(Node::new(OUTPUT_ID));
+        s.wire(sine, "out", gain, "in");
+        s.wire(gain, "out", output, "in");
+        s.update();
+        s
+    };
+    let render = |s: &mut Session| {
+        let mut out = vec![0.0; 300 * SETTINGS.channels];
+        s.processor.process(&mut out);
+        out
+    };
+
+    let mut steady = session();
+    let expected: Vec<f32> = (0..4).flat_map(|_| render(&mut steady)).collect();
+
+    let mut edited = session();
+    let mut actual: Vec<f32> = (0..2).flat_map(|_| render(&mut edited)).collect();
+    // An edit elsewhere in the graph: the sine and gain carry on untouched.
+    edited.add(Node::new("noodle.util.mix").with_config(Config::new()));
+    edited.update();
+    actual.extend((0..2).flat_map(|_| render(&mut edited)));
+
+    assert!(expected.iter().any(|&x| x != 0.0));
+    assert_eq!(actual, expected);
+}

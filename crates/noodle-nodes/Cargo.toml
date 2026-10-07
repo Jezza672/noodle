@@ -7,3 +7,6 @@ license.workspace = true
 
 [dependencies]
 noodle-engine.workspace = true
+
+[dev-dependencies]
+noodle-core.workspace = true

@@ -17,8 +17,8 @@ The graph engine works end to end without a UI.
   - Signal buffers with `[voices][channels][frames]` shapes and broadcasting.
   - Compiler steps: cycle check, shape inference, topological sort, buffer allocation.
   - `RenderPlan`, and plan swapping that migrates node instances.
-  - Return queue to the GC thread.
-  - Param queue.
+  - Return queue, so old plans are freed off the audio thread.
+  - Shared parameter cells, with smoothing.
   - Offline renderer that writes WAV.
 - **`noodle-nodes`:** sine and saw oscillators, noise, gain, sum, a state-variable
   filter, and output.
@@ -46,7 +46,7 @@ The first build that feels like the product.
   - Box select, delete, duplicate.
   - Reroute points and frames.
 - Parameter widgets on the nodes themselves and in a properties panel.
-- Live editing: structural edits recompile, parameter edits go through the param queue.
+- Live editing: structural edits recompile, parameter edits go straight to the parameter cells.
 - Compile errors shown on the wires and nodes they come from.
 - Audio input node and a device and settings picker.
 - Scope and meter nodes, which exercise the path from engine back to UI.
