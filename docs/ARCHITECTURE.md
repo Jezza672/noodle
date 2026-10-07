@@ -530,8 +530,9 @@ start; the node only reads that. Clip commands are undoable like any other.
   one audio clip at a time: the one that started last (the higher ID on a
   tie), and the earlier clip is cut where the later one begins. This holds per
   kind: an audio clip and a MIDI clip on the same track play together. There is no automatic
-  crossfade; a clip's own fades apply. The arrangement view stops you
-  placing clips on top of each other, so overlaps only come from tempo edits.
+  crossfade; a clip's own fades apply. The arrangement view doesn't stop you
+  placing clips on top of each other: overlaps are legal, and the later start
+  wins.
 - **Nodes that go.** Removing a node removes the clips it plays (a track input node) and the lanes
   driving its inputs, in the same undo step. Node IDs don't change when a
   node moves in or out of a group, so those clips and lanes stay valid. A lane
@@ -665,7 +666,20 @@ style. It has these views:
     under a node in front ignores the pointer so the front node gets it.
   - **Custom node bodies.** Nodes that draw something other than parameters,
     such as meters and scopes, reserve space and draw it in `editor/body.rs`.
-- **Timeline:** tracks, clips, automation lanes.
+- **Timeline** (`noodle-app/src/timeline`, the arrangement above the node
+  editor): a lane per track input node, a ruler of bars and beats from the
+  tempo map, and clips as wide as their audio at that tempo.
+  - **Ticks on the x axis**, so the view doesn't stretch when the tempo
+    changes. Zoom is points per quarter note.
+  - **Moving and trimming** are `SetClip` commands, one undo step per drag.
+    Each frame's edit is worked out from the clips as they were when the
+    drag began, so snapping can't accumulate error. Moves and the grabbed
+    edge snap to beats; Alt turns that off. Trimming turns the dragged tick
+    back into file frames (`timeline/clips.rs`), and shortens fades that no
+    longer fit.
+  - A clip's file is read once for its sample rate and length, and
+    remembered as missing if it can't be, so a broken path costs one read.
+  - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
   and compile problems. A parameter with a wire into it is greyed out,

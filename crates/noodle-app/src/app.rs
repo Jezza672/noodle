@@ -7,6 +7,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::session::{Edit, Saved, Session};
+use crate::timeline::{self, TimelineState};
 use crate::{properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -35,6 +36,7 @@ const SHORTCUTS: [(KeyboardShortcut, Action); 8] = [
 pub struct App {
     session: Session,
     editor: EditorState,
+    timeline: TimelineState,
     devices: DevicePicker,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -88,6 +90,7 @@ impl App {
         Self {
             session,
             editor: EditorState::default(),
+            timeline: TimelineState::default(),
             devices: DevicePicker::default(),
             confirming: None,
             after_save: None,
@@ -135,6 +138,15 @@ impl App {
             .show(ui, |ui| {
                 ui.add_space(4.0);
                 let edits = properties::show(ui, &self.session, active);
+                self.session.edit(edits);
+            });
+
+        egui::Panel::top("arrangement")
+            .resizable(true)
+            .default_size(theme::timeline::DEFAULT_HEIGHT)
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                let edits = timeline::show(ui, &mut self.timeline, &self.session, None);
                 self.session.edit(edits);
             });
 
