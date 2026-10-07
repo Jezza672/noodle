@@ -17,6 +17,9 @@ impl Meter {
     }
 }
 
+/// The Meter's type ID.
+pub const METER_ID: &str = "noodle.view.meter";
+
 const IN: usize = 0;
 
 /// A mean square below this (-300 dB RMS) is flushed to zero.
@@ -26,7 +29,7 @@ const TINY: f32 = 1e-30;
 const RMS_TIME_SECONDS: f32 = 0.3;
 
 static INFO: NodeInfo = NodeInfo {
-    id: "noodle.view.meter",
+    id: METER_ID,
     version: 1,
     name: "Meter",
     category: "Views",

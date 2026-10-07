@@ -317,6 +317,10 @@ glitches in `Health`.
 - **One hub per engine:** two engines instantiating the same graph from one
   hub (live playback and an offline export, say) would both look like they
   were playing, so an export should use a registry with its own hub.
+- **Drawing:** the node editor reads every meter and scope once a frame
+  (`noodle-app/src/editor/body.rs`) and draws them in their nodes' bodies,
+  repainting continuously while audio plays. Scopes trigger on a rising zero
+  crossing so steady waveforms hold still.
 - `noodle_nodes::register_all` creates the hub and returns it. Playhead
   position and cache-render progress will use the same hub.
 

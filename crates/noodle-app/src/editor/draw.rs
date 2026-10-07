@@ -137,7 +137,7 @@ pub fn nodes(
         if node.reroute {
             reroute(painter, f, node, outline);
         } else {
-            boxed(painter, f, node, outline, problem);
+            boxed(painter, f, node, outline, problem, &state.bodies);
         }
         then(node);
     }
@@ -152,7 +152,14 @@ fn reroute(painter: &Painter, f: &Frame_<'_>, node: &NodeGeom, outline: Stroke) 
     }
 }
 
-fn boxed(painter: &Painter, f: &Frame_<'_>, node: &NodeGeom, outline: Stroke, problem: bool) {
+fn boxed(
+    painter: &Painter,
+    f: &Frame_<'_>,
+    node: &NodeGeom,
+    outline: Stroke,
+    problem: bool,
+    bodies: &body::Bodies,
+) {
     let z = f.t.zoom;
     let rect = f.t.rect_to_screen(node.rect);
     let radius = 4.0 * z;
@@ -234,6 +241,7 @@ fn boxed(painter: &Painter, f: &Frame_<'_>, node: &NodeGeom, outline: Stroke, pr
             z,
             node.id,
             graph.node(node.id).map_or("", |n| &n.type_id),
+            bodies,
         );
     }
 }
