@@ -788,6 +788,18 @@ fn subnormals_are_flushed_while_processing() {
 }
 
 #[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn subnormals_are_flushed_while_processing_with_input() {
+    // Live sessions with input take this path, not `process`.
+    let mut rig = Rig::new(SETTINGS);
+    let subnormal = rig.add("subnormal");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(subnormal, output, "in");
+    rig.update();
+    assert_eq!(rig.render_input(&[0.0, 0.0], 1), [0.0; 2]);
+}
+
+#[test]
 fn non_finite_parameter_values_are_ignored() {
     let (mut rig, offset) = offset_rig();
     rig.controller.set_param(offset, "offset", f32::INFINITY);
@@ -816,4 +828,89 @@ fn invalid_settings_are_rejected() {
         Some(SettingsError::SampleRate(_))
     ));
     assert!(with(|_| {}).is_none());
+}
+
+/// input (with `channels` channels) → output, on a stereo engine.
+fn input_rig(channels: i64) -> Rig {
+    let mut rig = Rig::new(Settings {
+        channels: 2,
+        ..SETTINGS
+    });
+    let input = rig.project.new_node_id();
+    rig.edit(Command::AddNode {
+        id: input,
+        node: ProjectNode::new(crate::INPUT_ID)
+            .with_config(Config::new().with("channels", Value::Int(channels))),
+    });
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(input, output, "in");
+    assert!(rig.update().is_empty());
+    rig
+}
+
+impl Rig {
+    fn render_input(&mut self, input: &[f32], input_channels: usize) -> Vec<f32> {
+        let frames = input.len() / input_channels;
+        let mut output = vec![f32::NAN; frames * self.processor.settings().channels];
+        self.processor
+            .process_with_input(input, input_channels, &mut output);
+        output
+    }
+}
+
+#[test]
+fn an_input_node_plays_the_device_input_across_blocks() {
+    let mut rig = input_rig(2);
+    // Six frames is a block of four and then two.
+    let input: Vec<f32> = (0..12).map(|x| x as f32).collect();
+    assert_eq!(rig.render_input(&input, 2), input);
+}
+
+#[test]
+fn a_mono_device_feeds_every_input_channel() {
+    let mut rig = input_rig(2);
+    assert_eq!(
+        rig.render_input(&[1.0, 2.0, 3.0], 1),
+        [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+    );
+}
+
+#[test]
+fn input_channels_the_device_lacks_are_silent() {
+    // A stereo node on a four-channel device takes the first two channels.
+    let mut rig = input_rig(2);
+    assert_eq!(
+        rig.render_input(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 4),
+        [1.0, 2.0, 5.0, 6.0]
+    );
+    // A three-channel node on a stereo device: the third channel is silent,
+    // so it doesn't reach the stereo output either way. Check it directly.
+    let mut signal = vec![f32::NAN; 3 * 2];
+    let mut out = crate::SignalOut::new(&mut signal, Shape::new(1, 3), 2);
+    let input = Interleaved {
+        samples: &[1.0, 2.0, 3.0, 4.0],
+        channels: 2,
+    };
+    crate::plan::read_input(input, &mut out);
+    assert_eq!(signal, [1.0, 3.0, 2.0, 4.0, 0.0, 0.0]);
+}
+
+#[test]
+fn without_input_an_input_node_is_silent() {
+    let mut rig = input_rig(2);
+    assert_eq!(rig.render(3), [0.0; 6]);
+}
+
+#[test]
+fn an_input_node_needs_a_sensible_channel_count() {
+    for channels in [0, -1, crate::MAX_INPUT_CHANNELS as i64 + 1] {
+        let mut rig = Rig::new(SETTINGS);
+        let input = rig.project.new_node_id();
+        rig.edit(Command::AddNode {
+            id: input,
+            node: ProjectNode::new(crate::INPUT_ID)
+                .with_config(Config::new().with("channels", Value::Int(channels))),
+        });
+        assert_eq!(rig.update().len(), 1, "{channels} channels");
+    }
 }

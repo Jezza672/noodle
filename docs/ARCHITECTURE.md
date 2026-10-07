@@ -229,6 +229,14 @@ schedule. Mixing at the end of the block would be too late, since their input
 buffers may already have been reused. A mono signal goes to every channel,
 and voices are summed.
 
+**Input nodes** work the other way round: the executor writes the block's
+device input into an Input node's output when the node's step comes. Its
+channel count is config (default 2): channel n is device channel n, a mono
+device feeds every channel, and channels the device lacks are silent.
+`Processor::process_with_input` takes the interleaved input; plain
+`process`, as offline rendering uses, leaves Input nodes silent. Input
+nodes are nondeterministic, so they're never cached.
+
 **On a device**, `noodle-io`'s `DeviceWriter` runs the processor inside the
 cpal callback, through a preallocated block buffer, and converts to the
 device's sample format. It clamps to between -1 and 1 and turns non-finite
@@ -244,6 +252,21 @@ own host, so the host setting only picks where default devices come from.
 buffer size are checked against what the device supports before a stream
 opens. Changing any of these means a new engine, since `Settings` are
 fixed for an engine's lifetime.
+
+**Device input** is off unless `AudioConfig::input` picks a device, since
+opening a microphone can prompt for permission. It runs at the output's
+sample rate, since there's no resampling yet. An input device that can't
+(or can't be opened at all) doesn't stop playback: Input nodes stay
+silent and `Playback::input_problem` says why. The input stream picks its
+own buffer size and starts before the output, and the feed doesn't count
+a shortfall as a glitch until input has first arrived. cpal runs input and output as separate streams, so input crosses
+between their callbacks through an SPSC ring (`noodle-io/src/input.rs`):
+`Capture` fills it, and the `DeviceWriter`'s `Feed` takes one engine block
+at a time. Unless both are the same device, their clocks drift apart. A
+slow input runs dry, and the gap is silence. A fast input builds a
+backlog, so the feed watches the smallest backlog over each half second
+and drops whatever was beyond a small margin. Both count as input
+glitches in `Health`.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.

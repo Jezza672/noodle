@@ -42,7 +42,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. |
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
 | `noodle-nodes` | Built-in nodes. Integration tests: `realtime.rs`, `golden.rs`. |
-| `noodle-io` | WAV files, device listing and choice (`devices.rs`), and output through cpal (`DeviceWriter`, `play`). MIDI and streaming later. |
+| `noodle-io` | WAV files, device listing and choice (`devices.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`). MIDI and streaming later. |
 | `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
 | `noodle-app` | The egui app (M1). Just a placeholder so far. |
 
