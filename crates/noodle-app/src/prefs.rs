@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use noodle_io::AudioConfig;
 use serde::{Deserialize, Serialize};
 
+use crate::session::write_atomically;
+
 /// Everything saved. Missing fields take their defaults, so the file stays
 /// readable as fields are added.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,18 +99,16 @@ pub fn load(path: &Path) -> Result<Prefs, PrefsError> {
     }
 }
 
-/// Writes preferences, creating the directory if needed. It writes a
-/// temporary file and renames it over the old one, so a crash mid-write
-/// can't leave a half-written file.
+/// Writes preferences, creating the directory if needed. Like a project, it
+/// writes and syncs a temporary file and renames it over the old one, so a
+/// failed or interrupted save never destroys the last good copy.
 pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let text = ron::ser::to_string_pretty(prefs, ron::ser::PrettyConfig::default())
         .map_err(io::Error::other)?;
-    let temporary = path.with_extension("ron.tmp");
-    fs::write(&temporary, text + "\n")?;
-    fs::rename(&temporary, path)
+    write_atomically(path, &(text + "\n"))
 }
 
 #[cfg(test)]

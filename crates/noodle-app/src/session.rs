@@ -511,7 +511,7 @@ impl std::error::Error for FileError {}
 
 /// Writes to a temporary file next to `path`, then renames it into place, so
 /// a failed save (a full disk, say) never destroys the last good copy.
-fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     let mut temp = path.as_os_str().to_owned();
     temp.push(".saving");
     let temp = PathBuf::from(temp);
