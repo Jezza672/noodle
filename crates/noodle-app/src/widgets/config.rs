@@ -40,6 +40,7 @@ impl ConfigOutput {
 
 #[must_use = "call `show` to draw the field"]
 pub struct ConfigField<'a> {
+    id_salt: Id,
     info: &'a ConfigInfo,
     value: Option<&'a Value>,
 }
@@ -47,15 +48,31 @@ pub struct ConfigField<'a> {
 impl<'a> ConfigField<'a> {
     /// `value` is the node's setting, or `None` if it uses the default.
     pub fn new(info: &'a ConfigInfo, value: Option<&'a Value>) -> Self {
-        Self { info, value }
+        Self {
+            id_salt: Id::new(info.key),
+            info,
+            value,
+        }
+    }
+
+    /// Distinguishes this field from the same setting on other nodes, e.g.
+    /// `(node, key)`. Without it, an edit in progress on one node would carry
+    /// over to the next node shown in the same place.
+    pub fn id_salt(mut self, salt: impl egui::AsId) -> Self {
+        self.id_salt = Id::new(salt);
+        self
     }
 
     pub fn show(self, ui: &mut Ui) -> ConfigOutput {
-        let id = ui.make_persistent_id(self.info.key);
+        let id = ui.make_persistent_id(self.id_salt);
         let committed = self.current();
-        let inner = ui.horizontal(|ui| {
-            ui.label(self.info.name);
-            edit_value(ui, id, &committed)
+        // Scoping by `id` keys the editor's own state (focus, drag) too.
+        let inner = ui.push_id(id, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(self.info.name);
+                edit_value(ui, id, &committed)
+            })
+            .inner
         });
         let (mut response, value) = inner.inner;
 
@@ -105,9 +122,14 @@ fn edit_value(ui: &mut Ui, id: Id, committed: &Value) -> (Response, Option<Value
 
     if response.dragged() || response.has_focus() {
         ui.data_mut(|d| d.insert_temp(pending_id, value));
-        (response, None)
-    } else {
-        ui.data_mut(|d| d.remove::<Value>(pending_id));
-        (response, Some(value))
+        return (response, None);
     }
+    ui.data_mut(|d| d.remove::<Value>(pending_id));
+    // Only a gesture finishing commits. A value left pending by a field that
+    // stopped being drawn mid-edit is dropped, not committed later.
+    let finished = match committed {
+        Value::Bool(_) => response.changed(),
+        _ => response.drag_stopped() || response.lost_focus(),
+    };
+    (response, finished.then_some(value))
 }

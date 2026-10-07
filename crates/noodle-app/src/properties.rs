@@ -61,7 +61,9 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
     ui.separator();
     ui.label(RichText::new("Settings").strong());
     for info in settings {
-        let out = ConfigField::new(info, node.config.get(info.key)).show(ui);
+        let out = ConfigField::new(info, node.config.get(info.key))
+            .id_salt((id, info.key))
+            .show(ui);
         edits.extend(out.edit(id, info.key));
         out.response
             .on_hover_text("Changing this rebuilds the node, and may change its ports.");
@@ -135,7 +137,7 @@ fn describe(session: &Session, endpoint: &Endpoint) -> String {
 
 #[cfg(test)]
 mod tests {
-    use egui::{Key, vec2};
+    use egui::{Key, Modifiers, vec2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
     use noodle_core::{Command, Config, Connection, Value};
@@ -267,6 +269,57 @@ mod tests {
         let harness = super::tests::harness([mix(0)]);
         harness.get_by_label_contains("inputs");
         harness.get_by_value("0");
+    }
+
+    /// Replaces the text in the focused field.
+    fn type_over(harness: &Harness<'_, State>, text: &str) {
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text(text.into()));
+    }
+
+    #[test]
+    fn a_config_edit_in_progress_stays_with_its_node() {
+        let mix = || Node::new("noodle.util.mix");
+        let mut harness = harness([mix(), mix()]);
+        let inputs = |harness: &Harness<'_, State>, node| {
+            let graph = harness.state().session.project().graph();
+            graph
+                .node(NodeId(node))
+                .unwrap()
+                .config
+                .get("inputs")
+                .cloned()
+        };
+
+        // Start typing into the first Mix's Inputs, then select the second.
+        harness.get_by_value("2").click();
+        harness.run();
+        type_over(&harness, "8");
+        harness.run();
+        harness.state_mut().active = Some(NodeId(2));
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(
+            inputs(&harness, 2),
+            None,
+            "the edit moved to the other node"
+        );
+
+        // Going back doesn't commit the abandoned edit either.
+        harness.state_mut().active = Some(NodeId(1));
+        harness.run();
+        harness.run();
+        assert_eq!(inputs(&harness, 1), None);
+
+        // But finishing an edit does.
+        harness.get_by_value("2").click();
+        harness.run();
+        type_over(&harness, "4");
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(inputs(&harness, 1), Some(Value::Int(4)));
     }
 
     #[test]
