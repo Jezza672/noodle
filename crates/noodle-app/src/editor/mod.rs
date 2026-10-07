@@ -16,7 +16,7 @@
 //! | Shift+right-drag | Add a reroute on each wire crossed |
 //! | Shift+A | Search for a node to add |
 //! | X, Delete | Delete the selection |
-//! | Shift+D | Duplicate the selection |
+//! | Shift+D | Duplicate the selection (a frame with what is in it) |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame |
 //! | Double-click a frame title, F2 | Rename the frame |
@@ -661,30 +661,36 @@ fn start_primary_drag(
 }
 
 /// Moves the selection, and everything inside the selected frames.
-fn start_move(state: &EditorState, f: &Frame_<'_>, start: Pos2) -> Gesture {
+/// The selected nodes and frames, and everything inside the selected frames,
+/// which come along when they're moved or copied.
+fn with_contents(state: &EditorState, scene: &Scene) -> (BTreeSet<NodeId>, BTreeSet<FrameId>) {
     let mut nodes = state.selected.clone();
     let mut frames = state.selected_frames.clone();
-    for frame in f
-        .scene
+    for frame in scene
         .frames
         .iter()
         .filter(|fr| state.selected_frames.contains(&fr.id))
     {
         nodes.extend(
-            f.scene
+            scene
                 .nodes
                 .iter()
                 .filter(|n| frame.rect.contains_rect(n.rect))
                 .map(|n| n.id),
         );
         frames.extend(
-            f.scene
+            scene
                 .frames
                 .iter()
                 .filter(|other| frame.rect.contains_rect(other.rect))
                 .map(|other| other.id),
         );
     }
+    (nodes, frames)
+}
+
+fn start_move(state: &EditorState, f: &Frame_<'_>, start: Pos2) -> Gesture {
+    let (nodes, frames) = with_contents(state, &f.scene);
     Gesture::Move {
         start: f.t.to_graph(start),
         nodes: nodes
@@ -973,7 +979,7 @@ fn keyboard(
         state.clear_selection();
     }
     if pressed(Modifiers::SHIFT, Key::D) {
-        duplicate(state, f.project, inputs, edits);
+        duplicate(state, f, inputs, edits);
     }
     if pressed(Modifiers::NONE, Key::A) {
         state.select_only(f.scene.nodes.iter().map(|n| n.id));
@@ -995,14 +1001,17 @@ fn keyboard(
 
 fn duplicate(
     state: &mut EditorState,
-    project: &Project,
+    f: &Frame_<'_>,
     inputs: &mut Inputs<'_>,
     edits: &mut Vec<Edit>,
 ) {
+    let project = f.project;
     let graph = project.graph();
+    // A selected frame is copied with what's in it, as dragging it moves it.
+    let (nodes, frames) = with_contents(state, &f.scene);
     let mut copies = BTreeMap::new();
     let mut commands = Vec::new();
-    for &id in &state.selected {
+    for &id in &nodes {
         let Some(node) = graph.node(id) else { continue };
         let copy = (inputs.new_node_id)();
         copies.insert(id, copy);
@@ -1022,13 +1031,13 @@ fn duplicate(
             }));
         }
     }
-    let mut frame_copies = BTreeSet::new();
-    for &id in &state.selected_frames {
+    let mut frame_copies = BTreeMap::new();
+    for &id in &frames {
         let Some(frame) = project.frame(id) else {
             continue;
         };
         let copy = (inputs.new_frame_id)();
-        frame_copies.insert(copy);
+        frame_copies.insert(id, copy);
         commands.push(Command::AddFrame {
             id: copy,
             frame: Frame {
@@ -1043,10 +1052,21 @@ fn duplicate(
         return;
     }
     edits.push(Edit::Apply(Command::Batch(commands)));
+    // The copies of what was selected, not of what came along with it.
     let active = state.active.and_then(|id| copies.get(&id).copied());
-    state.select_only(copies.into_values());
+    let nodes: Vec<NodeId> = state
+        .selected
+        .iter()
+        .filter_map(|id| copies.get(id).copied())
+        .collect();
+    let frames = state
+        .selected_frames
+        .iter()
+        .filter_map(|id| frame_copies.get(id).copied())
+        .collect();
+    state.select_only(nodes);
     state.active = active.or(state.active);
-    state.selected_frames = frame_copies;
+    state.selected_frames = frames;
 }
 
 /// Puts a new frame around the selected nodes.
