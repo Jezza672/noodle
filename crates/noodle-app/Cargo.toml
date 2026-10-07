@@ -1,0 +1,12 @@
+[package]
+name = "noodle-app"
+description = "The Noodle desktop application (egui)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+noodle-core.workspace = true
+noodle-engine.workspace = true
+noodle-nodes.workspace = true
+noodle-io.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "noodle-nodes"
+description = "Built-in node library (DSP)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+noodle-engine.workspace = true

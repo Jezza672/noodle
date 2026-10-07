@@ -1,0 +1,9 @@
+[package]
+name = "noodle-engine"
+description = "Graph compiler, render plans, real-time executor and offline renderer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+noodle-core.workspace = true

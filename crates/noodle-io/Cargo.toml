@@ -1,0 +1,9 @@
+[package]
+name = "noodle-io"
+description = "Audio and MIDI device I/O, audio file decoding and disk streaming."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+noodle-engine.workspace = true
