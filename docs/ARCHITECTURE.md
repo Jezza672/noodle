@@ -112,8 +112,24 @@ The **Project** is the single source of truth. It holds one global graph:
 - **Frames** are labelled boxes drawn behind nodes, for organising a patch.
   They're part of the project, so they're saved and undoable, but they're
   layout only and never reach the engine.
-- **Group nodes** contain a subgraph and expose ports through it. Buses and
-  sends are just wires.
+- **Group nodes** (`noodle.group`) contain a subgraph and expose ports through
+  it. Buses and sends are just wires.
+  - **One graph.** A node's `parent` says which group it's inside. Wires only
+    join nodes with the same parent, so the editor shows one level at a time.
+  - **Ports.** A group's ports are the boundary nodes inside it: a
+    `noodle.group.input` (output port `out`) per input and a
+    `noodle.group.output` (input port `in`) per output, named by their `name`
+    config. In M2's first cut they're structure only, so they need no
+    registry entry and flatten drops them.
+  - **Boundary parameters (decided, not built yet).** Every group's input
+    and output nodes carry gain, mute and solo parameters (see Tracks below).
+    When that lands, flatten will keep a boundary node that has any parameter set
+    or wired, as a real gain stage in the flat graph, and keep dropping the
+    rest. So a group whose controls are at their defaults still costs
+    nothing and renders bit-for-bit like the flat patch, and one with a
+    non-default gain costs one gain stage. The tracks work builds this.
+  - **Edits.** Removing a group removes its contents, and undo restores them.
+    `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
   the project's owner):
   - **One kind of track.** Every track takes clips of both kinds, MIDI and
@@ -206,7 +222,10 @@ the per-sample loop.
    is reused once its last reader has run, and a node's outputs never share a
    buffer with its inputs.
 
-Group nodes are flattened in M2, and cacheability is analysed in M4.
+Before step 1, **group nodes are flattened** (`flatten.rs`): groups and their
+boundary nodes are dropped and each wire through them is joined end to end, so
+a group costs nothing at run time. Nodes keep their IDs, so diagnostics still
+point at the right node. Cacheability is analysed in M4.
 
 **Problems don't stop compilation.** A node that can't run is left out, and
 anything wired to it behaves as if unconnected. A wire that can't work is
@@ -308,14 +327,18 @@ a glitch until input has first arrived. The streams also fail separately:
 `Health::errors` says which stream each error came from, and a fatal error
 on the input (the device unplugged, say) leaves Input nodes silent and the
 status bar saying "No input", while only a fatal output error stops
-playback. cpal runs input and output as separate streams, so input crosses
-between their callbacks through an SPSC ring (`noodle-io/src/input.rs`):
-`Capture` fills it, and the `DeviceWriter`'s `Feed` takes one engine block
-at a time. Unless both are the same device, their clocks drift apart. A slow
-input runs dry, and the gap is silence. A fast input builds a backlog, so
-the feed watches the smallest backlog over each half second and drops
-whatever was beyond a small margin. Both count as input glitches in
-`Health`, a gap once however many engine blocks it spans.
+playback. If the output is rerouted (headphones unplugged, say), cpal
+reports `DeviceChanged` and some backends leave the stream silent, so the
+app starts playback again on the new default and says so, unless it has
+already done that three times in ten seconds, when it stops instead. cpal
+runs input and output as separate streams, so input crosses between their
+callbacks through an SPSC ring (`noodle-io/src/input.rs`): `Capture` fills
+it, and the `DeviceWriter`'s `Feed` takes one engine block at a time. Unless
+both are the same device, their clocks drift apart. A slow input runs dry,
+and the gap is silence. A fast input builds a backlog, so the feed watches
+the smallest backlog over each half second and drops whatever was beyond a
+small margin. Both count as input glitches in `Health`, a gap once however
+many engine blocks it spans.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.

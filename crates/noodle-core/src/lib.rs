@@ -8,6 +8,7 @@ mod config;
 mod edit;
 mod frame;
 mod graph;
+pub mod group;
 mod project;
 mod timeline;
 
