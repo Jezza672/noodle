@@ -12,6 +12,7 @@ use std::mem;
 use noodle_core::{Graph, NodeId};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
+use crate::denormals::FlushDenormals;
 use crate::plan::{self, Cells, Plan, PlanInfo};
 use crate::{Context, Diagnostic, Registry, Transport, compile};
 
@@ -141,7 +142,8 @@ impl Controller {
 
     /// Sets an unconnected input's value without recompiling. The change is
     /// smoothed if the input is a continuous parameter. Does nothing if the
-    /// node has no such unconnected input in the current plan.
+    /// node has no such unconnected input in the current plan, or if `value`
+    /// is infinite or NaN.
     pub fn set_param(&mut self, node: NodeId, key: &str, value: f32) {
         if let Some(cell) = self.cells.get(&node).and_then(|inputs| inputs.get(key)) {
             cell.set(value);
@@ -199,6 +201,9 @@ impl Processor {
 
     /// Renders interleaved audio into `output`, whose length must be a
     /// multiple of the channel count. Silent until the first plan arrives.
+    ///
+    /// Subnormal floats are flushed to zero while it runs (see
+    /// `denormals.rs`), and the thread's previous mode is restored after.
     pub fn process(&mut self, output: &mut [f32]) {
         let Settings {
             sample_rate,
@@ -206,6 +211,7 @@ impl Processor {
             channels,
         } = self.settings;
         debug_assert_eq!(output.len() % channels, 0);
+        let _flush = FlushDenormals::new();
 
         let mut rest = output;
         while !rest.is_empty() {
