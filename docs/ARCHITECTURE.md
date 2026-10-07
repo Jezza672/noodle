@@ -181,6 +181,20 @@ the return queue. The controller frees them in `maintain()`, which the UI
 calls every frame. The processor installs a plan only when the return queue
 has room, so nothing is ever freed on the audio thread.
 
+**Swaps that change what's audible fade.** Carrying instances over keeps an
+edit elsewhere in the graph seamless, but removing, rewiring or rebuilding a
+node on the output's path would still switch the sound in one sample and
+click. So `plan::build` records the wiring of every node the Output nodes
+depend on, and marks the plan *seamless* if that wiring is unchanged and all
+of those nodes carry over. A seamless plan goes in at once. For any other,
+the processor fades the output out over 5 ms with the old plan, installs
+every queued plan at silence, and fades back in over 5 ms.
+- The cost is a 10 ms dip on structural edits to the audible path. Parameter
+  changes, and edits elsewhere in the graph, don't dip.
+- A true crossfade would avoid the dip, but carried-over instances can't run
+  in both plans at once, so it would need the old plan run without them.
+- The first plan goes in without a fade, so offline renders are unchanged.
+
 **Parameter changes don't recompile.**
 - Every unconnected input has a shared atomic cell. `set_param` writes the
   cell, and the audio thread reads it at the start of each block and smooths
@@ -337,8 +351,9 @@ through the telemetry API.
   valid.
 - **Real-time safety:** the audio-thread allocation check runs in all
   debug builds and tests.
-- **Plan swapping:** a test swaps plans mid-render and checks that the output
-  is continuous, with no click at the swap.
+- **Plan swapping:** tests swap plans mid-render and check that the output
+  is continuous, with no click at the swap: identical for an edit off the
+  audible path, and no jump steeper than the signal's own for one on it.
 - **CI** runs fmt, clippy and the tests on macOS, Windows and Linux.
 
 ## Open questions

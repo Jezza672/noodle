@@ -7,10 +7,11 @@ Each milestone ends with something you can run and check. See
 
 The graph engine works end to end without a UI.
 
-**Status:** everything is built, including cpal output and the `noodle render`
-and `noodle play` commands. `noodle play` swaps edits to the file in while it
-plays. What's left is checking the "done when" below: listening on macOS, and
-the tests on all three platforms (Linux and Windows on CI, macOS on a Mac).
+**Status:** done. `noodle play` played through a Mac's speakers and swapped
+in an edit; structural edits fade rather than click (#8); the tests pass on
+Linux and Windows CI and on macOS. Still to do when the user is back: a
+listening check on their Mac, and re-running the macOS tests on the latest
+main.
 
 - **CI:** GitHub Actions running fmt, clippy and tests on macOS, Windows and Linux.
 - **`noodle-core`:**
