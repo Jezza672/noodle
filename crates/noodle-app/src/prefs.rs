@@ -2,10 +2,11 @@
 //! They're a small RON file in the user's config directory, read at startup
 //! and written when a setting is applied.
 //!
-//! The file's location is set by [`init`], per thread: the app's UI runs on
-//! the thread that started it, and each test runs on its own, so a test can
-//! point the app at a temporary file without touching the real preferences
-//! or other tests.
+//! [`init`] reads the file and keeps the preferences in memory, per thread:
+//! the app's UI runs on the thread that started it, and each test runs on
+//! its own, so a test can point the app at a temporary file without
+//! touching the real preferences or other tests. Saving writes what's in
+//! memory, never re-reading the file.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -25,8 +26,8 @@ pub struct Prefs {
 }
 
 thread_local! {
-    /// Where [`init`] said the preferences live.
-    static PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    /// Where [`init`] said the preferences live, and what they are now.
+    static CURRENT: RefCell<Option<(PathBuf, Prefs)>> = const { RefCell::new(None) };
 }
 
 /// Where the preferences live on this platform, e.g.
@@ -36,29 +37,38 @@ pub fn default_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "Noodle").map(|dirs| dirs.config_dir().join("prefs.ron"))
 }
 
-/// Reads the preferences at `path` and remembers it for [`remember_audio`].
+/// Reads the preferences at `path` and keeps them for [`remember_audio`].
 /// A missing or unreadable file gives the defaults: losing preferences
-/// shouldn't stop the app starting.
+/// shouldn't stop the app starting. A damaged file is moved aside to
+/// `prefs.ron.bad`, so the next save can't quietly replace what's in it.
 pub fn init(path: PathBuf) -> Prefs {
     let prefs = load(&path).unwrap_or_else(|error| {
         eprintln!("noodle: ignoring preferences: {error}");
+        if let PrefsError::Parse(..) = error {
+            let aside = path.with_extension("ron.bad");
+            match fs::rename(&path, &aside) {
+                Ok(()) => eprintln!("noodle: moved them to {}", aside.display()),
+                Err(error) => eprintln!("noodle: couldn't move them aside: {error}"),
+            }
+        }
         Prefs::default()
     });
-    PATH.set(Some(path));
+    CURRENT.set(Some((path, prefs.clone())));
     prefs
 }
 
-/// Saves the audio settings, if [`init`] has been called, keeping any other
-/// preferences in the file. A failure is reported but not fatal.
+/// Saves the audio settings, with the other preferences, if [`init`] has
+/// been called. A failure is reported but not fatal.
 pub fn remember_audio(audio: &AudioConfig) {
-    let Some(path) = PATH.with_borrow(Clone::clone) else {
-        return;
-    };
-    let mut prefs = load(&path).unwrap_or_default();
-    prefs.audio = audio.clone();
-    if let Err(error) = save(&path, &prefs) {
-        eprintln!("noodle: couldn't save preferences: {error}");
-    }
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.audio = audio.clone();
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -190,10 +200,14 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_file_starts_with_the_defaults() {
+    fn a_broken_file_starts_with_the_defaults_and_is_kept_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prefs.ron");
         fs::write(&path, "not ron").unwrap();
-        assert_eq!(init(path), Prefs::default());
+        assert_eq!(init(path.clone()), Prefs::default());
+        remember_audio(&chosen().audio);
+        assert_eq!(load(&path).unwrap(), chosen());
+        let aside = dir.path().join("prefs.ron.bad");
+        assert_eq!(fs::read_to_string(aside).unwrap(), "not ron");
     }
 }
