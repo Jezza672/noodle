@@ -67,17 +67,17 @@ impl Session {
 
     fn with_project(registry: Registry, project: Project, path: Option<PathBuf>) -> Self {
         let mut session = Self {
-            saved: project.clone(),
-            project,
+            saved: Project::new(),
+            project: Project::new(),
             history: History::new(),
             registry,
-            path,
+            path: None,
             dirty: false,
             diagnostics: Vec::new(),
             audio: None,
             message: None,
         };
-        session.recompile();
+        session.replace(project, path);
         session
     }
 
@@ -125,6 +125,10 @@ impl Session {
     /// Applies edits from a view. An edit that fails, e.g. because a node was
     /// removed in the meantime, is skipped and reported in the status bar.
     pub fn edit(&mut self, edits: impl IntoIterator<Item = Edit>) {
+        let mut edits = edits.into_iter().peekable();
+        if edits.peek().is_none() {
+            return;
+        }
         let mut structural = false;
         let mut params = Vec::new();
         for edit in edits {
@@ -142,13 +146,18 @@ impl Session {
                     continue;
                 }
             };
-            match kind(&command) {
-                Kind::Layout => {}
-                Kind::Param(node, key, value) => params.push((node, key.to_owned(), value)),
-                Kind::Structural => structural = true,
-            }
-            if let Err(error) = self.history.apply(&mut self.project, command) {
-                self.message = Some(format!("Couldn't edit: {error}"));
+            let effect = match kind(&command) {
+                Kind::Layout => None,
+                Kind::Param(node, key, value) => Some(Some((node, key.to_owned(), value))),
+                Kind::Structural => Some(None),
+            };
+            match self.history.apply(&mut self.project, command) {
+                Ok(()) => match effect {
+                    Some(Some(param)) => params.push(param),
+                    Some(None) => structural = true,
+                    None => {}
+                },
+                Err(error) => self.message = Some(format!("Couldn't edit: {error}")),
             }
         }
         if structural {
@@ -162,14 +171,18 @@ impl Session {
     }
 
     pub fn undo(&mut self) {
-        self.step(History::undo);
+        self.step(History::undo, "undo");
     }
 
     pub fn redo(&mut self) {
-        self.step(History::redo);
+        self.step(History::redo, "redo");
     }
 
-    fn step(&mut self, step: fn(&mut History, &mut Project) -> Result<bool, EditError>) {
+    fn step(
+        &mut self,
+        step: fn(&mut History, &mut Project) -> Result<bool, EditError>,
+        name: &str,
+    ) {
         match step(&mut self.history, &mut self.project) {
             // Recompiling also writes the project's parameter values into the
             // engine, so undoing a parameter change reaches the audio.
@@ -178,7 +191,7 @@ impl Session {
                 self.update_dirty();
             }
             Ok(false) => {}
-            Err(error) => self.message = Some(format!("Couldn't undo: {error}")),
+            Err(error) => self.message = Some(format!("Couldn't {name}: {error}")),
         }
     }
 
@@ -209,18 +222,34 @@ impl Session {
     }
 
     /// Replaces the project with one from a file, keeping the current one if
-    /// it can't be loaded. Playback carries on with the new project.
-    pub fn load(&mut self, path: &Path) {
+    /// it can't be loaded. Playback carries on with the new project. Returns
+    /// whether it loaded.
+    pub fn load(&mut self, path: &Path) -> bool {
         match load(path) {
             Ok(project) => {
-                let audio = self.audio.take();
-                let registry = std::mem::take(&mut self.registry);
-                *self = Self::with_project(registry, project, Some(path.to_owned()));
-                self.audio = audio;
-                self.recompile();
+                self.replace(project, Some(path.to_owned()));
+                true
             }
-            Err(error) => self.message = Some(error.to_string()),
+            Err(error) => {
+                self.message = Some(error.to_string());
+                false
+            }
         }
+    }
+
+    /// Starts a new, empty project. Playback carries on.
+    pub fn new_project(&mut self) {
+        self.replace(Project::new(), None);
+    }
+
+    fn replace(&mut self, project: Project, path: Option<PathBuf>) {
+        self.saved = project.clone();
+        self.project = project;
+        self.history = History::new();
+        self.path = path;
+        self.dirty = false;
+        self.message = None;
+        self.recompile();
     }
 
     pub fn is_playing(&self) -> bool {
@@ -487,11 +516,21 @@ mod tests {
         std::fs::write(&path, "not a project").unwrap();
         let mut session = Session::new(registry());
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
-        session.load(&path);
+        assert!(!session.load(&path));
         assert!(session.project().graph().node(sine).is_some());
         assert!(session.message().is_some_and(|m| m.contains("Can't load")));
         assert!(Session::open(registry(), &path).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_new_project_starts_clean() {
+        let mut session = Session::new(registry());
+        add(&mut session, Node::new("no.such.type"));
+        session.new_project();
+        assert_eq!(session.project(), &Project::new());
+        assert!(!session.is_dirty() && !session.can_undo());
+        assert!(session.diagnostics().is_empty());
     }
 
     #[test]

@@ -11,23 +11,45 @@ use crate::{properties, theme};
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 const REDO: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
+const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
-const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
+const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
 pub struct App {
     session: Session,
     editor: EditorState,
+    /// An action waiting for the user to decide what to do with unsaved
+    /// changes.
+    confirming: Option<Action>,
+    /// Set once the user has agreed to close despite unsaved changes.
+    closing: bool,
     /// The title last sent to the window, so it's only sent when it changes.
     title: String,
 }
 
-/// Something that needs a file dialog, which the UI pass can't open itself.
-enum FileAction {
+/// Something the user asked for, from a menu or a shortcut. Collected during
+/// the frame and run afterwards, so nothing slow (file dialogs, file and
+/// device I/O) happens while egui is mid-frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    New,
     Open,
+    Save,
     SaveAs,
+    Undo,
+    Redo,
+    TogglePlayback,
+    Close,
+}
+
+impl Action {
+    /// Whether it throws the current project away.
+    fn discards(self) -> bool {
+        matches!(self, Self::New | Self::Open | Self::Close)
+    }
 }
 
 impl App {
@@ -35,6 +57,8 @@ impl App {
         Self {
             session,
             editor: EditorState::default(),
+            confirming: None,
+            closing: false,
             title: String::new(),
         }
     }
@@ -48,13 +72,14 @@ impl App {
     /// drive it without a window.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.session.maintain();
-        let mut file_action = self.shortcuts(ui.ctx());
+        // Before the panels, so a focused button doesn't also see Space.
+        let mut actions = self.shortcuts(ui.ctx());
 
         egui::Panel::top("menu").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                file_action = file_action.take().or_else(|| self.menus(ui));
+                self.menus(ui, &mut actions);
                 ui.separator();
-                self.transport(ui);
+                self.transport(ui, &mut actions);
             });
         });
 
@@ -76,6 +101,7 @@ impl App {
                 self.session.edit(edits);
             });
 
+        self.confirm_dialog(ui.ctx(), &mut actions);
         self.editor.retain_existing(&self.session);
         self.update_title(ui.ctx());
         if self.session.is_playing() {
@@ -83,72 +109,60 @@ impl App {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
-        if let Some(action) = file_action {
-            self.run_file_action(action);
+        for action in actions {
+            self.request(ui.ctx(), action);
         }
     }
 
-    fn shortcuts(&mut self, ctx: &egui::Context) -> Option<FileAction> {
-        let mut action = None;
+    fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
+        // A text field gets plain keys like Space.
+        let typing = ctx.egui_wants_keyboard_input();
         ctx.input_mut(|input| {
-            // Redo first: its shortcut contains undo's.
-            if input.consume_shortcut(&REDO) {
-                self.session.redo();
+            // Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
+            let mut actions = Vec::new();
+            for (shortcut, action) in [
+                (REDO, Action::Redo),
+                (UNDO, Action::Undo),
+                (SAVE_AS, Action::SaveAs),
+                (SAVE, Action::Save),
+                (OPEN, Action::Open),
+                (NEW, Action::New),
+                (PLAY, Action::TogglePlayback),
+            ] {
+                if (action != Action::TogglePlayback || !typing)
+                    && input.consume_shortcut(&shortcut)
+                {
+                    actions.push(action);
+                }
             }
-            if input.consume_shortcut(&UNDO) {
-                self.session.undo();
+            if input.viewport().close_requested() && !self.closing {
+                actions.push(Action::Close);
             }
-            if input.consume_shortcut(&SAVE_AS) {
-                action = Some(FileAction::SaveAs);
-            }
-            if input.consume_shortcut(&SAVE) && !self.session.save() {
-                action = Some(FileAction::SaveAs);
-            }
-            if input.consume_shortcut(&OPEN) {
-                action = Some(FileAction::Open);
-            }
-            if input.consume_shortcut(&NEW) {
-                self.new_project();
-            }
-        });
-        // Space toggles playback, unless a text field has it.
-        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Space)) {
-            self.toggle_playback();
-        }
-        action
+            actions
+        })
     }
 
-    fn menus(&mut self, ui: &mut egui::Ui) -> Option<FileAction> {
-        let mut action = None;
+    fn menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let ctx = ui.ctx().clone();
+        let mut item = |ui: &mut egui::Ui, text, shortcut: &KeyboardShortcut, enabled, action| {
+            let button = egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut));
+            if ui.add_enabled(enabled, button).clicked() {
+                actions.push(action);
+            }
+        };
         ui.menu_button("File", |ui| {
-            if ui.add(button("New", &NEW, &ctx)).clicked() {
-                self.new_project();
-            }
-            if ui.add(button("Open…", &OPEN, &ctx)).clicked() {
-                action = Some(FileAction::Open);
-            }
-            if ui.add(button("Save", &SAVE, &ctx)).clicked() && !self.session.save() {
-                action = Some(FileAction::SaveAs);
-            }
-            if ui.add(button("Save As…", &SAVE_AS, &ctx)).clicked() {
-                action = Some(FileAction::SaveAs);
-            }
+            item(ui, "New", &NEW, true, Action::New);
+            item(ui, "Open…", &OPEN, true, Action::Open);
+            item(ui, "Save", &SAVE, true, Action::Save);
+            item(ui, "Save As…", &SAVE_AS, true, Action::SaveAs);
         });
         ui.menu_button("Edit", |ui| {
-            let undo = button("Undo", &UNDO, &ctx);
-            if ui.add_enabled(self.session.can_undo(), undo).clicked() {
-                self.session.undo();
-            }
-            let redo = button("Redo", &REDO, &ctx);
-            if ui.add_enabled(self.session.can_redo(), redo).clicked() {
-                self.session.redo();
-            }
+            item(ui, "Undo", &UNDO, self.session.can_undo(), Action::Undo);
+            item(ui, "Redo", &REDO, self.session.can_redo(), Action::Redo);
         });
-        action
     }
 
-    fn transport(&mut self, ui: &mut egui::Ui) {
+    fn transport(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let label = if self.session.is_playing() {
             "⏹ Stop"
         } else {
@@ -159,7 +173,7 @@ impl App {
             .on_hover_text("Play through the default output device (Space)")
             .clicked()
         {
-            self.toggle_playback();
+            actions.push(Action::TogglePlayback);
         }
     }
 
@@ -183,38 +197,91 @@ impl App {
         });
     }
 
-    fn toggle_playback(&mut self) {
-        if self.session.is_playing() {
-            self.session.stop();
+    /// Asks what to do with unsaved changes before an action that would
+    /// lose them.
+    fn confirm_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(action) = self.confirming else {
+            return;
+        };
+        let modal = egui::Modal::new(egui::Id::new("unsaved")).show(ctx, |ui| {
+            ui.label(format!(
+                "Save the changes to {} first?",
+                self.session.name()
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    // Saving may need a dialog, so it waits for the next frame.
+                    if self.session.save() {
+                        self.run(ctx, action);
+                    } else {
+                        actions.push(Action::SaveAs);
+                    }
+                    self.confirming = None;
+                }
+                if ui.button("Don't Save").clicked() {
+                    self.confirming = None;
+                    self.run(ctx, action);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.confirming = None;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.confirming = None;
+        }
+    }
+
+    /// Runs an action, first asking about unsaved changes if it would lose
+    /// them.
+    fn request(&mut self, ctx: &egui::Context, action: Action) {
+        if action.discards() && self.session.is_dirty() {
+            if action == Action::Close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+            self.confirming = Some(action);
         } else {
-            self.session.play();
+            self.run(ctx, action);
         }
     }
 
-    fn new_project(&mut self) {
-        let registry = crate::registry();
-        let playing = self.session.is_playing();
-        self.session = Session::new(registry);
-        self.editor = EditorState::default();
-        if playing {
-            self.session.play();
-        }
-    }
-
-    fn run_file_action(&mut self, action: FileAction) {
-        let dialog = rfd::FileDialog::new().add_filter("Noodle project", &["ron"]);
+    fn run(&mut self, ctx: &egui::Context, action: Action) {
         match action {
-            FileAction::Open => {
-                if let Some(path) = dialog.pick_file() {
-                    self.session.load(&path);
+            Action::New => {
+                self.session.new_project();
+                self.editor = EditorState::default();
+            }
+            Action::Open => {
+                if let Some(path) = dialog().pick_file()
+                    && self.session.load(&path)
+                {
                     self.editor = EditorState::default();
                 }
             }
-            FileAction::SaveAs => {
+            Action::Save => {
+                if !self.session.save() {
+                    self.run(ctx, Action::SaveAs);
+                }
+            }
+            Action::SaveAs => {
                 let name = format!("{}.ron", self.session.name());
-                if let Some(path) = dialog.set_file_name(name).save_file() {
+                if let Some(path) = dialog().set_file_name(name).save_file() {
                     self.session.save_as(&with_extension(path));
                 }
+            }
+            Action::Undo => self.session.undo(),
+            Action::Redo => self.session.redo(),
+            Action::TogglePlayback => {
+                if self.session.is_playing() {
+                    self.session.stop();
+                } else {
+                    self.session.play();
+                }
+            }
+            Action::Close => {
+                self.closing = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
@@ -235,9 +302,8 @@ impl eframe::App for App {
     }
 }
 
-/// A menu item showing its shortcut.
-fn button<'a>(text: &'a str, shortcut: &KeyboardShortcut, ctx: &egui::Context) -> egui::Button<'a> {
-    egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut))
+fn dialog() -> rfd::FileDialog {
+    rfd::FileDialog::new().add_filter("Noodle project", &["ron"])
 }
 
 /// Adds `.ron` if the save dialog didn't.
@@ -326,6 +392,63 @@ mod tests {
         harness.get_by_label("Sine (#1)").click();
         harness.run();
         harness.get_by_label("frequency: 220");
+    }
+
+    #[test]
+    fn new_asks_before_discarding_unsaved_changes() {
+        let mut app = empty();
+        let node = Node::new("noodle.osc.sine");
+        let id = noodle_core::NodeId(1);
+        app.session
+            .edit([Edit::Apply(Command::AddNode { id, node })]);
+        let mut harness = harness(app);
+        harness.run();
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+        harness.run();
+        harness.get_by_label("Save the changes to Untitled first?");
+        harness.get_by_label("Cancel").click();
+        harness.run();
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            1
+        );
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+        harness.run();
+        harness.get_by_label("Don't Save").click();
+        harness.run();
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn new_without_changes_doesnt_ask() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+        harness.run();
+        assert!(harness.query_by_label("Cancel").is_none());
+    }
+
+    #[test]
+    fn only_new_open_and_close_discard() {
+        let discarding: Vec<_> = [
+            Action::New,
+            Action::Open,
+            Action::Save,
+            Action::SaveAs,
+            Action::Undo,
+            Action::Redo,
+            Action::TogglePlayback,
+            Action::Close,
+        ]
+        .into_iter()
+        .filter(|a| a.discards())
+        .collect();
+        assert_eq!(discarding, [Action::New, Action::Open, Action::Close]);
     }
 
     #[test]
