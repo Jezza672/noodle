@@ -459,8 +459,9 @@ start; the node only reads that. Clip commands are undoable like any other.
   one audio clip at a time: the one that started last (the higher ID on a
   tie), and the earlier clip is cut where the later one begins. This holds per
   kind: an audio clip and a MIDI clip on the same track play together. There is no automatic
-  crossfade; a clip's own fades apply. The arrangement view stops you
-  placing clips on top of each other, so overlaps only come from tempo edits.
+  crossfade; a clip's own fades apply. The arrangement view doesn't stop you
+  placing clips on top of each other: overlaps are legal, and the later start
+  wins.
 - **Nodes that go.** Removing a node removes the clips it plays (a track input node) and the lanes
   driving its inputs, in the same undo step. Node IDs don't change when a
   node moves in or out of a group, so those clips and lanes stay valid. A lane

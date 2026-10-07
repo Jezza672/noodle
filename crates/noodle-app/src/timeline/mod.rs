@@ -165,8 +165,21 @@ pub fn show(
         rect.max,
     );
     let hovered = ui.rect_contains_pointer(rect);
+    let directory = session.directory().map(std::path::Path::to_path_buf);
     if hovered {
-        navigate(ui, state, content, tracks.len());
+        // Room to scroll to: the end of the last clip, and some more to
+        // place clips in.
+        let extent = project
+            .clips()
+            .filter_map(|(_, clip)| {
+                let audio = clip.as_audio()?;
+                let source = state.sources.get(directory.as_deref(), &audio.source);
+                let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
+                Some(clips::end_tick(map, clip.start, audio.length, rate).quarters())
+            })
+            .fold(0.0, f64::max) as f32
+            + 16.0;
+        navigate(ui, state, content, tracks.len(), extent);
     }
     let axis = Axis {
         origin: content.left() - state.scroll_x,
@@ -225,7 +238,6 @@ pub fn show(
     }
 
     let mut hit_clip = false;
-    let directory = session.directory().map(std::path::Path::to_path_buf);
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
         if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
@@ -365,6 +377,14 @@ pub fn show(
         }
     }
 
+    // A drag whose clip has scrolled off screen or been removed never sees
+    // its widget's `drag_stopped`, which would leave its undo group open.
+    if state.drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
+        state.drag = None;
+        if !edits.contains(&Edit::EndDrag) {
+            edits.push(Edit::EndDrag);
+        }
+    }
     if background.clicked() && !hit_clip {
         state.selected.clear();
     }
@@ -397,7 +417,7 @@ pub fn show(
 }
 
 /// Scrolling and zooming, while the pointer is over the arrangement.
-fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tracks: usize) {
+fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tracks: usize, extent: f32) {
     let (scroll, zoom, pointer) =
         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
     if zoom != 1.0 {
@@ -411,7 +431,9 @@ fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tracks: usi
         state.scroll_y -= scroll.y;
     }
     let tall = tracks as f32 * colors::LANE_HEIGHT;
-    state.scroll_x = state.scroll_x.max(0.0);
+    state.scroll_x = state
+        .scroll_x
+        .clamp(0.0, (extent * state.ppq - content.width() * 0.5).max(0.0));
     state.scroll_y = state
         .scroll_y
         .clamp(0.0, (tall - content.height()).max(0.0));

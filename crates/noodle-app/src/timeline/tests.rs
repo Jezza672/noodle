@@ -313,3 +313,53 @@ fn the_playhead_follows_the_tick_it_is_given() {
     // clips.
     assert_eq!(rect(&h, id).width(), 240.0);
 }
+
+#[test]
+fn a_drag_that_loses_its_clip_still_ends_its_undo_step() {
+    let (mut h, id) = rig();
+    let from = centre(&h, id);
+    h.event(Event::PointerMoved(from));
+    h.step();
+    let button = |pressed| Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    h.event(button(true));
+    h.step();
+    for i in 1..=6 {
+        h.event(Event::PointerMoved(from + Vec2::new(i as f32 * 20.0, 0.0)));
+        h.step();
+    }
+    // The clip scrolls out of view mid-drag, and the button comes up with
+    // nothing under the pointer to report it.
+    h.state_mut().timeline.scroll_x = 5000.0;
+    h.step();
+    h.event(button(false));
+    h.run();
+    // A later drag must be its own undo step.
+    h.state_mut().session.edit([
+        Edit::Drag(Command::AddNode {
+            id: NodeId(9),
+            node: Node::new("noodle.osc.sine"),
+        }),
+        Edit::EndDrag,
+    ]);
+    h.state_mut().session.undo();
+    assert_ne!(start(&h, id), Tick(0), "the move is still there");
+}
+
+#[test]
+fn undoing_a_delete_leaves_nothing_selected_that_is_gone() {
+    let (mut h, id) = rig();
+    let c = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.key_press(Key::Delete);
+    h.run();
+    assert!(h.state().timeline.selected().is_empty());
+    h.state_mut().session.undo();
+    h.run();
+    assert!(h.state().session.project().clip(id).is_some());
+    assert!(h.state().timeline.selected().is_empty());
+}
