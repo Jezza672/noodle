@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn harness(nodes: impl IntoIterator<Item = Node>) -> Harness<'static, State> {
-        let mut session = Session::new(crate::registry());
+        let mut session = Session::new(crate::session::Nodes::all());
         let edits: Vec<_> = nodes
             .into_iter()
             .enumerate()

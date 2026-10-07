@@ -6,6 +6,7 @@
 
 mod builtin;
 mod compile;
+mod denormals;
 mod event;
 mod lane;
 mod node;
@@ -16,9 +17,10 @@ mod registry;
 mod render;
 mod runtime;
 mod signal;
+mod telemetry;
 pub mod testing;
 
-pub use builtin::{OUTPUT_ID, Output};
+pub use builtin::{INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_ID, Output};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Problem, Schedule, ScheduledNode,
     compile,
@@ -29,10 +31,11 @@ pub use node::{
     ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, Mode, Node, NodeError,
     NodeInfo, NodeType, Port, Setup, Transport,
 };
-pub use noodle_core::{Config, Value};
+pub use noodle_core::{Config, NodeId, Value};
 pub use offline::{Cancelled, OfflineNode, Progress};
 pub use param::{ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
 pub use render::{Render, RenderError, render};
 pub use runtime::{Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
+pub use telemetry::{Level, MeterWriter, ScopeView, ScopeWriter, Telemetry};

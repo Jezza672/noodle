@@ -345,7 +345,7 @@ mod tests {
     }
 
     fn empty() -> App {
-        App::new(Session::new(crate::registry()))
+        App::new(Session::new(crate::session::Nodes::all()))
     }
 
     #[test]

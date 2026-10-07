@@ -8,6 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
 use noodle_engine::{Diagnostic, Registry, Settings, render};
+use noodle_io::{AudioConfig, InputChoice};
 
 #[derive(Parser)]
 #[command(
@@ -36,12 +37,57 @@ enum Command {
         #[arg(long, default_value_t = 2)]
         channels: usize,
     },
-    /// Play a project on the default audio device until Ctrl-C. Saving the
-    /// file while it plays swaps the new version in.
+    /// Play a project on an audio device until Ctrl-C. Saving the file
+    /// while it plays swaps the new version in.
     Play {
         /// The project file (.ron).
         project: PathBuf,
+        #[command(flatten)]
+        device: DeviceArgs,
     },
+    /// List the audio hosts, and the devices on one, with their IDs for
+    /// `play`.
+    Devices {
+        /// The host to list (default: the platform's default host).
+        #[arg(long)]
+        host: Option<String>,
+    },
+}
+
+/// Which device to play on, and how. Each defaults to the system's choice.
+#[derive(clap::Args)]
+struct DeviceArgs {
+    /// The audio host, by ID (see `noodle devices`).
+    #[arg(long)]
+    host: Option<String>,
+    /// The output device, by ID (see `noodle devices`).
+    #[arg(long)]
+    output: Option<String>,
+    /// Record into Input nodes from this device, by ID, or `default`.
+    /// Off unless given.
+    #[arg(long)]
+    input: Option<String>,
+    #[arg(long)]
+    sample_rate: Option<u32>,
+    /// Frames per device callback.
+    #[arg(long)]
+    buffer_size: Option<u32>,
+}
+
+impl DeviceArgs {
+    fn config(self) -> AudioConfig {
+        AudioConfig {
+            host: self.host,
+            output: self.output,
+            input: match self.input.as_deref() {
+                None => InputChoice::Off,
+                Some("default") => InputChoice::Default,
+                Some(id) => InputChoice::Device(id.to_owned()),
+            },
+            sample_rate: self.sample_rate,
+            buffer_size: self.buffer_size,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -85,8 +131,37 @@ fn run(command: Command) -> Result<(), String> {
             noodle_io::write_wav(&output, &rendered.samples, channels, sample_rate)
                 .map_err(|error| format!("can't write {}: {error}", output.display()))
         }
-        Command::Play { project } => play(&project),
+        Command::Play { project, device } => play(&project, &device.config()),
+        Command::Devices { host } => list_devices(host.as_deref()),
     }
+}
+
+fn list_devices(host: Option<&str>) -> Result<(), String> {
+    println!("Hosts:");
+    for info in noodle_io::hosts() {
+        let default = if info.is_default { " (default)" } else { "" };
+        println!("  {}: {}{default}", info.id, info.name);
+    }
+    let list = noodle_io::devices(host).map_err(|error| error.to_string())?;
+    for (title, devices) in [("Outputs", &list.outputs), ("Inputs", &list.inputs)] {
+        println!("{title}:");
+        if devices.is_empty() {
+            println!("  none");
+        }
+        for device in devices {
+            let default = if device.is_default { " (default)" } else { "" };
+            let caps = &device.capabilities;
+            println!("  {}{default}", device.name);
+            println!("    id: {}", device.id);
+            println!("    channels: up to {}", caps.max_channels);
+            let rates: Vec<String> = caps.sample_rates.iter().map(u32::to_string).collect();
+            println!("    sample rates: {}", rates.join(", "));
+            if let Some((min, max)) = caps.buffer_sizes {
+                println!("    buffer sizes: {min} to {max} frames");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Frames per block for live playback: about 11 ms at 48 kHz.
@@ -94,7 +169,7 @@ const MAX_FRAMES: usize = 512;
 /// How often to check the project file for changes.
 const POLL: Duration = Duration::from_millis(100);
 
-fn play(path: &Path) -> Result<(), String> {
+fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     let text = read(path)?;
     let project = parse(path, &text)?;
     // Watch from the text that was loaded, so an edit made while the device
@@ -102,7 +177,7 @@ fn play(path: &Path) -> Result<(), String> {
     let mut watch = Watch::new(path, text);
     let registry = registry();
     let (mut playback, mut controller) =
-        noodle_io::play(MAX_FRAMES).map_err(|error| error.to_string())?;
+        noodle_io::play(config, MAX_FRAMES).map_err(|error| error.to_string())?;
     report(&controller.update(project.graph(), &registry));
     let settings = playback.settings();
     eprintln!(
@@ -112,8 +187,15 @@ fn play(path: &Path) -> Result<(), String> {
         settings.sample_rate,
         settings.channels,
     );
+    if let Some((device, channels)) = playback.input() {
+        eprintln!("Recording from {device} ({channels} channels).");
+    }
+    if let Some(problem) = playback.input_problem() {
+        eprintln!("warning: playing without input: {problem}");
+    }
 
     let mut underruns = 0;
+    let mut input_glitches = 0;
     loop {
         thread::sleep(POLL);
         controller.maintain();
@@ -130,6 +212,11 @@ fn play(path: &Path) -> Result<(), String> {
         if total > underruns {
             eprintln!("warning: {} underruns", total - underruns);
             underruns = total;
+        }
+        let total = health.input_glitches();
+        if total > input_glitches {
+            eprintln!("warning: {} input glitches", total - input_glitches);
+            input_glitches = total;
         }
 
         if let Some(text) = watch.changed() {
@@ -194,7 +281,8 @@ fn parse(path: &Path, text: &str) -> Result<Project, String> {
 
 fn registry() -> Registry {
     let mut registry = Registry::with_builtins();
-    noodle_nodes::register_all(&mut registry);
+    // Nothing displays meters or scopes yet, so their hub isn't needed.
+    let _telemetry = noodle_nodes::register_all(&mut registry);
     registry
 }
 

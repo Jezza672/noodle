@@ -63,6 +63,7 @@ impl Harness {
         );
 
         let instance = node_type.instantiate(&Setup {
+            node: noodle_core::NodeId(0),
             config,
             sample_rate,
             max_frames,
