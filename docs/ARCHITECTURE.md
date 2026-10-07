@@ -201,6 +201,15 @@ device's sample format. It clamps to between -1 and 1 and turns non-finite
 samples into silence, to protect ears and speakers. Offline renders aren't
 clamped, so files keep exactly what the graph produced.
 
+**Choosing a device.** `play` takes an `AudioConfig`: a host (audio API),
+an output device, a sample rate and a buffer size, each defaulting to the
+system's choice. Hosts and devices are stored by cpal's stable IDs, so a
+saved choice survives restarts and renamed devices. `hosts()` and
+`devices()` list what the picker offers, and the rate and buffer size are
+checked against what the device supports before a stream opens. Changing
+any of these means a new engine, since `Settings` are fixed for an
+engine's lifetime.
+
 **Data going back to the UI** (meter levels, scope buffers, playhead
 position, cache-render progress) will go through SPSC ring buffers or atomics,
 which the UI reads every frame.

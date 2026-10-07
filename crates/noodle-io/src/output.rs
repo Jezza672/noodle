@@ -4,14 +4,17 @@
 //! callback does and can be tested without a device, and [`play`] only finds
 //! the device and wires the writer into its callback.
 
-use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
-use noodle_engine::{Controller, Processor, Settings, SettingsError, engine};
+use noodle_engine::{Controller, Processor, Settings, engine};
 use rtrb::{Consumer, Producer, RingBuffer};
+
+use crate::devices::{
+    AudioConfig, AudioError, Chosen, Direction, choose_config, device_name, find_device, open_host,
+};
 
 pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
 
@@ -142,57 +145,22 @@ impl Reporter {
     }
 }
 
-#[derive(Debug)]
-pub enum OutputError {
-    NoDevice,
-    Device(DeviceError),
-    Settings(SettingsError),
-    UnsupportedFormat(SampleFormat),
-}
-
-impl From<DeviceError> for OutputError {
-    fn from(error: DeviceError) -> Self {
-        Self::Device(error)
-    }
-}
-
-impl From<SettingsError> for OutputError {
-    fn from(error: SettingsError) -> Self {
-        Self::Settings(error)
-    }
-}
-
-impl fmt::Display for OutputError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoDevice => f.write_str("no audio output device"),
-            Self::Device(error) => write!(f, "audio device error: {error}"),
-            Self::Settings(error) => write!(f, "unusable device settings: {error}"),
-            Self::UnsupportedFormat(format) => {
-                write!(f, "the device's sample format ({format}) isn't supported")
-            }
-        }
-    }
-}
-
-impl std::error::Error for OutputError {}
-
-/// Starts an engine playing on the default output device, at the device's
-/// default sample rate and channel count. Send it graphs with the returned
-/// [`Controller`].
+/// Starts an engine playing on an output device, chosen by `config`, with
+/// `max_frames` frames per engine block. The channel count is the device's.
+/// Send the engine graphs with the returned [`Controller`].
 ///
 /// Errors while playing are reported through [`Playback::health`].
-pub fn play(max_frames: usize) -> Result<(Playback, Controller), OutputError> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or(OutputError::NoDevice)?;
-    let name = match device.description() {
-        Ok(description) => description.name().to_owned(),
-        Err(_) => "the default device".to_owned(),
-    };
-    let supported = device.default_output_config()?;
-    let format = supported.sample_format();
-    let config: StreamConfig = supported.into();
+pub fn play(config: &AudioConfig, max_frames: usize) -> Result<(Playback, Controller), AudioError> {
+    let host = open_host(config.host.as_deref())?;
+    let device = find_device(&host, config.output.as_deref(), Direction::Output)?;
+    let name = device_name(&device);
+    let ranges: Vec<_> = device.supported_output_configs()?.collect();
+    let Chosen { config, format } = choose_config(
+        &ranges,
+        device.default_output_config()?,
+        config.sample_rate,
+        config.buffer_size,
+    )?;
     let settings = Settings {
         sample_rate: config.sample_rate as f32,
         max_frames,
@@ -213,7 +181,7 @@ pub fn play(max_frames: usize) -> Result<(Playback, Controller), OutputError> {
         SampleFormat::U8 => open::<u8>(&device, config, writer, on_error),
         SampleFormat::U16 => open::<u16>(&device, config, writer, on_error),
         SampleFormat::U32 => open::<u32>(&device, config, writer, on_error),
-        format => return Err(OutputError::UnsupportedFormat(format)),
+        format => return Err(AudioError::UnsupportedFormat(format)),
     }?;
     stream.play()?;
     Ok((
