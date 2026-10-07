@@ -278,7 +278,11 @@ sample rate, since there's no resampling yet. An input device that can't
 (or can't be opened at all) doesn't stop playback: Input nodes stay
 silent and `Playback::input_problem` says why. The input stream picks its
 own buffer size and starts before the output, and the feed doesn't count
-a shortfall as a glitch until input has first arrived. cpal runs input and output as separate streams, so input crosses
+a shortfall as a glitch until input has first arrived. The streams also fail
+separately: `Health::errors` says which stream each error came from, and a
+fatal error on the input (the device unplugged, say) leaves Input nodes
+silent and the status bar saying "No input", while only a fatal output error
+stops playback. cpal runs input and output as separate streams, so input crosses
 between their callbacks through an SPSC ring (`noodle-io/src/input.rs`):
 `Capture` fills it, and the `DeviceWriter`'s `Feed` takes one engine block
 at a time. Unless both are the same device, their clocks drift apart. A

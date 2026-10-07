@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use noodle_core::{Command, EditError, FrameId, History, NodeId, Project};
 use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
-use noodle_io::{AudioConfig, AudioError, Playback};
+use noodle_io::{AudioConfig, AudioError, DeviceError, Playback, Stream};
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
 const MAX_FRAMES: usize = 512;
@@ -87,6 +87,8 @@ struct Audio {
     controller: Controller,
     /// The counts last reported to the user.
     reported: Glitches,
+    /// Why the input stopped after playback began. The output carries on.
+    input_lost: Option<String>,
 }
 
 /// Running totals of audible trouble since playback started.
@@ -374,6 +376,7 @@ impl Session {
                     playback,
                     controller,
                     reported: Glitches::default(),
+                    input_lost: None,
                 });
                 self.recompile();
             }
@@ -384,8 +387,11 @@ impl Session {
     /// Why playback is going on without the input that was asked for. It
     /// lasts as long as playback, unlike [`Session::message`].
     pub fn input_problem(&self) -> Option<String> {
-        let problem = self.audio.as_ref()?.playback.input_problem()?;
-        Some(no_input(problem))
+        let audio = self.audio.as_ref()?;
+        match audio.playback.input_problem() {
+            Some(problem) => Some(no_input(problem)),
+            None => audio.input_lost.clone(),
+        }
     }
 
     pub fn stop(&mut self) {
@@ -400,22 +406,28 @@ impl Session {
         };
         audio.controller.maintain();
         let health = audio.playback.health();
-        let mut stopped = None;
-        for error in health.errors() {
-            if noodle_io::is_fatal(&error) {
-                stopped = Some(format!("Playback stopped: {error}"));
-            } else {
-                self.message = Some(error.to_string());
-            }
+        let verdict = judge(health.errors());
+        if let Some(message) = verdict.message {
+            self.message = Some(message);
+        }
+        // Said once when it happens; the status bar keeps "No input" up.
+        if let Some(message) = verdict.input_lost {
+            self.message = Some(message.clone());
+            audio.input_lost = Some(message);
         }
         let now = Glitches {
             underruns: health.underruns(),
-            input: health.input_glitches(),
+            // A lost input is already reported, and every block after it
+            // would count again.
+            input: match audio.input_lost {
+                Some(_) => audio.reported.input,
+                None => health.input_glitches(),
+            },
         };
         if let Some(message) = audio.reported.report(now) {
             self.message = Some(message);
         }
-        if let Some(message) = stopped {
+        if let Some(message) = verdict.stopped {
             self.audio = None;
             self.message = Some(message);
         }
@@ -484,6 +496,31 @@ fn count(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// What a batch of device errors means for playback.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Verdict {
+    /// An output error that stopped playback for good.
+    stopped: Option<String>,
+    /// An input error that stopped the input. The output plays on.
+    input_lost: Option<String>,
+    /// A survivable error worth telling the user about.
+    message: Option<String>,
+}
+
+/// Sorts errors by what they mean: only the output stream's fatal errors
+/// stop playback, since Input nodes just go quiet without their input.
+fn judge(errors: impl IntoIterator<Item = (Stream, DeviceError)>) -> Verdict {
+    let mut verdict = Verdict::default();
+    for (stream, error) in errors {
+        match (stream, noodle_io::is_fatal(&error)) {
+            (Stream::Output, true) => verdict.stopped = Some(format!("Playback stopped: {error}")),
+            (Stream::Input, true) => verdict.input_lost = Some(format!("Input lost: {error}")),
+            (_, false) => verdict.message = Some(error.to_string()),
+        }
+    }
+    verdict
+}
+
 fn no_input(error: &AudioError) -> String {
     format!("Playing without input: {error}")
 }
@@ -549,6 +586,37 @@ mod tests {
     use noodle_engine::OUTPUT_ID;
 
     use super::*;
+
+    fn error(kind: noodle_io::DeviceErrorKind) -> DeviceError {
+        kind.into()
+    }
+
+    #[test]
+    fn a_fatal_input_error_loses_the_input_but_not_the_playback() {
+        use noodle_io::DeviceErrorKind::*;
+        let verdict = judge([(Stream::Input, error(DeviceNotAvailable))]);
+        assert_eq!(verdict.stopped, None);
+        assert!(verdict.input_lost.unwrap().starts_with("Input lost: "));
+        // Playback only stops for the output.
+        let verdict = judge([
+            (Stream::Input, error(BackendError)),
+            (Stream::Output, error(DeviceNotAvailable)),
+        ]);
+        assert!(verdict.stopped.unwrap().starts_with("Playback stopped: "));
+        assert!(verdict.input_lost.is_some());
+    }
+
+    #[test]
+    fn survivable_errors_only_get_a_message() {
+        use noodle_io::DeviceErrorKind::*;
+        for stream in [Stream::Output, Stream::Input] {
+            let verdict = judge([(stream, error(DeviceChanged))]);
+            assert_eq!(verdict.stopped, None);
+            assert_eq!(verdict.input_lost, None);
+            assert!(verdict.message.is_some());
+        }
+        assert_eq!(judge([]), Verdict::default());
+    }
 
     #[test]
     fn falling_back_keeps_the_input_and_drops_the_output_choices() {

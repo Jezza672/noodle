@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
 use noodle_engine::{Diagnostic, Registry, Settings, render};
-use noodle_io::{AudioConfig, InputChoice};
+use noodle_io::{AudioConfig, InputChoice, Stream};
 
 #[derive(Parser)]
 #[command(
@@ -201,11 +201,13 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
         controller.maintain();
 
         let health = playback.health();
-        for error in health.errors() {
-            if noodle_io::is_fatal(&error) {
-                return Err(format!("playback stopped: {error}"));
+        for (stream, error) in health.errors() {
+            match (stream, noodle_io::is_fatal(&error)) {
+                (Stream::Output, true) => return Err(format!("playback stopped: {error}")),
+                // The sound goes on; Input nodes just go quiet.
+                (Stream::Input, true) => eprintln!("warning: input lost: {error}"),
+                (_, false) => eprintln!("warning: {error}"),
             }
-            eprintln!("warning: {error}");
         }
         // Summarised, since a struggling machine can underrun constantly.
         let total = health.underruns();
