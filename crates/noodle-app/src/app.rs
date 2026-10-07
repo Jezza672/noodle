@@ -6,7 +6,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
-use crate::session::{Saved, Session};
+use crate::session::{Edit, Saved, Session};
 use crate::{properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -46,6 +46,8 @@ pub struct App {
     closing: bool,
     /// The title last sent to the window, so it's only sent when it changes.
     title: String,
+    /// Whether a widget was being dragged last frame. See [`App::show`].
+    dragging: bool,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -81,6 +83,7 @@ impl App {
             after_save: None,
             closing: false,
             title: String::new(),
+            dragging: false,
         }
     }
 
@@ -133,6 +136,15 @@ impl App {
             crate::prefs::remember_audio(self.session.audio_config());
         }
         self.editor.retain_existing(&self.session);
+        // A safety net for undo grouping: a drag's edits are one undo step,
+        // closed by its widget's `EndDrag`. A widget that stops being drawn
+        // mid-drag never sends it, and the next gesture would join the group.
+        // Ending a group that isn't open does nothing.
+        let dragging = ui.ctx().dragged_id().is_some();
+        if self.dragging && !dragging {
+            self.session.edit([Edit::EndDrag]);
+        }
+        self.dragging = dragging;
         self.update_title(ui.ctx());
         if self.session.is_playing() {
             // Keeps health checks and plan freeing going while idle.
@@ -596,5 +608,139 @@ mod tests {
             harness.state().session().project().graph().nodes().count(),
             1
         );
+    }
+
+    /// Two sines, the first active, in a harness big enough for both panels.
+    fn two_sines() -> Harness<'static, App> {
+        let mut app = empty();
+        for (n, x) in [(1, 0.0), (2, 300.0)] {
+            let node = Node::new("noodle.osc.sine").at(x, 100.0);
+            let id = noodle_core::NodeId(n);
+            app.session
+                .edit([Edit::Apply(Command::AddNode { id, node })]);
+        }
+        app.editor.selected.insert(noodle_core::NodeId(1));
+        app.editor.active = Some(noodle_core::NodeId(1));
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        harness.run();
+        harness
+    }
+
+    fn param(h: &Harness<'_, App>, node: u64) -> Option<f32> {
+        let graph = h.state().session().project().graph();
+        let node = graph.node(noodle_core::NodeId(node)).unwrap();
+        node.params.get("frequency").copied()
+    }
+
+    /// Where a node's title is on screen.
+    fn title(h: &Harness<'_, App>, node: u64) -> egui::Pos2 {
+        let editor = h.state().editor();
+        let graph = h.state().session().project().graph();
+        let at = graph.node(noodle_core::NodeId(node)).unwrap().position;
+        let p = egui::Pos2::new(at.x + 80.0, at.y + 8.0);
+        editor.to_screen(p)
+    }
+
+    /// The properties panel's Frequency field: the rightmost one.
+    fn panel_field(h: &Harness<'_, App>) -> egui::Pos2 {
+        h.get_all_by_label("Frequency")
+            .map(|n| n.rect())
+            .max_by(|a, b| a.min.x.total_cmp(&b.min.x))
+            .unwrap()
+            .center()
+    }
+
+    fn press_at(h: &Harness<'_, App>, pos: egui::Pos2, pressed: bool) {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+
+    fn move_to(h: &mut Harness<'_, App>, pos: egui::Pos2) {
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+    }
+
+    #[test]
+    fn keys_do_nothing_while_a_node_is_dragged() {
+        let mut h = two_sines();
+        let start = title(&h, 1);
+        move_to(&mut h, start);
+        press_at(&h, start, true);
+        h.step();
+        move_to(&mut h, start + egui::vec2(20.0, 0.0));
+        move_to(&mut h, start + egui::vec2(40.0, 0.0));
+        // X would delete the node being dragged.
+        h.key_press(Key::X);
+        h.step();
+        move_to(&mut h, start + egui::vec2(60.0, 0.0));
+        press_at(&h, start + egui::vec2(60.0, 0.0), false);
+        h.run();
+        let session = h.state().session();
+        assert_eq!(session.project().graph().nodes().count(), 2);
+        assert_eq!(session.message(), None);
+        let moved = session.project().graph().node(noodle_core::NodeId(1));
+        assert_eq!(moved.unwrap().position.x, 60.0);
+    }
+
+    #[test]
+    fn select_all_mid_drag_leaves_the_panel_slider_alone() {
+        let mut h = two_sines();
+        let start = panel_field(&h);
+        move_to(&mut h, start);
+        press_at(&h, start, true);
+        h.step();
+        move_to(&mut h, start + egui::vec2(10.0, 0.0));
+        move_to(&mut h, start + egui::vec2(20.0, 0.0));
+        // Over the canvas, where the editor's keys would be live.
+        let canvas = title(&h, 2);
+        move_to(&mut h, canvas);
+        h.key_press(Key::A);
+        h.step();
+        press_at(&h, canvas, false);
+        h.run();
+        let editor = h.state().editor();
+        assert_eq!(editor.selected.len(), 1, "A didn't select all");
+        assert_eq!(editor.active, Some(noodle_core::NodeId(1)));
+    }
+
+    #[test]
+    fn a_drag_whose_widget_disappears_still_ends_its_undo_step() {
+        let mut h = two_sines();
+        let start = panel_field(&h);
+        move_to(&mut h, start);
+        press_at(&h, start, true);
+        h.step();
+        move_to(&mut h, start + egui::vec2(10.0, 0.0));
+        move_to(&mut h, start + egui::vec2(20.0, 0.0));
+        assert!(param(&h, 1).is_some());
+        // The panel switches to the other node, so the dragged field goes.
+        h.state_mut().editor.active = Some(noodle_core::NodeId(2));
+        h.step();
+        press_at(&h, start + egui::vec2(20.0, 0.0), false);
+        h.run();
+
+        // So a node move afterwards is an undo step of its own.
+        let at = title(&h, 2);
+        move_to(&mut h, at);
+        press_at(&h, at, true);
+        h.step();
+        move_to(&mut h, at + egui::vec2(20.0, 0.0));
+        move_to(&mut h, at + egui::vec2(40.0, 0.0));
+        press_at(&h, at + egui::vec2(40.0, 0.0), false);
+        h.run();
+        h.state_mut().session.undo();
+        let moved = h.state().session().project().graph();
+        assert_eq!(
+            moved.node(noodle_core::NodeId(2)).unwrap().position.x,
+            300.0
+        );
+        assert!(param(&h, 1).is_some(), "only the move was undone");
     }
 }
