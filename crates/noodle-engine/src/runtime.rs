@@ -7,10 +7,12 @@
 //! shared atomics, so changing one doesn't need a recompile or a queue.
 
 use std::fmt;
+use std::mem;
 
 use noodle_core::{Graph, NodeId};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
+use crate::denormals::Flush;
 use crate::plan::{self, Cells, Plan, PlanInfo};
 use crate::{Context, Diagnostic, Registry, Transport, compile};
 
@@ -63,6 +65,9 @@ impl fmt::Display for SettingsError {
 impl std::error::Error for SettingsError {}
 
 const PLAN_QUEUE: usize = 4;
+/// How long the output fades out before a plan that changes what's audible,
+/// and back in after it.
+const FADE_SECONDS: f32 = 0.005;
 const RETURN_QUEUE: usize = 8;
 
 pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsError> {
@@ -78,9 +83,14 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         next_generation: 0,
         cells: Cells::new(),
     };
+    let fade_len = ((settings.sample_rate * FADE_SECONDS).round() as usize).max(1);
     let processor = Processor {
         settings,
         plan: None,
+        fade_len,
+        level: fade_len,
+        flush: Flush::detect(),
+        fading_out: false,
         incoming,
         returns,
         position: 0,
@@ -107,8 +117,9 @@ impl Controller {
     }
 
     /// Compiles `graph` and sends the result to the audio thread. Nodes that
-    /// are unchanged keep their state, so the switch is seamless. Returns the
-    /// problems found, for the UI to show.
+    /// are unchanged keep their state. If everything the output depends on is
+    /// unchanged, the switch is seamless; otherwise the output dips briefly
+    /// (see [`Processor`]). Returns the problems found, for the UI to show.
     pub fn update(&mut self, graph: &Graph, registry: &Registry) -> Vec<Diagnostic> {
         self.free_returned();
         let (schedule, mut diagnostics) = compile(graph, registry);
@@ -132,8 +143,12 @@ impl Controller {
 
     /// Sets an unconnected input's value without recompiling. The change is
     /// smoothed if the input is a continuous parameter. Does nothing if the
-    /// node has no such unconnected input in the current plan.
+    /// node has no such unconnected input in the current plan, or if `value`
+    /// is infinite or NaN.
     pub fn set_param(&mut self, node: NodeId, key: &str, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
         if let Some(cell) = self.cells.get(&node).and_then(|inputs| inputs.get(key)) {
             cell.set(value);
         }
@@ -164,9 +179,22 @@ impl Controller {
 }
 
 /// Renders the current plan. Everything here is real-time safe.
+///
+/// A plan that changes what's audible (a node on the output's path is added,
+/// removed, rewired or rebuilt) would switch the sound abruptly and click. So
+/// the processor fades the output out over a few milliseconds, installs the
+/// plan, and fades back in. Other plans go in at once.
 pub struct Processor {
     settings: Settings,
     plan: Option<Box<Plan>>,
+    /// Fade length in frames.
+    fade_len: usize,
+    /// Output gain in frames of fade: `fade_len` is full volume, 0 silence.
+    level: usize,
+    /// Fading out, to install a plan that isn't seamless at silence.
+    fading_out: bool,
+    /// How to flush subnormals on this CPU, found when the engine is made.
+    flush: Flush,
     incoming: Consumer<Box<Plan>>,
     returns: Producer<Box<Plan>>,
     position: u64,
@@ -179,6 +207,9 @@ impl Processor {
 
     /// Renders interleaved audio into `output`, whose length must be a
     /// multiple of the channel count. Silent until the first plan arrives.
+    ///
+    /// Subnormal floats are flushed to zero while it runs (see
+    /// `denormals.rs`), and the thread's previous mode is restored after.
     pub fn process(&mut self, output: &mut [f32]) {
         let Settings {
             sample_rate,
@@ -186,10 +217,19 @@ impl Processor {
             channels,
         } = self.settings;
         debug_assert_eq!(output.len() % channels, 0);
-        self.install_new_plans();
+        let _flush = self.flush.enable();
 
-        for chunk in output.chunks_mut(max_frames * channels) {
-            let frames = chunk.len() / channels;
+        let mut rest = output;
+        while !rest.is_empty() {
+            self.install_new_plans();
+            let mut frames = (rest.len() / channels).min(max_frames);
+            if self.fading_out && self.level > 0 {
+                // End the chunk where the fade does, so the plan goes in there.
+                frames = frames.min(self.level);
+            }
+            let (chunk, tail) = mem::take(&mut rest).split_at_mut(frames * channels);
+            rest = tail;
+
             match &mut self.plan {
                 Some(plan) => {
                     let ctx = Context {
@@ -204,6 +244,7 @@ impl Processor {
                 }
                 None => chunk.fill(0.0),
             }
+            self.apply_fade(chunk, channels);
             self.position += frames as u64;
         }
     }
@@ -211,10 +252,22 @@ impl Processor {
     /// Installs queued plans in order, sending each replaced plan back to be
     /// freed. Stops while the return queue is full, so a plan is never freed
     /// here.
+    ///
+    /// A plan that isn't seamless waits, and the output starts fading out.
+    /// Once it's silent, every queued plan goes in and the output fades back
+    /// in.
     fn install_new_plans(&mut self) {
+        let silent = self.level == 0;
         while self.returns.slots() > 0 {
-            let Ok(mut plan) = self.incoming.pop() else {
+            let Ok(next) = self.incoming.peek() else {
+                break;
+            };
+            if !(silent || self.plan.is_none() || next.is_seamless()) {
+                self.fading_out = true;
                 return;
+            }
+            let Ok(mut plan) = self.incoming.pop() else {
+                break;
             };
             if let Some(old) = &mut self.plan {
                 plan.take_state_from(old);
@@ -222,6 +275,29 @@ impl Processor {
             if let Some(old) = self.plan.replace(plan) {
                 let pushed = self.returns.push(old);
                 debug_assert!(pushed.is_ok(), "checked for room above");
+            }
+        }
+        // If the return queue filled up, stay silent until every waiting plan
+        // is in.
+        if silent && self.incoming.is_empty() {
+            self.fading_out = false;
+        }
+    }
+
+    /// Scales `chunk` by the fade, frame by frame, and moves the fade on.
+    fn apply_fade(&mut self, chunk: &mut [f32], channels: usize) {
+        if !self.fading_out && self.level == self.fade_len {
+            return;
+        }
+        for frame in chunk.chunks_mut(channels) {
+            self.level = if self.fading_out {
+                self.level.saturating_sub(1)
+            } else {
+                (self.level + 1).min(self.fade_len)
+            };
+            let gain = self.level as f32 / self.fade_len as f32;
+            for sample in frame {
+                *sample *= gain;
             }
         }
     }

@@ -1,12 +1,17 @@
 //! The engine's real-time guarantees, checked with the real node library:
 //! rendering never allocates or frees memory, even while parameters change and
 //! new plans are swapped in, and swapping plans doesn't disturb the sound.
+//! Meters and scopes are part of the graph, so reporting telemetry is checked
+//! too.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::f32::consts::TAU;
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
-use noodle_engine::{Controller, OUTPUT_ID, Processor, Registry, Settings, engine};
+use noodle_engine::{
+    Controller, OUTPUT_ID, Processor, Registry, ScopeView, Settings, Telemetry, engine,
+};
 use noodle_io::DeviceWriter;
 
 /// Counts allocations and frees made while the current thread is marked as
@@ -64,6 +69,7 @@ const SETTINGS: Settings = Settings {
 struct Session {
     project: Project,
     registry: Registry,
+    telemetry: Telemetry,
     controller: Controller,
     processor: Processor,
 }
@@ -71,11 +77,12 @@ struct Session {
 impl Session {
     fn new() -> Self {
         let mut registry = Registry::with_builtins();
-        noodle_nodes::register_all(&mut registry);
+        let telemetry = noodle_nodes::register_all(&mut registry);
         let (controller, processor) = engine(SETTINGS).unwrap();
         Self {
             project: Project::new(),
             registry,
+            telemetry,
             controller,
             processor,
         }
@@ -105,8 +112,8 @@ impl Session {
 }
 
 /// sine → filter → gain → mix (with a second sine) → voice mix → output,
-/// with an LFO on the filter cutoff.
-fn busy_session() -> (Session, NodeId, NodeId) {
+/// with an LFO on the filter cutoff, and a meter and scope on the mix.
+fn busy_session() -> (Session, NodeId, NodeId, NodeId, NodeId) {
     let mut s = Session::new();
     let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
     let lfo = s.add(Node::new("noodle.osc.sine").with_param("frequency", 2.0));
@@ -125,15 +132,20 @@ fn busy_session() -> (Session, NodeId, NodeId) {
     s.wire(other, "out", mix, "in2");
     s.wire(mix, "out", voices, "in");
     s.wire(voices, "out", output, "in");
+    let meter = s.add(Node::new("noodle.view.meter"));
+    let scope = s.add(Node::new("noodle.view.scope"));
+    s.wire(mix, "out", meter, "in");
+    s.wire(mix, "out", scope, "in");
     s.update();
-    (s, gain, mix)
+    (s, gain, mix, meter, scope)
 }
 
 #[test]
 fn rendering_never_allocates_even_while_editing() {
-    let (mut s, gain, mix) = busy_session();
+    let (mut s, gain, mix, meter, scope) = busy_session();
     // Longer than max_frames, so each call renders several blocks.
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut view = ScopeView::default();
 
     for round in 0..12 {
         // UI thread: allowed to allocate.
@@ -174,6 +186,15 @@ fn rendering_never_allocates_even_while_editing() {
             violations, 0,
             "allocated on the audio thread in round {round}"
         );
+
+        // UI thread: the meter and scope have reported.
+        let levels = s.telemetry.meter(meter).unwrap();
+        assert!(levels[0].peak > 0.0, "no meter level in round {round}");
+        assert!(s.telemetry.read_scope(scope, &mut view));
+        assert!(
+            !view.samples().is_empty(),
+            "no scope samples in round {round}"
+        );
     }
 
     assert!(out.iter().all(|x| x.is_finite()));
@@ -182,7 +203,7 @@ fn rendering_never_allocates_even_while_editing() {
 
 #[test]
 fn the_device_writer_never_allocates() {
-    let (s, _, _) = busy_session();
+    let (s, ..) = busy_session();
     let mut writer = DeviceWriter::new(s.processor);
     // Longer than a block, in a format that needs converting.
     let mut out = vec![0i16; 1000 * SETTINGS.channels];
@@ -225,4 +246,63 @@ fn swapping_plans_mid_render_is_seamless() {
 
     assert!(expected.iter().any(|&x| x != 0.0));
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn deleting_a_view_node_closes_its_channel() {
+    let (mut s, _, _, meter, scope) = busy_session();
+    let mut out = vec![0.0; 256 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    assert!(s.telemetry.meter(meter).is_some());
+
+    s.edit(Command::RemoveNode { id: meter });
+    s.update();
+    // The audio thread installs the new plan and hands back the old one,
+    // which the controller frees, dropping the meter's writer.
+    s.processor.process(&mut out);
+    s.controller.maintain();
+
+    assert!(s.telemetry.meter(meter).is_none());
+    assert!(s.telemetry.read_scope(scope, &mut ScopeView::default()));
+}
+
+#[test]
+fn changing_the_audible_path_mid_render_does_not_click() {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 440.0));
+    let gain = s.add(Node::new("noodle.util.gain"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", gain, "in");
+    s.wire(gain, "out", output, "in");
+    s.update();
+
+    let render = |s: &mut Session, frames: usize| {
+        let mut out = vec![0.0; frames * SETTINGS.channels];
+        s.processor.process(&mut out);
+        out
+    };
+    // An odd length, so the swap lands mid-block and mid-cycle.
+    let mut out = render(&mut s, 1007);
+    // The steepest a full-scale 440 Hz sine gets between samples.
+    let steady = TAU * 440.0 / SETTINGS.sample_rate;
+
+    // Removing the gain rewires the output straight to the sine.
+    s.edit(Command::RemoveNode { id: gain });
+    s.wire(sine, "out", output, "in");
+    s.update();
+    out.extend(render(&mut s, 500));
+
+    // A new sine in its place starts at phase 0, a jump without a fade.
+    s.edit(Command::RemoveNode { id: sine });
+    let fresh = s.add(Node::new("noodle.osc.sine").with_param("frequency", 440.0));
+    s.wire(fresh, "out", output, "in");
+    s.update();
+    out.extend(render(&mut s, 500));
+
+    let jump = out
+        .chunks(SETTINGS.channels)
+        .zip(out.chunks(SETTINGS.channels).skip(1))
+        .map(|(a, b)| (a[0] - b[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(jump < steady * 1.5, "jump of {jump}, steady {steady}");
 }

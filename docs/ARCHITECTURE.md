@@ -69,6 +69,26 @@ panics if it's used on the audio thread (`assert_no_alloc` or equivalent).
 Anything that needs memory or I/O happens on another thread and arrives
 through a lock-free queue.
 
+**Subnormals are flushed.** A filter or envelope whose input goes silent
+decays towards zero, and its state can get stuck among the subnormal floats,
+which most CPUs handle many times more slowly. `Processor::process` sets
+flush-to-zero (MXCSR FTZ and DAZ on x86_64, FPCR.FZ on aarch64) while it
+runs and restores the previous mode after, so this covers offline renders
+too. Stateful nodes also flush their own tiny state once per block (the SVF's
+integrators and the Meter's mean square, below 1e-30), so they behave the
+same where the engine can't set the mode, such as in the test harness.
+
+**Bad values don't stick.** One infinite or NaN value reaching an
+oscillator's phase or a filter's state would otherwise keep it outputting NaN
+until it's rebuilt.
+- Unconnected inputs ignore non-finite values from `set_param`, and a
+  non-finite value in the project is replaced by the port's default.
+- Connected signals are deliberately unclamped, so nodes with state check it
+  once per block and reset it if it isn't finite. New stateful nodes must do
+  the same.
+- Parameter ranges (`ParamInfo::min/max`) are for the UI and aren't enforced
+  on the audio thread, so a node must cope with any finite value.
+
 ## Data model (`noodle-core`)
 
 The **Project** is the single source of truth. It holds one global graph:
@@ -184,6 +204,20 @@ the return queue. The controller frees them in `maintain()`, which the UI
 calls every frame. The processor installs a plan only when the return queue
 has room, so nothing is ever freed on the audio thread.
 
+**Swaps that change what's audible fade.** Carrying instances over keeps an
+edit elsewhere in the graph seamless, but removing, rewiring or rebuilding a
+node on the output's path would still switch the sound in one sample and
+click. So `plan::build` records the wiring of every node the Output nodes
+depend on, and marks the plan *seamless* if that wiring is unchanged and all
+of those nodes carry over. A seamless plan goes in at once. For any other,
+the processor fades the output out over 5 ms with the old plan, installs
+every queued plan at silence, and fades back in over 5 ms.
+- The cost is a 10 ms dip on structural edits to the audible path. Parameter
+  changes, and edits elsewhere in the graph, don't dip.
+- A true crossfade would avoid the dip, but carried-over instances can't run
+  in both plans at once, so it would need the old plan run without them.
+- The first plan goes in without a fade, so offline renders are unchanged.
+
 **Parameter changes don't recompile.**
 - Every unconnected input has a shared atomic cell. `set_param` writes the
   cell, and the audio thread reads it at the start of each block and smooths
@@ -204,9 +238,48 @@ device's sample format. It clamps to between -1 and 1 and turns non-finite
 samples into silence, to protect ears and speakers. Offline renders aren't
 clamped, so files keep exactly what the graph produced.
 
-**Data going back to the UI** (meter levels, scope buffers, playhead
-position, cache-render progress) will go through SPSC ring buffers or atomics,
-which the UI reads every frame.
+**Choosing a device.** `play` takes an `AudioConfig`: a host (audio API),
+an output device, a sample rate and a buffer size, each defaulting to the
+system's choice. Hosts and devices are stored by cpal's stable IDs, so a
+saved choice survives restarts and renamed devices. A device ID names its
+own host, so the host setting only picks where default devices come from.
+`hosts()` and `devices()` list what the picker offers, and the rate and
+buffer size are checked against what the device supports before a stream
+opens. Changing any of these means a new engine, since `Settings` are
+fixed for an engine's lifetime.
+
+**Data going back to the UI** goes through a `Telemetry` hub
+(`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
+
+- **Opening a channel:** a reporting node type, such as Meter or Scope, holds
+  a handle to the hub. When it instantiates a node, off the audio thread, it
+  opens a channel under the node's ID (`Setup::node`), keeps the writing end
+  in the instance, and the hub keeps the reading end. Carried-over instances
+  keep their channels.
+- **Following the playing instance:** instances are made when a plan is
+  built, before it reaches the audio thread, and a plan can be dropped
+  unsent, so a node can have several channels open. The hub reads the newest
+  one that has been written to (falling back to the newest), which is
+  always the instance that's playing.
+- **Meters** are atomics per channel. The audio thread raises the peak with
+  `fetch_max` on the float's bits (integer order is float order for
+  non-negative floats) and stores the smoothed RMS. The UI takes the peak,
+  resetting it, so it sees the highest peak since its last frame.
+- **Scopes** are `rtrb` SPSC ring buffers of interleaved frames, holding about
+  a second. When the ring is full, new frames are dropped whole, so channels
+  stay aligned. The hub keeps the most recent second it has read in a
+  fixed-size ring, and the UI copies it into a `ScopeView` it reuses.
+- **Locking:** only the hub's map of channels has a lock, and only the UI and
+  plan building take it, never while running caller code. The writing ends
+  never lock or allocate, which `realtime.rs` checks.
+- **Closing:** every use of the hub closes channels whose writing end has
+  been dropped. That happens when the controller frees a deleted node's
+  instance, so the hub needs no hook into graph edits.
+- **One hub per engine:** two engines instantiating the same graph from one
+  hub (live playback and an offline export, say) would both look like they
+  were playing, so an export should use a registry with its own hub.
+- `noodle_nodes::register_all` creates the hub and returns it. Playhead
+  position and cache-render progress will use the same hub.
 
 Blocks have a fixed maximum size, and a longer device buffer is rendered as
 several blocks. Events inside a block are sample-accurate.
@@ -335,8 +408,9 @@ through the telemetry API.
   valid.
 - **Real-time safety:** the audio-thread allocation check runs in all
   debug builds and tests.
-- **Plan swapping:** a test swaps plans mid-render and checks that the output
-  is continuous, with no click at the swap.
+- **Plan swapping:** tests swap plans mid-render and check that the output
+  is continuous, with no click at the swap: identical for an edit off the
+  audible path, and no jump steeper than the signal's own for one on it.
 - **CI** runs fmt, clippy and the tests on macOS, Windows and Linux.
 
 ## Open questions

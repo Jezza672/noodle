@@ -42,8 +42,8 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. |
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
 | `noodle-nodes` | Built-in nodes. Integration tests: `realtime.rs`, `golden.rs`. |
-| `noodle-io` | WAV files, and output through cpal (`DeviceWriter`, `play`). MIDI and streaming later. |
-| `noodle-cli` | The `noodle` command: `render`, and `play` (reloads the file when it changes). |
+| `noodle-io` | WAV files, device listing and choice (`devices.rs`), and output through cpal (`DeviceWriter`, `play`). MIDI and streaming later. |
+| `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
 | `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`. |
 
 ## Rules the code relies on
@@ -99,8 +99,9 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 
 ## What's next
 
-1. **Start here: confirm M0 is done.** cpal output and `noodle play` are
-   built. M0's "done when" still needs: the tests passing on the user's Mac,
-   the user hearing `noodle play` there (including an edit swapped in while
-   it plays), and the Windows CI run. Then mark M0 done in ROADMAP.md.
-2. **Start M1:** the egui app shell and node editor. See the roadmap.
+1. **M1 is in progress,** split into parallel streams, each with its own
+   branch and PR: app shell, node editor, parameter widgets and properties,
+   telemetry with scope and meter nodes, and audio input with a device
+   picker. The roadmap's M1 status line says what has landed.
+2. **When the user is back:** run the batched macOS checks on their Mac
+   (tests on the latest main, and a `noodle play` listening test).

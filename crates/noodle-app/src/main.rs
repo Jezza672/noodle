@@ -10,21 +10,19 @@ mod widgets;
 
 use std::process::ExitCode;
 
-use noodle_engine::Registry;
-
 use crate::app::App;
-use crate::session::Session;
+use crate::session::{Nodes, Session};
 
 fn main() -> ExitCode {
     let session = match std::env::args_os().nth(1) {
-        Some(path) => match Session::open(registry(), path.as_ref()) {
+        Some(path) => match Session::open(Nodes::all(), path.as_ref()) {
             Ok(session) => session,
             Err(error) => {
                 eprintln!("noodle: {error}");
                 return ExitCode::FAILURE;
             }
         },
-        None => Session::new(registry()),
+        None => Session::new(Nodes::all()),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -47,11 +45,4 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// Every node type the app offers.
-pub fn registry() -> Registry {
-    let mut registry = Registry::with_builtins();
-    noodle_nodes::register_all(&mut registry);
-    registry
 }

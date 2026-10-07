@@ -17,6 +17,10 @@ const SETTINGS: Settings = Settings {
     channels: 1,
 };
 
+/// The fade around a plan that changes what's audible: 5 ms, which is 5
+/// samples at the test sample rate.
+const FADE: usize = 5;
+
 const fn info(id: &'static str) -> NodeInfo {
     NodeInfo {
         id,
@@ -330,6 +334,33 @@ impl Node for NoteProbeNode {
     }
 }
 
+/// Outputs a subnormal float, computed at run time.
+struct Subnormal;
+
+impl NodeType for Subnormal {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("subnormal");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().output("out", "Out"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(SubnormalNode))
+    }
+}
+
+struct SubnormalNode;
+
+impl Node for SubnormalNode {
+    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        let tiny = std::hint::black_box(f32::MIN_POSITIVE) * std::hint::black_box(0.25);
+        io.outputs[0].fill(tiny);
+    }
+}
+
 fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     let mut registry = Registry::with_builtins();
     registry.register(Counter);
@@ -341,6 +372,7 @@ fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     registry.register(NoteSource);
     registry.register(NoteThru);
     registry.register(NoteProbe);
+    registry.register(Subnormal);
     registry
 }
 
@@ -462,7 +494,89 @@ fn changing_config_rebuilds_the_node() {
         value: Some(Value::Int(100)),
     });
     rig.update();
-    assert_eq!(rig.render(2), [100.0, 101.0]);
+    // The old counter fades out, then the new one fades in from 100.
+    rig.render(2 * FADE);
+    assert_eq!(rig.render(2), [105.0, 106.0]);
+}
+
+#[test]
+fn a_plan_that_changes_the_output_fades_out_then_in() {
+    let (mut rig, counter) = counter_rig();
+    assert_eq!(rig.render(2), [0.0, 1.0]);
+    rig.edit(Command::SetConfig {
+        node: counter,
+        key: "start".into(),
+        value: Some(Value::Int(100)),
+    });
+    rig.update();
+    // Out over five samples of the old counter, which ends silent, then in
+    // over five of the new one. Gains are multiples of 1/5.
+    let gains = [4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 5];
+    let values = [2, 3, 4, 5, 6, 100, 101, 102, 103, 104, 105];
+    let expected: Vec<f32> = gains
+        .iter()
+        .zip(values)
+        .map(|(&g, v)| g as f32 / FADE as f32 * v as f32)
+        .collect();
+    // In odd lengths, so the fade crosses block and call boundaries.
+    let mut actual = rig.render(3);
+    actual.extend(rig.render(7));
+    actual.extend(rig.render(1));
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn rewiring_the_output_fades() {
+    let mut rig = Rig::new(SETTINGS);
+    let counter = rig.add("counter");
+    let offset = rig.add("offset");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.wire(counter, offset, "in");
+    rig.update();
+    rig.render(4);
+    // Every node carries over; only the wire into the output changes.
+    rig.wire(offset, output, "in");
+    rig.update();
+    let faded = rig.render(FADE);
+    assert_eq!(faded[FADE - 1], 0.0, "{faded:?}");
+}
+
+#[test]
+fn plans_that_leave_the_output_alone_go_in_at_once() {
+    let (mut rig, offset) = offset_rig();
+    // An unconnected node, and a value changed in the project.
+    rig.add("counter");
+    rig.edit(Command::SetParam {
+        node: offset,
+        key: "offset".into(),
+        value: Some(2.0),
+    });
+    rig.update();
+    assert_eq!(rig.render(4), [0.5, 1.0, 1.5, 2.0]);
+}
+
+#[test]
+fn a_plan_that_arrives_mid_fade_goes_in_with_the_one_that_started_it() {
+    let (mut rig, counter) = counter_rig();
+    rig.render(4);
+    rig.edit(Command::SetConfig {
+        node: counter,
+        key: "start".into(),
+        value: Some(Value::Int(100)),
+    });
+    rig.update();
+    rig.render(2);
+    rig.edit(Command::SetConfig {
+        node: counter,
+        key: "start".into(),
+        value: Some(Value::Int(200)),
+    });
+    rig.update();
+    // The first fade carries on to silence, and both plans go in there.
+    let out = rig.render(3 + FADE + 1);
+    assert_eq!(out[2], 0.0);
+    assert_eq!(out[3 + FADE], 205.0);
 }
 
 #[test]
@@ -534,11 +648,13 @@ fn a_plan_waits_when_the_queue_is_full() {
         });
         rig.update();
     }
-    rig.render(1);
+    // Each plan rebuilds the counter, so the processor fades out first.
+    rig.render(FADE);
     rig.controller.maintain();
     // The latest plan arrives, and takes over correctly from the last one the
     // processor installed.
-    assert_eq!(rig.render(2), [10.0, 11.0]);
+    rig.render(FADE);
+    assert_eq!(rig.render(2), [15.0, 16.0]);
 }
 
 #[test]
@@ -584,9 +700,32 @@ fn a_failed_node_is_retried_and_reported_until_it_works() {
     assert_eq!(rig.update(), failed);
     assert_eq!(rig.render(2), [0.0; 2]);
 
-    // Nothing in the graph changed, but the node is tried again.
+    // Nothing in the graph changed, but the node is tried again. It's new on
+    // the output's path, so it fades in.
     assert!(rig.update().is_empty());
+    rig.render(2 * FADE);
     assert_eq!(rig.render(2), [7.0; 2]);
+}
+
+#[test]
+fn a_failed_node_on_the_output_path_does_not_fade_every_update() {
+    let mut rig = Rig::new(SETTINGS);
+    let failing = rig.add("failing");
+    let offset = rig.add("offset");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(failing, offset, "in");
+    rig.wire(offset, output, "in");
+    rig.update();
+    rig.render(2);
+    // An edit elsewhere: the failed node is retried, but it's still silent.
+    rig.add("counter");
+    rig.edit(Command::SetParam {
+        node: offset,
+        key: "offset".into(),
+        value: Some(2.0),
+    });
+    rig.update();
+    assert_eq!(rig.render(4), [0.5, 1.0, 1.5, 2.0]);
 }
 
 #[test]
@@ -632,6 +771,31 @@ fn events_reach_every_consumer_and_are_cleared_each_block() {
         rig.render(8),
         [10201.0, 0.0, 0.0, 0.0, 0.0, 20402.0, 0.0, 0.0]
     );
+}
+
+#[test]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn subnormals_are_flushed_while_processing() {
+    let mut rig = Rig::new(SETTINGS);
+    let subnormal = rig.add("subnormal");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(subnormal, output, "in");
+    rig.update();
+    assert_eq!(rig.render(2), [0.0; 2]);
+    // The thread's own mode is back afterwards.
+    let tiny = std::hint::black_box(f32::MIN_POSITIVE) * std::hint::black_box(0.25);
+    assert!(tiny.is_subnormal());
+}
+
+#[test]
+fn non_finite_parameter_values_are_ignored() {
+    let (mut rig, offset) = offset_rig();
+    rig.controller.set_param(offset, "offset", f32::INFINITY);
+    assert_eq!(rig.render(2), [0.0; 2]);
+    rig.controller.set_param(offset, "offset", f32::NAN);
+    assert_eq!(rig.render(2), [0.0; 2]);
+    rig.controller.set_param(offset, "offset", 1.0);
+    assert_eq!(rig.render(4), [0.25, 0.5, 0.75, 1.0]);
 }
 
 #[test]
