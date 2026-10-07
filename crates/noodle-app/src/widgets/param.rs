@@ -14,8 +14,8 @@
 //! so a whole drag can become one undo step.
 
 use egui::{
-    Align2, ComboBox, CursorIcon, Id, Key, Modifiers, Rect, Response, Sense, StrokeKind, TextEdit,
-    TextStyle, Ui, WidgetInfo, pos2, vec2,
+    Align2, ComboBox, CursorIcon, FontId, Id, Key, Modifiers, Rect, Response, Sense, StrokeKind,
+    TextEdit, TextStyle, Ui, WidgetInfo, pos2, vec2,
 };
 use noodle_core::{Command, NodeId};
 use noodle_engine::{ParamInfo, ParamKind};
@@ -93,6 +93,8 @@ pub struct ParamField<'a> {
     value: f32,
     compact: bool,
     width: Option<f32>,
+    height: Option<f32>,
+    zoom: f32,
 }
 
 impl<'a> ParamField<'a> {
@@ -106,6 +108,8 @@ impl<'a> ParamField<'a> {
             value,
             compact: false,
             width: None,
+            height: None,
+            zoom: 1.0,
         }
     }
 
@@ -143,18 +147,48 @@ impl<'a> ParamField<'a> {
         }
     }
 
+    /// Scales the text and height, for drawing inside a zoomed canvas.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "for the node editor, which lands separately")
+    )]
+    pub fn zoom(mut self, zoom: f32) -> Self {
+        self.zoom = zoom;
+        self
+    }
+
+    /// Shows the field filling `rect`, in screen space, e.g. a row of a node
+    /// body that the editor has already laid out and scaled. Combine with
+    /// [`zoom`](Self::zoom) so the text scales too.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "for the node editor, which lands separately")
+    )]
+    pub fn show_at(mut self, ui: &mut Ui, rect: Rect) -> ParamOutput {
+        self.width = Some(rect.width());
+        self.height = Some(rect.height());
+        let builder = egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center));
+        ui.scope_builder(builder, |ui| self.show(ui)).inner
+    }
+
     fn size(&self, ui: &Ui) -> egui::Vec2 {
         let height = ui.spacing().interact_size.y;
         let height = if self.compact { height - 2.0 } else { height };
+        let height = self.height.unwrap_or(height * self.zoom);
         vec2(self.width.unwrap_or_else(|| ui.available_width()), height)
     }
 
-    fn text_style(&self) -> TextStyle {
-        if self.compact {
+    fn font(&self, ui: &Ui) -> FontId {
+        let style = if self.compact {
             TextStyle::Small
         } else {
             TextStyle::Body
-        }
+        };
+        let mut font = style.resolve(ui.style());
+        font.size *= self.zoom;
+        font
     }
 
     fn show_slider(self, ui: &mut Ui) -> ParamOutput {
@@ -258,7 +292,7 @@ impl<'a> ParamField<'a> {
             size,
             TextEdit::singleline(&mut typing.text)
                 .id(typing_id.with("text"))
-                .font(self.text_style()),
+                .font(self.font(ui)),
         );
         if !typing.focused {
             response.request_focus();
@@ -307,7 +341,7 @@ impl<'a> ParamField<'a> {
         }
         painter.rect_stroke(rect, radius, visuals.bg_stroke, StrokeKind::Inside);
 
-        let font = self.text_style().resolve(ui.style());
+        let font = self.font(ui);
         let color = visuals.text_color();
         let pad = ui.spacing().button_padding.x;
         let value = format_value(self.info, self.value);
@@ -332,11 +366,11 @@ impl<'a> ParamField<'a> {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 if !self.compact && !self.label.is_empty() {
-                    ui.label(egui::RichText::new(self.label).text_style(self.text_style()));
+                    ui.label(egui::RichText::new(self.label).font(self.font(ui)));
                 }
                 let selected_text =
                     egui::RichText::new(labels.get(current).map_or("", |l| l.as_ref()))
-                        .text_style(self.text_style());
+                        .font(self.font(ui));
                 ComboBox::from_id_salt(id)
                     .width(ui.available_width())
                     .selected_text(selected_text)

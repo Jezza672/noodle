@@ -319,3 +319,26 @@ fn config_commits_only_when_the_drag_ends() {
     c.frame(&mut h, vec![]);
     assert_eq!(c.edits, [ConfigEdit::Set(Value::Int(6))]);
 }
+
+#[test]
+fn show_at_fills_the_rect_and_zoom_scales_the_height() {
+    let mut h = Harness::new();
+    let info = ParamInfo::new(0.0, 1.0, 0.5);
+    let target = Rect::from_min_size(pos2(100.0, 50.0), vec2(120.0, 30.0));
+    let (mut placed, mut normal, mut zoomed) = (Rect::NOTHING, Rect::NOTHING, Rect::NOTHING);
+    h.frame(vec![], |ui| {
+        placed = ParamField::new("A", &info, 0.5)
+            .compact(true)
+            .show_at(ui, target)
+            .response
+            .rect;
+        normal = ParamField::new("B", &info, 0.5).show(ui).response.rect;
+        zoomed = ParamField::new("C", &info, 0.5)
+            .zoom(2.0)
+            .show(ui)
+            .response
+            .rect;
+    });
+    assert_eq!(placed, target);
+    assert_eq!(zoomed.height(), normal.height() * 2.0);
+}
