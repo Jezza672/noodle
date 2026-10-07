@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use egui::epaint::PathShape;
 use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::{NodeId, Project};
-use noodle_engine::{Level, ScopeView, Telemetry};
+use noodle_engine::{Level, MeterReader, ScopeView, Telemetry};
 use noodle_nodes::{METER_ID, SCOPE_ID};
 
 use crate::theme::editor as colors;
@@ -46,6 +46,8 @@ pub fn paint(
 /// What the bodies show, read from the engine once a frame.
 #[derive(Default)]
 pub struct Bodies {
+    /// The editor's own reader, so other views still see every peak.
+    reader: Option<MeterReader>,
     meters: HashMap<NodeId, Vec<MeterChannel>>,
     scopes: HashMap<NodeId, ScopeView>,
 }
@@ -55,13 +57,18 @@ impl Bodies {
     /// time since the last update, in seconds, for the peaks' decay.
     pub fn update(&mut self, telemetry: &Telemetry, project: &Project, dt: f32) {
         let graph = project.graph();
+        // A new session brings a new hub.
+        if !self.reader.as_ref().is_some_and(|r| r.reads(telemetry)) {
+            self.reader = None;
+        }
+        let reader = &*self.reader.get_or_insert_with(|| telemetry.meter_reader());
         self.meters.retain(|&id, _| graph.node(id).is_some());
         self.scopes.retain(|&id, _| graph.node(id).is_some());
         for (id, node) in graph.nodes() {
             match node.type_id.as_str() {
                 METER_ID => {
                     let channels = self.meters.entry(id).or_default();
-                    let levels = telemetry.meter(id).unwrap_or_default();
+                    let levels = reader.meter(id).unwrap_or_default();
                     channels.resize_with(levels.len(), MeterChannel::default);
                     for (channel, level) in channels.iter_mut().zip(levels) {
                         channel.update(level, dt);

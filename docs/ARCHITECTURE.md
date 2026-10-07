@@ -302,8 +302,10 @@ glitches in `Health`.
   always the instance that's playing.
 - **Meters** are atomics per channel. The audio thread raises the peak with
   `fetch_max` on the float's bits (integer order is float order for
-  non-negative floats) and stores the smoothed RMS. The UI takes the peak,
-  resetting it, so it sees the highest peak since its last frame.
+  non-negative floats) and stores the smoothed RMS. Views read through
+  their own `MeterReader`. A read takes the peak, resetting it, and folds it
+  into a held peak for every reader, so each view (the editor every frame, a
+  mixer now and then) sees the highest peak since its own last read.
 - **Scopes** are `rtrb` SPSC ring buffers of interleaved frames, holding about
   a second. When the ring is full, new frames are dropped whole, so channels
   stay aligned. The hub keeps the most recent second it has read in a

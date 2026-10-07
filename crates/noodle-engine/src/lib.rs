@@ -38,4 +38,4 @@ pub use registry::Registry;
 pub use render::{Render, RenderError, render};
 pub use runtime::{Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
-pub use telemetry::{Level, MeterWriter, ScopeView, ScopeWriter, Telemetry};
+pub use telemetry::{Level, MeterReader, MeterWriter, ScopeView, ScopeWriter, Telemetry};
