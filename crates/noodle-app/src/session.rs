@@ -61,7 +61,6 @@ pub struct Session {
     project: Project,
     history: History,
     registry: Registry,
-    #[expect(dead_code, reason = "meters and scopes aren't drawn yet")]
     telemetry: Telemetry,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
@@ -130,7 +129,6 @@ impl Session {
     }
 
     /// Where meter and scope nodes report what they measure.
-    #[expect(dead_code, reason = "meters and scopes aren't drawn yet")]
     pub fn telemetry(&self) -> &Telemetry {
         &self.telemetry
     }

@@ -19,13 +19,16 @@ impl Scope {
     }
 }
 
+/// The Scope's type ID.
+pub const SCOPE_ID: &str = "noodle.view.scope";
+
 const IN: usize = 0;
 
 /// How much the scope buffers for the UI, which reads it every frame.
 const BUFFER_SECONDS: f32 = 1.0;
 
 static INFO: NodeInfo = NodeInfo {
-    id: "noodle.view.scope",
+    id: SCOPE_ID,
     version: 1,
     name: "Scope",
     category: "Views",
