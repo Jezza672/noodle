@@ -13,9 +13,10 @@ use std::path::Path;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
+use symphonia::core::units::Timestamp;
 
 use crate::Audio;
 
@@ -134,6 +135,33 @@ impl Decoder {
 
     pub fn info(&self) -> FileInfo {
         self.info
+    }
+
+    /// Moves to `frame`, a position in the file's own frames. Returns the
+    /// frame the decoder actually landed on, which is at or before the one
+    /// asked for in compressed formats; the caller skips the difference. A
+    /// seek past the end lands at the end.
+    pub fn seek(&mut self, frame: u64) -> Result<u64, DecodeError> {
+        let ts = Timestamp::new(i64::try_from(frame).unwrap_or(i64::MAX));
+        let seeked = self.format.seek(
+            SeekMode::Accurate,
+            SeekTo::Timestamp {
+                ts,
+                track_id: self.track_id,
+            },
+        );
+        match seeked {
+            Ok(to) => {
+                self.decoder.reset();
+                Ok(u64::try_from(to.actual_ts.get()).unwrap_or(0))
+            }
+            // Past the end of the file: there is nothing left to read.
+            Err(Error::SeekError(_)) => {
+                self.decoder.reset();
+                Ok(self.info.frames.unwrap_or(frame).min(frame))
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Replaces `out` with the next chunk of interleaved samples. Returns the
