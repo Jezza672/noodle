@@ -10,6 +10,7 @@ cpal = "0.18.2"
 hound = "3.5.1"
 noodle-engine.workspace = true
 rtrb = "0.4.0"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 noodle-core.workspace = true

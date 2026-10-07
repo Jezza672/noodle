@@ -259,6 +259,11 @@ changes and on Refresh, never per frame, because probing devices is slow.
 It offers only sample rates both the output and the chosen input support,
 and when the devices change it drops a rate or buffer size they don't
 support, so Apply can't hand back settings that fail to open.
+Applied settings are saved to `prefs.ron` in the user's config directory
+(`noodle-app/src/prefs.rs`) and loaded at startup, so they survive
+restarts. Missing fields take their defaults, so the file stays readable as
+settings are added, and a broken file is reported and ignored rather than
+stopping the app.
 
 **Device input** is off unless `AudioConfig::input` picks a device, since
 opening a microphone can prompt for permission. It runs at the output's
