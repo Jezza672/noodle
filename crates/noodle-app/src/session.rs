@@ -161,19 +161,11 @@ impl Session {
         &self.telemetry
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the device picker isn't built yet")
-    )]
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio_config
     }
 
     /// Chooses the device to play on. If playing, playback restarts there.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the device picker isn't built yet")
-    )]
     pub fn set_audio_config(&mut self, config: AudioConfig) {
         self.audio_config = config;
         if self.audio.take().is_some() {

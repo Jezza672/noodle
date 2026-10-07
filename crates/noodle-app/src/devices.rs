@@ -36,7 +36,7 @@ impl Default for DevicePicker {
 impl DevicePicker {
     /// A picker that lists devices with the given functions, so tests can
     /// supply their own.
-    fn with_lister(
+    pub(crate) fn with_lister(
         list_hosts: fn() -> Vec<HostInfo>,
         list_devices: fn(Option<&str>) -> Result<DeviceList, AudioError>,
     ) -> Self {
