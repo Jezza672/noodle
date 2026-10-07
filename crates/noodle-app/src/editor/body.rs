@@ -68,9 +68,9 @@ impl Bodies {
                     }
                 }
                 SCOPE_ID => {
-                    let view = self.scopes.entry(id).or_default();
+                    let view = self.scopes.entry(id).or_insert_with(scope_view);
                     if !telemetry.read_scope(id, view) {
-                        *view = ScopeView::default();
+                        *view = scope_view();
                     }
                 }
                 _ => {}
@@ -165,14 +165,18 @@ fn meter(painter: &Painter, area: Rect, zoom: f32, channels: Option<&Vec<MeterCh
             } else {
                 colors::TEXT
             };
-            painter.vline(x_at(channel.hold), bar.y_range(), Stroke::new(zoom, color));
+            painter.vline(
+                x_at(channel.hold),
+                bar.y_range(),
+                Stroke::new(zoom.max(1.0), color),
+            );
         }
     }
     // 0 dB, so overs are easy to see.
     painter.vline(
         x_at(1.0),
         area.y_range(),
-        Stroke::new(zoom, colors::TEXT_WEAK),
+        Stroke::new(zoom.max(1.0), colors::TEXT_WEAK),
     );
 }
 
@@ -224,6 +228,12 @@ fn scope(painter: &Painter, area: Rect, zoom: f32, view: Option<&ScopeView>) {
             Stroke::new(zoom.max(1.0), colors::SCOPE_TRACE),
         ));
     }
+}
+
+/// A view holding only as much history as the scope draws from: the window
+/// shown, and the windows searched before it for a trigger.
+fn scope_view() -> ScopeView {
+    ScopeView::tail(SCOPE_FRAMES * (TRIGGER_SEARCH_WINDOWS + 1))
 }
 
 /// How far back, in windows, the scope looks for a crossing to trigger on.
