@@ -142,6 +142,8 @@ impl App {
         // A text field gets plain keys like Space.
         let typing = ctx.egui_wants_keyboard_input();
         // A dialog has the user's attention; shortcuts would act behind it.
+        // The editor's own keys are safe too, since they need the pointer
+        // over the canvas and a modal's backdrop covers it. Keep it so.
         let dialog = self.devices.is_open() || self.confirming.is_some();
         ctx.input_mut(|input| {
             let mut actions = Vec::new();

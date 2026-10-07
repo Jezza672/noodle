@@ -254,8 +254,9 @@ opens. Changing any of these means a new engine, since `Settings` are
 fixed for an engine's lifetime. In the app, the audio settings dialog
 (`noodle-app/src/devices.rs`) edits a copy of the session's `AudioConfig`
 and hands it back on Apply; if audio is playing, it restarts on the new
-devices. It opens from File → Audio Settings… (Cmd/Ctrl+,). It lists devices when it opens, when the host
-changes and on Refresh, never per frame, because probing devices is slow.
+devices. It opens from File → Audio Settings… (Cmd/Ctrl+,). It lists
+devices when it opens, when the host changes and on Refresh, never per
+frame, because probing devices is slow.
 It offers only sample rates both the output and the chosen input support,
 and when the devices change it drops a rate or buffer size they don't
 support, so Apply can't hand back settings that fail to open.
