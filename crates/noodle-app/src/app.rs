@@ -71,6 +71,14 @@ impl Action {
     fn discards(self) -> bool {
         matches!(self, Self::New | Self::Open | Self::Close)
     }
+
+    /// Whether a focused text field gets its key first. Space types a
+    /// space, and Cmd+Z undoes the text, not the project edit before it. The
+    /// others (New, Open, Save and the rest) are chords a text field has no
+    /// use for; a new shortcut should ask which kind it is.
+    fn yields_to_text(self) -> bool {
+        matches!(self, Self::TogglePlayback | Self::Undo | Self::Redo)
+    }
 }
 
 impl App {
@@ -157,7 +165,7 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
-        // A text field gets plain keys like Space.
+        // A text field keeps the keys it uses itself.
         let typing = ctx.egui_wants_keyboard_input();
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
@@ -167,9 +175,7 @@ impl App {
             let mut actions = Vec::new();
             let shortcuts = if dialog { &[][..] } else { &SHORTCUTS[..] };
             for &(shortcut, action) in shortcuts {
-                if (action != Action::TogglePlayback || !typing)
-                    && input.consume_shortcut(&shortcut)
-                {
+                if !(typing && action.yields_to_text()) && input.consume_shortcut(&shortcut) {
                     actions.push(action);
                 }
             }
@@ -611,7 +617,7 @@ mod tests {
     }
 
     /// Two sines, the first active, in a harness big enough for both panels.
-    fn two_sines() -> Harness<'static, App> {
+    fn two_placed_sines() -> Harness<'static, App> {
         let mut app = empty();
         for (n, x) in [(1, 0.0), (2, 300.0)] {
             let node = Node::new("noodle.osc.sine").at(x, 100.0);
@@ -625,6 +631,27 @@ mod tests {
             .with_size(egui::Vec2::new(1100.0, 700.0))
             .with_step_dt(1.0 / 60.0)
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        harness.run();
+        harness
+    }
+
+    /// An app with two sines, each added as its own undo step, and the
+    /// first selected so the properties panel shows it.
+    fn two_sines() -> Harness<'static, App> {
+        let mut app = empty();
+        for n in 1..=2 {
+            app.session.edit([Edit::Apply(Command::AddNode {
+                id: noodle_core::NodeId(n),
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let mut harness = harness(app);
+        harness
+            .state_mut()
+            .editor
+            .selected
+            .insert(noodle_core::NodeId(1));
+        harness.state_mut().editor.active = Some(noodle_core::NodeId(1));
         harness.run();
         harness
     }
@@ -669,7 +696,7 @@ mod tests {
 
     #[test]
     fn keys_do_nothing_while_a_node_is_dragged() {
-        let mut h = two_sines();
+        let mut h = two_placed_sines();
         let start = title(&h, 1);
         move_to(&mut h, start);
         press_at(&h, start, true);
@@ -691,7 +718,7 @@ mod tests {
 
     #[test]
     fn select_all_mid_drag_leaves_the_panel_slider_alone() {
-        let mut h = two_sines();
+        let mut h = two_placed_sines();
         let start = panel_field(&h);
         move_to(&mut h, start);
         press_at(&h, start, true);
@@ -712,7 +739,7 @@ mod tests {
 
     #[test]
     fn a_drag_whose_widget_disappears_still_ends_its_undo_step() {
-        let mut h = two_sines();
+        let mut h = two_placed_sines();
         let start = panel_field(&h);
         move_to(&mut h, start);
         press_at(&h, start, true);
@@ -742,5 +769,48 @@ mod tests {
             300.0
         );
         assert!(param(&h, 1).is_some(), "only the move was undone");
+    }
+
+    fn node_count(harness: &Harness<'_, App>) -> usize {
+        harness.state().session().project().graph().nodes().count()
+    }
+
+    #[test]
+    fn undo_and_redo_belong_to_a_text_field_while_typing() {
+        let mut harness = two_sines();
+        // One edit is undone already, so there's something to redo.
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1);
+        assert!(harness.state().session().can_redo());
+
+        // The properties panel's field is the rightmost one.
+        let field = harness
+            .query_all_by_label("Frequency")
+            .max_by(|a, b| a.rect().center().x.total_cmp(&b.rect().center().x))
+            .unwrap();
+        field.click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("1000".into()));
+        harness.run();
+
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1, "Cmd+Shift+Z redid a project edit");
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1, "Cmd+Z undid a project edit");
+        assert!(harness.state().session().can_redo());
+
+        // Escape leaves the field, and then both are the project's again.
+        harness.key_press(Key::Escape);
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 2);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1);
     }
 }

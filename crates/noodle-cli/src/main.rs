@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
 use noodle_engine::{Diagnostic, Registry, Settings, render};
-use noodle_io::{AudioConfig, InputChoice};
+use noodle_io::{AudioConfig, InputChoice, Stream};
 
 #[derive(Parser)]
 #[command(
@@ -196,16 +196,24 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
 
     let mut underruns = 0;
     let mut input_glitches = 0;
+    let mut input_lost = false;
     loop {
         thread::sleep(POLL);
         controller.maintain();
 
         let health = playback.health();
-        for error in health.errors() {
-            if noodle_io::is_fatal(&error) {
-                return Err(format!("playback stopped: {error}"));
+        for (stream, error) in health.errors() {
+            match (stream, noodle_io::is_fatal(&error)) {
+                (Stream::Output, true) => return Err(format!("playback stopped: {error}")),
+                // The sound goes on; Input nodes just go quiet.
+                (Stream::Input, true) if !input_lost => {
+                    eprintln!("warning: input lost: {error}");
+                    input_lost = true;
+                }
+                // A backend may follow the cause with more.
+                (Stream::Input, true) => {}
+                (_, false) => eprintln!("warning: {error}"),
             }
-            eprintln!("warning: {error}");
         }
         // Summarised, since a struggling machine can underrun constantly.
         let total = health.underruns();
@@ -213,8 +221,9 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
             eprintln!("warning: {} underruns", total - underruns);
             underruns = total;
         }
+        // Once the input is lost, every block comes up dry and counts again.
         let total = health.input_glitches();
-        if total > input_glitches {
+        if total > input_glitches && !input_lost {
             eprintln!("warning: {} input glitches", total - input_glitches);
             input_glitches = total;
         }
