@@ -85,10 +85,8 @@ pub struct Session {
 struct Audio {
     playback: Playback,
     controller: Controller,
-    /// The counts last reported to the user.
-    reported: Glitches,
-    /// Why the input stopped after playback began. The output carries on.
-    input_lost: Option<String>,
+    /// What the user has been told about the devices.
+    monitor: Monitor,
 }
 
 /// Running totals of audible trouble since playback started.
@@ -375,8 +373,7 @@ impl Session {
                 self.audio = Some(Audio {
                     playback,
                     controller,
-                    reported: Glitches::default(),
-                    input_lost: None,
+                    monitor: Monitor::default(),
                 });
                 self.recompile();
             }
@@ -390,7 +387,7 @@ impl Session {
         let audio = self.audio.as_ref()?;
         match audio.playback.input_problem() {
             Some(problem) => Some(no_input(problem)),
-            None => audio.input_lost.clone(),
+            None => audio.monitor.input_lost.clone(),
         }
     }
 
@@ -406,30 +403,16 @@ impl Session {
         };
         audio.controller.maintain();
         let health = audio.playback.health();
-        let verdict = judge(health.errors());
-        if let Some(message) = verdict.message {
-            self.message = Some(message);
-        }
-        // Said once when it happens; the status bar keeps "No input" up.
-        if let Some(message) = verdict.input_lost {
-            self.message = Some(message.clone());
-            audio.input_lost = Some(message);
-        }
         let now = Glitches {
             underruns: health.underruns(),
-            // A lost input is already reported, and every block after it
-            // would count again.
-            input: match audio.input_lost {
-                Some(_) => audio.reported.input,
-                None => health.input_glitches(),
-            },
+            input: health.input_glitches(),
         };
-        if let Some(message) = audio.reported.report(now) {
+        let check = audio.monitor.check(health.errors(), now);
+        if let Some(message) = check.message {
             self.message = Some(message);
         }
-        if let Some(message) = verdict.stopped {
+        if check.stopped {
             self.audio = None;
-            self.message = Some(message);
         }
     }
 
@@ -496,6 +479,58 @@ fn count(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// What the user has been told about the devices since playback started.
+#[derive(Debug, Default)]
+struct Monitor {
+    /// The counts last reported.
+    reported: Glitches,
+    /// Why the input stopped after playback began. The output carries on.
+    input_lost: Option<String>,
+}
+
+/// What a check of the devices found.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Check {
+    /// Something to tell the user.
+    message: Option<String>,
+    /// Playback has stopped for good.
+    stopped: bool,
+}
+
+impl Monitor {
+    /// Takes the errors reported since the last check, and the running
+    /// glitch totals.
+    fn check(
+        &mut self,
+        errors: impl IntoIterator<Item = (Stream, DeviceError)>,
+        mut now: Glitches,
+    ) -> Check {
+        let verdict = judge(errors);
+        let mut message = verdict.message;
+        // Said once when it happens, and the first cause is kept; the status
+        // bar keeps "No input" up.
+        if let Some(lost) = verdict.input_lost
+            && self.input_lost.is_none()
+        {
+            message = Some(lost.clone());
+            self.input_lost = Some(lost);
+        }
+        // A lost input is already reported, and every block after it would
+        // count as another glitch.
+        if self.input_lost.is_some() {
+            now.input = self.reported.input;
+        }
+        if let Some(glitches) = self.reported.report(now) {
+            message = Some(glitches);
+        }
+        let stopped = verdict.stopped.is_some();
+        if stopped {
+            message = verdict.stopped;
+        }
+        Check { message, stopped }
+    }
+}
+
 /// What a batch of device errors means for playback.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Verdict {
@@ -513,8 +548,17 @@ fn judge(errors: impl IntoIterator<Item = (Stream, DeviceError)>) -> Verdict {
     let mut verdict = Verdict::default();
     for (stream, error) in errors {
         match (stream, noodle_io::is_fatal(&error)) {
-            (Stream::Output, true) => verdict.stopped = Some(format!("Playback stopped: {error}")),
-            (Stream::Input, true) => verdict.input_lost = Some(format!("Input lost: {error}")),
+            // The first error is the cause; a backend may follow it with more.
+            (Stream::Output, true) => {
+                verdict
+                    .stopped
+                    .get_or_insert_with(|| format!("Playback stopped: {error}"));
+            }
+            (Stream::Input, true) => {
+                verdict
+                    .input_lost
+                    .get_or_insert_with(|| format!("Input lost: {error}"));
+            }
             (_, false) => verdict.message = Some(error.to_string()),
         }
     }
@@ -604,6 +648,80 @@ mod tests {
         ]);
         assert!(verdict.stopped.unwrap().starts_with("Playback stopped: "));
         assert!(verdict.input_lost.is_some());
+    }
+
+    #[test]
+    fn the_first_fatal_error_is_the_cause() {
+        use noodle_io::DeviceErrorKind::*;
+        let verdict = judge([
+            (Stream::Input, error(DeviceNotAvailable)),
+            (Stream::Input, error(BackendError)),
+            (Stream::Output, error(PermissionDenied)),
+            (Stream::Output, error(BackendError)),
+        ]);
+        let said = |kind, prefix| format!("{prefix}: {}", error(kind));
+        assert_eq!(
+            verdict.input_lost,
+            Some(said(DeviceNotAvailable, "Input lost"))
+        );
+        assert_eq!(
+            verdict.stopped,
+            Some(said(PermissionDenied, "Playback stopped"))
+        );
+    }
+
+    fn glitches(underruns: u64, input: u64) -> Glitches {
+        Glitches { underruns, input }
+    }
+
+    #[test]
+    fn a_lost_input_is_reported_once_and_playback_goes_on() {
+        use noodle_io::DeviceErrorKind::*;
+        let mut monitor = Monitor::default();
+        let check = monitor.check([(Stream::Input, error(DeviceNotAvailable))], glitches(0, 0));
+        assert!(!check.stopped);
+        assert!(check.message.unwrap().starts_with("Input lost: "));
+        let cause = monitor.input_lost.clone().unwrap();
+
+        // A follow-up error neither repeats the message nor replaces the cause.
+        let check = monitor.check([(Stream::Input, error(BackendError))], glitches(0, 0));
+        assert_eq!(check, Check::default());
+        assert_eq!(monitor.input_lost, Some(cause));
+    }
+
+    #[test]
+    fn after_the_input_is_lost_its_glitches_stop_being_reported() {
+        use noodle_io::DeviceErrorKind::*;
+        let mut monitor = Monitor::default();
+        // Before the loss, input glitches are reported as usual.
+        let check = monitor.check([], glitches(0, 2));
+        assert!(check.message.unwrap().contains("2 input glitches"));
+        monitor.check([(Stream::Input, error(DeviceNotAvailable))], glitches(0, 2));
+
+        // Every block now comes up dry, but that's the loss, not new news.
+        let check = monitor.check([], glitches(0, 500));
+        assert_eq!(check, Check::default());
+        // Underruns are still the output's business.
+        let check = monitor.check([], glitches(3, 900));
+        let message = check.message.unwrap();
+        assert!(message.contains("3 underruns"), "{message}");
+        assert!(!message.contains("input glitch"), "{message}");
+        assert!(!check.stopped);
+    }
+
+    #[test]
+    fn only_a_lost_output_stops_playback() {
+        use noodle_io::DeviceErrorKind::*;
+        let mut monitor = Monitor::default();
+        let check = monitor.check(
+            [
+                (Stream::Input, error(DeviceNotAvailable)),
+                (Stream::Output, error(DeviceNotAvailable)),
+            ],
+            glitches(0, 0),
+        );
+        assert!(check.stopped);
+        assert!(check.message.unwrap().starts_with("Playback stopped: "));
     }
 
     #[test]

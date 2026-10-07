@@ -196,6 +196,7 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
 
     let mut underruns = 0;
     let mut input_glitches = 0;
+    let mut input_lost = false;
     loop {
         thread::sleep(POLL);
         controller.maintain();
@@ -205,7 +206,12 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
             match (stream, noodle_io::is_fatal(&error)) {
                 (Stream::Output, true) => return Err(format!("playback stopped: {error}")),
                 // The sound goes on; Input nodes just go quiet.
-                (Stream::Input, true) => eprintln!("warning: input lost: {error}"),
+                (Stream::Input, true) if !input_lost => {
+                    eprintln!("warning: input lost: {error}");
+                    input_lost = true;
+                }
+                // A backend may follow the cause with more.
+                (Stream::Input, true) => {}
                 (_, false) => eprintln!("warning: {error}"),
             }
         }
@@ -215,8 +221,9 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
             eprintln!("warning: {} underruns", total - underruns);
             underruns = total;
         }
+        // Once the input is lost, every block comes up dry and counts again.
         let total = health.input_glitches();
-        if total > input_glitches {
+        if total > input_glitches && !input_lost {
             eprintln!("warning: {} input glitches", total - input_glitches);
             input_glitches = total;
         }
