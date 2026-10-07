@@ -102,6 +102,7 @@ pub mod editor {
             "Input/Output" => Color32::from_rgb(130, 50, 50),
             "Polyphony" => Color32::from_rgb(120, 90, 40),
             "Offline" => Color32::from_rgb(90, 90, 40),
+            "Group" => Color32::from_rgb(70, 70, 100),
             "Views" => Color32::from_rgb(60, 100, 60),
             _ => Color32::from_gray(70),
         }

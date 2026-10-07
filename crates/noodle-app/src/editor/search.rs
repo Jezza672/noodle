@@ -1,6 +1,7 @@
 //! Shift+A: search for a node type, and add it where the pointer was.
 
 use egui::{Key, Pos2};
+use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_engine::Registry;
 
 /// The add-node search box.
@@ -12,6 +13,9 @@ pub struct Search {
     query: String,
     highlighted: usize,
     focused: bool,
+    /// Whether the editor is inside a group, which is where group inputs and
+    /// outputs make sense.
+    in_group: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +40,7 @@ pub struct Entry {
 /// Everything that can be added that matches every word of `query`, by name,
 /// category or ID. Those whose name matches come first, then they're ordered
 /// by category and name.
-pub fn entries(registry: &Registry, query: &str) -> Vec<Entry> {
+pub fn entries(registry: &Registry, query: &str, in_group: bool) -> Vec<Entry> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut entries: Vec<Entry> = registry
         .iter()
@@ -49,10 +53,34 @@ pub fn entries(registry: &Registry, query: &str) -> Vec<Entry> {
             }
         })
         .chain([Entry {
+            name: "Group",
+            category: "Group",
+            choice: Choice::Node(GROUP),
+        }])
+        // Frames belong to the top level for now, so inside a group there
+        // would be nowhere to see or delete one.
+        .chain((!in_group).then_some(Entry {
             name: "Frame",
             category: "Layout",
             choice: Choice::Frame,
-        }])
+        }))
+        .chain(
+            in_group
+                .then_some([
+                    Entry {
+                        name: "Group Input",
+                        category: "Group",
+                        choice: Choice::Node(GROUP_INPUT),
+                    },
+                    Entry {
+                        name: "Group Output",
+                        category: "Group",
+                        choice: Choice::Node(GROUP_OUTPUT),
+                    },
+                ])
+                .into_iter()
+                .flatten(),
+        )
         .filter(|entry| {
             let id = match entry.choice {
                 Choice::Node(id) => id,
@@ -73,13 +101,14 @@ pub fn entries(registry: &Registry, query: &str) -> Vec<Entry> {
 }
 
 impl Search {
-    pub fn new(at: Pos2, screen: Pos2) -> Self {
+    pub fn new(at: Pos2, screen: Pos2, in_group: bool) -> Self {
         Self {
             at,
             screen,
             query: String::new(),
             highlighted: 0,
             focused: false,
+            in_group,
         }
     }
 
@@ -113,7 +142,7 @@ impl Search {
                         self.highlighted = 0;
                     }
 
-                    let entries = entries(registry, &self.query);
+                    let entries = entries(registry, &self.query, self.in_group);
                     let last = entries.len().saturating_sub(1);
                     if down {
                         self.highlighted = (self.highlighted + 1).min(last);
@@ -178,8 +207,12 @@ mod tests {
     #[test]
     fn every_word_must_match_the_name_category_or_id() {
         let registry = registry();
-        let names =
-            |query| -> Vec<&str> { entries(&registry, query).iter().map(|e| e.name).collect() };
+        let names = |query| -> Vec<&str> {
+            entries(&registry, query, false)
+                .iter()
+                .map(|e| e.name)
+                .collect()
+        };
         assert_eq!(names("gain"), ["Gain"]);
         assert_eq!(names("GEN sine"), ["Sine"]);
         // By ID.
@@ -189,9 +222,29 @@ mod tests {
     }
 
     #[test]
+    fn group_ports_are_offered_only_inside_a_group() {
+        let registry = registry();
+        let outside = entries(&registry, "group", false);
+        assert_eq!(outside.len(), 1);
+        let inside = entries(&registry, "group", true);
+        assert_eq!(inside.len(), 3);
+        // Frames are only offered at the top level.
+        assert!(
+            entries(&registry, "frame", false)
+                .iter()
+                .any(|e| e.name == "Frame")
+        );
+        assert!(
+            entries(&registry, "frame", true)
+                .iter()
+                .all(|e| e.name != "Frame")
+        );
+    }
+
+    #[test]
     fn name_matches_come_first() {
         let registry = registry();
-        let names = entries(&registry, "output");
+        let names = entries(&registry, "output", false);
         assert_eq!(names[0].name, "Output");
         assert!(names.iter().any(|e| e.name == "Input"), "by category");
     }
@@ -199,11 +252,11 @@ mod tests {
     #[test]
     fn everything_is_listed_by_category() {
         let registry = registry();
-        let all = entries(&registry, "");
+        let all = entries(&registry, "", false);
         assert_eq!(
             all.len(),
-            registry.iter().count() + 1,
-            "the types and Frame"
+            registry.iter().count() + 2,
+            "the types, Frame and Group"
         );
         assert!(
             all.windows(2)
