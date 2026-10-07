@@ -157,17 +157,21 @@ pub(crate) fn build(
         let carried = previous
             .and_then(|p| p.nodes.get(&id))
             .filter(|(old_key, _)| *old_key == key);
-        let instance = match carried {
+        // A node that fails to instantiate plays silence, and isn't recorded
+        // as able to carry over, so the next update retries it and reports
+        // the problem again.
+        let (instance, carries_over) = match carried {
             Some(&(_, old_slot)) => {
                 migrations.push((old_slot, slot));
-                None
+                (None, true)
             }
-            None => Some(instantiate(
-                &scheduled,
-                sample_rate,
-                max_frames,
-                diagnostics,
-            )),
+            None => match instantiate(&scheduled, sample_rate, max_frames) {
+                Ok(node) => (Some(node), true),
+                Err(error) => {
+                    diagnostics.push(Diagnostic::node(id, Problem::Node(error)));
+                    (Some(Box::new(Silence) as Box<dyn Node>), false)
+                }
+            },
         };
 
         let mut inputs = Vec::with_capacity(scheduled.inputs.len());
@@ -230,7 +234,9 @@ pub(crate) fn build(
             event_outputs: Vec::with_capacity(event_outputs.len()),
         };
 
-        info.nodes.insert(id, (key, slot));
+        if carries_over {
+            info.nodes.insert(id, (key, slot));
+        }
         nodes.push(PlanNode {
             instance,
             inputs,
@@ -267,24 +273,30 @@ fn instantiate(
     scheduled: &crate::ScheduledNode,
     sample_rate: f32,
     max_frames: usize,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Box<dyn Node> {
+) -> Result<Box<dyn Node>, NodeError> {
     let setup = Setup {
         config: &scheduled.config,
         sample_rate,
         max_frames,
         input_shapes: &scheduled.input_shapes,
         output_shapes: &scheduled.output_shapes,
+        seed: seed_for(scheduled.id),
     };
-    let error = match scheduled.node_type.instantiate(&setup) {
-        Ok(Instance::Realtime(node)) => return node,
-        Ok(Instance::Offline(_)) => {
-            NodeError::config("node type bug: offline instance for a real-time layout")
-        }
-        Err(error) => error,
-    };
-    diagnostics.push(Diagnostic::node(scheduled.id, Problem::Node(error)));
-    Box::new(Silence)
+    match scheduled.node_type.instantiate(&setup)? {
+        Instance::Realtime(node) => Ok(node),
+        Instance::Offline(_) => Err(NodeError::config(
+            "node type bug: offline instance for a real-time layout",
+        )),
+    }
+}
+
+/// A well-mixed seed from a node ID (SplitMix64), so neighbouring IDs get
+/// unrelated seeds.
+fn seed_for(id: NodeId) -> u64 {
+    let mut z = id.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// Stands in for a node that couldn't be instantiated.

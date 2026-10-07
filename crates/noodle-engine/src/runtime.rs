@@ -6,6 +6,8 @@
 //! old plans come back to be freed off the audio thread. Parameter values are
 //! shared atomics, so changing one doesn't need a recompile or a queue.
 
+use std::fmt;
+
 use noodle_core::{Graph, NodeId};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
@@ -24,10 +26,47 @@ pub struct Settings {
     pub channels: usize,
 }
 
+impl Settings {
+    /// Checks the settings an engine relies on. They usually come from an
+    /// audio device, so they're checked rather than trusted.
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        if !(self.sample_rate.is_finite() && self.sample_rate > 0.0) {
+            return Err(SettingsError::SampleRate(self.sample_rate));
+        }
+        if self.max_frames == 0 {
+            return Err(SettingsError::MaxFrames);
+        }
+        if self.channels == 0 {
+            return Err(SettingsError::Channels);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SettingsError {
+    SampleRate(f32),
+    MaxFrames,
+    Channels,
+}
+
+impl fmt::Display for SettingsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SampleRate(rate) => write!(f, "sample rate must be positive, not {rate}"),
+            Self::MaxFrames => f.write_str("block size must be at least one frame"),
+            Self::Channels => f.write_str("output needs at least one channel"),
+        }
+    }
+}
+
+impl std::error::Error for SettingsError {}
+
 const PLAN_QUEUE: usize = 4;
 const RETURN_QUEUE: usize = 8;
 
-pub fn engine(settings: Settings) -> (Controller, Processor) {
+pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsError> {
+    settings.validate()?;
     let (plans, incoming) = RingBuffer::new(PLAN_QUEUE);
     let (returns, returned) = RingBuffer::new(RETURN_QUEUE);
     let controller = Controller {
@@ -46,7 +85,7 @@ pub fn engine(settings: Settings) -> (Controller, Processor) {
         returns,
         position: 0,
     };
-    (controller, processor)
+    Ok((controller, processor))
 }
 
 /// Compiles graphs into plans and sends them to the [`Processor`].

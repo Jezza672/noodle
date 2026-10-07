@@ -36,6 +36,18 @@ impl Harness {
         sample_rate: f32,
         max_frames: usize,
     ) -> Result<Self, NodeError> {
+        Self::with_seed(node_type, config, connected, sample_rate, max_frames, 0)
+    }
+
+    /// Like [`new`](Self::new), with the seed the node gets in [`Setup`].
+    pub fn with_seed(
+        node_type: &dyn NodeType,
+        config: &Config,
+        connected: &[(usize, Shape)],
+        sample_rate: f32,
+        max_frames: usize,
+        seed: u64,
+    ) -> Result<Self, NodeError> {
         let connected_shape =
             |port: usize| connected.iter().find(|(p, _)| *p == port).map(|(_, s)| *s);
 
@@ -56,6 +68,7 @@ impl Harness {
             max_frames,
             input_shapes: &input_shapes,
             output_shapes: &output_shapes,
+            seed,
         })?;
         assert_eq!(
             instance.mode(),
