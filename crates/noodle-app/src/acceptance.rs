@@ -89,11 +89,12 @@ fn wire(h: &mut H, from: (NodeId, &str), to: (NodeId, &str)) {
     drag(h, &path);
 }
 
-/// The meter's peak since it was last read.
+/// The meter's smoothed RMS. Not its peak: reading that resets it, and the
+/// editor reads it every frame to draw the meter.
 #[cfg(target_os = "linux")]
-fn peak(h: &H, meter: NodeId) -> f32 {
+fn rms(h: &H, meter: NodeId) -> f32 {
     let levels = h.state().session().telemetry().meter(meter);
-    levels.expect("the meter is running")[0].peak
+    levels.expect("the meter is running")[0].rms
 }
 
 fn socket(h: &H, node: NodeId, output: bool, key: &str) -> Pos2 {
@@ -197,7 +198,8 @@ fn build_a_patch_play_and_tweak_it_save_and_reopen_it() {
         assert!(session.is_playing(), "{:?}", session.message());
         assert_eq!(session.input_problem(), None);
         play_for(&mut h, Duration::from_millis(200));
-        assert!(peak(&h, meter) > 0.5, "the sine reaches the meter");
+        // A full-scale sine settles at about 0.707.
+        assert!(rms(&h, meter) > 0.3, "the sine reaches the meter");
     }
     let select = socket(&h, sine, true, "out") - Vec2::new(60.0, 0.0);
     drag(&mut h, &[select]);
@@ -214,7 +216,7 @@ fn build_a_patch_play_and_tweak_it_save_and_reopen_it() {
         assert!(session.is_playing(), "{:?}", session.message());
         // Underruns, input glitches and device errors all land here.
         assert_eq!(session.message(), None, "playback was clean");
-        assert!(peak(&h, meter) > 0.5, "still playing after the tweak");
+        assert!(rms(&h, meter) > 0.3, "still playing after the tweak");
     }
 
     // Save, and reopen it as it was.
