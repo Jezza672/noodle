@@ -404,19 +404,33 @@ Settled for M2 (Phase 0):
 - **Blocks.** The transport splits a block at the loop end, so a block never
   crosses the wrap. It does not split at tempo changes: the block's timeline
   info carries the tick and tempo at its start, so a tempo change reaches
-  tempo-synced nodes at the next block (a millisecond or so). Track inputs
-  work in samples and aren't affected.
-- **Editing the tempo map while playing.** The playhead keeps its tick. The
-  transport recomputes its sample position from the new map, and clip
-  track inputs get their new schedule in the next plan, crossing over with the
-  usual 5 ms structural-edit fade.
+  tempo-synced nodes at the next block. That lag is bounded by `max_frames`
+  (512 in the app, about 11 ms at 48 kHz), which is fine for LFOs and delays.
+  Track inputs work in samples and aren't affected.
+- **Editing the tempo map or a clip while playing.** The playhead keeps its
+  tick, since that is what the user sees. Three things make that work:
+  - **The new sample position is computed on the audio thread**, when the
+    plan is installed, from the playhead's tick under the old map and the
+    new map's table. The playhead moves while the UI thread builds the plan,
+    so working it out on the UI thread would be racy.
+  - **The plan is marked as a discontinuity** when installing it changes the
+    playhead's sample position or a track input's schedule. Today only a
+    change to the audible wiring makes a plan non-seamless (and so gets the 5
+    ms structural-edit fade); the discontinuity flag joins that, so a tempo
+    or clip edit fades out and back in rather than jumping.
+  - **A schedule reaches a carried-over track input without rebuilding it.**
+    Instances are carried over by their `NodeKey` (type, config, shapes), and
+    the schedule is not part of it: rebuilding would throw away the decoder
+    and streaming state mid-clip. The schedule is handed over lock-free, like
+    parameter cells, and the node switches at the start of a block.
 
 ### Clips
 
 Clips are part of the project, not of the graph, like frames. A clip says
 which track input node plays it (`node`), where it starts, and what it
 contains. A clip's content is audio (which part of which file) or, from M3,
-MIDI, and one track holds both kinds. The track itself is a group node, so
+MIDI, and one track holds both kinds. M2 builds the audio side; MIDI clips
+themselves arrive with M3, and the data model leaves room for them. The track itself is a group node, so
 the arrangement view reads the track input node's clips.
 Compiling turns the clips into the schedule the node follows, sorted by
 start; the node only reads that. Clip commands are undoable like any other.
@@ -451,8 +465,11 @@ into a parameter port.** It is not a clip and not a node the user wires.
   wire into an automated parameter wins, and the lane is greyed with a
   diagnostic. Two sources into one input were never allowed anyway.
 - **Without a transport** (a live patch) the lane holds its first value.
-- **Hold steps aren't smoothed.** Parameters already smooth their own changes,
-  so a stepped lane doesn't click.
+- **Hold steps are ramped by the automation node.** An unconnected input
+  smooths its own value changes, but a lane is wired in, so its samples reach
+  the node as they are. The internal automation node therefore ramps the
+  jump at each hold step over the same smoothing length the target would have
+  used, so a stepped lane doesn't click.
 - **The parameter widget.** For a parameter with a lane, the widget shows the
   lane's value at the playhead and is greyed like a wired parameter. The lane
   is edited as a lane.
