@@ -231,7 +231,7 @@ mod tests {
     use crate::Config;
 
     fn add(history: &mut History, project: &mut Project, node: Node) -> NodeId {
-        let id = project.graph_mut().new_id();
+        let id = project.new_node_id();
         history
             .apply(project, Command::AddNode { id, node })
             .unwrap();
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn a_failed_batch_changes_nothing() {
         let (mut p, mut h) = (Project::new(), History::new());
-        let id = p.graph_mut().new_id();
+        let id = p.new_node_id();
         let missing = NodeId(999);
         let batch = Command::Batch(vec![
             Command::AddNode {

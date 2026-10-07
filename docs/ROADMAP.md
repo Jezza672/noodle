@@ -109,6 +109,12 @@ It becomes an instrument.
   - ADSR envelope and LFO.
   - SVF and ladder filters.
   - VCA, unison and spread.
+- **Delay node and feedback loops.**
+  - **Now:** the compiler drops any wire that closes a loop, and shows a
+    diagnostic on it.
+  - **The change:** a node type can declare that its output doesn't depend on
+    its input within the same block, as with a delay of at least one block.
+    The compiler then allows loops that pass through such a node.
 
 **Done when:** you can build a polyphonic subtractive synth from nodes and
 play it from a MIDI keyboard and from a MIDI clip.
