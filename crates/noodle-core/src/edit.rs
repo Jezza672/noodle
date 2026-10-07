@@ -11,7 +11,8 @@ pub enum Command {
         id: NodeId,
         node: Node,
     },
-    /// Also removes the node's connections.
+    /// Also removes the node's connections, and everything inside it if it's
+    /// a group.
     RemoveNode {
         id: NodeId,
     },
@@ -35,6 +36,12 @@ pub enum Command {
     MoveNode {
         node: NodeId,
         position: Position,
+    },
+    /// Moves a node into a group, or `None` out to the top level. The node
+    /// can't be wired to nodes outside its new group.
+    SetParent {
+        node: NodeId,
+        parent: Option<NodeId>,
     },
     AddFrame {
         id: FrameId,
@@ -99,10 +106,21 @@ impl Command {
                 Command::RemoveNode { id }
             }
             Command::RemoveNode { id } => {
-                let (node, connections) = graph.remove_node(id)?;
-                let mut restore = vec![Command::AddNode { id, node }];
-                restore.extend(connections.into_iter().map(Command::Connect));
-                Command::Batch(restore)
+                // Contents first, so a parent is always added back before
+                // the nodes inside it.
+                let mut ids = graph.descendants(id);
+                ids.reverse();
+                ids.push(id);
+                let mut nodes = Vec::new();
+                let mut connections = Vec::new();
+                for id in ids {
+                    let (node, wires) = graph.remove_node(id)?;
+                    nodes.push(Command::AddNode { id, node });
+                    connections.extend(wires.into_iter().map(Command::Connect));
+                }
+                nodes.reverse();
+                nodes.extend(connections);
+                Command::Batch(nodes)
             }
             Command::Connect(connection) => {
                 let input = connection.to.clone();
@@ -145,6 +163,10 @@ impl Command {
                     node,
                     position: old,
                 }
+            }
+            Command::SetParent { node, parent } => {
+                let old = graph.set_parent(node, parent)?;
+                Command::SetParent { node, parent: old }
             }
             Command::Batch(_)
             | Command::AddFrame { .. }
@@ -207,6 +229,13 @@ pub enum EditError {
     ConnectedTwice(Endpoint),
     NoSuchFrame(FrameId),
     FrameExists(FrameId),
+    /// A node's parent, or a wire's ends, aren't in the same group.
+    DifferentGroups(Connection),
+    NotAGroup(NodeId),
+    NothingToGroup,
+    /// A node being grouped has a different parent from the first.
+    NotSiblings(NodeId),
+    GroupInsideItself(NodeId),
 }
 
 impl fmt::Display for EditError {
@@ -218,6 +247,15 @@ impl fmt::Display for EditError {
             Self::ConnectedTwice(input) => write!(f, "{input} has more than one connection"),
             Self::NoSuchFrame(id) => write!(f, "there's no {id}"),
             Self::FrameExists(id) => write!(f, "there's already a {id}"),
+            Self::DifferentGroups(c) => write!(
+                f,
+                "{} and {} aren't in the same group, so they can't be wired together",
+                c.from, c.to
+            ),
+            Self::NothingToGroup => write!(f, "there's nothing selected to group"),
+            Self::NotSiblings(id) => write!(f, "{id} isn't in the same group as the rest"),
+            Self::NotAGroup(id) => write!(f, "{id} isn't a group"),
+            Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
         }
     }
 }

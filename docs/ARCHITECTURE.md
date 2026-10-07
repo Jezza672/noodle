@@ -112,9 +112,17 @@ The **Project** is the single source of truth. It holds one global graph:
 - **Frames** are labelled boxes drawn behind nodes, for organising a patch.
   They're part of the project, so they're saved and undoable, but they're
   layout only and never reach the engine.
-- **Group nodes** contain a subgraph and expose ports through it. A **track**
-  is a group node with a clip source feeding its subgraph. Buses and sends are
-  just wires.
+- **Group nodes** (`noodle.group`) contain a subgraph and expose ports through
+  it. A **track** is a group node with a clip source feeding its subgraph.
+  Buses and sends are just wires.
+  - **One graph.** A node's `parent` says which group it's inside. Wires only
+    join nodes with the same parent, so the editor shows one level at a time.
+  - **Ports.** A group's ports are the boundary nodes inside it: a
+    `noodle.group.input` (output port `out`) per input and a
+    `noodle.group.output` (input port `in`) per output, named by their `name`
+    config. They're structure only, so they need no registry entry.
+  - **Edits.** Removing a group removes its contents, and undo restores them.
+    `group_nodes` folds a selection into a group as one undo step.
 - The timeline and mixer are **views over the graph**, not separate structures.
   The mixer shows each track group's output gain, pan and send nodes, and the
   timeline shows the clips that feed each track.
@@ -180,7 +188,10 @@ the per-sample loop.
    is reused once its last reader has run, and a node's outputs never share a
    buffer with its inputs.
 
-Group nodes are flattened in M2, and cacheability is analysed in M4.
+Before step 1, **group nodes are flattened** (`flatten.rs`): groups and their
+boundary nodes are dropped and each wire through them is joined end to end, so
+a group costs nothing at run time. Nodes keep their IDs, so diagnostics still
+point at the right node. Cacheability is analysed in M4.
 
 **Problems don't stop compilation.** A node that can't run is left out, and
 anything wired to it behaves as if unconnected. A wire that can't work is

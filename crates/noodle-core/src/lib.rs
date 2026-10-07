@@ -6,6 +6,7 @@ mod config;
 mod edit;
 mod frame;
 mod graph;
+pub mod group;
 mod project;
 
 pub use config::{Config, Value};

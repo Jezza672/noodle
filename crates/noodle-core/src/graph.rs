@@ -54,11 +54,17 @@ pub struct Node {
     /// Where the node sits in the editor.
     #[serde(default)]
     pub position: Position,
+    /// The group node this node sits inside, or `None` at the top level.
+    /// Wires only join nodes with the same parent; a group's own ports are
+    /// how signals cross its boundary (see [`group`](crate::group)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<NodeId>,
 }
 
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
         self.type_id == other.type_id
+            && self.parent == other.parent
             && self.config == other.config
             && self.position == other.position
             && self.params.len() == other.params.len()
@@ -77,6 +83,15 @@ impl Node {
             params: BTreeMap::new(),
             config: Config::new(),
             position: Position::default(),
+            parent: None,
+        }
+    }
+
+    /// Puts the node inside a group.
+    pub fn in_group(self, group: NodeId) -> Self {
+        Self {
+            parent: Some(group),
+            ..self
         }
     }
 
@@ -161,6 +176,21 @@ impl Graph {
         Self::default()
     }
 
+    /// Builds a graph from finished parts, with the same checks as loading a
+    /// file. Unlike the mutators this makes a new graph rather than changing
+    /// a project's, so it needs no command; the engine uses it for the
+    /// flattened copy it compiles.
+    pub fn from_parts(
+        nodes: impl IntoIterator<Item = (NodeId, Node)>,
+        connections: impl IntoIterator<Item = Connection>,
+    ) -> Result<Self, EditError> {
+        GraphFile {
+            nodes: nodes.into_iter().collect(),
+            connections: connections.into_iter().collect(),
+        }
+        .try_into()
+    }
+
     pub fn node(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(&id)
     }
@@ -199,12 +229,60 @@ impl Graph {
     }
 
     pub(crate) fn insert_node(&mut self, id: NodeId, node: Node) -> Result<(), EditError> {
+        if let Some(parent) = node.parent {
+            self.check_group(parent)?;
+        }
+        self.insert_node_unchecked(id, node)
+    }
+
+    /// For loading a file, where a node's parent may come later in ID order.
+    fn insert_node_unchecked(&mut self, id: NodeId, node: Node) -> Result<(), EditError> {
         if self.nodes.contains_key(&id) {
             return Err(EditError::NodeExists(id));
         }
         self.nodes.insert(id, node);
         self.next_id = self.next_id.max(id.0 + 1);
         Ok(())
+    }
+
+    /// Errors unless `id` is a group node.
+    fn check_group(&self, id: NodeId) -> Result<(), EditError> {
+        match self.nodes.get(&id) {
+            None => Err(EditError::NoSuchNode(id)),
+            Some(node) if node.type_id != crate::group::GROUP => Err(EditError::NotAGroup(id)),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Moves a node into a group, or out to the top level, and returns where
+    /// it was. The node can't have wires to nodes that would then be in a
+    /// different group, and a group can't be moved inside itself.
+    pub(crate) fn set_parent(
+        &mut self,
+        id: NodeId,
+        parent: Option<NodeId>,
+    ) -> Result<Option<NodeId>, EditError> {
+        let old = self.nodes.get(&id).ok_or(EditError::NoSuchNode(id))?.parent;
+        if let Some(parent) = parent {
+            self.check_group(parent)?;
+            if parent == id || self.is_inside(parent, id) {
+                return Err(EditError::GroupInsideItself(id));
+            }
+        }
+        for connection in self.connections() {
+            let other = if connection.from.node == id {
+                connection.to.node
+            } else if connection.to.node == id {
+                connection.from.node
+            } else {
+                continue;
+            };
+            if self.nodes[&other].parent != parent {
+                return Err(EditError::DifferentGroups(connection));
+            }
+        }
+        self.nodes.get_mut(&id).expect("checked above").parent = parent;
+        Ok(old)
     }
 
     /// Removes a node along with its connections, and returns both.
@@ -225,10 +303,20 @@ impl Graph {
         &mut self,
         connection: Connection,
     ) -> Result<Option<Endpoint>, EditError> {
-        for node in [connection.from.node, connection.to.node] {
-            if !self.nodes.contains_key(&node) {
-                return Err(EditError::NoSuchNode(node));
-            }
+        let mut parents = [None; 2];
+        for (parent, node) in parents
+            .iter_mut()
+            .zip([connection.from.node, connection.to.node])
+        {
+            *parent = Some(
+                self.nodes
+                    .get(&node)
+                    .ok_or(EditError::NoSuchNode(node))?
+                    .parent,
+            );
+        }
+        if parents[0] != parents[1] {
+            return Err(EditError::DifferentGroups(connection));
         }
         Ok(self.sources.insert(connection.to, connection.from))
     }
@@ -265,7 +353,17 @@ impl TryFrom<GraphFile> for Graph {
     fn try_from(file: GraphFile) -> Result<Self, EditError> {
         let mut graph = Graph::new();
         for (id, node) in file.nodes {
-            graph.insert_node(id, node)?;
+            graph.insert_node_unchecked(id, node)?;
+        }
+        let parents: Vec<(NodeId, NodeId)> = graph
+            .nodes()
+            .filter_map(|(id, node)| Some((id, node.parent?)))
+            .collect();
+        for (id, parent) in parents {
+            graph.check_group(parent)?;
+            if parent == id || graph.is_inside(parent, id) {
+                return Err(EditError::GroupInsideItself(id));
+            }
         }
         for connection in file.connections {
             let input = connection.to.clone();
