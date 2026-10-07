@@ -2,6 +2,11 @@
 //! empty one.
 
 mod app;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the shell doesn't open the audio settings yet")
+)]
+mod devices;
 mod editor;
 mod properties;
 mod session;
