@@ -227,6 +227,27 @@ mod tests {
     }
 
     #[test]
+    fn peaks_line_up_with_file_frames_block_by_block() {
+        // A spike just inside a block, far from the start, where a block size
+        // that was slightly off would have drifted by many blocks.
+        let block = u64::from(BLOCK_FRAMES);
+        let spike = block * 1000 + 3;
+        let mut samples = vec![0.0; (block * 1002) as usize];
+        samples[spike as usize] = 0.9;
+        let peaks = Peaks::from_audio(&mono(samples));
+        let loud = Peak { min: 0.0, max: 0.9 };
+        // Exactly the block holding the spike, and not its neighbours.
+        let at = |first: u64| peaks.columns(None, first * block, (first + 1) * block, 1)[0];
+        assert_eq!(at(1000), loud);
+        assert_eq!(at(999), Peak::EMPTY);
+        assert_eq!(at(1001), Peak::EMPTY);
+        // A column starting a frame before the block still sees it; one
+        // starting just after the spike's block does not.
+        assert_eq!(peaks.columns(None, 256_000 - 1, 256_000 + 1, 1)[0], loud);
+        assert_eq!(peaks.columns(None, 256_256, 256_300, 1)[0], Peak::EMPTY);
+    }
+
+    #[test]
     fn streamed_in_pieces_equals_in_one_go() {
         let samples: Vec<f32> = (0..5000)
             .map(|i| ((i * 7919) % 200) as f32 / 100.0 - 1.0)

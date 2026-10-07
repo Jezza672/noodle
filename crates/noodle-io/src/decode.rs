@@ -59,6 +59,16 @@ impl From<Error> for DecodeError {
     }
 }
 
+/// The longest stretch of silence put in for one packet that can't be
+/// decoded, so a bad length field can't make us allocate gigabytes.
+const MAX_GAP_FRAMES: u64 = 1 << 16;
+
+/// Replaces `out` with `frames` frames of silence.
+fn silence(out: &mut Vec<f32>, frames: usize, channels: usize) {
+    out.clear();
+    out.resize(frames * channels, 0.0);
+}
+
 /// What a file says about its audio, before any of it is decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileInfo {
@@ -127,9 +137,9 @@ impl Decoder {
     }
 
     /// Replaces `out` with the next chunk of interleaved samples. Returns the
-    /// number of frames in it, or `None` at the end of the file. Packets
-    /// that fail to decode are skipped, so one bad frame doesn't lose the
-    /// rest of the file.
+    /// number of frames in it, or `None` at the end of the file. A packet
+    /// that fails to decode comes out as silence of the same length, so one
+    /// bad frame doesn't lose the rest of the file or shift it earlier.
     pub fn read_chunk(&mut self, out: &mut Vec<f32>) -> Result<Option<usize>, DecodeError> {
         loop {
             let Some(packet) = self.format.next_packet()? else {
@@ -147,7 +157,16 @@ impl Decoder {
                     buf.copy_to_vec_interleaved(out);
                     return Ok(Some(frames));
                 }
-                Err(Error::DecodeError(_) | Error::IoError(_)) => continue,
+                Err(Error::DecodeError(_) | Error::IoError(_)) => {
+                    // Keep the later audio where it belongs: a clip's offset
+                    // counts frames from the start of the file.
+                    let frames = packet.dur.get().min(MAX_GAP_FRAMES) as usize;
+                    if frames == 0 {
+                        continue;
+                    }
+                    silence(out, frames, self.info.channels);
+                    return Ok(Some(frames));
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -209,6 +228,13 @@ mod tests {
                 frames: Some(300)
             }
         );
+    }
+
+    #[test]
+    fn a_bad_packet_becomes_silence_of_its_length() {
+        let mut out = vec![0.7; 10];
+        silence(&mut out, 3, 2);
+        assert_eq!(out, [0.0; 6]);
     }
 
     #[test]
