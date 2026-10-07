@@ -159,6 +159,11 @@ impl Graph {
     }
 
     /// Reserves an ID for a node that's about to be added.
+    /// The ID [`new_id`](Self::new_id) would hand out next.
+    pub(crate) fn next_id(&self) -> NodeId {
+        NodeId(self.next_id)
+    }
+
     pub(crate) fn new_id(&mut self) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;

@@ -6,6 +6,7 @@
 //! step: structural changes recompile, and parameter changes go straight to
 //! the engine's parameter cells.
 
+use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,9 @@ pub struct Session {
     /// unsaved changes.
     saved: Project,
     dirty: bool,
+    /// The next ID [`Session::new_node_id`] can hand out. Views only get
+    /// `&Session`, so it's a `Cell`.
+    next_id: Cell<u64>,
     diagnostics: Vec<Diagnostic>,
     audio: Option<Audio>,
     /// Something the user should know, such as a failed save, shown until the
@@ -73,6 +77,7 @@ impl Session {
             registry,
             path: None,
             dirty: false,
+            next_id: Cell::new(0),
             diagnostics: Vec::new(),
             audio: None,
             message: None,
@@ -98,6 +103,17 @@ impl Session {
             ),
             None => "Untitled".into(),
         }
+    }
+
+    /// An ID for a node a view is about to add, e.g. by adding, duplicating
+    /// or pasting. Each call gives a different ID, even before the nodes are
+    /// added, so a view can wire up several new nodes in one batch. IDs that
+    /// end up unused are harmless.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the editor is a placeholder"))]
+    pub fn new_node_id(&self) -> NodeId {
+        let id = self.next_id.get().max(self.project.next_node_id().0);
+        self.next_id.set(id + 1);
+        NodeId(id)
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -397,7 +413,7 @@ mod tests {
 
     /// Adds a node as one undo step.
     fn add(session: &mut Session, node: Node) -> NodeId {
-        let id = session.project.new_node_id();
+        let id = session.new_node_id();
         session.edit([Edit::Apply(Command::AddNode { id, node })]);
         id
     }
@@ -521,6 +537,37 @@ mod tests {
         assert!(session.message().is_some_and(|m| m.contains("Can't load")));
         assert!(Session::open(registry(), &path).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn node_ids_are_unique_even_before_use() {
+        let mut session = Session::new(registry());
+        let existing = add(&mut session, Node::new("noodle.osc.sine"));
+        let (a, b) = (session.new_node_id(), session.new_node_id());
+        assert!(a != b && a != existing && b != existing);
+
+        // Both added in one step, wired together.
+        session.edit([Edit::Apply(Command::Batch(vec![
+            Command::AddNode {
+                id: b,
+                node: Node::new("noodle.osc.sine"),
+            },
+            Command::AddNode {
+                id: a,
+                node: Node::new(OUTPUT_ID),
+            },
+            Command::Connect(Connection {
+                from: Endpoint::new(b, "out"),
+                to: Endpoint::new(a, "in"),
+            }),
+        ]))]);
+        assert_eq!(session.project().graph().nodes().count(), 3);
+
+        // A removed node's ID isn't handed out again, so undoing the removal
+        // can't clash with a node added since.
+        session.edit([Edit::Apply(Command::RemoveNode { id: b })]);
+        let c = session.new_node_id();
+        assert!(c != a && c != b && c != existing);
     }
 
     #[test]
