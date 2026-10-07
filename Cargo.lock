@@ -34,6 +34,7 @@ name = "noodle-engine"
 version = "0.1.0"
 dependencies = [
  "noodle-core",
+ "rtrb",
 ]
 
 [[package]]
@@ -47,6 +48,7 @@ dependencies = [
 name = "noodle-nodes"
 version = "0.1.0"
 dependencies = [
+ "noodle-core",
  "noodle-engine",
 ]
 
@@ -87,6 +89,12 @@ dependencies = [
  "typeid",
  "unicode-ident",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
 
 [[package]]
 name = "serde"

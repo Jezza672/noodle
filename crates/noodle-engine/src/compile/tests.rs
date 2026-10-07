@@ -5,12 +5,22 @@ use noodle_core::{Command, Connection, Node, Project};
 use super::*;
 use crate::{Context, Instance, Io, NodeInfo, ParamInfo, Setup};
 
-/// A node type for tests: a fixed layout, and optionally a fixed output shape
-/// instead of broadcasting. Config `broken` makes its layout fail.
+/// A node type for tests with a fixed layout. Config `broken` makes its
+/// layout fail.
 struct TestType {
     info: NodeInfo,
     layout: Layout,
-    output: Option<Shape>,
+    outputs: Outputs,
+}
+
+#[derive(Clone, Copy)]
+enum Outputs {
+    /// Every output is the broadcast of the inputs.
+    Broadcast,
+    Fixed(Shape),
+    /// Output 0 is the broadcast of the inputs and output 1 is a stereo
+    /// version of it, so the two need differently sized buffers.
+    Split,
 }
 
 impl NodeType for TestType {
@@ -31,11 +41,12 @@ impl NodeType for TestType {
         layout: &Layout,
         inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
-        let shape = match self.output {
-            Some(shape) => shape,
-            None => Shape::broadcast_all(inputs.iter().copied())?,
-        };
-        Ok(vec![shape; layout.outputs.len()])
+        let broadcast = Shape::broadcast_all(inputs.iter().copied())?;
+        Ok(match self.outputs {
+            Outputs::Broadcast => vec![broadcast; layout.outputs.len()],
+            Outputs::Fixed(shape) => vec![shape; layout.outputs.len()],
+            Outputs::Split => vec![broadcast, Shape::new(broadcast.voices, 2)],
+        })
     }
 
     fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
@@ -51,7 +62,7 @@ impl crate::Node for Silent {
 
 fn registry() -> Registry {
     let mut registry = Registry::new();
-    let mut add = |id: &'static str, layout: Layout, output: Option<Shape>| {
+    let mut add = |id: &'static str, layout: Layout, outputs: Outputs| {
         registry.register(TestType {
             info: NodeInfo {
                 id,
@@ -60,20 +71,20 @@ fn registry() -> Registry {
                 category: "Test",
             },
             layout,
-            output,
+            outputs,
         });
     };
     let out = || Layout::realtime().output("out", "Out");
-    add("source", out(), None);
-    add("poly8", out(), Some(Shape::new(8, 1)));
-    add("poly4", out(), Some(Shape::new(4, 1)));
+    add("source", out(), Outputs::Broadcast);
+    add("poly8", out(), Outputs::Fixed(Shape::new(8, 1)));
+    add("poly4", out(), Outputs::Fixed(Shape::new(4, 1)));
     add(
         "thru",
         Layout::realtime()
             .input("in", "In")
             .param("amount", "Amount", ParamInfo::new(0.0, 1.0, 0.5))
             .output("out", "Out"),
-        None,
+        Outputs::Broadcast,
     );
     add(
         "sum",
@@ -81,19 +92,40 @@ fn registry() -> Registry {
             .input("a", "A")
             .input("b", "B")
             .output("out", "Out"),
-        None,
+        Outputs::Broadcast,
     );
     add(
         "notes",
         Layout::realtime()
             .event_input("notes", "Notes")
             .output("out", "Out"),
-        None,
+        Outputs::Broadcast,
     );
     add(
         "offline",
         Layout::offline().input("in", "In").output("out", "Out"),
-        None,
+        Outputs::Broadcast,
+    );
+    add(
+        "split",
+        Layout::realtime()
+            .input("in", "In")
+            .output("low", "Low")
+            .output("high", "High"),
+        Outputs::Split,
+    );
+    add(
+        "note_source",
+        Layout::realtime().event_output("notes", "Notes"),
+        Outputs::Broadcast,
+    );
+    add(
+        "note_thru",
+        Layout::realtime()
+            .event_input("notes", "Notes")
+            .event_output("a", "A")
+            .event_output("b", "B"),
+        Outputs::Broadcast,
     );
     registry
 }
@@ -119,13 +151,28 @@ fn compile_checked(project: &Project) -> (Schedule, Vec<Diagnostic>) {
     (schedule, diagnostics)
 }
 
-/// Checks a schedule by simulating it: every buffer an input reads must
-/// still hold the output it's wired to, outputs must not share buffers with
-/// the node's inputs or each other, and buffers must be big enough.
+/// Checks a schedule by simulating it, for signal and event buffers alike:
+/// every buffer an input reads must still hold the output it's wired to, a
+/// node's outputs must not share buffers with its inputs or each other,
+/// buffer IDs must exist, and signal buffers must be big enough.
 fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
     let scheduled: HashMap<NodeId, &ScheduledNode> =
         schedule.nodes.iter().map(|n| (n.id, n)).collect();
+    // A wire from a scheduled node can only be ignored if a diagnostic says why.
+    let assert_explained = |input: &Endpoint| {
+        if let Some(wired) = graph.source(input)
+            && scheduled.contains_key(&wired.node)
+        {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.location == Location::Wire(input.clone())),
+                "{input} ignored its wire without a diagnostic"
+            );
+        }
+    };
     let mut holds: HashMap<BufferId, Endpoint> = HashMap::new();
+    let mut event_holds: HashMap<EventBufferId, Endpoint> = HashMap::new();
 
     for node in &schedule.nodes {
         for (port, source) in node.layout.inputs.iter().zip(&node.inputs) {
@@ -135,32 +182,31 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
                     let wired = graph.source(&input).expect("buffer input must be wired");
                     assert_eq!(holds.get(b), Some(wired), "{input} read a stale buffer");
                 }
-                InputSource::Value(_) => {
-                    // A wire from a scheduled node can only be ignored if a
-                    // diagnostic says why.
-                    if let Some(wired) = graph.source(&input)
-                        && scheduled.contains_key(&wired.node)
-                    {
-                        assert!(
-                            diagnostics
-                                .iter()
-                                .any(|d| d.location == Location::Wire(input.clone())),
-                            "{input} ignored its wire without a diagnostic"
-                        );
-                    }
+                InputSource::Value(_) => assert_explained(&input),
+            }
+        }
+        for (port, source) in node.layout.event_inputs.iter().zip(&node.event_inputs) {
+            let input = Endpoint::new(node.id, port.key.as_ref());
+            match source {
+                Some(b) => {
+                    let wired = graph.source(&input).expect("event input must be wired");
+                    assert_eq!(
+                        event_holds.get(b),
+                        Some(wired),
+                        "{input} read a stale event buffer"
+                    );
                 }
+                None => assert_explained(&input),
             }
         }
 
-        let mut outputs = node.outputs.clone();
-        outputs.sort();
-        outputs.dedup();
-        assert_eq!(outputs.len(), node.outputs.len(), "outputs share a buffer");
+        assert_distinct(&node.outputs, "outputs share a buffer");
         for (b, (port, shape)) in node
             .outputs
             .iter()
             .zip(node.layout.outputs.iter().zip(&node.output_shapes))
         {
+            assert!(b.0 < schedule.buffer_lanes.len(), "no buffer {b:?}");
             assert!(
                 !node.inputs.contains(&InputSource::Buffer(*b)),
                 "output aliases an input"
@@ -171,7 +217,24 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
             );
             holds.insert(*b, Endpoint::new(node.id, port.key.as_ref()));
         }
+
+        assert_distinct(&node.event_outputs, "event outputs share a buffer");
+        for (b, port) in node.event_outputs.iter().zip(&node.layout.event_outputs) {
+            assert!(b.0 < schedule.event_buffers, "no event buffer {b:?}");
+            assert!(
+                !node.event_inputs.contains(&Some(*b)),
+                "event output aliases an event input"
+            );
+            event_holds.insert(*b, Endpoint::new(node.id, port.key.as_ref()));
+        }
     }
+}
+
+fn assert_distinct<T: Ord + Clone>(items: &[T], message: &str) {
+    let mut sorted = items.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), items.len(), "{message}");
 }
 
 fn order(schedule: &Schedule) -> Vec<NodeId> {
@@ -347,6 +410,60 @@ fn leaves_out_offline_nodes_and_broken_config() {
     );
 }
 
+#[test]
+fn each_output_gets_its_own_buffer_and_lifetime() {
+    let mut p = Project::new();
+    let source = add(&mut p, Node::new("source"));
+    let split = add(&mut p, Node::new("split"));
+    let early = add(&mut p, Node::new("thru"));
+    let late = add(&mut p, Node::new("thru"));
+    wire(&mut p, source, "out", split, "in");
+    wire(&mut p, split, "low", early, "in");
+    // `late` runs after `early`, so `high` must outlive `low`.
+    wire(&mut p, early, "out", late, "amount");
+    wire(&mut p, split, "high", late, "in");
+    let (schedule, diagnostics) = compile_checked(&p);
+    assert!(diagnostics.is_empty());
+
+    let split = find(&schedule, split);
+    assert_eq!(split.output_shapes, [Shape::MONO, Shape::STEREO]);
+    let [low, high] = split.outputs[..] else {
+        panic!()
+    };
+    assert_ne!(low, high);
+    assert_eq!(find(&schedule, early).inputs[0], InputSource::Buffer(low));
+    assert_eq!(find(&schedule, late).inputs[0], InputSource::Buffer(high));
+    assert_eq!(find(&schedule, late).output_shapes, [Shape::STEREO]);
+}
+
+#[test]
+fn routes_keeps_and_reuses_event_buffers() {
+    let mut p = Project::new();
+    let source = add(&mut p, Node::new("note_source"));
+    let first = add(&mut p, Node::new("note_thru"));
+    let second = add(&mut p, Node::new("note_thru"));
+    let sink = add(&mut p, Node::new("notes"));
+    let late_sink = add(&mut p, Node::new("notes"));
+    wire(&mut p, source, "notes", first, "notes");
+    wire(&mut p, first, "a", second, "notes");
+    wire(&mut p, second, "a", sink, "notes");
+    // Fan-out: the source is also read last of all.
+    wire(&mut p, source, "notes", late_sink, "notes");
+    let (schedule, diagnostics) = compile_checked(&p);
+    assert!(diagnostics.is_empty());
+
+    let source_buffer = find(&schedule, source).event_outputs[0];
+    assert_eq!(
+        find(&schedule, late_sink).event_inputs,
+        [Some(source_buffer)]
+    );
+    let first = find(&schedule, first);
+    assert_eq!(first.event_inputs, [Some(source_buffer)]);
+    assert_ne!(first.event_outputs[0], first.event_outputs[1]);
+    // Five event outputs, but finished and unread buffers get reused.
+    assert!(schedule.event_buffers < 5, "{}", schedule.event_buffers);
+}
+
 /// A small, seeded random number generator, so failures reproduce.
 struct XorShift(u64);
 
@@ -361,17 +478,46 @@ impl XorShift {
 
 #[test]
 fn random_graphs_compile_to_valid_schedules() {
-    let types = ["source", "poly8", "poly4", "thru", "sum"];
-    let inputs: HashMap<&str, &[&str]> = HashMap::from([
-        ("source", &[][..]),
-        ("poly8", &[][..]),
-        ("poly4", &[][..]),
-        ("thru", &["in", "amount"][..]),
-        ("sum", &["a", "b"][..]),
-    ]);
+    let registry = registry();
+    let types = [
+        "source",
+        "poly8",
+        "poly4",
+        "thru",
+        "sum",
+        "split",
+        "note_source",
+        "note_thru",
+        "notes",
+    ];
+    // Each fixture's outputs and inputs, as (port key, is an event port).
+    type Ports = Vec<(String, bool)>;
+    let ports: HashMap<&str, (Ports, Ports)> = types
+        .iter()
+        .map(|&type_id| {
+            let layout = registry
+                .get(type_id)
+                .unwrap()
+                .layout(&Config::new())
+                .unwrap();
+            let signal_in = layout.inputs.iter().map(|p| (p.key.to_string(), false));
+            let signal_out = layout.outputs.iter().map(|p| (p.key.to_string(), false));
+            let events_in = layout
+                .event_inputs
+                .iter()
+                .map(|p| (p.key.to_string(), true));
+            let events_out = layout
+                .event_outputs
+                .iter()
+                .map(|p| (p.key.to_string(), true));
+            let outputs = signal_out.chain(events_out).collect();
+            let inputs = signal_in.chain(events_in).collect();
+            (type_id, (outputs, inputs))
+        })
+        .collect();
     let mut rng = XorShift(0x5eed);
 
-    for _ in 0..300 {
+    for _ in 0..500 {
         let mut p = Project::new();
         let nodes: Vec<(NodeId, &str)> = (0..2 + rng.below(30))
             .map(|_| {
@@ -379,12 +525,24 @@ fn random_graphs_compile_to_valid_schedules() {
                 (add(&mut p, Node::new(type_id)), type_id)
             })
             .collect();
-        for _ in 0..rng.below(nodes.len() * 2) {
-            let (from, _) = nodes[rng.below(nodes.len())];
+        for _ in 0..rng.below(nodes.len() * 3) {
+            let (from, from_type) = nodes[rng.below(nodes.len())];
             let (to, to_type) = nodes[rng.below(nodes.len())];
-            let ports = inputs[to_type];
-            if !ports.is_empty() {
-                wire(&mut p, from, "out", to, ports[rng.below(ports.len())]);
+            let outputs = &ports[from_type].0;
+            if outputs.is_empty() {
+                continue;
+            }
+            let (from_port, is_event) = &outputs[rng.below(outputs.len())];
+            // Mostly pick an input of the same kind; occasionally any input,
+            // to exercise kind mismatches.
+            let inputs: Vec<&(String, bool)> = ports[to_type]
+                .1
+                .iter()
+                .filter(|(_, kind)| rng.below(10) == 0 || kind == is_event)
+                .collect();
+            if !inputs.is_empty() {
+                let (to_port, _) = inputs[rng.below(inputs.len())];
+                wire(&mut p, from, from_port, to, to_port);
             }
         }
         compile_checked(&p);

@@ -131,60 +131,85 @@ the per-sample loop.
 ## Compilation and the render plan (`noodle-engine`)
 
 ```
- UI thread                         audio thread                  GC thread
- ─────────                         ────────────                  ─────────
- Command ─▶ Project ─▶ compile ─▶ [plan queue] ─▶ swap plans ─▶ [return queue] ─▶ drop old plan
-                          │                         ▲
- param edit ──────────────┼──▶ [param queue] ───────┘ (applied at block start, smoothed)
-                          │
- meters/scopes ◀──────────┴──── [telemetry queues] ◀── written by nodes
+ UI thread (Controller)                 audio thread (Processor)
+ ──────────────────────                 ────────────────────────
+ Command ─▶ Project ─▶ compile ─▶ build ─▶ [plan queue] ─▶ install: take over
+                                                            instances, run
+ maintain(): free old plans ◀──────────── [return queue] ◀── replaced plan
+
+ set_param ─▶ shared atomic cell ─────────────────────────▶ read each block,
+                                                            smoothed
+
+ meters/scopes ◀── telemetry (M1) ◀──────────────────────── written by nodes
 ```
 
-Compiling turns a Project into a **RenderPlan** in these steps:
+**Compiling** (`compile`) turns the project graph into a **schedule**:
 
-1. **Flatten** group nodes into one graph, keeping a map back to the original
-   node IDs for error messages and telemetry.
-2. **Check for cycles.** A cycle is only allowed if it passes through an
-   explicit delay node (minimum one block). Any other cycle is a compile error,
-   shown on the offending wire.
-3. **Infer shapes.** Propagate `(voices, channels)` through the graph using the
-   broadcasting rules. A mismatch, such as 8 voices meeting 4, is a compile
-   error shown on the wire.
-4. **Sort topologically** into an execution order.
-5. **Allocate buffers**, reusing them based on liveness, the way registers
-   are allocated. Every buffer is allocated here at its maximum size, before the
-   plan reaches the audio thread.
-6. **Analyse cacheability** (see Caching).
-7. **Instantiate nodes.** Nodes that are new in this plan get fresh DSP
-   instances, built off the audio thread. For nodes that already exist, the
-   plan records a migration entry: *take the instance from old slot i and put
-   it in new slot j*.
+1. **Resolve nodes** to their types and layouts, and **resolve wires** to port
+   indices.
+2. **Drop loops.** A wire that closes a loop is ignored, with a diagnostic on
+   it. Loops through a Delay node come in M3.
+3. **Sort topologically** into an execution order, breaking ties by node ID.
+4. **Infer shapes.** Propagate `(voices, channels)` through the graph using the
+   broadcasting rules. A mismatch, such as 8 voices meeting 4, is reported on
+   the wire that broke it.
+5. **Allocate buffers** by liveness, the way registers are allocated. A buffer
+   is reused once its last reader has run, and a node's outputs never share a
+   buffer with its inputs.
 
-On the audio thread, swapping plans means moving the surviving instances out
-of the old plan into the new one. That's O(nodes) pointer moves with no
-allocation, and it keeps filter state, oscillator phase and plugin
-instances intact. The old plan, and any instances that were removed, go back
-through the return queue to be dropped on the GC thread.
+Group nodes are flattened in M2, and cacheability is analysed in M4.
 
-**Parameter changes don't recompile.** They go through the param queue, are
-applied at the start of a block, and are smoothed by the node. The Project
-records the new value for saving and undo.
+**Problems don't stop compilation.** A node that can't run is left out, and
+anything wired to it behaves as if unconnected. A wire that can't work is
+ignored. Each problem becomes a diagnostic on the node or wire where it
+happened, for the UI to show.
+
+**Building a plan** (`plan::build`) happens off the audio thread:
+
+- **Memory:** it allocates everything the plan will need: the buffer pool,
+  event buffers, and scratch space for each node's views.
+- **Nodes:** a node whose type, config and shapes are unchanged since the
+  last plan is marked to **carry over**: *take the instance from old slot i
+  and put it in new slot j*. Every other node is instantiated fresh. A node
+  that fails to instantiate is kept as silence, with a diagnostic.
+
+**On the audio thread**, installing a plan moves the carried-over instances
+out of the old plan into the new one. That's O(nodes) pointer moves with no
+allocation, and it keeps filter state, oscillator phase and plugin instances
+intact. The old plan, and any instances that were removed, go back through
+the return queue. The controller frees them in `maintain()`, which the UI
+calls every frame. The processor installs a plan only when the return queue
+has room, so nothing is ever freed on the audio thread.
+
+**Parameter changes don't recompile.**
+- Every unconnected input has a shared atomic cell. `set_param` writes the
+  cell, and the audio thread reads it at the start of each block and smooths
+  the change, so nodes just see a ramp.
+- The project is the source of truth: every `update` writes the project's
+  values back into the cells, so undoing a parameter change reaches the
+  audio.
+- A ramp that's in progress carries on smoothly across a plan swap.
+
+**Output nodes** are mixed into the device buffer as they're reached in the
+schedule. Mixing at the end of the block would be too late, since their input
+buffers may already have been reused. A mono signal goes to every channel,
+and voices are summed.
 
 **Data going back to the UI** (meter levels, scope buffers, playhead
-position, cache-render progress) goes through SPSC ring buffers or atomics,
+position, cache-render progress) will go through SPSC ring buffers or atomics,
 which the UI reads every frame.
 
-Blocks have a fixed maximum size. Hosts may ask for any block size up to
-that, and events inside a block are sample-accurate.
+Blocks have a fixed maximum size, and a longer device buffer is rendered as
+several blocks. Events inside a block are sample-accurate.
 
 ## Threads
 
 - **Audio:** driven by the device callback in `noodle-io`, or by the offline
   renderer. Runs the current plan.
-- **UI:** owns the Project and the undo stack, and compiles plans. Compiling
-  can move to a worker if it gets slow for large graphs.
-- **Workers:** disk streaming, cache renders, plugin scanning, dropping old
-  plans.
+- **UI:** owns the Project and the undo stack, compiles and builds plans, and
+  frees old ones. Compiling can move to a worker if it gets slow for large
+  graphs.
+- **Workers:** disk streaming, cache renders, plugin scanning.
 - **Parallel execution (M6):** the plan's dependency graph is scheduled across
   a pool of real-time worker threads. The plan format records dependencies
   from the start so this can be added without redesigning it.

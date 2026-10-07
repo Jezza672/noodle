@@ -118,14 +118,14 @@ impl fmt::Display for Problem {
 }
 
 impl Diagnostic {
-    fn node(id: NodeId, problem: Problem) -> Self {
+    pub(crate) fn node(id: NodeId, problem: Problem) -> Self {
         Self {
             location: Location::Node(id),
             problem,
         }
     }
 
-    fn wire(input: &Endpoint, problem: Problem) -> Self {
+    pub(crate) fn wire(input: &Endpoint, problem: Problem) -> Self {
         Self {
             location: Location::Wire(input.clone()),
             problem,

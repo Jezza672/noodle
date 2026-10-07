@@ -4,16 +4,20 @@
 //!
 //! The node API, for writing nodes, starts at [`NodeType`].
 
+mod builtin;
 mod compile;
 mod event;
 mod lane;
 mod node;
 mod offline;
 mod param;
+mod plan;
 mod registry;
+mod runtime;
 mod signal;
 pub mod testing;
 
+pub use builtin::{OUTPUT_ID, Output};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Problem, Schedule, ScheduledNode,
     compile,
@@ -28,4 +32,5 @@ pub use noodle_core::{Config, Value};
 pub use offline::{Cancelled, OfflineNode, Progress};
 pub use param::{ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
+pub use runtime::{Controller, Processor, Settings, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
