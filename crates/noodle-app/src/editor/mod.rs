@@ -90,6 +90,12 @@ impl Default for EditorState {
 }
 
 impl EditorState {
+    /// Where a graph point is on screen, as of the last frame.
+    #[cfg(test)]
+    pub fn to_screen(&self, p: Pos2) -> Pos2 {
+        self.view.on(self.canvas).to_screen(p)
+    }
+
     /// Forgets nodes and frames that no longer exist, e.g. after an undo.
     pub fn retain_existing(&mut self, session: &Session) {
         self.retain_in(session.project());
@@ -282,9 +288,14 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     };
 
     pointer(ui, state, &f, &response, &mut inputs, &mut edits);
+    // Not mid-drag, in the editor (its gestures are all canvas drags) or in
+    // any other widget (a slider in the properties panel, say): deleting a
+    // node being moved, or switching the active node under a field being
+    // dragged, would leave the drag acting on things that are gone.
     if response.contains_pointer()
         && state.search.is_none()
         && state.rename.is_none()
+        && ui.ctx().dragged_id().is_none()
         && !ui.ctx().egui_wants_keyboard_input()
     {
         keyboard(ui, state, &f, canvas, &mut inputs, &mut edits);
