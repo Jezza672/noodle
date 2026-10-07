@@ -821,12 +821,17 @@ fn problems_show_on_the_wire_they_belong_to() {
 #[test]
 fn problems_show_on_the_node_they_belong_to() {
     let mut h = rig();
-    let node = add(&mut h, Node::new("no.such.type").at(0.0, 0.0));
+    // Its ports are fine, but the compiler can't run it yet.
+    let node = add(&mut h, Node::new("noodle.offline.reverse").at(0.0, 0.0));
+    let unknown = add(&mut h, Node::new("no.such.type").at(0.0, 200.0));
     h.run();
-    h.hover_at(title(&h, node));
-    for _ in 0..60 {
-        h.step();
+    for (node, text) in [(node, "cached renders"), (unknown, "unknown node type")] {
+        let p = title(&h, node);
+        h.hover_at(p);
+        for _ in 0..60 {
+            h.step();
+        }
+        h.run();
+        assert!(h.query_by_label_contains(text).is_some(), "{text}");
     }
-    h.run();
-    assert!(h.query_by_label_contains("unknown node type").is_some());
 }

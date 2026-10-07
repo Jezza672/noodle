@@ -89,6 +89,9 @@ The **Project** is the single source of truth. It holds one global graph:
 - **Connections** go from an output port to an input port. An input port
   that has a connection uses the incoming signal in place of its parameter
   value, so any parameter can be modulated.
+- **Frames** are labelled boxes drawn behind nodes, for organising a patch.
+  They're part of the project, so they're saved and undoable, but they're
+  layout only and never reach the engine.
 - **Group nodes** contain a subgraph and expose ports through it. A **track**
   is a group node with a clip source feeding its subgraph. Buses and sends are
   just wires.
@@ -294,9 +297,28 @@ ports become graph ports. Plugin state is saved in the Project.
 The UI is egui, rendered on the GPU, aiming for Blender's dense, keyboard-driven
 style. It has these views:
 
-- **Node editor:** pan and zoom, Shift+A to search for and add a node,
-  box select, drag to connect, Ctrl+right-drag to cut wires, reroute
-  points, frames, and Tab to enter and leave a group.
+- **Node editor** (`noodle-app/src/editor`): pan and zoom, Shift+A to search
+  for and add a node, box select, drag to connect, Ctrl+right-drag to cut
+  wires, reroute points, frames, and Tab to enter and leave a group (M2).
+  - **A custom canvas**, not `egui-snarl`, so the interactions can follow
+    Blender's exactly: picking a wire up off an input, cutting and rerouting
+    with a stroke, frames that carry their nodes. The full list of inputs is
+    at the top of `editor/mod.rs`.
+  - **Rebuilt every frame.** `layout::Scene` works out every node's box,
+    port and wire end from the project and the registry each frame, so
+    nothing is cached that an undo or a recompile could make stale. Input is
+    hit-tested against it, then it's drawn.
+  - **Edits, not changes.** The editor never touches the project. It returns
+    `Edit`s, and a node drag is a run of `Edit::Drag`s ending in
+    `Edit::EndDrag`, so it's one undo step.
+  - **Reroutes are nodes** (`noodle.util.reroute`, a pass-through), so a
+    wire can fan out from one, as in Blender. **Frames** are layout only:
+    they're saved in the project, edited through commands, and never reach
+    the engine. Dragging a frame moves the nodes inside it.
+  - **Problems** from compiling are drawn where they belong: a red outline
+    and a warning sign on the node, or a red wire, with the message on hover.
+  - **Custom node bodies.** Nodes that draw something other than parameters,
+    such as meters and scopes, reserve space and draw it in `editor/body.rs`.
 - **Timeline:** tracks, clips, automation lanes.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's parameters.
@@ -331,5 +353,3 @@ through the telemetry API.
   parameter ports, or as a separate mechanism.
 - Representing time: sample positions plus a tempo map, or musical ticks as
   the main unit.
-- The node editor: build on `egui-snarl`, or write a custom canvas for
-  Blender-specific interactions.
