@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::{Connection, Endpoint, Node, NodeId, Position, Project, Value};
+use crate::{Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -36,6 +36,19 @@ pub enum Command {
         node: NodeId,
         position: Position,
     },
+    AddFrame {
+        id: FrameId,
+        frame: Frame,
+    },
+    /// Leaves the nodes inside the frame where they are.
+    RemoveFrame {
+        id: FrameId,
+    },
+    /// Replaces the frame's label, position and size.
+    SetFrame {
+        id: FrameId,
+        frame: Frame,
+    },
     /// Applied in order, as one step. If any command fails, none take effect.
     Batch(Vec<Command>),
 }
@@ -61,6 +74,22 @@ impl Command {
             }
             inverses.reverse();
             return Ok(Command::Batch(inverses));
+        }
+
+        match self {
+            Command::AddFrame { id, frame } => {
+                project.insert_frame(id, frame)?;
+                return Ok(Command::RemoveFrame { id });
+            }
+            Command::RemoveFrame { id } => {
+                let frame = project.remove_frame(id)?;
+                return Ok(Command::AddFrame { id, frame });
+            }
+            Command::SetFrame { id, frame } => {
+                let old = std::mem::replace(project.frame_mut(id)?, frame);
+                return Ok(Command::SetFrame { id, frame: old });
+            }
+            _ => {}
         }
 
         let graph = project.graph_mut();
@@ -117,8 +146,54 @@ impl Command {
                     position: old,
                 }
             }
-            Command::Batch(_) => unreachable!("handled above"),
+            Command::Batch(_)
+            | Command::AddFrame { .. }
+            | Command::RemoveFrame { .. }
+            | Command::SetFrame { .. } => unreachable!("handled above"),
         })
+    }
+}
+
+/// What a command that only sets a value sets, so later inverses of the same
+/// thing in a group can be dropped.
+#[derive(PartialEq)]
+enum Target<'a> {
+    Position(NodeId),
+    Frame(FrameId),
+    Param(NodeId, &'a str),
+}
+
+fn target(command: &Command) -> Option<Target<'_>> {
+    match command {
+        Command::MoveNode { node, .. } => Some(Target::Position(*node)),
+        Command::SetFrame { id, .. } => Some(Target::Frame(*id)),
+        Command::SetParam { node, key, .. } => Some(Target::Param(*node, key)),
+        _ => None,
+    }
+}
+
+/// Adds an inverse to an open group, flattening batches and dropping inverses
+/// that an earlier one in the group already undoes. Undo applies a group in
+/// reverse, so the earliest inverse of a value runs last and wins.
+fn push_coalesced(group: &mut Vec<Command>, inverse: Command) {
+    match inverse {
+        // A batch's inverse is already in undo order; the group is reversed
+        // when it ends, so push its parts in application order.
+        Command::Batch(parts) => {
+            for part in parts.into_iter().rev() {
+                push_coalesced(group, part);
+            }
+        }
+        inverse => {
+            let seen = target(&inverse).is_some_and(|t| {
+                group
+                    .iter()
+                    .any(|earlier| target(earlier).as_ref() == Some(&t))
+            });
+            if !seen {
+                group.push(inverse);
+            }
+        }
     }
 }
 
@@ -130,6 +205,8 @@ pub enum EditError {
     /// Only possible in a project file, since connecting an input that's
     /// already connected replaces the old connection.
     ConnectedTwice(Endpoint),
+    NoSuchFrame(FrameId),
+    FrameExists(FrameId),
 }
 
 impl fmt::Display for EditError {
@@ -139,6 +216,8 @@ impl fmt::Display for EditError {
             Self::NodeExists(id) => write!(f, "there's already a node {id}"),
             Self::NotConnected(input) => write!(f, "nothing is connected to {input}"),
             Self::ConnectedTwice(input) => write!(f, "{input} has more than one connection"),
+            Self::NoSuchFrame(id) => write!(f, "there's no {id}"),
+            Self::FrameExists(id) => write!(f, "there's already a {id}"),
         }
     }
 }
@@ -163,7 +242,7 @@ impl History {
         let inverse = command.apply(project)?;
         self.redo.clear();
         match &mut self.group {
-            Some(group) => group.push(inverse),
+            Some(group) => push_coalesced(group, inverse),
             None => self.undo.push(inverse),
         }
         Ok(())
@@ -171,6 +250,11 @@ impl History {
 
     /// Until [`end_group`](Self::end_group), everything applied becomes one
     /// undo step, e.g. all the moves made during one drag.
+    ///
+    /// A group keeps only the first inverse of each move, frame change or
+    /// parameter change to the same thing, since that one restores the value
+    /// from before the group. So a long drag stays one small undo step rather
+    /// than one inverse per frame.
     pub fn begin_group(&mut self) {
         self.group.get_or_insert_with(Vec::new);
     }
@@ -236,6 +320,45 @@ mod tests {
             .apply(project, Command::AddNode { id, node })
             .unwrap();
         id
+    }
+
+    fn frame(label: &str) -> Frame {
+        Frame {
+            label: label.into(),
+            position: Position { x: -10.0, y: 5.0 },
+            width: 300.0,
+            height: 200.0,
+        }
+    }
+
+    #[test]
+    fn frame_ids_are_not_reused_and_clash_cleanly() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let id = p.new_frame_id();
+        h.apply(
+            &mut p,
+            Command::AddFrame {
+                id,
+                frame: frame("A"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            h.apply(
+                &mut p,
+                Command::AddFrame {
+                    id,
+                    frame: frame("B")
+                }
+            ),
+            Err(EditError::FrameExists(id))
+        );
+        h.apply(&mut p, Command::RemoveFrame { id }).unwrap();
+        assert_ne!(p.new_frame_id(), id);
+        assert_eq!(
+            h.apply(&mut p, Command::RemoveFrame { id }),
+            Err(EditError::NoSuchFrame(id))
+        );
     }
 
     fn connect(from: NodeId, from_port: &str, to: NodeId, to_port: &str) -> Command {
@@ -312,6 +435,15 @@ mod tests {
             Command::Disconnect {
                 input: Endpoint::new(mix, "in2"),
             },
+            Command::AddFrame {
+                id: FrameId(1),
+                frame: frame("Synth"),
+            },
+            Command::SetFrame {
+                id: FrameId(1),
+                frame: frame("Voice"),
+            },
+            Command::RemoveFrame { id: FrameId(1) },
             Command::RemoveNode { id: a },
         ];
         for command in commands {
@@ -370,6 +502,62 @@ mod tests {
         assert_eq!(p, before);
         h.redo(&mut p).unwrap();
         assert_eq!(p.graph().node(id).unwrap().position.x, 3.0);
+    }
+
+    #[test]
+    fn a_long_drag_keeps_one_inverse_per_thing() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let a = add(&mut h, &mut p, Node::new("noodle.osc.sine"));
+        let b = add(&mut h, &mut p, Node::new("noodle.osc.sine").at(5.0, 5.0));
+        let frame = p.new_frame_id();
+        h.apply(
+            &mut p,
+            Command::AddFrame {
+                id: frame,
+                frame: super::tests::frame("F"),
+            },
+        )
+        .unwrap();
+        h.apply(&mut p, connect(a, "out", b, "frequency")).unwrap();
+        let before = p.clone();
+
+        h.begin_group();
+        for x in 1..=100 {
+            let position = Position {
+                x: x as f32,
+                y: 0.0,
+            };
+            let mut moved = super::tests::frame("F");
+            moved.position = position;
+            let batch = Command::Batch(vec![
+                Command::MoveNode { node: a, position },
+                Command::MoveNode { node: b, position },
+                Command::SetFrame {
+                    id: frame,
+                    frame: moved,
+                },
+                Command::SetParam {
+                    node: a,
+                    key: "frequency".into(),
+                    value: Some(x as f32),
+                },
+            ]);
+            h.apply(&mut p, batch).unwrap();
+        }
+        // Something that isn't a value change is kept, and its batch inverse
+        // (re-add, then reconnect) stays in order.
+        h.apply(&mut p, Command::RemoveNode { id: b }).unwrap();
+        h.end_group();
+
+        let Some(Command::Batch(step)) = h.undo.last() else {
+            panic!("one undo step");
+        };
+        assert_eq!(step.len(), 6, "{step:?}");
+        let after = p.clone();
+        h.undo(&mut p).unwrap();
+        assert_eq!(p, before);
+        h.redo(&mut p).unwrap();
+        assert_eq!(p, after);
     }
 
     #[test]

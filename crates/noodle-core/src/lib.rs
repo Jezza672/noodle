@@ -4,10 +4,12 @@
 
 mod config;
 mod edit;
+mod frame;
 mod graph;
 mod project;
 
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
+pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
 pub use project::{LoadError, Project};

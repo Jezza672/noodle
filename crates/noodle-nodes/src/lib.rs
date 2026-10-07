@@ -6,6 +6,7 @@ mod meter;
 mod mix;
 mod noise;
 mod osc;
+mod reroute;
 mod reverse;
 mod scope;
 mod svf;
@@ -16,6 +17,7 @@ pub use meter::Meter;
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use osc::{Saw, Sine};
+pub use reroute::{REROUTE_ID, Reroute};
 pub use reverse::Reverse;
 pub use scope::Scope;
 pub use svf::Svf;
@@ -37,6 +39,7 @@ pub fn register_all(registry: &mut Registry) -> Telemetry {
     registry.register(Svf);
     registry.register(VoiceMix);
     registry.register(Reverse);
+    registry.register(Reroute);
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
     telemetry

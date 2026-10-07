@@ -383,7 +383,7 @@ mod tests {
     fn an_empty_project_says_so() {
         let mut harness = harness(empty());
         harness.run();
-        harness.get_by_label("No nodes yet");
+        harness.get_by_label("No nodes yet. Shift+A adds one.");
         harness.get_by_label("No problems");
         harness.get_by_label("▶ Play");
     }
@@ -436,7 +436,8 @@ mod tests {
         harness.run();
         harness.get_by_label("Select a node to see its properties.");
 
-        harness.get_by_label("Sine (#1)").click();
+        harness.state_mut().editor.selected.insert(id);
+        harness.state_mut().editor.active = Some(id);
         harness.run();
         harness.get_by_label("Frequency");
     }

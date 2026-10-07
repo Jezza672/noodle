@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use noodle_core::{Command, EditError, History, NodeId, Project};
+use noodle_core::{Command, EditError, FrameId, History, NodeId, Project};
 use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
 use noodle_io::{AudioConfig, AudioError, Playback};
 
@@ -72,6 +72,8 @@ pub struct Session {
     /// The next ID [`Session::new_node_id`] can hand out. Views only get
     /// `&Session`, so it's a `Cell`.
     next_id: Cell<u64>,
+    /// The same, for [`Session::new_frame_id`].
+    next_frame_id: Cell<u64>,
     diagnostics: Vec<Diagnostic>,
     /// The device to play on.
     audio_config: AudioConfig,
@@ -138,6 +140,7 @@ impl Session {
             path: None,
             dirty: false,
             next_id: Cell::new(0),
+            next_frame_id: Cell::new(0),
             diagnostics: Vec::new(),
             audio_config: AudioConfig::default(),
             audio: None,
@@ -188,11 +191,17 @@ impl Session {
     /// or pasting. Each call gives a different ID, even before the nodes are
     /// added, so a view can wire up several new nodes in one batch. IDs that
     /// end up unused are harmless.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the editor is a placeholder"))]
     pub fn new_node_id(&self) -> NodeId {
         let id = self.next_id.get().max(self.project.next_node_id().0);
         self.next_id.set(id + 1);
         NodeId(id)
+    }
+
+    /// Like [`new_node_id`](Self::new_node_id), for a frame.
+    pub fn new_frame_id(&self) -> FrameId {
+        let id = self.next_frame_id.get().max(self.project.next_frame_id().0);
+        self.next_frame_id.set(id + 1);
+        FrameId(id)
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -447,7 +456,10 @@ impl Effect {
     fn add(&mut self, command: &Command) {
         match command {
             // Changes nothing the engine sees.
-            Command::MoveNode { .. } => {}
+            Command::MoveNode { .. }
+            | Command::AddFrame { .. }
+            | Command::RemoveFrame { .. }
+            | Command::SetFrame { .. } => {}
             Command::SetParam {
                 node,
                 key,
@@ -701,6 +713,8 @@ mod tests {
         let existing = add(&mut session, Node::new("noodle.osc.sine"));
         let (a, b) = (session.new_node_id(), session.new_node_id());
         assert!(a != b && a != existing && b != existing);
+        let (f, g) = (session.new_frame_id(), session.new_frame_id());
+        assert_ne!(f, g);
 
         // Both added in one step, wired together.
         session.edit([Edit::Apply(Command::Batch(vec![

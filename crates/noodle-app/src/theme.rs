@@ -57,3 +57,46 @@ pub fn visuals() -> Visuals {
     widgets.active.bg_stroke = Stroke::new(1.0, SELECTED);
     visuals
 }
+
+/// The node editor's colours.
+pub mod editor {
+    use egui::Color32;
+
+    pub const GRID: Color32 = Color32::from_gray(36);
+    pub const GRID_MAJOR: Color32 = Color32::from_gray(44);
+    pub const NODE: Color32 = Color32::from_gray(48);
+    pub const NODE_OUTLINE: Color32 = Color32::from_gray(20);
+    pub const TEXT: Color32 = Color32::from_gray(225);
+    pub const TEXT_WEAK: Color32 = Color32::from_gray(150);
+    /// A selected node's outline, Blender's orange.
+    pub const SELECTED: Color32 = Color32::from_rgb(237, 135, 37);
+    /// The active node's outline: the one the properties panel shows.
+    pub const ACTIVE: Color32 = Color32::from_rgb(255, 255, 255);
+    pub const PROBLEM: Color32 = Color32::from_rgb(230, 70, 60);
+    pub const WIRE: Color32 = Color32::from_gray(150);
+    /// Wires to and from selected nodes.
+    pub const WIRE_SELECTED: Color32 = Color32::from_gray(230);
+    pub const EVENT_WIRE: Color32 = Color32::from_rgb(200, 110, 200);
+    pub const AUDIO_SOCKET: Color32 = Color32::from_rgb(99, 199, 255);
+    pub const PARAM_SOCKET: Color32 = Color32::from_rgb(161, 161, 161);
+    pub const EVENT_SOCKET: Color32 = Color32::from_rgb(204, 102, 204);
+    /// The bar of a parameter on a node.
+    pub const PARAM_FIELD: Color32 = Color32::from_gray(62);
+    pub const PARAM_FILL: Color32 = Color32::from_rgb(71, 114, 179);
+    pub const FRAME: Color32 = Color32::from_rgba_premultiplied(60, 60, 60, 120);
+    pub const BOX_SELECT: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
+    pub const CUT: Color32 = Color32::from_rgb(230, 70, 60);
+
+    /// Header colours by node category, like Blender's.
+    pub fn header(category: &str) -> Color32 {
+        match category {
+            "Generators" => Color32::from_rgb(40, 110, 100),
+            "Filters" => Color32::from_rgb(90, 60, 130),
+            "Utilities" => Color32::from_rgb(50, 80, 120),
+            "Input/Output" => Color32::from_rgb(130, 50, 50),
+            "Polyphony" => Color32::from_rgb(120, 90, 40),
+            "Offline" => Color32::from_rgb(90, 90, 40),
+            _ => Color32::from_gray(70),
+        }
+    }
+}
