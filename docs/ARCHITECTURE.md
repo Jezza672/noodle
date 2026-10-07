@@ -429,6 +429,10 @@ style. It has these views:
     the engine. Dragging a frame moves the nodes inside it.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
+  - **Parameters on nodes** are `ParamField`s (see below), one per
+    parameter input without a wire. Each node's fields are shown straight
+    after the node is painted, so nodes in front cover them, and a field
+    under a node in front ignores the pointer so the front node gets it.
   - **Custom node bodies.** Nodes that draw something other than parameters,
     such as meters and scopes, reserve space and draw it in `editor/body.rs`.
 - **Timeline:** tracks, clips, automation lanes.

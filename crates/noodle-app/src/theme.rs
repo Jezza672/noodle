@@ -80,9 +80,6 @@ pub mod editor {
     pub const AUDIO_SOCKET: Color32 = Color32::from_rgb(99, 199, 255);
     pub const PARAM_SOCKET: Color32 = Color32::from_rgb(161, 161, 161);
     pub const EVENT_SOCKET: Color32 = Color32::from_rgb(204, 102, 204);
-    /// The bar of a parameter on a node.
-    pub const PARAM_FIELD: Color32 = Color32::from_gray(62);
-    pub const PARAM_FILL: Color32 = Color32::from_rgb(71, 114, 179);
     pub const FRAME: Color32 = Color32::from_rgba_premultiplied(60, 60, 60, 120);
     pub const BOX_SELECT: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
     pub const CUT: Color32 = Color32::from_rgb(230, 70, 60);

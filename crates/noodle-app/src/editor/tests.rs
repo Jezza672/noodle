@@ -996,3 +996,92 @@ fn a_node_in_front_hides_the_sockets_behind_it() {
     );
     assert_eq!(h.state().session.project().graph().connections().count(), 0);
 }
+
+fn param(h: &H, node: NodeId, key: &str) -> Option<f32> {
+    let graph = h.state().session.project().graph();
+    graph.node(node).unwrap().params.get(key).copied()
+}
+
+/// The middle of a parameter's field on its node.
+fn field(h: &H, node: NodeId, key: &str) -> Pos2 {
+    let scene = scene(h);
+    let row = scene
+        .node(node)
+        .unwrap()
+        .port(Side::Input, key)
+        .unwrap()
+        .row;
+    screen(h, row.center())
+}
+
+#[test]
+fn a_parameter_is_dragged_on_its_node_as_one_undo_step() {
+    let mut h = rig();
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    h.run();
+    let start = field(&h, gain, "gain");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(10.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    let value = param(&h, gain, "gain").expect("the drag set the gain");
+    assert!(value > 0.0, "dragged right, so up from 0 dB: {value}");
+    // The node stayed put, and nothing else was selected.
+    assert_eq!(position(&h, gain), Position { x: 0.0, y: 0.0 });
+    assert!(h.state().editor.selected.is_empty());
+    assert!(matches!(h.state().log.last(), Some(Edit::EndDrag)));
+
+    h.state_mut().session.undo();
+    assert_eq!(param(&h, gain, "gain"), None);
+}
+
+#[test]
+fn a_wired_parameter_has_no_field() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    h.run();
+    assert_eq!(h.query_all_by_label("Gain").count(), 1);
+    connect(&mut h, sine, "out", gain, "gain");
+    h.run();
+    assert_eq!(h.query_all_by_label("Gain").count(), 0);
+}
+
+#[test]
+fn a_node_in_front_takes_the_clicks_on_the_fields_behind_it() {
+    let mut h = rig();
+    let back = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+    h.run();
+    let start = field(&h, back, "gain");
+    let row = scene(&h)
+        .node(back)
+        .unwrap()
+        .port(Side::Input, "gain")
+        .unwrap()
+        .row;
+    // Selected, so drawn on top, with its header over the back node's field.
+    let front = add(
+        &mut h,
+        Node::new("noodle.osc.sine").at(-20.0, row.top() - 8.0),
+    );
+    h.state_mut().editor.selected.insert(front);
+    h.run();
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(10.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    assert_eq!(param(&h, back, "gain"), None);
+    assert_eq!(position(&h, front).x, 20.0);
+}

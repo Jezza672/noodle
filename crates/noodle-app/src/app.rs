@@ -435,11 +435,14 @@ mod tests {
         let mut harness = harness(app);
         harness.run();
         harness.get_by_label("Select a node to see its properties.");
+        // The node's own field.
+        assert_eq!(harness.query_all_by_label("Frequency").count(), 1);
 
         harness.state_mut().editor.selected.insert(id);
         harness.state_mut().editor.active = Some(id);
         harness.run();
-        harness.get_by_label("Frequency");
+        // And now the properties panel's.
+        assert_eq!(harness.query_all_by_label("Frequency").count(), 2);
     }
 
     #[test]

@@ -28,6 +28,7 @@
 mod body;
 mod draw;
 mod layout;
+mod params;
 mod search;
 mod view;
 mod wire;
@@ -287,7 +288,17 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         _ => None,
     };
     draw::wires(&painter, &f, state, &problems, detached);
-    draw::nodes(&painter, &f, state, &problems);
+    {
+        let mut fields = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("noodle-editor-fields")
+                .max_rect(canvas),
+        );
+        fields.set_clip_rect(canvas);
+        draw::nodes(&painter, &f, state, &problems, |node| {
+            params::show(&mut fields, &f, node, pointer_pos, &mut edits);
+        });
+    }
     if let Some(p) = pointer_pos {
         draw::gesture(&painter, &f, &state.gesture, p);
     }
