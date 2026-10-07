@@ -12,7 +12,7 @@ use std::mem;
 use noodle_core::{Graph, NodeId};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
-use crate::denormals::FlushDenormals;
+use crate::denormals::Flush;
 use crate::plan::{self, Cells, Plan, PlanInfo};
 use crate::{Context, Diagnostic, Registry, Transport, compile};
 
@@ -89,6 +89,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         plan: None,
         fade_len,
         level: fade_len,
+        flush: Flush::detect(),
         fading_out: false,
         incoming,
         returns,
@@ -145,6 +146,9 @@ impl Controller {
     /// node has no such unconnected input in the current plan, or if `value`
     /// is infinite or NaN.
     pub fn set_param(&mut self, node: NodeId, key: &str, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
         if let Some(cell) = self.cells.get(&node).and_then(|inputs| inputs.get(key)) {
             cell.set(value);
         }
@@ -189,6 +193,8 @@ pub struct Processor {
     level: usize,
     /// Fading out, to install a plan that isn't seamless at silence.
     fading_out: bool,
+    /// How to flush subnormals on this CPU, found when the engine is made.
+    flush: Flush,
     incoming: Consumer<Box<Plan>>,
     returns: Producer<Box<Plan>>,
     position: u64,
@@ -211,7 +217,7 @@ impl Processor {
             channels,
         } = self.settings;
         debug_assert_eq!(output.len() % channels, 0);
-        let _flush = FlushDenormals::new();
+        let _flush = self.flush.enable();
 
         let mut rest = output;
         while !rest.is_empty() {
