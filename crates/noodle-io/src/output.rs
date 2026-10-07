@@ -186,6 +186,14 @@ pub fn is_fatal(error: &DeviceError) -> bool {
     )
 }
 
+/// Which of the two streams something came from. They fail separately:
+/// losing the input leaves the output playing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    Output,
+    Input,
+}
+
 /// What the devices have reported. Some backends (ALSA among them) report
 /// errors from the audio thread itself, so the reports arrive lock-free:
 /// underruns and input glitches are counted, and other errors are queued.
@@ -193,7 +201,7 @@ pub struct Health {
     underruns: Arc<AtomicU64>,
     pub(crate) input_glitches: Arc<AtomicU64>,
     /// One queue per stream.
-    errors: Vec<Consumer<DeviceError>>,
+    errors: Vec<(Stream, Consumer<DeviceError>)>,
 }
 
 impl Health {
@@ -206,9 +214,9 @@ impl Health {
     }
 
     /// A reporter for one more stream.
-    fn reporter(&mut self) -> Reporter {
+    fn reporter(&mut self, stream: Stream) -> Reporter {
         let (producer, consumer) = RingBuffer::new(ERROR_QUEUE);
-        self.errors.push(consumer);
+        self.errors.push((stream, consumer));
         Reporter {
             underruns: Arc::clone(&self.underruns),
             errors: producer,
@@ -221,11 +229,13 @@ impl Health {
         self.underruns.load(Ordering::Relaxed)
     }
 
-    /// Errors reported since the last call, other than underruns.
-    pub fn errors(&mut self) -> impl Iterator<Item = DeviceError> + '_ {
-        self.errors
-            .iter_mut()
-            .flat_map(|queue| std::iter::from_fn(|| queue.pop().ok()))
+    /// Errors reported since the last call, other than underruns, with the
+    /// stream each came from.
+    pub fn errors(&mut self) -> impl Iterator<Item = (Stream, DeviceError)> + '_ {
+        self.errors.iter_mut().flat_map(|(stream, queue)| {
+            let stream = *stream;
+            std::iter::from_fn(move || queue.pop().ok().map(|error| (stream, error)))
+        })
     }
 }
 
@@ -309,7 +319,7 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
         }
     };
     let fade = writer.fade.clone();
-    let mut reporter = health.reporter();
+    let mut reporter = health.reporter(Stream::Output);
     let on_error = move |error| reporter.report(error);
 
     let stream = match format {
@@ -394,7 +404,7 @@ fn open_input(
         settings.max_frames,
         Arc::clone(&health.input_glitches),
     );
-    let mut reporter = health.reporter();
+    let mut reporter = health.reporter(Stream::Input);
     let on_error = move |error| reporter.report(error);
     let stream = match format {
         SampleFormat::F32 => record::<f32>(&device, config, capture, on_error),
@@ -507,8 +517,8 @@ mod tests {
     #[test]
     fn health_gathers_every_stream() {
         let mut health = Health::new();
-        let mut output = health.reporter();
-        let mut input = health.reporter();
+        let mut output = health.reporter(Stream::Output);
+        let mut input = health.reporter(Stream::Input);
         output.report(DeviceErrorKind::Xrun.into());
         input.report(DeviceErrorKind::Xrun.into());
         output.report(DeviceErrorKind::DeviceNotAvailable.into());
@@ -518,14 +528,34 @@ mod tests {
     }
 
     #[test]
+    fn errors_say_which_stream_they_came_from() {
+        let mut health = Health::new();
+        let mut output = health.reporter(Stream::Output);
+        let mut input = health.reporter(Stream::Input);
+        input.report(DeviceErrorKind::DeviceNotAvailable.into());
+        output.report(DeviceErrorKind::BackendError.into());
+        input.report(DeviceErrorKind::PermissionDenied.into());
+        let mut errors: Vec<_> = health.errors().map(|(s, e)| (s, e.kind())).collect();
+        errors.sort_by_key(|(stream, _)| *stream as u8);
+        assert_eq!(
+            errors,
+            [
+                (Stream::Output, DeviceErrorKind::BackendError),
+                (Stream::Input, DeviceErrorKind::DeviceNotAvailable),
+                (Stream::Input, DeviceErrorKind::PermissionDenied),
+            ]
+        );
+    }
+
+    #[test]
     fn health_counts_underruns_and_queues_other_errors() {
         let mut health = Health::new();
-        let mut reporter = health.reporter();
+        let mut reporter = health.reporter(Stream::Output);
         reporter.report(DeviceErrorKind::Xrun.into());
         reporter.report(DeviceErrorKind::DeviceNotAvailable.into());
         reporter.report(DeviceErrorKind::Xrun.into());
         assert_eq!(health.underruns(), 2);
-        let kinds: Vec<_> = health.errors().map(|e| e.kind()).collect();
+        let kinds: Vec<_> = health.errors().map(|(_, e)| e.kind()).collect();
         assert_eq!(kinds, [DeviceErrorKind::DeviceNotAvailable]);
         assert_eq!(health.errors().count(), 0, "errors are drained");
     }
@@ -533,7 +563,7 @@ mod tests {
     #[test]
     fn health_drops_errors_beyond_its_queue() {
         let mut health = Health::new();
-        let mut reporter = health.reporter();
+        let mut reporter = health.reporter(Stream::Output);
         for _ in 0..ERROR_QUEUE + 5 {
             reporter.report(DeviceErrorKind::BackendError.into());
         }

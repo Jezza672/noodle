@@ -320,13 +320,22 @@ impl<'a> ParamField<'a> {
                 .id(typing_id.with("text"))
                 .font(self.font(ui)),
         );
+        // egui drops focus silently if the text box stops being drawn while
+        // focused, e.g. its node is zoomed out of view or removed by undo.
+        // `lost_focus` never fires then, so the edit would stay open as a
+        // dead text box. It counts as cancelled instead, since the field may
+        // no longer even be the same one.
+        let abandoned = typing.focused && !response.has_focus() && !response.lost_focus();
         if !typing.focused {
             response.request_focus();
             typing.focused = true;
         }
 
         let mut edit = None;
-        if response.lost_focus() {
+        if abandoned {
+            ui.data_mut(|d| d.remove::<Typing>(typing_id));
+            ui.ctx().request_repaint();
+        } else if response.lost_focus() {
             let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
             if !cancelled && typing.text != typing.original {
                 edit = parse_value(self.info, &typing.text).map(ParamEdit::Set);

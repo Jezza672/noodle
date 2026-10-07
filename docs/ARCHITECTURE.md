@@ -274,18 +274,22 @@ choice for when the device is back.
 
 **Device input** is off unless `AudioConfig::input` picks a device, since
 opening a microphone can prompt for permission. It runs at the output's
-sample rate, since there's no resampling yet. An input device that can't
-(or can't be opened at all) doesn't stop playback: Input nodes stay
-silent and `Playback::input_problem` says why. The input stream picks its
-own buffer size and starts before the output, and the feed doesn't count
-a shortfall as a glitch until input has first arrived. cpal runs input and output as separate streams, so input crosses
+sample rate, since there's no resampling yet. An input device that can't (or
+can't be opened at all) doesn't stop playback: Input nodes stay silent and
+`Playback::input_problem` says why. The input stream picks its own buffer
+size and starts before the output, and the feed doesn't count a shortfall as
+a glitch until input has first arrived. The streams also fail separately:
+`Health::errors` says which stream each error came from, and a fatal error
+on the input (the device unplugged, say) leaves Input nodes silent and the
+status bar saying "No input", while only a fatal output error stops
+playback. cpal runs input and output as separate streams, so input crosses
 between their callbacks through an SPSC ring (`noodle-io/src/input.rs`):
 `Capture` fills it, and the `DeviceWriter`'s `Feed` takes one engine block
-at a time. Unless both are the same device, their clocks drift apart. A
-slow input runs dry, and the gap is silence. A fast input builds a
-backlog, so the feed watches the smallest backlog over each half second
-and drops whatever was beyond a small margin. Both count as input
-glitches in `Health`.
+at a time. Unless both are the same device, their clocks drift apart. A slow
+input runs dry, and the gap is silence. A fast input builds a backlog, so
+the feed watches the smallest backlog over each half second and drops
+whatever was beyond a small margin. Both count as input glitches in
+`Health`.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
