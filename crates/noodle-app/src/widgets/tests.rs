@@ -421,3 +421,20 @@ fn a_focused_checkbox_commits_when_toggled() {
     }
     assert_eq!(edits, [ConfigEdit::Set(Value::Bool(true))]);
 }
+
+#[test]
+fn a_field_abandoned_mid_typing_comes_back_as_a_slider() {
+    let mut h = Harness::new();
+    let mut p = Param::new(ParamInfo::new(0.0, 100.0, 50.0));
+    p.click(&mut h);
+    p.frame(&mut h, vec![Event::Text("7".into())]);
+    // The field stops being drawn while it has focus, as when its node is
+    // zoomed out of view or removed by undo.
+    h.frame(vec![], |_| {});
+    h.frame(vec![], |_| {});
+
+    // Back again, it's a slider: dragging changes the value, and the
+    // abandoned text was neither committed nor kept.
+    p.drag(&mut h, WIDTH / 4.0);
+    assert!(close(p.value, 75.0), "{}", p.value);
+}

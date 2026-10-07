@@ -323,6 +323,38 @@ mod tests {
     }
 
     #[test]
+    fn a_param_abandoned_mid_typing_is_a_slider_again() {
+        let mut harness = harness([Node::new("noodle.osc.sine")]);
+        harness.get_by_label("Frequency").click();
+        harness.run();
+        type_over(&harness, "700");
+        harness.run();
+
+        // The panel goes away while the text box has focus (e.g. the node is
+        // deselected or removed by undo), then comes back.
+        harness.state_mut().active = None;
+        harness.run_steps(4);
+        harness.state_mut().active = Some(NodeId(1));
+        harness.run_steps(3);
+        assert_eq!(
+            param(&harness, "frequency"),
+            None,
+            "abandoned text committed"
+        );
+
+        let rect = harness.get_by_label("Frequency").rect();
+        harness.drag_at(rect.center());
+        harness.run();
+        for i in 1..=5 {
+            harness.hover_at(rect.center() + vec2(10.0 * i as f32, 0.0));
+            harness.run();
+        }
+        harness.drop_at(rect.center() + vec2(50.0, 0.0));
+        harness.run();
+        assert!(param(&harness, "frequency").is_some(), "the field is dead");
+    }
+
+    #[test]
     fn shows_problems() {
         let harness = harness([Node::new("no.such.type").with_param("x", 1.0)]);
         harness.get_by_label("unknown node type `no.such.type`");
