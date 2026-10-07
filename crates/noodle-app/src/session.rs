@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use noodle_core::{Command, EditError, FrameId, History, NodeId, Project};
 use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
@@ -16,6 +17,11 @@ use noodle_io::{AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback,
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
 const MAX_FRAMES: usize = 512;
+
+/// More reroutes than this within [`REROUTE_WINDOW`] means the output is
+/// flapping, and playback stops instead of restarting again.
+const MAX_REROUTES: usize = 3;
+const REROUTE_WINDOW: Duration = Duration::from_secs(10);
 
 /// What [`Session::save`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +83,7 @@ pub struct Session {
     /// The device to play on.
     audio_config: AudioConfig,
     audio: Option<Audio>,
+    reroutes: Reroutes,
     /// Something the user should know, such as a failed save, shown until the
     /// next one replaces it.
     message: Option<String>,
@@ -143,6 +150,7 @@ impl Session {
             diagnostics: Vec::new(),
             audio_config: AudioConfig::default(),
             audio: None,
+            reroutes: Reroutes::default(),
             message: None,
         };
         session.replace(project, path);
@@ -423,7 +431,12 @@ impl Session {
         if check.stopped {
             self.audio = None;
         } else if check.restart {
-            self.restart_on_new_output();
+            if self.reroutes.allow(Instant::now()) {
+                self.restart_on_new_output();
+            } else {
+                self.audio = None;
+                self.message = Some("Playback stopped: the audio output keeps changing".into());
+            }
         }
     }
 
@@ -517,6 +530,26 @@ struct Monitor {
     reported: Glitches,
     /// Why the input stopped after playback began. The output carries on.
     input_lost: Option<String>,
+}
+
+/// When playback last restarted after a reroute, so a flapping output can't
+/// make it restart on every frame.
+#[derive(Debug, Default)]
+struct Reroutes {
+    recent: Vec<Instant>,
+}
+
+impl Reroutes {
+    /// Whether a restart at `now` is allowed, and if so, counts it.
+    fn allow(&mut self, now: Instant) -> bool {
+        self.recent
+            .retain(|&at| now.saturating_duration_since(at) < REROUTE_WINDOW);
+        if self.recent.len() >= MAX_REROUTES {
+            return false;
+        }
+        self.recent.push(now);
+        true
+    }
 }
 
 /// What a check of the devices found.
@@ -794,6 +827,19 @@ mod tests {
         );
         assert!(check.restart);
         assert!(!check.stopped);
+    }
+
+    #[test]
+    fn a_flapping_output_stops_being_restarted() {
+        let start = Instant::now();
+        let mut reroutes = Reroutes::default();
+        let second = Duration::from_secs(1);
+        for i in 0..MAX_REROUTES as u32 {
+            assert!(reroutes.allow(start + second * i), "restart {i}");
+        }
+        assert!(!reroutes.allow(start + second * MAX_REROUTES as u32));
+        // Once the window has passed, an ordinary reroute is fine again.
+        assert!(reroutes.allow(start + REROUTE_WINDOW + second * MAX_REROUTES as u32));
     }
 
     #[test]
