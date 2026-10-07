@@ -142,21 +142,32 @@ impl DevicePicker {
         ui.end_row();
 
         let mut input = self.draft.input.clone();
-        combo(ui, "Input", input_label(inputs, &input), |ui| {
-            ui.selectable_value(&mut input, InputChoice::Off, "Off");
-            ui.selectable_value(
-                &mut input,
-                InputChoice::Default,
-                input_label(inputs, &InputChoice::Default),
-            );
-            for device in inputs {
+        let listed_host = self.draft.host.as_deref().or_else(|| {
+            self.hosts
+                .iter()
+                .find(|h| h.is_default)
+                .map(|h| h.id.as_str())
+        });
+        combo(
+            ui,
+            "Input",
+            input_label(inputs, listed_host, &input),
+            |ui| {
+                ui.selectable_value(&mut input, InputChoice::Off, "Off");
                 ui.selectable_value(
                     &mut input,
-                    InputChoice::Device(device.id.clone()),
-                    &device.name,
+                    InputChoice::Default,
+                    input_label(inputs, listed_host, &InputChoice::Default),
                 );
-            }
-        })
+                for device in inputs {
+                    ui.selectable_value(
+                        &mut input,
+                        InputChoice::Device(device.id.clone()),
+                        &device.name,
+                    );
+                }
+            },
+        )
         .on_hover_text("Records into Input nodes, at the output's sample rate");
         ui.end_row();
 
@@ -221,14 +232,11 @@ impl DevicePicker {
         })
     }
 
-    /// Switches host. Devices chosen on the old host can't be used on the new
-    /// one, so they go back to its defaults.
+    /// Switches host. The output has to be on the chosen host, so it goes
+    /// back to the default. A named input opens on its own host, so it stays.
     fn change_host(&mut self, host: Option<String>) {
         self.draft.host = host;
         self.draft.output = None;
-        if let InputChoice::Device(_) = self.draft.input {
-            self.draft.input = InputChoice::Default;
-        }
         self.refresh_devices();
         self.drop_unsupported();
     }
@@ -287,11 +295,21 @@ fn device_label(devices: &[DeviceInfo], id: Option<&str>) -> String {
     }
 }
 
-fn input_label(devices: &[DeviceInfo], choice: &InputChoice) -> String {
+/// Like [`device_label`], but an input that isn't listed may be on another
+/// host, since a named input opens on its own host. `host` is the host the
+/// devices were listed from, if known.
+fn input_label(devices: &[DeviceInfo], host: Option<&str>, choice: &InputChoice) -> String {
     match choice {
         InputChoice::Off => "Off".into(),
         InputChoice::Default => device_label(devices, None),
-        InputChoice::Device(id) => device_label(devices, Some(id)),
+        InputChoice::Device(id) => match host {
+            Some(host)
+                if !id.starts_with(&format!("{host}:")) && !devices.iter().any(|d| &d.id == id) =>
+            {
+                format!("{id} (on another host)")
+            }
+            _ => device_label(devices, Some(id)),
+        },
     }
 }
 
@@ -508,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_host_resets_devices_from_the_old_one() {
+    fn changing_host_resets_the_output_but_keeps_a_named_input() {
         let mut harness = harness(AudioConfig {
             output: Some("alsa:usb".into()),
             input: InputChoice::Device("alsa:mic".into()),
@@ -518,8 +536,9 @@ mod tests {
         let draft = &harness.state().picker.draft;
         assert_eq!(draft.host.as_deref(), Some("jack"));
         assert_eq!(draft.output, None);
-        assert_eq!(draft.input, InputChoice::Default);
+        assert_eq!(draft.input, InputChoice::Device("alsa:mic".into()));
         assert_eq!(shown(&harness, "Output"), "Default (system)");
+        assert_eq!(shown(&harness, "Input"), "alsa:mic (on another host)");
     }
 
     #[test]
