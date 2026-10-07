@@ -513,6 +513,104 @@ fn shift_d_duplicates_with_the_wires_between_the_copies() {
 }
 
 #[test]
+fn shift_d_on_a_frame_copies_what_is_in_it() {
+    let mut h = rig();
+    let (sine, gain, _) = wired(&mut h);
+    let outside = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 400.0));
+    h.run();
+    let p = title(&h, sine);
+    click(&mut h, p, Modifiers::NONE);
+    let p = title(&h, gain);
+    click(&mut h, p, Modifiers::SHIFT);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::COMMAND, Key::J);
+    let (frame_id, frame) = {
+        let (id, frame) = h.state().session.project().frames().next().unwrap();
+        (id, frame.clone())
+    };
+
+    // Select just the frame, by its title, and copy it.
+    let p = empty_space(&h);
+    click(&mut h, p, Modifiers::NONE);
+    let label = screen(
+        &h,
+        Pos2::new(frame.position.x + 30.0, frame.position.y + 8.0),
+    );
+    click(&mut h, label, Modifiers::NONE);
+    assert!(h.state().editor.selected.is_empty());
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::SHIFT, Key::D);
+
+    let project = h.state().session.project();
+    assert_eq!(project.frames().count(), 2);
+    // The sine and gain are copied, with the wire between them, and the
+    // sine outside the frame isn't.
+    assert_eq!(project.graph().nodes().count(), 5);
+    assert_eq!(project.graph().connections().count(), 2);
+    let (copy_id, copy) = project.frames().find(|(id, _)| *id != frame_id).unwrap();
+    // Below the original, not overlapping it.
+    assert_eq!(copy.position.x, frame.position.x);
+    assert_eq!(copy.position.y, frame.position.y + frame.height + 20.0);
+    assert_eq!(copy.width, frame.width);
+    let copies: Vec<NodeId> = project
+        .graph()
+        .nodes()
+        .map(|(id, _)| id)
+        .filter(|id| ![sine, gain, outside].contains(id))
+        .collect();
+    assert_eq!(copies.len(), 2);
+    for id in &copies {
+        let node = project.graph().node(*id).unwrap();
+        let original = if node.type_id == "noodle.osc.sine" {
+            sine
+        } else {
+            gain
+        };
+        let moved = project.graph().node(original).unwrap().position;
+        assert_eq!(node.position.x, moved.x);
+        assert_eq!(node.position.y, moved.y + frame.height + 20.0);
+    }
+    assert_eq!(position(&h, sine), Position::default());
+    // The copy of the frame is what's selected, and dragging it carries
+    // the copied nodes.
+    assert_eq!(
+        h.state().editor.selected_frames.iter().collect::<Vec<_>>(),
+        [&copy_id]
+    );
+    assert!(h.state().editor.selected.is_empty());
+
+    // Dragging the copy by its title moves the copied nodes and leaves the
+    // originals where they were.
+    let (sine_at, gain_at) = (position(&h, sine), position(&h, gain));
+    let copies_at: Vec<Position> = copies.iter().map(|&id| position(&h, id)).collect();
+    let label = screen(&h, Pos2::new(copy.position.x + 30.0, copy.position.y + 8.0));
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            label,
+            label + Vec2::new(10.0, 0.0),
+            label + Vec2::new(10.0, 150.0),
+        ],
+    );
+    assert_eq!(position(&h, sine), sine_at);
+    assert_eq!(position(&h, gain), gain_at);
+    assert_eq!(position(&h, outside), Position { x: 0.0, y: 400.0 });
+    for (&id, at) in copies.iter().zip(&copies_at) {
+        let now = position(&h, id);
+        assert_eq!((now.x, now.y), (at.x + 10.0, at.y + 150.0));
+    }
+    h.state_mut().session.undo();
+
+    // One more undo removes all of the copy.
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(project.frames().count(), 1);
+    assert_eq!(project.graph().nodes().count(), 3);
+}
+
+#[test]
 fn shift_a_searches_and_adds_at_the_pointer() {
     let mut h = rig();
     let at = screen(&h, Pos2::new(120.0, 80.0));
