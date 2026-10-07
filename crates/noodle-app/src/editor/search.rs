@@ -165,9 +165,7 @@ mod tests {
     use super::*;
 
     fn registry() -> Registry {
-        let mut registry = Registry::with_builtins();
-        noodle_nodes::register_all(&mut registry);
-        registry
+        crate::session::Nodes::all().registry
     }
 
     #[test]

@@ -23,7 +23,7 @@ type H = Harness<'static, Rig>;
 
 fn rig() -> H {
     let rig = Rig {
-        session: Session::new(crate::registry()),
+        session: Session::new(crate::session::Nodes::all()),
         editor: EditorState::default(),
         log: Vec::new(),
     };

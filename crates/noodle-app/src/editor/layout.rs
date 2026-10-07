@@ -318,9 +318,7 @@ mod tests {
     use noodle_core::{Command, Frame, History, Node, Position};
 
     fn registry() -> Registry {
-        let mut registry = Registry::with_builtins();
-        noodle_nodes::register_all(&mut registry);
-        registry
+        crate::session::Nodes::all().registry
     }
 
     fn add(project: &mut Project, history: &mut History, node: Node) -> NodeId {
