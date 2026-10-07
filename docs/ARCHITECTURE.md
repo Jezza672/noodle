@@ -74,9 +74,9 @@ decays towards zero, and its state can get stuck among the subnormal floats,
 which most CPUs handle many times more slowly. `Processor::process` sets
 flush-to-zero (MXCSR FTZ and DAZ on x86_64, FPCR.FZ on aarch64) while it
 runs and restores the previous mode after, so this covers offline renders
-too. Stateful nodes also flush their own tiny state once per block (the SVF
-below 1e-30), so they behave the same where the engine can't set the mode,
-such as in the test harness.
+too. Stateful nodes also flush their own tiny state once per block (the SVF's
+integrators and the Meter's mean square, below 1e-30), so they behave the
+same where the engine can't set the mode, such as in the test harness.
 
 **Bad values don't stick.** One infinite or NaN value reaching an
 oscillator's phase or a filter's state would otherwise keep it outputting NaN
