@@ -1,0 +1,17 @@
+// Wind: white noise through a narrow, resonant band-pass filter.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.noise.white", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.filter.svf", params: {"cutoff": 700.0, "resonance": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.util.gain", params: {"gain": -6.0}, position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.io.output", position: (x: 600.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "in")),
+            (from: (node: 2, port: "band"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+        ],
+    ),
+)

@@ -71,7 +71,7 @@ impl Session {
     fn new() -> Self {
         let mut registry = Registry::with_builtins();
         noodle_nodes::register_all(&mut registry);
-        let (controller, processor) = engine(SETTINGS);
+        let (controller, processor) = engine(SETTINGS).unwrap();
         Self {
             project: Project::new(),
             registry,

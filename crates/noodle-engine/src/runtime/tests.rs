@@ -5,8 +5,8 @@ use noodle_core::{Command, Config, Connection, Endpoint, Node as ProjectNode, Pr
 
 use super::*;
 use crate::{
-    ConfigInfo, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
-    OUTPUT_ID, ParamInfo, PerLane, Setup, Shape,
+    ConfigInfo, Event, EventKind, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError,
+    NodeInfo, NodeType, NoteId, OUTPUT_ID, ParamInfo, PerLane, Setup, Shape,
 };
 
 /// Smoothing for the `offset` parameter: 4 ms, which is 4 samples at the test
@@ -186,13 +186,161 @@ impl Node for TwoVoicesNode {
     }
 }
 
+/// Fails to instantiate the first time, then outputs 7.
+struct Flaky(AtomicUsize);
+
+impl NodeType for Flaky {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("flaky");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().output("out", "Out"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        match self.0.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(NodeError::config("not yet")),
+            _ => Ok(Instance::realtime(Constant(7.0))),
+        }
+    }
+}
+
+struct Constant(f32);
+
+impl Node for Constant {
+    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        io.outputs[0].fill(self.0);
+    }
+}
+
+/// Emits one note per block: key 1 at frame 0 in the first block, key 2 at
+/// frame 1 in the second, and so on.
+struct NoteSource;
+
+impl NodeType for NoteSource {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("note_source");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().event_output("notes", "Notes"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(NoteSourceNode { block: 0 }))
+    }
+}
+
+struct NoteSourceNode {
+    block: u32,
+}
+
+impl Node for NoteSourceNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let event = Event {
+            time: self.block % ctx.frames as u32,
+            kind: EventKind::NoteOn {
+                note: NoteId(self.block),
+                channel: 0,
+                key: self.block as u8 + 1,
+                velocity: 1.0,
+            },
+        };
+        io.event_outputs[0].push(event).unwrap();
+        self.block += 1;
+    }
+}
+
+/// Passes notes through on output `a`, and on `b` with their keys doubled.
+struct NoteThru;
+
+impl NodeType for NoteThru {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("note_thru");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime()
+            .event_input("notes", "Notes")
+            .event_output("a", "A")
+            .event_output("b", "B"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(NoteThruNode))
+    }
+}
+
+struct NoteThruNode;
+
+impl Node for NoteThruNode {
+    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        let [a, b] = io.event_outputs else {
+            unreachable!()
+        };
+        for event in io.event_inputs[0] {
+            a.push(*event).unwrap();
+            let mut doubled = *event;
+            if let EventKind::NoteOn { key, .. } = &mut doubled.kind {
+                *key *= 2;
+            }
+            b.push(doubled).unwrap();
+        }
+    }
+}
+
+/// Turns notes into audio: each note adds `key × scale` at its frame.
+struct NoteProbe;
+
+const SCALE: ConfigInfo = ConfigInfo::int("scale", "Scale", 1);
+
+impl NodeType for NoteProbe {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("note_probe");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime()
+            .event_input("notes", "Notes")
+            .output("out", "Out"))
+    }
+
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        let scale = SCALE.get_int(setup.config) as f32;
+        Ok(Instance::realtime(NoteProbeNode(scale)))
+    }
+}
+
+struct NoteProbeNode(f32);
+
+impl Node for NoteProbeNode {
+    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        let out = io.outputs[0].lane_mut(0, 0);
+        out.fill(0.0);
+        for event in io.event_inputs[0] {
+            if let EventKind::NoteOn { key, .. } = event.kind {
+                out[event.time as usize] += key as f32 * self.0;
+            }
+        }
+    }
+}
+
 fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     let mut registry = Registry::with_builtins();
     registry.register(Counter);
     registry.register(Offset);
     registry.register(Droppable(Arc::clone(dropped)));
     registry.register(Failing);
+    registry.register(Flaky(AtomicUsize::new(0)));
     registry.register(TwoVoices);
+    registry.register(NoteSource);
+    registry.register(NoteThru);
+    registry.register(NoteProbe);
     registry
 }
 
@@ -207,7 +355,7 @@ struct Rig {
 impl Rig {
     fn new(settings: Settings) -> Self {
         let dropped = Arc::new(AtomicUsize::new(0));
-        let (controller, processor) = engine(settings);
+        let (controller, processor) = engine(settings).unwrap();
         Self {
             project: Project::new(),
             registry: registry(&dropped),
@@ -227,8 +375,12 @@ impl Rig {
     }
 
     fn wire(&mut self, from: NodeId, to: NodeId, to_port: &str) {
+        self.connect(from, "out", to, to_port);
+    }
+
+    fn connect(&mut self, from: NodeId, from_port: &str, to: NodeId, to_port: &str) {
         self.edit(Command::Connect(Connection {
-            from: Endpoint::new(from, "out"),
+            from: Endpoint::new(from, from_port),
             to: Endpoint::new(to, to_port),
         }));
     }
@@ -417,4 +569,87 @@ fn voices_are_summed_into_every_channel() {
     rig.wire(voices, output, "in");
     rig.update();
     assert_eq!(rig.render(2), [3.0; 4]);
+}
+
+#[test]
+fn a_failed_node_is_retried_and_reported_until_it_works() {
+    let mut rig = Rig::new(SETTINGS);
+    let flaky = rig.add("flaky");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(flaky, output, "in");
+    let failed = [Diagnostic::node(
+        flaky,
+        crate::Problem::Node(NodeError::config("not yet")),
+    )];
+    assert_eq!(rig.update(), failed);
+    assert_eq!(rig.render(2), [0.0; 2]);
+
+    // Nothing in the graph changed, but the node is tried again.
+    assert!(rig.update().is_empty());
+    assert_eq!(rig.render(2), [7.0; 2]);
+}
+
+#[test]
+fn a_failure_is_reported_on_every_update() {
+    let mut rig = Rig::new(SETTINGS);
+    rig.add("failing");
+    let first = rig.update();
+    assert_eq!(first.len(), 1);
+    assert_eq!(rig.update(), first);
+}
+
+#[test]
+fn events_reach_every_consumer_and_are_cleared_each_block() {
+    let mut rig = Rig::new(SETTINGS);
+    let source = rig.add("note_source");
+    let thru = rig.add("note_thru");
+    // Each probe feeds its own Output node; Output nodes are summed.
+    let probe = |rig: &mut Rig, scale: i64| {
+        let id = rig.project.new_node_id();
+        let config = Config::new().with("scale", Value::Int(scale));
+        rig.edit(Command::AddNode {
+            id,
+            node: ProjectNode::new("note_probe").with_config(config),
+        });
+        let output = rig.add(OUTPUT_ID);
+        rig.wire(id, output, "in");
+        id
+    };
+    let via_a = probe(&mut rig, 1);
+    let via_b = probe(&mut rig, 100);
+    let direct = probe(&mut rig, 10_000);
+    rig.connect(source, "notes", thru, "notes");
+    rig.connect(thru, "a", via_a, "notes");
+    rig.connect(thru, "b", via_b, "notes");
+    // Fan-out: the source is read by both `thru` and `direct`.
+    rig.connect(source, "notes", direct, "notes");
+    assert!(rig.update().is_empty());
+
+    // Key k reaches `via_a` as k, `via_b` as 2k and `direct` as k, so the
+    // total is k + 200k + 10000k = 10201k. Leftover events from an earlier
+    // block, or events reaching the wrong consumer, would change it.
+    assert_eq!(
+        rig.render(8),
+        [10201.0, 0.0, 0.0, 0.0, 0.0, 20402.0, 0.0, 0.0]
+    );
+}
+
+#[test]
+fn invalid_settings_are_rejected() {
+    let with = |change: fn(&mut Settings)| {
+        let mut settings = SETTINGS;
+        change(&mut settings);
+        engine(settings).err()
+    };
+    assert_eq!(with(|s| s.channels = 0), Some(SettingsError::Channels));
+    assert_eq!(with(|s| s.max_frames = 0), Some(SettingsError::MaxFrames));
+    assert_eq!(
+        with(|s| s.sample_rate = 0.0),
+        Some(SettingsError::SampleRate(0.0))
+    );
+    assert!(matches!(
+        with(|s| s.sample_rate = f32::NAN),
+        Some(SettingsError::SampleRate(_))
+    ));
+    assert!(with(|_| {}).is_none());
 }

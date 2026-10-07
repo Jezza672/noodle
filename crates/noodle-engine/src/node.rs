@@ -248,6 +248,10 @@ pub struct Setup<'a> {
     pub max_frames: usize,
     pub input_shapes: &'a [Shape],
     pub output_shapes: &'a [Shape],
+    /// A seed for anything random. It's the same for this node on every run,
+    /// so renders repeat exactly (and can be cached), but different for every
+    /// node, so two noise sources aren't identical.
+    pub seed: u64,
 }
 
 pub enum Instance {

@@ -117,6 +117,21 @@ impl fmt::Display for Problem {
     }
 }
 
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.location, self.problem)
+    }
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(id) => write!(f, "node {id}"),
+            Self::Wire(input) => write!(f, "wire into {input}"),
+        }
+    }
+}
+
 impl Diagnostic {
     pub(crate) fn node(id: NodeId, problem: Problem) -> Self {
         Self {

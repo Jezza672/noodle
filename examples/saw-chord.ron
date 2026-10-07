@@ -1,0 +1,24 @@
+// An A minor chord from three saws, mixed and softened by a resonant
+// low-pass filter.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.osc.saw", params: {"frequency": 110.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.osc.saw", params: {"frequency": 130.81}, position: (x: 0.0, y: 120.0)),
+            3: (type: "noodle.osc.saw", params: {"frequency": 164.81}, position: (x: 0.0, y: 240.0)),
+            4: (type: "noodle.util.mix", config: {"inputs": 3}, position: (x: 200.0, y: 120.0)),
+            5: (type: "noodle.filter.svf", params: {"cutoff": 900.0, "resonance": 0.6}, position: (x: 400.0, y: 120.0)),
+            6: (type: "noodle.util.gain", params: {"gain": -14.0}, position: (x: 600.0, y: 120.0)),
+            7: (type: "noodle.io.output", position: (x: 800.0, y: 120.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 4, port: "in1")),
+            (from: (node: 2, port: "out"), to: (node: 4, port: "in2")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in3")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 5, port: "low"), to: (node: 6, port: "in")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+        ],
+    ),
+)

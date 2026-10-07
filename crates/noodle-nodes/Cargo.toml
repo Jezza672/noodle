@@ -10,3 +10,4 @@ noodle-engine.workspace = true
 
 [dev-dependencies]
 noodle-core.workspace = true
+noodle-io.workspace = true
