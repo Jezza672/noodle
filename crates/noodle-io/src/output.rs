@@ -5,7 +5,8 @@
 //! the device and wires the writer into its callback.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
@@ -28,6 +29,26 @@ pub struct DeviceWriter {
     /// One block of interleaved samples.
     scratch: Box<[f32]>,
     input: Option<Feed>,
+    fade: Arc<Fade>,
+    /// The gain applied to the output: 1 until a fade-out starts.
+    gain: f32,
+    /// How much the gain falls per frame while fading out.
+    step: f32,
+}
+
+/// How long the output takes to fade out when playback stops. Cutting a
+/// stream off mid-wave is a click.
+const FADE_OUT: Duration = Duration::from_millis(10);
+
+/// Lets the thread that owns the stream ask the audio callback for a fade-out
+/// and hear when it is done.
+#[derive(Default)]
+struct Fade {
+    stop: AtomicBool,
+    done: AtomicBool,
+    /// The most frames the callback has been asked for at once, which is how
+    /// much the device queues ahead of what it is playing.
+    period: AtomicU32,
 }
 
 impl DeviceWriter {
@@ -35,12 +56,15 @@ impl DeviceWriter {
         let Settings {
             max_frames,
             channels,
-            ..
+            sample_rate,
         } = processor.settings();
         Self {
             processor,
             scratch: vec![0.0; max_frames * channels].into_boxed_slice(),
             input: None,
+            fade: Arc::default(),
+            gain: 1.0,
+            step: 1.0 / (FADE_OUT.as_secs_f32() * sample_rate).max(1.0),
         }
     }
 
@@ -57,6 +81,9 @@ impl DeviceWriter {
     /// becomes silence, so a misbehaving graph can't blast the speakers.
     pub fn write<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
         let channels = self.processor.settings().channels;
+        self.fade
+            .period
+            .fetch_max((output.len() / channels) as u32, Ordering::Relaxed);
         for chunk in output.chunks_mut(self.scratch.len()) {
             let scratch = &mut self.scratch[..chunk.len()];
             match &mut self.input {
@@ -68,20 +95,30 @@ impl DeviceWriter {
                 }
                 None => self.processor.process(scratch),
             }
-            for (out, &x) in chunk.iter_mut().zip(scratch.iter()) {
-                let x = if x.is_finite() {
-                    x.clamp(-1.0, 1.0)
-                } else {
-                    0.0
-                };
-                *out = T::from_sample(x);
+            let stopping = self.fade.stop.load(Ordering::Relaxed);
+            for (frame_out, frame) in chunk.chunks_mut(channels).zip(scratch.chunks(channels)) {
+                if stopping {
+                    self.gain = (self.gain - self.step).max(0.0);
+                }
+                for (out, &x) in frame_out.iter_mut().zip(frame) {
+                    let x = if x.is_finite() {
+                        x.clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    *out = T::from_sample(x * self.gain);
+                }
+            }
+            if stopping && self.gain == 0.0 {
+                self.fade.done.store(true, Ordering::Release);
             }
         }
     }
 }
 
-/// Audio playing on a device. Dropping it stops the sound.
+/// Audio playing on a device. Dropping it fades the sound out and stops it.
 pub struct Playback {
+    fade: Arc<Fade>,
     _stream: cpal::Stream,
     _input_stream: Option<cpal::Stream>,
     device: String,
@@ -89,6 +126,27 @@ pub struct Playback {
     input_problem: Option<AudioError>,
     settings: Settings,
     health: Health,
+}
+
+impl Drop for Playback {
+    fn drop(&mut self) {
+        // Wait for the callback to bring the output down to silence; the
+        // streams stop right after. A stream that has stopped calling back
+        // (an unplugged device) would never finish, so don't wait forever.
+        self.fade.stop.store(true, Ordering::Relaxed);
+        let deadline = Instant::now() + FADE_OUT + Duration::from_millis(100);
+        while !self.fade.done.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The ramp is queued behind the audio already in the device's buffer,
+        // and closing the stream throws the queue away. Let that play out
+        // first: two periods, as devices queue about that much.
+        if self.fade.done.load(Ordering::Acquire) {
+            let frames = self.fade.period.load(Ordering::Relaxed) as f32;
+            let queued = Duration::from_secs_f32(2.0 * frames / self.settings.sample_rate);
+            std::thread::sleep(queued.min(Duration::from_millis(500)));
+        }
+    }
 }
 
 impl Playback {
@@ -260,6 +318,7 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
             }
         }
     };
+    let fade = writer.fade.clone();
     let mut reporter = health.reporter(Stream::Output);
     let on_error = move |error| reporter.report(error);
 
@@ -289,6 +348,7 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
     stream.play()?;
     Ok((
         Playback {
+            fade,
             _stream: stream,
             _input_stream: input_stream,
             device: name,
@@ -523,6 +583,39 @@ mod tests {
         let mut output = vec![0.0f32; 150 * 2];
         writer(0.25).write(&mut output);
         assert!(output.iter().all(|&x| x == 0.25), "{output:?}");
+    }
+
+    #[test]
+    fn stopping_fades_the_output_out_without_a_jump() {
+        let mut writer = writer(0.5);
+        let mut output = vec![0.0f32; 64 * 2];
+        writer.write(&mut output);
+        assert!(output.iter().all(|&x| x == 0.5));
+
+        writer.fade.stop.store(true, Ordering::Relaxed);
+        // 10 ms at 48 kHz is 480 frames; write 600.
+        let mut faded = vec![0.0f32; 600 * 2];
+        writer.write(&mut faded);
+        // Falls steadily from the last level to silence: no step bigger than
+        // one frame's share of the ramp.
+        let biggest_step = std::iter::once(0.5)
+            .chain(faded.iter().step_by(2).copied())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|pair| (pair[0] - pair[1]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(biggest_step < 0.5 / 400.0, "{biggest_step}");
+        assert!(faded.iter().rev().take(2 * 100).all(|&x| x == 0.0));
+        assert!(writer.fade.done.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn the_writer_notes_how_much_the_device_asks_for_at_once() {
+        let mut writer = writer(0.0);
+        writer.write(&mut vec![0.0f32; 32 * 2]);
+        writer.write(&mut vec![0.0f32; 150 * 2]);
+        writer.write(&mut [0.0f32; 10 * 2]);
+        assert_eq!(writer.fade.period.load(Ordering::Relaxed), 150);
     }
 
     #[test]
