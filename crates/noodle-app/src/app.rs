@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::editor::{self, EditorState};
-use crate::session::Session;
+use crate::session::{Saved, Session};
 use crate::{properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -24,6 +24,9 @@ pub struct App {
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
     confirming: Option<Action>,
+    /// An action to run once Save As succeeds, when the user chose to save an
+    /// untitled project before it.
+    after_save: Option<Action>,
     /// Set once the user has agreed to close despite unsaved changes.
     closing: bool,
     /// The title last sent to the window, so it's only sent when it changes.
@@ -58,6 +61,7 @@ impl App {
             session,
             editor: EditorState::default(),
             confirming: None,
+            after_save: None,
             closing: false,
             title: String::new(),
         }
@@ -211,13 +215,21 @@ impl App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
-                    // Saving may need a dialog, so it waits for the next frame.
-                    if self.session.save() {
-                        self.run(ctx, action);
-                    } else {
-                        actions.push(Action::SaveAs);
+                    match self.session.save() {
+                        Saved::Yes => {
+                            self.confirming = None;
+                            self.run(ctx, action);
+                        }
+                        // The dialog stays open, with the error in the
+                        // status bar, so nothing is lost.
+                        Saved::Failed => {}
+                        // The file dialog can't open mid-frame.
+                        Saved::NoFile => {
+                            self.confirming = None;
+                            self.after_save = Some(action);
+                            actions.push(Action::SaveAs);
+                        }
                     }
-                    self.confirming = None;
                 }
                 if ui.button("Don't Save").clicked() {
                     self.confirming = None;
@@ -260,14 +272,18 @@ impl App {
                 }
             }
             Action::Save => {
-                if !self.session.save() {
+                if self.session.save() == Saved::NoFile {
                     self.run(ctx, Action::SaveAs);
                 }
             }
             Action::SaveAs => {
+                let then = self.after_save.take();
                 let name = format!("{}.ron", self.session.name());
-                if let Some(path) = dialog().set_file_name(name).save_file() {
-                    self.session.save_as(&with_extension(path));
+                if let Some(path) = dialog().set_file_name(name).save_file()
+                    && self.session.save_as(&with_extension(path))
+                    && let Some(then) = then
+                {
+                    self.run(ctx, then);
                 }
             }
             Action::Undo => self.session.undo(),
@@ -425,6 +441,32 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_save_keeps_the_work_and_the_question() {
+        let dir = std::env::temp_dir().join(format!("noodle-app-{}-gone", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.ron");
+        let mut app = empty();
+        assert!(app.session.save_as(&path));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let node = Node::new("noodle.osc.sine");
+        let id = noodle_core::NodeId(1);
+        app.session
+            .edit([Edit::Apply(Command::AddNode { id, node })]);
+        let mut harness = harness(app);
+        harness.run();
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+        harness.run();
+        harness.get_by_label("Save").click();
+        harness.run();
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            1
+        );
+        harness.get_by_label("Don't Save");
+    }
+
+    #[test]
     fn new_without_changes_doesnt_ask() {
         let mut harness = harness(empty());
         harness.run();
@@ -453,7 +495,7 @@ mod tests {
 
     #[test]
     fn saving_without_a_file_asks_where() {
-        assert!(!empty().session.save());
+        assert_eq!(empty().session.save(), Saved::NoFile);
         assert_eq!(with_extension(PathBuf::from("a")), PathBuf::from("a.ron"));
         assert_eq!(
             with_extension(PathBuf::from("a.ron")),

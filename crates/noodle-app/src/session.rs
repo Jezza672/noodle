@@ -17,6 +17,16 @@ use noodle_io::{OutputError, Playback};
 /// Frames per block while playing: about 11 ms at 48 kHz.
 const MAX_FRAMES: usize = 512;
 
+/// What [`Session::save`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saved {
+    Yes,
+    /// The write failed. The reason is in [`Session::message`].
+    Failed,
+    /// The project has no file yet, so the caller should ask for one.
+    NoFile,
+}
+
 /// A change a view wants made.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
@@ -202,28 +212,28 @@ impl Session {
         }
     }
 
-    /// Saves to the project's own file. Returns false if it has none yet, so
-    /// the caller should ask where to save it.
-    pub fn save(&mut self) -> bool {
+    /// Saves to the project's own file.
+    pub fn save(&mut self) -> Saved {
         match self.path.clone() {
-            Some(path) => {
-                self.save_as(&path);
-                true
-            }
-            None => false,
+            Some(path) if self.save_as(&path) => Saved::Yes,
+            Some(_) => Saved::Failed,
+            None => Saved::NoFile,
         }
     }
 
-    pub fn save_as(&mut self, path: &Path) {
+    /// Returns whether it saved. If not, the reason is in [`Self::message`].
+    pub fn save_as(&mut self, path: &Path) -> bool {
         match write_atomically(path, &self.project.to_ron()) {
             Ok(()) => {
                 self.path = Some(path.to_owned());
                 self.saved = self.project.clone();
                 self.dirty = false;
                 self.message = Some(format!("Saved {}", path.display()));
+                true
             }
             Err(error) => {
                 self.message = Some(format!("Couldn't save {}: {error}", path.display()));
+                false
             }
         }
     }
@@ -501,7 +511,7 @@ mod tests {
         let path = temp("dirty.ron");
         let mut session = Session::new(registry());
         assert!(!session.is_dirty());
-        assert!(!session.save(), "nowhere to save yet");
+        assert_eq!(session.save(), Saved::NoFile);
 
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
         assert!(session.is_dirty());
