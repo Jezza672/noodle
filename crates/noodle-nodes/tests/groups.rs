@@ -57,3 +57,78 @@ fn a_grouped_vibrato_sounds_the_same_as_the_flat_one() {
     }
     assert_eq!(render_project(&project), flat);
 }
+
+/// The vibrato with its oscillator and output gain folded into one group,
+/// and that group's output node.
+fn grouped_output() -> (Project, History, Vec<f32>, NodeId) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vibrato.ron");
+    let mut project = Project::from_ron(&fs::read_to_string(path).unwrap()).unwrap();
+    let flat = render_project(&project);
+    let mut history = History::new();
+    let (group, command) = group_nodes(&mut project, &[NodeId(4), NodeId(5)]).unwrap();
+    history.apply(&mut project, command).unwrap();
+    let output = project.graph().group_ports(group).outputs[0].node;
+    (project, history, flat, output)
+}
+
+fn set(project: &mut Project, history: &mut History, node: NodeId, key: &str, value: f32) {
+    let command = noodle_core::Command::SetParam {
+        node,
+        key: key.into(),
+        value: Some(value),
+    };
+    history.apply(project, command).unwrap();
+}
+
+#[test]
+fn a_groups_gain_scales_what_comes_out_of_it() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    set(&mut project, &mut history, output, "gain", -6.0206);
+    let quieter = render_project(&project);
+    assert_eq!(quieter.len(), flat.len());
+    for (a, b) in quieter.iter().zip(&flat) {
+        assert!((a - b * 0.5).abs() < 1e-3, "{a} vs half of {b}");
+    }
+}
+
+#[test]
+fn a_muted_group_is_silent_and_unmuting_restores_it() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    set(&mut project, &mut history, output, "mute", 1.0);
+    let mut registry = Registry::with_builtins();
+    let _telemetry = noodle_nodes::register_all(&mut registry);
+    let silent = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
+    assert!(silent.diagnostics.is_empty(), "{:?}", silent.diagnostics);
+    assert!(silent.samples.iter().all(|&x| x == 0.0));
+    history.undo(&mut project).unwrap();
+    assert_eq!(render_project(&project), flat);
+}
+
+#[test]
+fn soloing_another_group_silences_this_one() {
+    let (mut project, mut history, _, _) = grouped_output();
+    // A second, empty group beside it, soloed.
+    let group = project.new_node_id();
+    let command = noodle_core::Command::AddNode {
+        id: group,
+        node: noodle_core::Node::new(noodle_core::group::GROUP),
+    };
+    history.apply(&mut project, command).unwrap();
+    let solo_out = project.new_node_id();
+    let boundary = noodle_core::Node::new(noodle_core::group::GROUP_OUTPUT)
+        .with_config(noodle_core::Config::new().with(
+            noodle_core::group::PORT_NAME,
+            noodle_core::Value::Text("out".into()),
+        ))
+        .in_group(group);
+    let command = noodle_core::Command::AddNode {
+        id: solo_out,
+        node: boundary,
+    };
+    history.apply(&mut project, command).unwrap();
+    set(&mut project, &mut history, solo_out, "solo", 1.0);
+    let mut registry = Registry::with_builtins();
+    let _telemetry = noodle_nodes::register_all(&mut registry);
+    let rendered = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
+    assert!(rendered.samples.iter().all(|&x| x == 0.0));
+}

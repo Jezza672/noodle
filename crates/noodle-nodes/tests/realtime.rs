@@ -380,3 +380,42 @@ fn the_transport_never_allocates_on_the_audio_thread() {
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }
+
+#[test]
+fn group_stages_never_allocate_while_controls_change() {
+    use noodle_core::group::group_nodes;
+
+    let (mut s, gain, ..) = busy_session();
+    let (group, command) = group_nodes(&mut s.project, &[gain]).unwrap();
+    command.apply(&mut s.project).unwrap();
+    s.update();
+    let output = s.project.graph().group_ports(group).outputs[0].node;
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+
+    for round in 0..12 {
+        // UI thread: a stage appears, and mute and solo recompile.
+        let set = |s: &mut Session, key: &str, value: f32| {
+            s.edit(Command::SetParam {
+                node: output,
+                key: key.into(),
+                value: Some(value),
+            });
+        };
+        set(&mut s, "gain", -(round as f32));
+        set(&mut s, "mute", (round % 2) as f32);
+        set(&mut s, "solo", ((round / 4) % 2) as f32);
+        s.update();
+        s.controller.maintain();
+
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the audio thread in round {round}"
+        );
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+}
