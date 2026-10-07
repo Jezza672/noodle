@@ -9,14 +9,15 @@ The name comes from Blender's word for the wires between nodes, and from
 *noodling*, musician slang for idly messing around on an instrument.
 
 **Status:** the real-time core works headless. Graphs compile, run with
-seamless live edits, play through your speakers, and render to WAV. There's
-no UI yet. See the [roadmap](docs/ROADMAP.md).
+seamless live edits, play through your speakers, and render to WAV. The app
+has its shell (window, files, undo, playback); the node editor is next. See the [roadmap](docs/ROADMAP.md).
 
 ## Trying it
 
 You need a stable Rust toolchain (via [rustup](https://rustup.rs)).
 
 ```sh
+cargo run -p noodle-app -- examples/vibrato.ron
 cargo run -p noodle-cli -- play examples/vibrato.ron
 cargo run -p noodle-cli -- render examples/vibrato.ron vibrato.wav
 ```

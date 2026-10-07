@@ -10,3 +10,9 @@ noodle-core.workspace = true
 noodle-engine.workspace = true
 noodle-nodes.workspace = true
 noodle-io.workspace = true
+eframe = "0.36.2"
+rfd = "0.17.2"
+egui = "0.36.2"
+
+[dev-dependencies]
+egui_kittest = "0.36.2"

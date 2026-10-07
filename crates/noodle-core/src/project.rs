@@ -42,6 +42,13 @@ impl Project {
         self.graph.new_id()
     }
 
+    /// The ID [`new_node_id`](Self::new_node_id) would hand out next, without
+    /// reserving it. It's never the ID of a node in the project, even one
+    /// that was removed, so it can't clash with an undo.
+    pub fn next_node_id(&self) -> NodeId {
+        self.graph.next_id()
+    }
+
     /// The project as RON, the text format project files use: it's readable
     /// and diffs well.
     pub fn to_ron(&self) -> String {
