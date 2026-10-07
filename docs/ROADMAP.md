@@ -47,9 +47,9 @@ The first build that feels like the product.
 **Status:** on main are the app shell (the window, theme, panels, files,
 undo/redo and play/stop), the parameter widgets and properties panel, the
 Scope, Meter and Input nodes, and the audio settings dialog (File → Audio
-Settings…). Still open: the node editor canvas (#15), drawing meters and
-scopes on their nodes (#18), the widgets on the nodes themselves, and an
-end-to-end check of the "done when" line below.
+Settings…). Still to land: the node editor canvas, meters and scopes drawn
+on their nodes, the widgets on the nodes themselves, and an end-to-end
+check of the "done when" line below.
 
 - eframe app shell with Blender-style dark theme and panel layout.
 - **Node editor:**
