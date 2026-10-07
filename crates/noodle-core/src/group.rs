@@ -163,6 +163,11 @@ pub fn group_nodes(
         if node.parent != parent {
             return Err(EditError::NotSiblings(id));
         }
+        // A boundary node is a port of the group it's in; moving it into a
+        // new group would leave the old group with a port that has no node.
+        if matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) {
+            return Err(EditError::BoundaryNode(id));
+        }
         inside.insert(id);
     }
 
@@ -359,6 +364,16 @@ mod tests {
         assert_eq!(project, before);
         assert!(history.redo(&mut project).unwrap());
         assert_ne!(project, before);
+    }
+
+    #[test]
+    fn a_groups_own_boundary_nodes_cannot_be_grouped() {
+        let (mut project, mut history, [_, gain, _]) = chain();
+        let (group, command) = group_nodes(&mut project, &[gain]).unwrap();
+        history.apply(&mut project, command).unwrap();
+        let boundary = project.graph().group_ports(group).inputs[0].node;
+        let result = group_nodes(&mut project, &[gain, boundary]);
+        assert_eq!(result.unwrap_err(), EditError::BoundaryNode(boundary));
     }
 
     #[test]

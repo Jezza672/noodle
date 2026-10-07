@@ -235,6 +235,8 @@ pub enum EditError {
     NothingToGroup,
     /// A node being grouped has a different parent from the first.
     NotSiblings(NodeId),
+    /// A group's input or output node can't be moved into another group.
+    BoundaryNode(NodeId),
     GroupInsideItself(NodeId),
 }
 
@@ -254,6 +256,7 @@ impl fmt::Display for EditError {
             ),
             Self::NothingToGroup => write!(f, "there's nothing selected to group"),
             Self::NotSiblings(id) => write!(f, "{id} isn't in the same group as the rest"),
+            Self::BoundaryNode(id) => write!(f, "{id} is a group port, so it can't be grouped"),
             Self::NotAGroup(id) => write!(f, "{id} isn't a group"),
             Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
         }

@@ -120,7 +120,15 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Ports.** A group's ports are the boundary nodes inside it: a
     `noodle.group.input` (output port `out`) per input and a
     `noodle.group.output` (input port `in`) per output, named by their `name`
-    config. They're structure only, so they need no registry entry.
+    config. In M2's first cut they're structure only, so they need no
+    registry entry and flatten drops them.
+  - **Boundary parameters (decided, not built yet).** The track design gives
+    a group's input and output nodes parameters such as gain and mute. When
+    that lands, flatten will keep a boundary node that has any parameter set
+    or wired, as a real gain stage in the flat graph, and keep dropping the
+    rest. So a group whose controls are at their defaults still costs
+    nothing and renders bit-for-bit like the flat patch, and one with a
+    non-default gain costs one gain stage. The tracks work builds this.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - The timeline and mixer are **views over the graph**, not separate structures.
