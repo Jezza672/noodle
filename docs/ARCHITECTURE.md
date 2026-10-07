@@ -112,9 +112,30 @@ The **Project** is the single source of truth. It holds one global graph:
 - **Frames** are labelled boxes drawn behind nodes, for organising a patch.
   They're part of the project, so they're saved and undoable, but they're
   layout only and never reach the engine.
-- **Group nodes** contain a subgraph and expose ports through it. A **track**
-  is a group node with a clip source feeding its subgraph. Buses and sends are
-  just wires.
+- **Group nodes** contain a subgraph and expose ports through it. Buses and
+  sends are just wires.
+- **Tracks** are group nodes of a particular shape (a steering decision from
+  the project's owner):
+  - **One kind of track.** Every track takes clips of both kinds, MIDI and
+    audio, mixed in the same track. There are no audio tracks and MIDI
+    tracks.
+  - **The track input node** (`noodle.track.input`) sits inside the group. It
+    has two outputs, `audio` and `midi`, and the transport plays the track's
+    clips out of them at the right times: audio clips out of `audio`, MIDI
+    clips out of `midi`. (The `midi` output is an events signal, which arrives
+    with M3; until then it exists and stays empty.)
+  - **Creating a track** creates the group, its track input node and the
+    group's output node in one step, with the input's `audio` output wired
+    into the group's output by default. Undo removes all of it.
+  - **Group input and output nodes carry the track's controls** as
+    parameters: gain, mute, solo and the like. The track's gain, mute and
+    solo buttons in the arrangement view and the mixer show and set those
+    parameters, so they can be automated and wired like any other.
+  - Every group gets such an input and output node, not only tracks, so a
+    nested group has the same controls.
+  - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
+    that are not soloed. It is resolved when compiling, from the solo
+    parameters, and not by a node reading its neighbours.
 - The timeline and mixer are **views over the graph**, not separate structures.
   The mixer shows each track group's output gain, pan and send nodes, and the
   timeline shows the clips that feed each track.
@@ -344,7 +365,7 @@ several blocks. Events inside a block are sample-accurate.
 ## Time and transport (M2)
 
 The transport gives every block a timeline position in samples, plus the
-musical position (bars, beats, tempo) from the tempo map. Clip player nodes
+musical position (bars, beats, tempo) from the tempo map. Track input nodes
 and tempo-synced nodes read it. A graph with no transport, such as a live
 patch, runs on free-running time.
 
@@ -383,29 +404,31 @@ Settled for M2 (Phase 0):
 - **Blocks.** The transport splits a block at the loop end, so a block never
   crosses the wrap. It does not split at tempo changes: the block's timeline
   info carries the tick and tempo at its start, so a tempo change reaches
-  tempo-synced nodes at the next block (a millisecond or so). Clip players
+  tempo-synced nodes at the next block (a millisecond or so). Track inputs
   work in samples and aren't affected.
 - **Editing the tempo map while playing.** The playhead keeps its tick. The
   transport recomputes its sample position from the new map, and clip
-  players get their new schedule in the next plan, crossing over with the
+  track inputs get their new schedule in the next plan, crossing over with the
   usual 5 ms structural-edit fade.
 
 ### Clips
 
 Clips are part of the project, not of the graph, like frames. A clip says
-which clip player node plays it (`player`, a node on the track), where it
-starts, and which part of which source it plays. The track itself is a group
-node, so the arrangement view reads the track's players and their clips.
-Compiling turns a player's clips into the schedule the node follows, sorted
-by start; the node only reads that. Clip commands are undoable like any other.
+which track input node plays it (`node`), where it starts, and what it
+contains. A clip's content is audio (which part of which file) or, from M3,
+MIDI, and one track holds both kinds. The track itself is a group node, so
+the arrangement view reads the track input node's clips.
+Compiling turns the clips into the schedule the node follows, sorted by
+start; the node only reads that. Clip commands are undoable like any other.
 
 - **Overlaps.** A clip's length is in samples and its start in ticks, so
-  slowing the tempo can make clips on one player overlap. A player plays one
-  clip at a time: the one that started last (the higher ID on a tie), and the
-  earlier clip is cut where the later one begins. There is no automatic
+  slowing the tempo can make audio clips on one track overlap. A track plays
+  one audio clip at a time: the one that started last (the higher ID on a
+  tie), and the earlier clip is cut where the later one begins. This holds per
+  kind: an audio clip and a MIDI clip on the same track play together. There is no automatic
   crossfade; a clip's own fades apply. The arrangement view stops you
   placing clips on top of each other, so overlaps only come from tempo edits.
-- **Nodes that go.** Removing a node removes the clips it plays and the lanes
+- **Nodes that go.** Removing a node removes the clips it plays (a track input node) and the lanes
   driving its inputs, in the same undo step. Node IDs don't change when a
   node moves in or out of a group, so those clips and lanes stay valid. A lane
   whose port no longer exists (a config change removed it) is not a load
@@ -459,7 +482,7 @@ depends on live input or a device. The compiler marks this per node. An
 offline node with a non-cacheable input is a compile error.
 
 **Cache keys.** Keys are computed Merkle-style. The hash includes the
-timeline: the tempo map, the clips a player plays, and the points of any lane
+timeline: the tempo map, the clips a track input plays, and the points of any lane
 driving the node, so freezes go stale when they change.
 
 ```
