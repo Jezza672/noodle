@@ -7,6 +7,7 @@ mod input;
 mod output;
 mod peaks;
 mod resample;
+mod stream;
 mod wav;
 
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
@@ -20,4 +21,5 @@ pub use output::{
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use resample::{ResampleError, resample};
+pub use stream::{ClipStream, StreamSpec, StreamWorker, open_stream};
 pub use wav::{Audio, WavError, read_wav, write_wav};

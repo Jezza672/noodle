@@ -8,14 +8,15 @@
 
 use std::fmt;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
-use symphonia::core::errors::Error;
+use symphonia::core::errors::{Error, SeekErrorKind};
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
+use symphonia::core::units::Timestamp;
 
 use crate::Audio;
 
@@ -69,6 +70,26 @@ fn silence(out: &mut Vec<f32>, frames: usize, channels: usize) {
     out.resize(frames * channels, 0.0);
 }
 
+/// What to do when the container refuses a seek.
+#[derive(Debug, PartialEq)]
+enum SeekFallback {
+    /// The position is past the end, so there is nothing left to read.
+    End,
+    /// The container can't go there directly, but can be read from the start.
+    Restart,
+    /// Nothing sensible to do.
+    Fail,
+}
+
+fn on_seek_error(kind: &SeekErrorKind) -> SeekFallback {
+    match kind {
+        SeekErrorKind::OutOfRange => SeekFallback::End,
+        SeekErrorKind::Unseekable | SeekErrorKind::ForwardOnly => SeekFallback::Restart,
+        // InvalidTrack, and any kind added later: don't guess.
+        _ => SeekFallback::Fail,
+    }
+}
+
 /// What a file says about its audio, before any of it is decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileInfo {
@@ -81,6 +102,10 @@ pub struct FileInfo {
 
 /// Reads a file's audio in chunks of interleaved `f32` samples.
 pub struct Decoder {
+    path: PathBuf,
+    /// Set by a seek past the end, so reads end instead of continuing from
+    /// wherever the reader was.
+    at_end: bool,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
@@ -125,6 +150,8 @@ impl Decoder {
         };
         let track_id = track.id;
         Ok(Self {
+            path: path.to_path_buf(),
+            at_end: false,
             format,
             decoder,
             track_id,
@@ -136,11 +163,55 @@ impl Decoder {
         self.info
     }
 
+    /// Moves to `frame`, a position in the file's own frames. Returns the
+    /// frame the decoder actually landed on, which is at or before the one
+    /// asked for in compressed formats; the caller skips the difference. A
+    /// seek past the end lands at the end.
+    pub fn seek(&mut self, frame: u64) -> Result<u64, DecodeError> {
+        let ts = Timestamp::new(i64::try_from(frame).unwrap_or(i64::MAX));
+        let seeked = self.format.seek(
+            SeekMode::Accurate,
+            SeekTo::Timestamp {
+                ts,
+                track_id: self.track_id,
+            },
+        );
+        match seeked {
+            Ok(to) => {
+                self.decoder.reset();
+                self.at_end = false;
+                Ok(u64::try_from(to.actual_ts.get()).unwrap_or(0))
+            }
+            Err(Error::SeekError(kind)) => match on_seek_error(&kind) {
+                SeekFallback::End => {
+                    self.decoder.reset();
+                    self.at_end = true;
+                    Ok(frame)
+                }
+                // Start again from the top: the caller skips forward from
+                // there, which is slow for a far seek but always right.
+                SeekFallback::Restart => self.restart(),
+                SeekFallback::Fail => Err(Error::SeekError(kind).into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Reopens the file, so the next read is its first frame. Returns 0, the
+    /// frame landed on.
+    fn restart(&mut self) -> Result<u64, DecodeError> {
+        *self = Self::open(&self.path)?;
+        Ok(0)
+    }
+
     /// Replaces `out` with the next chunk of interleaved samples. Returns the
     /// number of frames in it, or `None` at the end of the file. A packet
     /// that fails to decode comes out as silence of the same length, so one
     /// bad frame doesn't lose the rest of the file or shift it earlier.
     pub fn read_chunk(&mut self, out: &mut Vec<f32>) -> Result<Option<usize>, DecodeError> {
+        if self.at_end {
+            return Ok(None);
+        }
         loop {
             let Some(packet) = self.format.next_packet()? else {
                 return Ok(None);
@@ -228,6 +299,58 @@ mod tests {
                 frames: Some(300)
             }
         );
+    }
+
+    #[test]
+    fn only_a_seek_out_of_range_means_the_end() {
+        assert_eq!(on_seek_error(&SeekErrorKind::OutOfRange), SeekFallback::End);
+        assert_eq!(
+            on_seek_error(&SeekErrorKind::ForwardOnly),
+            SeekFallback::Restart
+        );
+        assert_eq!(
+            on_seek_error(&SeekErrorKind::Unseekable),
+            SeekFallback::Restart
+        );
+        assert_eq!(
+            on_seek_error(&SeekErrorKind::InvalidTrack),
+            SeekFallback::Fail
+        );
+    }
+
+    #[test]
+    fn a_seek_goes_where_asked_and_past_the_end_reads_nothing() {
+        let path = temp("decode-seek.wav");
+        let samples: Vec<f32> = (0..30_000).map(|i| i as f32 / 30_000.0).collect();
+        write_wav(&path, &samples, 1, 44_100).unwrap();
+        let mut decoder = Decoder::open(&path).unwrap();
+        let mut chunk = Vec::new();
+        decoder.read_chunk(&mut chunk).unwrap();
+        let landed = decoder.seek(12_345).unwrap();
+        assert!(landed <= 12_345);
+        decoder.read_chunk(&mut chunk).unwrap();
+        assert_eq!(chunk[0], samples[landed as usize]);
+        // Past the end: nothing more, rather than the old position's audio.
+        decoder.seek(1_000_000).unwrap();
+        assert_eq!(decoder.read_chunk(&mut chunk).unwrap(), None);
+        // And a seek back works again afterwards.
+        let landed = decoder.seek(100).unwrap();
+        decoder.read_chunk(&mut chunk).unwrap();
+        assert_eq!(chunk[0], samples[landed as usize]);
+    }
+
+    #[test]
+    fn restarting_reads_the_file_from_its_first_frame() {
+        let path = temp("decode-restart.wav");
+        let samples: Vec<f32> = (0..30_000).map(|i| i as f32 / 30_000.0).collect();
+        write_wav(&path, &samples, 1, 44_100).unwrap();
+        let mut decoder = Decoder::open(&path).unwrap();
+        let mut chunk = Vec::new();
+        decoder.seek(20_000).unwrap();
+        decoder.read_chunk(&mut chunk).unwrap();
+        assert_eq!(decoder.restart().unwrap(), 0);
+        decoder.read_chunk(&mut chunk).unwrap();
+        assert_eq!(chunk[..10], samples[..10]);
     }
 
     #[test]

@@ -390,6 +390,15 @@ several blocks. Events inside a block are sample-accurate.
   frees old ones. Compiling can move to a worker if it gets slow for large
   graphs.
 - **Workers:** disk streaming, cache renders, plugin scanning.
+  - **Disk streaming** (`noodle-io/src/stream.rs`): one worker thread per
+    playing clip decodes the file, resamples it to the engine's rate and fills
+    fixed-size chunks. Full chunks reach the audio thread, and spent ones go
+    back, through two lock-free queues, so the audio thread never allocates,
+    locks or waits (`tests/stream_realtime.rs` enforces it). A stream counts
+    its position in engine frames from the start of the clip, and maps it to
+    the file with the clip's `offset` and `length` in file frames. A seek is a
+    request the worker acts on; until it catches up, reads come back short
+    and count an underrun, and the caller plays silence.
 - **Parallel execution (M6):** the plan's dependency graph is scheduled across
   a pool of real-time worker threads. The plan format records dependencies
   from the start so this can be added without redesigning it.

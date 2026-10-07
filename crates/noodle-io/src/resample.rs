@@ -26,7 +26,7 @@ impl std::error::Error for ResampleError {}
 /// output is trimmed so that it starts when the input does, and is as long as
 /// the input is at the new rate (to the nearest frame).
 pub fn resample(audio: &Audio, rate: u32) -> Result<Audio, ResampleError> {
-    if audio.sample_rate == rate || audio.samples.is_empty() {
+    if audio.sample_rate == rate || audio.samples.is_empty() || audio.channels == 0 {
         return Ok(Audio {
             samples: audio.samples.clone(),
             channels: audio.channels,

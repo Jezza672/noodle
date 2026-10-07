@@ -162,6 +162,11 @@ impl PeaksBuilder {
         if self.channels == 0 {
             return;
         }
+        debug_assert_eq!(
+            samples.len() % self.channels,
+            0,
+            "samples don't divide into whole frames"
+        );
         for frame in samples.chunks_exact(self.channels) {
             if self.in_current == 0 {
                 self.current.clear();
