@@ -1114,7 +1114,6 @@ fn a_tempo_change_reaches_nodes() {
     assert_eq!(rig.render(4)[0], 120.0);
     let map = TempoMap::constant(90.0, noodle_core::TimeSignature::COMMON).unwrap();
     rig.controller.set_tempo_map(&map);
-    // The playhead is past the start, so it moves and the output fades.
     let out = rig.render(20);
     assert_eq!(out[19], 90.0);
 }
@@ -1164,15 +1163,13 @@ fn old_tempo_tables_are_freed_by_the_controller() {
 }
 
 #[test]
-fn a_tempo_change_that_moves_the_playhead_fades_the_output() {
-    let mut rig = probe_rig(PLAYING);
+fn a_tempo_change_mid_playback_neither_fades_nor_resets_nodes() {
+    let mut rig = probe_rig(SINCE_RESET);
     rig.render(8);
     let map = TempoMap::constant(90.0, noodle_core::TimeSignature::COMMON).unwrap();
     rig.controller.set_tempo_map(&map);
-    let out = rig.render(20);
-    // Out over FADE frames, silent at the jump, and back in.
-    assert!((out[0] - 0.8).abs() < 1e-6, "{out:?}");
-    assert_eq!(out[FADE - 1], 0.0, "{out:?}");
-    assert!(out[FADE] > 0.0 && out[FADE] < 1.0, "{out:?}");
-    assert_eq!(out[19], 1.0);
+    // The probe counts frames since its last reset, and keeps counting. A
+    // fade would scale the first frames down.
+    let want: Vec<f32> = (8..28).map(|i| i as f32).collect();
+    assert_eq!(rig.render(20), want);
 }

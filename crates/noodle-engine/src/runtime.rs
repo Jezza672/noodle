@@ -414,10 +414,14 @@ impl Processor {
         }
     }
 
-    /// Applies a seek, and a new tempo table, which jump the playhead and so
-    /// click unless the output is silent: they wait for it, and the output
-    /// fades out meanwhile. A tempo table that leaves the playhead where it
-    /// is goes in at once. Returns whether anything is still waiting.
+    /// Applies a seek, which jumps the playhead and so clicks unless the
+    /// output is silent: it waits for that, and the output fades out
+    /// meanwhile. A new tempo table goes in at once. It keeps the playhead's
+    /// tick, so everything that reads ticks carries on unbroken, and it
+    /// doesn't reset nodes, so a tempo drag leaves reverb tails alone. Only
+    /// something reading the sample position can notice the move, which in
+    /// M2 means a clip schedule; when one exists it must raise its own
+    /// discontinuity. Returns whether a seek is still waiting.
     fn install_time_changes(&mut self, silent: bool) -> bool {
         if let Some(tick) = self.control.take_seek(&mut self.seen_seek) {
             self.pending_seek = Some(tick);
@@ -437,20 +441,13 @@ impl Processor {
             // The playhead keeps its tick, so its sample position moves.
             let tick = self.table.tick_at(self.position);
             let position = next.sample_at(tick);
-            let moves = position != self.position;
-            if moves && !silent {
-                return true;
-            }
             let Ok(new) = self.tempo_in.pop() else {
                 break;
             };
             let old = mem::replace(&mut self.table, new);
             let pushed = self.tempo_returns.push(old);
             debug_assert!(pushed.is_ok(), "checked for room above");
-            if moves {
-                self.position = position;
-                self.reset_nodes();
-            }
+            self.position = position;
         }
         // A table is still waiting only if the return queue is full.
         !self.tempo_in.is_empty()
