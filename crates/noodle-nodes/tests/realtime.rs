@@ -7,12 +7,14 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::f32::consts::TAU;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
 use noodle_engine::{
-    Controller, OUTPUT_ID, Processor, Registry, ScopeView, Settings, Telemetry, engine,
+    Controller, INPUT_ID, OUTPUT_ID, Processor, Registry, ScopeView, Settings, Telemetry, engine,
 };
-use noodle_io::DeviceWriter;
+use noodle_io::{DeviceWriter, input_path};
 
 /// Counts allocations and frees made while the current thread is marked as
 /// real-time.
@@ -214,6 +216,35 @@ fn the_device_writer_never_allocates() {
     });
     assert_eq!(violations, 0, "allocated in the audio callback");
     assert!(out.iter().any(|&x| x != 0), "should be making sound");
+}
+
+#[test]
+fn the_device_writer_never_allocates_with_input() {
+    let mut s = Session::new();
+    let input = s.add(Node::new(INPUT_ID));
+    let svf = s.add(Node::new("noodle.filter.svf"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(input, "out", svf, "in");
+    s.wire(svf, "low", output, "in");
+    s.update();
+    let glitches = Arc::new(AtomicU64::new(0));
+    let (mut capture, feed) = input_path(1, SETTINGS.sample_rate, SETTINGS.max_frames, glitches);
+    let mut writer = DeviceWriter::with_input(s.processor, feed);
+    let recorded: Vec<i16> = (0..1000).map(|x| (x % 200) * 100).collect();
+    let mut out = vec![0i16; 1000 * SETTINGS.channels];
+    let violations = realtime(|| {
+        for _ in 0..4 {
+            capture.capture(&recorded);
+            writer.write(&mut out);
+        }
+        // And running dry.
+        writer.write(&mut out);
+    });
+    assert_eq!(violations, 0, "allocated in the audio callbacks");
+    // The last block ran dry, so look at a fresh one.
+    capture.capture(&recorded);
+    writer.write(&mut out);
+    assert!(out.iter().any(|&x| x != 0), "should be playing the input");
 }
 
 #[test]
