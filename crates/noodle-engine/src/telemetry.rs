@@ -11,8 +11,9 @@
 //! audio thread:
 //!
 //! - **Meters** are atomics. The audio thread raises a peak with `fetch_max`
-//!   and stores the latest RMS; the UI takes the peak (resetting it) and loads
-//!   the RMS.
+//!   and stores the latest RMS. The hub takes the peak (resetting it) and
+//!   folds it into a held peak for every [`MeterReader`], so each reader sees
+//!   the highest peak since its own last read, however many there are.
 //! - **Scopes** are SPSC ring buffers of interleaved frames. When the UI falls
 //!   behind and the ring is full, the newest frames are dropped.
 //!
@@ -33,7 +34,7 @@
 //! and an offline export) would both look live, so give an export a registry
 //! with its own hub.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -51,6 +52,12 @@ pub struct Telemetry {
 struct Channels {
     meters: HashMap<NodeId, Vec<Arc<MeterCells>>>,
     scopes: HashMap<NodeId, Vec<ScopeReader>>,
+    /// The IDs of the live [`MeterReader`]s.
+    readers: HashSet<u64>,
+    next_reader: u64,
+    /// Each reader's highest peak per channel since it last read a meter,
+    /// by (meter, reader).
+    held: HashMap<(NodeId, u64), Vec<f32>>,
 }
 
 impl Channels {
@@ -64,6 +71,8 @@ impl Channels {
             list.retain(|reader| !reader.consumer.is_abandoned());
             !list.is_empty()
         });
+        let meters = &self.meters;
+        self.held.retain(|(node, _), _| meters.contains_key(node));
     }
 }
 
@@ -121,14 +130,17 @@ impl Telemetry {
         ScopeWriter { producer, channels }
     }
 
-    /// `node`'s meter levels, one per channel, or `None` if it has no meter.
-    /// Each peak is the highest since the previous call, so only one reader
-    /// should poll a meter.
-    pub fn meter(&self, node: NodeId) -> Option<Vec<Level>> {
-        let channels = self.lock();
-        let list = channels.meters.get(&node)?;
-        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
-        Some(cells.levels.iter().map(LevelCells::take).collect())
+    /// A new reader of meter levels. Each reader sees every peak, so a view
+    /// should keep its own rather than share one.
+    pub fn meter_reader(&self) -> MeterReader {
+        let mut channels = self.lock();
+        let id = channels.next_reader;
+        channels.next_reader += 1;
+        channels.readers.insert(id);
+        MeterReader {
+            hub: self.clone(),
+            id,
+        }
     }
 
     /// Copies `node`'s most recent scope frames into `view`, reusing its
@@ -150,6 +162,66 @@ impl Telemetry {
             .map_or(0, |frames| len.saturating_sub(frames * reader.channels));
         view.samples.extend(reader.history.range(skip..));
         true
+    }
+}
+
+/// Reads meter levels, keeping its own peaks: what one reader takes, the
+/// others still see. Dropping it forgets its peaks.
+pub struct MeterReader {
+    hub: Telemetry,
+    id: u64,
+}
+
+impl MeterReader {
+    /// `node`'s meter levels, one per channel, or `None` if it has no meter.
+    /// Each peak is the highest since this reader last read `node`.
+    pub fn meter(&self, node: NodeId) -> Option<Vec<Level>> {
+        let mut guard = self.hub.lock();
+        let Channels {
+            meters,
+            readers,
+            held,
+            ..
+        } = &mut *guard;
+        let list = meters.get(&node)?;
+        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+        let count = cells.levels.len();
+
+        // Hand the peaks since anyone last read to every reader.
+        let peaks: Vec<f32> = cells.levels.iter().map(LevelCells::take_peak).collect();
+        for &reader in readers.iter() {
+            let held = held.entry((node, reader)).or_default();
+            held.resize(count, 0.0);
+            for (held, &peak) in held.iter_mut().zip(&peaks) {
+                *held = held.max(peak);
+            }
+        }
+
+        let mine = held.get_mut(&(node, self.id))?;
+        Some(
+            cells
+                .levels
+                .iter()
+                .zip(mine.iter_mut())
+                .map(|(cells, held)| Level {
+                    peak: std::mem::take(held),
+                    rms: f32::from_bits(cells.rms.load(Ordering::Relaxed)),
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether this reader reads from `telemetry`, rather than another hub.
+    pub fn reads(&self, telemetry: &Telemetry) -> bool {
+        Arc::ptr_eq(&self.hub.inner, &telemetry.inner)
+    }
+}
+
+impl Drop for MeterReader {
+    fn drop(&mut self) {
+        let mut channels = self.hub.lock();
+        channels.readers.remove(&self.id);
+        channels.held.retain(|&(_, reader), _| reader != self.id);
     }
 }
 
@@ -177,11 +249,8 @@ struct LevelCells {
 }
 
 impl LevelCells {
-    fn take(&self) -> Level {
-        Level {
-            peak: f32::from_bits(self.peak.swap(0, Ordering::Relaxed)),
-            rms: f32::from_bits(self.rms.load(Ordering::Relaxed)),
-        }
+    fn take_peak(&self) -> f32 {
+        f32::from_bits(self.peak.swap(0, Ordering::Relaxed))
     }
 }
 
@@ -322,6 +391,7 @@ mod tests {
     #[test]
     fn meter_peaks_hold_until_read() {
         let telemetry = Telemetry::new();
+        let reader = telemetry.meter_reader();
         let writer = telemetry.open_meter(NODE, 2);
         writer.write(
             0,
@@ -345,7 +415,7 @@ mod tests {
             },
         );
 
-        let levels = telemetry.meter(NODE).unwrap();
+        let levels = reader.meter(NODE).unwrap();
         assert_eq!(
             levels[0],
             Level {
@@ -356,7 +426,7 @@ mod tests {
         assert_eq!(levels[1], Level::default());
 
         // The peak resets once read; the RMS stays.
-        let levels = telemetry.meter(NODE).unwrap();
+        let levels = reader.meter(NODE).unwrap();
         assert_eq!(
             levels[0],
             Level {
@@ -367,8 +437,53 @@ mod tests {
     }
 
     #[test]
+    fn every_reader_sees_every_peak() {
+        let telemetry = Telemetry::new();
+        let editor = telemetry.meter_reader();
+        let mixer = telemetry.meter_reader();
+        let writer = telemetry.open_meter(NODE, 1);
+        let peak = |reader: &MeterReader| reader.meter(NODE).unwrap()[0].peak;
+
+        writer.write(
+            0,
+            Level {
+                peak: 0.9,
+                rms: 0.0,
+            },
+        );
+        // The editor reads every frame; the mixer only now and then.
+        assert_eq!(peak(&editor), 0.9);
+        writer.write(
+            0,
+            Level {
+                peak: 0.3,
+                rms: 0.0,
+            },
+        );
+        assert_eq!(peak(&editor), 0.3);
+        assert_eq!(peak(&editor), 0.0);
+        // The mixer still sees the highest peak since its own last read.
+        assert_eq!(peak(&mixer), 0.9);
+        assert_eq!(peak(&mixer), 0.0);
+
+        // A dropped reader's peaks are forgotten.
+        drop(mixer);
+        writer.write(
+            0,
+            Level {
+                peak: 0.5,
+                rms: 0.0,
+            },
+        );
+        assert_eq!(peak(&editor), 0.5);
+        assert!(telemetry.lock().held.keys().all(|&(_, id)| id == editor.id));
+        assert!(editor.reads(&telemetry) && !editor.reads(&Telemetry::new()));
+    }
+
+    #[test]
     fn negative_zero_doesnt_pin_the_peak() {
         let telemetry = Telemetry::new();
+        let reader = telemetry.meter_reader();
         let writer = telemetry.open_meter(NODE, 1);
         writer.write(
             0,
@@ -384,7 +499,7 @@ mod tests {
                 rms: 0.0,
             },
         );
-        assert_eq!(telemetry.meter(NODE).unwrap()[0].peak, 0.5);
+        assert_eq!(reader.meter(NODE).unwrap()[0].peak, 0.5);
     }
 
     fn read(telemetry: &Telemetry) -> ScopeView {
@@ -440,7 +555,8 @@ mod tests {
     #[test]
     fn meters_follow_the_playing_instance() {
         let telemetry = Telemetry::new();
-        let read = || telemetry.meter(NODE).unwrap()[0].peak;
+        let reader = telemetry.meter_reader();
+        let read = || reader.meter(NODE).unwrap()[0].peak;
         let playing = telemetry.open_meter(NODE, 1);
         playing.write(0, peak(0.9));
 
@@ -476,15 +592,17 @@ mod tests {
     #[test]
     fn dropping_the_writer_closes_the_channel() {
         let telemetry = Telemetry::new();
+        let reader = telemetry.meter_reader();
         let meter = telemetry.open_meter(NODE, 1);
         let scope = telemetry.open_scope(NODE, 1, 4);
-        assert!(telemetry.meter(NODE).is_some());
+        assert!(reader.meter(NODE).is_some());
         assert!(telemetry.read_scope(NODE, &mut ScopeView::default()));
 
         drop((meter, scope));
-        assert!(telemetry.meter(NODE).is_none());
+        assert!(reader.meter(NODE).is_none());
         assert!(!telemetry.read_scope(NODE, &mut ScopeView::default()));
         let channels = telemetry.lock();
         assert!(channels.meters.is_empty() && channels.scopes.is_empty());
+        assert!(channels.held.is_empty());
     }
 }

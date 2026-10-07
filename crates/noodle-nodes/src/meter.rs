@@ -133,7 +133,7 @@ mod tests {
             h.run(frames).unwrap();
         }
 
-        let levels = telemetry.meter(NODE).unwrap();
+        let levels = telemetry.meter_reader().meter(NODE).unwrap();
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[0].peak, 0.5);
         assert!((levels[0].rms - 0.5).abs() < 1e-3, "{:?}", levels[0]);
@@ -156,7 +156,7 @@ mod tests {
         h.run(4).unwrap();
         h.input(IN, 4).fill(0.5);
         h.run(4).unwrap();
-        let level = telemetry.meter(NODE).unwrap()[0];
+        let level = telemetry.meter_reader().meter(NODE).unwrap()[0];
         assert!(level.rms.is_finite() && level.rms > 0.0, "{level:?}");
     }
 
@@ -182,6 +182,6 @@ mod tests {
         for _ in 0..60 {
             h.run(frames).unwrap();
         }
-        assert_eq!(telemetry.meter(NODE).unwrap()[0].rms, 0.0);
+        assert_eq!(telemetry.meter_reader().meter(NODE).unwrap()[0].rms, 0.0);
     }
 }

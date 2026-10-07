@@ -148,6 +148,7 @@ fn rendering_never_allocates_even_while_editing() {
     // Longer than max_frames, so each call renders several blocks.
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
     let mut view = ScopeView::default();
+    let reader = s.telemetry.meter_reader();
 
     for round in 0..12 {
         // UI thread: allowed to allocate.
@@ -190,7 +191,7 @@ fn rendering_never_allocates_even_while_editing() {
         );
 
         // UI thread: the meter and scope have reported.
-        let levels = s.telemetry.meter(meter).unwrap();
+        let levels = reader.meter(meter).unwrap();
         assert!(levels[0].peak > 0.0, "no meter level in round {round}");
         assert!(s.telemetry.read_scope(scope, &mut view));
         assert!(
@@ -284,7 +285,8 @@ fn deleting_a_view_node_closes_its_channel() {
     let (mut s, _, _, meter, scope) = busy_session();
     let mut out = vec![0.0; 256 * SETTINGS.channels];
     s.processor.process(&mut out);
-    assert!(s.telemetry.meter(meter).is_some());
+    let reader = s.telemetry.meter_reader();
+    assert!(reader.meter(meter).is_some());
 
     s.edit(Command::RemoveNode { id: meter });
     s.update();
@@ -293,7 +295,7 @@ fn deleting_a_view_node_closes_its_channel() {
     s.processor.process(&mut out);
     s.controller.maintain();
 
-    assert!(s.telemetry.meter(meter).is_none());
+    assert!(reader.meter(meter).is_none());
     assert!(s.telemetry.read_scope(scope, &mut ScopeView::default()));
 }
 
