@@ -85,7 +85,33 @@ pub struct Session {
 struct Audio {
     playback: Playback,
     controller: Controller,
+    /// The counts last reported to the user.
+    reported: Glitches,
+}
+
+/// Running totals of audible trouble since playback started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Glitches {
+    /// The output device ran dry.
     underruns: u64,
+    /// Input arrived late or early, or the engine wasn't taking it.
+    input: u64,
+}
+
+impl Glitches {
+    /// A message about whatever has grown since `self`, which then catches
+    /// up to `now`.
+    fn report(&mut self, now: Self) -> Option<String> {
+        let mut parts = Vec::new();
+        if now.underruns > self.underruns {
+            parts.push(count(now.underruns, "underrun", "underruns"));
+        }
+        if now.input > self.input {
+            parts.push(count(now.input, "input glitch", "input glitches"));
+        }
+        *self = now;
+        (!parts.is_empty()).then(|| format!("{} since playback started", parts.join(", ")))
+    }
 }
 
 impl Session {
@@ -136,19 +162,11 @@ impl Session {
         &self.telemetry
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the device picker isn't built yet")
-    )]
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio_config
     }
 
     /// Chooses the device to play on. If playing, playback restarts there.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the device picker isn't built yet")
-    )]
     pub fn set_audio_config(&mut self, config: AudioConfig) {
         self.audio_config = config;
         if self.audio.take().is_some() {
@@ -335,18 +353,39 @@ impl Session {
         if self.audio.is_some() {
             return;
         }
-        match noodle_io::play(&self.audio_config, MAX_FRAMES) {
+        let mut started = noodle_io::play(&self.audio_config, MAX_FRAMES);
+        let mut fell_back = None;
+        // A saved device that's been unplugged, or a rate it no longer
+        // takes, shouldn't stop the app making sound. The setting is kept
+        // for when the device is back.
+        if let Err(error) = &started
+            && let Some(defaults) = fallback(&self.audio_config)
+            && let Ok(playing) = noodle_io::play(&defaults, MAX_FRAMES)
+        {
+            fell_back = Some(on_default_output(error));
+            started = Ok(playing);
+        }
+        match started {
             Ok((playback, controller)) => {
+                // Playback carries on without input rather than failing.
+                // The status bar keeps saying so; see `input_problem`.
+                self.message = fell_back.or_else(|| playback.input_problem().map(no_input));
                 self.audio = Some(Audio {
                     playback,
                     controller,
-                    underruns: 0,
+                    reported: Glitches::default(),
                 });
                 self.recompile();
-                self.message = None;
             }
             Err(error) => self.message = Some(play_error(&error)),
         }
+    }
+
+    /// Why playback is going on without the input that was asked for. It
+    /// lasts as long as playback, unlike [`Session::message`].
+    pub fn input_problem(&self) -> Option<String> {
+        let problem = self.audio.as_ref()?.playback.input_problem()?;
+        Some(no_input(problem))
     }
 
     pub fn stop(&mut self) {
@@ -369,10 +408,12 @@ impl Session {
                 self.message = Some(error.to_string());
             }
         }
-        let underruns = health.underruns();
-        if underruns > audio.underruns {
-            audio.underruns = underruns;
-            self.message = Some(format!("{underruns} underruns since playback started"));
+        let now = Glitches {
+            underruns: health.underruns(),
+            input: health.input_glitches(),
+        };
+        if let Some(message) = audio.reported.report(now) {
+            self.message = Some(message);
         }
         if let Some(message) = stopped {
             self.audio = None;
@@ -439,6 +480,28 @@ fn play_error(error: &AudioError) -> String {
     format!("Can't play: {error}")
 }
 
+fn count(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+fn no_input(error: &AudioError) -> String {
+    format!("Playing without input: {error}")
+}
+
+fn on_default_output(error: &AudioError) -> String {
+    format!("Playing on the default output: {error}")
+}
+
+/// What to try when the chosen output settings can't play: the system's
+/// defaults, keeping the input. `None` if that's what was tried.
+fn fallback(config: &AudioConfig) -> Option<AudioConfig> {
+    let defaults = AudioConfig {
+        input: config.input.clone(),
+        ..AudioConfig::default()
+    };
+    (defaults != *config).then_some(defaults)
+}
+
 #[derive(Debug)]
 pub enum FileError {
     Read(PathBuf, std::io::Error),
@@ -458,7 +521,7 @@ impl std::error::Error for FileError {}
 
 /// Writes to a temporary file next to `path`, then renames it into place, so
 /// a failed save (a full disk, say) never destroys the last good copy.
-fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     let mut temp = path.as_os_str().to_owned();
     temp.push(".saving");
     let temp = PathBuf::from(temp);
@@ -486,6 +549,29 @@ mod tests {
     use noodle_engine::OUTPUT_ID;
 
     use super::*;
+
+    #[test]
+    fn falling_back_keeps_the_input_and_drops_the_output_choices() {
+        let chosen = AudioConfig {
+            host: Some("jack".into()),
+            output: Some("jack:system".into()),
+            input: noodle_io::InputChoice::Default,
+            sample_rate: Some(96_000),
+            buffer_size: Some(64),
+        };
+        assert_eq!(
+            fallback(&chosen),
+            Some(AudioConfig {
+                input: noodle_io::InputChoice::Default,
+                ..AudioConfig::default()
+            })
+        );
+        let defaults = AudioConfig {
+            input: noodle_io::InputChoice::Default,
+            ..AudioConfig::default()
+        };
+        assert_eq!(fallback(&defaults), None);
+    }
 
     fn temp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("noodle-app-{}-{name}", std::process::id()))
@@ -749,5 +835,44 @@ mod tests {
         assert_eq!(session.audio_config(), &config);
         assert!(!session.is_playing());
         assert_eq!(session.message(), None);
+    }
+
+    #[test]
+    fn glitches_are_reported_once_each_time_they_grow() {
+        let mut reported = Glitches::default();
+        assert_eq!(reported.report(Glitches::default()), None);
+        let one = Glitches {
+            underruns: 1,
+            input: 0,
+        };
+        assert_eq!(
+            reported.report(one).as_deref(),
+            Some("1 underrun since playback started")
+        );
+        let underruns = Glitches {
+            underruns: 2,
+            input: 0,
+        };
+        assert_eq!(
+            reported.report(underruns).as_deref(),
+            Some("2 underruns since playback started")
+        );
+        assert_eq!(reported.report(underruns), None, "already reported");
+        let both = Glitches {
+            underruns: 3,
+            input: 1,
+        };
+        assert_eq!(
+            reported.report(both).as_deref(),
+            Some("3 underruns, 1 input glitch since playback started")
+        );
+        let input = Glitches {
+            underruns: 3,
+            input: 4,
+        };
+        assert_eq!(
+            reported.report(input).as_deref(),
+            Some("4 input glitches since playback started")
+        );
     }
 }
