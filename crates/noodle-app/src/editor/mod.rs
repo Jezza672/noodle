@@ -53,6 +53,8 @@ const SOCKET_REACH: f32 = 9.0;
 const WIRE_REACH: f32 = 6.0;
 /// How far duplicates are placed from the originals.
 const DUPLICATE_OFFSET: Vec2 = Vec2::new(30.0, 30.0);
+/// Space left between a frame and its copy, which goes below it.
+const DUPLICATE_FRAME_GAP: f32 = 20.0;
 /// Space around nodes when framing them.
 const FRAME_MARGIN: f32 = 20.0;
 const MIN_FRAME_SIZE: Vec2 = Vec2::new(80.0, 60.0);
@@ -660,7 +662,6 @@ fn start_primary_drag(
     }
 }
 
-/// Moves the selection, and everything inside the selected frames.
 /// The selected nodes and frames, and everything inside the selected frames,
 /// which come along when they're moved or copied.
 fn with_contents(state: &EditorState, scene: &Scene) -> (BTreeSet<NodeId>, BTreeSet<FrameId>) {
@@ -689,6 +690,7 @@ fn with_contents(state: &EditorState, scene: &Scene) -> (BTreeSet<NodeId>, BTree
     (nodes, frames)
 }
 
+/// Moves the selection, and everything inside the selected frames.
 fn start_move(state: &EditorState, f: &Frame_<'_>, start: Pos2) -> Gesture {
     let (nodes, frames) = with_contents(state, &f.scene);
     Gesture::Move {
@@ -1009,6 +1011,18 @@ fn duplicate(
     let graph = project.graph();
     // A selected frame is copied with what's in it, as dragging it moves it.
     let (nodes, frames) = with_contents(state, &f.scene);
+    // A frame owns what its rectangle holds, so a copy that overlapped the
+    // original would also pick the original's nodes up when dragged. With
+    // frames, the copies go below the tallest of them instead.
+    let offset = state
+        .selected_frames
+        .iter()
+        .filter_map(|&id| project.frame(id))
+        .map(|frame| frame.height)
+        .reduce(f32::max)
+        .map_or(DUPLICATE_OFFSET, |height| {
+            Vec2::new(0.0, height + DUPLICATE_FRAME_GAP)
+        });
     let mut copies = BTreeMap::new();
     let mut commands = Vec::new();
     for &id in &nodes {
@@ -1016,7 +1030,7 @@ fn duplicate(
         let copy = (inputs.new_node_id)();
         copies.insert(id, copy);
         let mut node = node.clone();
-        node.position = position(Pos2::new(node.position.x, node.position.y) + DUPLICATE_OFFSET);
+        node.position = position(Pos2::new(node.position.x, node.position.y) + offset);
         commands.push(Command::AddNode { id: copy, node });
     }
     // Wires between the copies, but not into them from outside, as in Blender.
@@ -1041,9 +1055,7 @@ fn duplicate(
         commands.push(Command::AddFrame {
             id: copy,
             frame: Frame {
-                position: position(
-                    Pos2::new(frame.position.x, frame.position.y) + DUPLICATE_OFFSET,
-                ),
+                position: position(Pos2::new(frame.position.x, frame.position.y) + offset),
                 ..frame.clone()
             },
         });

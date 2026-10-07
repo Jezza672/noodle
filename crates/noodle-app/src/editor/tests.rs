@@ -548,7 +548,9 @@ fn shift_d_on_a_frame_copies_what_is_in_it() {
     assert_eq!(project.graph().nodes().count(), 5);
     assert_eq!(project.graph().connections().count(), 2);
     let (copy_id, copy) = project.frames().find(|(id, _)| *id != frame_id).unwrap();
-    assert_eq!(copy.position.x, frame.position.x + 30.0);
+    // Below the original, not overlapping it.
+    assert_eq!(copy.position.x, frame.position.x);
+    assert_eq!(copy.position.y, frame.position.y + frame.height + 20.0);
     assert_eq!(copy.width, frame.width);
     let copies: Vec<NodeId> = project
         .graph()
@@ -559,7 +561,14 @@ fn shift_d_on_a_frame_copies_what_is_in_it() {
     assert_eq!(copies.len(), 2);
     for id in &copies {
         let node = project.graph().node(*id).unwrap();
-        assert!(node.position.x >= 30.0 && node.position.y >= 30.0);
+        let original = if node.type_id == "noodle.osc.sine" {
+            sine
+        } else {
+            gain
+        };
+        let moved = project.graph().node(original).unwrap().position;
+        assert_eq!(node.position.x, moved.x);
+        assert_eq!(node.position.y, moved.y + frame.height + 20.0);
     }
     assert_eq!(position(&h, sine), Position::default());
     // The copy of the frame is what's selected, and dragging it carries
@@ -570,7 +579,31 @@ fn shift_d_on_a_frame_copies_what_is_in_it() {
     );
     assert!(h.state().editor.selected.is_empty());
 
-    // One undo removes all of it.
+    // Dragging the copy by its title moves the copied nodes and leaves the
+    // originals where they were.
+    let (sine_at, gain_at) = (position(&h, sine), position(&h, gain));
+    let copies_at: Vec<Position> = copies.iter().map(|&id| position(&h, id)).collect();
+    let label = screen(&h, Pos2::new(copy.position.x + 30.0, copy.position.y + 8.0));
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            label,
+            label + Vec2::new(10.0, 0.0),
+            label + Vec2::new(10.0, 150.0),
+        ],
+    );
+    assert_eq!(position(&h, sine), sine_at);
+    assert_eq!(position(&h, gain), gain_at);
+    assert_eq!(position(&h, outside), Position { x: 0.0, y: 400.0 });
+    for (&id, at) in copies.iter().zip(&copies_at) {
+        let now = position(&h, id);
+        assert_eq!((now.x, now.y), (at.x + 10.0, at.y + 150.0));
+    }
+    h.state_mut().session.undo();
+
+    // One more undo removes all of the copy.
     h.state_mut().session.undo();
     let project = h.state().session.project();
     assert_eq!(project.frames().count(), 1);
