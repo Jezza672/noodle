@@ -130,12 +130,17 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Group input and output nodes carry the track's controls** as
     parameters: gain, mute, solo and the like. The track's gain, mute and
     solo buttons in the arrangement view and the mixer show and set those
-    parameters, so they can be automated and wired like any other.
+    parameters. Gain and mute are ordinary runtime parameters, so they can be
+  automated and wired like any other. Solo is the exception (below).
   - Every group gets such an input and output node, not only tracks, so a
     nested group has the same controls.
   - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
-    that are not soloed. It is resolved when compiling, from the solo
-    parameters, and not by a node reading its neighbours.
+    that are not soloed. For M2 it is read **at compile time** from the solo
+    parameters, which gives every track a mute stage derived from them. So
+    solo can't be automated or wired (lanes and wires into a solo parameter
+    are refused with a diagnostic), and toggling it recompiles, which costs
+    the usual short fade. A runtime solo, driven by one shared "any solo"
+    value so it could be automated, can come later if it is wanted.
 - The timeline and mixer are **views over the graph**, not separate structures.
   The mixer shows each track group's output gain, pan and send nodes, and the
   timeline shows the clips that feed each track.
@@ -394,7 +399,8 @@ Settled for M2 (Phase 0):
 - **Tempo is keyed to ticks, signatures to bars.** Editing an early time
   signature moves the bar lines but not the tempo changes after it, which
   stay at their place in the music. That is what a signature edit means: the
-  bars change, the music underneath doesn't.
+  bars change, the music underneath doesn't. Later signature changes follow
+  their bar number, so they move in ticks along with the bar lines.
 - **Nothing starts before tick 0.** Clip starts and lane points can't be
   negative, so there is no pre-roll in M2.
 - **The engine never calls the tempo map per sample.** Its lookups walk the
@@ -418,8 +424,12 @@ Settled for M2 (Phase 0):
     plan is installed, from the playhead's tick under the old map and the
     new map's table. The playhead moves while the UI thread builds the plan,
     so working it out on the UI thread would be racy.
-  - **The plan is marked as a discontinuity** when installing it changes the
-    playhead's sample position or a track input's schedule. Today only a
+  - **The plan is marked as a discontinuity** when installing it changes
+    what is heard at the playhead: its sample position moves, or the schedule
+    of a clip that is playing (or about to, within a block) changes. A clip
+    edited far from the playhead, or a tempo edit after it, changes nothing
+    audible and installs seamlessly. Steps of one drag don't each trigger a
+    fresh fade while one is still running. Today only a
     change to the audible wiring makes a plan non-seamless (and so gets the 5
     ms structural-edit fade); the discontinuity flag joins that, so a tempo
     or clip edit fades out and back in rather than jumping.
@@ -505,7 +515,9 @@ offline node with a non-cacheable input is a compile error.
 
 **Cache keys.** Keys are computed Merkle-style. The hash includes the
 timeline: the tempo map, the clips a track input plays, and the points of any lane
-driving the node, so freezes go stale when they change.
+driving the node, so freezes go stale when they change. An audio source in the key is its
+content hash, like any source file, so replacing a file under the same name
+invalidates it.
 
 ```
 key(node) = hash(type_id, type_version, params, sample_rate, range, key(inputs)…)
