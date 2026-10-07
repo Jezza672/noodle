@@ -211,6 +211,13 @@ pub(crate) fn build(
             inputs.push(match *source {
                 InputSource::Buffer(b) => Input::Buffer(view(b, *shape)),
                 InputSource::Value(value) => {
+                    // A hand-edited file can hold inf or NaN, which would
+                    // leave nodes stuck. Use the port's default instead.
+                    let value = match &port.kind {
+                        _ if value.is_finite() => value,
+                        InputKind::Param(param) => param.default,
+                        InputKind::Audio => 0.0,
+                    };
                     let key = port.key.to_string();
                     let cell = cells
                         .get(&id)
@@ -620,7 +627,9 @@ impl ValueInput {
 
     fn prepare(&mut self, frames: usize) {
         let target = self.cell.get();
-        if target != self.target && !target.is_nan() {
+        // Non-finite values are ignored: ramping from one gives NaN, and a
+        // node's state can't recover from either.
+        if target != self.target && target.is_finite() {
             self.target = target;
             if self.smoothing == 0 {
                 self.current = target;

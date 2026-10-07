@@ -69,6 +69,26 @@ panics if it's used on the audio thread (`assert_no_alloc` or equivalent).
 Anything that needs memory or I/O happens on another thread and arrives
 through a lock-free queue.
 
+**Subnormals are flushed.** A filter or envelope whose input goes silent
+decays towards zero, and its state can get stuck among the subnormal floats,
+which most CPUs handle many times more slowly. `Processor::process` sets
+flush-to-zero (MXCSR FTZ and DAZ on x86_64, FPCR.FZ on aarch64) while it
+runs and restores the previous mode after, so this covers offline renders
+too. Stateful nodes also flush their own tiny state once per block (the SVF's
+integrators and the Meter's mean square, below 1e-30), so they behave the
+same where the engine can't set the mode, such as in the test harness.
+
+**Bad values don't stick.** One infinite or NaN value reaching an
+oscillator's phase or a filter's state would otherwise keep it outputting NaN
+until it's rebuilt.
+- Unconnected inputs ignore non-finite values from `set_param`, and a
+  non-finite value in the project is replaced by the port's default.
+- Connected signals are deliberately unclamped, so nodes with state check it
+  once per block and reset it if it isn't finite. New stateful nodes must do
+  the same.
+- Parameter ranges (`ParamInfo::min/max`) are for the UI and aren't enforced
+  on the audio thread, so a node must cope with any finite value.
+
 ## Data model (`noodle-core`)
 
 The **Project** is the single source of truth. It holds one global graph:

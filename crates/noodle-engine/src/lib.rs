@@ -6,6 +6,7 @@
 
 mod builtin;
 mod compile;
+mod denormals;
 mod event;
 mod lane;
 mod node;

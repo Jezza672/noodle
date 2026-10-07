@@ -79,6 +79,7 @@ impl LaneKernel for SvfKernel {
                 .unwrap_or_else(|| Coefficients::new(cutoff[i], resonance[i], ctx.sample_rate));
             (low[i], band[i], high[i]) = state.tick(x, &c);
         }
+        state.tidy();
     }
 }
 
@@ -123,7 +124,25 @@ impl SvfState {
         self.ic2 = 2.0 * v2 - self.ic2;
         (v2, v1, x - c.k * v1 - v2)
     }
+
+    /// Once per block: resets state that an infinite or NaN input made
+    /// non-finite, which would otherwise stay that way for good, and flushes
+    /// state too small to hear to zero, so it doesn't decay into the slow
+    /// subnormal range even where the engine can't flush them.
+    fn tidy(&mut self) {
+        if !(self.ic1.is_finite() && self.ic2.is_finite()) {
+            *self = Self::default();
+        }
+        for x in [&mut self.ic1, &mut self.ic2] {
+            if x.abs() < TINY {
+                *x = 0.0;
+            }
+        }
+    }
 }
+
+/// About -600 dB: far below anything audible, and far above the subnormals.
+const TINY: f32 = 1e-30;
 
 #[cfg(test)]
 mod tests {
@@ -163,6 +182,37 @@ mod tests {
         };
         assert!(tail(LOW) < 1e-3);
         assert!(tail(HIGH) > 0.99);
+    }
+
+    /// Without the engine's flush-to-zero, as the harness runs it.
+    #[test]
+    fn silence_decays_to_zero_not_to_subnormals() {
+        let mut h =
+            Harness::new(&Svf, &Config::new(), &[(IN, Shape::MONO)], 48_000.0, 512).unwrap();
+        h.set(CUTOFF, 200.0);
+        h.input(IN, 512).lane_mut(0, 0).fill(1.0);
+        h.run(512).unwrap();
+        h.input(IN, 512).lane_mut(0, 0).fill(0.0);
+        // 20 s of silence.
+        for _ in 0..1875 {
+            h.run(512).unwrap();
+        }
+        for port in [LOW, BAND, HIGH] {
+            let out = h.output(port).lane(0, 0);
+            assert!(out.iter().all(|&x| x == 0.0), "{:e}", out[511]);
+        }
+    }
+
+    #[test]
+    fn recovers_from_an_infinite_input() {
+        let mut h = Harness::new(&Svf, &Config::new(), &[(IN, Shape::MONO)], 48_000.0, 64).unwrap();
+        h.input(IN, 64).lane_mut(0, 0)[10] = f32::INFINITY;
+        h.run(64).unwrap();
+        h.input(IN, 64).fill(1.0);
+        h.run(64).unwrap();
+        for port in [LOW, BAND, HIGH] {
+            assert!(h.output(port).lane(0, 0).iter().all(|x| x.is_finite()));
+        }
     }
 
     #[test]
