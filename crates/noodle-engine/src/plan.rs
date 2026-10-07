@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use noodle_core::NodeId;
 
-use crate::builtin::OUTPUT_ID;
+use crate::builtin::{INPUT_ID, OUTPUT_ID};
 use crate::{
     Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
     ParamKind, Problem, Schedule, Setup, Shape, SignalIn, SignalOut,
@@ -98,6 +98,8 @@ struct PlanNode {
     event_outputs: Vec<usize>,
     /// An Output node, whose input is mixed into the device output.
     is_output: bool,
+    /// An Input node, whose output the executor fills from the device input.
+    is_input: bool,
     scratch: Scratch,
 }
 
@@ -290,6 +292,7 @@ pub(crate) fn build(
             event_inputs,
             event_outputs,
             is_output: scheduled.node_type.info().id == OUTPUT_ID,
+            is_input: scheduled.node_type.info().id == INPUT_ID,
             scratch,
         });
     }
@@ -410,12 +413,19 @@ impl Plan {
         }
     }
 
-    /// Renders one block into `output`, interleaved with `channels` channels.
-    /// Real-time safe.
-    pub(crate) fn run(&mut self, ctx: &Context, output: &mut [f32], channels: usize) {
+    /// Renders one block into `output`, interleaved with `channels` channels,
+    /// with `input` feeding Input nodes. Real-time safe.
+    pub(crate) fn run(
+        &mut self,
+        ctx: &Context,
+        input: Interleaved<'_>,
+        output: &mut [f32],
+        channels: usize,
+    ) {
         let frames = ctx.frames;
         debug_assert!(frames <= self.max_frames);
         debug_assert_eq!(output.len(), frames * channels);
+        debug_assert_eq!(input.samples.len(), frames * input.channels);
 
         for value in &mut self.values {
             value.prepare(frames);
@@ -468,6 +478,9 @@ impl Plan {
                 // Only possible if plans arrived out of order.
                 None => Silence.process(ctx, io),
             }
+            if node.is_input {
+                read_input(input, &mut outputs[0]);
+            }
             // Mixed now, not after the whole schedule: the compiler frees a
             // buffer after its last reader, so a later node may reuse it.
             if node.is_output {
@@ -512,6 +525,48 @@ fn recycle<T, U>(mut vec: Vec<T>) -> Vec<U> {
     // have the same size and alignment, so the allocation's layout is right
     // for `U`. Only ever called with `T` and `U` differing in lifetimes.
     unsafe { Vec::from_raw_parts(vec.as_mut_ptr().cast::<U>(), 0, vec.capacity()) }
+}
+
+/// Device input for one block: interleaved, `channels` channels. Empty, with
+/// no channels, when there's no input device.
+#[derive(Clone, Copy)]
+pub(crate) struct Interleaved<'a> {
+    pub(crate) samples: &'a [f32],
+    pub(crate) channels: usize,
+}
+
+impl Interleaved<'_> {
+    pub(crate) const NONE: Interleaved<'static> = Interleaved {
+        samples: &[],
+        channels: 0,
+    };
+}
+
+/// Fills an Input node's output from device input. Channel n comes from
+/// device channel n, a mono device feeds every channel, and channels the
+/// device doesn't have are silent.
+pub(crate) fn read_input(input: Interleaved<'_>, signal: &mut SignalOut<'_>) {
+    let Interleaved { samples, channels } = input;
+    let shape = signal.shape();
+    for channel in 0..shape.channels {
+        let source = match channels {
+            1 => Some(0),
+            n if channel < n => Some(channel),
+            _ => None,
+        };
+        for voice in 0..shape.voices {
+            let lane = signal.lane_mut(voice, channel);
+            match source {
+                Some(source) => {
+                    let frames = samples.iter().skip(source).step_by(channels);
+                    for (out, &x) in lane.iter_mut().zip(frames) {
+                        *out = x;
+                    }
+                }
+                None => lane.fill(0.0),
+            }
+        }
+    }
 }
 
 /// Adds a signal into interleaved output. A mono signal goes to every

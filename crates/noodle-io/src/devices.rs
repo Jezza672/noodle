@@ -18,7 +18,7 @@ use cpal::{
 use crate::DeviceError;
 
 /// The devices and settings to play with. The default is the system's
-/// default output at its own sample rate and buffer size.
+/// default output at its own sample rate and buffer size, with no input.
 ///
 /// Hosts and devices are stored by their stable IDs, so a saved choice
 /// finds the same device after a restart, and still works if its display
@@ -32,10 +32,24 @@ pub struct AudioConfig {
     /// The output device, by [`DeviceInfo::id`]. `None` uses the host's
     /// default.
     pub output: Option<String>,
-    /// `None` uses the output device's default rate.
+    pub input: InputChoice,
+    /// `None` uses the output device's default rate. The input always runs
+    /// at the output's rate: Noodle doesn't resample between devices.
     pub sample_rate: Option<u32>,
     /// Frames per device callback. `None` lets the device decide.
     pub buffer_size: Option<u32>,
+}
+
+/// Which device, if any, records into Input nodes. Off by default, since
+/// opening a microphone can ask the user for permission.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum InputChoice {
+    #[default]
+    Off,
+    /// The host's default input device.
+    Default,
+    /// A device, by [`DeviceInfo::id`].
+    Device(String),
 }
 
 /// An audio API the platform offers.
@@ -65,7 +79,7 @@ pub fn hosts() -> Vec<HostInfo> {
 /// One direction of a device: what it can play or record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
-    /// Stable, for [`AudioConfig::output`].
+    /// Stable, for [`AudioConfig::output`] or [`InputChoice::Device`].
     pub id: String,
     /// For showing to the user.
     pub name: String,

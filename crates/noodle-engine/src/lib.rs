@@ -19,7 +19,7 @@ mod signal;
 mod telemetry;
 pub mod testing;
 
-pub use builtin::{OUTPUT_ID, Output};
+pub use builtin::{INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_ID, Output};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Problem, Schedule, ScheduledNode,
     compile,

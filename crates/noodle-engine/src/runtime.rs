@@ -12,7 +12,7 @@ use std::mem;
 use noodle_core::{Graph, NodeId};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
-use crate::plan::{self, Cells, Plan, PlanInfo};
+use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
 use crate::{Context, Diagnostic, Registry, Transport, compile};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
@@ -199,7 +199,31 @@ impl Processor {
 
     /// Renders interleaved audio into `output`, whose length must be a
     /// multiple of the channel count. Silent until the first plan arrives.
+    /// Input nodes are silent; see [`process_with_input`](Self::process_with_input).
     pub fn process(&mut self, output: &mut [f32]) {
+        self.render(Interleaved::NONE, output);
+    }
+
+    /// Renders like [`process`](Self::process), with Input nodes playing
+    /// `input`: interleaved, with `input_channels` channels and as many
+    /// frames as `output`. Input of the wrong length is a bug in the caller;
+    /// it's ignored, so Input nodes go silent.
+    pub fn process_with_input(&mut self, input: &[f32], input_channels: usize, output: &mut [f32]) {
+        let frames = output.len() / self.settings.channels;
+        let fits = input_channels > 0 && input.len() == frames * input_channels;
+        debug_assert!(fits, "{} input samples for {frames} frames", input.len());
+        let input = if fits {
+            Interleaved {
+                samples: input,
+                channels: input_channels,
+            }
+        } else {
+            Interleaved::NONE
+        };
+        self.render(input, output);
+    }
+
+    fn render(&mut self, input: Interleaved<'_>, output: &mut [f32]) {
         let Settings {
             sample_rate,
             max_frames,
@@ -208,6 +232,7 @@ impl Processor {
         debug_assert_eq!(output.len() % channels, 0);
 
         let mut rest = output;
+        let mut input_rest = input.samples;
         while !rest.is_empty() {
             self.install_new_plans();
             let mut frames = (rest.len() / channels).min(max_frames);
@@ -217,6 +242,12 @@ impl Processor {
             }
             let (chunk, tail) = mem::take(&mut rest).split_at_mut(frames * channels);
             rest = tail;
+            let (input_chunk, input_tail) = input_rest.split_at(frames * input.channels);
+            input_rest = input_tail;
+            let input_chunk = Interleaved {
+                samples: input_chunk,
+                channels: input.channels,
+            };
 
             match &mut self.plan {
                 Some(plan) => {
@@ -228,7 +259,7 @@ impl Processor {
                             position: self.position,
                         },
                     };
-                    plan.run(&ctx, chunk, channels);
+                    plan.run(&ctx, input_chunk, chunk, channels);
                 }
                 None => chunk.fill(0.0),
             }

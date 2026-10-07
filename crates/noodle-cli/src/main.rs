@@ -8,7 +8,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
 use noodle_engine::{Diagnostic, Registry, Settings, render};
-use noodle_io::AudioConfig;
+use noodle_io::{AudioConfig, InputChoice};
 
 #[derive(Parser)]
 #[command(
@@ -63,6 +63,10 @@ struct DeviceArgs {
     /// The output device, by ID (see `noodle devices`).
     #[arg(long)]
     output: Option<String>,
+    /// Record into Input nodes from this device, by ID, or `default`.
+    /// Off unless given.
+    #[arg(long)]
+    input: Option<String>,
     #[arg(long)]
     sample_rate: Option<u32>,
     /// Frames per device callback.
@@ -75,6 +79,11 @@ impl DeviceArgs {
         AudioConfig {
             host: self.host,
             output: self.output,
+            input: match self.input.as_deref() {
+                None => InputChoice::Off,
+                Some("default") => InputChoice::Default,
+                Some(id) => InputChoice::Device(id.to_owned()),
+            },
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
         }
@@ -178,8 +187,12 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
         settings.sample_rate,
         settings.channels,
     );
+    if let Some((device, channels)) = playback.input() {
+        eprintln!("Recording from {device} ({channels} channels).");
+    }
 
     let mut underruns = 0;
+    let mut input_glitches = 0;
     loop {
         thread::sleep(POLL);
         controller.maintain();
@@ -196,6 +209,11 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
         if total > underruns {
             eprintln!("warning: {} underruns", total - underruns);
             underruns = total;
+        }
+        let total = health.input_glitches();
+        if total > input_glitches {
+            eprintln!("warning: {} input glitches", total - input_glitches);
+            input_glitches = total;
         }
 
         if let Some(text) = watch.changed() {
