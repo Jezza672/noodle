@@ -55,3 +55,14 @@ fn rejects_a_render_too_long_to_count() {
     assert!(stderr.contains("seconds: too long"), "{stderr}");
     assert!(!output.exists());
 }
+
+#[test]
+fn play_reports_a_missing_project() {
+    let result = noodle(&["play", "no-such-project.ron"]);
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("can't read no-such-project.ron"),
+        "{stderr}"
+    );
+}

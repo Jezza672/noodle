@@ -9,16 +9,21 @@ The name comes from Blender's word for the wires between nodes, and from
 *noodling*, musician slang for idly messing around on an instrument.
 
 **Status:** the real-time core works headless. Graphs compile, run with
-seamless live edits, and render to WAV. There's no live audio output or UI
-yet. See the [roadmap](docs/ROADMAP.md).
+seamless live edits, play through your speakers, and render to WAV. There's
+no UI yet. See the [roadmap](docs/ROADMAP.md).
 
 ## Trying it
 
 You need a stable Rust toolchain (via [rustup](https://rustup.rs)).
 
 ```sh
+cargo run -p noodle-cli -- play examples/vibrato.ron
 cargo run -p noodle-cli -- render examples/vibrato.ron vibrato.wav
 ```
+
+`play` runs until Ctrl-C, and picks up changes to the file while it plays.
+On Linux, install the ALSA headers first (`libasound2-dev` on Debian and
+Ubuntu).
 
 Each project in [`examples/`](examples) is a readable RON file. Open one to
 see how its nodes are wired.

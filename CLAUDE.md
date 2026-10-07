@@ -29,9 +29,11 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   is *meant* to alter the sound, regenerate them with
   `UPDATE_GOLDEN=1 cargo test -p noodle-nodes --test golden`, sanity-check
   the levels and pitch, and say so in the PR so the user can listen.
-- **Linux dependency:** once cpal is added (next step), Linux builds need
-  `libasound2-dev`. Add an apt step to `.github/workflows/ci.yml`, and install
-  it in a cloud session.
+- **Linux dependency:** cpal needs `libasound2-dev`. CI installs it; in a
+  cloud session, run `apt-get install -y libasound2-dev` first.
+- **No audio device in the cloud.** `noodle play` fails cleanly there. To run
+  the real stream path anyway, point ALSA at a null device with
+  `printf 'pcm.!default { type null }\n' > ~/.asoundrc` (and delete it after).
 
 ## Crates
 
@@ -40,8 +42,8 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. |
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
 | `noodle-nodes` | Built-in nodes. Integration tests: `realtime.rs`, `golden.rs`. |
-| `noodle-io` | WAV files now; devices (cpal), MIDI and streaming later. |
-| `noodle-cli` | The `noodle` command: `render`, and `play` next. |
+| `noodle-io` | WAV files, and output through cpal (`DeviceWriter`, `play`). MIDI and streaming later. |
+| `noodle-cli` | The `noodle` command: `render`, and `play` (reloads the file when it changes). |
 | `noodle-app` | The egui app (M1). Just a placeholder so far. |
 
 ## Rules the code relies on
@@ -95,10 +97,8 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 
 ## What's next
 
-1. **Start here: finish M0 with live audio:** cpal output in `noodle-io` driving
-   `Processor::process`, and a `noodle play <project>` command (play until
-   Ctrl-C). Keep the device code thin, because cloud sessions have no audio
-   device. Test everything up to the device boundary, and ask the user to try
-   `noodle play` on their Mac. Add `libasound2-dev` to CI. Then mark M0 done
-   in ROADMAP.md.
+1. **Start here: confirm M0 is done.** cpal output and `noodle play` are
+   built. M0's "done when" still needs two things only the user can do: hear
+   `noodle play` on their Mac (including an edit swapped in while it plays),
+   and an all-platform CI run. Then mark M0 done in ROADMAP.md.
 2. **Start M1:** the egui app shell and node editor. See the roadmap.

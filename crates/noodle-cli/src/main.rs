@@ -2,10 +2,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
-use noodle_engine::{Registry, Settings, render};
+use noodle_engine::{Diagnostic, Registry, Settings, render};
 
 #[derive(Parser)]
 #[command(
@@ -33,6 +35,12 @@ enum Command {
         sample_rate: u32,
         #[arg(long, default_value_t = 2)]
         channels: usize,
+    },
+    /// Play a project on the default audio device until Ctrl-C. Saving the
+    /// file while it plays swaps the new version in.
+    Play {
+        /// The project file (.ron).
+        project: PathBuf,
     },
 }
 
@@ -73,13 +81,86 @@ fn run(command: Command) -> Result<(), String> {
             let frames = frames as usize;
             let rendered = render(project.graph(), &registry(), settings, frames)
                 .map_err(|error| error.to_string())?;
-            for diagnostic in &rendered.diagnostics {
-                eprintln!("warning: {diagnostic}");
-            }
+            report(&rendered.diagnostics);
             noodle_io::write_wav(&output, &rendered.samples, channels, sample_rate)
                 .map_err(|error| format!("can't write {}: {error}", output.display()))
         }
+        Command::Play { project } => play(&project),
     }
+}
+
+/// Frames per block for live playback: about 11 ms at 48 kHz.
+const MAX_FRAMES: usize = 512;
+/// How often to check the project file for changes.
+const POLL: Duration = Duration::from_millis(100);
+
+fn play(path: &Path) -> Result<(), String> {
+    let project = load(path)?;
+    let registry = registry();
+    let (playback, mut controller) =
+        noodle_io::play(MAX_FRAMES, |error| eprintln!("noodle: {error}"))
+            .map_err(|error| error.to_string())?;
+    report(&controller.update(project.graph(), &registry));
+    let settings = playback.settings();
+    eprintln!(
+        "Playing {} on {} ({} Hz, {} channels). Press Ctrl-C to stop.",
+        path.display(),
+        playback.device(),
+        settings.sample_rate,
+        settings.channels,
+    );
+
+    let mut watch = Watch::new(path);
+    loop {
+        thread::sleep(POLL);
+        controller.maintain();
+        if !watch.changed() {
+            continue;
+        }
+        // A bad edit keeps the last good version playing.
+        match load(path) {
+            Ok(project) => {
+                report(&controller.update(project.graph(), &registry));
+                eprintln!("Reloaded {}.", path.display());
+            }
+            Err(message) => eprintln!("noodle: {message}"),
+        }
+    }
+}
+
+fn report(diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        eprintln!("warning: {diagnostic}");
+    }
+}
+
+/// Notices when a file is modified, by polling its modification time. That's
+/// coarse but needs nothing platform-specific, and it catches editors that
+/// save by replacing the file.
+struct Watch {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+impl Watch {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            modified: modified(path),
+        }
+    }
+
+    /// Whether the file has changed since the last call, or since `new`.
+    fn changed(&mut self) -> bool {
+        let modified = modified(&self.path);
+        let changed = modified != self.modified;
+        self.modified = modified;
+        changed
+    }
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 fn load(path: &Path) -> Result<Project, String> {
@@ -92,4 +173,29 @@ fn registry() -> Registry {
     let mut registry = Registry::with_builtins();
     noodle_nodes::register_all(&mut registry);
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+
+    use super::*;
+
+    #[test]
+    fn a_watch_notices_changes_once() {
+        let path = std::env::temp_dir().join("noodle-cli-watch-test.ron");
+        let file = File::create(&path).unwrap();
+        let start = SystemTime::now();
+        file.set_modified(start).unwrap();
+        let mut watch = Watch::new(&path);
+        assert!(!watch.changed());
+
+        file.set_modified(start + Duration::from_secs(1)).unwrap();
+        assert!(watch.changed());
+        assert!(!watch.changed());
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(watch.changed(), "a deleted file has changed");
+        assert!(!watch.changed());
+    }
 }

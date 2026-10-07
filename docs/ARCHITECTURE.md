@@ -195,6 +195,12 @@ schedule. Mixing at the end of the block would be too late, since their input
 buffers may already have been reused. A mono signal goes to every channel,
 and voices are summed.
 
+**On a device**, `noodle-io`'s `DeviceWriter` runs the processor inside the
+cpal callback, through a preallocated block buffer, and converts to the
+device's sample format. It clamps to between -1 and 1 and turns non-finite
+samples into silence, to protect ears and speakers. Offline renders aren't
+clamped, so files keep exactly what the graph produced.
+
 **Data going back to the UI** (meter levels, scope buffers, playhead
 position, cache-render progress) will go through SPSC ring buffers or atomics,
 which the UI reads every frame.
