@@ -145,8 +145,7 @@ impl Session {
         if edits.peek().is_none() {
             return;
         }
-        let mut structural = false;
-        let mut params = Vec::new();
+        let mut effect = Effect::default();
         for edit in edits {
             let command = match edit {
                 Edit::Apply(command) => {
@@ -162,24 +161,16 @@ impl Session {
                     continue;
                 }
             };
-            let effect = match kind(&command) {
-                Kind::Layout => None,
-                Kind::Param(node, key, value) => Some(Some((node, key.to_owned(), value))),
-                Kind::Structural => Some(None),
-            };
+            let this = Effect::of(&command);
             match self.history.apply(&mut self.project, command) {
-                Ok(()) => match effect {
-                    Some(Some(param)) => params.push(param),
-                    Some(None) => structural = true,
-                    None => {}
-                },
+                Ok(()) => effect.merge(this),
                 Err(error) => self.message = Some(format!("Couldn't edit: {error}")),
             }
         }
-        if structural {
+        if effect.structural {
             self.recompile();
         } else if let Some(audio) = &mut self.audio {
-            for (node, key, value) in params {
+            for (node, key, value) in effect.params {
                 audio.controller.set_param(node, &key, value);
             }
         }
@@ -224,7 +215,7 @@ impl Session {
     }
 
     pub fn save_as(&mut self, path: &Path) {
-        match std::fs::write(path, self.project.to_ron()) {
+        match write_atomically(path, &self.project.to_ron()) {
             Ok(()) => {
                 self.path = Some(path.to_owned());
                 self.saved = self.project.clone();
@@ -335,35 +326,41 @@ impl Session {
     }
 }
 
-enum Kind<'a> {
-    /// Changes nothing the engine sees, such as a node's position.
-    Layout,
-    /// Sets a parameter, which the engine can take without recompiling.
-    Param(NodeId, &'a str, f32),
-    Structural,
+/// What a command means for the engine.
+#[derive(Default, Debug, PartialEq)]
+struct Effect {
+    /// Needs a recompile.
+    structural: bool,
+    /// Parameter values the engine can take without recompiling.
+    params: Vec<(NodeId, String, f32)>,
 }
 
-fn kind(command: &Command) -> Kind<'_> {
-    match command {
-        Command::MoveNode { .. } => Kind::Layout,
-        // Resetting to the default needs the default from the node type, so
-        // it recompiles, which reads it.
-        Command::SetParam {
-            node,
-            key,
-            value: Some(value),
-        } => Kind::Param(*node, key, *value),
-        Command::Batch(commands) => {
-            if commands
-                .iter()
-                .all(|command| matches!(kind(command), Kind::Layout))
-            {
-                Kind::Layout
-            } else {
-                Kind::Structural
-            }
+impl Effect {
+    fn of(command: &Command) -> Self {
+        let mut effect = Self::default();
+        effect.add(command);
+        effect
+    }
+
+    fn add(&mut self, command: &Command) {
+        match command {
+            // Changes nothing the engine sees.
+            Command::MoveNode { .. } => {}
+            Command::SetParam {
+                node,
+                key,
+                value: Some(value),
+            } => self.params.push((*node, key.clone(), *value)),
+            Command::Batch(commands) => commands.iter().for_each(|c| self.add(c)),
+            // Includes resetting a parameter to its default, which needs the
+            // default from the node type; recompiling reads it.
+            _ => self.structural = true,
         }
-        _ => Kind::Structural,
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.structural |= other.structural;
+        self.params.extend(other.params);
     }
 }
 
@@ -387,6 +384,24 @@ impl fmt::Display for FileError {
 }
 
 impl std::error::Error for FileError {}
+
+/// Writes to a temporary file next to `path`, then renames it into place, so
+/// a failed save (a full disk, say) never destroys the last good copy.
+fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".saving");
+    let temp = PathBuf::from(temp);
+    let result = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
 
 fn load(path: &Path) -> Result<Project, FileError> {
     let text =
@@ -581,36 +596,78 @@ mod tests {
     }
 
     #[test]
-    fn classifies_commands() {
+    fn effects_of_commands() {
         let node = NodeId(1);
         let moved = Command::MoveNode {
             node,
             position: Position::default(),
         };
-        assert!(matches!(kind(&moved), Kind::Layout));
-        assert!(matches!(
-            kind(&Command::Batch(vec![moved.clone(), moved.clone()])),
-            Kind::Layout
-        ));
-        let set = Command::SetParam {
+        let set = |value| Command::SetParam {
             node,
             key: "gain".into(),
-            value: Some(-6.0),
+            value,
         };
-        assert!(matches!(kind(&set), Kind::Param(_, "gain", -6.0)));
-        let reset = Command::SetParam {
-            node,
-            key: "gain".into(),
-            value: None,
-        };
-        assert!(matches!(kind(&reset), Kind::Structural));
-        assert!(matches!(
-            kind(&Command::Batch(vec![moved, set])),
-            Kind::Structural
-        ));
-        assert!(matches!(
-            kind(&Command::RemoveNode { id: node }),
-            Kind::Structural
-        ));
+        let param = |value| (node, "gain".to_owned(), value);
+
+        assert_eq!(Effect::of(&moved), Effect::default());
+        assert_eq!(
+            Effect::of(&set(Some(-6.0))),
+            Effect {
+                structural: false,
+                params: vec![param(-6.0)],
+            }
+        );
+        // Parameters in a batch still skip the recompile.
+        assert_eq!(
+            Effect::of(&Command::Batch(vec![
+                moved.clone(),
+                set(Some(-6.0)),
+                Command::Batch(vec![set(Some(-3.0))]),
+            ])),
+            Effect {
+                structural: false,
+                params: vec![param(-6.0), param(-3.0)],
+            }
+        );
+        assert!(Effect::of(&set(None)).structural);
+        assert!(
+            Effect::of(&Command::Batch(vec![
+                moved,
+                Command::RemoveNode { id: node }
+            ]))
+            .structural
+        );
+    }
+
+    #[test]
+    fn saving_replaces_the_file_whole() {
+        let path = temp("atomic.ron");
+        std::fs::write(&path, "old").unwrap();
+        let mut session = Session::new(registry());
+        session.save_as(&path);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            session.project().to_ron()
+        );
+        let mut leftover = path.clone().into_os_string();
+        leftover.push(".saving");
+        assert!(!PathBuf::from(leftover).exists());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_old_file() {
+        // Saving into a directory that doesn't exist fails before touching
+        // anything.
+        let path = temp("missing-dir").join("project.ron");
+        let mut session = Session::new(registry());
+        add(&mut session, Node::new("noodle.osc.sine"));
+        session.save_as(&path);
+        assert!(session.is_dirty());
+        assert!(
+            session
+                .message()
+                .is_some_and(|m| m.contains("Couldn't save"))
+        );
     }
 }
