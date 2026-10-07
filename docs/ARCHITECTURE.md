@@ -255,7 +255,9 @@ fixed for an engine's lifetime. In the app, the audio settings dialog
 (`noodle-app/src/devices.rs`) edits a copy of the session's `AudioConfig`
 and hands it back on Apply. It lists devices when it opens, when the host
 changes and on Refresh, never per frame, because probing devices is slow.
-It offers only sample rates both the output and the chosen input support.
+It offers only sample rates both the output and the chosen input support,
+and when the devices change it drops a rate or buffer size they don't
+support, so Apply can't hand back settings that fail to open.
 
 **Device input** is off unless `AudioConfig::input` picks a device, since
 opening a microphone can prompt for permission. It runs at the output's

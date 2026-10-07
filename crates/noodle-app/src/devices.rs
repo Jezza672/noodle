@@ -77,9 +77,13 @@ impl DevicePicker {
                 .num_columns(2)
                 .spacing([12.0, 6.0])
                 .show(ui, |ui| self.fields(ui));
-            if let Err(error) = &self.devices {
+            let warning = match &self.devices {
+                Err(error) => Some(error.clone()),
+                Ok(_) => self.input_rate_warning(),
+            };
+            if let Some(warning) = warning {
                 ui.add_space(4.0);
-                ui.colored_label(ui.visuals().warn_fg_color, error);
+                ui.colored_label(ui.visuals().warn_fg_color, warning);
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -156,12 +160,7 @@ impl DevicePicker {
         .on_hover_text("Records into Input nodes, at the output's sample rate");
         ui.end_row();
 
-        let output_caps = chosen(outputs, self.draft.output.as_deref());
-        let input_caps = match &self.draft.input {
-            InputChoice::Off => None,
-            InputChoice::Default => chosen(inputs, None),
-            InputChoice::Device(id) => chosen(inputs, Some(id)),
-        };
+        let (output_caps, input_caps) = selected(&self.devices, &self.draft);
 
         let mut rate = self.draft.sample_rate;
         let default_rate = output_caps.and_then(|c| c.default_sample_rate);
@@ -183,13 +182,43 @@ impl DevicePicker {
         .on_hover_text("Smaller is quicker to respond, larger is safer from dropouts");
         ui.end_row();
 
-        self.draft.output = output;
-        self.draft.input = input;
         self.draft.sample_rate = rate;
         self.draft.buffer_size = buffer;
+        if output != self.draft.output || input != self.draft.input {
+            self.draft.output = output;
+            self.draft.input = input;
+            self.drop_unsupported();
+        }
         if host != self.draft.host {
             self.change_host(host);
         }
+    }
+
+    /// After the devices change, forgets a sample rate or buffer size they
+    /// don't support, so Apply never hands back settings that can't open.
+    /// With nothing known about the devices, the settings are kept.
+    fn drop_unsupported(&mut self) {
+        let (output, input) = selected(&self.devices, &self.draft);
+        let rate = self.draft.sample_rate.filter(|rate| {
+            output.is_none() && input.is_none() || sample_rates(output, input).contains(rate)
+        });
+        let buffer = self
+            .draft
+            .buffer_size
+            .filter(|size| output.is_none() || buffer_sizes(output).contains(size));
+        self.draft.sample_rate = rate;
+        self.draft.buffer_size = buffer;
+    }
+
+    /// With input on and the rate left to the output, a warning when the
+    /// input can't run at that rate. Playback would go on without input.
+    fn input_rate_warning(&self) -> Option<String> {
+        let (output, input) = selected(&self.devices, &self.draft);
+        let input = input?;
+        let rate = self.draft.sample_rate.or(output?.default_sample_rate)?;
+        (!input.sample_rates.contains(&rate)).then(|| {
+            format!("The input doesn't support {rate} Hz, so it would be off. Pick a sample rate both devices support.")
+        })
     }
 
     /// Switches host. Devices chosen on the old host can't be used on the new
@@ -201,6 +230,7 @@ impl DevicePicker {
             self.draft.input = InputChoice::Default;
         }
         self.refresh_devices();
+        self.drop_unsupported();
     }
 
     fn refresh(&mut self) {
@@ -278,6 +308,23 @@ fn buffer_label(frames: Option<u32>) -> String {
         Some(frames) => format!("{frames} frames"),
         None => "Device default".into(),
     }
+}
+
+/// What the configured output and input support, where they're listed.
+fn selected<'a>(
+    devices: &'a Result<DeviceList, String>,
+    config: &AudioConfig,
+) -> (Option<&'a Capabilities>, Option<&'a Capabilities>) {
+    let Ok(list) = devices else {
+        return (None, None);
+    };
+    let output = chosen(&list.outputs, config.output.as_deref());
+    let input = match &config.input {
+        InputChoice::Off => None,
+        InputChoice::Default => chosen(&list.inputs, None),
+        InputChoice::Device(id) => chosen(&list.inputs, Some(id)),
+    };
+    (output, input)
 }
 
 /// What the chosen device (`None` for the default) supports, if it's listed.
@@ -364,7 +411,12 @@ mod tests {
             None | Some("alsa") => DeviceList {
                 outputs: vec![
                     device("alsa:speakers", "Speakers", true, stereo.clone()),
-                    device("alsa:usb", "USB Interface", false, stereo),
+                    device(
+                        "alsa:usb",
+                        "USB Interface",
+                        false,
+                        caps(&[44_100, 48_000], Some((32, 1024))),
+                    ),
                 ],
                 inputs: vec![
                     device("alsa:mic", "Microphone", true, caps(&[44_100], None)),
@@ -491,6 +543,57 @@ mod tests {
         });
         assert_eq!(shown(&harness, "Host"), "asio (not available)");
         harness.get_by_label("Couldn't list devices: no audio host called \"asio\" is available");
+    }
+
+    #[test]
+    fn a_rate_or_buffer_the_new_devices_lack_is_dropped() {
+        let mut harness = harness(AudioConfig {
+            sample_rate: Some(96_000),
+            buffer_size: Some(4096),
+            ..AudioConfig::default()
+        });
+        choose(&mut harness, "Output", "USB Interface");
+        let draft = &harness.state().picker.draft;
+        assert_eq!((draft.sample_rate, draft.buffer_size), (None, None));
+        assert_eq!(shown(&harness, "Sample rate"), "Device default (44100 Hz)");
+        assert_eq!(shown(&harness, "Buffer size"), "Device default");
+    }
+
+    #[test]
+    fn a_rate_the_input_lacks_is_dropped() {
+        let mut harness = harness(AudioConfig {
+            sample_rate: Some(96_000),
+            buffer_size: Some(4096),
+            ..AudioConfig::default()
+        });
+        choose(&mut harness, "Input", "Microphone");
+        let draft = &harness.state().picker.draft;
+        assert_eq!((draft.sample_rate, draft.buffer_size), (None, Some(4096)));
+    }
+
+    #[test]
+    fn changing_host_drops_a_rate_its_devices_lack() {
+        let mut harness = harness(AudioConfig {
+            sample_rate: Some(96_000),
+            ..AudioConfig::default()
+        });
+        choose(&mut harness, "Host", "JACK");
+        assert_eq!(harness.state().picker.draft.sample_rate, None);
+    }
+
+    #[test]
+    fn warns_when_the_input_cant_run_at_the_default_rate() {
+        let mut harness = harness(AudioConfig::default());
+        choose(&mut harness, "Input", "USB Interface");
+        harness.get_by_label(
+            "The input doesn't support 44100 Hz, so it would be off. Pick a sample rate both devices support.",
+        );
+        choose(&mut harness, "Sample rate", "48000 Hz");
+        assert!(
+            harness
+                .query_by_label_contains("The input doesn't support")
+                .is_none()
+        );
     }
 
     #[test]
