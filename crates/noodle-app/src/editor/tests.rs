@@ -1216,21 +1216,30 @@ fn a_socket_sticking_out_of_a_node_in_front_beats_a_field_behind() {
 fn a_field_drag_carries_on_over_a_node_in_front() {
     let dragged = |with_front: bool| {
         let mut h = rig();
-        let gain = add(&mut h, Node::new("noodle.util.gain").at(0.0, 0.0));
+        let gain = add(
+            &mut h,
+            Node::new("noodle.util.gain")
+                .at(0.0, 0.0)
+                .with_param("gain", -60.0),
+        );
         if with_front {
-            let front = add(
-                &mut h,
-                Node::new("noodle.osc.sine").at(NODE_WIDTH - 20.0, 40.0),
-            );
+            // Over the right half of the field, where the drag ends.
+            let front = add(&mut h, Node::new("noodle.osc.sine").at(80.0, 40.0));
             h.state_mut().editor.selected.insert(front);
         }
         h.run();
         let start = field(&h, gain, "gain") - Vec2::new(40.0, 0.0);
         let path: Vec<Pos2> = (0..=6)
-            .map(|i| start + Vec2::new(i as f32 * 20.0, 0.0))
+            .map(|i| start + Vec2::new(i as f32 * 10.0, 0.0))
             .collect();
         drag(&mut h, PointerButton::Primary, Modifiers::NONE, &path);
+        assert!(matches!(h.state().log.last(), Some(Edit::EndDrag)));
         param(&h, gain, "gain").unwrap()
     };
-    assert_eq!(dragged(true), dragged(false));
+    let unobstructed = dragged(false);
+    assert!(
+        -60.0 < unobstructed && unobstructed < 24.0,
+        "{unobstructed}"
+    );
+    assert_eq!(dragged(true), unobstructed);
 }

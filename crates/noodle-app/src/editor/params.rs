@@ -18,7 +18,8 @@ pub struct Fields {
     /// The node whose fields take the pointer: the topmost one under it.
     /// Fields of other nodes ignore the pointer, so a node in front (or a
     /// socket sticking out of it) gets the clicks instead of a field behind.
-    /// A field already being dragged keeps the pointer either way.
+    /// `None` while anything is being dragged, so a field drag carries on
+    /// over other nodes.
     front: Option<NodeId>,
     /// Whether a field was being dragged last frame, and this frame.
     was_dragging: bool,
@@ -37,6 +38,13 @@ impl Fields {
         );
         ui.set_clip_rect(canvas);
         let was_dragging = ui.data(|d| d.get_temp::<bool>(drag_id())).unwrap_or(false);
+        // Only a new press is judged: a disabled field stops responding to
+        // its own drag, so mid-drag (wherever the pointer goes) none is.
+        let front = if parent.ctx().dragged_id().is_some() {
+            None
+        } else {
+            front
+        };
         Self {
             ui,
             front,
