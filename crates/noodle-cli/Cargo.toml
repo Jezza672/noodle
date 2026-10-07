@@ -1,6 +1,6 @@
 [package]
 name = "noodle-cli"
-description = "Command-line tools: render a project to WAV."
+description = "Command-line tools: render a project to WAV, or play it."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

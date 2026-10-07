@@ -7,9 +7,10 @@ Each milestone ends with something you can run and check. See
 
 The graph engine works end to end without a UI.
 
-**Status:** everything except live device output is done, including the
-`noodle render` command. What's left: cpal output in `noodle-io` and a
-`noodle play` command.
+**Status:** everything is built, including cpal output and the `noodle render`
+and `noodle play` commands. `noodle play` swaps edits to the file in while it
+plays. What's left is checking the "done when" below: listening on macOS, and
+the tests on all three platforms (Linux and Windows on CI, macOS on a Mac).
 
 - **CI:** GitHub Actions running fmt, clippy and tests on macOS, Windows and Linux.
 - **`noodle-core`:**

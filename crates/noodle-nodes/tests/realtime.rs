@@ -7,6 +7,7 @@ use std::cell::Cell;
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
 use noodle_engine::{Controller, OUTPUT_ID, Processor, Registry, Settings, engine};
+use noodle_io::DeviceWriter;
 
 /// Counts allocations and frees made while the current thread is marked as
 /// real-time.
@@ -175,6 +176,21 @@ fn rendering_never_allocates_even_while_editing() {
 
     assert!(out.iter().all(|x| x.is_finite()));
     assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
+}
+
+#[test]
+fn the_device_writer_never_allocates() {
+    let (s, _, _) = busy_session();
+    let mut writer = DeviceWriter::new(s.processor);
+    // Longer than a block, in a format that needs converting.
+    let mut out = vec![0i16; 1000 * SETTINGS.channels];
+    let violations = realtime(|| {
+        for _ in 0..4 {
+            writer.write(&mut out);
+        }
+    });
+    assert_eq!(violations, 0, "allocated in the audio callback");
+    assert!(out.iter().any(|&x| x != 0), "should be making sound");
 }
 
 #[test]
