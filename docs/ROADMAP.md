@@ -44,12 +44,12 @@ platforms.
 
 The first build that feels like the product.
 
-**Status:** on main are the app shell (the window, theme, panels, files,
-undo/redo and play/stop), the parameter widgets and properties panel, the
-Scope, Meter and Input nodes, and the audio settings dialog (File → Audio
-Settings…). Still to land: the node editor canvas, meters and scopes drawn
-on their nodes, the widgets on the nodes themselves, and an end-to-end
-check of the "done when" line below.
+**Status:** all of M1's code is on main: the app shell (the window, theme,
+panels, files, undo/redo and play/stop), the node editor with parameter
+widgets on the nodes, the properties panel, the Scope, Meter and Input
+nodes (drawn live on their nodes), and the audio settings dialog (File →
+Audio Settings…). An end-to-end test follows the "done when" line below
+through the app. Left: a review pass, and the listening check on a Mac.
 
 - eframe app shell with Blender-style dark theme and panel layout.
 - **Node editor:**

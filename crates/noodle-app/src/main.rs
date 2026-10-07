@@ -1,6 +1,8 @@
 //! Noodle, the desktop app. `noodle-app [project.ron]` opens a project, or an
 //! empty one.
 
+#[cfg(test)]
+mod acceptance;
 mod app;
 mod devices;
 mod editor;

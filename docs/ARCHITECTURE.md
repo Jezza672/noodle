@@ -486,6 +486,10 @@ through the telemetry API.
 - **Plan swapping:** tests swap plans mid-render and check that the output
   is continuous, with no click at the swap: identical for an edit off the
   audible path, and no jump steeper than the signal's own for one on it.
+- **App tests** drive the egui app with `egui_kittest`, sending real pointer
+  and key events. `noodle-app/src/acceptance.rs` follows a milestone's
+  "done when" end to end: it builds a patch in the node editor, plays it
+  on ALSA's `null` device and tweaks it, saves, and reopens it unchanged.
 - **CI** runs fmt, clippy and the tests on macOS, Windows and Linux.
 
 ## Open questions
