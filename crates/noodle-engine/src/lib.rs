@@ -8,6 +8,7 @@ mod builtin;
 mod compile;
 mod denormals;
 mod event;
+mod flatten;
 mod lane;
 mod node;
 mod offline;
@@ -26,6 +27,7 @@ pub use compile::{
     compile,
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
+pub use flatten::flatten;
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane};
 pub use node::{
     ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, Mode, Node, NodeError,
