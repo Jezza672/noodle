@@ -420,6 +420,15 @@ impl Plan {
         }
     }
 
+    /// Clears every node's internal state, for when the transport jumps.
+    pub(crate) fn reset_nodes(&mut self) {
+        for node in &mut self.nodes {
+            if let Some(instance) = &mut node.instance {
+                instance.reset();
+            }
+        }
+    }
+
     /// Renders one block into `output`, interleaved with `channels` channels,
     /// with `input` feeding Input nodes. Real-time safe.
     pub(crate) fn run(
