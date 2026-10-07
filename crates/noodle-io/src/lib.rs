@@ -4,5 +4,7 @@
 mod output;
 mod wav;
 
-pub use output::{DeviceError, DeviceWriter, OutputError, Playback, play};
+pub use output::{
+    DeviceError, DeviceErrorKind, DeviceWriter, Health, OutputError, Playback, is_fatal, play,
+};
 pub use wav::{Audio, WavError, read_wav, write_wav};

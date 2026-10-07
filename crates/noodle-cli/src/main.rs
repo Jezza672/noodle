@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
@@ -95,11 +95,14 @@ const MAX_FRAMES: usize = 512;
 const POLL: Duration = Duration::from_millis(100);
 
 fn play(path: &Path) -> Result<(), String> {
-    let project = load(path)?;
+    let text = read(path)?;
+    let project = parse(path, &text)?;
+    // Watch from the text that was loaded, so an edit made while the device
+    // opens isn't missed.
+    let mut watch = Watch::new(path, text);
     let registry = registry();
-    let (playback, mut controller) =
-        noodle_io::play(MAX_FRAMES, |error| eprintln!("noodle: {error}"))
-            .map_err(|error| error.to_string())?;
+    let (mut playback, mut controller) =
+        noodle_io::play(MAX_FRAMES).map_err(|error| error.to_string())?;
     report(&controller.update(project.graph(), &registry));
     let settings = playback.settings();
     eprintln!(
@@ -110,20 +113,34 @@ fn play(path: &Path) -> Result<(), String> {
         settings.channels,
     );
 
-    let mut watch = Watch::new(path);
+    let mut underruns = 0;
     loop {
         thread::sleep(POLL);
         controller.maintain();
-        if !watch.changed() {
-            continue;
-        }
-        // A bad edit keeps the last good version playing.
-        match load(path) {
-            Ok(project) => {
-                report(&controller.update(project.graph(), &registry));
-                eprintln!("Reloaded {}.", path.display());
+
+        let health = playback.health();
+        for error in health.errors() {
+            if noodle_io::is_fatal(&error) {
+                return Err(format!("playback stopped: {error}"));
             }
-            Err(message) => eprintln!("noodle: {message}"),
+            eprintln!("warning: {error}");
+        }
+        // Summarised, since a struggling machine can underrun constantly.
+        let total = health.underruns();
+        if total > underruns {
+            eprintln!("warning: {} underruns", total - underruns);
+            underruns = total;
+        }
+
+        if let Some(text) = watch.changed() {
+            // A bad edit keeps the last good version playing.
+            match parse(path, &text) {
+                Ok(project) => {
+                    report(&controller.update(project.graph(), &registry));
+                    eprintln!("Reloaded {}.", path.display());
+                }
+                Err(message) => eprintln!("noodle: {message}"),
+            }
         }
     }
 }
@@ -134,39 +151,45 @@ fn report(diagnostics: &[Diagnostic]) {
     }
 }
 
-/// Notices when a file is modified, by polling its modification time. That's
-/// coarse but needs nothing platform-specific, and it catches editors that
-/// save by replacing the file.
+/// Notices when a file's contents change, by reading it. Project files are
+/// small, and comparing contents rather than modification times catches
+/// saves that land within the timestamp resolution, such as a save that
+/// finishes after a half-written version was read.
 struct Watch {
     path: PathBuf,
-    modified: Option<SystemTime>,
+    seen: String,
 }
 
 impl Watch {
-    fn new(path: &Path) -> Self {
+    fn new(path: &Path, seen: String) -> Self {
         Self {
             path: path.to_owned(),
-            modified: modified(path),
+            seen,
         }
     }
 
-    /// Whether the file has changed since the last call, or since `new`.
-    fn changed(&mut self) -> bool {
-        let modified = modified(&self.path);
-        let changed = modified != self.modified;
-        self.modified = modified;
-        changed
+    /// The file's contents, if they've changed since the last call. A file
+    /// that can't be read, e.g. mid-save, counts as unchanged.
+    fn changed(&mut self) -> Option<String> {
+        let text = std::fs::read_to_string(&self.path).ok()?;
+        if text == self.seen {
+            return None;
+        }
+        self.seen.clone_from(&text);
+        Some(text)
     }
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+fn load(path: &Path) -> Result<Project, String> {
+    parse(path, &read(path)?)
 }
 
-fn load(path: &Path) -> Result<Project, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("can't read {}: {error}", path.display()))?;
-    Project::from_ron(&text).map_err(|error| format!("can't load {}: {error}", path.display()))
+fn read(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|error| format!("can't read {}: {error}", path.display()))
+}
+
+fn parse(path: &Path, text: &str) -> Result<Project, String> {
+    Project::from_ron(text).map_err(|error| format!("can't load {}: {error}", path.display()))
 }
 
 fn registry() -> Registry {
@@ -177,25 +200,26 @@ fn registry() -> Registry {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
+    use std::fs;
 
     use super::*;
 
     #[test]
-    fn a_watch_notices_changes_once() {
-        let path = std::env::temp_dir().join("noodle-cli-watch-test.ron");
-        let file = File::create(&path).unwrap();
-        let start = SystemTime::now();
-        file.set_modified(start).unwrap();
-        let mut watch = Watch::new(&path);
-        assert!(!watch.changed());
+    fn a_watch_notices_each_change_once() {
+        let path = std::env::temp_dir().join(format!("noodle-watch-{}.ron", std::process::id()));
+        fs::write(&path, "one").unwrap();
+        let mut watch = Watch::new(&path, "one".into());
+        assert_eq!(watch.changed(), None);
 
-        file.set_modified(start + Duration::from_secs(1)).unwrap();
-        assert!(watch.changed());
-        assert!(!watch.changed());
+        // Same length and, on a coarse filesystem, the same timestamp.
+        fs::write(&path, "two").unwrap();
+        assert_eq!(watch.changed().as_deref(), Some("two"));
+        assert_eq!(watch.changed(), None);
 
-        std::fs::remove_file(&path).unwrap();
-        assert!(watch.changed(), "a deleted file has changed");
-        assert!(!watch.changed());
+        fs::remove_file(&path).unwrap();
+        assert_eq!(watch.changed(), None, "a missing file is mid-save");
+        fs::write(&path, "two").unwrap();
+        assert_eq!(watch.changed(), None, "back as it was");
+        fs::remove_file(&path).unwrap();
     }
 }

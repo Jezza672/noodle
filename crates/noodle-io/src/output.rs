@@ -5,12 +5,15 @@
 //! the device and wires the writer into its callback.
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
 use noodle_engine::{Controller, Processor, Settings, SettingsError, engine};
+use rtrb::{Consumer, Producer, RingBuffer};
 
-pub use cpal::Error as DeviceError;
+pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
 
 /// Runs the [`Processor`] for an audio callback, converting its output to the
 /// device's sample format. Real-time safe: its buffer is allocated up front.
@@ -57,6 +60,7 @@ pub struct Playback {
     _stream: cpal::Stream,
     device: String,
     settings: Settings,
+    health: Health,
 }
 
 impl Playback {
@@ -66,6 +70,75 @@ impl Playback {
 
     pub fn settings(&self) -> Settings {
         self.settings
+    }
+
+    /// The device's health since playback started. Check it regularly, e.g.
+    /// every UI frame.
+    pub fn health(&mut self) -> &mut Health {
+        &mut self.health
+    }
+}
+
+/// Whether an error means the stream has stopped for good. Underruns, a
+/// rerouted device and a refused real-time priority are survivable.
+pub fn is_fatal(error: &DeviceError) -> bool {
+    !matches!(
+        error.kind(),
+        DeviceErrorKind::Xrun | DeviceErrorKind::DeviceChanged | DeviceErrorKind::RealtimeDenied
+    )
+}
+
+/// What the device has reported. Some backends (ALSA among them) report
+/// errors from the audio thread itself, so the reports arrive lock-free:
+/// underruns are counted, and other errors are queued.
+pub struct Health {
+    underruns: Arc<AtomicU64>,
+    errors: Consumer<DeviceError>,
+}
+
+impl Health {
+    /// Underruns and overruns so far. The device's buffer ran dry, so there
+    /// was a gap in the sound.
+    pub fn underruns(&self) -> u64 {
+        self.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Errors reported since the last call, other than underruns.
+    pub fn errors(&mut self) -> impl Iterator<Item = DeviceError> + '_ {
+        std::iter::from_fn(|| self.errors.pop().ok())
+    }
+}
+
+/// The device's side of [`Health`]. Real-time safe.
+struct Reporter {
+    underruns: Arc<AtomicU64>,
+    errors: Producer<DeviceError>,
+}
+
+/// More errors than this between checks are dropped. They're likely repeats.
+const ERROR_QUEUE: usize = 16;
+
+fn health() -> (Reporter, Health) {
+    let underruns = Arc::new(AtomicU64::new(0));
+    let (producer, consumer) = RingBuffer::new(ERROR_QUEUE);
+    let reporter = Reporter {
+        underruns: Arc::clone(&underruns),
+        errors: producer,
+    };
+    let health = Health {
+        underruns,
+        errors: consumer,
+    };
+    (reporter, health)
+}
+
+impl Reporter {
+    fn report(&mut self, error: DeviceError) {
+        if error.kind() == DeviceErrorKind::Xrun {
+            self.underruns.fetch_add(1, Ordering::Relaxed);
+        } else {
+            let _ = self.errors.push(error);
+        }
     }
 }
 
@@ -108,12 +181,8 @@ impl std::error::Error for OutputError {}
 /// default sample rate and channel count. Send it graphs with the returned
 /// [`Controller`].
 ///
-/// `on_error` is called with errors the device reports while playing. It's
-/// called from a device thread, but not from inside the audio callback.
-pub fn play(
-    max_frames: usize,
-    on_error: impl FnMut(DeviceError) + Send + 'static,
-) -> Result<(Playback, Controller), OutputError> {
+/// Errors while playing are reported through [`Playback::health`].
+pub fn play(max_frames: usize) -> Result<(Playback, Controller), OutputError> {
     let device = cpal::default_host()
         .default_output_device()
         .ok_or(OutputError::NoDevice)?;
@@ -131,6 +200,8 @@ pub fn play(
     };
     let (controller, processor) = engine(settings)?;
     let writer = DeviceWriter::new(processor);
+    let (mut reporter, health) = health();
+    let on_error = move |error| reporter.report(error);
 
     let stream = match format {
         SampleFormat::F32 => open::<f32>(&device, config, writer, on_error),
@@ -150,6 +221,7 @@ pub fn play(
             _stream: stream,
             device: name,
             settings,
+            health,
         },
         controller,
     ))
@@ -196,6 +268,34 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         // The controller can go: the plan is already queued.
         DeviceWriter::new(processor)
+    }
+
+    #[test]
+    fn health_counts_underruns_and_queues_other_errors() {
+        let (mut reporter, mut health) = health();
+        reporter.report(DeviceErrorKind::Xrun.into());
+        reporter.report(DeviceErrorKind::DeviceNotAvailable.into());
+        reporter.report(DeviceErrorKind::Xrun.into());
+        assert_eq!(health.underruns(), 2);
+        let kinds: Vec<_> = health.errors().map(|e| e.kind()).collect();
+        assert_eq!(kinds, [DeviceErrorKind::DeviceNotAvailable]);
+        assert_eq!(health.errors().count(), 0, "errors are drained");
+    }
+
+    #[test]
+    fn health_drops_errors_beyond_its_queue() {
+        let (mut reporter, mut health) = health();
+        for _ in 0..ERROR_QUEUE + 5 {
+            reporter.report(DeviceErrorKind::BackendError.into());
+        }
+        assert_eq!(health.errors().count(), ERROR_QUEUE);
+    }
+
+    #[test]
+    fn only_some_errors_are_fatal() {
+        assert!(!is_fatal(&DeviceErrorKind::Xrun.into()));
+        assert!(!is_fatal(&DeviceErrorKind::DeviceChanged.into()));
+        assert!(is_fatal(&DeviceErrorKind::DeviceNotAvailable.into()));
     }
 
     #[test]

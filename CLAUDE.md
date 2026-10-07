@@ -74,9 +74,9 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   10× and Windows 2×.
   - Pushes and PRs run **Linux only**.
   - The all-platform run is triggered **by hand**
-    (`gh workflow run CI --ref main`), and the user wants it **once all of
-    M1 is done**. They wrote "M1" while M0 was in progress. If that matters,
-    ask whether they meant M0.
+    (`gh workflow run CI --ref main`, or the GitHub MCP's workflow-run
+    tool), **once each milestone's code is merged**. The user confirmed
+    this for M0 on 2026-10-07.
   - macOS used to be tested locally on the user's Mac. A cloud session can't
     do that, so if a change could behave differently on macOS (device code,
     for example), ask the user to run the tests locally.
