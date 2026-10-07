@@ -186,6 +186,40 @@ mod tests {
     "#;
 
     #[test]
+    fn a_project_with_nans_equals_its_copy() {
+        let mut project = Project::from_ron(HAND_WRITTEN).unwrap();
+        let mut history = History::new();
+        let frame = project.new_frame_id();
+        let node = Node::new("noodle.util.gain")
+            .with_param("gain", f32::NAN)
+            .with_config(Config::new().with("x", Value::Float(f64::NAN)))
+            .at(f32::NAN, 0.0);
+        let id = project.new_node_id();
+        history
+            .apply(&mut project, Command::AddNode { id, node })
+            .unwrap();
+        let frame_value = Frame {
+            label: "f".into(),
+            position: Position {
+                x: 0.0,
+                y: f32::NAN,
+            },
+            width: f32::NAN,
+            height: 1.0,
+        };
+        history
+            .apply(
+                &mut project,
+                Command::AddFrame {
+                    id: frame,
+                    frame: frame_value,
+                },
+            )
+            .unwrap();
+        assert_eq!(project, project.clone());
+    }
+
+    #[test]
     fn reads_a_hand_written_file() {
         let project = Project::from_ron(HAND_WRITTEN).unwrap();
         let graph = project.graph();

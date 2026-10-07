@@ -69,6 +69,14 @@ impl Action {
     fn discards(self) -> bool {
         matches!(self, Self::New | Self::Open | Self::Close)
     }
+
+    /// Whether a focused text field gets its key first. Space types a
+    /// space, and Cmd+Z undoes the text, not the project edit before it. The
+    /// others (New, Open, Save and the rest) are chords a text field has no
+    /// use for; a new shortcut should ask which kind it is.
+    fn yields_to_text(self) -> bool {
+        matches!(self, Self::TogglePlayback | Self::Undo | Self::Redo)
+    }
 }
 
 impl App {
@@ -145,7 +153,7 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
-        // A text field gets plain keys like Space.
+        // A text field keeps the keys it uses itself.
         let typing = ctx.egui_wants_keyboard_input();
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
@@ -155,9 +163,7 @@ impl App {
             let mut actions = Vec::new();
             let shortcuts = if dialog { &[][..] } else { &SHORTCUTS[..] };
             for &(shortcut, action) in shortcuts {
-                if (action != Action::TogglePlayback || !typing)
-                    && input.consume_shortcut(&shortcut)
-                {
+                if !(typing && action.yields_to_text()) && input.consume_shortcut(&shortcut) {
                     actions.push(action);
                 }
             }
@@ -596,5 +602,69 @@ mod tests {
             harness.state().session().project().graph().nodes().count(),
             1
         );
+    }
+
+    /// An app with two sines, each added as its own undo step, and the
+    /// first selected so the properties panel shows it.
+    fn two_sines() -> Harness<'static, App> {
+        let mut app = empty();
+        for n in 1..=2 {
+            app.session.edit([Edit::Apply(Command::AddNode {
+                id: noodle_core::NodeId(n),
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let mut harness = harness(app);
+        harness
+            .state_mut()
+            .editor
+            .selected
+            .insert(noodle_core::NodeId(1));
+        harness.state_mut().editor.active = Some(noodle_core::NodeId(1));
+        harness.run();
+        harness
+    }
+
+    fn node_count(harness: &Harness<'_, App>) -> usize {
+        harness.state().session().project().graph().nodes().count()
+    }
+
+    #[test]
+    fn undo_and_redo_belong_to_a_text_field_while_typing() {
+        let mut harness = two_sines();
+        // One edit is undone already, so there's something to redo.
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1);
+        assert!(harness.state().session().can_redo());
+
+        // The properties panel's field is the rightmost one.
+        let field = harness
+            .query_all_by_label("Frequency")
+            .max_by(|a, b| a.rect().center().x.total_cmp(&b.rect().center().x))
+            .unwrap();
+        field.click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("1000".into()));
+        harness.run();
+
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1, "Cmd+Shift+Z redid a project edit");
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1, "Cmd+Z undid a project edit");
+        assert!(harness.state().session().can_redo());
+
+        // Escape leaves the field, and then both are the project's again.
+        harness.key_press(Key::Escape);
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 2);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(node_count(&harness), 1);
     }
 }
