@@ -395,6 +395,11 @@ Settled for M2 (Phase 0):
   signature moves the bar lines but not the tempo changes after it, which
   stay at their place in the music. That is what a signature edit means: the
   bars change, the music underneath doesn't.
+- **Nothing starts before tick 0.** Clip starts and lane points can't be
+  negative, so there is no pre-roll in M2.
+- **The engine never calls the tempo map per sample.** Its lookups walk the
+  list of changes, which is fine for the UI. The engine uses the compiled
+  table (a binary search per block) and steps through a segment by adding.
 - **Rounding.** Tick to sample rounds to the nearest sample. Sample to tick
   is only needed for display and for nodes reading the musical position, so
   it is a float.
