@@ -29,7 +29,7 @@ use rubato::{
     WindowFunction,
 };
 
-use crate::{DecodeError, Decoder};
+use crate::{DecodeError, Decoder, FileInfo};
 
 /// Engine frames in a chunk.
 const CHUNK_FRAMES: usize = 2048;
@@ -52,6 +52,8 @@ pub struct StreamSpec {
     /// How much of the file plays, in the file's frames. Shorter if the file
     /// ends first.
     pub length: u64,
+    /// Where in the clip to start, in engine frames.
+    pub start: u64,
     /// How many chunks to keep ahead of the audio thread, at least 2. Each is
     /// 2048 frames, so 8 is about 340 ms at 48 kHz.
     pub chunks: usize,
@@ -97,7 +99,20 @@ pub struct StreamWorker {
     thread: Option<JoinHandle<()>>,
 }
 
-/// Opens the file and starts the worker, positioned at the clip's start.
+/// How long a clip is at the engine's rate: `length` file frames from
+/// `offset`, cut short by the end of the file when the container says how
+/// long that is, converted to `rate` and rounded. A stream's
+/// [`total_frames`](ClipStream::total_frames) is this, so schedules built from
+/// it agree with what is played.
+pub fn clip_frames(info: &FileInfo, offset: u64, length: u64, rate: u32) -> u64 {
+    let available = info
+        .frames
+        .map_or(length, |frames| frames.saturating_sub(offset));
+    let ratio = f64::from(rate) / f64::from(info.sample_rate);
+    (length.min(available) as f64 * ratio).round() as u64
+}
+
+/// Opens the file and starts the worker, positioned at `spec.start`.
 /// Opening happens here, off the audio thread, so errors are reported now.
 pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), DecodeError> {
     let decoder = Decoder::open(&spec.path)?;
@@ -107,7 +122,8 @@ pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), Decod
         .frames
         .map_or(spec.length, |f| f.saturating_sub(spec.offset));
     let length = spec.length.min(available);
-    let total = (length as f64 * ratio).round() as u64;
+    let total = clip_frames(&info, spec.offset, spec.length, spec.rate);
+    let start = spec.start.min(total);
     let channels = info.channels;
 
     let chunks = spec.chunks.max(2);
@@ -122,7 +138,7 @@ pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), Decod
     }
     let shared = Arc::new(Shared {
         generation: AtomicU64::new(0),
-        target: AtomicU64::new(0),
+        target: AtomicU64::new(start),
         stop: AtomicBool::new(false),
         underruns: AtomicU64::new(0),
         failed: AtomicBool::new(false),
@@ -146,7 +162,7 @@ pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), Decod
             generation: 0,
             current: None,
             used: 0,
-            position: 0,
+            position: start,
         },
         StreamWorker {
             shared,
@@ -257,7 +273,7 @@ fn run(mut source: Source, mut spent: Consumer<Chunk>, mut full: Producer<Chunk>
     let mut generation = 0;
     // The chunk being filled when the queue of spent ones ran dry.
     let mut spare: Option<Chunk> = None;
-    if source.seek(0).is_err() {
+    if source.seek(shared.target.load(Ordering::Relaxed)).is_err() {
         shared.failed.store(true, Ordering::Relaxed);
         return;
     }
@@ -589,6 +605,7 @@ mod tests {
             rate,
             offset,
             length,
+            start: 0,
             chunks: 4,
         }
     }
@@ -633,6 +650,30 @@ mod tests {
         // 10 000 frames, then the end: nothing more.
         assert_same(&got, &samples[3_000 * 2..13_000 * 2]);
         assert_eq!(stream.read(&mut [0.0; 8]), 0);
+    }
+
+    #[test]
+    fn a_stream_can_open_part_way_into_the_clip() {
+        let (path, samples) = ramp_file("stream-start.wav", 20_000, 48_000);
+        let mut at = spec(&path, 48_000, 1_000, 10_000);
+        at.start = 4_321;
+        let (mut stream, _worker) = open_stream(at).unwrap();
+        assert_eq!(stream.position(), 4_321);
+        let got = read_all(&mut stream, 10_000);
+        assert_same(&got, &samples[(1_000 + 4_321) * 2..11_000 * 2]);
+    }
+
+    #[test]
+    fn the_clip_length_helper_agrees_with_the_stream() {
+        let (path, _) = ramp_file("stream-frames.wav", 20_000, 44_100);
+        let info = Decoder::open(&path).unwrap().info();
+        for (offset, length) in [(0, 20_000), (5_000, 99_999), (0, 7_777)] {
+            let (stream, _worker) = open_stream(spec(&path, 48_000, offset, length)).unwrap();
+            assert_eq!(
+                stream.total_frames(),
+                clip_frames(&info, offset, length, 48_000)
+            );
+        }
     }
 
     #[test]

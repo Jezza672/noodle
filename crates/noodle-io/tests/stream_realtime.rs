@@ -64,6 +64,7 @@ fn reading_seeking_and_running_dry_never_touch_the_allocator() {
         rate: 48_000,
         offset: 0,
         length: 100_000,
+        start: 0,
         chunks: 4,
     })
     .unwrap();
