@@ -17,9 +17,10 @@ use noodle_core::Tick;
 /// effect tails ring out and live input still comes through.
 pub struct TransportControl {
     playing: AtomicBool,
-    loop_on: AtomicBool,
-    loop_start: AtomicI64,
-    loop_end: AtomicI64,
+    /// The loop's start in the high half and end in the low half, in ticks,
+    /// so the audio thread never sees a start from one loop and an end from
+    /// another. Zero means no loop.
+    looping: AtomicU64,
     seek_tick: AtomicI64,
     /// Counts seeks, so the audio thread notices a new one.
     seek_seq: AtomicU64,
@@ -31,9 +32,7 @@ impl TransportControl {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             playing: AtomicBool::new(true),
-            loop_on: AtomicBool::new(false),
-            loop_start: AtomicI64::new(0),
-            loop_end: AtomicI64::new(0),
+            looping: AtomicU64::new(0),
             seek_tick: AtomicI64::new(0),
             seek_seq: AtomicU64::new(0),
             position: AtomicU64::new(0),
@@ -60,17 +59,17 @@ impl TransportControl {
     }
 
     /// Loops between two ticks while playing, or turns looping off. An empty
-    /// or backwards range is the same as off.
+    /// or backwards range is the same as off. A playhead already past the end
+    /// when the loop is set plays on and never wraps, as in most DAWs. Ticks
+    /// are held in 32 bits each, which reaches about 18 days at 120 bpm;
+    /// later ones are clamped.
     pub fn set_loop(&self, range: Option<(Tick, Tick)>) {
-        match range {
-            Some((start, end)) => {
-                self.loop_on.store(false, Ordering::Release);
-                self.loop_start.store(start.0, Ordering::Relaxed);
-                self.loop_end.store(end.0, Ordering::Relaxed);
-                self.loop_on.store(true, Ordering::Release);
-            }
-            None => self.loop_on.store(false, Ordering::Release),
-        }
+        let pack = |tick: Tick| u64::from(u32::try_from(tick.0.max(0)).unwrap_or(u32::MAX));
+        let packed = match range {
+            Some((start, end)) if start < end => pack(start) << 32 | pack(end),
+            _ => 0,
+        };
+        self.looping.store(packed, Ordering::Relaxed);
     }
 
     /// The playhead, in samples. It's the audio thread's position at the end
@@ -83,12 +82,9 @@ impl TransportControl {
     // The audio thread's side.
 
     pub(crate) fn loop_range(&self) -> Option<(Tick, Tick)> {
-        if !self.loop_on.load(Ordering::Acquire) {
-            return None;
-        }
-        let start = self.loop_start.load(Ordering::Relaxed);
-        let end = self.loop_end.load(Ordering::Relaxed);
-        (start < end).then_some((Tick(start), Tick(end)))
+        let packed = self.looping.load(Ordering::Relaxed);
+        let (start, end) = (packed >> 32, packed & u64::from(u32::MAX));
+        (start < end).then_some((Tick(start as i64), Tick(end as i64)))
     }
 
     /// A seek made since `seen`, which is updated.
