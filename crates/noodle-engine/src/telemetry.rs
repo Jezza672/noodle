@@ -131,7 +131,9 @@ impl Telemetry {
     }
 
     /// A new reader of meter levels. Each reader sees every peak, so a view
-    /// should keep its own rather than share one.
+    /// should keep its own rather than share one. A reader holds peaks for
+    /// every meter until it reads them or is dropped, so drop short-lived
+    /// readers rather than parking them.
     pub fn meter_reader(&self) -> MeterReader {
         let mut channels = self.lock();
         let id = channels.next_reader;
