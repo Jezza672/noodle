@@ -65,8 +65,9 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 
 - **One branch and PR per chunk** of work, roughly one PR's worth of a
   milestone. Never commit straight to `main`.
-- **Merging:** once Linux CI passes and the tests pass, squash-merge the PR
-  yourself with `gh pr merge --squash --delete-branch`.
+- **Merging:** squash-merge the PR yourself
+  (`gh pr merge --squash --delete-branch`) once Linux CI passes, the tests
+  pass, and Copilot's review has been dealt with (see below).
 - **CI minutes are metered** because the repo is private, with macOS counting
   10× and Windows 2×.
   - Pushes and PRs run **Linux only**.
@@ -78,9 +79,12 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
     do that, so if a change could behave differently on macOS (device code,
     for example), ask the user to run the tests locally.
 - **Copilot reviews every PR automatically,** about 2–3 minutes after it's
-  opened. Read its comments and decide whether you agree. Address the ones you
-  agree with in the *next* chunk, and say in that PR which findings it
-  addresses and which you rejected, and why.
+  opened. Wait for the review before merging.
+  - Decide whether you agree with each comment.
+  - **Fix the ones you agree with in the same PR**, before merging. Don't
+    defer review fixes to a later PR.
+  - Leave a PR comment saying what you fixed, and which comments you
+    rejected and why.
 - **Prove that tests can fail.** For a new checker or invariant test,
   deliberately break the code, confirm the test catches it, then restore.
   Watch for a mutation landing in code that never runs; that happened once.
@@ -91,6 +95,27 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 
 ## What's next
 
+0. **Start here: finish PR #3** (branch `m0/offline-render`, still open).
+   Its Linux CI passed. Copilot left two comments, and the user wants both
+   fixed on that branch before it's merged:
+   - **Very long renders.** In `crates/noodle-engine/src/render.rs`,
+     `frames * settings.channels` can overflow, and a huge but valid length
+     makes the allocation abort the process. Use `checked_mul` and
+     `Vec::try_reserve_exact`, and return a new `RenderError::TooLong`
+     (wrapping `SettingsError` too) instead of `SettingsError`. In
+     `crates/noodle-cli/src/main.rs`, `(seconds * rate).round() as usize`
+     silently saturates, so reject durations above `usize::MAX as f64`. Add
+     tests: overflow (`usize::MAX / 2 + 1` frames × 2 channels), too many
+     bytes (`usize::MAX / 4` frames, mono), and the CLI with `--seconds 1e300`.
+   - **NaNs pass the golden test.** In `crates/noodle-nodes/tests/golden.rs`,
+     NaN passes both the "not silent" check and the tolerance check. Assert
+     that rendered samples are finite *before* the `UPDATE_GOLDEN` branch, so
+     a NaN can never be saved as a golden. Report non-finite expected samples
+     too. (Clippy rejects `!(a <= b)` on floats, so check finiteness
+     explicitly rather than inverting the comparison.)
+
+   Then leave a PR comment summarising the fixes, wait for Linux CI, and
+   squash-merge.
 1. **Finish M0 with live audio:** cpal output in `noodle-io` driving
    `Processor::process`, and a `noodle play <project>` command (play until
    Ctrl-C). Keep the device code thin, because cloud sessions have no audio
@@ -98,7 +123,3 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
    `noodle play` on their Mac. Add `libasound2-dev` to CI. Then mark M0 done
    in ROADMAP.md.
 2. **Start M1:** the egui app shell and node editor. See the roadmap.
-
-### Open review findings to address in the next chunk
-
-None yet. PR #3's Copilot review is recorded here before merging.
