@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 
+use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::session::{Saved, Session};
 use crate::{properties, theme};
@@ -16,11 +17,25 @@ const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O)
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
+const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
+
+/// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
+const SHORTCUTS: [(KeyboardShortcut, Action); 8] = [
+    (REDO, Action::Redo),
+    (UNDO, Action::Undo),
+    (SAVE_AS, Action::SaveAs),
+    (SAVE, Action::Save),
+    (OPEN, Action::Open),
+    (NEW, Action::New),
+    (SETTINGS, Action::AudioSettings),
+    (PLAY, Action::TogglePlayback),
+];
 
 pub struct App {
     session: Session,
     editor: EditorState,
+    devices: DevicePicker,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
     confirming: Option<Action>,
@@ -45,6 +60,7 @@ enum Action {
     Undo,
     Redo,
     TogglePlayback,
+    AudioSettings,
     Close,
 }
 
@@ -60,6 +76,7 @@ impl App {
         Self {
             session,
             editor: EditorState::default(),
+            devices: DevicePicker::default(),
             confirming: None,
             after_save: None,
             closing: false,
@@ -106,6 +123,9 @@ impl App {
             });
 
         self.confirm_dialog(ui.ctx(), &mut actions);
+        if let Some(config) = self.devices.show(ui.ctx()) {
+            self.session.set_audio_config(config);
+        }
         self.editor.retain_existing(&self.session);
         self.update_title(ui.ctx());
         if self.session.is_playing() {
@@ -121,18 +141,14 @@ impl App {
     fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
         // A text field gets plain keys like Space.
         let typing = ctx.egui_wants_keyboard_input();
+        // A dialog has the user's attention; shortcuts would act behind it.
+        // The editor's own keys are safe too, since they need the pointer
+        // over the canvas and a modal's backdrop covers it. Keep it so.
+        let dialog = self.devices.is_open() || self.confirming.is_some();
         ctx.input_mut(|input| {
-            // Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
             let mut actions = Vec::new();
-            for (shortcut, action) in [
-                (REDO, Action::Redo),
-                (UNDO, Action::Undo),
-                (SAVE_AS, Action::SaveAs),
-                (SAVE, Action::Save),
-                (OPEN, Action::Open),
-                (NEW, Action::New),
-                (PLAY, Action::TogglePlayback),
-            ] {
+            let shortcuts = if dialog { &[][..] } else { &SHORTCUTS[..] };
+            for &(shortcut, action) in shortcuts {
                 if (action != Action::TogglePlayback || !typing)
                     && input.consume_shortcut(&shortcut)
                 {
@@ -159,6 +175,14 @@ impl App {
             item(ui, "Open…", &OPEN, true, Action::Open);
             item(ui, "Save", &SAVE, true, Action::Save);
             item(ui, "Save As…", &SAVE_AS, true, Action::SaveAs);
+            ui.separator();
+            item(
+                ui,
+                "Audio Settings…",
+                &SETTINGS,
+                true,
+                Action::AudioSettings,
+            );
         });
         ui.menu_button("Edit", |ui| {
             item(ui, "Undo", &UNDO, self.session.can_undo(), Action::Undo);
@@ -174,7 +198,7 @@ impl App {
         };
         if ui
             .button(label)
-            .on_hover_text("Play through the default output device (Space)")
+            .on_hover_text("Play through the output device chosen in Audio Settings (Space)")
             .clicked()
         {
             actions.push(Action::TogglePlayback);
@@ -300,6 +324,7 @@ impl App {
                     self.session.play();
                 }
             }
+            Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::Close => {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -490,6 +515,7 @@ mod tests {
             Action::Undo,
             Action::Redo,
             Action::TogglePlayback,
+            Action::AudioSettings,
             Action::Close,
         ]
         .into_iter()
@@ -505,6 +531,55 @@ mod tests {
         assert_eq!(
             with_extension(PathBuf::from("a.ron")),
             PathBuf::from("a.ron")
+        );
+    }
+
+    /// An audio settings dialog that lists no devices, rather than asking
+    /// the system.
+    fn no_devices() -> DevicePicker {
+        DevicePicker::with_lister(Vec::new, |_| Ok(noodle_io::DeviceList::default()))
+    }
+
+    #[test]
+    fn audio_settings_open_from_the_shortcut_and_reach_the_session() {
+        let mut app = empty();
+        app.devices = no_devices();
+        let mut harness = harness(app);
+        harness.run();
+        assert!(harness.query_by_label("Audio Settings").is_none());
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+        harness.run();
+        harness.get_by_label("Buffer size").click();
+        harness.run();
+        harness.get_by_label("256 frames").click();
+        harness.run();
+        harness.get_by_label("Apply").click();
+        harness.run();
+
+        assert!(harness.query_by_label("Audio Settings").is_none());
+        let session = harness.state().session();
+        assert_eq!(session.audio_config().buffer_size, Some(256));
+        assert!(!session.is_playing());
+    }
+
+    #[test]
+    fn shortcuts_do_nothing_behind_a_dialog() {
+        let mut app = empty();
+        let node = Node::new("noodle.osc.sine");
+        let id = noodle_core::NodeId(1);
+        app.session
+            .edit([Edit::Apply(Command::AddNode { id, node })]);
+        app.devices = no_devices();
+        app.devices.open(&noodle_io::AudioConfig::default());
+        let mut harness = harness(app);
+        harness.run();
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run();
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            1
         );
     }
 }
