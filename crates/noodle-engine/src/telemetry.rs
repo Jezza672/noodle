@@ -144,9 +144,11 @@ impl Telemetry {
         };
         view.channels = reader.channels;
         view.samples.clear();
-        let (front, back) = reader.history.as_slices();
-        view.samples.extend_from_slice(front);
-        view.samples.extend_from_slice(back);
+        let len = reader.history.len();
+        let skip = view
+            .limit
+            .map_or(0, |frames| len.saturating_sub(frames * reader.channels));
+        view.samples.extend(reader.history.range(skip..));
         true
     }
 }
@@ -275,9 +277,20 @@ impl ScopeReader {
 pub struct ScopeView {
     channels: usize,
     samples: Vec<f32>,
+    /// The most frames to copy, or `None` for everything the hub keeps.
+    limit: Option<usize>,
 }
 
 impl ScopeView {
+    /// A view that copies only the most recent `frames` frames, for drawing
+    /// that never looks further back.
+    pub fn tail(frames: usize) -> Self {
+        Self {
+            limit: Some(frames),
+            ..Self::default()
+        }
+    }
+
     pub fn channels(&self) -> usize {
         self.channels
     }
@@ -396,6 +409,10 @@ mod tests {
         let right: Vec<f32> = view.channel(1).unwrap().collect();
         assert_eq!(right, [21.0, 101.0, 111.0, 121.0]);
         assert!(view.channel(2).is_none());
+
+        let mut tail = ScopeView::tail(2);
+        assert!(telemetry.read_scope(NODE, &mut tail));
+        assert_eq!(tail.samples(), [110.0, 111.0, 120.0, 121.0]);
 
         // A full ring's worth replaces the history outright.
         assert_eq!(writer.write(4, |f, c| (200 + f * 10 + c) as f32), 4);
