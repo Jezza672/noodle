@@ -348,6 +348,63 @@ musical position (bars, beats, tempo) from the tempo map. Clip player nodes
 and tempo-synced nodes read it. A graph with no transport, such as a live
 patch, runs on free-running time.
 
+### Representing time
+
+Settled for M2 (Phase 0):
+
+- **The document counts in ticks.** A `Tick` is an integer, 960 to a quarter
+  note. Clip starts, loop points and automation points are ticks, so a
+  project edited in bars and beats stays put when the tempo changes.
+- **The engine counts in samples.** The transport position is a sample
+  count (`u64`) at the engine's rate, and `Processor::process` never sees a
+  tick. Where a node wants the musical position it reads it from the block's
+  timeline info, which carries the tick (as `f64`, with the fraction), the
+  tempo and the time signature at the start of the block.
+- **The tempo map converts between them.** It is a list of tempo changes
+  (a tick and a BPM, with steps, not ramps) and time signature changes (a
+  bar and a numerator over a denominator). It lives in the project, because
+  it is edited and undone like anything else. The engine gets a compiled copy:
+  a table of segments with the sample position each starts at, searched
+  without allocating, and swapped like a plan when the map changes.
+- **Audio doesn't stretch with the tempo.** An audio clip stores its start in
+  ticks but its source offset and length in the file's own samples, so a
+  tempo change moves it without changing how it sounds. (Warping to the
+  tempo is a later feature and would be a property of the clip.)
+- **Rounding.** Tick to sample rounds to the nearest sample. Sample to tick
+  is only needed for display and for nodes reading the musical position, so
+  it is a float.
+
+### Clips
+
+Clips are part of the project, not of the graph, like frames. A clip says
+which clip player node plays it (`player`, a node on the track), where it
+starts, and which part of which source it plays. The track itself is a group
+node, so the arrangement view reads the track's players and their clips.
+Compiling turns a player's clips into the schedule the node follows, sorted
+by start; the node only reads that. Clip commands are undoable like any other.
+
+## Automation (M2)
+
+Settled for M2 (Phase 0): **an automation lane is an implicit source wired
+into a parameter port.** It is not a clip and not a node the user wires.
+
+- A lane is part of the project: a target (`node` and parameter key) and a
+  list of points. A point is a tick, a value and the curve to the next point
+  (hold or linear to start with). Before the first point the lane holds the
+  first value, and after the last it holds the last.
+- When the compiler meets a lane, it adds an internal automation node that
+  reads the transport position and writes the lane's value into the target
+  port, as a wire would. So a lane modulates exactly what a wire does, with
+  the same signal shape, and nodes need no support for it.
+- **Lane and wire.** A wire replaces a parameter's value (see Nodes), so a
+  wire into an automated parameter wins, and the lane is greyed with a
+  diagnostic. Two sources into one input were never allowed anyway.
+- **Without a transport** (a live patch) the lane holds its first value.
+- The lane evaluates per sample for linear segments and flags the signal
+  constant for hold segments, so a stepped lane costs nothing.
+- Lanes are drawn by the arrangement view under their track, and in the
+  properties panel next to the parameter they target.
+
 ## Caching (M4)
 
 Export, freeze and offline-only nodes all rely on one property:
@@ -502,7 +559,3 @@ through the telemetry API.
   - **M4:** streaming offline renders.
 - The project file format. RON or JSON for readable diffs, with audio stored
   alongside.
-- The automation model: automation lanes as clip-like sources feeding
-  parameter ports, or as a separate mechanism.
-- Representing time: sample positions plus a tempo map, or musical ticks as
-  the main unit.

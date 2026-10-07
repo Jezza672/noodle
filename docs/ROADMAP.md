@@ -72,6 +72,11 @@ with no glitches, save it, and reopen it exactly as it was.
 
 It becomes a DAW.
 
+**Status:** Phase 0 is settled: the time model and the automation model are
+in [ARCHITECTURE.md](ARCHITECTURE.md), and the core types are next. The
+arrangement view follows the Studio direction: inspector on the left, the
+arrangement on top, and the selected track's node graph below.
+
 - **Transport:** play, stop, loop, tempo map and time signature.
 - Group nodes, with Tab to enter and leave them.
 - Tracks as group nodes, fed by clip player nodes.
