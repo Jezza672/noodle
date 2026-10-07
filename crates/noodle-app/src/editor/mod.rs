@@ -196,6 +196,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
         ui.ctx().request_repaint();
     }
     let mut new_node_id = || session.new_node_id();
+    let mut new_frame_id = || session.new_frame_id();
     show_project(
         ui,
         state,
@@ -204,6 +205,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
             registry: session.registry(),
             diagnostics: session.diagnostics(),
             new_node_id: &mut new_node_id,
+            new_frame_id: &mut new_frame_id,
         },
     )
 }
@@ -214,6 +216,7 @@ struct Inputs<'a> {
     registry: &'a Registry,
     diagnostics: &'a [Diagnostic],
     new_node_id: &'a mut dyn FnMut() -> NodeId,
+    new_frame_id: &'a mut dyn FnMut() -> FrameId,
 }
 
 /// Problems from compiling, by where they belong.
@@ -376,18 +379,44 @@ fn navigate(
     }
 }
 
+/// How close to one of `node`'s sockets counts as on it, in screen points.
+/// Smaller when zoomed out, so neighbouring sockets don't overlap and a
+/// reroute keeps a middle that can be grabbed to move it.
+fn socket_reach(f: &Frame_<'_>, node: &layout::NodeGeom) -> f32 {
+    let limit = if node.reroute {
+        layout::REROUTE_SIZE.x / 4.0
+    } else {
+        layout::ROW_HEIGHT / 2.0
+    };
+    SOCKET_REACH.min(f.t.scale(limit))
+}
+
+/// The socket of `node` nearest `p`, if any is within reach.
+fn nearest_socket<'n>(
+    f: &Frame_<'_>,
+    node: &'n layout::NodeGeom,
+    p: Pos2,
+    filter: impl Fn(&layout::PortGeom) -> bool,
+) -> Option<&'n layout::PortGeom> {
+    let reach = socket_reach(f, node);
+    node.ports
+        .iter()
+        .filter(|port| filter(port))
+        .map(|port| (f.t.to_screen(port.socket).distance(p), port))
+        .filter(|&(distance, _)| distance <= reach)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, port)| port)
+}
+
 fn hit(f: &Frame_<'_>, p: Pos2) -> Hit {
-    for &i in f.order.iter().rev() {
-        let node = &f.scene.nodes[i];
-        for port in &node.ports {
-            if f.t.to_screen(port.socket).distance(p) <= SOCKET_REACH {
-                return Hit::Port(Endpoint::new(node.id, port.key.clone()), port.side);
-            }
-        }
-    }
     let g = f.t.to_graph(p);
+    // Topmost first, each node's sockets with its body, so a node in front
+    // hides the sockets of nodes behind it.
     for &i in f.order.iter().rev() {
         let node = &f.scene.nodes[i];
+        if let Some(port) = nearest_socket(f, node, p, |_| true) {
+            return Hit::Port(Endpoint::new(node.id, port.key.clone()), port.side);
+        }
         if node.rect.contains(g) {
             return Hit::Node(node.id);
         }
@@ -428,9 +457,16 @@ fn drop_target(
             .ports
             .iter()
             .filter(|port| port.side != side && compatible(&port.kind));
-        if let Some(port) = candidates.clone().find(|port| {
-            port.row.contains(g) || f.t.to_screen(port.socket).distance(p) <= SOCKET_REACH
-        }) {
+        // The row under the pointer, then the nearest socket in reach.
+        let target = candidates
+            .clone()
+            .find(|port| port.row.contains(g))
+            .or_else(|| {
+                nearest_socket(f, node, p, |port| {
+                    port.side != side && compatible(&port.kind)
+                })
+            });
+        if let Some(port) = target {
             return Some(Endpoint::new(node.id, port.key.clone()));
         }
         if node.rect.contains(g) {
@@ -499,6 +535,10 @@ fn pointer(
     if response.drag_stopped() {
         let gesture = std::mem::take(&mut state.gesture);
         if let Some(p) = latest {
+            // The pointer may have moved in the same frame it was released.
+            state.gesture = gesture;
+            drag(state, f, p, edits);
+            let gesture = std::mem::take(&mut state.gesture);
             finish(state, f, gesture, p, inputs, edits);
         }
     }
@@ -771,7 +811,9 @@ fn finish(
                 state.active = state.selected.iter().next_back().copied();
             }
         }
-        Gesture::Stroke { points, action } => {
+        Gesture::Stroke { mut points, action } => {
+            // Always end where the pointer was released, however close.
+            points.push(f.t.to_graph(p));
             let commands = stroke(f, &points, action, inputs);
             if !commands.is_empty() {
                 edits.push(Edit::Apply(Command::Batch(commands)));
@@ -790,6 +832,10 @@ fn stroke(
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     for wire in &f.scene.wires {
+        // Reroutes only pass audio, so they can't go on an event wire.
+        if action == StrokeAction::Reroute && wire.event {
+            continue;
+        }
         let line = wire::flatten(wire::curve(wire.from, wire.to));
         let Some(at) = wire::first_crossing(&line, points) else {
             continue;
@@ -909,7 +955,7 @@ fn keyboard(
         state.clear_selection();
     }
     if pressed(Modifiers::COMMAND, Key::J) {
-        frame_selection(state, f, edits);
+        frame_selection(state, f, inputs, edits);
     }
     if pressed(Modifiers::NONE, Key::F2)
         && state.selected_frames.len() == 1
@@ -948,14 +994,12 @@ fn duplicate(
             }));
         }
     }
-    let mut next_frame = project.next_frame_id().0;
     let mut frame_copies = BTreeSet::new();
     for &id in &state.selected_frames {
         let Some(frame) = project.frame(id) else {
             continue;
         };
-        let copy = FrameId(next_frame);
-        next_frame += 1;
+        let copy = (inputs.new_frame_id)();
         frame_copies.insert(copy);
         commands.push(Command::AddFrame {
             id: copy,
@@ -978,7 +1022,12 @@ fn duplicate(
 }
 
 /// Puts a new frame around the selected nodes.
-fn frame_selection(state: &mut EditorState, f: &Frame_<'_>, edits: &mut Vec<Edit>) {
+fn frame_selection(
+    state: &mut EditorState,
+    f: &Frame_<'_>,
+    inputs: &mut Inputs<'_>,
+    edits: &mut Vec<Edit>,
+) {
     let Some(bounds) = state
         .selected
         .iter()
@@ -992,7 +1041,7 @@ fn frame_selection(state: &mut EditorState, f: &Frame_<'_>, edits: &mut Vec<Edit
         bounds.min - Vec2::new(FRAME_MARGIN, FRAME_MARGIN + FRAME_HEADER_HEIGHT),
         bounds.max + Vec2::splat(FRAME_MARGIN),
     );
-    let id = f.project.next_frame_id();
+    let id = (inputs.new_frame_id)();
     edits.push(Edit::Apply(Command::AddFrame {
         id,
         frame: Frame {
@@ -1040,7 +1089,7 @@ fn popups(
                         state.select_only([id]);
                     }
                     Choice::Frame => {
-                        let id = f.project.next_frame_id();
+                        let id = (inputs.new_frame_id)();
                         edits.push(Edit::Apply(Command::AddFrame {
                             id,
                             frame: Frame {

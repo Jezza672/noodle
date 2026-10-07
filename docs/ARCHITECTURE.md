@@ -421,10 +421,36 @@ style. It has these views:
     such as meters and scopes, reserve space and draw it in `editor/body.rs`.
 - **Timeline:** tracks, clips, automation lanes.
 - **Mixer:** a view over the track groups.
-- **Properties panel:** the selected node's parameters.
+- **Properties panel:** the selected node's config settings, parameters
+  and compile problems. A parameter with a wire into it is greyed out,
+  since the wire replaces its value.
 
 The UI only changes the Project by issuing commands, and only reads engine state
 through the telemetry API.
+
+### Parameter widgets
+
+`widgets::ParamField` draws any `ParamInfo`, in the properties panel and
+(with `compact`) on node bodies, so both behave the same:
+
+- **Sliders** for continuous and unlabelled stepped parameters, in the style
+  of Blender's number fields. The fill follows the taper, so a log
+  frequency field puts 200 Hz a third of the way along 20 Hz to 20 kHz.
+  Drag to change (Shift for fine control), click to type, Backspace while
+  hovering or the right-click menu to reset. With keyboard focus, the
+  arrow keys nudge the value and Enter starts typing; AccessKit's increment
+  and decrement actions work too.
+- **Drop-downs** for stepped parameters with labels.
+- **Units:** values are stored in the unit they're shown in (a 0 to 100
+  `Percent` parameter shows 50 as "50.0 %"). Hz and seconds switch to kHz
+  and ms, and typed values accept the unit and those prefixes ("2k",
+  "250 ms").
+- **Edits, not mutation:** a field reports a `ParamEdit` and a `Gesture`,
+  and `ParamOutput::edits` turns them into session edits. A drag sends
+  `Edit::Drag` each frame and `Edit::EndDrag` on release, so it's one undo
+  step, and each step goes straight to the parameter cells.
+- **Config fields** (`ConfigField`) only commit when a drag or typing
+  finishes, because changing config recompiles the node.
 
 ## Testing
 

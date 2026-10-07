@@ -154,6 +154,49 @@ impl Command {
     }
 }
 
+/// What a command that only sets a value sets, so later inverses of the same
+/// thing in a group can be dropped.
+#[derive(PartialEq)]
+enum Target<'a> {
+    Position(NodeId),
+    Frame(FrameId),
+    Param(NodeId, &'a str),
+}
+
+fn target(command: &Command) -> Option<Target<'_>> {
+    match command {
+        Command::MoveNode { node, .. } => Some(Target::Position(*node)),
+        Command::SetFrame { id, .. } => Some(Target::Frame(*id)),
+        Command::SetParam { node, key, .. } => Some(Target::Param(*node, key)),
+        _ => None,
+    }
+}
+
+/// Adds an inverse to an open group, flattening batches and dropping inverses
+/// that an earlier one in the group already undoes. Undo applies a group in
+/// reverse, so the earliest inverse of a value runs last and wins.
+fn push_coalesced(group: &mut Vec<Command>, inverse: Command) {
+    match inverse {
+        // A batch's inverse is already in undo order; the group is reversed
+        // when it ends, so push its parts in application order.
+        Command::Batch(parts) => {
+            for part in parts.into_iter().rev() {
+                push_coalesced(group, part);
+            }
+        }
+        inverse => {
+            let seen = target(&inverse).is_some_and(|t| {
+                group
+                    .iter()
+                    .any(|earlier| target(earlier).as_ref() == Some(&t))
+            });
+            if !seen {
+                group.push(inverse);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditError {
     NoSuchNode(NodeId),
@@ -199,7 +242,7 @@ impl History {
         let inverse = command.apply(project)?;
         self.redo.clear();
         match &mut self.group {
-            Some(group) => group.push(inverse),
+            Some(group) => push_coalesced(group, inverse),
             None => self.undo.push(inverse),
         }
         Ok(())
@@ -207,6 +250,11 @@ impl History {
 
     /// Until [`end_group`](Self::end_group), everything applied becomes one
     /// undo step, e.g. all the moves made during one drag.
+    ///
+    /// A group keeps only the first inverse of each move, frame change or
+    /// parameter change to the same thing, since that one restores the value
+    /// from before the group. So a long drag stays one small undo step rather
+    /// than one inverse per frame.
     pub fn begin_group(&mut self) {
         self.group.get_or_insert_with(Vec::new);
     }
@@ -454,6 +502,62 @@ mod tests {
         assert_eq!(p, before);
         h.redo(&mut p).unwrap();
         assert_eq!(p.graph().node(id).unwrap().position.x, 3.0);
+    }
+
+    #[test]
+    fn a_long_drag_keeps_one_inverse_per_thing() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let a = add(&mut h, &mut p, Node::new("noodle.osc.sine"));
+        let b = add(&mut h, &mut p, Node::new("noodle.osc.sine").at(5.0, 5.0));
+        let frame = p.new_frame_id();
+        h.apply(
+            &mut p,
+            Command::AddFrame {
+                id: frame,
+                frame: super::tests::frame("F"),
+            },
+        )
+        .unwrap();
+        h.apply(&mut p, connect(a, "out", b, "frequency")).unwrap();
+        let before = p.clone();
+
+        h.begin_group();
+        for x in 1..=100 {
+            let position = Position {
+                x: x as f32,
+                y: 0.0,
+            };
+            let mut moved = super::tests::frame("F");
+            moved.position = position;
+            let batch = Command::Batch(vec![
+                Command::MoveNode { node: a, position },
+                Command::MoveNode { node: b, position },
+                Command::SetFrame {
+                    id: frame,
+                    frame: moved,
+                },
+                Command::SetParam {
+                    node: a,
+                    key: "frequency".into(),
+                    value: Some(x as f32),
+                },
+            ]);
+            h.apply(&mut p, batch).unwrap();
+        }
+        // Something that isn't a value change is kept, and its batch inverse
+        // (re-add, then reconnect) stays in order.
+        h.apply(&mut p, Command::RemoveNode { id: b }).unwrap();
+        h.end_group();
+
+        let Some(Command::Batch(step)) = h.undo.last() else {
+            panic!("one undo step");
+        };
+        assert_eq!(step.len(), 6, "{step:?}");
+        let after = p.clone();
+        h.undo(&mut p).unwrap();
+        assert_eq!(p, before);
+        h.redo(&mut p).unwrap();
+        assert_eq!(p, after);
     }
 
     #[test]

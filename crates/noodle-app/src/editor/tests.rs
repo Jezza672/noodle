@@ -835,3 +835,164 @@ fn problems_show_on_the_node_they_belong_to() {
         assert!(h.query_by_label_contains(text).is_some(), "{text}");
     }
 }
+
+/// Presses `button` at `start`, moves to `via`, then moves to `end` and
+/// releases there in the same frame.
+fn drag_ending_in_one_frame(
+    h: &mut H,
+    button: PointerButton,
+    modifiers: Modifiers,
+    start: Pos2,
+    via: Pos2,
+    end: Pos2,
+) {
+    h.event(Event::ModifiersChanged(modifiers));
+    h.event(Event::PointerMoved(start));
+    h.event(Event::PointerButton {
+        pos: start,
+        button,
+        pressed: true,
+        modifiers,
+    });
+    h.event(Event::PointerMoved(via));
+    h.step();
+    h.input_mut().events.extend([
+        Event::PointerMoved(end),
+        Event::PointerButton {
+            pos: end,
+            button,
+            pressed: false,
+            modifiers,
+        },
+    ]);
+    h.step();
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run();
+}
+
+#[test]
+fn a_move_released_in_the_same_frame_lands_where_released() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    h.run();
+    let start = title(&h, sine);
+    drag_ending_in_one_frame(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        start,
+        start + Vec2::new(20.0, 0.0),
+        start + Vec2::new(70.0, 30.0),
+    );
+    assert_eq!(position(&h, sine), Position { x: 70.0, y: 30.0 });
+    assert!(matches!(h.state().log.last(), Some(Edit::EndDrag)));
+}
+
+#[test]
+fn a_cut_counts_the_last_short_movement() {
+    let mut h = rig();
+    let (_, gain, stroke) = wired(&mut h);
+    let wire_y = stroke[1].y;
+    let x = stroke[1].x;
+    // The last step is too short to be sampled while dragging, but it's the
+    // one that crosses the wire.
+    drag_ending_in_one_frame(
+        &mut h,
+        PointerButton::Secondary,
+        Modifiers::COMMAND,
+        Pos2::new(x, wire_y - 60.0),
+        Pos2::new(x, wire_y - 1.5),
+        Pos2::new(x, wire_y + 1.5),
+    );
+    assert_eq!(source(&h, gain, "in"), None);
+}
+
+#[test]
+fn zoomed_out_the_nearest_socket_wins() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    connect(&mut h, sine, "out", gain, "in");
+    h.state_mut().editor.view.zoom = 0.4;
+    h.run();
+    // Start exactly on `gain`, a row below the connected `in`.
+    let from = socket(&h, gain, Side::Input, "gain");
+    let to = socket(&h, sine, Side::Output, "out");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[from, from.lerp(to, 0.5), to],
+    );
+    assert_eq!(source(&h, gain, "gain"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(
+        source(&h, gain, "in"),
+        Some(Endpoint::new(sine, "out")),
+        "untouched"
+    );
+
+    // And dropping exactly on `gain` connects there, not to `in`.
+    let other = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 300.0));
+    h.run();
+    let from = socket(&h, other, Side::Output, "out");
+    let to = socket(&h, gain, Side::Input, "gain");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[from, from.lerp(to, 0.5), to],
+    );
+    assert_eq!(source(&h, gain, "gain"), Some(Endpoint::new(other, "out")));
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+}
+
+#[test]
+fn zoomed_out_a_reroute_can_still_be_moved() {
+    let mut h = rig();
+    let reroute = add(&mut h, Node::new(REROUTE_ID).at(100.0, 100.0));
+    h.state_mut().editor.view.zoom = 0.5;
+    h.run();
+    let center = screen(&h, scene(&h).node(reroute).unwrap().rect.center());
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            center,
+            center + Vec2::new(10.0, 0.0),
+            center + Vec2::new(20.0, 10.0),
+        ],
+    );
+    assert_eq!(position(&h, reroute), Position { x: 140.0, y: 120.0 });
+}
+
+#[test]
+fn a_node_in_front_hides_the_sockets_behind_it() {
+    let mut h = rig();
+    let back = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    // Drawn on top, covering the back node's output socket.
+    let front = add(
+        &mut h,
+        Node::new("noodle.util.gain").at(NODE_WIDTH - 40.0, 10.0),
+    );
+    h.run();
+    let hidden = socket(&h, back, Side::Output, "out");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            hidden,
+            hidden + Vec2::new(10.0, 0.0),
+            hidden + Vec2::new(30.0, 0.0),
+        ],
+    );
+    assert_eq!(
+        position(&h, front),
+        Position {
+            x: NODE_WIDTH - 10.0,
+            y: 10.0
+        }
+    );
+    assert_eq!(h.state().session.project().graph().connections().count(), 0);
+}
