@@ -18,6 +18,7 @@ use cpal::{FromSample, Sample};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::output::Health;
+use crate::record::{RecordTap, Recorder, record_path};
 
 /// How much input the ring buffer holds, in seconds. Far more than any
 /// sensible device buffer, so it only overflows when the output has stopped.
@@ -38,11 +39,34 @@ pub fn input_path(
     max_frames: usize,
     glitches: Arc<AtomicU64>,
 ) -> (Capture, Feed) {
+    build(channels, sample_rate, max_frames, glitches, None)
+}
+
+/// Like [`input_path`], and the input can also be recorded to a file.
+pub fn recordable_input_path(
+    channels: usize,
+    sample_rate: f32,
+    max_frames: usize,
+    glitches: Arc<AtomicU64>,
+) -> (Capture, Feed, Recorder) {
+    let (tap, recorder) = record_path(channels, sample_rate);
+    let (capture, feed) = build(channels, sample_rate, max_frames, glitches, Some(tap));
+    (capture, feed, recorder)
+}
+
+fn build(
+    channels: usize,
+    sample_rate: f32,
+    max_frames: usize,
+    glitches: Arc<AtomicU64>,
+    tap: Option<RecordTap>,
+) -> (Capture, Feed) {
     let ring_frames = ((sample_rate * RING_SECONDS) as usize).max(4 * max_frames);
     let (producer, consumer) = RingBuffer::new(ring_frames * channels);
     let capture = Capture {
         producer,
         glitches: Arc::clone(&glitches),
+        tap,
     };
     let feed = Feed {
         consumer,
@@ -62,6 +86,7 @@ pub fn input_path(
 pub struct Capture {
     producer: Producer<f32>,
     glitches: Arc<AtomicU64>,
+    tap: Option<RecordTap>,
 }
 
 impl Capture {
@@ -71,6 +96,9 @@ impl Capture {
     where
         f32: FromSample<T>,
     {
+        if let Some(tap) = &mut self.tap {
+            tap.push(input);
+        }
         // Both ends move whole frames, so this is a whole number of them.
         let fits = input.len().min(self.producer.slots());
         if fits < input.len() {

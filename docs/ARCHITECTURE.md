@@ -112,8 +112,24 @@ The **Project** is the single source of truth. It holds one global graph:
 - **Frames** are labelled boxes drawn behind nodes, for organising a patch.
   They're part of the project, so they're saved and undoable, but they're
   layout only and never reach the engine.
-- **Group nodes** contain a subgraph and expose ports through it. Buses and
-  sends are just wires.
+- **Group nodes** (`noodle.group`) contain a subgraph and expose ports through
+  it. Buses and sends are just wires.
+  - **One graph.** A node's `parent` says which group it's inside. Wires only
+    join nodes with the same parent, so the editor shows one level at a time.
+  - **Ports.** A group's ports are the boundary nodes inside it: a
+    `noodle.group.input` (output port `out`) per input and a
+    `noodle.group.output` (input port `in`) per output, named by their `name`
+    config. In M2's first cut they're structure only, so they need no
+    registry entry and flatten drops them.
+  - **Boundary parameters (decided, not built yet).** Every group's input
+    and output nodes carry gain, mute and solo parameters (see Tracks below).
+    When that lands, flatten will keep a boundary node that has any parameter set
+    or wired, as a real gain stage in the flat graph, and keep dropping the
+    rest. So a group whose controls are at their defaults still costs
+    nothing and renders bit-for-bit like the flat patch, and one with a
+    non-default gain costs one gain stage. The tracks work builds this.
+  - **Edits.** Removing a group removes its contents, and undo restores them.
+    `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
   the project's owner):
   - **One kind of track.** Every track takes clips of both kinds, MIDI and
@@ -206,7 +222,10 @@ the per-sample loop.
    is reused once its last reader has run, and a node's outputs never share a
    buffer with its inputs.
 
-Group nodes are flattened in M2, and cacheability is analysed in M4.
+Before step 1, **group nodes are flattened** (`flatten.rs`): groups and their
+boundary nodes are dropped and each wire through them is joined end to end, so
+a group costs nothing at run time. Nodes keep their IDs, so diagnostics still
+point at the right node. Cacheability is analysed in M4.
 
 **Problems don't stop compilation.** A node that can't run is left out, and
 anything wired to it behaves as if unconnected. A wire that can't work is
@@ -308,14 +327,31 @@ a glitch until input has first arrived. The streams also fail separately:
 `Health::errors` says which stream each error came from, and a fatal error
 on the input (the device unplugged, say) leaves Input nodes silent and the
 status bar saying "No input", while only a fatal output error stops
-playback. cpal runs input and output as separate streams, so input crosses
-between their callbacks through an SPSC ring (`noodle-io/src/input.rs`):
-`Capture` fills it, and the `DeviceWriter`'s `Feed` takes one engine block
-at a time. Unless both are the same device, their clocks drift apart. A slow
-input runs dry, and the gap is silence. A fast input builds a backlog, so
-the feed watches the smallest backlog over each half second and drops
-whatever was beyond a small margin. Both count as input glitches in
-`Health`, a gap once however many engine blocks it spans.
+playback. If the output is rerouted (headphones unplugged, say), cpal
+reports `DeviceChanged` and some backends leave the stream silent, so the
+app starts playback again on the new default and says so, unless it has
+already done that three times in ten seconds, when it stops instead. cpal
+runs input and output as separate streams, so input crosses between their
+callbacks through an SPSC ring (`noodle-io/src/input.rs`): `Capture` fills
+it, and the `DeviceWriter`'s `Feed` takes one engine block at a time. Unless
+both are the same device, their clocks drift apart. A slow input runs dry,
+and the gap is silence. A fast input builds a backlog, so the feed watches
+the smallest backlog over each half second and drops whatever was beyond a
+small margin. Both count as input glitches in `Health`, a gap once however
+many engine blocks it spans.
+
+**Recording** takes a second copy of the input. `RecordTap`, inside the
+input callback (`Capture`), queues samples into its own ring while recording
+is on, and a writer thread (`noodle-io/src/record.rs`) writes them to a
+32-bit float WAV, so the callback never touches the disk and recording
+doesn't depend on the output. `Playback::start_recording` and
+`stop_recording` switch it with a flag: no stream is rebuilt and nothing is
+allocated on the audio thread. The file's header is refreshed about once a
+second, so a crash loses little, and a `Take` reports the frames written and
+any input dropped because the disk stalled. The file is at the input's
+channel count and the engine's rate, and starts at the moment of the call:
+aligning it with the timeline, and with the input's latency, is the
+transport's job.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
@@ -367,6 +403,15 @@ several blocks. Events inside a block are sample-accurate.
   frees old ones. Compiling can move to a worker if it gets slow for large
   graphs.
 - **Workers:** disk streaming, cache renders, plugin scanning.
+  - **Disk streaming** (`noodle-io/src/stream.rs`): one worker thread per
+    playing clip decodes the file, resamples it to the engine's rate and fills
+    fixed-size chunks. Full chunks reach the audio thread, and spent ones go
+    back, through two lock-free queues, so the audio thread never allocates,
+    locks or waits (`tests/stream_realtime.rs` enforces it). A stream counts
+    its position in engine frames from the start of the clip, and maps it to
+    the file with the clip's `offset` and `length` in file frames. A seek is a
+    request the worker acts on; until it catches up, reads come back short
+    and count an underrun, and the caller plays silence.
 - **Parallel execution (M6):** the plan's dependency graph is scheduled across
   a pool of real-time worker threads. The plan format records dependencies
   from the start so this can be added without redesigning it.
@@ -414,6 +459,30 @@ Settled for M2 (Phase 0):
   is only needed for display and for nodes reading the musical position, so
   it is a float.
 
+### The engine's transport
+
+- `Controller::transport()` gives a `TransportControl`: play, stop, seek (to
+  a tick), loop (between two ticks) and the playhead in samples. They are
+  shared atomics, so a UI thread sets them and the audio thread reads them
+  without a lock. A new transport is playing from sample 0, so a live patch
+  runs on free-running time as before. Stopping holds the position and tells
+  nodes `playing` is false, and the graph keeps rendering.
+- `Controller::set_tempo_map` builds a `TempoTable` (the compiled map) and
+  sends it over a queue, like a plan. The audio thread gets the tick from
+  the sample position by binary search, and nodes read `tick`, `bpm` and
+  `signature` from `Context::transport`.
+- Seeks wait for the output to fade out (the same 5 ms fade a non-seamless
+  plan uses), jump while it is silent, reset every node, and fade back in.
+  A new tempo table goes in at once, keeps the playhead's tick, and resets
+  nothing, so dragging the tempo doesn't chop the sound or wipe reverb tails.
+  Only something that reads the sample position can notice the move, which
+  means a clip schedule (below). Old tables are sent back to the controller
+  to be freed.
+- `stop()` doesn't fade: the graph keeps rendering. A track input playing a
+  clip must end it or fade when `playing` goes false, or stopping mid-clip
+  clicks.
+- A block ends exactly at the loop end, and the playhead wraps there.
+
 ### Playing along the timeline
 
 - **Blocks.** The transport splits a block at the loop end, so a block never
@@ -436,7 +505,9 @@ Settled for M2 (Phase 0):
     fresh fade while one is still running. Today only a
     change to the audible wiring makes a plan non-seamless (and so gets the 5
     ms structural-edit fade); the discontinuity flag joins that, so a tempo
-    or clip edit fades out and back in rather than jumping.
+    or clip edit fades out and back in rather than jumping. Until clip
+    schedules exist (stream 3), nothing raises the flag for a tempo edit, so
+    tempo edits install at once.
   - **A schedule reaches a carried-over track input without rebuilding it.**
     Instances are carried over by their `NodeKey` (type, config, shapes), and
     the schedule is not part of it: rebuilding would throw away the decoder

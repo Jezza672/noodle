@@ -9,13 +9,19 @@
 use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use noodle_core::{Command, EditError, FrameId, History, NodeId, Project};
 use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
-use noodle_io::{AudioConfig, AudioError, DeviceError, Playback, Stream};
+use noodle_io::{AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, Stream};
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
 const MAX_FRAMES: usize = 512;
+
+/// More reroutes than this within [`REROUTE_WINDOW`] means the output is
+/// flapping, and playback stops instead of restarting again.
+const MAX_REROUTES: usize = 3;
+const REROUTE_WINDOW: Duration = Duration::from_secs(10);
 
 /// What [`Session::save`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +83,7 @@ pub struct Session {
     /// The device to play on.
     audio_config: AudioConfig,
     audio: Option<Audio>,
+    reroutes: Reroutes,
     /// Something the user should know, such as a failed save, shown until the
     /// next one replaces it.
     message: Option<String>,
@@ -143,6 +150,7 @@ impl Session {
             diagnostics: Vec::new(),
             audio_config: AudioConfig::default(),
             audio: None,
+            reroutes: Reroutes::default(),
             message: None,
         };
         session.replace(project, path);
@@ -412,13 +420,49 @@ impl Session {
             underruns: health.underruns(),
             input: health.input_glitches(),
         };
-        let check = audio.monitor.check(health.errors(), now);
+        // Which error the backend sent decides what happens next, and
+        // backends differ, so say what arrived.
+        let errors: Vec<_> = health.errors().collect();
+        for (stream, error) in &errors {
+            eprintln!(
+                "noodle: audio error on the {stream:?}: {:?} ({error})",
+                error.kind()
+            );
+        }
+        let check = audio.monitor.check(errors, now);
         if let Some(message) = check.message {
             self.message = Some(message);
         }
         if check.stopped {
             self.audio = None;
+        } else if check.restart {
+            if self.reroutes.allow(Instant::now()) {
+                self.restart_on_new_output();
+            } else {
+                self.audio = None;
+                self.message = Some("Playback stopped: the audio output keeps changing".into());
+            }
         }
+    }
+
+    /// The output was rerouted, say when headphones are unplugged. Some
+    /// backends reroute the stream by themselves but leave it silent, so
+    /// start again on whatever is now the default, and say so.
+    fn restart_on_new_output(&mut self) {
+        self.audio = None;
+        self.play();
+        let Some(audio) = &self.audio else {
+            // `play` has said why it couldn't.
+            return;
+        };
+        let changed = format!(
+            "Audio output changed: playing on {}",
+            audio.playback.device()
+        );
+        self.message = Some(match self.message.take() {
+            Some(also) => format!("{changed}. {also}"),
+            None => changed,
+        });
     }
 
     fn recompile(&mut self) {
@@ -493,6 +537,26 @@ struct Monitor {
     input_lost: Option<String>,
 }
 
+/// When playback last restarted after a reroute, so a flapping output can't
+/// make it restart on every frame.
+#[derive(Debug, Default)]
+struct Reroutes {
+    recent: Vec<Instant>,
+}
+
+impl Reroutes {
+    /// Whether a restart at `now` is allowed, and if so, counts it.
+    fn allow(&mut self, now: Instant) -> bool {
+        self.recent
+            .retain(|&at| now.saturating_duration_since(at) < REROUTE_WINDOW);
+        if self.recent.len() >= MAX_REROUTES {
+            return false;
+        }
+        self.recent.push(now);
+        true
+    }
+}
+
 /// What a check of the devices found.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Check {
@@ -500,6 +564,8 @@ struct Check {
     message: Option<String>,
     /// Playback has stopped for good.
     stopped: bool,
+    /// The output was rerouted: playback should restart on the new device.
+    restart: bool,
 }
 
 impl Monitor {
@@ -532,7 +598,12 @@ impl Monitor {
         if stopped {
             message = verdict.stopped;
         }
-        Check { message, stopped }
+        Check {
+            message,
+            stopped,
+            // There's no device to restart on if the output was lost.
+            restart: verdict.output_changed && !stopped,
+        }
     }
 }
 
@@ -545,6 +616,9 @@ struct Verdict {
     input_lost: Option<String>,
     /// A survivable error worth telling the user about.
     message: Option<String>,
+    /// The output was rerouted to another device. The stream may not have
+    /// carried on, so playback should start afresh on the new one.
+    output_changed: bool,
 }
 
 /// Sorts errors by what they mean: only the output stream's fatal errors
@@ -563,6 +637,9 @@ fn judge(errors: impl IntoIterator<Item = (Stream, DeviceError)>) -> Verdict {
                 verdict
                     .input_lost
                     .get_or_insert_with(|| format!("Input lost: {error}"));
+            }
+            (Stream::Output, false) if error.kind() == DeviceErrorKind::DeviceChanged => {
+                verdict.output_changed = true;
             }
             (_, false) => verdict.message = Some(error.to_string()),
         }
@@ -738,12 +815,61 @@ mod tests {
     }
 
     #[test]
+    fn a_rerouted_output_restarts_playback_but_a_rerouted_input_does_not() {
+        use noodle_io::DeviceErrorKind::*;
+        let mut monitor = Monitor::default();
+        let check = monitor.check([(Stream::Input, error(DeviceChanged))], glitches(0, 0));
+        assert!(!check.restart);
+        assert!(check.message.is_some(), "still worth a message");
+
+        // However many times it's rerouted, it restarts once.
+        let check = monitor.check(
+            [
+                (Stream::Output, error(DeviceChanged)),
+                (Stream::Output, error(DeviceChanged)),
+            ],
+            glitches(0, 0),
+        );
+        assert!(check.restart);
+        assert!(!check.stopped);
+    }
+
+    #[test]
+    fn a_flapping_output_stops_being_restarted() {
+        let start = Instant::now();
+        let mut reroutes = Reroutes::default();
+        let second = Duration::from_secs(1);
+        for i in 0..MAX_REROUTES as u32 {
+            assert!(reroutes.allow(start + second * i), "restart {i}");
+        }
+        assert!(!reroutes.allow(start + second * MAX_REROUTES as u32));
+        // Once the window has passed, an ordinary reroute is fine again.
+        assert!(reroutes.allow(start + REROUTE_WINDOW + second * MAX_REROUTES as u32));
+    }
+
+    #[test]
+    fn no_restart_when_the_output_is_lost_for_good() {
+        use noodle_io::DeviceErrorKind::*;
+        let mut monitor = Monitor::default();
+        let check = monitor.check(
+            [
+                (Stream::Output, error(DeviceChanged)),
+                (Stream::Output, error(DeviceNotAvailable)),
+            ],
+            glitches(0, 0),
+        );
+        assert!(check.stopped);
+        assert!(!check.restart);
+    }
+
+    #[test]
     fn survivable_errors_only_get_a_message() {
         use noodle_io::DeviceErrorKind::*;
         for stream in [Stream::Output, Stream::Input] {
-            let verdict = judge([(stream, error(DeviceChanged))]);
+            let verdict = judge([(stream, error(RealtimeDenied))]);
             assert_eq!(verdict.stopped, None);
             assert_eq!(verdict.input_lost, None);
+            assert!(!verdict.output_changed);
             assert!(verdict.message.is_some());
         }
         assert_eq!(judge([]), Verdict::default());

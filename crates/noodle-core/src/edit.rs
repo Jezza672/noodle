@@ -15,7 +15,7 @@ pub enum Command {
         node: Node,
     },
     /// Also removes the node's connections, the clips it plays and the lanes
-    /// driving its inputs.
+    /// driving its inputs, and everything inside it if it's a group.
     RemoveNode {
         id: NodeId,
     },
@@ -39,6 +39,12 @@ pub enum Command {
     MoveNode {
         node: NodeId,
         position: Position,
+    },
+    /// Moves a node into a group, or `None` out to the top level. The node
+    /// can't be wired to nodes outside its new group.
+    SetParent {
+        node: NodeId,
+        parent: Option<NodeId>,
     },
     AddFrame {
         id: FrameId,
@@ -147,21 +153,36 @@ impl Command {
                 return Ok(Command::SetLane { id, lane: old });
             }
             Command::RemoveNode { id } => {
-                let (node, connections) = project.graph_mut().remove_node(id)?;
-                let (clips, lanes) = project.remove_dependents(id);
-                let mut restore = vec![Command::AddNode { id, node }];
-                restore.extend(connections.into_iter().map(Command::Connect));
-                restore.extend(
-                    clips
-                        .into_iter()
-                        .map(|(id, clip)| Command::AddClip { id, clip }),
-                );
-                restore.extend(
-                    lanes
-                        .into_iter()
-                        .map(|(id, lane)| Command::AddLane { id, lane }),
-                );
-                return Ok(Command::Batch(restore));
+                // Contents first, so a parent is always added back before
+                // the nodes inside it.
+                let mut ids = project.graph().descendants(id);
+                ids.reverse();
+                ids.push(id);
+                let mut nodes = Vec::new();
+                let mut wires = Vec::new();
+                let mut clips = Vec::new();
+                let mut lanes = Vec::new();
+                for id in ids {
+                    let (node, connections) = project.graph_mut().remove_node(id)?;
+                    let (node_clips, node_lanes) = project.remove_dependents(id);
+                    nodes.push(Command::AddNode { id, node });
+                    wires.extend(connections.into_iter().map(Command::Connect));
+                    clips.extend(
+                        node_clips
+                            .into_iter()
+                            .map(|(id, clip)| Command::AddClip { id, clip }),
+                    );
+                    lanes.extend(
+                        node_lanes
+                            .into_iter()
+                            .map(|(id, lane)| Command::AddLane { id, lane }),
+                    );
+                }
+                nodes.reverse();
+                nodes.extend(wires);
+                nodes.extend(clips);
+                nodes.extend(lanes);
+                return Ok(Command::Batch(nodes));
             }
             _ => {}
         }
@@ -213,6 +234,10 @@ impl Command {
                     node,
                     position: old,
                 }
+            }
+            Command::SetParent { node, parent } => {
+                let old = graph.set_parent(node, parent)?;
+                Command::SetParent { node, parent: old }
             }
             Command::Batch(_)
             | Command::RemoveNode { .. }
@@ -289,6 +314,15 @@ pub enum EditError {
     ConnectedTwice(Endpoint),
     NoSuchFrame(FrameId),
     FrameExists(FrameId),
+    /// A node's parent, or a wire's ends, aren't in the same group.
+    DifferentGroups(Connection),
+    NotAGroup(NodeId),
+    NothingToGroup,
+    /// A node being grouped has a different parent from the first.
+    NotSiblings(NodeId),
+    /// A group's input or output node can't be moved into another group.
+    BoundaryNode(NodeId),
+    GroupInsideItself(NodeId),
     NoSuchClip(ClipId),
     ClipExists(ClipId),
     /// What's wrong with the clip.
@@ -310,6 +344,16 @@ impl fmt::Display for EditError {
             Self::ConnectedTwice(input) => write!(f, "{input} has more than one connection"),
             Self::NoSuchFrame(id) => write!(f, "there's no {id}"),
             Self::FrameExists(id) => write!(f, "there's already a {id}"),
+            Self::DifferentGroups(c) => write!(
+                f,
+                "{} and {} aren't in the same group, so they can't be wired together",
+                c.from, c.to
+            ),
+            Self::NothingToGroup => write!(f, "there's nothing selected to group"),
+            Self::NotSiblings(id) => write!(f, "{id} isn't in the same group as the rest"),
+            Self::BoundaryNode(id) => write!(f, "{id} is a group port, so it can't be grouped"),
+            Self::NotAGroup(id) => write!(f, "{id} isn't a group"),
+            Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
             Self::NoSuchClip(id) => write!(f, "there's no {id}"),
             Self::ClipExists(id) => write!(f, "there's already a {id}"),
             Self::InvalidClip(id, why) => write!(f, "the {id} can't be used: {why}"),

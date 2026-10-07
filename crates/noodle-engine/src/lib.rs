@@ -8,6 +8,7 @@ mod builtin;
 mod compile;
 mod denormals;
 mod event;
+mod flatten;
 mod lane;
 mod node;
 mod offline;
@@ -18,7 +19,9 @@ mod render;
 mod runtime;
 mod signal;
 mod telemetry;
+mod tempo;
 pub mod testing;
+mod transport;
 
 pub use builtin::{INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_ID, Output};
 pub use compile::{
@@ -26,6 +29,7 @@ pub use compile::{
     compile,
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
+pub use flatten::flatten;
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane};
 pub use node::{
     ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, Mode, Node, NodeError,
@@ -39,3 +43,5 @@ pub use render::{Render, RenderError, render};
 pub use runtime::{Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{Level, MeterReader, MeterWriter, ScopeView, ScopeWriter, Telemetry};
+pub use tempo::TempoTable;
+pub use transport::TransportControl;
