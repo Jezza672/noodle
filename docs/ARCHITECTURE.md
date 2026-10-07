@@ -215,6 +215,16 @@ device's sample format. It clamps to between -1 and 1 and turns non-finite
 samples into silence, to protect ears and speakers. Offline renders aren't
 clamped, so files keep exactly what the graph produced.
 
+**Choosing a device.** `play` takes an `AudioConfig`: a host (audio API),
+an output device, a sample rate and a buffer size, each defaulting to the
+system's choice. Hosts and devices are stored by cpal's stable IDs, so a
+saved choice survives restarts and renamed devices. A device ID names its
+own host, so the host setting only picks where default devices come from.
+`hosts()` and `devices()` list what the picker offers, and the rate and
+buffer size are checked against what the device supports before a stream
+opens. Changing any of these means a new engine, since `Settings` are
+fixed for an engine's lifetime.
+
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
 
