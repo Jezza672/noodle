@@ -62,6 +62,8 @@ enum Action {
     Undo,
     Redo,
     TogglePlayback,
+    Rewind,
+    TogglePause,
     AudioSettings,
     Close,
 }
@@ -93,6 +95,11 @@ impl App {
             title: String::new(),
             dragging: false,
         }
+    }
+
+    #[cfg(test)]
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
     }
 
     #[cfg(test)]
@@ -157,7 +164,7 @@ impl App {
         if self.session.is_playing() {
             // Keeps health checks and plan freeing going while idle.
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
         for action in actions {
             self.request(ui.ctx(), action);
@@ -227,6 +234,32 @@ impl App {
         {
             actions.push(Action::TogglePlayback);
         }
+        let open = self.session.is_playing();
+        ui.add_enabled_ui(open, |ui| {
+            if ui.button("⏮").on_hover_text("Back to the start").clicked() {
+                actions.push(Action::Rewind);
+            }
+            let pause = if self.session.transport_running() {
+                "⏸"
+            } else {
+                "⏵"
+            };
+            if ui
+                .button(pause)
+                .on_hover_text("Pause or resume the timeline")
+                .clicked()
+            {
+                actions.push(Action::TogglePause);
+            }
+        });
+        let position = self.session.playhead().map_or_else(
+            || "– . – . –".to_owned(),
+            |tick| {
+                let at = self.session.project().tempo_map().position(tick);
+                format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick)
+            },
+        );
+        ui.monospace(position).on_hover_text("Bar.beat.tick");
     }
 
     fn status_bar(&self, ui: &mut egui::Ui) {
@@ -347,6 +380,11 @@ impl App {
                 } else {
                     self.session.play();
                 }
+            }
+            Action::Rewind => self.session.rewind(),
+            Action::TogglePause => {
+                let running = self.session.transport_running();
+                self.session.set_transport_running(!running);
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::Close => {
