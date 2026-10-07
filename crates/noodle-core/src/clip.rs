@@ -1,4 +1,4 @@
-//! Clips: audio placed on the timeline for a clip player node to play.
+//! Clips: audio (and from M3, MIDI) placed on the timeline for a track input node to play.
 
 use std::fmt;
 
@@ -18,15 +18,27 @@ impl fmt::Display for ClipId {
     }
 }
 
-/// Part of an audio file, placed on the timeline. The start is in ticks, so
-/// it follows the tempo; what plays, and for how long, is counted in the
+/// Something placed on a track's timeline. The start is in ticks, so it
+/// follows the tempo. One track holds clips of every kind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    /// The track input node that plays this clip.
+    pub node: NodeId,
+    pub start: Tick,
+    pub content: ClipContent,
+}
+
+/// What a clip plays. MIDI clips join this with M3.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ClipContent {
+    Audio(AudioClip),
+}
+
+/// Part of an audio file. What plays, and for how long, is counted in the
 /// file's own samples, so a tempo change moves the clip without changing how
 /// it sounds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Clip {
-    /// The clip player node that plays this clip. It sits on a track.
-    pub player: NodeId,
-    pub start: Tick,
+pub struct AudioClip {
     /// The audio file, as a path relative to the project file.
     pub source: String,
     /// Where in the file the clip starts, in the file's sample frames.
@@ -40,13 +52,11 @@ pub struct Clip {
     pub fade_out: u64,
 }
 
-impl Clip {
-    /// A clip playing `length` frames of `source`, from its start, at unit
-    /// gain and without fades.
-    pub fn new(player: NodeId, start: Tick, source: impl Into<String>, length: u64) -> Self {
+impl AudioClip {
+    /// `length` frames of `source` from its start, at unit gain and without
+    /// fades.
+    pub fn new(source: impl Into<String>, length: u64) -> Self {
         Self {
-            player,
-            start,
             source: source.into(),
             offset: 0,
             length,
@@ -55,12 +65,39 @@ impl Clip {
             fade_out: 0,
         }
     }
+}
+
+impl Clip {
+    /// An audio clip of `length` frames of `source`, from its start.
+    pub fn audio(node: NodeId, start: Tick, source: impl Into<String>, length: u64) -> Self {
+        Self {
+            node,
+            start,
+            content: ClipContent::Audio(AudioClip::new(source, length)),
+        }
+    }
+
+    /// The audio, if this is an audio clip.
+    pub fn as_audio(&self) -> Option<&AudioClip> {
+        match &self.content {
+            ClipContent::Audio(audio) => Some(audio),
+        }
+    }
 
     /// Why this clip can't be in a project, if it can't.
     pub(crate) fn problem(&self) -> Option<&'static str> {
         if self.start < Tick::ZERO {
-            Some("it starts before the beginning")
-        } else if self.length == 0 {
+            return Some("it starts before the beginning");
+        }
+        match &self.content {
+            ClipContent::Audio(audio) => audio.problem(),
+        }
+    }
+}
+
+impl AudioClip {
+    fn problem(&self) -> Option<&'static str> {
+        if self.length == 0 {
             Some("it is empty")
         } else if self.source.is_empty() {
             Some("it has no audio file")

@@ -12,7 +12,7 @@ mod project;
 mod timeline;
 
 pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};
-pub use clip::{Clip, ClipId};
+pub use clip::{AudioClip, Clip, ClipContent, ClipId};
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};

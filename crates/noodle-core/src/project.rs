@@ -156,9 +156,9 @@ impl Project {
         self.clips.iter().map(|(&id, clip)| (id, clip))
     }
 
-    /// The clips a clip player node plays, in ID order.
-    pub fn clips_on(&self, player: NodeId) -> impl Iterator<Item = (ClipId, &Clip)> {
-        self.clips().filter(move |(_, clip)| clip.player == player)
+    /// The clips a track input node plays, in ID order.
+    pub fn clips_on(&self, node: NodeId) -> impl Iterator<Item = (ClipId, &Clip)> {
+        self.clips().filter(move |(_, clip)| clip.node == node)
     }
 
     /// Reserves an ID for a clip that's about to be added.
@@ -177,8 +177,8 @@ impl Project {
         if let Some(problem) = clip.problem() {
             return Err(EditError::InvalidClip(id, problem));
         }
-        if self.graph.node(clip.player).is_none() {
-            return Err(EditError::NoSuchNode(clip.player));
+        if self.graph.node(clip.node).is_none() {
+            return Err(EditError::NoSuchNode(clip.node));
         }
         Ok(())
     }
@@ -537,8 +537,8 @@ mod tests {
     // The timeline: tempo map, clips and automation lanes.
 
     use crate::{
-        AutomationLane, AutomationPoint, Clip, ClipId, Curve, LaneId, SignatureChange, TempoChange,
-        TempoMap, Tick, TimeSignature,
+        AudioClip, AutomationLane, AutomationPoint, Clip, ClipContent, ClipId, Curve, LaneId,
+        SignatureChange, TempoChange, TempoMap, Tick, TimeSignature,
     };
 
     fn apply(project: &mut Project, history: &mut History, command: Command) {
@@ -555,7 +555,7 @@ mod tests {
             &mut history,
             Command::AddNode {
                 id: player,
-                node: Node::new("noodle.clip.player"),
+                node: Node::new("noodle.clip.node"),
             },
         );
         let clip = project.new_clip_id();
@@ -564,7 +564,7 @@ mod tests {
             &mut history,
             Command::AddClip {
                 id: clip,
-                clip: Clip::new(player, Tick(960), "kick.wav", 48_000),
+                clip: Clip::audio(player, Tick(960), "kick.wav", 48_000),
             },
         );
         let lane = project.new_lane_id();
@@ -611,7 +611,7 @@ mod tests {
         let text = project.to_ron();
         let loaded = Project::from_ron(&text).unwrap();
         assert_eq!(loaded, project);
-        assert_eq!(loaded.clip(clip).unwrap().player, player);
+        assert_eq!(loaded.clip(clip).unwrap().node, player);
         assert_eq!(loaded.to_ron(), text);
         // New IDs carry on after the loaded ones.
         assert_eq!(loaded.next_clip_id(), ClipId(clip.0 + 1));
@@ -634,7 +634,7 @@ mod tests {
         let (project, ..) = with_timeline();
         let text = project.to_ron();
         assert!(Project::from_ron(&text).is_ok());
-        let no_player = text.replace("player: 1", "player: 9");
+        let no_player = text.replace("node: 1,\n", "node: 9,\n");
         assert!(matches!(
             Project::from_ron(&no_player),
             Err(LoadError::Broken(EditError::NoSuchNode(NodeId(9))))
@@ -661,7 +661,10 @@ mod tests {
 
         history.undo(&mut project).unwrap();
         assert_eq!(project, before);
-        assert_eq!(project.clip(clip).unwrap().source, "kick.wav");
+        assert_eq!(
+            project.clip(clip).unwrap().as_audio().unwrap().source,
+            "kick.wav"
+        );
         history.redo(&mut project).unwrap();
         assert!(project.clip(clip).is_none());
     }
@@ -671,34 +674,33 @@ mod tests {
         let (mut project, _, player, clip, _) = with_timeline();
         let add = |project: &mut Project, id, clip| Command::AddClip { id, clip }.apply(project);
         let id = project.new_clip_id();
-        let good = Clip::new(player, Tick(0), "a.wav", 10);
+        let good = Clip::audio(player, Tick(0), "a.wav", 10);
 
         assert_eq!(
             add(&mut project, clip, good.clone()),
             Err(EditError::ClipExists(clip))
         );
-        let ghost = Clip::new(NodeId(77), Tick(0), "a.wav", 10);
+        let ghost = Clip::audio(NodeId(77), Tick(0), "a.wav", 10);
         assert_eq!(
             add(&mut project, id, ghost),
             Err(EditError::NoSuchNode(NodeId(77)))
         );
+        let tweak = |change: &dyn Fn(&mut AudioClip)| {
+            let mut clip = good.clone();
+            let ClipContent::Audio(audio) = &mut clip.content;
+            change(audio);
+            clip
+        };
         for bad in [
-            Clip::new(player, Tick(-1), "a.wav", 10),
-            Clip::new(player, Tick(0), "a.wav", 0),
-            Clip::new(player, Tick(0), "", 10),
-            Clip {
-                gain: f32::NAN,
-                ..good.clone()
-            },
-            Clip {
-                gain: -1.0,
-                ..good.clone()
-            },
-            Clip {
-                fade_in: 6,
-                fade_out: 5,
-                ..good.clone()
-            },
+            Clip::audio(player, Tick(-1), "a.wav", 10),
+            Clip::audio(player, Tick(0), "a.wav", 0),
+            Clip::audio(player, Tick(0), "", 10),
+            tweak(&|a| a.gain = f32::NAN),
+            tweak(&|a| a.gain = -1.0),
+            tweak(&|a| {
+                a.fade_in = 6;
+                a.fade_out = 5;
+            }),
         ] {
             assert!(
                 matches!(
@@ -714,7 +716,11 @@ mod tests {
             .apply(&mut project);
             assert!(matches!(set, Err(EditError::InvalidClip(..))));
         }
-        assert_eq!(project.clip(clip).unwrap().source, "kick.wav", "unchanged");
+        assert_eq!(
+            project.clip(clip).unwrap().as_audio().unwrap().source,
+            "kick.wav",
+            "unchanged"
+        );
         assert!(add(&mut project, id, good).is_ok());
         assert_eq!(
             Command::RemoveClip { id: ClipId(99) }.apply(&mut project),
