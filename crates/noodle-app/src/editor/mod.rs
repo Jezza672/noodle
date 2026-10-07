@@ -28,6 +28,7 @@
 mod body;
 mod draw;
 mod layout;
+mod params;
 mod search;
 mod view;
 mod wire;
@@ -298,7 +299,16 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         _ => None,
     };
     draw::wires(&painter, &f, state, &problems, detached);
-    draw::nodes(&painter, &f, state, &problems);
+    let front = pointer_pos.and_then(|p| match hit(&f, p) {
+        Hit::Port(endpoint, _) => Some(endpoint.node),
+        Hit::Node(id) => Some(id),
+        _ => None,
+    });
+    let mut fields = params::Fields::new(ui, canvas, front);
+    draw::nodes(&painter, &f, state, &problems, |node| {
+        fields.show(&f, node, &mut edits);
+    });
+    fields.finish(&mut edits);
     if let Some(p) = pointer_pos {
         draw::gesture(&painter, &f, &state.gesture, p);
     }
@@ -503,11 +513,29 @@ fn pointer(
         )
     });
 
-    if response.drag_started() {
+    // A parameter field on a node takes any drag that starts on it, but only
+    // plain primary drags (and right-clicks) are its own. Hand panning and
+    // strokes to the canvas, before the field sees the drag.
+    let (middle, secondary) = ui.input(|i| (i.pointer.middle_down(), i.pointer.secondary_down()));
+    let canvas_drag = middle || (secondary && (modifiers.command || modifiers.shift));
+    let stolen = canvas_drag
+        && state.search.is_none()
+        && state.rename.is_none()
+        && origin.is_some_and(|p| state.canvas.contains(p))
+        && ui.ctx().dragged_id().is_some_and(|id| id != response.id);
+    if stolen {
+        ui.ctx().set_dragged_id(response.id);
+        // Catch up with the movement that decided it was a drag.
+        if middle && let (Some(origin), Some(latest)) = (origin, latest) {
+            state.view.pan(latest - origin);
+        }
+    }
+
+    if response.drag_started() || stolen {
         let start = origin.or(latest).unwrap_or_default();
-        state.gesture = if response.dragged_by(PointerButton::Middle) {
+        state.gesture = if middle {
             Gesture::Pan
-        } else if response.dragged_by(PointerButton::Secondary) {
+        } else if secondary {
             let action = if modifiers.command {
                 Some(StrokeAction::Cut)
             } else if modifiers.shift {
@@ -519,7 +547,7 @@ fn pointer(
                 points: vec![f.t.to_graph(start)],
                 action,
             })
-        } else if response.dragged_by(PointerButton::Primary) {
+        } else if ui.input(|i| i.pointer.primary_down()) {
             start_primary_drag(state, f, start, modifiers)
         } else {
             Gesture::Idle

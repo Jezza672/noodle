@@ -3,7 +3,6 @@
 use egui::epaint::{CornerRadius, CubicBezierShape, PathShape, StrokeKind};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use noodle_core::Endpoint;
-use noodle_engine::{ParamInfo, ParamKind, Taper, Unit};
 
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
 use super::view::Transform;
@@ -11,7 +10,7 @@ use super::{EditorState, Frame_, Gesture, Problems, StrokeAction, body, wire};
 use crate::theme::{self, editor as colors};
 
 /// Below this zoom, text is too small to read, so it isn't drawn.
-const MIN_TEXT_ZOOM: f32 = 0.4;
+pub const MIN_TEXT_ZOOM: f32 = 0.4;
 const GRID: f32 = 20.0;
 
 pub fn canvas(painter: &Painter, rect: Rect, t: &Transform) {
@@ -114,7 +113,15 @@ pub fn wires(
     }
 }
 
-pub fn nodes(painter: &Painter, f: &Frame_<'_>, state: &EditorState, problems: &Problems) {
+/// Paints the nodes, bottom first, calling `then` after each one so widgets
+/// on it stack the same way.
+pub fn nodes(
+    painter: &Painter,
+    f: &Frame_<'_>,
+    state: &EditorState,
+    problems: &Problems,
+    mut then: impl FnMut(&NodeGeom),
+) {
     for &i in &f.order {
         let node = &f.scene.nodes[i];
         let problem = problems.nodes.contains_key(&node.id) || node.error.is_some();
@@ -132,6 +139,7 @@ pub fn nodes(painter: &Painter, f: &Frame_<'_>, state: &EditorState, problems: &
         } else {
             boxed(painter, f, node, outline, problem, &state.bodies);
         }
+        then(node);
     }
 }
 
@@ -187,7 +195,6 @@ fn boxed(
     }
 
     let graph = f.project.graph();
-    let values = graph.node(node.id).map(|n| &n.params);
     for port in &node.ports {
         if text {
             let row = f.t.rect_to_screen(port.row);
@@ -196,13 +203,8 @@ fn boxed(
                     .source(&Endpoint::new(node.id, port.key.clone()))
                     .is_some();
             match (&port.kind, port.side) {
-                (PortKind::Param(info), Side::Input) if !connected => {
-                    let value = values
-                        .and_then(|v| v.get(&port.key))
-                        .copied()
-                        .unwrap_or(info.default);
-                    param_field(painter, row, z, &port.name, info, value);
-                }
+                // The parameter's field is a widget, shown by `params`.
+                (PortKind::Param(_), Side::Input) if !connected => {}
                 (_, side) => {
                     let (anchor, align) = match side {
                         Side::Input => (
@@ -241,69 +243,6 @@ fn boxed(
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
         );
-    }
-}
-
-/// A read-only stand-in for the parameter widget, which comes from
-/// `crate::widgets`: Blender's slider, showing the name and value.
-fn param_field(painter: &Painter, row: Rect, z: f32, name: &str, info: &ParamInfo, value: f32) {
-    let field = row.shrink2(Vec2::new(10.0 * z, 2.0 * z));
-    let radius = 3.0 * z;
-    painter.rect_filled(field, radius, colors::PARAM_FIELD);
-    let filled = field.with_max_x(field.left() + field.width() * fraction(info, value));
-    if filled.width() > 0.0 {
-        painter.rect_filled(filled, radius, colors::PARAM_FILL);
-    }
-    let font = FontId::proportional(12.0 * z);
-    let clipped = painter.with_clip_rect(field);
-    clipped.text(
-        field.left_center() + Vec2::new(6.0 * z, 0.0),
-        Align2::LEFT_CENTER,
-        name,
-        font.clone(),
-        colors::TEXT,
-    );
-    clipped.text(
-        field.right_center() - Vec2::new(6.0 * z, 0.0),
-        Align2::RIGHT_CENTER,
-        format_value(info, value),
-        font,
-        colors::TEXT,
-    );
-}
-
-/// How far along its range a value is, from 0 to 1, following the taper.
-pub fn fraction(info: &ParamInfo, value: f32) -> f32 {
-    let f = match info.taper {
-        Taper::Log if info.min > 0.0 && value > 0.0 => {
-            (value / info.min).ln() / (info.max / info.min).ln()
-        }
-        _ => (value - info.min) / (info.max - info.min),
-    };
-    if f.is_finite() {
-        f.clamp(0.0, 1.0)
-    } else {
-        0.0
-    }
-}
-
-pub fn format_value(info: &ParamInfo, value: f32) -> String {
-    if let ParamKind::Stepped { labels } = &info.kind {
-        let step = value.round();
-        return match labels.get(step as usize) {
-            Some(label) if step >= 0.0 => label.to_string(),
-            _ => format!("{step}"),
-        };
-    }
-    match info.unit {
-        Unit::Hertz if value.abs() >= 1000.0 => format!("{:.2} kHz", value / 1000.0),
-        Unit::Hertz => format!("{value:.1} Hz"),
-        Unit::Decibels => format!("{value:.1} dB"),
-        Unit::Seconds if value.abs() < 1.0 => format!("{:.0} ms", value * 1000.0),
-        Unit::Seconds => format!("{value:.2} s"),
-        Unit::Semitones => format!("{value:+.1} st"),
-        Unit::Percent => format!("{value:.0}%"),
-        Unit::None => format!("{value:.3}"),
     }
 }
 
@@ -399,38 +338,5 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
             painter.extend(Shape::dashed_line(&line, Stroke::new(1.5, color), 6.0, 4.0));
         }
         Gesture::Idle | Gesture::Pan | Gesture::Move { .. } | Gesture::Resize { .. } => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fraction_follows_the_taper() {
-        let linear = ParamInfo::new(-60.0, 24.0, 0.0);
-        assert_eq!(fraction(&linear, -60.0), 0.0);
-        assert_eq!(fraction(&linear, 24.0), 1.0);
-        assert_eq!(fraction(&linear, 100.0), 1.0);
-        let log = ParamInfo::new(20.0, 20_000.0, 440.0).log();
-        assert!(
-            (fraction(&log, 632.4555) - 0.5).abs() < 1e-3,
-            "the geometric middle"
-        );
-        assert_eq!(fraction(&ParamInfo::new(1.0, 1.0, 1.0), 1.0), 0.0);
-    }
-
-    #[test]
-    fn values_are_formatted_with_units() {
-        let hz = ParamInfo::new(20.0, 20_000.0, 440.0).unit(Unit::Hertz);
-        assert_eq!(format_value(&hz, 440.0), "440.0 Hz");
-        assert_eq!(format_value(&hz, 2500.0), "2.50 kHz");
-        let db = ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels);
-        assert_eq!(format_value(&db, -6.0), "-6.0 dB");
-        let s = ParamInfo::new(0.0, 10.0, 0.0).unit(Unit::Seconds);
-        assert_eq!(format_value(&s, 0.25), "250 ms");
-        let choice = ParamInfo::choice(["Low", "High"]);
-        assert_eq!(format_value(&choice, 0.9), "High");
-        assert_eq!(format_value(&choice, 7.0), "7");
     }
 }

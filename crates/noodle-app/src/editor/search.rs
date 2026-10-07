@@ -33,8 +33,9 @@ pub struct Entry {
     pub choice: Choice,
 }
 
-/// Everything that can be added, ordered by category then name, keeping the
-/// ones that match every word of `query`.
+/// Everything that can be added that matches every word of `query`, by name,
+/// category or ID. Those whose name matches come first, then they're ordered
+/// by category and name.
 pub fn entries(registry: &Registry, query: &str) -> Vec<Entry> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut entries: Vec<Entry> = registry
@@ -61,7 +62,13 @@ pub fn entries(registry: &Registry, query: &str) -> Vec<Entry> {
             words.iter().all(|word| haystack.contains(word.as_str()))
         })
         .collect();
-    entries.sort_by_key(|e| (e.category, e.name));
+    // Names that match every word come first, so "output" finds Output
+    // before Input, whose category is "Input/Output".
+    entries.sort_by_key(|e| {
+        let name = e.name.to_lowercase();
+        let by_name = words.iter().all(|word| name.contains(word.as_str()));
+        (!by_name, e.category, e.name)
+    });
     entries
 }
 
@@ -179,6 +186,14 @@ mod tests {
         assert_eq!(names("util.mix"), ["Mix"]);
         assert!(names("frame").contains(&"Frame"));
         assert!(names("sine zzz").is_empty());
+    }
+
+    #[test]
+    fn name_matches_come_first() {
+        let registry = registry();
+        let names = entries(&registry, "output");
+        assert_eq!(names[0].name, "Output");
+        assert!(names.iter().any(|e| e.name == "Input"), "by category");
     }
 
     #[test]
