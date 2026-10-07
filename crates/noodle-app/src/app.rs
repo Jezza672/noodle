@@ -89,6 +89,11 @@ impl App {
         &self.session
     }
 
+    #[cfg(test)]
+    pub fn editor(&self) -> &EditorState {
+        &self.editor
+    }
+
     /// Draws the whole window. Separate from [`eframe::App`] so tests can
     /// drive it without a window.
     pub fn show(&mut self, ui: &mut egui::Ui) {
