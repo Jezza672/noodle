@@ -204,7 +204,8 @@ clamped, so files keep exactly what the graph produced.
 **Choosing a device.** `play` takes an `AudioConfig`: a host (audio API),
 an output device, a sample rate and a buffer size, each defaulting to the
 system's choice. Hosts and devices are stored by cpal's stable IDs, so a
-saved choice survives restarts and renamed devices. `hosts()` and
+saved choice survives restarts and renamed devices. A device ID names its
+own host, so the host setting only picks where default devices come from. `hosts()` and
 `devices()` list what the picker offers, and the rate and buffer size are
 checked against what the device supports before a stream opens. Changing
 any of these means a new engine, since `Settings` are fixed for an

@@ -13,7 +13,7 @@ use noodle_engine::{Controller, Processor, Settings, engine};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
-    AudioConfig, AudioError, Chosen, Direction, choose_config, device_name, find_device, open_host,
+    AudioConfig, AudioError, Chosen, Direction, choose_config, device_name, find_device, host_for,
 };
 
 pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
@@ -145,21 +145,28 @@ impl Reporter {
     }
 }
 
-/// Starts an engine playing on an output device, chosen by `config`, with
+/// Starts an engine playing on an output device, chosen by `choice`, with
 /// `max_frames` frames per engine block. The channel count is the device's.
 /// Send the engine graphs with the returned [`Controller`].
 ///
 /// Errors while playing are reported through [`Playback::health`].
-pub fn play(config: &AudioConfig, max_frames: usize) -> Result<(Playback, Controller), AudioError> {
-    let host = open_host(config.host.as_deref())?;
-    let device = find_device(&host, config.output.as_deref(), Direction::Output)?;
+pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Controller), AudioError> {
+    let host = match host_for(
+        choice.host.as_deref(),
+        choice.output.as_deref(),
+        Direction::Output,
+    )? {
+        Some(id) => cpal::host_from_id(id)?,
+        None => cpal::default_host(),
+    };
+    let device = find_device(&host, choice.output.as_deref(), Direction::Output)?;
     let name = device_name(&device);
     let ranges: Vec<_> = device.supported_output_configs()?.collect();
     let Chosen { config, format } = choose_config(
         &ranges,
         device.default_output_config()?,
-        config.sample_rate,
-        config.buffer_size,
+        choice.sample_rate,
+        choice.buffer_size,
     )?;
     let settings = Settings {
         sample_rate: config.sample_rate as f32,

@@ -26,7 +26,8 @@ use crate::DeviceError;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AudioConfig {
     /// The audio API, by [`HostInfo::id`] (e.g. `alsa`, `jack`, `wasapi`,
-    /// `asio`). `None` uses the platform's default.
+    /// `asio`), for default devices. `None` uses the platform's default. A
+    /// device ID names its own host, which this must agree with if given.
     pub host: Option<String>,
     /// The output device, by [`DeviceInfo::id`]. `None` uses the host's
     /// default.
@@ -105,10 +106,9 @@ pub fn devices(host: Option<&str>) -> Result<DeviceList, AudioError> {
     for device in host.devices()? {
         let Ok(id) = device.id() else { continue };
         let name = device_name(&device);
-        if device.supports_output()
-            && let Ok(ranges) = device.supported_output_configs()
-        {
-            let ranges: Vec<_> = ranges.collect();
+        // Each query probes the device, which is slow on some hosts, so
+        // they're made once and an empty answer means "can't".
+        if let Some(ranges) = usable(device.supported_output_configs()) {
             let default = device.default_output_config().ok();
             list.outputs.push(DeviceInfo {
                 id: id.to_string(),
@@ -117,10 +117,7 @@ pub fn devices(host: Option<&str>) -> Result<DeviceList, AudioError> {
                 capabilities: capabilities(&ranges, default.as_ref()),
             });
         }
-        if device.supports_input()
-            && let Ok(ranges) = device.supported_input_configs()
-        {
-            let ranges: Vec<_> = ranges.collect();
+        if let Some(ranges) = usable(device.supported_input_configs()) {
             let default = device.default_input_config().ok();
             list.inputs.push(DeviceInfo {
                 id: id.to_string(),
@@ -133,16 +130,49 @@ pub fn devices(host: Option<&str>) -> Result<DeviceList, AudioError> {
     Ok(list)
 }
 
+/// A device's configurations in formats Noodle can play, if it has any.
+fn usable(
+    ranges: Result<impl Iterator<Item = SupportedStreamConfigRange>, DeviceError>,
+) -> Option<Vec<SupportedStreamConfigRange>> {
+    let ranges: Vec<_> = ranges
+        .ok()?
+        .filter(|r| is_supported(r.sample_format()))
+        .collect();
+    (!ranges.is_empty()).then_some(ranges)
+}
+
+/// The sample formats the device streams convert to and from.
+pub const SUPPORTED_FORMATS: [SampleFormat; 9] = [
+    SampleFormat::F32,
+    SampleFormat::F64,
+    SampleFormat::I8,
+    SampleFormat::I16,
+    SampleFormat::I24,
+    SampleFormat::I32,
+    SampleFormat::U8,
+    SampleFormat::U16,
+    SampleFormat::U32,
+];
+
+fn is_supported(format: SampleFormat) -> bool {
+    SUPPORTED_FORMATS.contains(&format)
+}
+
 /// Rates a picker offers, where the device supports them.
 pub const COMMON_SAMPLE_RATES: [u32; 8] = [
     22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
 ];
 
-/// Summarises a device's configurations for a picker.
+/// Summarises a device's configurations for a picker. Configurations in
+/// formats Noodle can't play are left out.
 pub fn capabilities(
     ranges: &[SupportedStreamConfigRange],
     default: Option<&SupportedStreamConfig>,
 ) -> Capabilities {
+    let ranges: Vec<_> = ranges
+        .iter()
+        .filter(|r| is_supported(r.sample_format()))
+        .collect();
     let supports = |rate: u32| ranges.iter().any(|r| r.contains_rate(rate));
     let mut sample_rates: Vec<u32> = COMMON_SAMPLE_RATES
         .into_iter()
@@ -155,71 +185,101 @@ pub fn capabilities(
         sample_rates.push(rate);
         sample_rates.sort_unstable();
     }
-    let buffer_sizes = ranges
-        .iter()
-        .filter_map(|r| match *r.buffer_size() {
-            SupportedBufferSize::Range { min, max } => Some((min, max)),
-            SupportedBufferSize::Unknown => None,
-        })
-        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)));
     Capabilities {
         max_channels: ranges.iter().map(|r| r.channels()).max().unwrap_or(0),
         default_sample_rate,
         sample_rates,
-        buffer_sizes,
+        buffer_sizes: buffer_span(ranges.iter().copied()),
     }
+}
+
+/// The smallest and largest buffer sizes across `ranges`, where known.
+fn buffer_span<'a>(
+    ranges: impl Iterator<Item = &'a SupportedStreamConfigRange>,
+) -> Option<(u32, u32)> {
+    ranges
+        .filter_map(|r| match *r.buffer_size() {
+            SupportedBufferSize::Range { min, max } => Some((min, max)),
+            SupportedBufferSize::Unknown => None,
+        })
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
 }
 
 /// Picks the configuration to open a stream with: the device's default, at
 /// `sample_rate` if one is given, with `buffer_size` frames per callback if
 /// one is given.
 ///
-/// When the rate differs from the default's, it prefers a configuration
-/// that keeps the default's channel count and sample format, then one in
-/// 32-bit float, then the one with the most channels.
+/// When the default won't do, it picks among the configurations that have
+/// the rate, a format Noodle can play, and room for the buffer size (a
+/// device that doesn't say which sizes it takes is given the benefit of the
+/// doubt). It prefers one that keeps the default's channel count, then its
+/// sample format, then 32-bit float, then one that says it takes the
+/// buffer size, then the most channels.
 pub fn choose_config(
     ranges: &[SupportedStreamConfigRange],
     default: SupportedStreamConfig,
     sample_rate: Option<u32>,
     buffer_size: Option<u32>,
 ) -> Result<Chosen, AudioError> {
-    let supported = match sample_rate {
-        None => default,
-        Some(rate) if rate == default.sample_rate() => default,
-        Some(rate) => ranges
+    if buffer_size == Some(0) {
+        return Err(AudioError::UnsupportedBufferSize {
+            frames: 0,
+            min: 1,
+            max: u32::MAX,
+        });
+    }
+    // Some for a buffer range that says it takes the size, None for one
+    // that doesn't say, false for one that says it doesn't.
+    let takes_buffer = |size: &SupportedBufferSize| match (buffer_size, *size) {
+        (Some(frames), SupportedBufferSize::Range { min, max }) => {
+            Some((min..=max).contains(&frames))
+        }
+        _ => None,
+    };
+    let rate = sample_rate.unwrap_or(default.sample_rate());
+    let supported = if rate == default.sample_rate()
+        && is_supported(default.sample_format())
+        && takes_buffer(default.buffer_size()) != Some(false)
+    {
+        default
+    } else {
+        let at_rate: Vec<_> = ranges
             .iter()
-            .filter(|r| r.contains_rate(rate))
+            .filter(|r| is_supported(r.sample_format()) && r.contains_rate(rate))
+            .collect();
+        if at_rate.is_empty() {
+            return Err(match sample_rate {
+                Some(rate) => AudioError::UnsupportedSampleRate(rate),
+                None => AudioError::UnsupportedFormat(default.sample_format()),
+            });
+        }
+        let best = at_rate
+            .iter()
+            .filter(|r| takes_buffer(r.buffer_size()) != Some(false))
             .max_by_key(|r| {
                 (
                     r.channels() == default.channels(),
                     r.sample_format() == default.sample_format(),
                     r.sample_format() == SampleFormat::F32,
+                    takes_buffer(r.buffer_size()) == Some(true),
                     r.channels(),
                 )
-            })
-            .ok_or(AudioError::UnsupportedSampleRate(rate))?
-            .with_sample_rate(rate),
-    };
-    let buffer_size = match buffer_size {
-        None => BufferSize::Default,
-        Some(frames) => {
-            if let SupportedBufferSize::Range { min, max } = *supported.buffer_size()
-                && !(min..=max).contains(&frames)
-            {
+            });
+        match (best, buffer_size) {
+            (Some(range), _) => range.with_sample_rate(rate),
+            // Every range at this rate said no, so they all have a span.
+            (None, Some(frames)) => {
+                let (min, max) = buffer_span(at_rate.into_iter()).unwrap_or((1, u32::MAX));
                 return Err(AudioError::UnsupportedBufferSize { frames, min, max });
             }
-            if frames == 0 {
-                return Err(AudioError::UnsupportedBufferSize {
-                    frames,
-                    min: 1,
-                    max: u32::MAX,
-                });
-            }
-            BufferSize::Fixed(frames)
+            (None, None) => unreachable!("with no buffer size, every range takes it"),
         }
     };
     let mut config: cpal::StreamConfig = supported.into();
-    config.buffer_size = buffer_size;
+    config.buffer_size = match buffer_size {
+        None => BufferSize::Default,
+        Some(frames) => BufferSize::Fixed(frames),
+    };
     Ok(Chosen {
         config,
         format: supported.sample_format(),
@@ -236,14 +296,45 @@ pub struct Chosen {
 pub(crate) fn open_host(id: Option<&str>) -> Result<cpal::Host, AudioError> {
     match id {
         None => Ok(cpal::default_host()),
-        Some(id) => {
-            let host = HostId::from_str(id).map_err(|_| AudioError::NoHost(id.to_owned()))?;
-            Ok(cpal::host_from_id(host)?)
-        }
+        Some(id) => Ok(cpal::host_from_id(parse_host(id)?)?),
     }
 }
 
-/// Finds a device by ID, or the default one, for output or input.
+fn parse_host(id: &str) -> Result<HostId, AudioError> {
+    HostId::from_str(id).map_err(|_| AudioError::NoHost(id.to_owned()))
+}
+
+/// The host to use: the one a device ID names, if a device is chosen,
+/// otherwise `host` (`None` for the platform's default). A device ID names
+/// its own host, so `host` only has to agree with it.
+pub(crate) fn host_for(
+    host: Option<&str>,
+    device: Option<&str>,
+    direction: Direction,
+) -> Result<Option<HostId>, AudioError> {
+    let Some(device) = device else {
+        return host.map(parse_host).transpose();
+    };
+    let no_device = || AudioError::NoDevice {
+        direction,
+        id: Some(device.to_owned()),
+    };
+    // Checked before parsing, so a mismatch is reported as one even when
+    // the device's host isn't available here.
+    let (named, _) = device.split_once(':').ok_or_else(no_device)?;
+    if let Some(host) = host
+        && !host.eq_ignore_ascii_case(named)
+    {
+        return Err(AudioError::HostMismatch {
+            host: host.to_owned(),
+            device: device.to_owned(),
+        });
+    }
+    let id = DeviceId::from_str(device).map_err(|_| no_device())?;
+    Ok(Some(id.host()))
+}
+
+/// Finds a device by ID, or the host's default one, for output or input.
 pub(crate) fn find_device(
     host: &cpal::Host,
     id: Option<&str>,
@@ -267,7 +358,7 @@ pub(crate) fn find_device(
 pub(crate) fn device_name(device: &cpal::Device) -> String {
     match device.description() {
         Ok(description) => description.name().to_owned(),
-        Err(_) => "the default device".to_owned(),
+        Err(_) => "an unnamed device".to_owned(),
     }
 }
 
@@ -291,6 +382,11 @@ impl fmt::Display for Direction {
 pub enum AudioError {
     /// No host with this ID is available here.
     NoHost(String),
+    /// A host was chosen, and a device on a different one.
+    HostMismatch {
+        host: String,
+        device: String,
+    },
     /// The device isn't there: unplugged, or (with no ID) there's no
     /// default.
     NoDevice {
@@ -324,6 +420,9 @@ impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoHost(id) => write!(f, "no audio host called {id:?} is available"),
+            Self::HostMismatch { host, device } => {
+                write!(f, "device {device:?} isn't on the {host:?} host")
+            }
             Self::NoDevice {
                 direction,
                 id: None,
@@ -450,25 +549,111 @@ mod tests {
     }
 
     #[test]
-    fn a_buffer_size_is_checked_against_the_chosen_range() {
+    fn a_buffer_size_the_default_lacks_picks_another_range() {
         let (ranges, default) = device();
         let chosen = choose_config(&ranges, default, None, Some(256)).unwrap();
         assert_eq!(chosen.config.buffer_size, BufferSize::Fixed(256));
-        let error = choose_config(&ranges, default, None, Some(32)).unwrap_err();
+        assert_eq!(chosen.format, SampleFormat::I16, "the default takes 256");
+        // The default takes 64 to 4096. The stereo f32 range doesn't say,
+        // so it's tried rather than the four-channel one that does.
+        let chosen = choose_config(&ranges, default, None, Some(32)).unwrap();
+        assert_eq!(chosen.config.buffer_size, BufferSize::Fixed(32));
+        assert_eq!(
+            (chosen.config.channels, chosen.format),
+            (2, SampleFormat::F32)
+        );
+        assert_eq!(chosen.config.sample_rate, 44_100);
+    }
+
+    #[test]
+    fn a_range_that_says_it_takes_the_buffer_size_beats_one_that_does_not_say() {
+        // Neither matches the default's channels, and both are f32, so
+        // without the buffer size the four-channel one would win.
+        let ranges = [
+            range(4, (48_000, 48_000), None, SampleFormat::F32),
+            range(2, (48_000, 48_000), Some((16, 64)), SampleFormat::F32),
+        ];
+        let default = range(1, (44_100, 44_100), None, SampleFormat::F32).with_sample_rate(44_100);
+        let chosen = choose_config(&ranges, default, Some(48_000), Some(32)).unwrap();
+        assert_eq!(chosen.config.channels, 2);
+        let chosen = choose_config(&ranges, default, Some(48_000), None).unwrap();
+        assert_eq!(chosen.config.channels, 4);
+    }
+
+    #[test]
+    fn a_buffer_size_no_range_takes_is_an_error() {
+        let (ranges, default) = device();
+        // Only the four-channel range has 192 kHz, and it takes 32 to 8192.
+        let error = choose_config(&ranges, default, Some(192_000), Some(16)).unwrap_err();
         assert!(
             matches!(
                 error,
                 AudioError::UnsupportedBufferSize {
-                    frames: 32,
-                    min: 64,
-                    max: 4096
+                    frames: 16,
+                    min: 32,
+                    max: 8192
                 }
             ),
             "{error}"
         );
-        // The f32 stereo range doesn't say, so any size is tried.
-        let chosen = choose_config(&ranges, default, Some(96_000), Some(32)).unwrap();
-        assert_eq!(chosen.config.buffer_size, BufferSize::Fixed(32));
+    }
+
+    #[test]
+    fn formats_noodle_cannot_play_are_passed_over() {
+        let ranges = [
+            range(2, (44_100, 48_000), None, SampleFormat::U64),
+            range(2, (44_100, 48_000), None, SampleFormat::I16),
+        ];
+        let default = ranges[0].with_sample_rate(48_000);
+        let chosen = choose_config(&ranges, default, None, None).unwrap();
+        assert_eq!(chosen.format, SampleFormat::I16);
+        assert_eq!(chosen.config.sample_rate, 48_000);
+
+        let caps = capabilities(&ranges[..1], Some(&default));
+        assert_eq!(caps.max_channels, 0);
+        let error = choose_config(&ranges[..1], default, None, None).unwrap_err();
+        assert!(
+            matches!(error, AudioError::UnsupportedFormat(SampleFormat::U64)),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_device_id_names_its_own_host() {
+        let host = cpal::default_host().id().to_string();
+        let device = format!("{host}:some-device");
+        assert_eq!(
+            host_for(None, Some(&device), Direction::Output).unwrap(),
+            Some(cpal::default_host().id())
+        );
+        assert_eq!(
+            host_for(Some(&host), Some(&device), Direction::Output).unwrap(),
+            Some(cpal::default_host().id())
+        );
+        assert_eq!(host_for(None, None, Direction::Output).unwrap(), None);
+    }
+
+    #[test]
+    fn a_host_must_agree_with_the_device_id() {
+        let error = host_for(Some("alsa"), Some("jack:system"), Direction::Output).unwrap_err();
+        assert!(matches!(error, AudioError::HostMismatch { .. }), "{error}");
+        let error = host_for(Some("ALSA"), Some("jack:system"), Direction::Output).unwrap_err();
+        assert!(matches!(error, AudioError::HostMismatch { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_device_id_that_does_not_parse_is_no_device() {
+        let error = host_for(None, Some("no colon"), Direction::Input).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                AudioError::NoDevice {
+                    direction: Direction::Input,
+                    id: Some(_)
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]
