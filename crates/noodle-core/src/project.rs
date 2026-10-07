@@ -66,6 +66,13 @@ impl Project {
         self.graph.new_id()
     }
 
+    /// The ID [`new_node_id`](Self::new_node_id) would hand out next, without
+    /// reserving it. It's never the ID of a node in the project, even one
+    /// that was removed, so it can't clash with an undo.
+    pub fn next_node_id(&self) -> NodeId {
+        self.graph.next_id()
+    }
+
     pub fn frame(&self, id: FrameId) -> Option<&Frame> {
         self.frames.get(&id)
     }

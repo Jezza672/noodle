@@ -6,6 +6,7 @@
 //! step: structural changes recompile, and parameter changes go straight to
 //! the engine's parameter cells.
 
+use std::cell::Cell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,9 @@ pub struct Session {
     /// unsaved changes.
     saved: Project,
     dirty: bool,
+    /// The next ID [`Session::new_node_id`] can hand out. Views only get
+    /// `&Session`, so it's a `Cell`.
+    next_id: Cell<u64>,
     diagnostics: Vec<Diagnostic>,
     audio: Option<Audio>,
     /// Something the user should know, such as a failed save, shown until the
@@ -67,17 +71,18 @@ impl Session {
 
     fn with_project(registry: Registry, project: Project, path: Option<PathBuf>) -> Self {
         let mut session = Self {
-            saved: project.clone(),
-            project,
+            saved: Project::new(),
+            project: Project::new(),
             history: History::new(),
             registry,
-            path,
+            path: None,
             dirty: false,
+            next_id: Cell::new(0),
             diagnostics: Vec::new(),
             audio: None,
             message: None,
         };
-        session.recompile();
+        session.replace(project, path);
         session
     }
 
@@ -98,6 +103,17 @@ impl Session {
             ),
             None => "Untitled".into(),
         }
+    }
+
+    /// An ID for a node a view is about to add, e.g. by adding, duplicating
+    /// or pasting. Each call gives a different ID, even before the nodes are
+    /// added, so a view can wire up several new nodes in one batch. IDs that
+    /// end up unused are harmless.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the editor is a placeholder"))]
+    pub fn new_node_id(&self) -> NodeId {
+        let id = self.next_id.get().max(self.project.next_node_id().0);
+        self.next_id.set(id + 1);
+        NodeId(id)
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -125,6 +141,10 @@ impl Session {
     /// Applies edits from a view. An edit that fails, e.g. because a node was
     /// removed in the meantime, is skipped and reported in the status bar.
     pub fn edit(&mut self, edits: impl IntoIterator<Item = Edit>) {
+        let mut edits = edits.into_iter().peekable();
+        if edits.peek().is_none() {
+            return;
+        }
         let mut structural = false;
         let mut params = Vec::new();
         for edit in edits {
@@ -142,13 +162,18 @@ impl Session {
                     continue;
                 }
             };
-            match kind(&command) {
-                Kind::Layout => {}
-                Kind::Param(node, key, value) => params.push((node, key.to_owned(), value)),
-                Kind::Structural => structural = true,
-            }
-            if let Err(error) = self.history.apply(&mut self.project, command) {
-                self.message = Some(format!("Couldn't edit: {error}"));
+            let effect = match kind(&command) {
+                Kind::Layout => None,
+                Kind::Param(node, key, value) => Some(Some((node, key.to_owned(), value))),
+                Kind::Structural => Some(None),
+            };
+            match self.history.apply(&mut self.project, command) {
+                Ok(()) => match effect {
+                    Some(Some(param)) => params.push(param),
+                    Some(None) => structural = true,
+                    None => {}
+                },
+                Err(error) => self.message = Some(format!("Couldn't edit: {error}")),
             }
         }
         if structural {
@@ -162,14 +187,18 @@ impl Session {
     }
 
     pub fn undo(&mut self) {
-        self.step(History::undo);
+        self.step(History::undo, "undo");
     }
 
     pub fn redo(&mut self) {
-        self.step(History::redo);
+        self.step(History::redo, "redo");
     }
 
-    fn step(&mut self, step: fn(&mut History, &mut Project) -> Result<bool, EditError>) {
+    fn step(
+        &mut self,
+        step: fn(&mut History, &mut Project) -> Result<bool, EditError>,
+        name: &str,
+    ) {
         match step(&mut self.history, &mut self.project) {
             // Recompiling also writes the project's parameter values into the
             // engine, so undoing a parameter change reaches the audio.
@@ -178,7 +207,7 @@ impl Session {
                 self.update_dirty();
             }
             Ok(false) => {}
-            Err(error) => self.message = Some(format!("Couldn't undo: {error}")),
+            Err(error) => self.message = Some(format!("Couldn't {name}: {error}")),
         }
     }
 
@@ -209,18 +238,34 @@ impl Session {
     }
 
     /// Replaces the project with one from a file, keeping the current one if
-    /// it can't be loaded. Playback carries on with the new project.
-    pub fn load(&mut self, path: &Path) {
+    /// it can't be loaded. Playback carries on with the new project. Returns
+    /// whether it loaded.
+    pub fn load(&mut self, path: &Path) -> bool {
         match load(path) {
             Ok(project) => {
-                let audio = self.audio.take();
-                let registry = std::mem::take(&mut self.registry);
-                *self = Self::with_project(registry, project, Some(path.to_owned()));
-                self.audio = audio;
-                self.recompile();
+                self.replace(project, Some(path.to_owned()));
+                true
             }
-            Err(error) => self.message = Some(error.to_string()),
+            Err(error) => {
+                self.message = Some(error.to_string());
+                false
+            }
         }
+    }
+
+    /// Starts a new, empty project. Playback carries on.
+    pub fn new_project(&mut self) {
+        self.replace(Project::new(), None);
+    }
+
+    fn replace(&mut self, project: Project, path: Option<PathBuf>) {
+        self.saved = project.clone();
+        self.project = project;
+        self.history = History::new();
+        self.path = path;
+        self.dirty = false;
+        self.message = None;
+        self.recompile();
     }
 
     pub fn is_playing(&self) -> bool {
@@ -300,7 +345,10 @@ enum Kind<'a> {
 
 fn kind(command: &Command) -> Kind<'_> {
     match command {
-        Command::MoveNode { .. } => Kind::Layout,
+        Command::MoveNode { .. }
+        | Command::AddFrame { .. }
+        | Command::RemoveFrame { .. }
+        | Command::SetFrame { .. } => Kind::Layout,
         // Resetting to the default needs the default from the node type, so
         // it recompiles, which reads it.
         Command::SetParam {
@@ -368,7 +416,7 @@ mod tests {
 
     /// Adds a node as one undo step.
     fn add(session: &mut Session, node: Node) -> NodeId {
-        let id = session.project.new_node_id();
+        let id = session.new_node_id();
         session.edit([Edit::Apply(Command::AddNode { id, node })]);
         id
     }
@@ -487,11 +535,52 @@ mod tests {
         std::fs::write(&path, "not a project").unwrap();
         let mut session = Session::new(registry());
         let sine = add(&mut session, Node::new("noodle.osc.sine"));
-        session.load(&path);
+        assert!(!session.load(&path));
         assert!(session.project().graph().node(sine).is_some());
         assert!(session.message().is_some_and(|m| m.contains("Can't load")));
         assert!(Session::open(registry(), &path).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn node_ids_are_unique_even_before_use() {
+        let mut session = Session::new(registry());
+        let existing = add(&mut session, Node::new("noodle.osc.sine"));
+        let (a, b) = (session.new_node_id(), session.new_node_id());
+        assert!(a != b && a != existing && b != existing);
+
+        // Both added in one step, wired together.
+        session.edit([Edit::Apply(Command::Batch(vec![
+            Command::AddNode {
+                id: b,
+                node: Node::new("noodle.osc.sine"),
+            },
+            Command::AddNode {
+                id: a,
+                node: Node::new(OUTPUT_ID),
+            },
+            Command::Connect(Connection {
+                from: Endpoint::new(b, "out"),
+                to: Endpoint::new(a, "in"),
+            }),
+        ]))]);
+        assert_eq!(session.project().graph().nodes().count(), 3);
+
+        // A removed node's ID isn't handed out again, so undoing the removal
+        // can't clash with a node added since.
+        session.edit([Edit::Apply(Command::RemoveNode { id: b })]);
+        let c = session.new_node_id();
+        assert!(c != a && c != b && c != existing);
+    }
+
+    #[test]
+    fn a_new_project_starts_clean() {
+        let mut session = Session::new(registry());
+        add(&mut session, Node::new("no.such.type"));
+        session.new_project();
+        assert_eq!(session.project(), &Project::new());
+        assert!(!session.is_dirty() && !session.can_undo());
+        assert!(session.diagnostics().is_empty());
     }
 
     #[test]
