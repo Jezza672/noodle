@@ -1,5 +1,9 @@
-//! A dark theme modelled on Blender's: dense, low-contrast greys, with blue
-//! for selection.
+//! The look of the app, kept in one place so it can be swapped wholesale.
+//!
+//! For now, a placeholder dark theme modelled on Blender's: dense,
+//! low-contrast greys, with blue for selection. The final design direction is
+//! still being chosen, so views should take colours, sizes and spacing from
+//! here rather than hard-coding them.
 
 use egui::{Color32, CornerRadius, Stroke, Visuals};
 
@@ -9,6 +13,8 @@ pub const CANVAS: Color32 = Color32::from_gray(29);
 pub const PANEL: Color32 = Color32::from_gray(48);
 /// Selected items, and text selection.
 pub const SELECTED: Color32 = Color32::from_rgb(71, 114, 179);
+/// The properties panel's starting width.
+pub const PROPERTIES_WIDTH: f32 = 260.0;
 
 pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals(visuals());

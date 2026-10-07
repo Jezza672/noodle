@@ -62,7 +62,7 @@ impl App {
 
         let active = self.editor.active;
         egui::Panel::right("properties")
-            .default_size(260.0)
+            .default_size(theme::PROPERTIES_WIDTH)
             .show(ui, |ui| {
                 ui.add_space(4.0);
                 let edits = properties::show(ui, &self.session, active);
