@@ -6,6 +6,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::f32::consts::TAU;
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
 use noodle_engine::{
@@ -261,4 +262,45 @@ fn deleting_a_view_node_closes_its_channel() {
 
     assert!(s.telemetry.meter(meter).is_none());
     assert!(s.telemetry.read_scope(scope, &mut ScopeView::default()));
+}
+
+#[test]
+fn changing_the_audible_path_mid_render_does_not_click() {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 440.0));
+    let gain = s.add(Node::new("noodle.util.gain"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", gain, "in");
+    s.wire(gain, "out", output, "in");
+    s.update();
+
+    let render = |s: &mut Session, frames: usize| {
+        let mut out = vec![0.0; frames * SETTINGS.channels];
+        s.processor.process(&mut out);
+        out
+    };
+    // An odd length, so the swap lands mid-block and mid-cycle.
+    let mut out = render(&mut s, 1007);
+    // The steepest a full-scale 440 Hz sine gets between samples.
+    let steady = TAU * 440.0 / SETTINGS.sample_rate;
+
+    // Removing the gain rewires the output straight to the sine.
+    s.edit(Command::RemoveNode { id: gain });
+    s.wire(sine, "out", output, "in");
+    s.update();
+    out.extend(render(&mut s, 500));
+
+    // A new sine in its place starts at phase 0, a jump without a fade.
+    s.edit(Command::RemoveNode { id: sine });
+    let fresh = s.add(Node::new("noodle.osc.sine").with_param("frequency", 440.0));
+    s.wire(fresh, "out", output, "in");
+    s.update();
+    out.extend(render(&mut s, 500));
+
+    let jump = out
+        .chunks(SETTINGS.channels)
+        .zip(out.chunks(SETTINGS.channels).skip(1))
+        .map(|(a, b)| (a[0] - b[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(jump < steady * 1.5, "jump of {jump}, steady {steady}");
 }

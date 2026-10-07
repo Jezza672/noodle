@@ -5,7 +5,7 @@
 //! everything a plan will need. Running one ([`Plan::run`]) and swapping one in
 //! ([`Plan::take_state_from`]) never allocate, lock or block.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -46,7 +46,18 @@ pub(crate) struct PlanInfo {
     generation: u64,
     nodes: HashMap<NodeId, (NodeKey, usize)>,
     values: HashMap<(NodeId, String), usize>,
+    /// Every node the output depends on, with what feeds each of its inputs.
+    audible: Wiring,
+    /// Nodes that failed to instantiate and play silence instead.
+    silent: HashSet<NodeId>,
 }
+
+/// For each node, where each of its inputs (signal inputs, then event
+/// inputs) comes from.
+type Wiring = HashMap<NodeId, Sources>;
+
+/// One node's inputs: `Some((node, output index))` if connected.
+type Sources = Vec<Option<(NodeId, usize)>>;
 
 /// A node instance can carry over to a new plan only if all of this is
 /// unchanged. Otherwise the node is rebuilt.
@@ -62,6 +73,9 @@ pub(crate) struct Plan {
     generation: u64,
     /// The plan this one replaces, which `migrations` index into.
     previous: Option<u64>,
+    /// Whether this plan can take over from the previous one without a fade:
+    /// everything the output depends on carries over, wired the same way.
+    seamless: bool,
     nodes: Vec<PlanNode>,
     /// Every signal buffer, back to back.
     pool: Box<[f32]>,
@@ -138,12 +152,20 @@ pub(crate) fn build(
         generation,
         nodes: HashMap::new(),
         values: HashMap::new(),
+        audible: HashMap::new(),
+        silent: HashSet::new(),
     };
     let mut nodes = Vec::with_capacity(schedule.nodes.len());
     let mut values = Vec::new();
     let mut migrations = Vec::new();
     let mut value_migrations = Vec::new();
     let mut live_cells: Cells = HashMap::new();
+    // Which node output last wrote each buffer, so each input's source is
+    // known even though buffers are reused.
+    let mut signal_writers = HashMap::new();
+    let mut event_writers = HashMap::new();
+    let mut wiring = Vec::with_capacity(schedule.nodes.len());
+    let mut carried_ids = HashSet::new();
 
     for (slot, scheduled) in schedule.nodes.into_iter().enumerate() {
         let id = scheduled.id;
@@ -163,11 +185,13 @@ pub(crate) fn build(
         let (instance, carries_over) = match carried {
             Some(&(_, old_slot)) => {
                 migrations.push((old_slot, slot));
+                carried_ids.insert(id);
                 (None, true)
             }
             None => match instantiate(&scheduled, sample_rate, max_frames) {
                 Ok(node) => (Some(node), true),
                 Err(error) => {
+                    info.silent.insert(id);
                     diagnostics.push(Diagnostic::node(id, Problem::Node(error)));
                     (Some(Box::new(Silence) as Box<dyn Node>), false)
                 }
@@ -215,6 +239,28 @@ pub(crate) fn build(
             });
         }
 
+        let sources = scheduled
+            .inputs
+            .iter()
+            .map(|source| match source {
+                InputSource::Buffer(b) => signal_writers.get(b).copied(),
+                InputSource::Value(_) => None,
+            })
+            .chain(
+                scheduled
+                    .event_inputs
+                    .iter()
+                    .map(|e| e.and_then(|e| event_writers.get(&e).copied())),
+            )
+            .collect();
+        wiring.push((id, sources));
+        for (port, &b) in scheduled.outputs.iter().enumerate() {
+            signal_writers.insert(b, (id, port));
+        }
+        for (port, &e) in scheduled.event_outputs.iter().enumerate() {
+            event_writers.insert(e, (id, port));
+        }
+
         let outputs: Vec<View> = scheduled
             .outputs
             .iter()
@@ -250,9 +296,19 @@ pub(crate) fn build(
     // Forget the cells of inputs that no longer exist or are now connected.
     *cells = live_cells;
 
+    info.audible = audible_wiring(&wiring, &nodes);
+    let seamless = previous.is_some_and(|p| p.audible == info.audible)
+        && info.audible.keys().all(|id| {
+            // A node that was silent and still is sounds the same, though
+            // it's rebuilt each time.
+            carried_ids.contains(id)
+                || (info.silent.contains(id) && previous.is_some_and(|p| p.silent.contains(id)))
+        });
+
     let plan = Plan {
         generation,
         previous: previous.map(|p| p.generation),
+        seamless,
         nodes,
         pool: vec![0.0; pool_len].into_boxed_slice(),
         events: (0..schedule.event_buffers)
@@ -264,6 +320,27 @@ pub(crate) fn build(
         max_frames,
     };
     (Box::new(plan), info)
+}
+
+/// The wiring of every node an Output node depends on, found by walking
+/// back from the Output nodes. `wiring` and `nodes` are both by slot.
+fn audible_wiring(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Wiring {
+    let slots: HashMap<NodeId, usize> = wiring
+        .iter()
+        .enumerate()
+        .map(|(slot, (id, _))| (*id, slot))
+        .collect();
+    let mut audible = HashMap::new();
+    let mut stack: Vec<usize> = (0..nodes.len()).filter(|&s| nodes[s].is_output).collect();
+    while let Some(slot) = stack.pop() {
+        let (id, sources) = &wiring[slot];
+        if audible.contains_key(id) {
+            continue;
+        }
+        stack.extend(sources.iter().flatten().map(|(source, _)| slots[source]));
+        audible.insert(*id, sources.clone());
+    }
+    audible
 }
 
 /// How many events one event output can produce per block.
@@ -312,6 +389,12 @@ impl Node for Silence {
 }
 
 impl Plan {
+    /// Whether this plan can be installed without fading the output. See
+    /// [`Processor`](crate::Processor).
+    pub(crate) fn is_seamless(&self) -> bool {
+        self.seamless
+    }
+
     /// Moves carried-over node instances and smoothing state out of the plan
     /// this one replaces. Real-time safe.
     pub(crate) fn take_state_from(&mut self, old: &mut Plan) {
