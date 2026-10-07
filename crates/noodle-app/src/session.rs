@@ -107,10 +107,10 @@ impl Glitches {
     fn report(&mut self, now: Self) -> Option<String> {
         let mut parts = Vec::new();
         if now.underruns > self.underruns {
-            parts.push(format!("{} underruns", now.underruns));
+            parts.push(count(now.underruns, "underrun", "underruns"));
         }
         if now.input > self.input {
-            parts.push(format!("{} input glitches", now.input));
+            parts.push(count(now.input, "input glitch", "input glitches"));
         }
         *self = now;
         (!parts.is_empty()).then(|| format!("{} since playback started", parts.join(", ")))
@@ -361,6 +361,7 @@ impl Session {
         match noodle_io::play(&self.audio_config, MAX_FRAMES) {
             Ok((playback, controller)) => {
                 // Playback carries on without input rather than failing.
+                // The status bar keeps saying so; see `input_problem`.
                 self.message = playback.input_problem().map(no_input);
                 self.audio = Some(Audio {
                     playback,
@@ -371,6 +372,13 @@ impl Session {
             }
             Err(error) => self.message = Some(play_error(&error)),
         }
+    }
+
+    /// Why playback is going on without the input that was asked for. It
+    /// lasts as long as playback, unlike [`Session::message`].
+    pub fn input_problem(&self) -> Option<String> {
+        let problem = self.audio.as_ref()?.playback.input_problem()?;
+        Some(no_input(problem))
     }
 
     pub fn stop(&mut self) {
@@ -460,6 +468,10 @@ impl Effect {
 
 fn play_error(error: &AudioError) -> String {
     format!("Can't play: {error}")
+}
+
+fn count(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 fn no_input(error: &AudioError) -> String {
@@ -780,6 +792,14 @@ mod tests {
     fn glitches_are_reported_once_each_time_they_grow() {
         let mut reported = Glitches::default();
         assert_eq!(reported.report(Glitches::default()), None);
+        let one = Glitches {
+            underruns: 1,
+            input: 0,
+        };
+        assert_eq!(
+            reported.report(one).as_deref(),
+            Some("1 underrun since playback started")
+        );
         let underruns = Glitches {
             underruns: 2,
             input: 0,
@@ -795,7 +815,7 @@ mod tests {
         };
         assert_eq!(
             reported.report(both).as_deref(),
-            Some("3 underruns, 1 input glitches since playback started")
+            Some("3 underruns, 1 input glitch since playback started")
         );
         let input = Glitches {
             underruns: 3,

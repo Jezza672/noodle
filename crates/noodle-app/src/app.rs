@@ -194,6 +194,11 @@ impl App {
                     ui.label(diagnostic.to_string());
                 }
             });
+            if let Some(problem) = self.session.input_problem() {
+                ui.separator();
+                ui.colored_label(ui.visuals().warn_fg_color, "No input")
+                    .on_hover_text(problem);
+            }
             if let Some(message) = self.session.message() {
                 ui.separator();
                 ui.label(message);
