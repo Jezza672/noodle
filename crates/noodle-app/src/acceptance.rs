@@ -89,11 +89,11 @@ fn wire(h: &mut H, from: (NodeId, &str), to: (NodeId, &str)) {
     drag(h, &path);
 }
 
-/// The meter's smoothed RMS. Not its peak: reading that resets it, and the
-/// editor reads it every frame to draw the meter.
+/// The meter's smoothed RMS, read through a reader of the test's own so the
+/// editor's peaks are left alone.
 #[cfg(target_os = "linux")]
 fn rms(h: &H, meter: NodeId) -> f32 {
-    let levels = h.state().session().telemetry().meter(meter);
+    let levels = h.state().session().telemetry().meter_reader().meter(meter);
     levels.expect("the meter is running")[0].rms
 }
 
