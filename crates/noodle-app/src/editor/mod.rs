@@ -1213,3 +1213,19 @@ fn position(p: Pos2) -> Position {
 
 #[cfg(test)]
 mod tests;
+
+/// Where a port's socket is on screen, for tests that drive the whole app
+/// through the editor.
+#[cfg(test)]
+pub(crate) fn socket_on_screen(
+    state: &EditorState,
+    session: &Session,
+    node: NodeId,
+    output: bool,
+    key: &str,
+) -> Option<Pos2> {
+    let side = if output { Side::Output } else { Side::Input };
+    let scene = Scene::build(session.project(), session.registry());
+    let socket = scene.node(node)?.port(side, key)?.socket;
+    Some(state.view.on(state.canvas).to_screen(socket))
+}
