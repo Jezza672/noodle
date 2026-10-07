@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Graph;
+use crate::{Graph, NodeId};
 
 /// Everything that gets saved. For now that's just the graph. Change it
 /// through a [`History`](crate::History), so every change can be undone.
@@ -35,6 +35,11 @@ impl Project {
 
     pub(crate) fn graph_mut(&mut self) -> &mut Graph {
         &mut self.graph
+    }
+
+    /// Reserves an ID for a node that's about to be added.
+    pub fn new_node_id(&mut self) -> NodeId {
+        self.graph.new_id()
     }
 
     /// The project as RON, the text format project files use: it's readable
@@ -122,7 +127,7 @@ mod tests {
     fn round_trips_through_ron() {
         let mut project = Project::from_ron(HAND_WRITTEN).unwrap();
         let mut history = History::new();
-        let id = project.graph_mut().new_id();
+        let id = project.new_node_id();
         let node = Node::new("noodle.util.gain")
             .with_param("gain", -6.0)
             .with_config(Config::new().with("flag", Value::Bool(true)))
@@ -147,7 +152,7 @@ mod tests {
     #[test]
     fn new_ids_follow_the_highest_loaded_id() {
         let mut project = Project::from_ron(HAND_WRITTEN).unwrap();
-        assert_eq!(project.graph_mut().new_id(), NodeId(3));
+        assert_eq!(project.new_node_id(), NodeId(3));
     }
 
     #[test]

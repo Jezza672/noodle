@@ -4,6 +4,7 @@
 //!
 //! The node API, for writing nodes, starts at [`NodeType`].
 
+mod compile;
 mod event;
 mod lane;
 mod node;
@@ -13,6 +14,10 @@ mod registry;
 mod signal;
 pub mod testing;
 
+pub use compile::{
+    BufferId, Diagnostic, EventBufferId, InputSource, Location, Problem, Schedule, ScheduledNode,
+    compile,
+};
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane};
 pub use node::{
