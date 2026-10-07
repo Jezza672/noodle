@@ -61,7 +61,7 @@ impl TransportControl {
     /// Loops between two ticks while playing, or turns looping off. An empty
     /// or backwards range is the same as off. A playhead already past the end
     /// when the loop is set plays on and never wraps, as in most DAWs. Ticks
-    /// are held in 32 bits each, which reaches about 18 days at 120 bpm;
+    /// are held in 32 bits each, which reaches about 26 days at 120 bpm;
     /// later ones are clamped.
     pub fn set_loop(&self, range: Option<(Tick, Tick)>) {
         let pack = |tick: Tick| u64::from(u32::try_from(tick.0.max(0)).unwrap_or(u32::MAX));
