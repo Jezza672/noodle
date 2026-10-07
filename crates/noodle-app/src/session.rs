@@ -11,7 +11,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use noodle_core::{Command, EditError, FrameId, History, NodeId, Project};
+use noodle_core::{Command, EditError, FrameId, History, NodeId, Project, Tick};
 use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
 use noodle_io::{AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, Stream};
 
@@ -384,6 +384,9 @@ impl Session {
                     monitor: Monitor::default(),
                 });
                 self.recompile();
+                if let Some(audio) = &mut self.audio {
+                    audio.controller.set_tempo_map(self.project.tempo_map());
+                }
             }
             Err(error) => self.message = Some(play_error(&error)),
         }
@@ -403,6 +406,51 @@ impl Session {
         self.audio = None;
     }
 
+    /// Whether the transport is running. The audio stream can be open with
+    /// the transport paused.
+    pub fn transport_running(&self) -> bool {
+        self.audio
+            .as_ref()
+            .is_some_and(|audio| audio.controller.transport().is_playing())
+    }
+
+    /// Pauses or resumes the timeline. Needs the stream open; does nothing
+    /// otherwise.
+    pub fn set_transport_running(&self, running: bool) {
+        if let Some(audio) = &self.audio {
+            let transport = audio.controller.transport();
+            if running {
+                transport.play();
+            } else {
+                transport.stop();
+            }
+        }
+    }
+
+    /// Moves the playhead to the start of the timeline.
+    pub fn rewind(&self) {
+        if let Some(audio) = &self.audio {
+            audio.controller.transport().seek(Tick(0));
+        }
+    }
+
+    /// The tempo map the audio thread is using, if the stream is open.
+    #[cfg(test)]
+    pub fn tempo_in_engine(&self) -> Option<&noodle_core::TempoMap> {
+        self.audio
+            .as_ref()
+            .map(|audio| audio.controller.tempo_map())
+    }
+
+    /// Where the playhead is, if the stream is open.
+    pub fn playhead(&self) -> Option<Tick> {
+        let audio = self.audio.as_ref()?;
+        let samples = audio.controller.transport().position();
+        let rate = f64::from(audio.controller.settings().sample_rate);
+        let tick = audio.controller.tempo_map().tick_at_sample(samples, rate);
+        Some(Tick(tick.round() as i64))
+    }
+
     /// Housekeeping to do every frame: frees plans the audio thread is done
     /// with, and checks the device's health.
     pub fn maintain(&mut self) {
@@ -410,6 +458,9 @@ impl Session {
             return;
         };
         audio.controller.maintain();
+        if audio.controller.tempo_map() != self.project.tempo_map() {
+            audio.controller.set_tempo_map(self.project.tempo_map());
+        }
         let health = audio.playback.health();
         let now = Glitches {
             underruns: health.underruns(),

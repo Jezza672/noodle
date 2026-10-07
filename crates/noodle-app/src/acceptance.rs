@@ -234,3 +234,43 @@ fn build_a_patch_play_and_tweak_it_save_and_reopen_it() {
     // The editor draws the reopened patch.
     socket(&h, output, false, "in");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
+    use noodle_core::{Command, TempoMap, Tick, TimeSignature};
+
+    use crate::session::Edit;
+
+    let dir = tempfile::tempdir().unwrap();
+    crate::prefs::init(dir.path().join("prefs.ron"));
+    let mut session = Session::new(Nodes::all());
+    session.set_audio_config(null_devices());
+    let mut h = harness(App::new(session));
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    assert!(h.state().session().is_playing());
+
+    let playhead = |h: &H| h.state().session().playhead().expect("the stream is open");
+    play_for(&mut h, Duration::from_millis(300));
+    assert!(playhead(&h) > Tick(0), "the playhead moves while playing");
+
+    // Paused, it holds still.
+    h.state().session().set_transport_running(false);
+    play_for(&mut h, Duration::from_millis(100));
+    let held = playhead(&h);
+    play_for(&mut h, Duration::from_millis(200));
+    assert_eq!(playhead(&h), held);
+
+    h.state().session().rewind();
+    play_for(&mut h, Duration::from_millis(200));
+    assert_eq!(playhead(&h), Tick(0));
+
+    // A tempo edit reaches the engine.
+    let fast = TempoMap::constant(240.0, TimeSignature::COMMON).unwrap();
+    h.state_mut()
+        .session_mut()
+        .edit([Edit::Apply(Command::SetTempoMap(fast.clone()))]);
+    play_for(&mut h, Duration::from_millis(200));
+    assert!(h.state().session().tempo_in_engine() == Some(&fast));
+}
