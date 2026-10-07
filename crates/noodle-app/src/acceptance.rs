@@ -7,6 +7,7 @@
 //! reopens, just without playing.
 
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
