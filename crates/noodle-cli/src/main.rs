@@ -194,7 +194,8 @@ fn parse(path: &Path, text: &str) -> Result<Project, String> {
 
 fn registry() -> Registry {
     let mut registry = Registry::with_builtins();
-    noodle_nodes::register_all(&mut registry);
+    // Nothing displays meters or scopes yet, so their hub isn't needed.
+    let _telemetry = noodle_nodes::register_all(&mut registry);
     registry
 }
 

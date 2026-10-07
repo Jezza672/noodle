@@ -23,7 +23,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use noodle_core::{Config, Value};
+use noodle_core::{Config, NodeId, Value};
 
 use crate::{Event, EventsOut, OfflineNode, ParamInfo, Shape, ShapeError, SignalIn, SignalOut};
 
@@ -242,6 +242,10 @@ impl ConfigInfo {
 /// Everything known about a node when it's instantiated.
 #[derive(Clone, Copy, Debug)]
 pub struct Setup<'a> {
+    /// The node's ID in the project graph, e.g. for keying its
+    /// [`Telemetry`](crate::Telemetry) channels. A test harness uses
+    /// `NodeId(0)`.
+    pub node: NodeId,
     pub config: &'a Config,
     pub sample_rate: f32,
     /// The most frames any block will have.
