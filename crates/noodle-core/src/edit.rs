@@ -3,7 +3,10 @@
 
 use std::fmt;
 
-use crate::{Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project, Value};
+use crate::{
+    AutomationLane, Clip, ClipId, Connection, Endpoint, Frame, FrameId, LaneId, Node, NodeId,
+    Position, Project, TempoMap, Value,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -11,8 +14,8 @@ pub enum Command {
         id: NodeId,
         node: Node,
     },
-    /// Also removes the node's connections, and everything inside it if it's
-    /// a group.
+    /// Also removes the node's connections, the clips it plays and the lanes
+    /// driving its inputs, and everything inside it if it's a group.
     RemoveNode {
         id: NodeId,
     },
@@ -56,6 +59,32 @@ pub enum Command {
         id: FrameId,
         frame: Frame,
     },
+    /// Replaces the tempo map.
+    SetTempoMap(TempoMap),
+    AddClip {
+        id: ClipId,
+        clip: Clip,
+    },
+    RemoveClip {
+        id: ClipId,
+    },
+    /// Replaces the clip: moving, trimming, fading and the rest.
+    SetClip {
+        id: ClipId,
+        clip: Clip,
+    },
+    AddLane {
+        id: LaneId,
+        lane: AutomationLane,
+    },
+    RemoveLane {
+        id: LaneId,
+    },
+    /// Replaces the lane's points, or its target.
+    SetLane {
+        id: LaneId,
+        lane: AutomationLane,
+    },
     /// Applied in order, as one step. If any command fails, none take effect.
     Batch(Vec<Command>),
 }
@@ -96,6 +125,65 @@ impl Command {
                 let old = std::mem::replace(project.frame_mut(id)?, frame);
                 return Ok(Command::SetFrame { id, frame: old });
             }
+            Command::SetTempoMap(map) => {
+                return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
+            }
+            Command::AddClip { id, clip } => {
+                project.insert_clip(id, clip)?;
+                return Ok(Command::RemoveClip { id });
+            }
+            Command::RemoveClip { id } => {
+                let clip = project.remove_clip(id)?;
+                return Ok(Command::AddClip { id, clip });
+            }
+            Command::SetClip { id, clip } => {
+                let old = project.replace_clip(id, clip)?;
+                return Ok(Command::SetClip { id, clip: old });
+            }
+            Command::AddLane { id, lane } => {
+                project.insert_lane(id, lane)?;
+                return Ok(Command::RemoveLane { id });
+            }
+            Command::RemoveLane { id } => {
+                let lane = project.remove_lane(id)?;
+                return Ok(Command::AddLane { id, lane });
+            }
+            Command::SetLane { id, lane } => {
+                let old = project.replace_lane(id, lane)?;
+                return Ok(Command::SetLane { id, lane: old });
+            }
+            Command::RemoveNode { id } => {
+                // Contents first, so a parent is always added back before
+                // the nodes inside it.
+                let mut ids = project.graph().descendants(id);
+                ids.reverse();
+                ids.push(id);
+                let mut nodes = Vec::new();
+                let mut wires = Vec::new();
+                let mut clips = Vec::new();
+                let mut lanes = Vec::new();
+                for id in ids {
+                    let (node, connections) = project.graph_mut().remove_node(id)?;
+                    let (node_clips, node_lanes) = project.remove_dependents(id);
+                    nodes.push(Command::AddNode { id, node });
+                    wires.extend(connections.into_iter().map(Command::Connect));
+                    clips.extend(
+                        node_clips
+                            .into_iter()
+                            .map(|(id, clip)| Command::AddClip { id, clip }),
+                    );
+                    lanes.extend(
+                        node_lanes
+                            .into_iter()
+                            .map(|(id, lane)| Command::AddLane { id, lane }),
+                    );
+                }
+                nodes.reverse();
+                nodes.extend(wires);
+                nodes.extend(clips);
+                nodes.extend(lanes);
+                return Ok(Command::Batch(nodes));
+            }
             _ => {}
         }
 
@@ -104,23 +192,6 @@ impl Command {
             Command::AddNode { id, node } => {
                 graph.insert_node(id, node)?;
                 Command::RemoveNode { id }
-            }
-            Command::RemoveNode { id } => {
-                // Contents first, so a parent is always added back before
-                // the nodes inside it.
-                let mut ids = graph.descendants(id);
-                ids.reverse();
-                ids.push(id);
-                let mut nodes = Vec::new();
-                let mut connections = Vec::new();
-                for id in ids {
-                    let (node, wires) = graph.remove_node(id)?;
-                    nodes.push(Command::AddNode { id, node });
-                    connections.extend(wires.into_iter().map(Command::Connect));
-                }
-                nodes.reverse();
-                nodes.extend(connections);
-                Command::Batch(nodes)
             }
             Command::Connect(connection) => {
                 let input = connection.to.clone();
@@ -169,9 +240,17 @@ impl Command {
                 Command::SetParent { node, parent: old }
             }
             Command::Batch(_)
+            | Command::RemoveNode { .. }
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
-            | Command::SetFrame { .. } => unreachable!("handled above"),
+            | Command::SetFrame { .. }
+            | Command::SetTempoMap(_)
+            | Command::AddClip { .. }
+            | Command::RemoveClip { .. }
+            | Command::SetClip { .. }
+            | Command::AddLane { .. }
+            | Command::RemoveLane { .. }
+            | Command::SetLane { .. } => unreachable!("handled above"),
         })
     }
 }
@@ -183,6 +262,9 @@ enum Target<'a> {
     Position(NodeId),
     Frame(FrameId),
     Param(NodeId, &'a str),
+    Clip(ClipId),
+    Lane(LaneId),
+    TempoMap,
 }
 
 fn target(command: &Command) -> Option<Target<'_>> {
@@ -190,6 +272,9 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::MoveNode { node, .. } => Some(Target::Position(*node)),
         Command::SetFrame { id, .. } => Some(Target::Frame(*id)),
         Command::SetParam { node, key, .. } => Some(Target::Param(*node, key)),
+        Command::SetClip { id, .. } => Some(Target::Clip(*id)),
+        Command::SetLane { id, .. } => Some(Target::Lane(*id)),
+        Command::SetTempoMap(_) => Some(Target::TempoMap),
         _ => None,
     }
 }
@@ -238,6 +323,16 @@ pub enum EditError {
     /// A group's input or output node can't be moved into another group.
     BoundaryNode(NodeId),
     GroupInsideItself(NodeId),
+    NoSuchClip(ClipId),
+    ClipExists(ClipId),
+    /// What's wrong with the clip.
+    InvalidClip(ClipId, &'static str),
+    NoSuchLane(LaneId),
+    LaneExists(LaneId),
+    /// Another lane already drives the input.
+    LaneTargetTaken(Endpoint, LaneId),
+    /// What's wrong with the lane.
+    InvalidLane(LaneId, &'static str),
 }
 
 impl fmt::Display for EditError {
@@ -259,6 +354,13 @@ impl fmt::Display for EditError {
             Self::BoundaryNode(id) => write!(f, "{id} is a group port, so it can't be grouped"),
             Self::NotAGroup(id) => write!(f, "{id} isn't a group"),
             Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
+            Self::NoSuchClip(id) => write!(f, "there's no {id}"),
+            Self::ClipExists(id) => write!(f, "there's already a {id}"),
+            Self::InvalidClip(id, why) => write!(f, "the {id} can't be used: {why}"),
+            Self::NoSuchLane(id) => write!(f, "there's no {id}"),
+            Self::LaneExists(id) => write!(f, "there's already a {id}"),
+            Self::LaneTargetTaken(input, id) => write!(f, "{id} already drives {input}"),
+            Self::InvalidLane(id, why) => write!(f, "the {id} can't be used: {why}"),
         }
     }
 }
