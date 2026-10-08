@@ -73,16 +73,32 @@ with no glitches, save it, and reopen it exactly as it was.
 
 It becomes a DAW.
 
-**Status:** Phase 0 is done: the time and automation models are in
-[ARCHITECTURE.md](ARCHITECTURE.md), and the core types (tempo map, clips,
-automation lanes) are in the project. The engine's transport (play, stop,
-seek, loop and a tempo table) and the app's transport bar have landed, along
-with group nodes (the model and flattening, and the editor's Tab, Ctrl+G and
-breadcrumb navigation), the arrangement view's lanes, ruler and movable,
-trimmable clips, and the audio side of the track input node. The engine side
-of automation (lanes compiled into hidden sources that ramp hold steps) is in
-review. The UI follows the Studio direction: inspector on the left, the
-arrangement on top, and the selected track's node graph below.
+**Status:** In progress. The engine side of M2 is done and tested; the app
+side is not. The time and automation models are in
+[ARCHITECTURE.md](ARCHITECTURE.md), and the engine has a transport (play,
+stop, seek, loop, a tempo table), group nodes and tracks, the track input
+with audio clips (decoding, resampling, disk streaming, gapless loops), and
+automation lanes, including lanes on a track's gain and mute (solo can't be
+automated). The app has the transport bar, the arrangement's lanes, ruler,
+playhead and movable, trimmable clips with waveforms, track headers with
+mute, solo and gain, and Add track. The session feeds the project's lanes,
+tempo and clips to the running engine, and the playhead can be set and read
+while stopped. The UI follows the Studio direction: inspector on the left,
+the arrangement on top, and the selected track's node graph below.
+
+The engine-side acceptance test (`noodle-nodes/tests/m2_acceptance.rs`)
+arranges clips on three tracks, runs one through a gain node, automates
+another's output gain and mixes down, offline and live, checking the levels.
+It does not show that a user can do this in the app.
+
+**Still missing for "done when":**
+
+- The app can't yet add clips (no import) or create or edit automation
+  lanes; only the project file and the CLI can.
+- The mixer view hasn't merged, and clip fades can't be dragged yet.
+- Recording audio input to clips hasn't started.
+- Nothing has been listened to on a real device: the Mac checks and the
+  Windows CI run for the milestone are still to do.
 
 - **Transport:** play, stop, loop, tempo map and time signature.
 - Group nodes, with Tab to enter and leave them (done; group controls and
