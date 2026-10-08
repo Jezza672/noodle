@@ -827,7 +827,10 @@ config. A strip reads the group's gain, mute and solo from its boundary
 nodes (`Graph::group_controls`) and a fader move, a mute or a solo click is
 a `SetParam` on the node `Graph::control_node` picks, so it is undoable like
 any edit and one drag is one undo step. The reading under the fader resets
-the gain to 0 dB. Solo mutes the other tracks as the compiler reads it
+the gain to 0 dB. Resets write the default and never remove the parameter,
+since a set control keeps its stage in the compiled graph and removing it
+would fade the whole output. A group with several outputs shows the first
+output node's controls. Solo mutes the other tracks as the compiler reads it
 (`Graph::solo_muted`), so a strip silenced by another's solo shows that, and
 its mute and solo buttons stay live. Turning solo off clears it on every
 boundary node of the group, since any can hold it. There are no meters yet.

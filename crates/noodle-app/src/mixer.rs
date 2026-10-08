@@ -67,6 +67,10 @@ fn set(node: NodeId, key: &str, value: Option<f32>) -> Command {
 
 /// Turns solo on or off for a group. Off clears it on every boundary node,
 /// since any of them can hold it.
+///
+/// Controls are reset by writing their default, never by removing the
+/// parameter: a set control keeps its stage in the compiled graph, and
+/// removing it would take the stage out and fade the whole output.
 pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
     let node = strip.node?;
     if on {
@@ -77,7 +81,7 @@ pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
         .filter(|(_, n)| {
             matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) && n.controls().solo
         })
-        .map(|(id, _)| set(id, SOLO, None))
+        .map(|(id, _)| set(id, SOLO, Some(0.0)))
         .collect();
     Some(Edit::Apply(Command::Batch(commands)))
 }
@@ -122,7 +126,7 @@ fn strip_ui(ui: &mut Ui, graph: &Graph, strip: &Strip, edits: &mut Vec<Edit>) {
                     if mute.on_hover_text("Mute").clicked()
                         && let Some(node) = strip.node
                     {
-                        let value = (!strip.controls.mute).then_some(1.0);
+                        let value = Some(f32::from(u8::from(!strip.controls.mute)));
                         edits.push(Edit::Apply(set(node, MUTE, value)));
                     }
                     let solo = toggle(
@@ -183,7 +187,7 @@ fn fader(ui: &mut Ui, strip: &Strip, edits: &mut Vec<Edit>) {
         .small_button(format!("{:+.1} dB", strip.controls.gain_db))
         .on_hover_text("Click to reset to 0 dB");
     if reading.clicked() {
-        edits.push(Edit::Apply(set(node, GAIN, None)));
+        edits.push(Edit::Apply(set(node, GAIN, Some(0.0))));
     }
 }
 
@@ -309,10 +313,10 @@ mod tests {
         harness.run();
         assert_eq!(param(&harness, 3, MUTE), Some(1.0));
         assert_eq!(param(&harness, 6, MUTE), None);
-        // Again: back to the default, with the parameter removed.
+        // Again: back to the default, still written so the stage stays.
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 3, MUTE), None);
+        assert_eq!(param(&harness, 3, MUTE), Some(0.0));
     }
 
     #[test]
@@ -329,7 +333,7 @@ mod tests {
 
         harness.get_all_by_label("S").next().unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 3, SOLO), None);
+        assert_eq!(param(&harness, 3, SOLO), Some(0.0));
         assert!(harness.query_by_label("muted by solo").is_none());
     }
 
@@ -346,7 +350,7 @@ mod tests {
         harness.get_by_label("muted by solo");
         harness.get_all_by_label("S").next().unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 2, SOLO), None);
+        assert_eq!(param(&harness, 2, SOLO), Some(0.0));
         assert!(harness.query_by_label("muted by solo").is_none());
     }
 
@@ -363,7 +367,7 @@ mod tests {
         assert_eq!(fader.accesskit_node().numeric_value(), Some(-12.0));
         harness.get_by_label("-12.0 dB").click();
         harness.run();
-        assert_eq!(param(&harness, 3, GAIN), None);
+        assert_eq!(param(&harness, 3, GAIN), Some(0.0));
         harness.get_all_by_label("+0.0 dB").next().unwrap();
     }
 
