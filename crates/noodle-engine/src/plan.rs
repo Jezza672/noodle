@@ -191,7 +191,18 @@ pub(crate) fn build(
                 (None, true)
             }
             None => match instantiate(&scheduled, sample_rate, max_frames) {
-                Ok(node) => (Some(node), true),
+                Ok(node) => {
+                    // A lane's source has no state, so rebuilding it for new
+                    // points changes only the value it writes, like a
+                    // parameter being moved: no fade needed. A lane that is
+                    // new is a change of wiring and still fades.
+                    if scheduled.node_type.info().id == crate::AUTOMATION_ID
+                        && previous.is_some_and(|p| p.nodes.contains_key(&id))
+                    {
+                        carried_ids.insert(id);
+                    }
+                    (Some(node), true)
+                }
                 Err(error) => {
                     info.silent.insert(id);
                     diagnostics.push(Diagnostic::node(id, Problem::Node(error)));

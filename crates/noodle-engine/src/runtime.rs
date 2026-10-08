@@ -10,14 +10,14 @@ use std::fmt;
 use std::mem;
 use std::sync::Arc;
 
-use noodle_core::{Graph, NodeId, TempoMap};
+use noodle_core::{Graph, NodeId, Project, TempoMap};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::denormals::Flush;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
-use crate::{Context, Diagnostic, Registry, Transport, compile};
+use crate::{Context, Diagnostic, Lanes, Registry, Transport, compile_with_lanes};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
 /// making a new engine.
@@ -164,8 +164,29 @@ impl Controller {
     /// unchanged, the switch is seamless; otherwise the output dips briefly
     /// (see [`Processor`]). Returns the problems found, for the UI to show.
     pub fn update(&mut self, graph: &Graph, registry: &Registry) -> Vec<Diagnostic> {
+        self.update_with_lanes(graph, &[], registry)
+    }
+
+    /// [`update`](Self::update) for a whole project: its automation lanes
+    /// drive their parameters, and its tempo map is used if the engine isn't
+    /// already using it.
+    pub fn update_project(&mut self, project: &Project, registry: &Registry) -> Vec<Diagnostic> {
+        if self.tempo_map != *project.tempo_map() {
+            self.set_tempo_map(project.tempo_map());
+        }
+        let lanes: Vec<_> = project.lanes().collect();
+        self.update_with_lanes(project.graph(), &lanes, registry)
+    }
+
+    /// [`update`](Self::update) for a graph with automation lanes.
+    pub fn update_with_lanes(
+        &mut self,
+        graph: &Graph,
+        lanes: &Lanes<'_>,
+        registry: &Registry,
+    ) -> Vec<Diagnostic> {
         self.free_returned();
-        let (schedule, mut diagnostics) = compile(graph, registry);
+        let (schedule, mut diagnostics) = compile_with_lanes(graph, lanes, registry);
         let generation = self.next_generation;
         self.next_generation += 1;
         // Built against the last plan *sent*: an unsent pending plan never
