@@ -46,6 +46,7 @@ pub struct TimelineState {
     selected: BTreeSet<ClipId>,
     drag: Option<Drag>,
     sources: Sources,
+    waveforms: waveform::Cache,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
     /// The text drawn on the lanes last frame; painted text isn't in the
@@ -54,7 +55,7 @@ pub struct TimelineState {
     drawn_text: Vec<String>,
     /// How many clips drew a waveform last frame.
     #[cfg(test)]
-    waveforms: usize,
+    waveforms_drawn: usize,
 }
 
 impl Default for TimelineState {
@@ -66,12 +67,13 @@ impl Default for TimelineState {
             selected: BTreeSet::new(),
             drag: None,
             sources: Sources::default(),
+            waveforms: waveform::Cache::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
             #[cfg(test)]
             drawn_text: Vec::new(),
             #[cfg(test)]
-            waveforms: 0,
+            waveforms_drawn: 0,
         }
     }
 }
@@ -80,6 +82,7 @@ impl TimelineState {
     /// Forgets clips that no longer exist, e.g. after an undo.
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
+        self.waveforms.retain(|id| project.clip(id).is_some());
         if self
             .drag
             .as_ref()
@@ -96,7 +99,12 @@ impl TimelineState {
 
     #[cfg(test)]
     pub fn waveforms(&self) -> usize {
-        self.waveforms
+        self.waveforms_drawn
+    }
+
+    #[cfg(test)]
+    pub fn columns_computed(&self) -> usize {
+        self.waveforms.computed()
     }
 
     #[cfg(test)]
@@ -205,7 +213,7 @@ pub fn show(
     {
         state.clip_rects.clear();
         state.drawn_text.clear();
-        state.waveforms = 0;
+        state.waveforms_drawn = 0;
     }
 
     let painter = ui.painter_at(content);
@@ -359,11 +367,22 @@ pub fn show(
 
             let painter = ui.painter_at(visible);
             painter.rect_filled(full, 4.0, colour);
-            if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_deref()) {
-                let drawn = waveform::draw(&painter, full, visible, peaks, audio, colour);
+            if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
+                let drawn = waveform::draw(
+                    &painter,
+                    &mut state.waveforms,
+                    full,
+                    visible,
+                    &waveform::Clip {
+                        id,
+                        peaks,
+                        audio,
+                        colour,
+                    },
+                );
                 #[cfg(test)]
                 {
-                    state.waveforms += usize::from(drawn);
+                    state.waveforms_drawn += usize::from(drawn);
                 }
                 #[cfg(not(test))]
                 let _ = drawn;

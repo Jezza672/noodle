@@ -1,7 +1,10 @@
 //! A clip's waveform, drawn from the file's peaks.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use egui::{Color32, Painter, Pos2, Rect, Stroke, vec2};
-use noodle_core::AudioClip;
+use noodle_core::{AudioClip, ClipId};
 use noodle_io::{Peak, Peaks};
 
 /// The strip along the top of a clip that its name goes in.
@@ -9,21 +12,95 @@ const LABEL: f32 = 15.0;
 /// At most this many columns, however wide the clip is zoomed.
 const MAX_COLUMNS: usize = 4096;
 
+/// The columns last worked out for each clip, so they're only worked out
+/// again when the zoom, the scroll, the clip or the file changes.
+#[derive(Default)]
+pub struct Cache {
+    columns: HashMap<ClipId, (Key, Vec<Peak>)>,
+    #[cfg(test)]
+    computed: usize,
+}
+
+/// What a clip's columns were worked out from.
+#[derive(PartialEq)]
+struct Key {
+    /// The peaks, by identity: a reloaded file has new ones.
+    peaks: usize,
+    start: u64,
+    end: u64,
+    columns: usize,
+}
+
+impl Cache {
+    fn columns(
+        &mut self,
+        id: ClipId,
+        peaks: &Arc<Peaks>,
+        start: u64,
+        end: u64,
+        n: usize,
+    ) -> &[Peak] {
+        let key = Key {
+            peaks: Arc::as_ptr(peaks) as usize,
+            start,
+            end,
+            columns: n,
+        };
+        let entry = self
+            .columns
+            .entry(id)
+            .or_insert_with(|| (Key { peaks: 0, ..key }, Vec::new()));
+        if entry.0 != key {
+            *entry = (key, peaks.columns(None, start, end, n));
+            #[cfg(test)]
+            {
+                self.computed += 1;
+            }
+        }
+        &entry.1
+    }
+
+    /// Forgets clips that are gone.
+    pub fn retain(&mut self, keep: impl Fn(ClipId) -> bool) {
+        self.columns.retain(|&id, _| keep(id));
+    }
+
+    #[cfg(test)]
+    pub fn computed(&self) -> usize {
+        self.computed
+    }
+}
+
 /// The waveform's colour on a clip of `clip_colour`.
 fn ink(clip_colour: Color32) -> Color32 {
     clip_colour.gamma_multiply(0.45)
+}
+
+/// The clip a waveform belongs to.
+#[derive(Clone, Copy)]
+pub struct Clip<'a> {
+    pub id: ClipId,
+    pub peaks: &'a Arc<Peaks>,
+    pub audio: &'a AudioClip,
+    /// The clip's colour; the waveform is a darker shade of it.
+    pub colour: Color32,
 }
 
 /// Draws the part of the clip that's in view, `visible` of `full`, one pixel
 /// column per peak. Says whether it drew anything.
 pub fn draw(
     painter: &Painter,
+    cache: &mut Cache,
     full: Rect,
     visible: Rect,
-    peaks: &Peaks,
-    audio: &AudioClip,
-    clip_colour: Color32,
+    clip: &Clip<'_>,
 ) -> bool {
+    let Clip {
+        id,
+        peaks,
+        audio,
+        colour: clip_colour,
+    } = *clip;
     let area = Rect::from_min_max(full.min + vec2(0.0, LABEL), full.max);
     if area.height() < 4.0 || full.width() <= 0.0 {
         return false;
@@ -38,9 +115,9 @@ pub fn draw(
     let stroke = Stroke::new(visible.width() / columns as f32, ink(clip_colour));
     let middle = area.center().y;
     let half = area.height() / 2.0 - 1.0;
-    for (i, peak) in peaks
-        .columns(None, start, end, columns)
-        .into_iter()
+    for (i, &peak) in cache
+        .columns(id, peaks, start, end, columns)
+        .iter()
         .enumerate()
     {
         let Peak { min, max } = scaled(peak, audio.gain);

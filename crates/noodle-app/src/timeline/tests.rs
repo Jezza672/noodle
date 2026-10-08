@@ -410,3 +410,39 @@ fn a_file_that_turns_up_later_replaces_the_missing_mark() {
     );
     assert_eq!(h.state().timeline.waveforms(), 2);
 }
+
+#[test]
+fn a_waveform_is_only_worked_out_again_when_the_view_changes() {
+    let (mut h, _) = rig();
+    wait_for_waveforms(&mut h, 1);
+    h.run_steps(5);
+    let computed = h.state().timeline.columns_computed();
+    assert_eq!(computed, 1);
+    h.run_steps(5);
+    assert_eq!(h.state().timeline.columns_computed(), computed);
+    // Zooming changes the columns.
+    h.state_mut().timeline.ppq = 90.0;
+    h.run_steps(2);
+    assert_eq!(h.state().timeline.columns_computed(), computed + 1);
+}
+
+#[test]
+fn a_file_that_changes_on_disk_is_read_again() {
+    let (mut h, id) = rig();
+    wait_for_waveforms(&mut h, 1);
+    h.state_mut().timeline.sources.retry_at_once();
+    let before = rect(&h, id).width();
+    // Re-exported at half the rate: the same frames take twice as long.
+    let dir = h.state().session.directory().unwrap().to_owned();
+    let path = dir.join("a.wav");
+    write_wav(&path, &vec![0.0; 96_000], 1, 24_000).unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    h.run_steps(3);
+    assert_eq!(rect(&h, id).width(), before * 2.0);
+}

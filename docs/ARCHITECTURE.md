@@ -693,11 +693,12 @@ style. It has these views:
     longer fit.
   - **Files and waveforms.** A clip's file is opened for its sample rate and
     length straight away, and its waveform (`noodle_io::Peaks`) is worked
-    out on a background thread, so a long file never stalls the UI. The
-    waveform is drawn one column per pixel from the clip's range of file
-    frames, scaled by its gain. A file that can't be read is drawn red and
-    labelled, and tried again every couple of seconds, so relinking it
-    shows up without a restart.
+    out by two background workers, so a long file never stalls the UI. The
+    columns drawn are cached per clip and only worked out again when the
+    zoom, scroll, clip or file changes. Every couple of seconds each file is
+    looked at again: one that couldn't be read is retried, a failed waveform
+    gets another go, and a changed modification time (a re-export) reads
+    the file afresh.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
