@@ -193,6 +193,39 @@ fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
 }
 
 #[test]
+fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
+    let mut rig = Rig::new("fade-drag");
+    rig.wav("one.wav", 1, 60_000, |_, _| 1.0);
+    let id = rig.add_clip(0, "one.wav", 0, 50_000);
+    rig.wait_ready(0, 1);
+    rig.play(0, 2_000);
+    // Both handles are dragged while the playhead is in the middle of the
+    // clip, nowhere near either fade.
+    let mut position = 2_000;
+    for (fade_in, fade_out) in [(300, 0), (600, 1_000), (900, 3_000), (1_200, 6_000)] {
+        rig.edit_clip(id, |clip| {
+            let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+            audio.fade_in = fade_in;
+            audio.fade_out = fade_out;
+        });
+        rig.settle();
+        let (left, _) = rig.play(position, position + 1_000);
+        assert_close(&left, |_| 1.0, "no dip");
+        position += 1_000;
+    }
+    // A fade that reaches the playhead is heard, with a dip.
+    rig.edit_clip(id, |clip| {
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        audio.fade_in = 0;
+        audio.fade_out = 49_000;
+    });
+    rig.settle();
+    let (left, _) = rig.play(position, position + 3_000);
+    let min = left.iter().copied().fold(f32::MAX, f32::min);
+    assert!(min < 0.01, "never dipped: {min}");
+}
+
+#[test]
 fn a_clip_whose_file_is_missing_is_reported_and_the_rest_play() {
     let mut rig = Rig::new("missing");
     rig.wav("here.wav", 1, 20_000, |_, _| 0.5);

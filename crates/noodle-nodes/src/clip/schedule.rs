@@ -128,17 +128,50 @@ impl<'a> Iterator for Segments<'a> {
     }
 }
 
-/// Whether two schedules sound the same over `from..to`.
+/// Whether two schedules sound the same over `from..to`: the same clips play
+/// the same audio, at the same gain, over the same stretches. A clip's fades
+/// only count where they reach the stretch being compared, so dragging a fade
+/// handle far from the playhead changes nothing audible.
 pub fn same_sound(a: &[ScheduledClip], b: &[ScheduledClip], from: u64, to: u64) -> bool {
     let mut a = Segments::new(a, from, to);
     let mut b = Segments::new(b, from, to);
     loop {
         match (a.next(), b.next()) {
             (None, None) => return true,
-            (Some(x), Some(y)) if x == y => {}
+            (Some((s0, e0, x)), Some((s1, e1, y))) if (s0, e0) == (s1, e1) => {
+                let same = match (x, y) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => same_clip_sound(x, y, s0, e0),
+                    _ => false,
+                };
+                if !same {
+                    return false;
+                }
+            }
             _ => return false,
         }
     }
+}
+
+/// Whether two versions of a clip play the same over `from..to`, which lies
+/// inside the clip. A fade only matters if the stretch reaches into it.
+fn same_clip_sound(x: &ScheduledClip, y: &ScheduledClip, from: u64, to: u64) -> bool {
+    let same_fade_in = x.fade_in == y.fade_in || {
+        let rel = from - x.start;
+        rel >= x.fade_in && rel >= y.fade_in
+    };
+    let same_fade_out = x.fade_out == y.fade_out || {
+        // The fade-out covers the last `fade_out` frames.
+        let rel_end = to - x.start;
+        rel_end + x.fade_out <= x.length && rel_end + y.fade_out <= x.length
+    };
+    x.id == y.id
+        && x.start == y.start
+        && x.length == y.length
+        && x.gain == y.gain
+        && x.source == y.source
+        && same_fade_in
+        && same_fade_out
 }
 
 /// A clip that couldn't be scheduled, and why.
@@ -405,5 +438,32 @@ mod tests {
         assert!(!same_sound(&a, &b, 80, 100));
         assert!(!same_sound(&a, &b, 0, 80));
         assert!(same_sound(&a, &b, 100, 512));
+    }
+
+    #[test]
+    fn a_fade_only_matters_where_it_reaches() {
+        let a = [clip(1, 0, 10_000)];
+        // Dragging the fade-in handle: it only reaches the first 1000 frames.
+        let mut b = a.clone();
+        b[0].fade_in = 1_000;
+        assert!(same_sound(&a, &b, 2_000, 2_512));
+        assert!(!same_sound(&a, &b, 900, 1_412));
+        assert!(!same_sound(&a, &b, 0, 512));
+        // Likewise the fade-out, over the last 1000 frames.
+        let mut c = a.clone();
+        c[0].fade_out = 1_000;
+        assert!(same_sound(&a, &c, 2_000, 2_512));
+        assert!(same_sound(&a, &c, 8_488, 9_000));
+        assert!(!same_sound(&a, &c, 8_489, 9_001));
+        assert!(!same_sound(&a, &c, 9_488, 10_000));
+        // Moving a handle between two places the block never reaches.
+        let mut d = b.clone();
+        d[0].fade_in = 1_500;
+        assert!(same_sound(&b, &d, 2_000, 2_512));
+        assert!(!same_sound(&b, &d, 1_200, 1_712));
+        // Gain is heard everywhere in the clip.
+        let mut e = a.clone();
+        e[0].gain = 0.5;
+        assert!(!same_sound(&a, &e, 2_000, 2_512));
     }
 }
