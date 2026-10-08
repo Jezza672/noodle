@@ -441,7 +441,12 @@ impl Session {
         }
     }
 
+    /// Closes the stream, keeping the playhead for the next play. Stopping
+    /// again while stopped rewinds, as in Logic and GarageBand.
     pub fn stop(&mut self) {
+        if self.audio.is_none() {
+            self.parked = Tick(0);
+        }
         self.close_stream();
         self.feed_clips();
     }
@@ -878,6 +883,8 @@ mod tests {
         assert_eq!(session.playhead(), Tick(1920));
         session.seek(Tick(-5));
         assert_eq!(session.playhead(), Tick(0));
+        session.stop();
+        assert_eq!(session.playhead(), Tick(0), "stopping again rewinds");
         session.seek(Tick(960));
         session.new_project();
         assert_eq!(session.playhead(), Tick(0), "a new project starts over");
