@@ -767,7 +767,12 @@ style. It has these views:
   - **Track headers** show the controls on the track group's output node:
     mute and solo buttons and a gain slider in decibels (double-click
     resets), written as `SetParam` commands, so a slider drag is one undo
-    step. A track input node outside any group has no controls.
+    step. A track input node outside any group has no controls. Solo counts
+    if either boundary node has it, so turning it off clears every one, and
+    a track silenced by another's solo is dimmed.
+  - **Add track:** the button after the last header runs
+    `group::create_track`, one undo step, and the new track shows up with
+    its controls at once.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
