@@ -90,7 +90,10 @@ impl State {
         &self.texts
     }
 
-    #[cfg(test)]
+    pub fn deselect(&mut self) {
+        self.selected = None;
+    }
+
     pub fn selected(&self) -> Option<(LaneId, usize)> {
         self.selected
     }

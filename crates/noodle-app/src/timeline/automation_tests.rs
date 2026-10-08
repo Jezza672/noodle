@@ -366,3 +366,65 @@ fn a_lane_on_solo_is_shown_as_unable_to_work() {
             .any(|text| text.contains("Solo can't be automated"))
     );
 }
+
+#[test]
+fn delete_removes_only_the_point_when_a_clip_was_selected_before() {
+    let (mut h, output) = rig();
+    let input = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .nodes()
+        .find(|(_, node)| node.type_id == super::TRACK_INPUT)
+        .map(|(id, _)| id)
+        .unwrap();
+    let clip_id = h.state().session.project().next_clip_id();
+    h.state_mut().session.edit([Edit::Apply(Command::AddClip {
+        id: clip_id,
+        clip: noodle_core::Clip::audio(input, Tick(0), "a.wav", 96_000),
+    })]);
+    h.run();
+    let id = add_lane(
+        &mut h,
+        gain(output),
+        vec![point(2, 0.0, Curve::Linear), point(4, -6.0, Curve::Linear)],
+    );
+    let on_clip = h.state().timeline.clip_rect(clip_id).unwrap().center();
+    click(&mut h, on_clip);
+    assert!(h.state().timeline.selected().contains(&clip_id));
+    let at = point_at(&h, id, 1);
+    click(&mut h, at);
+    assert_eq!(h.state().timeline.automation().selected(), Some((id, 1)));
+    assert!(h.state().timeline.selected().is_empty());
+    h.key_press(Key::Delete);
+    h.run();
+    assert_eq!(ticks(&h, id), vec![1920]);
+    assert!(h.state().session.project().clip(clip_id).is_some());
+
+    // And the other way round: picking a clip drops the point selection, so
+    // the next Delete removes the clip and leaves the lane alone.
+    click(&mut h, on_clip);
+    assert_eq!(h.state().timeline.automation().selected(), None);
+    h.key_press(Key::Delete);
+    h.run();
+    assert!(h.state().session.project().clip(clip_id).is_none());
+    assert_eq!(ticks(&h, id), vec![1920]);
+}
+
+#[test]
+fn a_track_control_with_a_lane_is_greyed_and_says_so() {
+    let (mut h, output) = rig();
+    assert!(!h.get_by_label("M").accesskit_node().is_disabled());
+    add_lane(&mut h, gain(output), vec![point(0, 0.0, Curve::Linear)]);
+    // Gain is automated now, mute isn't.
+    assert!(!h.get_by_label("M").accesskit_node().is_disabled());
+    let slider = h.get_by_role(egui::accesskit::Role::Slider);
+    assert!(slider.accesskit_node().is_disabled());
+    add_lane(
+        &mut h,
+        Endpoint::new(output, group::MUTE),
+        vec![point(0, 0.0, Curve::Hold)],
+    );
+    assert!(h.get_by_label("M").accesskit_node().is_disabled());
+}

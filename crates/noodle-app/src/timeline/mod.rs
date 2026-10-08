@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
-use noodle_core::{Clip, ClipId, Command, NodeId, Project, TempoMap, Tick};
+use noodle_core::group;
+use noodle_core::{Clip, ClipId, Command, Endpoint, NodeId, Project, TempoMap, Tick};
 
 use crate::session::{Edit, Session};
 use crate::theme::timeline as colors;
@@ -285,6 +286,7 @@ pub fn show(
     }
 
     let mut hit_clip = false;
+    let clips_before = state.selected.clone();
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
         if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
@@ -445,6 +447,12 @@ pub fn show(
         }
     }
 
+    // Clips and automation points share the Delete key, so picking one
+    // drops the other from the selection.
+    if state.selected != clips_before && !state.selected.is_empty() {
+        state.automation.deselect();
+    }
+    let point_before = state.automation.selected();
     edits.extend(automation::show(
         ui,
         &mut state.automation,
@@ -457,6 +465,10 @@ pub fn show(
             axis,
         },
     ));
+
+    if state.automation.selected().is_some() && state.automation.selected() != point_before {
+        state.selected.clear();
+    }
 
     // A drag whose clip has scrolled off screen or been removed never sees
     // its widget's `drag_stopped`, which would leave its undo group open.
@@ -671,7 +683,19 @@ fn draw_headers(
             continue;
         }
         let controls = header::controls_for(graph, input, &muted_by_solo);
-        edits.extend(header::show(ui, graph, lane, index, input, controls));
+        let automated = controls.map_or_else(header::Automated::default, |t| header::Automated {
+            gain: session
+                .project()
+                .lane_for(&Endpoint::new(t.node, group::GAIN))
+                .is_some(),
+            mute: session
+                .project()
+                .lane_for(&Endpoint::new(t.node, group::MUTE))
+                .is_some(),
+        });
+        edits.extend(header::show(
+            ui, graph, lane, index, input, controls, automated,
+        ));
         if let Some(controls) = controls {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),

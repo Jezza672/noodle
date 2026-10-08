@@ -19,6 +19,17 @@ use crate::theme::timeline as colors;
 /// mixer's faders cover, so a gain set in one shows in the other.
 const GAIN_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
 
+/// Which of a track's controls an automation lane drives. A lane overrides
+/// the parameter it automates, so those controls are greyed out rather than
+/// left doing nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Automated {
+    pub gain: bool,
+    pub mute: bool,
+}
+
+const AUTOMATED: &str = "Automated by a lane; edit or remove the lane to change it";
+
 /// A track's controls: where they are set and what they say now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackControls {
@@ -84,6 +95,7 @@ pub fn show(
     index: usize,
     input: NodeId,
     track: Option<TrackControls>,
+    automated: Automated,
 ) -> Vec<Edit> {
     let mut edits = Vec::new();
     let painter = ui.painter_at(lane);
@@ -127,7 +139,10 @@ pub fn show(
                 .on_hover_text(tip)
                 .clicked()
         };
-        if button(ui, "M", controls.mute, "Mute") {
+        let mute = ui
+            .add_enabled_ui(!automated.mute, |ui| button(ui, "M", controls.mute, "Mute"))
+            .inner;
+        if mute {
             edits.push(Edit::Apply(set(
                 node,
                 group::MUTE,
@@ -139,15 +154,23 @@ pub fn show(
         }
         let mut gain = controls.gain_db;
         ui.spacing_mut().slider_width = (ui.available_width() - 6.0).max(20.0);
-        let slider = ui.add(
-            Slider::new(&mut gain, GAIN_RANGE)
-                .show_value(false)
-                .smart_aim(false),
-        );
-        let slider = slider.on_hover_text(format!("Gain {:+.1} dB (double-click to reset)", gain));
+        let slider = ui
+            .add_enabled(
+                !automated.gain,
+                Slider::new(&mut gain, GAIN_RANGE)
+                    .show_value(false)
+                    .smart_aim(false),
+            )
+            .on_hover_text(if automated.gain {
+                AUTOMATED.to_owned()
+            } else {
+                format!("Gain {:+.1} dB (double-click to reset)", gain)
+            })
+            .on_disabled_hover_text(AUTOMATED);
         // A slider only senses drags, so its response never reports a double
         // click; ask the pointer instead.
-        let double = slider.contains_pointer()
+        let double = !automated.gain
+            && slider.contains_pointer()
             && ui.input(|i| {
                 i.pointer
                     .button_double_clicked(egui::PointerButton::Primary)
