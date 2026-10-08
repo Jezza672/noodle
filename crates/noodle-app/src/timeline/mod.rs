@@ -9,6 +9,7 @@
 mod clips;
 mod grid;
 mod sources;
+mod waveform;
 
 use std::collections::BTreeSet;
 #[cfg(test)]
@@ -45,12 +46,16 @@ pub struct TimelineState {
     selected: BTreeSet<ClipId>,
     drag: Option<Drag>,
     sources: Sources,
+    waveforms: waveform::Cache,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
     /// The text drawn on the lanes last frame; painted text isn't in the
     /// accessibility tree.
     #[cfg(test)]
     drawn_text: Vec<String>,
+    /// How many clips drew a waveform last frame.
+    #[cfg(test)]
+    waveforms_drawn: usize,
 }
 
 impl Default for TimelineState {
@@ -62,10 +67,13 @@ impl Default for TimelineState {
             selected: BTreeSet::new(),
             drag: None,
             sources: Sources::default(),
+            waveforms: waveform::Cache::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
             #[cfg(test)]
             drawn_text: Vec::new(),
+            #[cfg(test)]
+            waveforms_drawn: 0,
         }
     }
 }
@@ -74,6 +82,7 @@ impl TimelineState {
     /// Forgets clips that no longer exist, e.g. after an undo.
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
+        self.waveforms.retain(|id| project.clip(id).is_some());
         if self
             .drag
             .as_ref()
@@ -86,6 +95,16 @@ impl TimelineState {
     #[cfg(test)]
     pub fn selected(&self) -> &BTreeSet<ClipId> {
         &self.selected
+    }
+
+    #[cfg(test)]
+    pub fn waveforms(&self) -> usize {
+        self.waveforms_drawn
+    }
+
+    #[cfg(test)]
+    pub fn columns_computed(&self) -> usize {
+        self.waveforms.computed()
     }
 
     #[cfg(test)]
@@ -173,7 +192,10 @@ pub fn show(
             .clips()
             .filter_map(|(_, clip)| {
                 let audio = clip.as_audio()?;
-                let source = state.sources.get(directory.as_deref(), &audio.source);
+                let source = state
+                    .sources
+                    .get(ui.ctx(), directory.as_deref(), &audio.source)
+                    .map(|loaded| loaded.source);
                 let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
                 Some(clips::end_tick(map, clip.start, audio.length, rate).quarters())
             })
@@ -191,6 +213,7 @@ pub fn show(
     {
         state.clip_rects.clear();
         state.drawn_text.clear();
+        state.waveforms_drawn = 0;
     }
 
     let painter = ui.painter_at(content);
@@ -248,7 +271,10 @@ pub fn show(
             let Some(audio) = clip.as_audio() else {
                 continue;
             };
-            let source = state.sources.get(directory.as_deref(), &audio.source);
+            let loaded = state
+                .sources
+                .get(ui.ctx(), directory.as_deref(), &audio.source);
+            let source = loaded.as_ref().map(|loaded| loaded.source);
             let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
             let end = clips::end_tick(map, clip.start, audio.length, rate);
             let full = Rect::from_min_max(
@@ -341,6 +367,26 @@ pub fn show(
 
             let painter = ui.painter_at(visible);
             painter.rect_filled(full, 4.0, colour);
+            if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
+                let drawn = waveform::draw(
+                    &painter,
+                    &mut state.waveforms,
+                    full,
+                    visible,
+                    &waveform::Clip {
+                        id,
+                        peaks,
+                        audio,
+                        colour,
+                    },
+                );
+                #[cfg(test)]
+                {
+                    state.waveforms_drawn += usize::from(drawn);
+                }
+                #[cfg(not(test))]
+                let _ = drawn;
+            }
             let name = std::path::Path::new(&audio.source).file_name().map_or_else(
                 || audio.source.clone(),
                 |n| n.to_string_lossy().into_owned(),
@@ -511,7 +557,7 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
             let audio = grabbed.as_audio()?;
             let end = clips::end_tick(map, grabbed.start, audio.length, rate);
             let edge = snap(Tick(end.0 + delta));
-            let clip = clips::trim_end(map, grabbed, edge, rate, source.map(|s| s.frames))?;
+            let clip = clips::trim_end(map, grabbed, edge, rate, source.and_then(|s| s.frames))?;
             vec![Command::SetClip {
                 id: drag.grabbed,
                 clip,

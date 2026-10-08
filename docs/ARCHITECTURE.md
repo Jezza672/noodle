@@ -729,8 +729,14 @@ style. It has these views:
     edge snap to beats; Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
-  - A clip's file is read once for its sample rate and length, and
-    remembered as missing if it can't be, so a broken path costs one read.
+  - **Files and waveforms.** A clip's file is opened for its sample rate and
+    length straight away, and its waveform (`noodle_io::Peaks`) is worked
+    out by two background workers, so a long file never stalls the UI. The
+    columns drawn are cached per clip and only worked out again when the
+    zoom, scroll, clip or file changes. Every couple of seconds each file is
+    looked at again: one that couldn't be read is retried, a failed waveform
+    gets another go, and a changed modification time (a re-export) reads
+    the file afresh.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
