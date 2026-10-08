@@ -39,6 +39,56 @@ pub const INPUT_PORT: &str = "out";
 /// The port of a [`GROUP_OUTPUT`] node.
 pub const OUTPUT_PORT: &str = "in";
 
+/// The node type that stands in for a boundary node with something to do. It
+/// exists only in the flattened graph the compiler sees: flatten swaps it in
+/// for a boundary node whose controls are off their defaults, under the same
+/// ID, so automation aimed at the boundary node reaches it.
+pub const GROUP_STAGE: &str = "noodle.group.stage";
+/// The controls every boundary node carries, as parameters: a gain in
+/// decibels, and mute and solo switches (on at 0.5 or more).
+pub const GAIN: &str = "gain";
+pub const MUTE: &str = "mute";
+pub const SOLO: &str = "solo";
+
+/// A boundary node's gain, mute and solo, with the defaults for any that
+/// aren't set. A track's controls are these, on its group's boundary nodes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Controls {
+    pub gain_db: f32,
+    pub mute: bool,
+    pub solo: bool,
+}
+
+impl Default for Controls {
+    fn default() -> Self {
+        Self {
+            gain_db: 0.0,
+            mute: false,
+            solo: false,
+        }
+    }
+}
+
+impl Node {
+    /// Whether a gain or mute has been set on this node, even to its
+    /// default. A set control keeps the node's stage in the compiled graph,
+    /// so moving it again changes a parameter and not the graph's shape.
+    pub fn has_gain_or_mute(&self) -> bool {
+        self.params.contains_key(GAIN) || self.params.contains_key(MUTE)
+    }
+
+    /// This node's gain, mute and solo parameters. Meaningful for boundary
+    /// nodes.
+    pub fn controls(&self) -> Controls {
+        let param = |key: &str| self.params.get(key).copied();
+        Controls {
+            gain_db: param(GAIN).filter(|g| g.is_finite()).unwrap_or(0.0),
+            mute: param(MUTE).is_some_and(|m| m >= 0.5),
+            solo: param(SOLO).is_some_and(|s| s >= 0.5),
+        }
+    }
+}
+
 /// One of a group's ports, and the boundary node inside that backs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupPort {
@@ -127,6 +177,108 @@ impl Graph {
         path
     }
 
+    /// A group's gain, mute and solo, as the mixer shows them: the gain and
+    /// mute of its first output node (a track has one), and solo if any of
+    /// the group's boundary nodes has it on.
+    pub fn group_controls(&self, group: NodeId) -> Controls {
+        let ports = self.group_ports(group);
+        let first = ports.outputs.first().or(ports.inputs.first());
+        let mut controls = first
+            .and_then(|port| self.node(port.node))
+            .map(Node::controls)
+            .unwrap_or_default();
+        controls.solo = self.has_own_solo(group);
+        controls
+    }
+
+    /// The groups that soloing silences. Among the groups sharing a parent
+    /// (the tracks of one level), if any is soloed, or has a soloed group
+    /// inside it, every one that isn't is muted, except those the soloed
+    /// groups feed: whatever a soloed track routes into (a reverb return, a
+    /// bus) stays audible, as in a mixer's implicit solo. "Feeds" follows
+    /// wires through any nodes at that level. Plain nodes are left alone.
+    /// Soloing is read here, from the project, rather than at run time, so it
+    /// can't be automated.
+    pub fn solo_muted(&self) -> std::collections::BTreeSet<NodeId> {
+        use std::collections::BTreeSet;
+        let groups: Vec<(NodeId, Option<NodeId>)> = self
+            .nodes()
+            .filter(|(_, node)| node.type_id == GROUP)
+            .map(|(id, node)| (id, node.parent))
+            .collect();
+        let wires: Vec<(NodeId, NodeId)> = self
+            .connections()
+            .map(|c| (c.from.node, c.to.node))
+            .collect();
+        let mut muted = BTreeSet::new();
+        let mut done = BTreeSet::new();
+        for &(_, parent) in &groups {
+            if !done.insert(parent) {
+                continue;
+            }
+            let siblings: Vec<NodeId> = groups
+                .iter()
+                .filter(|(_, p)| *p == parent)
+                .map(|&(id, _)| id)
+                .collect();
+            let mut audible: BTreeSet<NodeId> = siblings
+                .iter()
+                .copied()
+                .filter(|&id| self.has_solo_inside(id))
+                .collect();
+            if audible.is_empty() {
+                continue;
+            }
+            // Everything downstream of a soloed group.
+            loop {
+                let before = audible.len();
+                for &(from, to) in &wires {
+                    if audible.contains(&from) {
+                        audible.insert(to);
+                    }
+                }
+                if audible.len() == before {
+                    break;
+                }
+            }
+            muted.extend(siblings.into_iter().filter(|id| !audible.contains(id)));
+        }
+        muted
+    }
+
+    /// Whether solo has been used on the groups beside this one (or on it):
+    /// any of them has a solo parameter set, even to off. While it has, the
+    /// compiler keeps a mute stage on each of them, so soloing and unsoloing
+    /// change a parameter rather than the shape of the graph.
+    pub fn solo_in_use(&self, group: NodeId) -> bool {
+        let Some(parent) = self.node(group).map(|n| n.parent) else {
+            return false;
+        };
+        self.nodes()
+            .filter(|(_, n)| n.type_id == GROUP && n.parent == parent)
+            .any(|(id, _)| {
+                self.children(Some(id)).any(|(_, b)| {
+                    matches!(b.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT)
+                        && b.params.contains_key(SOLO)
+                })
+            })
+    }
+
+    /// Whether any boundary node of this group has solo on.
+    pub fn has_own_solo(&self, group: NodeId) -> bool {
+        self.children(Some(group)).any(|(_, node)| {
+            matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) && node.controls().solo
+        })
+    }
+
+    /// Whether this group or any group inside it is soloed.
+    pub fn has_solo_inside(&self, group: NodeId) -> bool {
+        self.has_own_solo(group)
+            || self.descendants(group).into_iter().any(|id| {
+                self.node(id).is_some_and(|n| n.type_id == GROUP) && self.has_own_solo(id)
+            })
+    }
+
     /// A group's ports, from the boundary nodes inside it. If two boundary
     /// nodes of the same kind share a name, the one with the lower ID counts.
     pub fn group_ports(&self, group: NodeId) -> GroupPorts {
@@ -185,7 +337,13 @@ pub fn create_track(
         },
         Command::AddNode {
             id: output,
-            node: inside(named(GROUP_OUTPUT, "out"), 300.0, 0.0),
+            node: inside(
+                named(GROUP_OUTPUT, "out")
+                    .with_param(GAIN, 0.0)
+                    .with_param(MUTE, 0.0),
+                300.0,
+                0.0,
+            ),
         },
         Command::Connect(Connection {
             from: Endpoint::new(source, AUDIO),
@@ -570,6 +728,103 @@ mod tests {
         let named = node.with_config(Config::new().with(PORT_NAME, Value::Text("drums".into())));
         assert_eq!(port_name(NodeId(7), &named), "drums");
     }
+
+    /// A group at `parent` with an input and output node.
+    fn group_with_ports(
+        project: &mut Project,
+        history: &mut History,
+        parent: Option<NodeId>,
+    ) -> (NodeId, NodeId) {
+        let mut node = Node::new(GROUP);
+        node.parent = parent;
+        let group = add(project, history, node);
+        let named = |kind: &str| {
+            Node::new(kind)
+                .with_config(Config::new().with(PORT_NAME, Value::Text("p".into())))
+                .in_group(group)
+        };
+        add(project, history, named(GROUP_INPUT));
+        let output = add(project, history, named(GROUP_OUTPUT));
+        (group, output)
+    }
+
+    fn set(project: &mut Project, history: &mut History, node: NodeId, key: &str, value: f32) {
+        let command = Command::SetParam {
+            node,
+            key: key.into(),
+            value: Some(value),
+        };
+        history.apply(project, command).unwrap();
+    }
+
+    #[test]
+    fn a_groups_controls_are_its_boundary_nodes_parameters() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (group, output) = group_with_ports(&mut project, &mut history, None);
+        assert_eq!(project.graph().group_controls(group), Controls::default());
+        set(&mut project, &mut history, output, GAIN, -6.0);
+        set(&mut project, &mut history, output, MUTE, 1.0);
+        set(&mut project, &mut history, output, SOLO, 0.4);
+        let controls = project.graph().group_controls(group);
+        assert_eq!(controls.gain_db, -6.0);
+        assert!(controls.mute);
+        assert!(!controls.solo, "under half is off");
+        // A NaN gain from a damaged file is the default, not NaN.
+        set(&mut project, &mut history, output, GAIN, f32::NAN);
+        assert_eq!(project.graph().group_controls(group).gain_db, 0.0);
+    }
+
+    #[test]
+    fn solo_mutes_the_other_groups_at_the_same_level() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (a, a_out) = group_with_ports(&mut project, &mut history, None);
+        let (b, _) = group_with_ports(&mut project, &mut history, None);
+        assert!(project.graph().solo_muted().is_empty());
+        set(&mut project, &mut history, a_out, SOLO, 1.0);
+        assert_eq!(project.graph().solo_muted(), [b].into());
+        assert!(project.graph().has_own_solo(a));
+        assert!(!project.graph().has_own_solo(b));
+    }
+
+    #[test]
+    fn solo_inside_a_bus_keeps_the_bus_and_mutes_its_siblings() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (bus1, _) = group_with_ports(&mut project, &mut history, None);
+        let (bus2, _) = group_with_ports(&mut project, &mut history, None);
+        let (track1, track1_out) = group_with_ports(&mut project, &mut history, Some(bus1));
+        let (track2, _) = group_with_ports(&mut project, &mut history, Some(bus1));
+        let (track3, _) = group_with_ports(&mut project, &mut history, Some(bus2));
+        set(&mut project, &mut history, track1_out, SOLO, 1.0);
+        let muted = project.graph().solo_muted();
+        assert_eq!(muted, [bus2, track2].into());
+        assert!(project.graph().has_solo_inside(bus1));
+        assert!(!muted.contains(&bus1) && !muted.contains(&track1));
+        // Nothing inside bus2 is soloed, so its track isn't muted separately
+        // (the bus is, which silences it).
+        assert!(!muted.contains(&track3));
+    }
+
+    #[test]
+    fn what_a_soloed_group_feeds_stays_audible() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (vocal, vocal_out) = group_with_ports(&mut project, &mut history, None);
+        let (drums, _) = group_with_ports(&mut project, &mut history, None);
+        let (reverb, _) = group_with_ports(&mut project, &mut history, None);
+        let (master, _) = group_with_ports(&mut project, &mut history, None);
+        // vocal -> a mixer node -> reverb -> master; drums -> master.
+        let mix = add(&mut project, &mut history, Node::new("mix"));
+        wire(&mut project, &mut history, (vocal, "p"), (mix, "in1"));
+        wire(&mut project, &mut history, (mix, "out"), (reverb, "p"));
+        wire(&mut project, &mut history, (reverb, "p"), (master, "p"));
+        wire(&mut project, &mut history, (drums, "p"), (master, "p2"));
+        set(&mut project, &mut history, vocal_out, SOLO, 1.0);
+        // Only the drums, which the vocal doesn't feed, are silenced.
+        assert_eq!(project.graph().solo_muted(), [drums].into());
+    }
 }
 
 #[cfg(test)]
@@ -601,6 +856,18 @@ mod track_tests {
 
         assert!(history.undo(&mut project).unwrap());
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn a_new_track_starts_with_its_output_controls_set_to_the_defaults() {
+        let mut project = Project::new();
+        let (group, command) = create_track(None, Position::default(), || project.new_node_id());
+        History::new().apply(&mut project, command).unwrap();
+        let graph = project.graph();
+        let out = graph.group_ports(group).outputs[0].node;
+        let node = graph.node(out).unwrap();
+        assert!(node.has_gain_or_mute());
+        assert_eq!(node.controls(), Controls::default());
     }
 
     #[test]

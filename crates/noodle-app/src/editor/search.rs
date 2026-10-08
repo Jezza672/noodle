@@ -1,7 +1,7 @@
 //! Shift+A: search for a node type, and add it where the pointer was.
 
 use egui::{Key, Pos2};
-use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
+use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE};
 use noodle_engine::Registry;
 
 /// The add-node search box.
@@ -44,6 +44,7 @@ pub fn entries(registry: &Registry, query: &str, in_group: bool) -> Vec<Entry> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut entries: Vec<Entry> = registry
         .iter()
+        .filter(|t| t.info().id != GROUP_STAGE)
         .map(|t| {
             let info = t.info();
             Entry {
@@ -255,8 +256,8 @@ mod tests {
         let all = entries(&registry, "", false);
         assert_eq!(
             all.len(),
-            registry.iter().count() + 2,
-            "the types, Frame and Group"
+            registry.iter().count() + 1,
+            "the types less the internal group stage, plus Frame and Group"
         );
         assert!(
             all.windows(2)
