@@ -164,9 +164,9 @@ It does not show that a user can do this in the app.
 
 **Still missing for "done when":**
 
-- The app can't yet add clips (no import); only the project file and the
-  CLI can.
-- The mixer view hasn't merged.
+- Check that the clip import (drop and Import audio) and the mixer view,
+  both now in the app, are covered by the app-level "done when" test; the
+  M2 follow-ups below are what's left of them.
 - Recording audio input to clips hasn't started.
 - Nothing has been listened to on a real device: the Mac checks and the
   Windows CI run for the milestone are still to do.
@@ -260,7 +260,7 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
   device (19), and a view for mapping the output nodes to real devices. This
   needs the engine to drive several streams from one plan, so it's the
   largest item here. Today there is one stream and one device
-  (see "Devices" in ARCHITECTURE.md).
+  (see "Choosing a device" under the audio output in ARCHITECTURE.md).
 
 **Clips and the arrangement (M2).**
 
