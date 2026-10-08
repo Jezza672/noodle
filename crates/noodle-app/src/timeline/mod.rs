@@ -7,6 +7,7 @@
 //! can be undone.
 
 mod add_track;
+mod automation;
 mod clips;
 mod grid;
 mod header;
@@ -20,7 +21,8 @@ use std::collections::HashMap;
 use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
-use noodle_core::{Clip, ClipId, Command, NodeId, Project, TempoMap, Tick};
+use noodle_core::group;
+use noodle_core::{Clip, ClipId, Command, Endpoint, NodeId, Project, TempoMap, Tick};
 
 use crate::session::{Edit, Session};
 use crate::theme::timeline as colors;
@@ -51,6 +53,7 @@ pub struct TimelineState {
     last_seek: Option<Tick>,
     sources: Sources,
     waveforms: waveform::Cache,
+    automation: automation::State,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
     #[cfg(test)]
@@ -75,6 +78,7 @@ impl Default for TimelineState {
             last_seek: None,
             sources: Sources::default(),
             waveforms: waveform::Cache::default(),
+            automation: automation::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
             #[cfg(test)]
@@ -92,6 +96,7 @@ impl TimelineState {
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
         self.waveforms.retain(|id| project.clip(id).is_some());
+        self.automation.retain_existing(project);
         if self
             .drag
             .as_ref()
@@ -104,6 +109,11 @@ impl TimelineState {
     #[cfg(test)]
     pub fn selected(&self) -> &BTreeSet<ClipId> {
         &self.selected
+    }
+
+    #[cfg(test)]
+    pub fn automation(&self) -> &automation::State {
+        &self.automation
     }
 
     #[cfg(test)]
@@ -202,6 +212,7 @@ pub fn show(
     let project = session.project();
     state.retain_existing(project);
     let tracks = tracks(project);
+    let rows = automation::Rows::new(project, &tracks);
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click());
@@ -227,7 +238,7 @@ pub fn show(
             })
             .fold(0.0, f64::max) as f32
             + 16.0;
-        navigate(ui, state, content, tracks.len(), extent);
+        navigate(ui, state, content, rows.total(), extent);
     }
     let axis = Axis {
         origin: content.left() - state.scroll_x,
@@ -246,7 +257,7 @@ pub fn show(
     let painter = ui.painter_at(content);
     painter.rect_filled(rect, 0.0, colors::BACKGROUND);
     let scroll_y = state.scroll_y;
-    let lane_top = |i: usize| content.top() - scroll_y + i as f32 * colors::LANE_HEIGHT;
+    let lane_top = |i: usize| content.top() - scroll_y + rows.top(i);
     for i in 0..tracks.len() {
         let top = lane_top(i);
         let fill = if i % 2 == 0 {
@@ -257,7 +268,7 @@ pub fn show(
         painter.rect_filled(
             Rect::from_min_size(
                 Pos2::new(content.left(), top),
-                vec2(content.width(), colors::LANE_HEIGHT),
+                vec2(content.width(), rows.height(i)),
             ),
             0.0,
             fill,
@@ -289,6 +300,7 @@ pub fn show(
     }
 
     let mut hit_clip = false;
+    let clips_before = state.selected.clone();
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
         if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
@@ -368,10 +380,8 @@ pub fn show(
                 && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
             {
                 let free = ui.input(|i| i.modifiers.alt);
-                let lane = ((pos.y - content.top() + state.scroll_y) / colors::LANE_HEIGHT)
-                    .floor()
-                    .max(0.0) as usize;
-                let target = tracks[lane.min(tracks.len() - 1)];
+                let lane = rows.track_at(pos.y - content.top() + state.scroll_y);
+                let target = tracks[lane];
                 let command = drag_command(
                     drag,
                     DragInput {
@@ -464,6 +474,29 @@ pub fn show(
         }
     }
 
+    // Clips and automation points share the Delete key, so picking one
+    // drops the other from the selection.
+    if state.selected != clips_before && !state.selected.is_empty() {
+        state.automation.deselect();
+    }
+    let point_before = state.automation.selected();
+    edits.extend(automation::show(
+        ui,
+        &mut state.automation,
+        &automation::View {
+            project,
+            rows: &rows,
+            tracks: &tracks,
+            content,
+            scroll_y: state.scroll_y,
+            axis,
+        },
+    ));
+
+    if state.automation.selected().is_some() && state.automation.selected() != point_before {
+        state.selected.clear();
+    }
+
     // A drag whose clip has scrolled off screen or been removed never sees
     // its widget's `drag_stopped`, which would leave its undo group open.
     if state.drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
@@ -493,6 +526,7 @@ pub fn show(
         rect,
         content,
         &tracks,
+        &rows,
         session,
         state.scroll_y,
     ));
@@ -531,7 +565,7 @@ pub fn show(
 }
 
 /// Scrolling and zooming, while the pointer is over the arrangement.
-fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tracks: usize, extent: f32) {
+fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tall: f32, extent: f32) {
     let (scroll, zoom, pointer) =
         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
     if zoom != 1.0 {
@@ -544,7 +578,6 @@ fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tracks: usi
         state.scroll_x -= scroll.x;
         state.scroll_y -= scroll.y;
     }
-    let tall = tracks as f32 * colors::LANE_HEIGHT;
     state.scroll_x = state
         .scroll_x
         .clamp(0.0, (extent * state.ppq - content.width() * 0.5).max(0.0));
@@ -770,6 +803,7 @@ fn draw_headers(
     rect: Rect,
     content: Rect,
     tracks: &[NodeId],
+    rows: &automation::Rows,
     session: &Session,
     scroll_y: f32,
 ) -> Vec<Edit> {
@@ -785,25 +819,59 @@ fn draw_headers(
     let clip = ui.clip_rect();
     ui.set_clip_rect(column.intersect(clip));
     for (index, &input) in tracks.iter().enumerate() {
-        let top = content.top() - scroll_y + index as f32 * colors::LANE_HEIGHT;
+        let top = content.top() - scroll_y + rows.top(index);
         let lane = Rect::from_min_size(
             Pos2::new(column.left(), top),
             vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
         );
-        if lane.bottom() < column.top() || lane.top() > column.bottom() {
+        let block_bottom = top + rows.height(index);
+        if block_bottom < column.top() || lane.top() > column.bottom() {
             continue;
         }
+        let controls = header::controls_for(graph, input, &muted_by_solo);
+        let automated = controls.map_or_else(header::Automated::default, |t| header::Automated {
+            gain: session
+                .project()
+                .lane_for(&Endpoint::new(t.node, group::GAIN))
+                .is_some(),
+            mute: session
+                .project()
+                .lane_for(&Endpoint::new(t.node, group::MUTE))
+                .is_some(),
+        });
         edits.extend(header::show(
-            ui,
-            graph,
-            lane,
-            index,
-            input,
-            header::controls_for(graph, input, &muted_by_solo),
+            ui, graph, lane, index, input, controls, automated,
         ));
+        if let Some(controls) = controls {
+            let spot = Rect::from_min_size(
+                Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
+                vec2(26.0, 18.0),
+            );
+            edits.extend(automation::add_menu(
+                ui,
+                spot,
+                session.project(),
+                controls.node,
+                controls.controls,
+            ));
+        }
+        for (k, &id) in rows.lanes(index).iter().enumerate() {
+            let Some(automation) = session.project().lane(id) else {
+                continue;
+            };
+            let row = Rect::from_min_size(
+                Pos2::new(
+                    column.left(),
+                    content.top() - scroll_y + rows.lane_top(index, k),
+                ),
+                vec2(colors::HEADER_WIDTH, automation::HEIGHT),
+            );
+            let refused = automation::refused(automation);
+            edits.extend(automation::header(ui, row, id, automation, refused));
+        }
     }
     // The button sits in the lane after the last track, so it scrolls with them.
-    let top = content.top() - scroll_y + tracks.len() as f32 * colors::LANE_HEIGHT;
+    let top = content.top() - scroll_y + rows.total();
     let spot = Rect::from_min_size(
         Pos2::new(column.left(), top),
         vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
@@ -863,5 +931,7 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {
     );
 }
 
+#[cfg(test)]
+mod automation_tests;
 #[cfg(test)]
 mod tests;

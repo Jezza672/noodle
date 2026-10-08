@@ -132,6 +132,10 @@ pub mod timeline {
     pub const PLAYHEAD: Color32 = Color32::from_rgb(255, 214, 90);
     pub const SELECTED: Color32 = Color32::WHITE;
     pub const MISSING: Color32 = Color32::from_rgb(230, 70, 60);
+    /// An automation lane's row, its header and its curve.
+    pub const AUTOMATION: Color32 = Color32::from_gray(36);
+    pub const AUTOMATION_HEADER: Color32 = Color32::from_gray(46);
+    pub const AUTOMATION_LINE: Color32 = Color32::from_rgb(120, 200, 255);
 
     /// A track's clip colour, spread around the colour wheel so neighbouring
     /// tracks differ.
