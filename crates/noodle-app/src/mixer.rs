@@ -9,9 +9,10 @@
 
 use egui::{Align, Color32, Layout, RichText, Slider, Ui, Vec2};
 use noodle_core::group::{Controls, GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
-use noodle_core::{Command, Graph, NodeId, Value};
+use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value};
 
 use crate::session::Edit;
+use crate::timeline::header;
 
 /// The config key a group's display name is kept under.
 pub const NAME: &str = "name";
@@ -31,10 +32,15 @@ pub struct Strip {
     pub node: Option<NodeId>,
     /// Silent because another track is soloed.
     pub muted_by_solo: bool,
+    /// An automation lane drives the gain, so the fader would do nothing.
+    pub gain_automated: bool,
+    /// The same for mute.
+    pub mute_automated: bool,
 }
 
 /// The strips for the top-level groups of a graph, in ID order.
-pub fn strips(graph: &Graph) -> Vec<Strip> {
+pub fn strips(project: &Project) -> Vec<Strip> {
+    let graph = project.graph();
     let muted_by_solo = graph.solo_muted();
     let mut groups: Vec<_> = graph
         .children(None)
@@ -52,8 +58,16 @@ pub fn strips(graph: &Graph) -> Vec<Strip> {
             controls: graph.group_controls(id),
             node: graph.control_node(id),
             muted_by_solo: muted_by_solo.contains(&id),
+            gain_automated: driven(project, graph.control_node(id), GAIN),
+            mute_automated: driven(project, graph.control_node(id), MUTE),
         })
         .collect()
+}
+
+/// Whether a lane drives `key` on `node`, which then overrides what the
+/// strip sets.
+fn driven(project: &Project, node: Option<NodeId>, key: &str) -> bool {
+    node.is_some_and(|node| project.lane_for(&Endpoint::new(node, key)).is_some())
 }
 
 /// A change to a group's gain, as one step of a drag or a lone edit.
@@ -87,8 +101,9 @@ pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
 }
 
 /// Draws the mixer and returns the edits made in it.
-pub fn show(ui: &mut Ui, graph: &Graph) -> Vec<Edit> {
-    let strips = strips(graph);
+pub fn show(ui: &mut Ui, project: &Project) -> Vec<Edit> {
+    let graph = project.graph();
+    let strips = strips(project);
     if strips.is_empty() {
         ui.weak("No tracks yet.");
         return Vec::new();
@@ -117,13 +132,31 @@ fn strip_ui(ui: &mut Ui, graph: &Graph, strip: &Strip, edits: &mut Vec<Edit>) {
             // A silent strip's fader is greyed, but its buttons stay live so
             // it can be unmuted or unsoloed.
             let silent = strip.controls.mute || strip.muted_by_solo;
-            ui.add_enabled_ui(strip.node.is_some() && !silent, |ui| {
-                fader(ui, strip, edits);
-            });
+            // A lane overrides the parameter it drives, so those controls
+            // are greyed out with the reason, as on the track header.
+            let faded = ui.add_enabled_ui(
+                strip.node.is_some() && !silent && !strip.gain_automated,
+                |ui| fader(ui, strip, edits),
+            );
+            if strip.gain_automated {
+                faded.response.on_disabled_hover_text(header::AUTOMATED);
+            }
             ui.add_enabled_ui(strip.node.is_some(), |ui| {
                 ui.horizontal(|ui| {
-                    let mute = toggle(ui, "M", strip.controls.mute, Color32::from_rgb(200, 70, 60));
-                    if mute.on_hover_text("Mute").clicked()
+                    let mute = ui
+                        .add_enabled_ui(!strip.mute_automated, |ui| {
+                            toggle(ui, "M", strip.controls.mute, Color32::from_rgb(200, 70, 60))
+                        })
+                        .inner;
+                    let tip = if strip.mute_automated {
+                        header::AUTOMATED
+                    } else {
+                        "Mute"
+                    };
+                    if mute
+                        .on_hover_text(tip)
+                        .on_disabled_hover_text(tip)
+                        .clicked()
                         && let Some(node) = strip.node
                     {
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
@@ -232,7 +265,7 @@ mod tests {
     fn harness(session: Session) -> Harness<'static, Session> {
         let mut harness = Harness::new_ui_state(
             |ui, session: &mut Session| {
-                let edits = show(ui, session.project().graph());
+                let edits = show(ui, session.project());
                 session.edit(edits);
             },
             session,
@@ -266,7 +299,7 @@ mod tests {
                 value: Some(-6.0),
             }),
         ]);
-        let strips = strips(session.project().graph());
+        let strips = strips(session.project());
         let summary: Vec<_> = strips
             .iter()
             .map(|s| (s.name.as_str(), s.node, s.controls.gain_db))
@@ -287,7 +320,7 @@ mod tests {
             id: NodeId(7),
             node: Node::new(GROUP),
         })]);
-        let strips = strips(session.project().graph());
+        let strips = strips(session.project());
         assert_eq!((strips[0].name.as_str(), strips[0].node), ("Group 7", None));
         // Nothing to set, so nothing is offered.
         assert_eq!(solo_edit(session.project().graph(), &strips[0], true), None);
@@ -408,6 +441,52 @@ mod tests {
                 .params
                 .get(GAIN),
             None
+        );
+    }
+
+    #[test]
+    fn a_lane_on_gain_or_mute_greys_that_control_on_the_strip() {
+        use noodle_core::{AutomationLane, AutomationPoint, Curve, LaneId};
+        let mut session = two_tracks();
+        let point = AutomationPoint {
+            tick: noodle_core::Tick(0),
+            value: -6.0,
+            curve: Curve::Hold,
+        };
+        let lane = |key: &str, id: u64| {
+            Edit::Apply(Command::AddLane {
+                id: LaneId(id),
+                lane: AutomationLane::new(Endpoint::new(NodeId(3), key), vec![point]),
+            })
+        };
+        session.edit([lane(GAIN, 1)]);
+        let strips = strips(session.project());
+        assert_eq!(
+            [strips[0].gain_automated, strips[0].mute_automated],
+            [true, false]
+        );
+        assert_eq!(
+            [strips[1].gain_automated, strips[1].mute_automated],
+            [false, false]
+        );
+
+        session.edit([lane(MUTE, 2)]);
+        let mut harness = harness(session);
+        // Drums' mute is driven, so clicking it changes nothing; Bass's is not.
+        harness.get_all_by_label("M").next().unwrap().click();
+        harness.run();
+        assert_eq!(param(&harness, 3, MUTE), None);
+        harness.get_all_by_label("M").nth(1).unwrap().click();
+        harness.run();
+        assert_eq!(param(&harness, 6, MUTE), Some(1.0));
+        let faders: Vec<_> = harness
+            .query_all_by_role(Role::Slider)
+            .map(|n| n.accesskit_node().is_disabled())
+            .collect();
+        assert_eq!(
+            faders,
+            [true, true],
+            "Bass is muted now, so its fader is greyed too"
         );
     }
 }

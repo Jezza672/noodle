@@ -10,7 +10,7 @@ mod add_track;
 mod automation;
 mod clips;
 mod grid;
-mod header;
+pub(crate) mod header;
 mod sources;
 mod waveform;
 
@@ -199,6 +199,8 @@ pub struct Output {
     pub edits: Vec<Edit>,
     /// Where they asked the playhead to go, by clicking the ruler.
     pub seek: Option<Tick>,
+    /// Tracks whose record-arm button was pressed, with the state asked for.
+    pub arm: Vec<(NodeId, bool)>,
 }
 
 /// Draws the arrangement and returns what the user did. The ruler moves the
@@ -521,15 +523,9 @@ pub fn show(
         edits.push(Edit::Apply(Command::Batch(removals)));
     }
 
-    edits.extend(draw_headers(
-        ui,
-        rect,
-        content,
-        &tracks,
-        &rows,
-        session,
-        state.scroll_y,
-    ));
+    let (header_edits, arm) =
+        draw_headers(ui, rect, content, &tracks, &rows, session, state.scroll_y);
+    edits.extend(header_edits);
     draw_ruler(ui, rect, axis, &lines);
     let ruler = Rect::from_min_max(
         Pos2::new(content.left(), rect.top()),
@@ -561,7 +557,7 @@ pub fn show(
             .vline(x, rect.y_range(), Stroke::new(1.5, colors::PLAYHEAD));
         }
     }
-    Output { edits, seek }
+    Output { edits, seek, arm }
 }
 
 /// Scrolling and zooming, while the pointer is over the arrangement.
@@ -806,7 +802,7 @@ fn draw_headers(
     rows: &automation::Rows,
     session: &Session,
     scroll_y: f32,
-) -> Vec<Edit> {
+) -> (Vec<Edit>, Vec<(NodeId, bool)>) {
     let graph = session.project().graph();
     let column = Rect::from_min_max(
         Pos2::new(rect.left(), content.top()),
@@ -815,6 +811,7 @@ fn draw_headers(
     ui.painter_at(column)
         .rect_filled(column, 0.0, colors::HEADER);
     let mut edits = Vec::new();
+    let mut arm = Vec::new();
     let muted_by_solo = graph.solo_muted();
     let clip = ui.clip_rect();
     ui.set_clip_rect(column.intersect(clip));
@@ -828,7 +825,11 @@ fn draw_headers(
         if block_bottom < column.top() || lane.top() > column.bottom() {
             continue;
         }
-        let controls = header::controls_for(graph, input, &muted_by_solo);
+        let controls =
+            header::controls_for(graph, input, &muted_by_solo).map(|t| header::TrackControls {
+                armed: session.is_armed(input),
+                ..t
+            });
         let automated = controls.map_or_else(header::Automated::default, |t| header::Automated {
             gain: session
                 .project()
@@ -839,9 +840,9 @@ fn draw_headers(
                 .lane_for(&Endpoint::new(t.node, group::MUTE))
                 .is_some(),
         });
-        edits.extend(header::show(
-            ui, graph, lane, index, input, controls, automated,
-        ));
+        let changes = header::show(ui, graph, lane, index, input, controls, automated);
+        edits.extend(changes.edits);
+        arm.extend(changes.arm.map(|on| (input, on)));
         if let Some(controls) = controls {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
@@ -884,7 +885,7 @@ fn draw_headers(
         }
     }
     ui.set_clip_rect(clip);
-    edits
+    (edits, arm)
 }
 
 fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {
