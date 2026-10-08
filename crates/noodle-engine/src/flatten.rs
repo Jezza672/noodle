@@ -311,7 +311,8 @@ mod tests {
     /// group's input and output nodes.
     fn grouped() -> (Project, History, NodeId, NodeId, NodeId) {
         let (mut project, mut history, [_, gain, _]) = chain();
-        let (group, command) = group_nodes(&mut project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         let ports = project.graph().group_ports(group);
         let (input, output) = (ports.inputs[0].node, ports.outputs[0].node);
