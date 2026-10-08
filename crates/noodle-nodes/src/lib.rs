@@ -10,6 +10,7 @@ mod osc;
 mod reroute;
 mod reverse;
 mod scope;
+mod stage;
 mod svf;
 mod voice_mix;
 
@@ -25,6 +26,7 @@ pub use osc::{Saw, Sine};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverse::Reverse;
 pub use scope::{SCOPE_ID, Scope};
+pub use stage::GroupStage;
 pub use svf::Svf;
 pub use voice_mix::VoiceMix;
 
@@ -54,6 +56,7 @@ pub fn register_library(registry: &mut Registry) -> Library {
     registry.register(VoiceMix);
     registry.register(Reverse);
     registry.register(Reroute);
+    registry.register(GroupStage);
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
     registry.register(TrackInput::new(&clips));
