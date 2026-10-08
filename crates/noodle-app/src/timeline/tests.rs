@@ -363,3 +363,50 @@ fn undoing_a_delete_leaves_nothing_selected_that_is_gone() {
     assert!(h.state().session.project().clip(id).is_some());
     assert!(h.state().timeline.selected().is_empty());
 }
+
+/// Steps until the background threads have reported, or gives up.
+fn wait_for_waveforms(h: &mut H, wanted: usize) {
+    for _ in 0..200 {
+        h.step();
+        if h.state().timeline.waveforms() >= wanted {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_clip_gets_its_waveform_once_the_file_is_read() {
+    let (mut h, _) = rig();
+    wait_for_waveforms(&mut h, 1);
+    assert_eq!(h.state().timeline.waveforms(), 1);
+}
+
+#[test]
+fn a_file_that_turns_up_later_replaces_the_missing_mark() {
+    let (mut h, _) = rig();
+    h.state_mut().timeline.sources.retry_at_once();
+    let session = &mut h.state_mut().session;
+    let id = session.project().next_clip_id();
+    session.edit([Edit::Apply(Command::AddClip {
+        id,
+        clip: Clip::audio(NodeId(2), Tick(0), "later.wav", 48_000),
+    })]);
+    h.run_steps(3);
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"later.wav (missing)".to_string())
+    );
+    let dir = h.state().session.directory().unwrap().to_owned();
+    write_wav(&dir.join("later.wav"), &vec![0.5; 48_000], 1, 48_000).unwrap();
+    wait_for_waveforms(&mut h, 2);
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"later.wav".to_string())
+    );
+    assert_eq!(h.state().timeline.waveforms(), 2);
+}
