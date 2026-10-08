@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use noodle_core::{Command, EditError, FrameId, History, NodeId, Project, Tick};
-use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
+use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, TempoTable, compile_with_lanes};
 use noodle_io::{AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, Stream};
+use noodle_nodes::{ClipFeeds, ClipProblem, Library};
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
 const MAX_FRAMES: usize = 512;
@@ -49,16 +50,19 @@ pub enum Edit {
 pub struct Nodes {
     pub registry: Registry,
     pub telemetry: Telemetry,
+    /// Where the track input nodes get their clips.
+    pub clips: ClipFeeds,
 }
 
 impl Nodes {
     /// Every node type the app offers.
     pub fn all() -> Self {
         let mut registry = Registry::with_builtins();
-        let telemetry = noodle_nodes::register_all(&mut registry);
+        let Library { telemetry, clips } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
             telemetry,
+            clips,
         }
     }
 }
@@ -68,6 +72,9 @@ pub struct Session {
     history: History,
     registry: Registry,
     telemetry: Telemetry,
+    clips: ClipFeeds,
+    /// Clips the track inputs couldn't schedule, as of the last feed.
+    clip_problems: Vec<ClipProblem>,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
     /// The project as it was last saved or loaded, to tell whether it has
@@ -136,6 +143,7 @@ impl Session {
         let Nodes {
             registry,
             telemetry,
+            clips,
         } = nodes;
         let mut session = Self {
             saved: Project::new(),
@@ -143,6 +151,8 @@ impl Session {
             history: History::new(),
             registry,
             telemetry,
+            clips,
+            clip_problems: Vec::new(),
             path: None,
             dirty: false,
             next_id: Cell::new(0),
@@ -268,9 +278,14 @@ impl Session {
         }
         if effect.structural {
             self.recompile();
-        } else if let Some(audio) = &mut self.audio {
-            for (node, key, value) in effect.params {
-                audio.controller.set_param(node, &key, value);
+        } else {
+            if let Some(audio) = &mut self.audio {
+                for (node, key, value) in effect.params {
+                    audio.controller.set_param(node, &key, value);
+                }
+            }
+            if effect.clips {
+                self.feed_clips();
             }
         }
         self.update_dirty();
@@ -314,7 +329,9 @@ impl Session {
     pub fn save_as(&mut self, path: &Path) -> bool {
         match write_atomically(path, &self.project.to_ron()) {
             Ok(()) => {
+                // Relative clip paths resolve against the file's directory.
                 self.path = Some(path.to_owned());
+                self.feed_clips();
                 self.saved = self.project.clone();
                 self.dirty = false;
                 self.message = Some(format!("Saved {}", path.display()));
@@ -416,6 +433,7 @@ impl Session {
 
     pub fn stop(&mut self) {
         self.audio = None;
+        self.feed_clips();
     }
 
     /// Whether the transport is running. The audio stream can be open with
@@ -443,6 +461,14 @@ impl Session {
     pub fn rewind(&self) {
         if let Some(audio) = &self.audio {
             audio.controller.transport().seek(Tick(0));
+        }
+    }
+
+    /// Moves the playhead to `tick`. Needs the stream open; does nothing
+    /// otherwise.
+    pub fn seek(&self, tick: Tick) {
+        if let Some(audio) = &self.audio {
+            audio.controller.transport().seek(tick);
         }
     }
 
@@ -511,6 +537,7 @@ impl Session {
         self.play();
         let Some(audio) = &self.audio else {
             // `play` has said why it couldn't.
+            self.feed_clips();
             return;
         };
         let changed = format!(
@@ -523,13 +550,47 @@ impl Session {
         });
     }
 
+    /// Clips the track inputs couldn't play, with the reason. Empty while
+    /// nothing is playing, since nothing has been scheduled.
+    pub fn clip_problems(&self) -> &[ClipProblem] {
+        &self.clip_problems
+    }
+
+    /// What a track input is doing with its clips.
+    #[cfg(test)]
+    pub fn clip_status(&self, track: NodeId) -> noodle_nodes::ClipStatus {
+        self.clips.status(track)
+    }
+
+    /// Schedules the project's clips on the track inputs, at the positions the
+    /// tempo map gives. Only matters while a stream is open.
+    fn feed_clips(&mut self) {
+        let Some(audio) = &self.audio else {
+            self.clip_problems.clear();
+            return;
+        };
+        let rate = audio.controller.settings().sample_rate;
+        let table = TempoTable::new(self.project.tempo_map(), rate);
+        let base = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
+    }
+
     fn recompile(&mut self) {
         self.diagnostics = match &mut self.audio {
             Some(audio) => audio
                 .controller
-                .update(self.project.graph(), &self.registry),
-            None => compile(self.project.graph(), &self.registry).1,
+                .update_project(&self.project, &self.registry),
+            None => {
+                let lanes: Vec<_> = self.project.lanes().collect();
+                compile_with_lanes(self.project.graph(), &lanes, &self.registry).1
+            }
         };
+        self.feed_clips();
     }
 
     fn update_dirty(&mut self) {
@@ -544,6 +605,9 @@ struct Effect {
     structural: bool,
     /// Parameter values the engine can take without recompiling.
     params: Vec<(NodeId, String, f32)>,
+    /// Clips or the tempo map changed, so the track inputs need their
+    /// schedules again. The graph is unchanged.
+    clips: bool,
 }
 
 impl Effect {
@@ -565,6 +629,10 @@ impl Effect {
                 key,
                 value: Some(value),
             } => self.params.push((*node, key.clone(), *value)),
+            Command::AddClip { .. }
+            | Command::RemoveClip { .. }
+            | Command::SetClip { .. }
+            | Command::SetTempoMap(_) => self.clips = true,
             Command::Batch(commands) => commands.iter().for_each(|c| self.add(c)),
             // Includes resetting a parameter to its default, which needs the
             // default from the node type; recompiling reads it.
@@ -574,6 +642,7 @@ impl Effect {
 
     fn merge(&mut self, other: Self) {
         self.structural |= other.structural;
+        self.clips |= other.clips;
         self.params.extend(other.params);
     }
 }
@@ -1192,6 +1261,7 @@ mod tests {
             Effect {
                 structural: false,
                 params: vec![param(-6.0)],
+                clips: false,
             }
         );
         // Parameters in a batch still skip the recompile.
@@ -1204,9 +1274,25 @@ mod tests {
             Effect {
                 structural: false,
                 params: vec![param(-6.0), param(-3.0)],
+                clips: false,
             }
         );
         assert!(Effect::of(&set(None)).structural);
+        // Clips and the tempo map only need the track inputs' schedules.
+        let tempo = Command::SetTempoMap(noodle_core::TempoMap::default());
+        assert_eq!(
+            Effect::of(&tempo),
+            Effect {
+                clips: true,
+                ..Effect::default()
+            }
+        );
+        assert!(
+            Effect::of(&Command::RemoveClip {
+                id: noodle_core::ClipId(1)
+            })
+            .clips
+        );
         assert!(
             Effect::of(&Command::Batch(vec![
                 moved,

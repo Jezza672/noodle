@@ -214,3 +214,90 @@ fn a_clip_past_the_end_of_its_file_is_left_out() {
     rig.add_clip(0, "short.wav", 5_000, 100);
     assert_eq!(rig.problems.len(), 1);
 }
+
+/// Plays a looping `rig` for `laps` laps from the loop's start and returns
+/// each lap's left channel.
+fn laps(rig: &mut Rig, laps: usize) -> Vec<Vec<f32>> {
+    let (start, end) = rig.looping.unwrap();
+    let len = (end - start) as usize;
+    let (left, _) = rig.play_looping(start, len * laps);
+    left.chunks(len).map(<[f32]>::to_vec).collect()
+}
+
+#[test]
+fn a_loop_repeats_without_a_gap() {
+    let mut rig = Rig::new("loop-gapless");
+    rig.wav("one.wav", 2, 200_000, |_, _| 1.0);
+    rig.add_clip(0, "one.wav", 0, 150_000);
+    rig.looping = Some((0, BEAT));
+    rig.wait_ready(0, 1);
+    let laps = laps(&mut rig, 9);
+    // The first lap fades in; every later one is solid from its first frame.
+    for (n, lap) in laps.iter().enumerate().skip(1) {
+        let first_zero = lap.iter().position(|&s| s == 0.0);
+        assert_eq!(first_zero, None, "lap {n} has a silent frame");
+        assert!(lap.iter().all(|&s| s == 1.0), "lap {n} isn't solid");
+    }
+}
+
+#[test]
+fn a_loop_that_starts_inside_a_clip_repeats_the_same_audio() {
+    let mut rig = Rig::new("loop-inside");
+    rig.wav("ramp.wav", 2, 200_000, ramp);
+    rig.add_clip(0, "ramp.wav", 0, 150_000);
+    rig.looping = Some((12_000, 36_000));
+    rig.wait_ready(12_000, 1);
+    let laps = laps(&mut rig, 9);
+    for (n, lap) in laps.iter().enumerate().skip(1) {
+        assert_close(lap, |i| ramp(0, 12_000 + i), &format!("lap {n}"));
+    }
+}
+
+#[test]
+fn clips_that_start_inside_a_loop_are_ready_for_every_lap() {
+    let mut rig = Rig::new("loop-clips");
+    rig.wav("ramp.wav", 2, 200_000, ramp);
+    // The loop is longer than the hub looks ahead, so each clip's stream is
+    // opened when the playhead gets near, in time for the lap. One clip
+    // starts at the loop's start, the other runs to its end.
+    rig.add_clip(0, "ramp.wav", 0, 20_000);
+    rig.add_clip(3, "ramp.wav", 30_000, 24_000);
+    rig.looping = Some((0, 4 * BEAT));
+    rig.wait_ready(0, 1);
+    let laps = laps(&mut rig, 4);
+    for (n, lap) in laps.iter().enumerate().skip(1) {
+        assert_close(
+            &lap[..20_000],
+            |i| ramp(0, i),
+            &format!("lap {n}, first clip"),
+        );
+        assert!(lap[20_000..3 * BEAT as usize].iter().all(|&s| s == 0.0));
+        assert_close(
+            &lap[3 * BEAT as usize..],
+            |i| ramp(0, 30_000 + i),
+            &format!("lap {n}, second clip"),
+        );
+    }
+}
+
+#[test]
+fn a_clip_cut_off_by_the_wrap_starts_afresh_next_lap() {
+    let mut rig = Rig::new("loop-cut");
+    rig.wav("ramp.wav", 2, 200_000, ramp);
+    // Starts half way round the loop and would run on past the end.
+    rig.add_clip(2, "ramp.wav", 0, 100_000);
+    rig.looping = Some((0, 4 * BEAT));
+    rig.settle();
+    let laps = laps(&mut rig, 4);
+    for (n, lap) in laps.iter().enumerate().skip(1) {
+        assert!(
+            lap[..2 * BEAT as usize].iter().all(|&s| s == 0.0),
+            "lap {n} isn't silent before the clip"
+        );
+        assert_close(
+            &lap[2 * BEAT as usize..],
+            |i| ramp(0, i),
+            &format!("lap {n}, clip"),
+        );
+    }
+}

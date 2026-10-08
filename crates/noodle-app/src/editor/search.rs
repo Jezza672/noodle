@@ -1,7 +1,7 @@
 //! Shift+A: search for a node type, and add it where the pointer was.
 
 use egui::{Key, Pos2};
-use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE};
+use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_engine::Registry;
 
 /// The add-node search box.
@@ -44,7 +44,7 @@ pub fn entries(registry: &Registry, query: &str, in_group: bool) -> Vec<Entry> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut entries: Vec<Entry> = registry
         .iter()
-        .filter(|t| t.info().id != GROUP_STAGE)
+        .filter(|t| t.info().category != noodle_engine::INTERNAL_CATEGORY)
         .map(|t| {
             let info = t.info();
             Entry {
@@ -254,11 +254,17 @@ mod tests {
     fn everything_is_listed_by_category() {
         let registry = registry();
         let all = entries(&registry, "", false);
+        let hidden = registry
+            .iter()
+            .filter(|t| t.info().category == noodle_engine::INTERNAL_CATEGORY)
+            .count();
+        assert!(hidden > 0, "the automation source is internal");
         assert_eq!(
             all.len(),
-            registry.iter().count() + 1,
-            "the types less the internal group stage, plus Frame and Group"
+            registry.iter().count() - hidden + 2,
+            "the user's types, Frame and Group"
         );
+        assert!(all.iter().all(|e| e.name != "Automation"));
         assert!(
             all.windows(2)
                 .all(|w| (w[0].category, w[0].name) <= (w[1].category, w[1].name))

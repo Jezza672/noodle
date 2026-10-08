@@ -49,6 +49,10 @@ pub const GROUP_STAGE: &str = "noodle.group.stage";
 pub const GAIN: &str = "gain";
 pub const MUTE: &str = "mute";
 pub const SOLO: &str = "solo";
+/// On a stage only: set by the compiler while another track's solo mutes
+/// this one. Kept apart from [`MUTE`] so an automation lane driving the mute
+/// can't override it.
+pub const SOLO_MUTE: &str = "solo_mute";
 
 /// A boundary node's gain, mute and solo, with the defaults for any that
 /// aren't set. A track's controls are these, on its group's boundary nodes.

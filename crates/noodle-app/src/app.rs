@@ -146,8 +146,12 @@ impl App {
             .default_size(theme::timeline::DEFAULT_HEIGHT)
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                let edits = timeline::show(ui, &mut self.timeline, &self.session, None);
-                self.session.edit(edits);
+                let playhead = self.session.playhead();
+                let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
+                self.session.edit(out.edits);
+                if let Some(tick) = out.seek {
+                    self.session.seek(tick);
+                }
             });
 
         egui::CentralPanel::default()
@@ -174,9 +178,10 @@ impl App {
         self.dragging = dragging;
         self.update_title(ui.ctx());
         if self.session.is_playing() {
-            // Keeps health checks and plan freeing going while idle.
+            // Keeps health checks and plan freeing going while idle, and the
+            // playhead moving at about 60 frames a second.
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(50));
+                .request_repaint_after(std::time::Duration::from_millis(16));
         }
         for action in actions {
             self.request(ui.ctx(), action);
@@ -290,6 +295,20 @@ impl App {
                     ui.label(diagnostic.to_string());
                 }
             });
+            let clips = self.session.clip_problems();
+            if !clips.is_empty() {
+                ui.separator();
+                let what = match clips.len() {
+                    1 => "1 clip can't play".to_owned(),
+                    n => format!("{n} clips can't play"),
+                };
+                ui.colored_label(ui.visuals().warn_fg_color, what)
+                    .on_hover_ui(|ui| {
+                        for problem in clips {
+                            ui.label(&problem.message);
+                        }
+                    });
+            }
             if let Some(problem) = self.session.input_problem() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, "No input")

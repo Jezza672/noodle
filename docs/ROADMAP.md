@@ -76,10 +76,12 @@ It becomes a DAW.
 **Status:** Phase 0 is done: the time and automation models are in
 [ARCHITECTURE.md](ARCHITECTURE.md), and the core types (tempo map, clips,
 automation lanes) are in the project. The engine's transport (play, stop,
-seek, loop and a tempo table) has landed, and the app's transport bar is in
-review. Group nodes have landed: the model and flattening, and
-the editor's Tab, Ctrl+G and breadcrumb navigation. The
-arrangement view follows the Studio direction: inspector on the left, the
+seek, loop and a tempo table) and the app's transport bar have landed, along
+with group nodes (the model and flattening, and the editor's Tab, Ctrl+G and
+breadcrumb navigation), the arrangement view's lanes, ruler and movable,
+trimmable clips, and the audio side of the track input node. The engine side
+of automation (lanes compiled into hidden sources that ramp hold steps) is in
+review. The UI follows the Studio direction: inspector on the left, the
 arrangement on top, and the selected track's node graph below.
 
 - **Transport:** play, stop, loop, tempo map and time signature.

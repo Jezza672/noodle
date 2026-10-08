@@ -142,8 +142,8 @@ The **Project** is the single source of truth. It holds one global graph:
     group output `out` with `audio` wired to it, and a group input `in`. The
     output starts with gain 0 dB and mute 0 already set, so the track's stage
     exists from creation (solo and mute act at the output, so the input needs
-    none) and the first fader or mute touch is a parameter change, not a graph change with a fade. The track input's `midi`
-    output is left unwired and the group has no MIDI port yet; the MIDI work
+    none) and the first fader or mute touch is a parameter change, not a
+    graph change with a fade. The track input's `midi` output is left unwired and the group has no MIDI port yet; the MIDI work
     adds both. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
@@ -545,8 +545,18 @@ Settled for M2 (Phase 0):
     need. The node reads both at the start of a block and hands what it is
     done with back to the hub to be freed. The hub opens a stream for the
     clip at the playhead and the ones starting within the next second, so no
-    file is opened on the audio thread. After a seek, the first few
-    milliseconds of a clip may be silent while its stream positions itself.
+    file is opened on the audio thread.
+  - **Loops are gapless.** `Transport::loop_range` tells nodes where the
+    loop is. When the loop's end is within that second, the hub also opens a
+    stream for each clip at the loop's start (the one playing there too),
+    positioned at the loop's start. The node plays from whichever stream is
+    already at the playhead, so the wrap needs no seek; it hands back the
+    streams the lap left behind, and the hub opens the next lap's. At most four
+    such streams are open at once (the ordinary ones have their own six), so a
+    loop with more clips than that near its start falls back to a short gap for
+    the rest. After a
+    seek that isn't a wrap, the first few milliseconds of a clip may be
+    silent while its stream positions itself.
 
 ### Clips
 
@@ -592,14 +602,38 @@ into a parameter port.** It is not a clip and not a node the user wires.
 - **Without a transport** (a live patch) the lane holds its first value.
 - **Hold steps are ramped by the automation node.** An unconnected input
   smooths its own value changes, but a lane is wired in, so its samples reach
-  the node as they are. The internal automation node therefore ramps the
-  jump at each hold step over the same smoothing length the target would have
-  used, so a stepped lane doesn't click.
+  the node as they are. The internal automation node therefore spreads the
+  jump into a hold segment (one that follows a hold segment) over the same
+  smoothing length the target would have used, capped at the segment's
+  length, so a stepped lane doesn't click. The value is a function of the
+  tick alone, so it comes out the same however the blocks fall, and a
+  stopped transport holds it.
+- **How it is built.** `compile_with_lanes` flattens the graph, then adds one
+  hidden `noodle.internal.automation` node per lane (category `Internal`, so
+  the add-node menu skips it) wired into the target. Its ID counts down from
+  `u64::MAX` by lane ID, so it can't clash with a project node and its
+  instance carries over between compiles. The points travel as text in the
+  node's config, so they are part of its `NodeKey`. A lane on a missing
+  node is skipped without a diagnostic; one on a missing port or an audio input, or on a
+  parameter with a wire, gets one.
+- **Group boundaries.** A lane on a group's boundary node can drive its
+  `gain` or `mute`: compiling keeps a stage for that node (the same stage a
+  set control keeps), and the lane is wired into the stage's port. A lane on
+  `solo` gets a diagnostic and does nothing, since solo is read when the
+  project is compiled. Solo-muting goes to its own
+  `solo_mute` input on the stage (OR-ed with `mute`), so a mute lane can't
+  make a track audible while another is soloed.
+- **Editing a lane** rebuilds its source node with the new points. The
+  source has no state, so the plan stays seamless: the new points apply from
+  the next block, like a parameter being moved. If the edit changes the value
+  at the playhead, the value jumps (a hold step can click); adding or
+  removing a lane changes the wiring, and fades like any other.
 - **The parameter widget.** For a parameter with a lane, the widget shows the
   lane's value at the playhead and is greyed like a wired parameter. The lane
   is edited as a lane.
-- The lane evaluates per sample for linear segments and flags the signal
-  constant for hold segments, so a stepped lane costs nothing.
+- The lane evaluates every sample, with a binary search for the segment. The
+  signal isn't flagged constant, since the node API has no way to flag an
+  output.
 - Lanes are drawn by the arrangement view under their track, and in the
   properties panel next to the parameter they target.
 
@@ -719,8 +753,17 @@ style. It has these views:
     edge snap to beats; Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
-  - A clip's file is read once for its sample rate and length, and
-    remembered as missing if it can't be, so a broken path costs one read.
+  - **Files and waveforms.** A clip's file is opened for its sample rate and
+    length straight away, and its waveform (`noodle_io::Peaks`) is worked
+    out by two background workers, so a long file never stalls the UI. The
+    columns drawn are cached per clip and only worked out again when the
+    zoom, scroll, clip or file changes. Every couple of seconds each file is
+    looked at again: one that couldn't be read is retried, a failed waveform
+    gets another go, and a changed modification time (a re-export) reads
+    the file afresh.
+  - **The playhead** is drawn from the transport's position, and clicking or
+    dragging the ruler seeks (to the nearest beat; Alt for free). Seeking
+    isn't a project edit, so `show` returns it beside the edits.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters

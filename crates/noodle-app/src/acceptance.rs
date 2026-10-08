@@ -293,3 +293,89 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     play_for(&mut h, Duration::from_millis(200));
     assert!(h.state().session().tempo_in_engine() == Some(&fast));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_clip_on_a_track_plays_and_follows_edits() {
+    use noodle_core::{Clip, Command, Connection, Node, Tick};
+    use noodle_engine::OUTPUT_ID;
+
+    use crate::session::Edit;
+
+    let dir = tempfile::tempdir().unwrap();
+    crate::prefs::init(dir.path().join("prefs.ron"));
+    // Half a second of a constant, so the meter reads it exactly.
+    let frames = 24_000;
+    noodle_io::write_wav(&dir.path().join("tone.wav"), &vec![0.5; frames], 1, 48_000).unwrap();
+    let path = dir.path().join("song.ron");
+    std::fs::write(&path, Project::new().to_ron()).unwrap();
+    let mut session = open(&path);
+    session.set_audio_config(null_devices());
+
+    let new = |session: &Session, type_id: &str| (session.new_node_id(), Node::new(type_id));
+    let (track, track_node) = new(&session, "noodle.track.input");
+    session.edit([Edit::Apply(Command::AddNode {
+        id: track,
+        node: track_node,
+    })]);
+    let (output, output_node) = new(&session, OUTPUT_ID);
+    session.edit([Edit::Apply(Command::AddNode {
+        id: output,
+        node: output_node,
+    })]);
+    session.edit([Edit::Apply(Command::Connect(Connection {
+        from: Endpoint::new(track, "audio"),
+        to: Endpoint::new(output, "in"),
+    }))]);
+    session.play();
+    assert!(session.is_playing(), "{:?}", session.message());
+    // The null device isn't clocked, so playback races ahead of the disk
+    // thread; hold the timeline at the start, where the clip will begin.
+    session.set_transport_running(false);
+    session.rewind();
+    // Added while playing, so it reaches the track input as an edit.
+    let clip = noodle_core::ClipId(1);
+    session.edit([Edit::Apply(Command::AddClip {
+        id: clip,
+        clip: Clip::audio(track, Tick(0), "tone.wav", frames as u64),
+    })]);
+    let mut h = harness(App::new(session));
+    // The track input opens a stream for the clip once it is scheduled.
+    // Generous, since a busy machine can be slow to open the file.
+    let mut streams = 0;
+    for _ in 0..200 {
+        play_for(&mut h, Duration::from_millis(50));
+        streams = h.state().session().clip_status(track).streams;
+        if streams > 0 {
+            break;
+        }
+    }
+    assert_eq!(streams, 1, "a stream is ready for the clip");
+    assert!(h.state().session().clip_problems().is_empty());
+
+    // A clip whose file is missing is reported, and the rest still plays.
+    let missing = noodle_core::ClipId(2);
+    h.state_mut()
+        .session_mut()
+        .edit([Edit::Apply(Command::AddClip {
+            id: missing,
+            clip: Clip::audio(track, Tick(1920), "gone.wav", 100),
+        })]);
+    let problems = h.state().session().clip_problems();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].clip, missing);
+
+    // Saving elsewhere resolves relative clips against the new folder, where
+    // the tone isn't, so it is reported too.
+    let other = tempfile::tempdir().unwrap();
+    assert!(
+        h.state_mut()
+            .session_mut()
+            .save_as(&other.path().join("moved.ron"))
+    );
+    assert_eq!(h.state().session().clip_problems().len(), 2);
+
+    // Stopping leaves nothing scheduled, so nothing to report.
+    h.state_mut().session_mut().stop();
+    assert!(h.state().session().clip_problems().is_empty());
+}

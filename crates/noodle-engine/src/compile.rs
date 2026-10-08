@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use noodle_core::{Config, Endpoint, Graph, NodeId};
 
-use crate::{Layout, Mode, NodeError, NodeType, Registry, Shape, ShapeError};
+use crate::{Lanes, Layout, Mode, NodeError, NodeType, Registry, Shape, ShapeError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BufferId(pub usize);
@@ -93,6 +93,14 @@ pub enum Problem {
     Loop,
     /// The signal on this wire can't be broadcast with the node's other inputs.
     Shape(ShapeError),
+    /// An automation lane targets an input that isn't a parameter.
+    NotAParam(String),
+    /// An automation lane targets a group's solo, which is read when the
+    /// project is compiled and can't change along the timeline.
+    LaneOnSolo,
+    /// A wire feeds a parameter that also has an automation lane. The wire
+    /// wins, and the lane does nothing.
+    LaneOverridden,
 }
 
 impl fmt::Display for Problem {
@@ -113,6 +121,15 @@ impl fmt::Display for Problem {
                  (they'll need to go through a Delay node)",
             ),
             Self::Shape(error) => error.fmt(f),
+            Self::NotAParam(key) => {
+                write!(f, "`{key}` isn't a parameter, so it can't be automated")
+            }
+            Self::LaneOnSolo => {
+                f.write_str("solo is read when the project is compiled, so it can't be automated")
+            }
+            Self::LaneOverridden => {
+                f.write_str("this input has a wire, which wins over its automation lane")
+            }
         }
     }
 }
@@ -179,8 +196,20 @@ struct Wire {
 /// Compiles a project's graph. Groups are flattened first, so the schedule
 /// only ever contains the nodes inside them.
 pub fn compile(graph: &Graph, registry: &Registry) -> (Schedule, Vec<Diagnostic>) {
-    let graph = &*crate::flatten::flatten(graph);
+    compile_with_lanes(graph, &[], registry)
+}
+
+/// Compiles a graph along with the automation lanes that drive its
+/// parameters. Each lane becomes a hidden source node wired into its target.
+pub fn compile_with_lanes(
+    graph: &Graph,
+    lanes: &Lanes<'_>,
+    registry: &Registry,
+) -> (Schedule, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
+    let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    let graph = crate::flatten::flatten_keeping(graph, &keep);
+    let graph = &*crate::automation::add_lanes(&graph, lanes, registry, &mut diagnostics);
     let mut candidates = resolve_nodes(graph, registry, &mut diagnostics);
     let wires = resolve_wires(graph, &candidates, &mut diagnostics);
     let wires = drop_loops(candidates.len(), wires, &mut diagnostics);

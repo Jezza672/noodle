@@ -10,8 +10,8 @@ use noodle_core::{AudioClip, Clip, TempoMap, Tick};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Source {
     pub sample_rate: u32,
-    /// How many frames the file has.
-    pub frames: u64,
+    /// How many frames the file has, when its header says.
+    pub frames: Option<u64>,
 }
 
 /// The tick a clip of `length` frames starting at `start` ends on.
