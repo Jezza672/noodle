@@ -290,6 +290,20 @@ impl App {
                     ui.label(diagnostic.to_string());
                 }
             });
+            let clips = self.session.clip_problems();
+            if !clips.is_empty() {
+                ui.separator();
+                let what = match clips.len() {
+                    1 => "1 clip can't play".to_owned(),
+                    n => format!("{n} clips can't play"),
+                };
+                ui.colored_label(ui.visuals().warn_fg_color, what)
+                    .on_hover_ui(|ui| {
+                        for problem in clips {
+                            ui.label(&problem.message);
+                        }
+                    });
+            }
             if let Some(problem) = self.session.input_problem() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, "No input")
