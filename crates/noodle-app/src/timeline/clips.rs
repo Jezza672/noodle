@@ -88,6 +88,37 @@ pub fn trim_end(
     })
 }
 
+/// The clip with its fade in ending at `at`, the longest it can be without
+/// running into the fade out. Dragging left of the start removes the fade.
+pub fn set_fade_in(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<Clip> {
+    let audio = clip.as_audio()?;
+    let rate = f64::from(rate);
+    let wanted = map
+        .sample_at(at.max(Tick::ZERO), rate)
+        .saturating_sub(map.sample_at(clip.start, rate));
+    let mut audio = audio.clone();
+    audio.fade_in = wanted.min(audio.length - audio.fade_out.min(audio.length));
+    Some(Clip {
+        content: noodle_core::ClipContent::Audio(audio),
+        ..clip.clone()
+    })
+}
+
+/// The clip with its fade out starting at `at`, the longest it can be
+/// without running into the fade in.
+pub fn set_fade_out(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<Clip> {
+    let audio = clip.as_audio()?;
+    let rate = f64::from(rate);
+    let end = map.sample_at(clip.start, rate) + audio.length;
+    let wanted = end.saturating_sub(map.sample_at(at.max(Tick::ZERO), rate));
+    let mut audio = audio.clone();
+    audio.fade_out = wanted.min(audio.length - audio.fade_in.min(audio.length));
+    Some(Clip {
+        content: noodle_core::ClipContent::Audio(audio),
+        ..clip.clone()
+    })
+}
+
 /// Shortens fades that no longer fit inside the clip.
 fn fit_fades(audio: &mut AudioClip) {
     audio.fade_in = audio.fade_in.min(audio.length);
@@ -115,6 +146,22 @@ mod tests {
 
     fn audio(clip: &Clip) -> &AudioClip {
         clip.as_audio().unwrap()
+    }
+
+    #[test]
+    fn fades_follow_the_pointer_and_stop_at_each_other() {
+        let mut c = clip(0, 0, 48_000);
+        c = set_fade_in(&map(), &c, Tick(960), RATE).unwrap();
+        assert_eq!(audio(&c).fade_in, 24_000);
+        // The fade out can take the rest of the clip, no more.
+        c = set_fade_out(&map(), &c, Tick(0), RATE).unwrap();
+        assert_eq!(audio(&c).fade_out, 24_000);
+        assert_eq!(audio(&c).fade_in, 24_000);
+        // Before the start, or past the end, there is no fade.
+        let c = set_fade_in(&map(), &c, Tick(-500), RATE).unwrap();
+        assert_eq!(audio(&c).fade_in, 0);
+        let c = set_fade_out(&map(), &c, Tick(9_999), RATE).unwrap();
+        assert_eq!(audio(&c).fade_out, 0);
     }
 
     #[test]
