@@ -795,7 +795,11 @@ style. It has these views:
     neighbours or go before the start), and right-click it or press Delete
     to remove it. A lane's header has a button to remove the lane. Each
     edit is one undo step. A lane on solo is drawn greyed out with a note,
-    since solo is read at compile time and the lane does nothing.
+    since solo is read at compile time and the lane does nothing. A lane
+    overrides the control it drives, so the track header's gain slider and
+    M button are greyed out with a note while one exists. Selecting a
+    point drops the clip selection and vice versa, so Delete only ever
+    acts on one.
   - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
