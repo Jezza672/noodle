@@ -329,13 +329,7 @@ pub fn create_track(
         },
         Command::AddNode {
             id: input,
-            node: inside(
-                named(GROUP_INPUT, "in")
-                    .with_param(GAIN, 0.0)
-                    .with_param(MUTE, 0.0),
-                -300.0,
-                0.0,
-            ),
+            node: inside(named(GROUP_INPUT, "in"), -300.0, 0.0),
         },
         Command::AddNode {
             id: source,
@@ -871,12 +865,9 @@ mod track_tests {
         History::new().apply(&mut project, command).unwrap();
         let graph = project.graph();
         let out = graph.group_ports(group).outputs[0].node;
-        let input = graph.group_ports(group).inputs[0].node;
-        for id in [input, out] {
-            let node = graph.node(id).unwrap();
-            assert!(node.has_gain_or_mute());
-            assert_eq!(node.controls(), Controls::default());
-        }
+        let node = graph.node(out).unwrap();
+        assert!(node.has_gain_or_mute());
+        assert_eq!(node.controls(), Controls::default());
     }
 
     #[test]

@@ -162,7 +162,7 @@ fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
         rendered.diagnostics
     );
 
-    // Both ends already have their stage.
+    // The output already has its stage; solo and mute act there too.
     let shape = |project: &Project| {
         let flat = noodle_engine::flatten(project.graph());
         let stages = flat
@@ -174,7 +174,7 @@ fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
         (stages, ids, wires)
     };
     let before = shape(&project);
-    assert_eq!(before.0, 2);
+    assert_eq!(before.0, 1);
 
     let ports = project.graph().group_ports(group);
     let command = Command::SetParam {
