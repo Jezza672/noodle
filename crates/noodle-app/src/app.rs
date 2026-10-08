@@ -105,7 +105,7 @@ impl App {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
     }
