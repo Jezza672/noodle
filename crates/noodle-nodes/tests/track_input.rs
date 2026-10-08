@@ -301,3 +301,42 @@ fn a_clip_cut_off_by_the_wrap_starts_afresh_next_lap() {
         );
     }
 }
+
+#[test]
+fn a_file_that_fails_to_open_is_tried_again_later() {
+    let mut rig = Rig::new("retry");
+    rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
+    rig.add_clip(0, "file.wav", 0, 5_000);
+    // The file is damaged after the project looked at it, and mended later.
+    std::fs::write(rig.dir.join("file.wav"), b"not audio").unwrap();
+    let started = std::time::Instant::now();
+    while rig.feeds.status(rig.id).error.is_none() {
+        rig.run(0, BLOCK, false);
+        assert!(started.elapsed().as_secs() < 5, "no error was reported");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
+    rig.wait_ready(0, 1);
+    assert_eq!(rig.feeds.status(rig.id).error, None);
+    let (left, _) = rig.play(0, 2_000);
+    assert_close(&left[300..], |_| 0.5, "after the retry");
+}
+
+#[test]
+fn the_feeds_forget_nodes_that_are_gone() {
+    let rig = Rig::new("forget");
+    let (feeds, dir) = (rig.feeds.clone(), rig.dir.clone());
+    assert_eq!(feeds.tracked(), 1);
+    drop(rig);
+    let table =
+        noodle_engine::TempoTable::new(noodle_core::Project::new().tempo_map(), RATE as f32);
+    let started = std::time::Instant::now();
+    while feeds.tracked() > 0 {
+        feeds.update(&noodle_core::Project::new(), &table, RATE, &dir);
+        assert!(
+            started.elapsed().as_secs() < 5,
+            "the node was never forgotten"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}

@@ -7,11 +7,11 @@
 //! ones the node is done with come back to be dropped here. It stops when the
 //! node is dropped.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
 use noodle_io::{ClipStream, StreamSpec, StreamWorker, open_stream};
@@ -29,7 +29,12 @@ pub(super) const MAX_HEADS: usize = 4;
 pub(super) const MAX_CHANNELS: usize = 8;
 /// How far ahead of the playhead streams are opened, in seconds.
 const LOOKAHEAD: f64 = 1.0;
+/// How often the hub looks while the playhead moves, and while it doesn't.
 const POLL: Duration = Duration::from_millis(4);
+const IDLE_POLL: Duration = Duration::from_millis(25);
+/// How long before a file that failed to open is tried again, so one that
+/// turns up later (restored, or a drive mounted) starts playing.
+const RETRY: Duration = Duration::from_secs(2);
 /// Things sent to the node and not yet returned. The return queue is bigger,
 /// so the node can always hand a retired one back.
 const MAX_OUTSTANDING: usize = 24;
@@ -70,6 +75,10 @@ impl Shared {
         if *latest.1 != schedule {
             *latest = (latest.0 + 1, Arc::new(schedule));
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.latest.lock().expect("schedule lock").1.is_empty()
     }
 
     pub fn status(&self) -> ClipStatus {
@@ -143,11 +152,14 @@ fn run(
     let mut outstanding = 0usize;
     let mut next_serial = 0u64;
     let mut live: Vec<Live> = Vec::new();
-    // Streams that failed to open for this version of the schedule.
-    let mut failed: HashSet<(ClipId, u64)> = HashSet::new();
+    // Streams that failed to open, and when.
+    let mut failed: HashMap<(ClipId, u64), Instant> = HashMap::new();
+    let mut last_position = None;
     let lookahead = (f64::from(rate) * LOOKAHEAD) as u64;
     while !to_node.is_abandoned() {
+        let mut busy = false;
         while let Ok(item) = from_node.pop() {
+            busy = true;
             match &item {
                 Retired::Promoted(serial) => {
                     if let Some(l) = live.iter_mut().find(|l| l.serial == *serial) {
@@ -170,12 +182,15 @@ fn run(
             if to_node.push(message).is_ok() {
                 sent = Some(version);
                 outstanding += 1;
+                busy = true;
                 failed.clear();
                 *shared.error.lock().expect("error lock") = None;
             }
         }
         if sent == Some(version) {
             let position = shared.position.load(Ordering::Relaxed);
+            busy |= last_position != Some(position);
+            last_position = Some(position);
             let looping = {
                 let (start, end) = (
                     shared.loop_start.load(Ordering::Relaxed),
@@ -185,7 +200,10 @@ fn run(
             };
             for (clip, head) in wanted(&schedule, position, lookahead, looping) {
                 let key = clip.stream_key();
-                if live.iter().any(|l| l.key == key && l.head == head) || failed.contains(&key) {
+                if live.iter().any(|l| l.key == key && l.head == head) {
+                    continue;
+                }
+                if failed.get(&key).is_some_and(|at| at.elapsed() < RETRY) {
                     continue;
                 }
                 if outstanding >= MAX_OUTSTANDING {
@@ -221,27 +239,31 @@ fn run(
                             _worker: worker,
                         };
                         if to_node.push(ToNode::Stream(Box::new(prepared))).is_ok() {
+                            busy = true;
+                            if failed.remove(&key).is_some() {
+                                *shared.error.lock().expect("error lock") = None;
+                            }
                             next_serial += 1;
                             live.push(Live { serial, key, head });
                             outstanding += 1;
                         }
                     }
                     Ok(_) => {
-                        failed.insert(key);
+                        failed.insert(key, Instant::now());
                         *shared.error.lock().expect("error lock") = Some(format!(
                             "{}: more than {MAX_CHANNELS} channels",
                             clip.source.path.display()
                         ));
                     }
                     Err(e) => {
-                        failed.insert(key);
+                        failed.insert(key, Instant::now());
                         *shared.error.lock().expect("error lock") =
                             Some(format!("{}: {e}", clip.source.path.display()));
                     }
                 }
             }
         }
-        thread::sleep(POLL);
+        thread::sleep(if busy { POLL } else { IDLE_POLL });
     }
 }
 
