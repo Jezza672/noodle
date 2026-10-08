@@ -102,7 +102,9 @@ pub struct ClipRender {
 /// for the disk, so the same project renders to the same samples every time.
 ///
 /// `registry` should hold the built-in nodes; the library nodes are added to
-/// it.
+/// it, so give each call a registry of its own (registering twice panics).
+/// A clip whose file can't be read is left silent for the rest of the render
+/// rather than waited on, and counted in `underruns`.
 pub fn render_project_with_clips(
     project: &Project,
     registry: &mut Registry,

@@ -120,6 +120,9 @@ struct TrackInputNode {
     /// waits need it to keep taking in what the hub sends.
     block: (u64, usize),
     looping: Option<(u64, u64)>,
+    /// Offline: clips whose audio never came, which are left silent for the
+    /// rest of the render instead of stalling every block they are in.
+    abandoned: Vec<(ClipId, u64)>,
     /// A schedule that arrived while the current one was in use.
     deferred: Option<(u64, Box<Schedule>)>,
 }
@@ -142,6 +145,7 @@ impl TrackInputNode {
             version: 0,
             block: (0, 0),
             looping: None,
+            abandoned: Vec::new(),
             deferred: None,
         }
     }
@@ -251,10 +255,14 @@ impl TrackInputNode {
     ) -> Option<usize> {
         let started = Instant::now();
         loop {
+            if self.abandoned.contains(&key) || self.shared.has_failed(key) {
+                return None;
+            }
             if let Some(slot) = self.pick(key, rel) {
                 return Some(slot);
             }
             if started.elapsed() > WAIT_LIMIT {
+                self.abandoned.push(key);
                 return None;
             }
             std::thread::sleep(WAIT_STEP);
@@ -442,6 +450,11 @@ impl TrackInputNode {
         }
         if got < len {
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+            if blocking && got < (clip.length - rel).min(len as u64) as usize {
+                // Waited and the disk still didn't answer: stop waiting on
+                // this clip.
+                self.abandoned.push(key);
+            }
         }
         let fade_in = clip.fade_in as f32;
         let fade_out = clip.fade_out as f32;

@@ -48,6 +48,9 @@ pub(super) struct Shared {
     /// playing silence, so the output doesn't depend on timing.
     pub blocking: bool,
     error: Mutex<Option<String>>,
+    /// Clips whose file couldn't be opened, for the offline node to skip
+    /// instead of waiting on.
+    failed: Mutex<Vec<(ClipId, u64)>>,
     /// The node's playhead at its last block, in samples.
     pub position: AtomicU64,
     /// The loop's start and end in samples as of the node's last block. An
@@ -64,6 +67,7 @@ impl Shared {
             blocking,
             latest: Mutex::new((0, Arc::new(Vec::new()))),
             error: Mutex::new(None),
+            failed: Mutex::new(Vec::new()),
             position: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
@@ -82,6 +86,10 @@ impl Shared {
         if *latest.1 != schedule {
             *latest = (latest.0 + 1, Arc::new(schedule));
         }
+    }
+
+    pub fn has_failed(&self, key: (ClipId, u64)) -> bool {
+        self.failed.lock().expect("failed lock").contains(&key)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -192,6 +200,7 @@ fn run(
                 outstanding += 1;
                 busy = true;
                 failed.clear();
+                shared.failed.lock().expect("failed lock").clear();
                 *shared.error.lock().expect("error lock") = None;
             }
         }
@@ -249,6 +258,11 @@ fn run(
                         if to_node.push(ToNode::Stream(Box::new(prepared))).is_ok() {
                             busy = true;
                             if failed.remove(&key).is_some() {
+                                shared
+                                    .failed
+                                    .lock()
+                                    .expect("failed lock")
+                                    .retain(|k| *k != key);
                                 *shared.error.lock().expect("error lock") = None;
                             }
                             next_serial += 1;
@@ -258,6 +272,11 @@ fn run(
                     }
                     Ok(_) => {
                         failed.insert(key, Instant::now());
+                        let mut shared_failed = shared.failed.lock().expect("failed lock");
+                        if !shared_failed.contains(&key) {
+                            shared_failed.push(key);
+                        }
+                        drop(shared_failed);
                         *shared.error.lock().expect("error lock") = Some(format!(
                             "{}: more than {MAX_CHANNELS} channels",
                             clip.source.path.display()
@@ -265,6 +284,11 @@ fn run(
                     }
                     Err(e) => {
                         failed.insert(key, Instant::now());
+                        let mut shared_failed = shared.failed.lock().expect("failed lock");
+                        if !shared_failed.contains(&key) {
+                            shared_failed.push(key);
+                        }
+                        drop(shared_failed);
                         *shared.error.lock().expect("error lock") =
                             Some(format!("{}: {e}", clip.source.path.display()));
                     }

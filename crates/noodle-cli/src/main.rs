@@ -137,7 +137,10 @@ fn run(command: Command) -> Result<(), String> {
                 eprintln!("warning: clip {}: {}", problem.clip.0, problem.message);
             }
             if rendered.underruns > 0 {
-                eprintln!("warning: some clip audio could not be read in time");
+                eprintln!(
+                    "warning: {} blocks of clip audio could not be read",
+                    rendered.underruns
+                );
             }
             report(&rendered.render.diagnostics);
             let rendered = rendered.render;

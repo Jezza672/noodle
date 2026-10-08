@@ -36,6 +36,10 @@ pub struct Rig {
 
 impl Rig {
     pub fn new(name: &str) -> Self {
+        Self::with_feeds(name, ClipFeeds::default())
+    }
+
+    pub fn with_feeds(name: &str, feeds: ClipFeeds) -> Self {
         let dir = std::env::temp_dir().join(format!("noodle-track-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         let mut project = Project::new();
@@ -50,7 +54,6 @@ impl Rig {
                 },
             )
             .unwrap();
-        let feeds = ClipFeeds::default();
         let node_type = TrackInput::new(&feeds);
         let config = Config::new();
         let instance = node_type
