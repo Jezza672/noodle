@@ -465,7 +465,7 @@ pub fn show(
         rect,
         content,
         &tracks,
-        project.graph(),
+        session,
         state.scroll_y,
     ));
     draw_ruler(ui, rect, axis, &lines);
@@ -623,9 +623,10 @@ fn draw_headers(
     rect: Rect,
     content: Rect,
     tracks: &[NodeId],
-    graph: &noodle_core::Graph,
+    session: &Session,
     scroll_y: f32,
 ) -> Vec<Edit> {
+    let graph = session.project().graph();
     let column = Rect::from_min_max(
         Pos2::new(rect.left(), content.top()),
         Pos2::new(content.left(), rect.bottom()),
@@ -653,6 +654,27 @@ fn draw_headers(
             input,
             header::controls_for(graph, input, &muted_by_solo),
         ));
+    }
+    // The button sits in the lane after the last track, so it scrolls with them.
+    let top = content.top() - scroll_y + tracks.len() as f32 * colors::LANE_HEIGHT;
+    let spot = Rect::from_min_size(
+        Pos2::new(column.left(), top),
+        vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
+    );
+    if spot.bottom() >= column.top() && spot.top() <= column.bottom() {
+        let place = Rect::from_center_size(spot.center(), vec2(spot.width() - 24.0, 24.0));
+        if ui.put(place, egui::Button::new("+ Add track")).clicked() {
+            // Below everything already in the graph, so the new track's nodes
+            // don't land on top of another's.
+            let below = graph.nodes().map(|(_, n)| n.position.y).fold(0.0, f32::max);
+            let position = noodle_core::Position {
+                x: 0.0,
+                y: below + 200.0,
+            };
+            let (_, command) =
+                noodle_core::group::create_track(None, position, || session.new_node_id());
+            edits.push(Edit::Apply(command));
+        }
     }
     ui.set_clip_rect(clip);
     edits

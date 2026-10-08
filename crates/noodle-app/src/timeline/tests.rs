@@ -655,3 +655,48 @@ fn double_clicking_the_gain_slider_writes_zero_db() {
     h.run();
     assert_eq!(param(&h, "gain"), Some(0.0));
 }
+
+fn track_inputs(h: &H) -> usize {
+    let graph = h.state().session.project().graph();
+    graph
+        .nodes()
+        .filter(|(_, n)| n.type_id == noodle_core::group::TRACK_INPUT)
+        .count()
+}
+
+#[test]
+fn add_track_creates_a_group_with_a_track_input_in_one_undo_step() {
+    let (mut h, _) = rig();
+    let before = track_inputs(&h);
+    h.get_by_label("+ Add track").click();
+    h.run();
+    assert_eq!(track_inputs(&h), before + 1);
+    let groups = |h: &H| {
+        let graph = h.state().session.project().graph();
+        graph
+            .nodes()
+            .filter(|(_, n)| n.type_id == noodle_core::group::GROUP)
+            .count()
+    };
+    assert_eq!(groups(&h), 1);
+    // The new track shows its controls straight away.
+    assert!(h.query_by_label("M").is_some());
+    h.state_mut().session.undo();
+    assert_eq!(track_inputs(&h), before);
+    assert_eq!(groups(&h), 0);
+}
+
+#[test]
+fn add_track_works_with_no_tracks() {
+    let (mut h, _) = rig();
+    for id in [1, 2] {
+        h.state_mut()
+            .session
+            .edit([Edit::Apply(Command::RemoveNode { id: NodeId(id) })]);
+    }
+    h.run();
+    assert_eq!(track_inputs(&h), 0);
+    h.get_by_label("+ Add track").click();
+    h.run();
+    assert_eq!(track_inputs(&h), 1);
+}
