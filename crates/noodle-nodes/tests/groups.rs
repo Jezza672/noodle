@@ -140,3 +140,85 @@ fn soloing_another_group_silences_this_one() {
     let rendered = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
     assert!(rendered.samples.iter().all(|&x| x == 0.0));
 }
+
+/// Renders with the project's lanes, returning the samples and diagnostics.
+fn render_lanes(project: &Project) -> noodle_engine::Render {
+    let mut registry = Registry::with_builtins();
+    let _telemetry = noodle_nodes::register_all(&mut registry);
+    noodle_engine::render_project(project, &registry, SETTINGS, FRAMES).unwrap()
+}
+
+fn add_lane(
+    project: &mut Project,
+    history: &mut History,
+    target: noodle_core::Endpoint,
+    value: f32,
+) {
+    let id = project.new_lane_id();
+    let point = noodle_core::AutomationPoint {
+        tick: noodle_core::Tick(0),
+        value,
+        curve: noodle_core::Curve::Hold,
+    };
+    let command = noodle_core::Command::AddLane {
+        id,
+        lane: noodle_core::AutomationLane::new(target, vec![point]),
+    };
+    history.apply(project, command).unwrap();
+}
+
+#[test]
+fn a_lane_can_drive_a_groups_gain() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    add_lane(
+        &mut project,
+        &mut history,
+        noodle_core::Endpoint::new(output, "gain"),
+        -6.0206,
+    );
+    let rendered = render_lanes(&project);
+    assert!(
+        rendered.diagnostics.is_empty(),
+        "{:?}",
+        rendered.diagnostics
+    );
+    for (a, b) in rendered.samples.iter().zip(&flat) {
+        assert!((a - b * 0.5).abs() < 1e-3, "{a} vs half of {b}");
+    }
+}
+
+#[test]
+fn a_lane_can_drive_a_groups_mute() {
+    let (mut project, mut history, _, output) = grouped_output();
+    add_lane(
+        &mut project,
+        &mut history,
+        noodle_core::Endpoint::new(output, "mute"),
+        1.0,
+    );
+    let rendered = render_lanes(&project);
+    assert!(
+        rendered.diagnostics.is_empty(),
+        "{:?}",
+        rendered.diagnostics
+    );
+    assert!(rendered.samples.iter().all(|&x| x == 0.0));
+}
+
+#[test]
+fn a_lane_on_solo_is_refused_and_changes_nothing() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    add_lane(
+        &mut project,
+        &mut history,
+        noodle_core::Endpoint::new(output, "solo"),
+        1.0,
+    );
+    let rendered = render_lanes(&project);
+    assert_eq!(rendered.diagnostics.len(), 1, "{:?}", rendered.diagnostics);
+    assert_eq!(
+        rendered.diagnostics[0].problem,
+        noodle_engine::Problem::LaneOnSolo
+    );
+    assert_eq!(rendered.samples, flat);
+}

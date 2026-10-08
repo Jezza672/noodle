@@ -95,6 +95,9 @@ pub enum Problem {
     Shape(ShapeError),
     /// An automation lane targets an input that isn't a parameter.
     NotAParam(String),
+    /// An automation lane targets a group's solo, which is read when the
+    /// project is compiled and can't change along the timeline.
+    LaneOnSolo,
     /// A wire feeds a parameter that also has an automation lane. The wire
     /// wins, and the lane does nothing.
     LaneOverridden,
@@ -120,6 +123,9 @@ impl fmt::Display for Problem {
             Self::Shape(error) => error.fmt(f),
             Self::NotAParam(key) => {
                 write!(f, "`{key}` isn't a parameter, so it can't be automated")
+            }
+            Self::LaneOnSolo => {
+                f.write_str("solo is read when the project is compiled, so it can't be automated")
             }
             Self::LaneOverridden => {
                 f.write_str("this input has a wire, which wins over its automation lane")
@@ -200,8 +206,9 @@ pub fn compile_with_lanes(
     lanes: &Lanes<'_>,
     registry: &Registry,
 ) -> (Schedule, Vec<Diagnostic>) {
-    let graph = crate::flatten::flatten(graph);
     let mut diagnostics = Vec::new();
+    let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    let graph = crate::flatten::flatten_keeping(graph, &keep);
     let graph = &*crate::automation::add_lanes(&graph, lanes, registry, &mut diagnostics);
     let mut candidates = resolve_nodes(graph, registry, &mut diagnostics);
     let wires = resolve_wires(graph, &candidates, &mut diagnostics);

@@ -34,6 +34,12 @@ const STAGE_OUT: &str = "out";
 /// dropped, so a group left at its defaults costs nothing and renders like
 /// the flat patch.
 pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
+    flatten_keeping(graph, &BTreeSet::new())
+}
+
+/// [`flatten`], also keeping a stage for each boundary node in `keep`, so an
+/// automation lane has a gain or mute port to drive.
+pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> Cow<'a, Graph> {
     if !has_groups(graph) {
         return Cow::Borrowed(graph);
     }
@@ -42,7 +48,7 @@ pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
             .node(id)
             .is_some_and(|node| matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT))
     };
-    let stages = stages(graph);
+    let stages = stages(graph, keep);
 
     let nodes = graph
         .nodes()
@@ -99,7 +105,7 @@ pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
 /// then moving it is only a parameter change. Soloing works the same way:
 /// the muted tracks get their stages at their outputs, and while solo is in
 /// use on a level, every group on it keeps one.
-fn stages(graph: &Graph) -> BTreeMap<NodeId, Node> {
+fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Node> {
     let muted_by_solo = graph.solo_muted();
     graph
         .nodes()
@@ -114,7 +120,7 @@ fn stages(graph: &Graph) -> BTreeMap<NodeId, Node> {
             let by_solo = solo_here && muted_by_solo.contains(&group);
             let keep_for_solo = solo_here && graph.solo_in_use(group);
             let mute = controls.mute || by_solo;
-            if !(node.has_gain_or_mute() || mute || keep_for_solo) {
+            if !(node.has_gain_or_mute() || mute || keep_for_solo || keep.contains(&id)) {
                 return None;
             }
             let mut stage = Node::new(GROUP_STAGE);

@@ -3,8 +3,10 @@
 //! needs no support for it. See "Automation" in docs/ARCHITECTURE.md.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use noodle_core::group::{GAIN, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
 use noodle_core::{
     AutomationLane, AutomationPoint, Config, Connection, Curve, Endpoint, Graph, LaneId, Node,
     NodeId, Tick, Value,
@@ -32,6 +34,35 @@ pub type Lanes<'a> = [(LaneId, &'a AutomationLane)];
 /// compile, so the node's state carries over.
 fn source_id(lane: LaneId) -> NodeId {
     NodeId(u64::MAX - lane.0)
+}
+
+/// The group boundary nodes whose gain or mute a lane drives. They need to
+/// keep a stage through flattening, since that is the node the lane wires
+/// into. A lane on a boundary's solo gets a diagnostic, and other ports of a
+/// boundary node are ignored.
+pub(crate) fn boundary_targets(
+    graph: &Graph,
+    lanes: &Lanes<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> BTreeSet<NodeId> {
+    let mut keep = BTreeSet::new();
+    for &(_, lane) in lanes {
+        let target = &lane.target;
+        let is_boundary = graph
+            .node(target.node)
+            .is_some_and(|n| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT));
+        if !is_boundary || lane.points.is_empty() {
+            continue;
+        }
+        match target.port.as_str() {
+            GAIN | MUTE => {
+                keep.insert(target.node);
+            }
+            SOLO => diagnostics.push(Diagnostic::node(target.node, Problem::LaneOnSolo)),
+            _ => {}
+        }
+    }
+    keep
 }
 
 /// Returns `graph` with each lane's source node added and wired into its
