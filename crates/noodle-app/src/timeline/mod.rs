@@ -10,6 +10,7 @@ mod add_track;
 mod clips;
 mod grid;
 mod header;
+pub mod import;
 mod sources;
 mod waveform;
 
@@ -189,6 +190,17 @@ pub struct Output {
     pub edits: Vec<Edit>,
     /// Where they asked the playhead to go, by clicking the ruler.
     pub seek: Option<Tick>,
+    /// Something to tell the user, such as files that couldn't be imported.
+    pub notice: Option<String>,
+    /// They asked to import audio from a file: where it should go.
+    pub pick: Option<Target>,
+}
+
+/// Where imported audio goes when it isn't dropped on a lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub track: NodeId,
+    pub at: Tick,
 }
 
 /// Draws the arrangement and returns what the user did. The ruler moves the
@@ -527,7 +539,65 @@ pub fn show(
             .vline(x, rect.y_range(), Stroke::new(1.5, colors::PLAYHEAD));
         }
     }
-    Output { edits, seek }
+    let mut notice = None;
+    let dropped: Vec<std::path::PathBuf> = ui.input(|i| {
+        let files = i.raw.dropped_files.iter();
+        files.map(|file| file.path().to_path_buf()).collect()
+    });
+    if !dropped.is_empty()
+        && let Some(pos) = ui
+            .input(|i| i.pointer.latest_pos())
+            .filter(|p| content.contains(*p))
+    {
+        if tracks.is_empty() {
+            notice = Some("Add a track before dropping audio onto it".to_string());
+        } else {
+            let lane = ((pos.y - content.top() + state.scroll_y) / colors::LANE_HEIGHT)
+                .floor()
+                .max(0.0) as usize;
+            let tick = axis.tick(pos.x).max(Tick::ZERO);
+            let at = if ui.input(|i| i.modifiers.alt) {
+                tick
+            } else {
+                grid::snap(map, tick)
+            };
+            let track = tracks[lane.min(tracks.len() - 1)];
+            let added = import::import(session, &dropped, track, at);
+            edits.extend(added.command.map(Edit::Apply));
+            notice = added.notice;
+        }
+    }
+
+    let corner = Rect::from_min_size(
+        rect.min + vec2(6.0, 3.0),
+        vec2(colors::HEADER_WIDTH - 12.0, colors::RULER_HEIGHT - 6.0),
+    );
+    let mut pick = None;
+    if ui
+        .put(corner, egui::Button::new("Import audio…").small())
+        .clicked()
+    {
+        let selected = state.selected.iter().next();
+        let track = selected
+            .and_then(|&id| project.clip(id))
+            .map(|clip| clip.node)
+            .or(tracks.first().copied());
+        match track {
+            Some(track) => {
+                pick = Some(Target {
+                    track,
+                    at: playhead.unwrap_or(Tick::ZERO).max(Tick::ZERO),
+                });
+            }
+            None => notice = Some("Add a track before importing audio".to_string()),
+        }
+    }
+    Output {
+        edits,
+        seek,
+        notice,
+        pick,
+    }
 }
 
 /// Scrolling and zooming, while the pointer is over the arrangement.

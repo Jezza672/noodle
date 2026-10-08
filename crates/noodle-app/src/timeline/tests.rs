@@ -16,6 +16,10 @@ struct Rig {
     playhead: Option<Tick>,
     /// Every place the ruler asked the playhead to go.
     seeks: Vec<Tick>,
+    /// What the arrangement told the user.
+    notices: Vec<String>,
+    /// Where it asked to import audio from a file.
+    picks: Vec<super::Target>,
     /// Keeps the audio files alive.
     _dir: tempfile::TempDir,
 }
@@ -46,6 +50,8 @@ fn rig() -> (H, ClipId) {
         timeline: TimelineState::default(),
         playhead: None,
         seeks: Vec::new(),
+        notices: Vec::new(),
+        picks: Vec::new(),
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -56,6 +62,8 @@ fn rig() -> (H, ClipId) {
                 let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
                 rig.session.edit(out.edits);
                 rig.seeks.extend(out.seek);
+                rig.notices.extend(out.notice);
+                rig.picks.extend(out.pick);
             },
             rig,
         );
@@ -756,4 +764,144 @@ fn a_clip_too_narrow_for_trimming_has_no_fade_handles() {
     })]);
     h.run();
     assert!(h.state().timeline.fade_handle(id, true).is_none());
+}
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("not needed".into())
+    }
+}
+
+/// Drops `files` with the pointer at `at`.
+fn drop_files(h: &mut H, at: Pos2, files: &[std::path::PathBuf]) {
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for file in files {
+        h.input_mut()
+            .dropped_files
+            .push(std::sync::Arc::new(Dropped(file.clone())));
+    }
+    h.step();
+    h.run();
+}
+
+/// Writes a wav of `frames` frames next to the project and returns its path.
+fn wav(h: &H, name: &str, frames: usize) -> std::path::PathBuf {
+    let path = h.state()._dir.path().join(name);
+    write_wav(&path, &vec![0.0; frames], 1, 48_000).unwrap();
+    path
+}
+
+fn clips_on(h: &H, node: u64) -> Vec<Clip> {
+    let project = h.state().session.project();
+    project
+        .clips()
+        .map(|(_, clip)| clip.clone())
+        .filter(|clip| clip.node == NodeId(node))
+        .collect()
+}
+
+/// A point in the second lane, `beats` quarter notes from the left.
+fn lane_two(h: &H, id: ClipId, beats: f32) -> Pos2 {
+    let r = rect(h, id);
+    Pos2::new(
+        r.left() + 60.0 * beats,
+        r.center().y + super::colors::LANE_HEIGHT,
+    )
+}
+
+#[test]
+fn dropping_a_file_on_a_lane_adds_a_clip_there_in_one_undo_step() {
+    let (mut h, id) = rig();
+    let file = wav(&h, "b.wav", 48_000);
+    // Just off the second beat: it snaps to it.
+    let at = lane_two(&h, id, 2.2);
+    drop_files(&mut h, at, &[file]);
+    let added = clips_on(&h, 2);
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].start, Tick(1920));
+    let audio = added[0].as_audio().unwrap();
+    assert_eq!((audio.source.as_str(), audio.length), ("b.wav", 48_000));
+    assert!(h.state().notices.is_empty());
+    h.state_mut().session.undo();
+    assert!(clips_on(&h, 2).is_empty(), "one undo step");
+}
+
+#[test]
+fn several_dropped_files_are_laid_end_to_end() {
+    let (mut h, id) = rig();
+    let one = wav(&h, "b.wav", 48_000);
+    let two = wav(&h, "c.wav", 24_000);
+    let at = lane_two(&h, id, 0.0);
+    drop_files(&mut h, at, &[one, two]);
+    let mut added = clips_on(&h, 2);
+    added.sort_by_key(|clip| clip.start);
+    // One second is two beats, so the second clip starts at beat two.
+    assert_eq!(
+        added.iter().map(|c| c.start).collect::<Vec<_>>(),
+        [Tick(0), Tick(1920)]
+    );
+    h.state_mut().session.undo();
+    assert!(clips_on(&h, 2).is_empty());
+}
+
+#[test]
+fn a_file_that_cant_be_read_is_reported_and_adds_nothing() {
+    let (mut h, id) = rig();
+    let bad = h.state()._dir.path().join("notes.txt");
+    std::fs::write(&bad, "not audio").unwrap();
+    let at = lane_two(&h, id, 1.0);
+    drop_files(&mut h, at, &[bad]);
+    assert!(clips_on(&h, 2).is_empty());
+    let notices = &h.state().notices;
+    assert!(
+        notices.len() == 1 && notices[0].contains("notes.txt"),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn dropping_a_file_where_there_are_no_tracks_asks_for_one() {
+    let (mut h, id) = rig();
+    let file = wav(&h, "b.wav", 48_000);
+    let at = lane_two(&h, id, 1.0);
+    for node in [1, 2] {
+        h.state_mut()
+            .session
+            .edit([Edit::Apply(Command::RemoveNode { id: NodeId(node) })]);
+    }
+    h.run();
+    drop_files(&mut h, at, &[file]);
+    assert_eq!(h.state().session.project().clips().count(), 0);
+    assert_eq!(h.state().notices.len(), 1);
+}
+
+#[test]
+fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
+    let (mut h, id) = rig();
+    h.state_mut().playhead = Some(Tick(960));
+    h.run();
+    // Nothing selected: the first track.
+    h.get_by_label("Import audio…").click();
+    h.run();
+    let first = h.state().picks.last().copied().unwrap();
+    assert_eq!((first.track, first.at), (NodeId(1), Tick(960)));
+    // Moving the clip to the second lane and selecting it points the import there.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Body,
+        Vec2::new(0.0, 64.0),
+    );
+    h.get_by_label("Import audio…").click();
+    h.run();
+    assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
 }

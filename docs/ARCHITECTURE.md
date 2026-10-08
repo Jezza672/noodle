@@ -767,6 +767,14 @@ style. It has these views:
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
+  - **Adding audio.** Dropping files on a lane, or the Import audio button
+    in the corner (which opens a file dialog and targets the selected clip's
+    track, or the first, at the playhead), creates one clip per file, laid end
+    to end from the drop position (snapped to beats; Alt turns that off).
+    The clip's length is the file's frame count, read when it's added; a file
+    that can't be read, or doesn't say how long it is, is left out and the
+    status line says why. All the clips are one `Batch`, so one undo removes
+    them. A file inside the project's folder is stored relative to it.
   - **Files and waveforms.** A clip's file is opened for its sample rate and
     length straight away, and its waveform (`noodle_io::Peaks`) is worked
     out by two background workers, so a long file never stalls the UI. The

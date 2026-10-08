@@ -152,6 +152,12 @@ impl App {
                 if let Some(tick) = out.seek {
                     self.session.seek(tick);
                 }
+                if let Some(notice) = out.notice {
+                    self.session.notify(notice);
+                }
+                if let Some(target) = out.pick {
+                    self.import_audio(target);
+                }
             });
 
         egui::CentralPanel::default()
@@ -440,6 +446,25 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+}
+
+impl App {
+    /// Asks which audio files to add, and adds them as clips at `target`.
+    fn import_audio(&mut self, target: timeline::Target) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"])
+            .pick_files();
+        let Some(files) = picked else {
+            return;
+        };
+        let added = timeline::import::import(&self.session, &files, target.track, target.at);
+        if let Some(command) = added.command {
+            self.session.edit([crate::session::Edit::Apply(command)]);
+        }
+        if let Some(notice) = added.notice {
+            self.session.notify(notice);
+        }
     }
 }
 
