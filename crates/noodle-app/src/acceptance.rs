@@ -364,4 +364,18 @@ fn a_clip_on_a_track_plays_and_follows_edits() {
     let problems = h.state().session().clip_problems();
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert_eq!(problems[0].clip, missing);
+
+    // Saving elsewhere resolves relative clips against the new folder, where
+    // the tone isn't, so it is reported too.
+    let other = tempfile::tempdir().unwrap();
+    assert!(
+        h.state_mut()
+            .session_mut()
+            .save_as(&other.path().join("moved.ron"))
+    );
+    assert_eq!(h.state().session().clip_problems().len(), 2);
+
+    // Stopping leaves nothing scheduled, so nothing to report.
+    h.state_mut().session_mut().stop();
+    assert!(h.state().session().clip_problems().is_empty());
 }

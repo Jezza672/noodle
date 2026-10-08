@@ -329,7 +329,9 @@ impl Session {
     pub fn save_as(&mut self, path: &Path) -> bool {
         match write_atomically(path, &self.project.to_ron()) {
             Ok(()) => {
+                // Relative clip paths resolve against the file's directory.
                 self.path = Some(path.to_owned());
+                self.feed_clips();
                 self.saved = self.project.clone();
                 self.dirty = false;
                 self.message = Some(format!("Saved {}", path.display()));
@@ -431,6 +433,7 @@ impl Session {
 
     pub fn stop(&mut self) {
         self.audio = None;
+        self.feed_clips();
     }
 
     /// Whether the transport is running. The audio stream can be open with
@@ -526,6 +529,7 @@ impl Session {
         self.play();
         let Some(audio) = &self.audio else {
             // `play` has said why it couldn't.
+            self.feed_clips();
             return;
         };
         let changed = format!(
