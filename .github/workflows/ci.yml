@@ -5,19 +5,25 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows:
+        description: Also run on Windows (needs a Windows runner or minutes)
+        type: boolean
+        default: false
 
 jobs:
   check:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        # The repo is private, so Actions minutes are metered, with macOS
-        # counting 10x and Windows 2x. Pushes and pull requests run Linux
-        # only. Windows runs too when triggered by hand, at the end of a
-        # milestone. macOS is tested on the user's Mac instead.
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
+        # Linux runs on the self-hosted Raspberry Pi runner (the hosted
+        # runners' minutes ran out). Windows is off until a runner for it
+        # exists: tick "windows" when triggering the workflow by hand to
+        # run it, at the end of a milestone. macOS is tested on the user's
+        # Mac instead.
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.windows && '[{"name":"linux","os":"Linux","runner":["self-hosted","linux-arm64"]},{"name":"windows","os":"Windows","runner":["windows-latest"]}]' || '[{"name":"linux","os":"Linux","runner":["self-hosted","linux-arm64"]}]') }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
       # The toolchain and components come from rust-toolchain.toml.
@@ -25,7 +31,7 @@ jobs:
       # cpal needs the ALSA headers on Linux.
       - name: Install ALSA
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: pkg-config --exists alsa || (sudo apt-get update && sudo apt-get install -y libasound2-dev)
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --all --check

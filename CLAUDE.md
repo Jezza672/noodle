@@ -72,8 +72,11 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   pass, and Copilot's review has been dealt with (see below).
 - **CI minutes are metered** because the repo is private, with macOS counting
   10× and Windows 2×.
-  - Pushes and PRs run **Linux only**.
-  - The Windows run is triggered **by hand**
+  - Pushes and PRs run **Linux only**, on the self-hosted Raspberry Pi
+    runner (`self-hosted, linux-arm64`), because the hosted minutes ran out.
+    It is ARM64, so the tests see an ARM Linux.
+  - The Windows run is off until a runner exists: it is triggered **by hand**
+    with the `windows` input ticked
     (`gh workflow run CI --ref main`, or the GitHub MCP's workflow-run
     tool), **once each milestone's code is merged**. The user confirmed
     this for M0 on 2026-10-07. It runs Linux and Windows.
