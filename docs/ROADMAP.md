@@ -167,7 +167,10 @@ It does not show that a user can do this in the app.
 - Check that the clip import (drop and Import audio) and the mixer view,
   both now in the app, are covered by the app-level "done when" test; the
   M2 follow-ups below are what's left of them.
-- Recording audio input to clips hasn't started.
+- Recording into the arrangement has merged (#72): arm tracks with R,
+  record, and each armed track gets one clip, as a single undo step. Still
+  open are latency compensation for takes and a check with a real
+  microphone on the Mac.
 - Nothing has been listened to on a real device: the Mac checks and the
   Windows CI run for the milestone are still to do.
 
@@ -183,7 +186,7 @@ It does not show that a user can do this in the app.
 - **Arrangement view:** tracks, and moving, trimming and fading clips.
 - Mixer view over the track groups.
 - Automation lanes.
-- Recording audio input to clips.
+- Recording audio input to clips (done, apart from latency compensation).
 
 **Done when:** you can arrange several audio clips on tracks, process them
 through node graphs, automate a parameter, and mix them down live.
