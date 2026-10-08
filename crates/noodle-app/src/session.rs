@@ -440,6 +440,8 @@ impl Session {
     }
 
     fn replace(&mut self, project: Project, path: Option<PathBuf>) {
+        // The take belongs to the project it was recorded in.
+        self.stop_recording();
         self.saved = project.clone();
         self.project = project;
         self.history = History::new();
@@ -554,6 +556,9 @@ impl Session {
 
     /// Moves the playhead. Works stopped too: playing starts from there.
     pub fn seek(&mut self, tick: Tick) {
+        // The clip would start where the take began, no longer where the
+        // audio is on the timeline.
+        self.stop_recording();
         let tick = Tick(tick.0.max(0));
         self.parked = tick;
         if let Some(audio) = &self.audio {
@@ -772,6 +777,14 @@ impl Session {
             .copied()
             .filter(|&track| self.project.graph().node(track).is_some())
             .collect();
+        if tracks.is_empty() {
+            // An empty batch would be an undo step that does nothing.
+            self.message = Some(format!(
+                "The armed tracks were deleted, so the take was kept as {}",
+                recording.relative
+            ));
+            return;
+        }
         let commands = tracks
             .into_iter()
             .map(|track| Command::AddClip {
@@ -1810,5 +1823,42 @@ mod tests {
         session.stop_recording();
         let on: Vec<NodeId> = clips(&session).into_iter().map(|c| c.0).collect();
         assert_eq!(on, [tracks[0]]);
+    }
+
+    #[test]
+    fn deleting_every_armed_track_keeps_the_take_without_an_empty_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.record();
+        tap.push(&vec![0.5_f32; 960]);
+        let group = session
+            .project()
+            .graph()
+            .node(tracks[0])
+            .unwrap()
+            .parent
+            .unwrap();
+        session.edit([Edit::Apply(Command::RemoveNode { id: group })]);
+        session.stop_recording();
+        assert!(clips(&session).is_empty());
+        assert!(session.message().unwrap().contains("take was kept"));
+        assert!(dir.path().join("song recordings/take-001.wav").exists());
+        // The next undo undoes the deletion, not a no-op.
+        session.undo();
+        assert!(session.project().graph().node(tracks[0]).is_some());
+    }
+
+    #[test]
+    fn seeking_ends_the_take_where_it_was_laid_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.seek(Tick(480));
+        session.record();
+        tap.push(&vec![0.5_f32; 960]);
+        session.seek(Tick(0));
+        assert!(!session.is_recording());
+        assert_eq!(clips(&session)[0].1, Tick(480));
     }
 }
