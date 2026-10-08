@@ -159,6 +159,8 @@ pub struct ClipFeeds {
 
 #[derive(Default)]
 struct Inner {
+    /// See [`ClipFeeds::blocking`].
+    blocking: bool,
     hubs: Mutex<HashMap<NodeId, Arc<Shared>>>,
     files: Mutex<HashMap<PathBuf, (Option<SystemTime>, FileInfo)>>,
 }
@@ -177,13 +179,34 @@ pub struct ClipStatus {
 
 impl ClipFeeds {
     pub(super) fn shared(&self, node: NodeId) -> Arc<Shared> {
+        let blocking = self.inner.blocking;
         self.inner
             .hubs
             .lock()
             .expect("feeds lock")
             .entry(node)
-            .or_default()
+            .or_insert_with(|| Arc::new(Shared::new(blocking)))
             .clone()
+    }
+
+    /// Feeds for rendering offline. The track input nodes they serve wait
+    /// for the schedule, their streams and the disk instead of playing
+    /// silence when those are late, so a render comes out the same every
+    /// time. Don't use them to play live: a slow disk would stall the audio
+    /// thread.
+    pub fn blocking() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                blocking: true,
+                ..Inner::default()
+            }),
+        }
+    }
+
+    /// Blocks where audio was missing, summed over every node.
+    pub fn underruns(&self) -> u64 {
+        let hubs = self.inner.hubs.lock().expect("feeds lock");
+        hubs.values().map(|s| s.status().underruns).sum()
     }
 
     /// How many nodes the feeds are keeping a schedule for.
@@ -249,7 +272,8 @@ impl ClipFeeds {
         }
         let mut hubs = self.inner.hubs.lock().expect("feeds lock");
         for node in by_node.keys() {
-            hubs.entry(*node).or_default();
+            hubs.entry(*node)
+                .or_insert_with(|| Arc::new(Shared::new(self.inner.blocking)));
         }
         for (node, shared) in hubs.iter() {
             let mut schedule = by_node.remove(node).unwrap_or_default();

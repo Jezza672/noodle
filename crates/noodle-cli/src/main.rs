@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
-use noodle_engine::{Diagnostic, Registry, Settings, render_project};
+use noodle_engine::{Diagnostic, Registry, Settings};
 use noodle_io::{AudioConfig, InputChoice, Stream};
+use noodle_nodes::render_project_with_clips;
 
 #[derive(Parser)]
 #[command(
@@ -112,7 +113,8 @@ fn run(command: Command) -> Result<(), String> {
             if !(seconds.is_finite() && seconds >= 0.0) {
                 return Err(format!("can't render {seconds} seconds"));
             }
-            let project = load(&project)?;
+            let project_path = project;
+            let project = load(&project_path)?;
             let settings = Settings {
                 sample_rate: sample_rate as f32,
                 max_frames: 512,
@@ -125,9 +127,23 @@ fn run(command: Command) -> Result<(), String> {
                 return Err(format!("can't render {seconds} seconds: too long"));
             }
             let frames = frames as usize;
-            let rendered = render_project(&project, &registry(), settings, frames)
-                .map_err(|error| error.to_string())?;
-            report(&rendered.diagnostics);
+            // Clip files are looked up next to the project file.
+            let base = project_path.parent().unwrap_or(Path::new(""));
+            let mut registry = Registry::with_builtins();
+            let rendered =
+                render_project_with_clips(&project, &mut registry, base, settings, frames)
+                    .map_err(|error| error.to_string())?;
+            for problem in &rendered.problems {
+                eprintln!("warning: clip {}: {}", problem.clip.0, problem.message);
+            }
+            if rendered.underruns > 0 {
+                eprintln!(
+                    "warning: {} blocks of clip audio could not be read",
+                    rendered.underruns
+                );
+            }
+            report(&rendered.render.diagnostics);
+            let rendered = rendered.render;
             noodle_io::write_wav(&output, &rendered.samples, channels, sample_rate)
                 .map_err(|error| format!("can't write {}: {error}", output.display()))
         }
@@ -300,6 +316,58 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn render_plays_a_projects_audio_clips_from_next_to_the_project_file() {
+        use noodle_core::{
+            Clip, Command as Edit, Connection, Endpoint, History, Node, NodeId, Tick,
+        };
+
+        let dir = std::env::temp_dir().join(format!("noodle-render-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let samples = vec![0.25f32; 2 * 48_000];
+        noodle_io::write_wav(&dir.join("tone.wav"), &samples, 2, 48_000).unwrap();
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (track, out) = (NodeId(1), NodeId(2));
+        for (id, kind) in [(track, "noodle.track.input"), (out, "noodle.io.output")] {
+            let node = Node::new(kind);
+            history
+                .apply(&mut project, Edit::AddNode { id, node })
+                .unwrap();
+        }
+        let connection = Connection {
+            from: Endpoint::new(track, "audio"),
+            to: Endpoint::new(out, "in"),
+        };
+        history
+            .apply(&mut project, Edit::Connect(connection))
+            .unwrap();
+        let id = project.new_clip_id();
+        let clip = Clip::audio(track, Tick(0), "tone.wav", 48_000);
+        history
+            .apply(&mut project, Edit::AddClip { id, clip })
+            .unwrap();
+        fs::write(dir.join("song.ron"), project.to_ron()).unwrap();
+
+        let output = dir.join("out.wav");
+        run(Command::Render {
+            project: dir.join("song.ron"),
+            output: output.clone(),
+            seconds: 1.0,
+            sample_rate: 48_000,
+            channels: 2,
+        })
+        .unwrap();
+        let audio = noodle_io::decode_file(&output).unwrap();
+        // The clip fades in over a few milliseconds, then holds its level.
+        let held = &audio.samples[2 * 1_000..2 * 47_000];
+        assert!(
+            held.iter().all(|&s| (s - 0.25).abs() < 1e-6),
+            "the clip isn\'t in the render"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_watch_notices_each_change_once() {

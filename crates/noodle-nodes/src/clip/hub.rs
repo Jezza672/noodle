@@ -44,7 +44,13 @@ const STREAM_CHUNKS: usize = 8;
 /// What the UI side, the hub and the node share.
 pub(super) struct Shared {
     latest: Mutex<(u64, Arc<Schedule>)>,
+    /// Offline rendering: the node waits for the hub and the disk instead of
+    /// playing silence, so the output doesn't depend on timing.
+    pub blocking: bool,
     error: Mutex<Option<String>>,
+    /// Clips whose file couldn't be opened, for the offline node to skip
+    /// instead of waiting on.
+    failed: Mutex<Vec<(ClipId, u64)>>,
     /// The node's playhead at its last block, in samples.
     pub position: AtomicU64,
     /// The loop's start and end in samples as of the node's last block. An
@@ -55,11 +61,13 @@ pub(super) struct Shared {
     pub underruns: AtomicU64,
 }
 
-impl Default for Shared {
-    fn default() -> Self {
+impl Shared {
+    pub fn new(blocking: bool) -> Self {
         Self {
+            blocking,
             latest: Mutex::new((0, Arc::new(Vec::new()))),
             error: Mutex::new(None),
+            failed: Mutex::new(Vec::new()),
             position: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
@@ -67,14 +75,21 @@ impl Default for Shared {
             underruns: AtomicU64::new(0),
         }
     }
-}
 
-impl Shared {
+    /// The version of the newest schedule set.
+    pub fn version(&self) -> u64 {
+        self.latest.lock().expect("schedule lock").0
+    }
+
     pub fn set(&self, schedule: Schedule) {
         let mut latest = self.latest.lock().expect("schedule lock");
         if *latest.1 != schedule {
             *latest = (latest.0 + 1, Arc::new(schedule));
         }
+    }
+
+    pub fn has_failed(&self, key: (ClipId, u64)) -> bool {
+        self.failed.lock().expect("failed lock").contains(&key)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -105,7 +120,8 @@ pub(super) struct Prepared {
 }
 
 pub(super) enum ToNode {
-    Schedule(Box<Schedule>),
+    /// A schedule and its version.
+    Schedule(u64, Box<Schedule>),
     Stream(Box<Prepared>),
 }
 
@@ -178,12 +194,13 @@ fn run(
             (latest.0, latest.1.clone())
         };
         if sent != Some(version) && outstanding < MAX_OUTSTANDING {
-            let message = ToNode::Schedule(Box::new(schedule.to_vec()));
+            let message = ToNode::Schedule(version, Box::new(schedule.to_vec()));
             if to_node.push(message).is_ok() {
                 sent = Some(version);
                 outstanding += 1;
                 busy = true;
                 failed.clear();
+                shared.failed.lock().expect("failed lock").clear();
                 *shared.error.lock().expect("error lock") = None;
             }
         }
@@ -241,6 +258,11 @@ fn run(
                         if to_node.push(ToNode::Stream(Box::new(prepared))).is_ok() {
                             busy = true;
                             if failed.remove(&key).is_some() {
+                                shared
+                                    .failed
+                                    .lock()
+                                    .expect("failed lock")
+                                    .retain(|k| *k != key);
                                 *shared.error.lock().expect("error lock") = None;
                             }
                             next_serial += 1;
@@ -250,6 +272,11 @@ fn run(
                     }
                     Ok(_) => {
                         failed.insert(key, Instant::now());
+                        let mut shared_failed = shared.failed.lock().expect("failed lock");
+                        if !shared_failed.contains(&key) {
+                            shared_failed.push(key);
+                        }
+                        drop(shared_failed);
                         *shared.error.lock().expect("error lock") = Some(format!(
                             "{}: more than {MAX_CHANNELS} channels",
                             clip.source.path.display()
@@ -257,6 +284,11 @@ fn run(
                     }
                     Err(e) => {
                         failed.insert(key, Instant::now());
+                        let mut shared_failed = shared.failed.lock().expect("failed lock");
+                        if !shared_failed.contains(&key) {
+                            shared_failed.push(key);
+                        }
+                        drop(shared_failed);
                         *shared.error.lock().expect("error lock") =
                             Some(format!("{}: {e}", clip.source.path.display()));
                     }

@@ -557,6 +557,16 @@ Settled for M2 (Phase 0):
     the rest. After a
     seek that isn't a wrap, the first few milliseconds of a clip may be
     silent while its stream positions itself.
+  - **Offline renders wait for the disk.** Live, a late stream means silence
+    for that block, because the audio thread can't wait. A render has no
+    deadline, so `ClipFeeds::blocking()` (what
+    `render_project_with_clips` uses) makes the track input wait instead: at
+    the start of a block for the hub to hand over the newest schedule, then
+    for the stream of each clip it plays, then for the disk to produce every
+    frame asked for, giving up after ten seconds and counting an underrun.
+    The output then depends only on the project and the block size, and the
+    first lap of a `noodle render` matches every other. `noodle render` and
+    the M2 acceptance test go through that function.
 
 ### Clips
 

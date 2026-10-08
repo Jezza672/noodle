@@ -340,3 +340,23 @@ fn the_feeds_forget_nodes_that_are_gone() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+#[test]
+fn an_offline_render_does_not_wait_on_a_file_that_cannot_be_opened() {
+    let mut rig = Rig::with_feeds("blocking-gone", noodle_nodes::ClipFeeds::blocking());
+    rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
+    rig.add_clip(0, "file.wav", 0, 5_000);
+    // The file goes after the project was scheduled.
+    std::fs::remove_file(rig.dir.join("file.wav")).unwrap();
+    let started = std::time::Instant::now();
+    for block in 0..20 {
+        let (left, _) = rig.run(block * BLOCK as u64, BLOCK, true);
+        assert!(left.iter().all(|&s| s == 0.0));
+    }
+    assert!(
+        started.elapsed().as_secs() < 5,
+        "20 blocks took {:?}",
+        started.elapsed()
+    );
+    assert!(rig.feeds.status(rig.id).error.is_some());
+}
