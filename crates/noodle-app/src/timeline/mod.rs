@@ -884,6 +884,11 @@ fn draw_headers(
         .rect_filled(column, 0.0, colors::HEADER);
     let mut edits = Vec::new();
     let mut arm = Vec::new();
+    // A name being typed belongs to a header; if that header isn't drawn this
+    // frame (scrolled away, or its track is gone) the rename is dropped, so it
+    // can't wait unseen and swallow a later click.
+    let renaming_group = state.renaming.as_ref().map(|r| r.group);
+    let mut renaming_seen = false;
     let muted_by_solo = graph.solo_muted();
     let clip = ui.clip_rect();
     ui.set_clip_rect(column.intersect(clip));
@@ -897,6 +902,8 @@ fn draw_headers(
         if block_bottom < column.top() || lane.top() > column.bottom() {
             continue;
         }
+        renaming_seen |=
+            renaming_group.is_some() && graph.node(input).and_then(|n| n.parent) == renaming_group;
         let controls =
             header::controls_for(graph, input, &muted_by_solo).map(|t| header::TrackControls {
                 armed: session.is_armed(input),
@@ -953,6 +960,9 @@ fn draw_headers(
             let refused = automation::refused(automation);
             edits.extend(automation::header(ui, row, id, automation, refused));
         }
+    }
+    if renaming_group.is_some() && !renaming_seen {
+        state.renaming = None;
     }
     // The button sits in the lane after the last track, so it scrolls with them.
     let top = content.top() - scroll_y + rows.total();

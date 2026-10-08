@@ -1086,3 +1086,35 @@ fn the_arm_button_arms_and_disarms_its_track() {
     h.run();
     assert!(!h.state().session.is_armed(first));
 }
+
+#[test]
+fn a_rename_is_dropped_when_its_header_scrolls_away() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    assert!(h.state().timeline.renaming.is_some());
+    for n in 3..=9 {
+        h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+            id: NodeId(n),
+            node: Node::new(TRACK_INPUT),
+        })]);
+    }
+    h.state_mut().timeline.scroll_y = 10_000.0;
+    h.run();
+    assert!(h.state().timeline.scroll_y > 100.0, "scrolled");
+    assert!(h.state().timeline.renaming.is_none(), "dropped");
+    assert_eq!(track_name(&h), None, "nothing was written");
+}
+
+#[test]
+fn a_rename_is_dropped_when_its_track_is_removed() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    assert!(h.state().timeline.renaming.is_some());
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::RemoveNode { id: NodeId(1) })]);
+    h.run();
+    assert!(h.state().timeline.renaming.is_none());
+}
