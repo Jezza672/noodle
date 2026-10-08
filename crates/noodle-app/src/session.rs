@@ -464,6 +464,14 @@ impl Session {
         }
     }
 
+    /// Moves the playhead to `tick`. Needs the stream open; does nothing
+    /// otherwise.
+    pub fn seek(&self, tick: Tick) {
+        if let Some(audio) = &self.audio {
+            audio.controller.transport().seek(tick);
+        }
+    }
+
     /// The tempo map the audio thread is using, if the stream is open.
     #[cfg(test)]
     pub fn tempo_in_engine(&self) -> Option<&noodle_core::TempoMap> {

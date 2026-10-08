@@ -753,6 +753,9 @@ style. It has these views:
     looked at again: one that couldn't be read is retried, a failed waveform
     gets another go, and a changed modification time (a re-export) reads
     the file afresh.
+  - **The playhead** is drawn from the transport's position, and clicking or
+    dragging the ruler seeks (to the nearest beat; Alt for free). Seeking
+    isn't a project edit, so `show` returns it beside the edits.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters

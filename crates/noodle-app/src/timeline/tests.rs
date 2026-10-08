@@ -13,6 +13,8 @@ struct Rig {
     session: Session,
     timeline: TimelineState,
     playhead: Option<Tick>,
+    /// Every place the ruler asked the playhead to go.
+    seeks: Vec<Tick>,
     /// Keeps the audio files alive.
     _dir: tempfile::TempDir,
 }
@@ -42,6 +44,7 @@ fn rig() -> (H, ClipId) {
         session,
         timeline: TimelineState::default(),
         playhead: None,
+        seeks: Vec::new(),
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -49,8 +52,9 @@ fn rig() -> (H, ClipId) {
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             |ui, rig: &mut Rig| {
-                let edits = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
-                rig.session.edit(edits);
+                let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
+                rig.session.edit(out.edits);
+                rig.seeks.extend(out.seek);
             },
             rig,
         );
@@ -445,4 +449,67 @@ fn a_file_that_changes_on_disk_is_read_again() {
         .unwrap();
     h.run_steps(3);
     assert_eq!(rect(&h, id).width(), before * 2.0);
+}
+
+#[test]
+fn clicking_the_ruler_asks_for_the_nearest_beat() {
+    let (mut h, id) = rig();
+    // The clip starts at tick 0; 60 points a beat, so 130 is a bit past two.
+    let x = rect(&h, id).left() + 130.0;
+    drag(&mut h, Modifiers::NONE, &[Pos2::new(x, 10.0)]);
+    assert_eq!(h.state().seeks.last(), Some(&Tick(1920)));
+}
+
+#[test]
+fn alt_clicking_the_ruler_does_not_snap() {
+    let (mut h, id) = rig();
+    let x = rect(&h, id).left() + 130.0;
+    drag(&mut h, Modifiers::ALT, &[Pos2::new(x, 10.0)]);
+    let tick = h.state().seeks.last().unwrap().0;
+    assert!((2075..=2085).contains(&tick), "{tick}");
+}
+
+#[test]
+fn clicking_the_ruler_leaves_clips_selected() {
+    let (mut h, id) = rig();
+    let c = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    drag(&mut h, Modifiers::NONE, &[Pos2::new(400.0, 10.0)]);
+    assert!(h.state().timeline.selected().contains(&id));
+}
+
+#[test]
+fn holding_the_ruler_still_seeks_once() {
+    let (mut h, id) = rig();
+    let x = rect(&h, id).left() + 130.0;
+    let at = Pos2::new(x, 10.0);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(h.state().seeks, [Tick(1920)]);
+    // Letting go and pressing again is a new request.
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.step();
+    assert_eq!(h.state().seeks, [Tick(1920), Tick(1920)]);
 }
