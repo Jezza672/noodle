@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use egui::{Align, Layout, Pos2, Rect, RichText, Slider, Stroke, UiBuilder, vec2};
 use noodle_core::group::{self, Controls};
-use noodle_core::{Command, Graph, NodeId};
+use noodle_core::{Command, Graph, NodeId, Value};
 
 use crate::session::Edit;
 use crate::theme::timeline as colors;
@@ -18,6 +18,24 @@ use crate::theme::timeline as colors;
 /// The slider's range, in decibels: what the group stage takes, and what the
 /// mixer's faders cover, so a gain set in one shows in the other.
 const GAIN_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
+
+/// The group's config setting that holds the track's name.
+const NAME: &str = "name";
+
+/// A name being typed in a header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rename {
+    pub group: NodeId,
+    pub text: String,
+}
+
+/// The name a track was given, if any.
+fn stored_name(graph: &Graph, group: NodeId) -> Option<String> {
+    match graph.node(group)?.config.get(NAME) {
+        Some(Value::Text(text)) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    }
+}
 
 /// Which of a track's controls an automation lane drives. A lane overrides
 /// the parameter it automates, so those controls are greyed out rather than
@@ -91,6 +109,15 @@ fn set(node: NodeId, key: &str, value: Option<f32>) -> Command {
     }
 }
 
+/// Where a track's header is, and which track it is.
+#[derive(Clone, Copy, Debug)]
+pub struct Lane {
+    pub rect: Rect,
+    pub index: usize,
+    /// The track input node that plays the track's clips.
+    pub input: NodeId,
+}
+
 /// What the user did in a header.
 #[derive(Default)]
 pub struct Changes {
@@ -104,12 +131,16 @@ pub struct Changes {
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
-    lane: Rect,
-    index: usize,
-    input: NodeId,
+    lane: Lane,
     track: Option<TrackControls>,
     automated: Automated,
+    renaming: &mut Option<Rename>,
 ) -> Changes {
+    let Lane {
+        rect: lane,
+        index,
+        input,
+    } = lane;
     let mut changes = Changes::default();
     let edits = &mut changes.edits;
     let painter = ui.painter_at(lane);
@@ -134,14 +165,53 @@ pub fn show(
     );
     child.set_clip_rect(lane.intersect(ui.clip_rect()));
     let silenced = track.is_some_and(|t| t.muted_by_solo);
-    let name = RichText::new(format!("Track {}", index + 1)).color(if silenced {
-        colors::TEXT_WEAK
+    let group = graph.node(input).and_then(|n| n.parent);
+    let stored = group.and_then(|group| stored_name(graph, group));
+    let shown = stored
+        .clone()
+        .unwrap_or_else(|| format!("Track {}", index + 1));
+    let typing = group.is_some() && renaming.as_ref().is_some_and(|r| Some(r.group) == group);
+    if typing {
+        let rename = renaming.as_mut().expect("checked above");
+        let field = child.add(
+            egui::TextEdit::singleline(&mut rename.text)
+                .desired_width(inner.width())
+                .id(child.id().with(("rename", rename.group))),
+        );
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        if field.lost_focus() {
+            let cancelled = child.input(|i| i.key_pressed(egui::Key::Escape));
+            let done = renaming.take().expect("checked above");
+            let text = done.text.trim().to_owned();
+            let wanted = (!text.is_empty()).then_some(text);
+            if !cancelled && wanted != stored {
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: done.group,
+                    key: NAME.to_owned(),
+                    value: wanted.map(Value::Text),
+                }));
+            }
+        }
     } else {
-        colors::TEXT
-    });
-    let label = child.label(name);
-    if silenced {
-        label.on_hover_text("Muted by solo");
+        let name = RichText::new(&shown).color(if silenced {
+            colors::TEXT_WEAK
+        } else {
+            colors::TEXT
+        });
+        let label = child.add(egui::Label::new(name).sense(egui::Sense::click()));
+        if silenced {
+            label.clone().on_hover_text("Muted by solo");
+        }
+        if let Some(group) = group
+            && label.double_clicked()
+        {
+            *renaming = Some(Rename {
+                group,
+                text: stored.unwrap_or_default(),
+            });
+        }
     }
     let Some(TrackControls {
         node,

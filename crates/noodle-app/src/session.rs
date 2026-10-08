@@ -309,6 +309,11 @@ impl Session {
         &self.diagnostics
     }
 
+    /// Shows the user `text` until the next message replaces it.
+    pub fn notify(&mut self, text: String) {
+        self.message = Some(text);
+    }
+
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
     }

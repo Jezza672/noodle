@@ -16,6 +16,10 @@ struct Rig {
     playhead: Option<Tick>,
     /// Every place the ruler asked the playhead to go.
     seeks: Vec<Tick>,
+    /// What the arrangement told the user.
+    notices: Vec<String>,
+    /// Where it asked to import audio from a file.
+    picks: Vec<super::Target>,
     /// Keeps the audio files alive.
     _dir: tempfile::TempDir,
 }
@@ -46,6 +50,8 @@ fn rig() -> (H, ClipId) {
         timeline: TimelineState::default(),
         playhead: None,
         seeks: Vec::new(),
+        notices: Vec::new(),
+        picks: Vec::new(),
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -56,6 +62,8 @@ fn rig() -> (H, ClipId) {
                 let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
                 rig.session.edit(out.edits);
                 rig.seeks.extend(out.seek);
+                rig.notices.extend(out.notice);
+                rig.picks.extend(out.pick);
                 for (track, on) in out.arm {
                     rig.session.arm(track, on);
                 }
@@ -759,6 +767,311 @@ fn a_clip_too_narrow_for_trimming_has_no_fade_handles() {
     })]);
     h.run();
     assert!(h.state().timeline.fade_handle(id, true).is_none());
+}
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("not needed".into())
+    }
+}
+
+/// Drops `files` with the pointer at `at`.
+fn drop_files(h: &mut H, at: Pos2, files: &[std::path::PathBuf]) {
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for file in files {
+        h.input_mut()
+            .dropped_files
+            .push(std::sync::Arc::new(Dropped(file.clone())));
+    }
+    h.step();
+    h.run();
+}
+
+/// Writes a wav of `frames` frames next to the project and returns its path.
+fn wav(h: &H, name: &str, frames: usize) -> std::path::PathBuf {
+    let path = h.state()._dir.path().join(name);
+    write_wav(&path, &vec![0.0; frames], 1, 48_000).unwrap();
+    path
+}
+
+fn clips_on(h: &H, node: u64) -> Vec<Clip> {
+    let project = h.state().session.project();
+    project
+        .clips()
+        .map(|(_, clip)| clip.clone())
+        .filter(|clip| clip.node == NodeId(node))
+        .collect()
+}
+
+/// A point in the second lane, `beats` quarter notes from the left.
+fn lane_two(h: &H, id: ClipId, beats: f32) -> Pos2 {
+    let r = rect(h, id);
+    Pos2::new(
+        r.left() + 60.0 * beats,
+        r.center().y + super::colors::LANE_HEIGHT,
+    )
+}
+
+#[test]
+fn dropping_a_file_on_a_lane_adds_a_clip_there_in_one_undo_step() {
+    let (mut h, id) = rig();
+    let file = wav(&h, "b.wav", 48_000);
+    // Just off the second beat: it snaps to it.
+    let at = lane_two(&h, id, 2.2);
+    drop_files(&mut h, at, &[file]);
+    let added = clips_on(&h, 2);
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].start, Tick(1920));
+    let audio = added[0].as_audio().unwrap();
+    assert_eq!((audio.source.as_str(), audio.length), ("b.wav", 48_000));
+    assert!(h.state().notices.is_empty());
+    h.state_mut().session.undo();
+    assert!(clips_on(&h, 2).is_empty(), "one undo step");
+}
+
+#[test]
+fn several_dropped_files_are_laid_end_to_end() {
+    let (mut h, id) = rig();
+    let one = wav(&h, "b.wav", 48_000);
+    let two = wav(&h, "c.wav", 24_000);
+    let at = lane_two(&h, id, 0.0);
+    drop_files(&mut h, at, &[one, two]);
+    let mut added = clips_on(&h, 2);
+    added.sort_by_key(|clip| clip.start);
+    // One second is two beats, so the second clip starts at beat two.
+    assert_eq!(
+        added.iter().map(|c| c.start).collect::<Vec<_>>(),
+        [Tick(0), Tick(1920)]
+    );
+    h.state_mut().session.undo();
+    assert!(clips_on(&h, 2).is_empty());
+}
+
+#[test]
+fn a_file_that_cant_be_read_is_reported_and_adds_nothing() {
+    let (mut h, id) = rig();
+    let bad = h.state()._dir.path().join("notes.txt");
+    std::fs::write(&bad, "not audio").unwrap();
+    let at = lane_two(&h, id, 1.0);
+    drop_files(&mut h, at, &[bad]);
+    assert!(clips_on(&h, 2).is_empty());
+    let notices = &h.state().notices;
+    assert!(
+        notices.len() == 1 && notices[0].contains("notes.txt"),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn dropping_a_file_where_there_are_no_tracks_asks_for_one() {
+    let (mut h, id) = rig();
+    let file = wav(&h, "b.wav", 48_000);
+    let at = lane_two(&h, id, 1.0);
+    for node in [1, 2] {
+        h.state_mut()
+            .session
+            .edit([Edit::Apply(Command::RemoveNode { id: NodeId(node) })]);
+    }
+    h.run();
+    drop_files(&mut h, at, &[file]);
+    assert_eq!(h.state().session.project().clips().count(), 0);
+    assert_eq!(h.state().notices.len(), 1);
+}
+
+#[test]
+fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
+    let (mut h, id) = rig();
+    h.state_mut().playhead = Some(Tick(960));
+    h.run();
+    // Nothing selected: the first track.
+    h.get_by_label("Import audio…").click();
+    h.run();
+    let first = h.state().picks.last().copied().unwrap();
+    assert_eq!((first.track, first.at), (NodeId(1), Tick(960)));
+    // Moving the clip to the second lane and selecting it points the import there.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Body,
+        Vec2::new(0.0, 64.0),
+    );
+    h.get_by_label("Import audio…").click();
+    h.run();
+    assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
+}
+
+fn double_click(h: &mut H, at: Pos2) {
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+    }
+    h.run();
+}
+
+fn type_and_press(h: &mut H, text: &str, key: Key) {
+    h.event(Event::Text(text.into()));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+fn track_name(h: &H) -> Option<noodle_core::Value> {
+    let graph = h.state().session.project().graph();
+    graph.node(NodeId(10)).unwrap().config.get("name").cloned()
+}
+
+#[test]
+fn double_clicking_a_track_name_renames_it_in_one_undo_step() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    type_and_press(&mut h, "Drums", Key::Enter);
+    assert_eq!(
+        track_name(&h),
+        Some(noodle_core::Value::Text("Drums".into()))
+    );
+    assert!(h.query_by_label("Drums").is_some());
+    h.state_mut().session.undo();
+    assert_eq!(track_name(&h), None);
+}
+
+#[test]
+fn escape_keeps_the_name() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    type_and_press(&mut h, "Nope", Key::Escape);
+    assert_eq!(track_name(&h), None);
+    assert!(h.query_by_label("Track 1").is_some());
+    // It can be renamed again afterwards. (Wait out the double click window,
+    // or the next two clicks would count as a triple click.)
+    h.run_steps(60);
+    double_click(&mut h, at);
+    assert!(h.state().timeline.renaming.is_some());
+    type_and_press(&mut h, "Bass", Key::Enter);
+    assert_eq!(
+        track_name(&h),
+        Some(noodle_core::Value::Text("Bass".into()))
+    );
+}
+
+#[test]
+fn an_empty_name_puts_the_default_back() {
+    let (mut h, _) = grouped();
+    h.state_mut().session.edit([Edit::Apply(Command::SetConfig {
+        node: NodeId(10),
+        key: "name".into(),
+        value: Some(noodle_core::Value::Text("Bass".into())),
+    })]);
+    h.run();
+    let at = h.get_by_label("Bass").rect().center();
+    double_click(&mut h, at);
+    h.event(Event::Key {
+        key: Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    h.step();
+    type_and_press(&mut h, "", Key::Backspace);
+    type_and_press(&mut h, "", Key::Enter);
+    assert_eq!(track_name(&h), None);
+    assert!(h.query_by_label("Track 1").is_some());
+}
+
+#[test]
+fn a_track_outside_a_group_cannot_be_renamed() {
+    let (mut h, _) = rig();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    assert!(h.state().timeline.renaming.is_none());
+}
+
+#[test]
+fn spaces_around_a_name_are_trimmed_and_spaces_alone_are_no_name() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    type_and_press(&mut h, "  Lead  ", Key::Enter);
+    assert_eq!(
+        track_name(&h),
+        Some(noodle_core::Value::Text("Lead".into()))
+    );
+    h.run_steps(60);
+    let at = h.get_by_label("Lead").rect().center();
+    double_click(&mut h, at);
+    h.event(Event::Key {
+        key: Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    h.step();
+    type_and_press(&mut h, "   ", Key::Enter);
+    assert_eq!(track_name(&h), None);
+}
+
+#[test]
+fn drops_find_their_track_below_an_automation_lane() {
+    use super::{automation, colors};
+    use noodle_core::{AutomationLane, AutomationPoint, Endpoint, LaneId};
+    let (mut h, id) = grouped();
+    let point = |tick, value| AutomationPoint {
+        tick: Tick(tick),
+        value,
+        curve: Default::default(),
+    };
+    h.state_mut().session.edit([Edit::Apply(Command::AddLane {
+        id: LaneId(1),
+        lane: AutomationLane::new(
+            Endpoint::new(NodeId(11), "gain"),
+            vec![point(0, 0.0), point(960, -6.0)],
+        ),
+    })]);
+    h.run();
+    let top = rect(&h, id).center();
+    let file = wav(&h, "b.wav", 48_000);
+    // The row under the first track is its automation lane: the drop still
+    // belongs to the first track.
+    drop_files(
+        &mut h,
+        top + Vec2::new(0.0, colors::LANE_HEIGHT),
+        std::slice::from_ref(&file),
+    );
+    assert_eq!(clips_on(&h, 1).len(), 2, "the first track took it");
+    assert!(clips_on(&h, 2).is_empty());
+    // The second track starts below that row.
+    let below = top + Vec2::new(0.0, colors::LANE_HEIGHT + automation::HEIGHT);
+    drop_files(&mut h, below, &[file]);
+    assert_eq!(clips_on(&h, 2).len(), 1, "the second track took it");
 }
 
 #[test]

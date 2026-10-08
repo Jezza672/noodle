@@ -785,6 +785,14 @@ style. It has these views:
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
+  - **Adding audio.** Dropping files on a lane, or the Import audio button
+    in the corner (which opens a file dialog and targets the selected clip's
+    track, or the first, at the playhead), creates one clip per file, laid end
+    to end from the drop position (snapped to beats; Alt turns that off).
+    The clip's length is the file's frame count, read when it's added; a file
+    that can't be read, or doesn't say how long it is, is left out and the
+    status line says why. All the clips are one `Batch`, so one undo removes
+    them. A file inside the project's folder is stored relative to it.
   - **Files and waveforms.** A clip's file is opened for its sample rate and
     length straight away, and its waveform (`noodle_io::Peaks`) is worked
     out by two background workers, so a long file never stalls the UI. The
@@ -802,6 +810,10 @@ style. It has these views:
     step. A track input node outside any group has no controls. Solo counts
     if either boundary node has it, so turning it off clears every one, and
     a track silenced by another's solo is dimmed.
+  - **Track names** are the track group's `name` config setting. Double-click
+    a header's name to type one; Enter keeps it, Escape throws it away, and
+    an empty name puts the default ("Track N", by position) back. One undo
+    step per rename.
   - **Add track:** the button after the last header runs
     `group::create_track`, one undo step, and the new track shows up with
     its controls at once. It also wires the track to an Output node, using
