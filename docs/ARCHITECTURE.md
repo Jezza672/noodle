@@ -763,6 +763,10 @@ style. It has these views:
     edge snap to beats; Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
+  - **Fades** are dragged by the handles on a clip's top corners (clips too
+    narrow to trim have none). A handle turns the pointer's tick into
+    frames, never snaps, and stops where the other fade begins. Each drag is
+    one undo step.
   - **Files and waveforms.** A clip's file is opened for its sample rate and
     length straight away, and its waveform (`noodle_io::Peaks`) is worked
     out by two background workers, so a long file never stalls the UI. The
