@@ -2184,6 +2184,7 @@ dependencies = [
  "noodle-core",
  "noodle-engine",
  "noodle-io",
+ "rtrb",
 ]
 
 [[package]]

@@ -497,22 +497,28 @@ Settled for M2 (Phase 0):
     plan is installed, from the playhead's tick under the old map and the
     new map's table. The playhead moves while the UI thread builds the plan,
     so working it out on the UI thread would be racy.
-  - **The plan is marked as a discontinuity** when installing it changes
-    what is heard at the playhead: its sample position moves, or the schedule
-    of a clip that is playing (or about to, within a block) changes. A clip
-    edited far from the playhead, or a tempo edit after it, changes nothing
-    audible and installs seamlessly. Steps of one drag don't each trigger a
-    fresh fade while one is still running. Today only a
-    change to the audible wiring makes a plan non-seamless (and so gets the 5
-    ms structural-edit fade); the discontinuity flag joins that, so a tempo
-    or clip edit fades out and back in rather than jumping. Until clip
-    schedules exist (stream 3), nothing raises the flag for a tempo edit, so
-    tempo edits install at once.
+  - **A change to what is heard at the playhead dips the track.** The track
+    input does this itself, in its own 5 ms fade, so other tracks play on
+    untouched and the engine needs no discontinuity flag. When a new schedule
+    arrives, the node compares it with the old one over the coming block. If
+    they sound the same (a clip edited far from the playhead, a tempo edit
+    after it), it swaps at once. If not, it fades the old schedule out, swaps
+    at silence, and fades the new one in. Steps of one drag arriving while it
+    is down replace each other, so they don't each trigger a fresh dip. The
+    node also fades in when the transport starts or jumps, and out when it
+    stops.
   - **A schedule reaches a carried-over track input without rebuilding it.**
     Instances are carried over by their `NodeKey` (type, config, shapes), and
     the schedule is not part of it: rebuilding would throw away the decoder
-    and streaming state mid-clip. The schedule is handed over lock-free, like
-    parameter cells, and the node switches at the start of a block.
+    and streaming state mid-clip. `ClipFeeds::update` (in `noodle-nodes`)
+    turns the project's clips and tempo map into a schedule per track input,
+    in samples, and a hub thread per node instance passes it to the node
+    through a lock-free queue, along with the audio streams the node will
+    need. The node reads both at the start of a block and hands what it is
+    done with back to the hub to be freed. The hub opens a stream for the
+    clip at the playhead and the ones starting within the next second, so no
+    file is opened on the audio thread. After a seek, the first few
+    milliseconds of a clip may be silent while its stream positions itself.
 
 ### Clips
 
@@ -642,7 +648,15 @@ style. It has these views:
 
 - **Node editor** (`noodle-app/src/editor`): pan and zoom, Shift+A to search
   for and add a node, box select, drag to connect, Ctrl+right-drag to cut
-  wires, reroute points, frames, and Tab to enter and leave a group (M2).
+  wires, reroute points, frames, and groups: Tab (or a double-click) enters the selected group
+  and leaves the current one, Ctrl+G folds the selection into a group, and a
+  breadcrumb leads back up. Inside a group the editor shows only that level;
+  frames are top-level only for now.
+  - **Tab and focus.** The canvas holds focus and asks egui to pass it Tab,
+    which egui otherwise uses to move focus, so Tab can't leave the canvas by
+    keyboard. `app.rs` knows the canvas isn't a text field, so the app's
+    shortcuts still work. `group_nodes` takes a shared `&Project` and an ID
+    allocator, so the editor can call it while the session owns the project.
   - **A custom canvas**, not `egui-snarl`, so the interactions can follow
     Blender's exactly: picking a wire up off an input, cutting and rerouting
     with a stroke, frames that carry their nodes. The full list of inputs is

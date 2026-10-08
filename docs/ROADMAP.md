@@ -77,12 +77,14 @@ It becomes a DAW.
 [ARCHITECTURE.md](ARCHITECTURE.md), and the core types (tempo map, clips,
 automation lanes) are in the project. The engine's transport (play, stop,
 seek, loop and a tempo table) has landed, and the app's transport bar is in
-review. The
+review. Group nodes have landed: the model and flattening, and
+the editor's Tab, Ctrl+G and breadcrumb navigation. The
 arrangement view follows the Studio direction: inspector on the left, the
 arrangement on top, and the selected track's node graph below.
 
 - **Transport:** play, stop, loop, tempo map and time signature.
-- Group nodes, with Tab to enter and leave them.
+- Group nodes, with Tab to enter and leave them (done; group controls and
+  solo come with the tracks).
 - Tracks as group nodes. Every track takes MIDI and audio clips alike: a
   track input node with `audio` and `midi` outputs, wired by default into the
   group's output node. Group input and output nodes carry gain, mute and solo

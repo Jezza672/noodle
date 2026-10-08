@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 
 use egui::{Pos2, Rect, Vec2};
-use noodle_core::{Connection, Endpoint, FrameId, NodeId, Project};
+use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
+use noodle_core::{Connection, Endpoint, FrameId, Graph, Node, NodeId, Project};
 use noodle_engine::{InputKind, ParamInfo, Registry};
 use noodle_nodes::REROUTE_ID;
 
@@ -124,52 +125,74 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn build(project: &Project, registry: &Registry) -> Self {
+    /// The scene for one level of the project: the top level for `None`, or
+    /// the inside of a group.
+    pub fn build(project: &Project, registry: &Registry, level: Option<NodeId>) -> Self {
         let graph = project.graph();
-        let connections: Vec<Connection> = graph.connections().collect();
+        let connections: Vec<Connection> = graph
+            .connections()
+            .filter(|c| graph.node(c.from.node).is_some_and(|n| n.parent == level))
+            .collect();
 
         let mut nodes = Vec::new();
         let mut index = BTreeMap::new();
-        for (id, node) in graph.nodes() {
+        for (id, node) in graph.children(level) {
             let mut ports = Vec::new();
             let mut error = None;
-            let (title, category) = match registry.get(&node.type_id) {
-                Some(node_type) => {
-                    let info = node_type.info();
-                    match node_type.layout(&node.config) {
-                        Ok(layout) => {
-                            let port = |side, key: &str, name: &str, kind| PortGeom {
-                                key: key.to_owned(),
-                                name: name.to_owned(),
-                                side,
-                                kind,
-                                socket: Pos2::ZERO,
-                                row: Rect::NOTHING,
-                            };
-                            for p in &layout.outputs {
-                                ports.push(port(Side::Output, &p.key, &p.name, PortKind::Audio));
-                            }
-                            for p in &layout.event_outputs {
-                                ports.push(port(Side::Output, &p.key, &p.name, PortKind::Event));
-                            }
-                            for p in &layout.inputs {
-                                let kind = match &p.kind {
-                                    InputKind::Audio => PortKind::Audio,
-                                    InputKind::Param(info) => PortKind::Param(info.clone()),
+            let (title, category) = if let Some((title, category, structural)) =
+                structure(graph, id, node)
+            {
+                ports = structural;
+                (title, category)
+            } else {
+                match registry.get(&node.type_id) {
+                    Some(node_type) => {
+                        let info = node_type.info();
+                        match node_type.layout(&node.config) {
+                            Ok(layout) => {
+                                let port = |side, key: &str, name: &str, kind| PortGeom {
+                                    key: key.to_owned(),
+                                    name: name.to_owned(),
+                                    side,
+                                    kind,
+                                    socket: Pos2::ZERO,
+                                    row: Rect::NOTHING,
                                 };
-                                ports.push(port(Side::Input, &p.key, &p.name, kind));
+                                for p in &layout.outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Audio,
+                                    ));
+                                }
+                                for p in &layout.event_outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Event,
+                                    ));
+                                }
+                                for p in &layout.inputs {
+                                    let kind = match &p.kind {
+                                        InputKind::Audio => PortKind::Audio,
+                                        InputKind::Param(info) => PortKind::Param(info.clone()),
+                                    };
+                                    ports.push(port(Side::Input, &p.key, &p.name, kind));
+                                }
+                                for p in &layout.event_inputs {
+                                    ports.push(port(Side::Input, &p.key, &p.name, PortKind::Event));
+                                }
                             }
-                            for p in &layout.event_inputs {
-                                ports.push(port(Side::Input, &p.key, &p.name, PortKind::Event));
-                            }
+                            Err(e) => error = Some(e.to_string()),
                         }
-                        Err(e) => error = Some(e.to_string()),
+                        (info.name.to_owned(), info.category.to_owned())
                     }
-                    (info.name.to_owned(), info.category.to_owned())
-                }
-                None => {
-                    error = Some(format!("unknown node type `{}`", node.type_id));
-                    (node.type_id.clone(), String::new())
+                    None => {
+                        error = Some(format!("unknown node type `{}`", node.type_id));
+                        (node.type_id.clone(), String::new())
+                    }
                 }
             };
 
@@ -235,8 +258,10 @@ impl Scene {
         let mut scene = Self {
             nodes,
             wires: Vec::new(),
+            // Frames belong to the top level for now.
             frames: project
                 .frames()
+                .filter(|_| level.is_none())
                 .map(|(id, frame)| FrameGeom {
                     id,
                     label: frame.label.clone(),
@@ -279,6 +304,54 @@ impl Scene {
             .map(|n| n.rect)
             .chain(self.frames.iter().map(|f| f.rect))
             .reduce(Rect::union)
+    }
+}
+
+/// A group's name, from its `name` config, or just "Group".
+pub fn group_title(graph: &Graph, id: NodeId) -> String {
+    match graph.node(id).and_then(|n| n.config.get(group::PORT_NAME)) {
+        Some(noodle_core::Value::Text(name)) if !name.is_empty() => name.clone(),
+        _ => "Group".to_owned(),
+    }
+}
+
+/// What a group node, or a boundary node inside one, looks like. These have
+/// no entry in the registry, because the engine flattens them away.
+fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, Vec<PortGeom>)> {
+    let port = |side, name: &str| PortGeom {
+        key: name.to_owned(),
+        name: name.to_owned(),
+        side,
+        kind: PortKind::Audio,
+        socket: Pos2::ZERO,
+        row: Rect::NOTHING,
+    };
+    let category = "Group".to_owned();
+    match node.type_id.as_str() {
+        GROUP => {
+            let ports = graph.group_ports(id);
+            let title = group_title(graph, id);
+            let mut all: Vec<PortGeom> = ports
+                .outputs
+                .iter()
+                .map(|p| port(Side::Output, &p.name))
+                .collect();
+            all.extend(ports.inputs.iter().map(|p| port(Side::Input, &p.name)));
+            Some((title, category, all))
+        }
+        GROUP_INPUT => {
+            let name = group::port_name(id, node);
+            let mut input = port(Side::Output, &name);
+            input.key = group::INPUT_PORT.to_owned();
+            Some(("Group Input".to_owned(), category, vec![input]))
+        }
+        GROUP_OUTPUT => {
+            let name = group::port_name(id, node);
+            let mut output = port(Side::Input, &name);
+            output.key = group::OUTPUT_PORT.to_owned();
+            Some(("Group Output".to_owned(), category, vec![output]))
+        }
+        _ => None,
     }
 }
 
@@ -337,7 +410,7 @@ mod tests {
             &mut history,
             Node::new("noodle.util.gain").at(100.0, 50.0),
         );
-        let scene = Scene::build(&project, &registry());
+        let scene = Scene::build(&project, &registry(), None);
         let node = scene.node(gain).unwrap();
         assert_eq!(node.title, "Gain");
         let keys: Vec<_> = node
@@ -377,7 +450,7 @@ mod tests {
             &mut history,
             Node::new("noodle.util.mix").with_config(config),
         );
-        let scene = Scene::build(&project, &registry());
+        let scene = Scene::build(&project, &registry(), None);
         let inputs = scene
             .node(mix)
             .unwrap()
@@ -413,7 +486,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let scene = Scene::build(&project, &registry());
+        let scene = Scene::build(&project, &registry(), None);
         assert_eq!(scene.wires.len(), 2);
         let node = scene.node(missing).unwrap();
         assert!(node.error.as_ref().unwrap().contains("no.such.type"));
@@ -449,7 +522,7 @@ mod tests {
             &mut history,
             Node::new(REROUTE_ID).at(10.0, 20.0),
         );
-        let scene = Scene::build(&project, &registry());
+        let scene = Scene::build(&project, &registry(), None);
         let node = scene.node(id).unwrap();
         assert!(node.reroute);
         assert_eq!(node.rect.size(), REROUTE_SIZE);
@@ -478,7 +551,7 @@ mod tests {
         history
             .apply(&mut project, Command::AddFrame { id, frame })
             .unwrap();
-        let scene = Scene::build(&project, &registry());
+        let scene = Scene::build(&project, &registry(), None);
         assert_eq!(scene.frames[0].label, "Synth");
         // A frame shorter than its header doesn't get a header taller than itself.
         assert_eq!(scene.frames[0].header().height(), 10.0);
