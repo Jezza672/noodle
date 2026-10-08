@@ -76,7 +76,16 @@ fn set(node: NodeId, key: &str, value: Option<f32>) -> Command {
     }
 }
 
+/// What the user did in a header.
+#[derive(Default)]
+pub struct Changes {
+    pub edits: Vec<Edit>,
+    /// The record-arm button was pressed: the arm state it asks for.
+    pub arm: Option<bool>,
+}
+
 /// Draws one track's header in `lane` and returns what the user changed.
+/// `armed` is whether the track is armed for recording.
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
@@ -84,8 +93,10 @@ pub fn show(
     index: usize,
     input: NodeId,
     track: Option<TrackControls>,
-) -> Vec<Edit> {
-    let mut edits = Vec::new();
+    armed: bool,
+) -> Changes {
+    let mut changes = Changes::default();
+    let edits = &mut changes.edits;
     let painter = ui.painter_at(lane);
     painter.rect_filled(
         Rect::from_min_size(lane.min, vec2(4.0, lane.height() - 1.0)),
@@ -118,8 +129,9 @@ pub fn show(
         label.on_hover_text("Muted by solo");
     }
     let Some(TrackControls { node, controls, .. }) = track else {
-        return edits;
+        return changes;
     };
+    let arm = &mut changes.arm;
     child.horizontal(|ui| {
         let button = |ui: &mut egui::Ui, text: &str, on: bool, tip: &str| {
             let text = RichText::new(text).size(11.0);
@@ -127,6 +139,9 @@ pub fn show(
                 .on_hover_text(tip)
                 .clicked()
         };
+        if button(ui, "R", armed, "Arm for recording") {
+            *arm = Some(!armed);
+        }
         if button(ui, "M", controls.mute, "Mute") {
             edits.push(Edit::Apply(set(
                 node,
@@ -163,5 +178,5 @@ pub fn show(
             edits.push(Edit::EndDrag);
         }
     });
-    edits
+    changes
 }

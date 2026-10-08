@@ -56,6 +56,9 @@ fn rig() -> (H, ClipId) {
                 let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
                 rig.session.edit(out.edits);
                 rig.seeks.extend(out.seek);
+                for (track, on) in out.arm {
+                    rig.session.arm(track, on);
+                }
             },
             rig,
         );
@@ -756,4 +759,17 @@ fn a_clip_too_narrow_for_trimming_has_no_fade_handles() {
     })]);
     h.run();
     assert!(h.state().timeline.fade_handle(id, true).is_none());
+}
+
+#[test]
+fn the_arm_button_arms_and_disarms_its_track() {
+    let (mut h, _) = grouped();
+    let first = NodeId(1);
+    assert!(!h.state().session.is_armed(first));
+    h.get_all_by_label("R").next().unwrap().click();
+    h.run();
+    assert!(h.state().session.is_armed(first));
+    h.get_all_by_label("R").next().unwrap().click();
+    h.run();
+    assert!(!h.state().session.is_armed(first));
 }

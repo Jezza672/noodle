@@ -593,6 +593,23 @@ start; the node only reads that. Clip commands are undoable like any other.
   whose port no longer exists (a config change removed it) is not a load
   error but a diagnostic when compiling.
 
+### Recording into the arrangement
+
+A track is armed in the session (the R on its header), which is app state and
+not saved with the project. Record needs an armed track and a saved project,
+since takes are stored next to it, in a `<project name> recordings` folder as
+`take-001.wav`, `take-002.wav` and so on, and a clip's source is a path
+relative to the project file like any other. Record starts the stream and the
+transport if they aren't running and starts `Playback::start_recording` at
+the playhead. Ending the take (the button, stopping, pausing the transport, or
+the stream closing, say for an output change) stops the recorder and adds one
+audio clip of the whole take, starting where recording began, to every armed
+track as a single `Batch`, so one undo removes the take. An armed track that
+was deleted meanwhile gets no clip, and a take with no audio adds nothing and
+deletes its file. Input that was dropped because the disk stalled is
+reported. The clip is placed at the playhead without compensating for the
+audio device's latency, so a take can sit a little late; that is still to do.
+
 ## Automation (M2)
 
 Settled for M2 (Phase 0): **an automation lane is an implicit source wired

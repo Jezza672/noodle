@@ -67,6 +67,7 @@ enum Action {
     Redo,
     TogglePlayback,
     Rewind,
+    ToggleRecord,
     TogglePause,
     AudioSettings,
     ToggleMixer,
@@ -164,6 +165,9 @@ impl App {
                 self.session.edit(out.edits);
                 if let Some(tick) = out.seek {
                     self.session.seek(tick);
+                }
+                for (track, on) in out.arm {
+                    self.session.arm(track, on);
                 }
             });
 
@@ -275,6 +279,22 @@ impl App {
             .clicked()
         {
             actions.push(Action::TogglePlayback);
+        }
+        let recording = self.session.is_recording();
+        let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
+            egui::Color32::from_rgb(230, 70, 70)
+        } else {
+            theme::timeline::TEXT
+        }))
+        .selected(recording);
+        if ui
+            .add(record)
+            .on_hover_text(
+                "Record the input onto the armed tracks (R on a track header), from the playhead",
+            )
+            .clicked()
+        {
+            actions.push(Action::ToggleRecord);
         }
         let open = self.session.is_playing();
         ui.add_enabled_ui(open, |ui| {
@@ -437,6 +457,13 @@ impl App {
                 }
             }
             Action::Rewind => self.session.rewind(),
+            Action::ToggleRecord => {
+                if self.session.is_recording() {
+                    self.session.stop_recording();
+                } else {
+                    self.session.record();
+                }
+            }
             Action::TogglePause => {
                 let running = self.session.transport_running();
                 self.session.set_transport_running(!running);
