@@ -557,14 +557,31 @@ into a parameter port.** It is not a clip and not a node the user wires.
 - **Without a transport** (a live patch) the lane holds its first value.
 - **Hold steps are ramped by the automation node.** An unconnected input
   smooths its own value changes, but a lane is wired in, so its samples reach
-  the node as they are. The internal automation node therefore ramps the
-  jump at each hold step over the same smoothing length the target would have
-  used, so a stepped lane doesn't click.
+  the node as they are. The internal automation node therefore spreads the
+  jump into a hold segment (one that follows a hold segment) over the same
+  smoothing length the target would have used, capped at the segment's
+  length, so a stepped lane doesn't click. The value is a function of the
+  tick alone, so it comes out the same however the blocks fall, and a
+  stopped transport holds it.
+- **How it is built.** `compile_with_lanes` flattens the graph, then adds one
+  hidden `noodle.internal.automation` node per lane (category `Internal`, so
+  the add-node menu skips it) wired into the target. Its ID counts down from
+  `u64::MAX` by lane ID, so it can't clash with a project node and its
+  instance carries over between compiles. The points travel as text in the
+  node's config, so they are part of its `NodeKey`. A lane on a missing
+  node, or on a group's boundary node (flattening drops those), is skipped
+  without a diagnostic; one on a missing port or an audio input, or on a
+  parameter with a wire, gets one.
+- **Editing a lane** rebuilds its source node, which makes the plan
+  non-seamless, so each edit fades the output. That is too coarse for
+  dragging a point; it needs the same hand-over the track input gets for its
+  schedule, and belongs with the arrangement view.
 - **The parameter widget.** For a parameter with a lane, the widget shows the
   lane's value at the playhead and is greyed like a wired parameter. The lane
   is edited as a lane.
-- The lane evaluates per sample for linear segments and flags the signal
-  constant for hold segments, so a stepped lane costs nothing.
+- The lane evaluates every sample, with a binary search for the segment. The
+  signal isn't flagged constant, since the node API has no way to flag an
+  output.
 - Lanes are drawn by the arrangement view under their track, and in the
   properties panel next to the parameter they target.
 

@@ -108,7 +108,9 @@ impl Session {
     }
 
     fn update(&mut self) {
-        let diagnostics = self.controller.update(self.project.graph(), &self.registry);
+        let diagnostics = self
+            .controller
+            .update_project(&self.project, &self.registry);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }
@@ -377,6 +379,53 @@ fn the_transport_never_allocates_on_the_audio_thread() {
             violations, 0,
             "allocated on the audio thread in round {round}"
         );
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
+}
+
+#[test]
+fn automation_lanes_never_allocate_on_the_audio_thread() {
+    use noodle_core::{AutomationLane, AutomationPoint, Curve, Endpoint, Tick};
+
+    let (mut s, gain, ..) = busy_session();
+    let points = |n: i64| {
+        (0..n)
+            .map(|i| AutomationPoint {
+                tick: Tick(i * 480),
+                value: -(i as f32),
+                curve: if i % 2 == 0 {
+                    Curve::Linear
+                } else {
+                    Curve::Hold
+                },
+            })
+            .collect()
+    };
+    let id = s.project.new_lane_id();
+    s.edit(Command::AddLane {
+        id,
+        lane: AutomationLane::new(Endpoint::new(gain, "gain"), points(8)),
+    });
+    s.update();
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..8 {
+        if round == 4 {
+            // Editing the lane rebuilds its source off the audio thread.
+            s.edit(Command::SetLane {
+                id,
+                lane: AutomationLane::new(Endpoint::new(gain, "gain"), points(12)),
+            });
+            s.update();
+        }
+        transport.seek(Tick(300 * round));
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use noodle_core::Project;
-use noodle_engine::{Registry, Settings, render};
+use noodle_engine::{Registry, Settings, render_project};
 use noodle_io::{read_wav, write_wav};
 
 const SETTINGS: Settings = Settings {
@@ -46,7 +46,7 @@ fn examples_match_their_golden_renders() {
         let name = path.file_stem().unwrap().to_string_lossy();
         let text = fs::read_to_string(path).unwrap();
         let project = Project::from_ron(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let rendered = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
+        let rendered = render_project(&project, &registry, SETTINGS, FRAMES).unwrap();
         assert!(
             rendered.diagnostics.is_empty(),
             "{name}: {:?}",

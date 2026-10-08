@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use noodle_core::{Command, EditError, FrameId, History, NodeId, Project, Tick};
-use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile};
+use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, compile_with_lanes};
 use noodle_io::{AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, Stream};
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
@@ -522,8 +522,11 @@ impl Session {
         self.diagnostics = match &mut self.audio {
             Some(audio) => audio
                 .controller
-                .update(self.project.graph(), &self.registry),
-            None => compile(self.project.graph(), &self.registry).1,
+                .update_project(&self.project, &self.registry),
+            None => {
+                let lanes: Vec<_> = self.project.lanes().collect();
+                compile_with_lanes(self.project.graph(), &lanes, &self.registry).1
+            }
         };
     }
 

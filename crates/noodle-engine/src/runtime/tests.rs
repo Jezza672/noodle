@@ -480,7 +480,25 @@ impl Rig {
     }
 
     fn update(&mut self) -> Vec<Diagnostic> {
-        self.controller.update(self.project.graph(), &self.registry)
+        let lanes: Vec<_> = self.project.lanes().collect();
+        self.controller
+            .update_with_lanes(self.project.graph(), &lanes, &self.registry)
+    }
+
+    fn add_lane(&mut self, target: Endpoint, points: &[(i64, f32, noodle_core::Curve)]) {
+        let id = self.project.new_lane_id();
+        let points = points
+            .iter()
+            .map(|&(tick, value, curve)| noodle_core::AutomationPoint {
+                tick: noodle_core::Tick(tick),
+                value,
+                curve,
+            })
+            .collect();
+        self.edit(Command::AddLane {
+            id,
+            lane: noodle_core::AutomationLane::new(target, points),
+        });
     }
 
     fn render(&mut self, frames: usize) -> Vec<f32> {
@@ -1172,4 +1190,139 @@ fn a_tempo_change_mid_playback_neither_fades_nor_resets_nodes() {
     // fade would scale the first frames down.
     let want: Vec<f32> = (8..28).map(|i| i as f32).collect();
     assert_eq!(rig.render(20), want);
+}
+
+// At 1000 Hz and 120 bpm a sample is 1.92 ticks, so 1920 ticks is 1000 samples.
+mod automation {
+    use noodle_core::Curve::{Hold, Linear};
+
+    use crate::{Location, Problem};
+
+    use super::*;
+
+    fn lane_rig(points: &[(i64, f32, noodle_core::Curve)]) -> (Rig, NodeId) {
+        let mut rig = Rig::new(SETTINGS);
+        let offset = rig.add("offset");
+        let output = rig.add(OUTPUT_ID);
+        rig.wire(offset, output, "in");
+        rig.add_lane(Endpoint::new(offset, "offset"), points);
+        (rig, offset)
+    }
+
+    #[test]
+    fn a_linear_lane_drives_the_parameter_along_the_timeline() {
+        let (mut rig, _) = lane_rig(&[(0, 0.0, Linear), (1920, 10.0, Linear)]);
+        assert!(rig.update().is_empty());
+        let out = rig.render(400);
+        assert_eq!(out[0], 0.0);
+        assert!((out[100] - 1.0).abs() < 1e-4, "{}", out[100]);
+        assert!((out[399] - 3.99).abs() < 1e-3, "{}", out[399]);
+    }
+
+    #[test]
+    fn a_hold_step_is_ramped_over_the_targets_smoothing() {
+        // 4 ms of smoothing is 7.68 ticks, which is 4 samples. The step is
+        // at tick 960, which is sample 500.
+        let (mut rig, _) = lane_rig(&[(0, 0.0, Hold), (960, 4.0, Hold), (1920, 4.0, Hold)]);
+        assert!(rig.update().is_empty());
+        let out = rig.render(520);
+        assert_eq!(out[499], 0.0);
+        assert!((out[502] - 2.0).abs() < 1e-3, "{}", out[502]);
+        assert_eq!(out[504], 4.0);
+        assert_eq!(out[510], 4.0);
+        // No sample jumps by more than a ramp step.
+        let biggest = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(biggest < 1.1, "{biggest}");
+    }
+
+    #[test]
+    fn a_stopped_transport_holds_the_lane_where_it_is() {
+        let (mut rig, _) = lane_rig(&[(0, 3.0, Linear), (1920, 10.0, Linear)]);
+        assert!(rig.update().is_empty());
+        rig.controller.transport().stop();
+        assert_eq!(rig.render(20), [3.0; 20]);
+    }
+
+    #[test]
+    fn a_wire_wins_over_a_lane() {
+        let mut rig = Rig::new(SETTINGS);
+        let counter = rig.add("counter");
+        let offset = rig.add("offset");
+        let output = rig.add(OUTPUT_ID);
+        rig.wire(counter, offset, "offset");
+        rig.wire(offset, output, "in");
+        rig.add_lane(Endpoint::new(offset, "offset"), &[(0, 9.0, Linear)]);
+        let diagnostics = rig.update();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].problem, Problem::LaneOverridden);
+        assert_eq!(
+            diagnostics[0].location,
+            Location::Wire(Endpoint::new(offset, "offset"))
+        );
+        assert_eq!(rig.render(3), [0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_lane_on_a_missing_port_or_an_audio_input_is_reported() {
+        let (mut rig, offset) = lane_rig(&[(0, 1.0, Linear)]);
+        rig.add_lane(Endpoint::new(offset, "nope"), &[(0, 1.0, Linear)]);
+        rig.add_lane(Endpoint::new(offset, "in"), &[(0, 1.0, Linear)]);
+        let diagnostics = rig.update();
+        let problems: Vec<_> = diagnostics.iter().map(|d| d.problem.clone()).collect();
+        assert_eq!(
+            problems,
+            [
+                Problem::UnknownPort(Endpoint::new(offset, "nope")),
+                Problem::NotAParam("in".into())
+            ]
+        );
+        // The good lane still works.
+        assert_eq!(rig.render(2), [1.0, 1.0]);
+    }
+
+    #[test]
+    fn editing_a_lane_swaps_its_points() {
+        let (mut rig, offset) = lane_rig(&[(0, 1.0, Linear)]);
+        assert!(rig.update().is_empty());
+        assert_eq!(rig.render(4), [1.0; 4]);
+        let id = rig.project.lanes().next().unwrap().0;
+        rig.edit(Command::SetLane {
+            id,
+            lane: noodle_core::AutomationLane::new(
+                Endpoint::new(offset, "offset"),
+                vec![noodle_core::AutomationPoint {
+                    tick: noodle_core::Tick(0),
+                    value: 2.0,
+                    curve: Linear,
+                }],
+            ),
+        });
+        assert!(rig.update().is_empty());
+        // The edit changes what is heard, so the output fades in again.
+        let out = rig.render(4 + 2 * FADE);
+        assert_eq!(out[4 + 2 * FADE - 1], 2.0);
+    }
+
+    #[test]
+    fn the_same_lane_renders_the_same_however_the_blocks_fall() {
+        let points = [
+            (0, 0.0, Hold),
+            (500, 5.0, Hold),
+            (1000, 2.0, Linear),
+            (1900, 8.0, Hold),
+        ];
+        let (mut a, _) = lane_rig(&points);
+        assert!(a.update().is_empty());
+        let whole = a.render(1000);
+        let (mut b, _) = lane_rig(&points);
+        assert!(b.update().is_empty());
+        let mut pieces = Vec::new();
+        for n in [1usize, 3, 7, 11, 100, 500, 378] {
+            pieces.extend(b.render(n));
+        }
+        assert_eq!(whole, pieces);
+    }
 }

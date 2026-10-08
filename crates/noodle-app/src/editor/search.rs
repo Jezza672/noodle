@@ -40,6 +40,7 @@ pub fn entries(registry: &Registry, query: &str) -> Vec<Entry> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut entries: Vec<Entry> = registry
         .iter()
+        .filter(|t| t.info().category != noodle_engine::INTERNAL_CATEGORY)
         .map(|t| {
             let info = t.info();
             Entry {
@@ -200,11 +201,17 @@ mod tests {
     fn everything_is_listed_by_category() {
         let registry = registry();
         let all = entries(&registry, "");
+        let hidden = registry
+            .iter()
+            .filter(|t| t.info().category == noodle_engine::INTERNAL_CATEGORY)
+            .count();
+        assert!(hidden > 0, "the automation source is internal");
         assert_eq!(
             all.len(),
-            registry.iter().count() + 1,
-            "the types and Frame"
+            registry.iter().count() - hidden + 1,
+            "the user's types and Frame"
         );
+        assert!(all.iter().all(|e| e.name != "Automation"));
         assert!(
             all.windows(2)
                 .all(|w| (w[0].category, w[0].name) <= (w[1].category, w[1].name))
