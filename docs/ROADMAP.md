@@ -215,6 +215,9 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
   with no new output node (4).
 - A track's group is named after the track, and the two stay in sync both
   ways (6). A track input node is named after its group (13).
+- Tracks can be dragged by their header to reorder them. The order is the
+  order of the groups, which the mixer also follows, so it's one undo step
+  that changes that order and the arrangement and mixer both follow it.
 - Tracks can be deleted, with Backspace or Delete on a selected track and
   from the right-click menu (10). Deleting also removes its group.
 - A track input's outputs grey out when nothing feeds them, for example the
@@ -267,6 +270,11 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 - Centre node names on the title bar (9). **Now.**
 - Inputs and outputs on a node are separate columns that grow independently,
   rather than sharing a row (26). **Now**, and this includes how wires attach.
+- A node with a single input or a single output doesn't show a label for it.
+  The port sits directly beside the title bar, on the left for an input and
+  the right for an output, which also makes such nodes shorter. This is part
+  of the column layout change above, and ports keep their names for tooltips
+  and the properties panel.
 - Drag a node's ports up and down to reorder them, so wires can be uncrossed.
   Nodes refer to ports by position, so this is a per-node *display order*
   saved with the node's editor layout, and never changes port indices or the
