@@ -80,8 +80,9 @@ stop, seek, loop, a tempo table), group nodes and tracks, the track input
 with audio clips (decoding, resampling, disk streaming, gapless loops), and
 automation lanes, including lanes on a track's gain and mute (solo can't be
 automated). The app has the transport bar, the arrangement's lanes, ruler,
-playhead and movable, trimmable clips with waveforms, track headers with
-mute, solo and gain, and Add track. The session feeds the project's lanes,
+playhead and movable, trimmable clips with waveforms and draggable fades,
+track headers with mute, solo and gain, Add track, and an editor for gain
+and mute automation lanes. The session feeds the project's lanes,
 tempo and clips to the running engine, and the playhead can be set and read
 while stopped. The UI follows the Studio direction: inspector on the left,
 the arrangement on top, and the selected track's node graph below.
@@ -93,9 +94,9 @@ It does not show that a user can do this in the app.
 
 **Still missing for "done when":**
 
-- The app can't yet add clips (no import) or create or edit automation
-  lanes; only the project file and the CLI can.
-- The mixer view hasn't merged, and clip fades can't be dragged yet.
+- The app can't yet add clips (no import); only the project file and the
+  CLI can.
+- The mixer view hasn't merged.
 - Recording audio input to clips hasn't started.
 - Nothing has been listened to on a real device: the Mac checks and the
   Windows CI run for the milestone are still to do.

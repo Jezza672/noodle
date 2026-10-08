@@ -141,7 +141,7 @@ impl App {
             egui::Panel::bottom("mixer")
                 .resizable(false)
                 .show(ui, |ui| {
-                    let edits = mixer::show(ui, self.session.project().graph());
+                    let edits = mixer::show(ui, self.session.project());
                     self.session.edit(edits);
                 });
         }

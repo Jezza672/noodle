@@ -806,7 +806,22 @@ style. It has these views:
     its controls at once. It also wires the track to an Output node, using
     a top level one whose input is free or adding one (Output nodes are
     mixed together), so a new track is audible without further wiring.
-  - Automation lanes and the mixer are still to come.
+  - **Automation lanes** (`timeline/automation.rs`): under each track, a
+    row for every lane that drives a boundary node of the track's group.
+    The track header's `~` menu adds a gain or mute lane, starting as one
+    point holding the control's value now, so adding it changes nothing you
+    hear. Click an empty spot to add a point (on the nearest beat, Alt for
+    free; a mute lane holds and snaps to off or on, a gain lane is
+    linear), drag a point to move it in time and value (it can't pass its
+    neighbours or go before the start), and right-click it or press Delete
+    to remove it. A lane's header has a button to remove the lane. Each
+    edit is one undo step. A lane on solo is drawn greyed out with a note,
+    since solo is read at compile time and the lane does nothing. A lane
+    overrides the control it drives, so the track header's gain slider and
+    M button are greyed out with a note while one exists. Selecting a
+    point drops the clip selection and vice versa, so Delete only ever
+    acts on one.
+  - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
   and compile problems. A parameter with a wire into it is greyed out,
@@ -854,7 +869,9 @@ would fade the whole output. A group with several outputs shows the first
 output node's controls. Solo mutes the other tracks as the compiler reads it
 (`Graph::solo_muted`), so a strip silenced by another's solo shows that, and
 its mute and solo buttons stay live. Turning solo off clears it on every
-boundary node of the group, since any can hold it. There are no meters yet.
+boundary node of the group, since any can hold it. A strip's fader or mute
+is greyed, with the track header's tooltip, while an automation lane drives
+that parameter, since the lane overrides it. There are no meters yet.
 
 ## Testing
 
