@@ -44,6 +44,9 @@ pub fn entries(registry: &Registry, query: &str, in_group: bool) -> Vec<Entry> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut entries: Vec<Entry> = registry
         .iter()
+        // The compiler swaps this in for a group's boundary nodes; users add
+        // those, not this.
+        .filter(|t| t.info().id != "noodle.group.stage")
         .map(|t| {
             let info = t.info();
             Entry {
@@ -255,8 +258,8 @@ mod tests {
         let all = entries(&registry, "", false);
         assert_eq!(
             all.len(),
-            registry.iter().count() + 2,
-            "the types, Frame and Group"
+            registry.iter().count() + 2 - 1,
+            "the types less the compiler's group stage, and Frame and Group"
         );
         assert!(
             all.windows(2)
