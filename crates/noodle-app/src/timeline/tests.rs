@@ -1061,7 +1061,7 @@ fn drops_find_their_track_below_an_automation_lane() {
     drop_files(
         &mut h,
         top + Vec2::new(0.0, colors::LANE_HEIGHT),
-        &[file.clone()],
+        std::slice::from_ref(&file),
     );
     assert_eq!(clips_on(&h, 1).len(), 2, "the first track took it");
     assert!(clips_on(&h, 2).is_empty());
