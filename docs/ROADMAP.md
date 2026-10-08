@@ -260,6 +260,10 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 
 **Node editor polish (M1 follow-ups).**
 
+- **Bug:** selecting a node resets the right-hand panel (the properties
+  panel) to its default width. A resized panel should keep its width.
+  Likely the panel's egui id changes with the selection, or its width is
+  set every frame, so check that first. **Now.**
 - Centre node names on the title bar (9). **Now.**
 - Inputs and outputs on a node are separate columns that grow independently,
   rather than sharing a row (26). **Now**, and this includes how wires attach.
