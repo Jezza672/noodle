@@ -28,6 +28,12 @@ pub const GROUP_INPUT: &str = "noodle.group.input";
 pub const GROUP_OUTPUT: &str = "noodle.group.output";
 /// The config key holding a boundary node's port name.
 pub const PORT_NAME: &str = "name";
+/// The track's source node, inside its group. It has two outputs, [`AUDIO`]
+/// and [`MIDI`]; the transport plays the track's clips out of them.
+pub const TRACK_INPUT: &str = "noodle.track.input";
+pub const AUDIO: &str = "audio";
+pub const MIDI: &str = "midi";
+
 /// The port of a [`GROUP_INPUT`] node.
 pub const INPUT_PORT: &str = "out";
 /// The port of a [`GROUP_OUTPUT`] node.
@@ -294,6 +300,61 @@ impl Graph {
         }
         ports
     }
+}
+
+/// Makes a track: a group holding a track input node, with its `audio`
+/// output wired to the group's output by default, and a group input beside
+/// them so the group has the same controls at both ends. One undo step.
+///
+/// Returns the group's ID and the command. `parent` is the group the track
+/// goes in, `None` for the top level. The group input is named `in` and the
+/// output `out`.
+pub fn create_track(
+    parent: Option<NodeId>,
+    position: Position,
+    mut new_id: impl FnMut() -> NodeId,
+) -> (NodeId, Command) {
+    let group = new_id();
+    let (input, source, output) = (new_id(), new_id(), new_id());
+    let inside = |node: Node, x: f32, y: f32| {
+        let mut node = node.at(position.x + x, position.y + y);
+        node.parent = Some(group);
+        node
+    };
+    let named = |kind: &str, name: &str| {
+        Node::new(kind).with_config(crate::Config::new().with(PORT_NAME, Value::Text(name.into())))
+    };
+    let mut group_node = Node::new(GROUP).at(position.x, position.y);
+    group_node.parent = parent;
+    let command = Command::Batch(vec![
+        Command::AddNode {
+            id: group,
+            node: group_node,
+        },
+        Command::AddNode {
+            id: input,
+            node: inside(named(GROUP_INPUT, "in"), -300.0, 0.0),
+        },
+        Command::AddNode {
+            id: source,
+            node: inside(Node::new(TRACK_INPUT), 0.0, 0.0),
+        },
+        Command::AddNode {
+            id: output,
+            node: inside(
+                named(GROUP_OUTPUT, "out")
+                    .with_param(GAIN, 0.0)
+                    .with_param(MUTE, 0.0),
+                300.0,
+                0.0,
+            ),
+        },
+        Command::Connect(Connection {
+            from: Endpoint::new(source, AUDIO),
+            to: Endpoint::new(output, OUTPUT_PORT),
+        }),
+    ]);
+    (group, command)
 }
 
 /// Folds `nodes` into a new group and returns its ID with the command that
@@ -767,5 +828,61 @@ mod tests {
         set(&mut project, &mut history, vocal_out, SOLO, 1.0);
         // Only the drums, which the vocal doesn't feed, are silenced.
         assert_eq!(project.graph().solo_muted(), [drums].into());
+    }
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::*;
+    use crate::History;
+
+    #[test]
+    fn creating_a_track_is_one_undo_step_and_wires_audio_to_the_output() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let before = project.clone();
+        let (group, command) = create_track(None, Position::default(), || project.new_node_id());
+        history.apply(&mut project, command).unwrap();
+
+        let graph = project.graph();
+        let ports = graph.group_ports(group);
+        assert_eq!(ports.inputs.len(), 1);
+        assert_eq!(ports.outputs.len(), 1);
+        assert_eq!(ports.outputs[0].name, "out");
+        let (source, _) = graph
+            .children(Some(group))
+            .find(|(_, n)| n.type_id == TRACK_INPUT)
+            .expect("a track input node");
+        assert_eq!(
+            graph.source(&Endpoint::new(ports.outputs[0].node, OUTPUT_PORT)),
+            Some(&Endpoint::new(source, AUDIO))
+        );
+
+        assert!(history.undo(&mut project).unwrap());
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn a_new_track_starts_with_its_output_controls_set_to_the_defaults() {
+        let mut project = Project::new();
+        let (group, command) = create_track(None, Position::default(), || project.new_node_id());
+        History::new().apply(&mut project, command).unwrap();
+        let graph = project.graph();
+        let out = graph.group_ports(group).outputs[0].node;
+        let node = graph.node(out).unwrap();
+        assert!(node.has_gain_or_mute());
+        assert_eq!(node.controls(), Controls::default());
+    }
+
+    #[test]
+    fn a_track_can_go_inside_another_group() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (outer, command) = create_track(None, Position::default(), || project.new_node_id());
+        history.apply(&mut project, command).unwrap();
+        let (inner, command) =
+            create_track(Some(outer), Position::default(), || project.new_node_id());
+        history.apply(&mut project, command).unwrap();
+        assert_eq!(project.graph().ancestors(inner), vec![outer]);
     }
 }

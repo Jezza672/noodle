@@ -137,6 +137,14 @@ The **Project** is the single source of truth. It holds one global graph:
     remove the parameter, or the stage goes and the fade comes back. Boundary
     nodes have no parameter ports in the editor yet, so wiring into them
     waits for that.
+  - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
+    the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
+    group output `out` with `audio` wired to it, and a group input `in`. The
+    output starts with gain 0 dB and mute 0 already set, so the track's stage
+    exists from creation (solo and mute act at the output, so the input needs
+    none) and the first fader or mute touch is a parameter change, not a
+    graph change with a fade. The track input's `midi` output is left unwired and the group has no MIDI port yet; the MIDI work
+    adds both. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
