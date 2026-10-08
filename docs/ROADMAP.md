@@ -188,6 +188,101 @@ It does not show that a user can do this in the app.
 **Done when:** you can arrange several audio clips on tracks, process them
 through node graphs, automate a parameter, and mix them down live.
 
+### M2 follow-ups: tracks, groups and the mixer
+
+Requested by Jeremy while trying the M2 build. They're grouped by theme, with
+a milestone for each theme, and the numbers are the order in his list. Items
+marked **now** are small fixes or bugs worth doing before the bigger work.
+
+**Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
+
+- The Add Node list doesn't offer group input and output nodes (1). **Now.**
+- A group's inputs and outputs are always one more than the number wired,
+  with the spare one greyed out, so you can wire into it without limit (2).
+  A mixer's inputs do the same (5). Both use one shared "spare port" rule
+  that adds and removes ports as wires come and go. Ports are config, so a
+  change recompiles; the spare port itself carries no signal and must not
+  trigger a recompile when it's only drawn.
+- Groups can be renamed, and so can their inputs and outputs (7, 8). Track
+  renaming already exists (#71), so this extends it to any group and port.
+- A group output's gain and mute can be wired from other nodes (14), like any
+  other parameter, which also means an automation lane can be a plain wire
+  (see below).
+
+**Tracks and the graph stay in sync (M2).**
+
+- Adding a track adds only the group and wires it into the default mixer,
+  with no new output node (4).
+- A track's group is named after the track, and the two stay in sync both
+  ways (6). A track input node is named after its group (13).
+- Tracks can be deleted, with Backspace or Delete on a selected track and
+  from the right-click menu (10). Deleting also removes its group.
+- A track input's outputs grey out when nothing feeds them, for example the
+  `midi` output on a track with no MIDI clips (12).
+- Adding automation to a track connects a generic automation output on the
+  track input node to the track output's parameter input (15), so a lane is
+  an ordinary wire.
+- **Inferred edits never delete anything (16).** When one of these edits has
+  to take over an input, it replaces the connection feeding it and leaves
+  existing nodes alone. Outputs can fan out, so existing wires from an
+  output stay. This is one rule in the graph-editing code, tested once, that
+  every inferred edit goes through.
+
+**Mixer as a view over any mixer node (M2).**
+
+- The mixer view maps onto a mixer node in the graph, with a drop-down to
+  choose which one, so more mixers can be added and the default one
+  removed (11). Today it has one strip per track group
+  (see "Mixer" in ARCHITECTURE.md), so this changes the strips to follow the
+  mixer node's channels.
+
+**Outputs (M2, after the mixer view).**
+
+- The final output has a built-in scope (18).
+- Several output nodes, each tied to one audio device, with at most one per
+  device (19), and a view for mapping the output nodes to real devices. This
+  needs the engine to drive several streams from one plan, so it's the
+  largest item here. Today there is one stream and one device
+  (see "Devices" in ARCHITECTURE.md).
+
+**Clips and the arrangement (M2).**
+
+- Ctrl or Cmd-drag a clip to copy it to the new place (17). More clip
+  editing (split, duplicate, slip) is expected after this.
+- Import audio moves to the File menu, and the timeline's right-click menu
+  offers it too (21). **Now.**
+- Clip waveforms (25) are **already done** (see "Files and waveforms" in
+  ARCHITECTURE.md), and need no work.
+
+**Node editor polish (M1 follow-ups).**
+
+- Centre node names on the title bar (9). **Now.**
+- Inputs and outputs on a node are separate columns that grow independently,
+  rather than sharing a row (26). **Now**, and this includes how wires attach.
+- Edit menu can delete the selected object (27). **Now.** Same command as
+  the Delete key (see "M1 follow-ups: wire editing").
+- Copy and paste for nodes, including a multi-node selection and the wires
+  between them (20). Duplicate already exists, so paste reuses its code and
+  adds a clipboard. Pasting is one undo step.
+- **Auto-arrange (3).** A layout command, bound to a shortcut and to a menu
+  item, that tidies the selected nodes or the whole graph. This is complex
+  and so gets its own PR: layered layout by topological depth (the compiler
+  already has this order), crossing reduction, and one undo step that moves
+  every node. Frames and groups need a rule. Planned for M3, when graphs
+  get large.
+
+**Buttons bound to nodes (M3).**
+
+- The transport bar can hold buttons that become input nodes in the graph,
+  outputting the button's state (23). Wherever a UI control can be a graph
+  node, it should be.
+- A metronome button (22) is the first one: a default arrangement of a
+  button input wired to the mute of the mixer channel for the default
+  metronome node. This needs a metronome node, so it comes with M3's
+  events work.
+- A button shows a distinct state when its node is missing or broken, and
+  what it's bound to can be edited (24).
+
 ## M3: Events and polyphony
 
 It becomes an instrument.
