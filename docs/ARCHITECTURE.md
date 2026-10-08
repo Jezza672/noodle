@@ -785,7 +785,18 @@ style. It has these views:
     its controls at once. It also wires the track to an Output node, using
     a top level one whose input is free or adding one (Output nodes are
     mixed together), so a new track is audible without further wiring.
-  - Automation lanes and the mixer are still to come.
+  - **Automation lanes** (`timeline/automation.rs`): under each track, a
+    row for every lane that drives a boundary node of the track's group.
+    The track header's `~` menu adds a gain or mute lane, starting as one
+    point holding the control's value now, so adding it changes nothing you
+    hear. Click an empty spot to add a point (on the nearest beat, Alt for
+    free; a mute lane holds and snaps to off or on, a gain lane is
+    linear), drag a point to move it in time and value (it can't pass its
+    neighbours or go before the start), and right-click it or press Delete
+    to remove it. A lane's header has a button to remove the lane. Each
+    edit is one undo step. A lane on solo is drawn greyed out with a note,
+    since solo is read at compile time and the lane does nothing.
+  - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
   and compile problems. A parameter with a wire into it is greyed out,
