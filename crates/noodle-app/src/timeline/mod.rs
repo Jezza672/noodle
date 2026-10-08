@@ -8,6 +8,7 @@
 
 mod clips;
 mod grid;
+mod header;
 mod sources;
 mod waveform;
 
@@ -45,6 +46,8 @@ pub struct TimelineState {
     scroll_y: f32,
     selected: BTreeSet<ClipId>,
     drag: Option<Drag>,
+    /// The tick the ruler last asked for, while the button is held.
+    last_seek: Option<Tick>,
     sources: Sources,
     waveforms: waveform::Cache,
     #[cfg(test)]
@@ -66,6 +69,7 @@ impl Default for TimelineState {
             scroll_y: 0.0,
             selected: BTreeSet::new(),
             drag: None,
+            last_seek: None,
             sources: Sources::default(),
             waveforms: waveform::Cache::default(),
             #[cfg(test)]
@@ -166,13 +170,22 @@ impl Axis {
     }
 }
 
-/// Draws the arrangement and returns the edits the user made.
+/// What the user did in the arrangement.
+#[derive(Default)]
+pub struct Output {
+    pub edits: Vec<Edit>,
+    /// Where they asked the playhead to go, by clicking the ruler.
+    pub seek: Option<Tick>,
+}
+
+/// Draws the arrangement and returns what the user did. The ruler moves the
+/// playhead, to the beat nearest the pointer unless Alt is held.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut TimelineState,
     session: &Session,
     playhead: Option<Tick>,
-) -> Vec<Edit> {
+) -> Output {
     let project = session.project();
     state.retain_existing(project);
     let tracks = tracks(project);
@@ -447,8 +460,35 @@ pub fn show(
         edits.push(Edit::Apply(Command::Batch(removals)));
     }
 
-    draw_headers(ui, rect, content, &tracks, state.scroll_y);
+    edits.extend(draw_headers(
+        ui,
+        rect,
+        content,
+        &tracks,
+        session,
+        state.scroll_y,
+    ));
     draw_ruler(ui, rect, axis, &lines);
+    let ruler = Rect::from_min_max(
+        Pos2::new(content.left(), rect.top()),
+        Pos2::new(rect.right(), content.top()),
+    );
+    let scrub = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
+    let wanted = scrub
+        .interact_pointer_pos()
+        .filter(|_| scrub.clicked() || scrub.dragged() || scrub.is_pointer_button_down_on())
+        .map(|pos| {
+            let tick = axis.tick(pos.x).max(Tick::ZERO);
+            if ui.input(|i| i.modifiers.alt) {
+                tick
+            } else {
+                grid::snap(map, tick)
+            }
+        });
+    // Only a new tick is worth seeking to: a held button, or a drag that stays
+    // within a beat, would otherwise restart the audio's fade every frame.
+    let seek = wanted.filter(|&tick| state.last_seek != Some(tick));
+    state.last_seek = wanted;
     if let Some(tick) = playhead {
         let x = axis.x(tick);
         if x >= content.left() && x <= content.right() {
@@ -459,7 +499,7 @@ pub fn show(
             .vline(x, rect.y_range(), Stroke::new(1.5, colors::PLAYHEAD));
         }
     }
-    edits
+    Output { edits, seek }
 }
 
 /// Scrolling and zooming, while the pointer is over the arrangement.
@@ -578,37 +618,66 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
     }
 }
 
-fn draw_headers(ui: &egui::Ui, rect: Rect, content: Rect, tracks: &[NodeId], scroll_y: f32) {
+fn draw_headers(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    content: Rect,
+    tracks: &[NodeId],
+    session: &Session,
+    scroll_y: f32,
+) -> Vec<Edit> {
+    let graph = session.project().graph();
     let column = Rect::from_min_max(
         Pos2::new(rect.left(), content.top()),
         Pos2::new(content.left(), rect.bottom()),
     );
-    let painter = ui.painter_at(column);
-    painter.rect_filled(column, 0.0, colors::HEADER);
-    for (index, _) in tracks.iter().enumerate() {
+    ui.painter_at(column)
+        .rect_filled(column, 0.0, colors::HEADER);
+    let mut edits = Vec::new();
+    let muted_by_solo = graph.solo_muted();
+    let clip = ui.clip_rect();
+    ui.set_clip_rect(column.intersect(clip));
+    for (index, &input) in tracks.iter().enumerate() {
         let top = content.top() - scroll_y + index as f32 * colors::LANE_HEIGHT;
         let lane = Rect::from_min_size(
             Pos2::new(column.left(), top),
             vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
         );
-        painter.rect_filled(
-            Rect::from_min_size(lane.min, vec2(4.0, lane.height() - 1.0)),
-            0.0,
-            colors::track_colour(index),
-        );
-        painter.text(
-            lane.left_top() + vec2(12.0, 8.0),
-            Align2::LEFT_TOP,
-            format!("Track {}", index + 1),
-            FontId::proportional(13.0),
-            colors::TEXT,
-        );
-        painter.hline(
-            lane.x_range(),
-            lane.bottom() - 0.5,
-            Stroke::new(1.0, colors::LANE_EVEN),
-        );
+        if lane.bottom() < column.top() || lane.top() > column.bottom() {
+            continue;
+        }
+        edits.extend(header::show(
+            ui,
+            graph,
+            lane,
+            index,
+            input,
+            header::controls_for(graph, input, &muted_by_solo),
+        ));
     }
+    // The button sits in the lane after the last track, so it scrolls with them.
+    let top = content.top() - scroll_y + tracks.len() as f32 * colors::LANE_HEIGHT;
+    let spot = Rect::from_min_size(
+        Pos2::new(column.left(), top),
+        vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
+    );
+    if spot.bottom() >= column.top() && spot.top() <= column.bottom() {
+        let place = Rect::from_center_size(spot.center(), vec2(spot.width() - 24.0, 24.0));
+        if ui.put(place, egui::Button::new("+ Add track")).clicked() {
+            // Below everything already in the graph, so the new track's nodes
+            // don't land on top of another's.
+            let below = graph.nodes().map(|(_, n)| n.position.y).fold(0.0, f32::max);
+            let position = noodle_core::Position {
+                x: 0.0,
+                y: below + 200.0,
+            };
+            let (_, command) =
+                noodle_core::group::create_track(None, position, || session.new_node_id());
+            edits.push(Edit::Apply(command));
+        }
+    }
+    ui.set_clip_rect(clip);
+    edits
 }
 
 fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {

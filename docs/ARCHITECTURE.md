@@ -137,6 +137,14 @@ The **Project** is the single source of truth. It holds one global graph:
     remove the parameter, or the stage goes and the fade comes back. Boundary
     nodes have no parameter ports in the editor yet, so wiring into them
     waits for that.
+  - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
+    the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
+    group output `out` with `audio` wired to it, and a group input `in`. The
+    output starts with gain 0 dB and mute 0 already set, so the track's stage
+    exists from creation (solo and mute act at the output, so the input needs
+    none) and the first fader or mute touch is a parameter change, not a
+    graph change with a fade. The track input's `midi` output is left unwired and the group has no MIDI port yet; the MIDI work
+    adds both. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
@@ -753,6 +761,18 @@ style. It has these views:
     looked at again: one that couldn't be read is retried, a failed waveform
     gets another go, and a changed modification time (a re-export) reads
     the file afresh.
+  - **The playhead** is drawn from the transport's position, and clicking or
+    dragging the ruler seeks (to the nearest beat; Alt for free). Seeking
+    isn't a project edit, so `show` returns it beside the edits.
+  - **Track headers** show the controls on the track group's output node:
+    mute and solo buttons and a gain slider in decibels (double-click
+    resets), written as `SetParam` commands, so a slider drag is one undo
+    step. A track input node outside any group has no controls. Solo counts
+    if either boundary node has it, so turning it off clears every one, and
+    a track silenced by another's solo is dimmed.
+  - **Add track:** the button after the last header runs
+    `group::create_track`, one undo step, and the new track shows up with
+    its controls at once.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters

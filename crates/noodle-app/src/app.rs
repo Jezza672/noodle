@@ -146,8 +146,12 @@ impl App {
             .default_size(theme::timeline::DEFAULT_HEIGHT)
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                let edits = timeline::show(ui, &mut self.timeline, &self.session, None);
-                self.session.edit(edits);
+                let playhead = Some(self.session.playhead());
+                let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
+                self.session.edit(out.edits);
+                if let Some(tick) = out.seek {
+                    self.session.seek(tick);
+                }
             });
 
         egui::CentralPanel::default()
@@ -174,9 +178,10 @@ impl App {
         self.dragging = dragging;
         self.update_title(ui.ctx());
         if self.session.is_playing() {
-            // Keeps health checks and plan freeing going while idle.
+            // Keeps health checks and plan freeing going while idle, and the
+            // playhead moving at about 60 frames a second.
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(50));
+                .request_repaint_after(std::time::Duration::from_millis(16));
         }
         for action in actions {
             self.request(ui.ctx(), action);
@@ -267,13 +272,12 @@ impl App {
                 actions.push(Action::TogglePause);
             }
         });
-        let position = self.session.playhead().map_or_else(
-            || "– . – . –".to_owned(),
-            |tick| {
-                let at = self.session.project().tempo_map().position(tick);
-                format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick)
-            },
-        );
+        let at = self
+            .session
+            .project()
+            .tempo_map()
+            .position(self.session.playhead());
+        let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
     }
 
