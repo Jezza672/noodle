@@ -477,3 +477,39 @@ fn clicking_the_ruler_leaves_clips_selected() {
     drag(&mut h, Modifiers::NONE, &[Pos2::new(400.0, 10.0)]);
     assert!(h.state().timeline.selected().contains(&id));
 }
+
+#[test]
+fn holding_the_ruler_still_seeks_once() {
+    let (mut h, id) = rig();
+    let x = rect(&h, id).left() + 130.0;
+    let at = Pos2::new(x, 10.0);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(h.state().seeks, [Tick(1920)]);
+    // Letting go and pressing again is a new request.
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.step();
+    assert_eq!(h.state().seeks, [Tick(1920), Tick(1920)]);
+}

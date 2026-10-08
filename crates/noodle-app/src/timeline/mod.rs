@@ -45,6 +45,8 @@ pub struct TimelineState {
     scroll_y: f32,
     selected: BTreeSet<ClipId>,
     drag: Option<Drag>,
+    /// The tick the ruler last asked for, while the button is held.
+    last_seek: Option<Tick>,
     sources: Sources,
     waveforms: waveform::Cache,
     #[cfg(test)]
@@ -66,6 +68,7 @@ impl Default for TimelineState {
             scroll_y: 0.0,
             selected: BTreeSet::new(),
             drag: None,
+            last_seek: None,
             sources: Sources::default(),
             waveforms: waveform::Cache::default(),
             #[cfg(test)]
@@ -463,7 +466,7 @@ pub fn show(
         Pos2::new(rect.right(), content.top()),
     );
     let scrub = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
-    let seek = scrub
+    let wanted = scrub
         .interact_pointer_pos()
         .filter(|_| scrub.clicked() || scrub.dragged() || scrub.is_pointer_button_down_on())
         .map(|pos| {
@@ -474,6 +477,10 @@ pub fn show(
                 grid::snap(map, tick)
             }
         });
+    // Only a new tick is worth seeking to: a held button, or a drag that stays
+    // within a beat, would otherwise restart the audio's fade every frame.
+    let seek = wanted.filter(|&tick| state.last_seek != Some(tick));
+    state.last_seek = wanted;
     if let Some(tick) = playhead {
         let x = axis.x(tick);
         if x >= content.left() && x <= content.right() {
