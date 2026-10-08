@@ -69,6 +69,76 @@ passes on Linux and Windows. Left: the listening check on a Mac.
 **Done when:** you can build a patch from scratch, tweak it while it plays
 with no glitches, save it, and reopen it exactly as it was.
 
+### M1 follow-ups: wire editing
+
+Small node-editor changes requested after M1 landed. They share the editor's
+hit-testing and wire code, so they go in one PR, alongside the M2 app work.
+
+- **Delete key on a selected node.** Pressing Delete (and Backspace) with
+  nodes selected deletes them, as one undo step. "Delete" is already listed
+  under M1's node editor, so first check why the key doesn't work and fix
+  that rather than adding a second path.
+- **Double-click a wire to break it.** One `Command` removing that
+  connection, as Ctrl+right-drag already does. The click's hit-test is the
+  same distance-to-curve test the cut gesture uses.
+- **Drop a node onto a wire to splice it in.** The wire's source goes to the
+  node's input and the node's output goes to the wire's destination.
+  *Proposed default design:*
+  - **Trigger:** while a node is dragged, the wire nearest the node's body
+    (within a small radius, and only if the node has no connections yet)
+    highlights. Releasing over it splices. Holding Alt while dragging turns
+    splicing off.
+  - **Port choice:** the first input and the first output whose signal type
+    matches the wire's (audio onto audio, control onto control), preferring
+    the main signal port over a parameter port. If nothing matches, the wire
+    doesn't highlight and nothing happens. A node with several candidate
+    ports takes the first by position, and the user can rewire from there.
+  - **One undo step:** remove the old wire, add the two new ones. The
+    compiler's usual shape and cycle checks apply, and a splice that would
+    create a cycle is refused with the normal diagnostic.
+
+### Backlog: modulation display (M3)
+
+Both of these are about control signals, so they belong with M3's LFO and
+envelope nodes, which are the first sources people will wire into parameters.
+The log-versus-linear decision comes first, because the meter's scale depends
+on it.
+
+- **Show a modulated parameter's live value.** A parameter with a wire
+  into it currently greys out. Instead, its slider becomes a meter:
+  - **Value:** the fill shows the parameter's current effective value, read
+    every frame.
+  - **Range marks:** two ticks mark the minimum and maximum over the last few
+    seconds (default about 3), so the modulation depth is visible against
+    the parameter's range.
+  - **Plumbing:** a connected parameter port gets a telemetry tap, which
+    keeps a per-block minimum, maximum and last value in atomics, in the same
+    way as `Meter`'s peak. The tap is only added to ports that are wired and
+    visible, and is off the audio path otherwise. Real-time rules apply: no
+    allocation, and `realtime.rs` is extended to cover it.
+  - **Scaling:** the meter uses the parameter's own taper, so it lines up
+    with the slider it replaces.
+  - **Oscillator levels:** a source's output is shown relative to the
+    target's range ("this LFO sweeps 30% of cutoff"), not in dB.
+- **Log versus linear for control signals.** *Proposed default design:*
+  - **Signals stay linear.** Audio and control signals are plain floats, and
+    gain is linear amplitude. Only the UI shows dB, as in the Meter node.
+  - **Parameters carry a taper** (linear or log, already in `ParamInfo` for
+    frequency) that decides how a value maps to the slider. Modulation adds
+    in the parameter's *tapered* space, so a bipolar LFO of depth 0.5 moves
+    a log cutoff by the same number of octaves at any base frequency, and a
+    linear parameter moves by the same amount everywhere.
+  - **Where it's applied:** the engine converts at the parameter, once per
+    block: `value = from_taper(to_taper(base) + depth * signal)`, clamped to
+    the range. A wire into a parameter port therefore means "offset in the
+    slider's space".
+  - **Exceptions:** a dedicated exponential converter node (for V/oct pitch
+    and dB gain) is available for cases where the user wants the other
+    behaviour.
+  - **To confirm:** this changes what a wire into a log parameter does today
+    (it adds in raw units), so it needs a golden-render check, and
+    `examples/vibrato.ron` is the first one to look at.
+
 ## M2: Timeline and tracks
 
 It becomes a DAW.
@@ -94,10 +164,13 @@ It does not show that a user can do this in the app.
 
 **Still missing for "done when":**
 
-- The app can't yet add clips (no import); only the project file and the
-  CLI can.
-- The mixer view hasn't merged.
-- Recording audio input to clips hasn't started.
+- Check that the clip import (drop and Import audio) and the mixer view,
+  both now in the app, are covered by the app-level "done when" test; the
+  M2 follow-ups below are what's left of them.
+- Recording into the arrangement has merged (#72): arm tracks with R,
+  record, and each armed track gets one clip, as a single undo step. Still
+  open are latency compensation for takes and a check with a real
+  microphone on the Mac.
 - Nothing has been listened to on a real device: the Mac checks and the
   Windows CI run for the milestone are still to do.
 
@@ -113,10 +186,142 @@ It does not show that a user can do this in the app.
 - **Arrangement view:** tracks, and moving, trimming and fading clips.
 - Mixer view over the track groups.
 - Automation lanes.
-- Recording audio input to clips.
+- Recording audio input to clips (done, apart from latency compensation).
 
 **Done when:** you can arrange several audio clips on tracks, process them
 through node graphs, automate a parameter, and mix them down live.
+
+### M2 follow-ups: tracks, groups and the mixer
+
+Requested by Jeremy while trying the M2 build. They're grouped by theme, with
+a milestone for each theme, and the numbers are the order in his list. Items
+marked **now** are small fixes or bugs worth doing before the bigger work.
+
+**Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
+
+- The Add Node list doesn't offer group input and output nodes (1). **Now.**
+- A group's inputs and outputs are always one more than the number wired,
+  with the spare one greyed out, so you can wire into it without limit (2).
+  A mixer's inputs do the same (5). Both use one shared "spare port" rule
+  that adds and removes ports as wires come and go. Ports are config, so a
+  change recompiles; the spare port itself carries no signal and must not
+  trigger a recompile when it's only drawn.
+- Groups can be renamed, and so can their inputs and outputs (7, 8). Track
+  renaming already exists (#71), so this extends it to any group and port.
+- A group output's gain and mute can be wired from other nodes (14), like any
+  other parameter, which also means an automation lane can be a plain wire
+  (see below).
+
+**Tracks and the graph stay in sync (M2).**
+
+- Adding a track adds only the group and wires it into the default mixer,
+  with no new output node (4).
+- A track's group is named after the track, and the two stay in sync both
+  ways (6). A track input node is named after its group (13).
+- Tracks can be dragged by their header to reorder them. The order is the
+  order of the groups, which the mixer also follows, so it's one undo step
+  that changes that order and the arrangement and mixer both follow it.
+- Tracks can be deleted, with Backspace or Delete on a selected track and
+  from the right-click menu (10). Deleting also removes its group.
+- A track input's outputs grey out when nothing feeds them, for example the
+  `midi` output on a track with no MIDI clips (12).
+- Adding automation to a track connects a generic automation output on the
+  track input node to the track output's parameter input (15), so a lane is
+  an ordinary wire.
+- **Inferred edits never delete anything (16).** When one of these edits has
+  to take over an input, it replaces the connection feeding it and leaves
+  existing nodes alone. Outputs can fan out, so existing wires from an
+  output stay. This is one rule in the graph-editing code, tested once, that
+  every inferred edit goes through.
+
+**Mixer as a view over any mixer node (M2).**
+
+- The mixer view maps onto a mixer node in the graph, with a drop-down to
+  choose which one, so more mixers can be added and the default one
+  removed (11). Today it has one strip per track group
+  (see "Mixer" in ARCHITECTURE.md), so this changes the strips to follow the
+  mixer node's channels.
+- **Node views by double-click.** Double-clicking a Scope node opens a scope
+  view pane, and double-clicking a Mixer node opens the mixer view on that
+  mixer. Like the mixer view, the scope view keeps no state of its own and
+  has a drop-down to choose which Scope node it shows, so one pane can
+  follow any scope in the graph. Both read through the telemetry API as the
+  node on the canvas does. This makes "open the view for this node" a
+  general mechanism that other node types can use later.
+- **Meters on mixer inputs.** Each input channel of a Mixer node shows a
+  level meter inside the node, next to its port (and the mixer view's strips
+  get the same meters, which ARCHITECTURE.md notes are missing). The Mixer
+  node would report per-channel peak and RMS through the telemetry hub, like
+  the Meter node, with one channel per input. Reporting must stay
+  allocation-free, and `realtime.rs` is extended to cover it. The spare input
+  (see the auto-growing ports item) has no meter.
+
+**Outputs (M2, after the mixer view).**
+
+- The final output has a built-in scope (18).
+- Several output nodes, each tied to one audio device, with at most one per
+  device (19), and a view for mapping the output nodes to real devices. This
+  needs the engine to drive several streams from one plan, so it's the
+  largest item here. Today there is one stream and one device
+  (see "Choosing a device" under the audio output in ARCHITECTURE.md).
+
+**Clips and the arrangement (M2).**
+
+- Ctrl or Cmd-drag a clip to copy it to the new place (17). More clip
+  editing (split, duplicate, slip) is expected after this.
+- Import audio moves to the File menu, and the timeline's right-click menu
+  offers it too (21). **Now.**
+- With a clip selected, Ctrl or Cmd+Left and Right move the playhead to the
+  clip's start or end, and the arrangement scrolls to keep the playhead in
+  view. The playhead can already be set while stopped, so this is a key
+  binding plus a scroll-into-view call. **Now.**
+- Clip waveforms (25) are **already done** (see "Files and waveforms" in
+  ARCHITECTURE.md), and need no work.
+
+**Node editor polish (M1 follow-ups).**
+
+- **Bug:** selecting a node resets the right-hand panel (the properties
+  panel) to its default width. A resized panel should keep its width.
+  Likely the panel's egui id changes with the selection, or its width is
+  set every frame, so check that first. **Now.**
+- Centre node names on the title bar (9). **Now.**
+- Inputs and outputs on a node are separate columns that grow independently,
+  rather than sharing a row (26). **Now**, and this includes how wires attach.
+- A node with a single input or a single output doesn't show a label for it.
+  The port sits directly beside the title bar, on the left for an input and
+  the right for an output, which also makes such nodes shorter. This is part
+  of the column layout change above, and ports keep their names for tooltips
+  and the properties panel.
+- Drag a node's ports up and down to reorder them, so wires can be uncrossed.
+  Nodes refer to ports by position, so this is a per-node *display order*
+  saved with the node's editor layout, and never changes port indices or the
+  compiled graph. The order applies within a column (see the separate input
+  and output columns above), and new ports on a growing node
+  (see the group items) go last. One undo step per drag. Builds on the
+  column layout fix, so it follows it.
+- Edit menu can delete the selected object (27). **Now.** Same command as
+  the Delete key (see "M1 follow-ups: wire editing").
+- Copy and paste for nodes, including a multi-node selection and the wires
+  between them (20). Duplicate already exists, so paste reuses its code and
+  adds a clipboard. Pasting is one undo step.
+- **Auto-arrange (3).** A layout command, bound to a shortcut and to a menu
+  item, that tidies the selected nodes or the whole graph. This is complex
+  and so gets its own PR: layered layout by topological depth (the compiler
+  already has this order), crossing reduction, and one undo step that moves
+  every node. Frames and groups need a rule. Planned for M3, when graphs
+  get large.
+
+**Buttons bound to nodes (M3).**
+
+- The transport bar can hold buttons that become input nodes in the graph,
+  outputting the button's state (23). Wherever a UI control can be a graph
+  node, it should be.
+- A metronome button (22) is the first one: a default arrangement of a
+  button input wired to the mute of the mixer channel for the default
+  metronome node. This needs a metronome node, so it comes with M3's
+  events work.
+- A button shows a distinct state when its node is missing or broken, and
+  what it's bound to can be edited (24).
 
 ## M3: Events and polyphony
 
