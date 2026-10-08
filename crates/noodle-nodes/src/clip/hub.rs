@@ -17,10 +17,10 @@ use noodle_core::ClipId;
 use noodle_io::{ClipStream, StreamSpec, StreamWorker, open_stream};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use super::schedule::{ClipStatus, Schedule};
+use super::schedule::{ClipStatus, Schedule, ScheduledClip};
 
 /// Streams a node can hold at once: the clip playing and the ones about to.
-pub(super) const MAX_STREAMS: usize = 4;
+pub(super) const MAX_STREAMS: usize = 6;
 /// The most channels a file can have and still play.
 pub(super) const MAX_CHANNELS: usize = 8;
 /// How far ahead of the playhead streams are opened, in seconds.
@@ -38,6 +38,10 @@ pub(super) struct Shared {
     error: Mutex<Option<String>>,
     /// The node's playhead at its last block, in samples.
     pub position: AtomicU64,
+    /// The loop's start and end in samples as of the node's last block. An
+    /// end of zero means no loop.
+    pub loop_start: AtomicU64,
+    pub loop_end: AtomicU64,
     pub bound: AtomicUsize,
     pub underruns: AtomicU64,
 }
@@ -48,6 +52,8 @@ impl Default for Shared {
             latest: Mutex::new((0, Arc::new(Vec::new()))),
             error: Mutex::new(None),
             position: AtomicU64::new(0),
+            loop_start: AtomicU64::new(0),
+            loop_end: AtomicU64::new(0),
             bound: AtomicUsize::new(0),
             underruns: AtomicU64::new(0),
         }
@@ -75,6 +81,10 @@ impl Shared {
 pub(super) struct Prepared {
     pub id: ClipId,
     pub key: u64,
+    /// Tells this stream apart from others for the same clip.
+    pub serial: u64,
+    /// Opened ahead for the loop's start, and not played from yet.
+    pub head: bool,
     pub stream: ClipStream,
     // Never read: dropping it stops and joins the thread, which must happen
     // here and not on the audio thread.
@@ -90,6 +100,17 @@ pub(super) enum Retired {
     // Only kept to be dropped on the hub's thread.
     Schedule(#[allow(dead_code)] Box<Schedule>),
     Stream(Box<Prepared>),
+    /// The node has started playing from a stream that was opened ahead for
+    /// the loop's start (its serial), so it is an ordinary stream now. Not
+    /// something to drop, and it needs no room in the queue.
+    Promoted(u64),
+}
+
+/// What the hub knows about a stream it has handed over.
+struct Live {
+    serial: u64,
+    key: (ClipId, u64),
+    head: bool,
 }
 
 /// The node's ends of the queues.
@@ -116,16 +137,24 @@ fn run(
 ) {
     let mut sent: Option<u64> = None;
     let mut outstanding = 0usize;
-    let mut live: Vec<(ClipId, u64)> = Vec::new();
+    let mut next_serial = 0u64;
+    let mut live: Vec<Live> = Vec::new();
     // Streams that failed to open for this version of the schedule.
     let mut failed: HashSet<(ClipId, u64)> = HashSet::new();
     let lookahead = (f64::from(rate) * LOOKAHEAD) as u64;
     while !to_node.is_abandoned() {
         while let Ok(item) = from_node.pop() {
-            outstanding -= 1;
-            if let Retired::Stream(prepared) = &item {
-                live.retain(|key| *key != (prepared.id, prepared.key));
+            match &item {
+                Retired::Promoted(serial) => {
+                    if let Some(l) = live.iter_mut().find(|l| l.serial == *serial) {
+                        l.head = false;
+                    }
+                    continue;
+                }
+                Retired::Stream(prepared) => live.retain(|l| l.serial != prepared.serial),
+                Retired::Schedule(_) => {}
             }
+            outstanding -= 1;
             drop(item);
         }
         let (version, schedule) = {
@@ -143,35 +172,49 @@ fn run(
         }
         if sent == Some(version) {
             let position = shared.position.load(Ordering::Relaxed);
-            for clip in schedule.iter() {
-                if clip.end() <= position || clip.start >= position.saturating_add(lookahead) {
-                    continue;
-                }
+            let looping = {
+                let (start, end) = (
+                    shared.loop_start.load(Ordering::Relaxed),
+                    shared.loop_end.load(Ordering::Relaxed),
+                );
+                (start < end).then_some((start, end))
+            };
+            for (clip, head) in wanted(&schedule, position, lookahead, looping) {
                 let key = clip.stream_key();
-                if live.contains(&key) || failed.contains(&key) {
+                if live.iter().any(|l| l.key == key && l.head == head) || failed.contains(&key) {
                     continue;
                 }
                 if live.len() >= MAX_STREAMS || outstanding >= MAX_OUTSTANDING {
                     break;
                 }
+                // A stream opened for the loop's start begins there; any other
+                // begins where the playhead is, or at the clip's start.
+                let from = match looping {
+                    Some((start, _)) if head => start,
+                    _ => position,
+                };
                 let spec = StreamSpec {
                     path: clip.source.path.clone(),
                     rate,
                     offset: clip.source.offset,
                     length: clip.source.length,
-                    start: position.saturating_sub(clip.start),
+                    start: from.saturating_sub(clip.start),
                     chunks: STREAM_CHUNKS,
                 };
                 match open_stream(spec) {
                     Ok((stream, worker)) if stream.channels() <= MAX_CHANNELS => {
+                        let serial = next_serial;
                         let prepared = Prepared {
                             id: clip.id,
                             key: key.1,
+                            serial,
+                            head,
                             stream,
                             _worker: worker,
                         };
                         if to_node.push(ToNode::Stream(Box::new(prepared))).is_ok() {
-                            live.push(key);
+                            next_serial += 1;
+                            live.push(Live { serial, key, head });
                             outstanding += 1;
                         }
                     }
@@ -192,4 +235,42 @@ fn run(
         }
         thread::sleep(POLL);
     }
+}
+
+/// The clips that need a stream now, soonest first, and whether each is for
+/// the loop's start (`true`) or for where the playhead is going (`false`).
+///
+/// Clips starting within `lookahead` of the playhead are wanted. When the
+/// loop's end is within that distance too, so are the clips at the start of
+/// the loop, including the one already playing there, each with a stream
+/// opened at the loop's start, so the audio is ready before the playhead
+/// wraps.
+fn wanted(
+    schedule: &[ScheduledClip],
+    position: u64,
+    lookahead: u64,
+    looping: Option<(u64, u64)>,
+) -> Vec<(&ScheduledClip, bool)> {
+    let mut reach = position.saturating_add(lookahead);
+    let wrap = looping.filter(|&(_, end)| position < end);
+    if let Some((_, end)) = wrap {
+        reach = reach.min(end);
+    }
+    let mut out: Vec<_> = schedule
+        .iter()
+        .filter(|c| c.end() > position && c.start < reach)
+        .map(|c| (c, false))
+        .collect();
+    if let Some((start, end)) = wrap
+        && position.saturating_add(lookahead) > end
+    {
+        let ahead = start + (position + lookahead - end);
+        out.extend(
+            schedule
+                .iter()
+                .filter(|c| c.end() > start && c.start < ahead)
+                .map(|c| (c, true)),
+        );
+    }
+    out
 }

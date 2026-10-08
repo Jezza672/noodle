@@ -345,6 +345,7 @@ impl Processor {
                         transport: Transport {
                             playing,
                             position: self.position,
+                            loop_range: looping,
                             tick,
                             bpm: self.table.bpm_at(tick),
                             signature: self.table.signature_at(tick),
