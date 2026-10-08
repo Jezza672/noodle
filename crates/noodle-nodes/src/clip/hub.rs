@@ -17,7 +17,7 @@ use noodle_core::ClipId;
 use noodle_io::{ClipStream, StreamSpec, StreamWorker, open_stream};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use super::schedule::{ClipStatus, Schedule, ScheduledClip};
+use super::schedule::{ClipStatus, FileError, Schedule, ScheduledClip};
 
 /// Streams a node can hold at once: the clip playing and the ones about to.
 pub(super) const MAX_STREAMS: usize = 6;
@@ -47,10 +47,9 @@ pub(super) struct Shared {
     /// Offline rendering: the node waits for the hub and the disk instead of
     /// playing silence, so the output doesn't depend on timing.
     pub blocking: bool,
-    error: Mutex<Option<String>>,
-    /// Clips whose file couldn't be opened, for the offline node to skip
-    /// instead of waiting on.
-    failed: Mutex<Vec<(ClipId, u64)>>,
+    /// Clips whose file couldn't be opened and why, for the offline node to
+    /// skip instead of waiting on, and for the UI to name.
+    failed: Mutex<Vec<((ClipId, u64), FileError)>>,
     /// The node's playhead at its last block, in samples.
     pub position: AtomicU64,
     /// The loop's start and end in samples as of the node's last block. An
@@ -66,7 +65,6 @@ impl Shared {
         Self {
             blocking,
             latest: Mutex::new((0, Arc::new(Vec::new()))),
-            error: Mutex::new(None),
             failed: Mutex::new(Vec::new()),
             position: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
@@ -89,18 +87,42 @@ impl Shared {
     }
 
     pub fn has_failed(&self, key: (ClipId, u64)) -> bool {
-        self.failed.lock().expect("failed lock").contains(&key)
+        self.failed
+            .lock()
+            .expect("failed lock")
+            .iter()
+            .any(|(k, _)| *k == key)
     }
 
     pub fn is_empty(&self) -> bool {
         self.latest.lock().expect("schedule lock").1.is_empty()
     }
 
+    /// The files that couldn't be opened, one entry each.
+    pub fn errors(&self) -> Vec<FileError> {
+        let mut errors: Vec<FileError> = Vec::new();
+        for (_, error) in self.failed.lock().expect("failed lock").iter() {
+            if !errors.contains(error) {
+                errors.push(error.clone());
+            }
+        }
+        errors
+    }
+
+    /// Notes that a clip's file failed; the newest message for a clip wins.
+    fn fail(&self, key: (ClipId, u64), error: FileError) {
+        let mut failed = self.failed.lock().expect("failed lock");
+        match failed.iter_mut().find(|(k, _)| *k == key) {
+            Some(entry) => entry.1 = error,
+            None => failed.push((key, error)),
+        }
+    }
+
     pub fn status(&self) -> ClipStatus {
         ClipStatus {
             streams: self.bound.load(Ordering::Relaxed),
             underruns: self.underruns.load(Ordering::Relaxed),
-            error: self.error.lock().expect("error lock").clone(),
+            errors: self.errors(),
         }
     }
 }
@@ -201,7 +223,6 @@ fn run(
                 busy = true;
                 failed.clear();
                 shared.failed.lock().expect("failed lock").clear();
-                *shared.error.lock().expect("error lock") = None;
             }
         }
         if sent == Some(version) {
@@ -262,8 +283,7 @@ fn run(
                                     .failed
                                     .lock()
                                     .expect("failed lock")
-                                    .retain(|k| *k != key);
-                                *shared.error.lock().expect("error lock") = None;
+                                    .retain(|(k, _)| *k != key);
                             }
                             next_serial += 1;
                             live.push(Live { serial, key, head });
@@ -272,25 +292,23 @@ fn run(
                     }
                     Ok(_) => {
                         failed.insert(key, Instant::now());
-                        let mut shared_failed = shared.failed.lock().expect("failed lock");
-                        if !shared_failed.contains(&key) {
-                            shared_failed.push(key);
-                        }
-                        drop(shared_failed);
-                        *shared.error.lock().expect("error lock") = Some(format!(
-                            "{}: more than {MAX_CHANNELS} channels",
-                            clip.source.path.display()
-                        ));
+                        shared.fail(
+                            key,
+                            FileError {
+                                path: clip.source.path.clone(),
+                                message: format!("more than {MAX_CHANNELS} channels"),
+                            },
+                        );
                     }
                     Err(e) => {
                         failed.insert(key, Instant::now());
-                        let mut shared_failed = shared.failed.lock().expect("failed lock");
-                        if !shared_failed.contains(&key) {
-                            shared_failed.push(key);
-                        }
-                        drop(shared_failed);
-                        *shared.error.lock().expect("error lock") =
-                            Some(format!("{}: {e}", clip.source.path.display()));
+                        shared.fail(
+                            key,
+                            FileError {
+                                path: clip.source.path.clone(),
+                                message: e.to_string(),
+                            },
+                        );
                     }
                 }
             }

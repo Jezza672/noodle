@@ -173,8 +173,22 @@ pub struct ClipStatus {
     /// Blocks where audio was missing, because a stream wasn't ready or
     /// the disk fell behind.
     pub underruns: u64,
-    /// The most recent file that couldn't be opened, and why.
-    pub error: Option<String>,
+    /// The files that couldn't be opened, and why. Each is tried again every
+    /// couple of seconds; an entry goes once its file opens.
+    pub errors: Vec<FileError>,
+}
+
+/// A clip's file that couldn't be opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+impl std::fmt::Display for FileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.message)
+    }
 }
 
 impl ClipFeeds {
@@ -207,6 +221,18 @@ impl ClipFeeds {
     pub fn underruns(&self) -> u64 {
         let hubs = self.inner.hubs.lock().expect("feeds lock");
         hubs.values().map(|s| s.status().underruns).sum()
+    }
+
+    /// Every file that couldn't be opened, over every node.
+    pub fn errors(&self) -> Vec<FileError> {
+        let hubs = self.inner.hubs.lock().expect("feeds lock");
+        let mut errors: Vec<FileError> = Vec::new();
+        for error in hubs.values().flat_map(|s| s.errors()) {
+            if !errors.contains(&error) {
+                errors.push(error);
+            }
+        }
+        errors
     }
 
     /// How many nodes the feeds are keeping a schedule for.

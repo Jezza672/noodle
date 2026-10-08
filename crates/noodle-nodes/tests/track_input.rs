@@ -310,14 +310,14 @@ fn a_file_that_fails_to_open_is_tried_again_later() {
     // The file is damaged after the project looked at it, and mended later.
     std::fs::write(rig.dir.join("file.wav"), b"not audio").unwrap();
     let started = std::time::Instant::now();
-    while rig.feeds.status(rig.id).error.is_none() {
+    while rig.feeds.status(rig.id).errors.is_empty() {
         rig.run(0, BLOCK, false);
         assert!(started.elapsed().as_secs() < 5, "no error was reported");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
     rig.wait_ready(0, 1);
-    assert_eq!(rig.feeds.status(rig.id).error, None);
+    assert!(rig.feeds.status(rig.id).errors.is_empty());
     let (left, _) = rig.play(0, 2_000);
     assert_close(&left[300..], |_| 0.5, "after the retry");
 }
@@ -358,5 +358,35 @@ fn an_offline_render_does_not_wait_on_a_file_that_cannot_be_opened() {
         "20 blocks took {:?}",
         started.elapsed()
     );
-    assert!(rig.feeds.status(rig.id).error.is_some());
+    let errors = rig.feeds.status(rig.id).errors;
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].path, rig.dir.join("file.wav"));
+    assert_eq!(rig.feeds.errors(), errors);
+}
+
+#[test]
+fn each_bad_file_is_named_separately() {
+    let mut rig = Rig::new("named-errors");
+    rig.wav("a.wav", 1, 20_000, |_, _| 0.5);
+    rig.wav("b.wav", 1, 20_000, |_, _| 0.5);
+    rig.add_clip(0, "a.wav", 0, 5_000);
+    rig.add_clip(0, "b.wav", 6_000, 5_000);
+    std::fs::write(rig.dir.join("a.wav"), b"not audio").unwrap();
+    std::fs::write(rig.dir.join("b.wav"), b"not audio").unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        rig.run(0, BLOCK, false);
+        let errors = rig.feeds.status(rig.id).errors;
+        if errors.len() == 2 {
+            let mut names: Vec<_> = errors
+                .iter()
+                .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(names, ["a.wav", "b.wav"]);
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 5, "got {errors:?}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }

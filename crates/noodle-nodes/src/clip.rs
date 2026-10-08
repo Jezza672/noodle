@@ -31,7 +31,7 @@ use rtrb::{Consumer, Producer, PushError};
 
 use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
 pub use schedule::{
-    ClipFeeds, ClipProblem, ClipSource, ClipStatus, Schedule, ScheduledClip, active_at,
+    ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip, active_at,
 };
 use schedule::{Segments, same_sound};
 
