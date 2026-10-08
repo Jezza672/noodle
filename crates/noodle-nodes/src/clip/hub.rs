@@ -21,6 +21,10 @@ use super::schedule::{ClipStatus, Schedule, ScheduledClip};
 
 /// Streams a node can hold at once: the clip playing and the ones about to.
 pub(super) const MAX_STREAMS: usize = 6;
+/// Streams opened ahead for the loop's start, on top of those. They have their
+/// own room so a busy loop can't keep them from opening, or the other way
+/// round.
+pub(super) const MAX_HEADS: usize = 4;
 /// The most channels a file can have and still play.
 pub(super) const MAX_CHANNELS: usize = 8;
 /// How far ahead of the playhead streams are opened, in seconds.
@@ -184,8 +188,12 @@ fn run(
                 if live.iter().any(|l| l.key == key && l.head == head) || failed.contains(&key) {
                     continue;
                 }
-                if live.len() >= MAX_STREAMS || outstanding >= MAX_OUTSTANDING {
+                if outstanding >= MAX_OUTSTANDING {
                     break;
+                }
+                let cap = if head { MAX_HEADS } else { MAX_STREAMS };
+                if live.iter().filter(|l| l.head == head).count() >= cap {
+                    continue;
                 }
                 // A stream opened for the loop's start begins there; any other
                 // begins where the playhead is, or at the clip's start.

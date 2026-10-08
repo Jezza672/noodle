@@ -27,7 +27,7 @@ use noodle_engine::{
 };
 use rtrb::{Consumer, Producer, PushError};
 
-use hub::{Links, MAX_CHANNELS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
+use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, Schedule, ScheduledClip, active_at,
 };
@@ -119,7 +119,7 @@ impl TrackInputNode {
             to_hub: links.to_hub,
             schedule: None,
             pending: None,
-            streams: (0..MAX_STREAMS).map(|_| None).collect(),
+            streams: (0..MAX_STREAMS + MAX_HEADS).map(|_| None).collect(),
             scratch: vec![0.0; max_frames * MAX_CHANNELS],
             left: vec![0.0; max_frames],
             right: vec![0.0; max_frames],

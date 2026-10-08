@@ -543,7 +543,10 @@ Settled for M2 (Phase 0):
     stream for each clip at the loop's start (the one playing there too),
     positioned at the loop's start. The node plays from whichever stream is
     already at the playhead, so the wrap needs no seek; it hands back the
-    streams the lap left behind, and the hub opens the next lap's. After a
+    streams the lap left behind, and the hub opens the next lap's. At most four
+    such streams are open at once (the ordinary ones have their own six), so a
+    loop with more clips than that near its start falls back to a short gap for
+    the rest. After a
     seek that isn't a wrap, the first few milliseconds of a clip may be
     silent while its stream positions itself.
 
