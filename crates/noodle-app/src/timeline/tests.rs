@@ -1035,3 +1035,38 @@ fn spaces_around_a_name_are_trimmed_and_spaces_alone_are_no_name() {
     type_and_press(&mut h, "   ", Key::Enter);
     assert_eq!(track_name(&h), None);
 }
+
+#[test]
+fn drops_find_their_track_below_an_automation_lane() {
+    use super::{automation, colors};
+    use noodle_core::{AutomationLane, AutomationPoint, Endpoint, LaneId};
+    let (mut h, id) = grouped();
+    let point = |tick, value| AutomationPoint {
+        tick: Tick(tick),
+        value,
+        curve: Default::default(),
+    };
+    h.state_mut().session.edit([Edit::Apply(Command::AddLane {
+        id: LaneId(1),
+        lane: AutomationLane::new(
+            Endpoint::new(NodeId(11), "gain"),
+            vec![point(0, 0.0), point(960, -6.0)],
+        ),
+    })]);
+    h.run();
+    let top = rect(&h, id).center();
+    let file = wav(&h, "b.wav", 48_000);
+    // The row under the first track is its automation lane: the drop still
+    // belongs to the first track.
+    drop_files(
+        &mut h,
+        top + Vec2::new(0.0, colors::LANE_HEIGHT),
+        &[file.clone()],
+    );
+    assert_eq!(clips_on(&h, 1).len(), 2, "the first track took it");
+    assert!(clips_on(&h, 2).is_empty());
+    // The second track starts below that row.
+    let below = top + Vec2::new(0.0, colors::LANE_HEIGHT + automation::HEIGHT);
+    drop_files(&mut h, below, &[file]);
+    assert_eq!(clips_on(&h, 2).len(), 1, "the second track took it");
+}
