@@ -20,11 +20,13 @@ mod schedule;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Setup, Shape,
 };
+use noodle_io::ClipStream;
 use rtrb::{Consumer, Producer, PushError};
 
 use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
@@ -37,6 +39,10 @@ pub const TRACK_INPUT_ID: &str = "noodle.track.input";
 
 const AUDIO: usize = 0;
 const FADE_SECONDS: f32 = 0.005;
+/// Offline, how often the node looks again while it waits for the hub or the
+/// disk, and how long it waits before giving up on them.
+const WAIT_STEP: Duration = Duration::from_micros(50);
+const WAIT_LIMIT: Duration = Duration::from_secs(10);
 /// How far behind a stream may be and still catch up by reading and dropping
 /// audio, which is quicker than seeking.
 const MAX_SKIP: u64 = 8192;
@@ -108,6 +114,14 @@ struct TrackInputNode {
     /// The declick gain, from 0 to 1.
     level: f32,
     step: f32,
+    /// The version of the newest schedule received.
+    version: u64,
+    /// The block being rendered: its first sample and its length. Offline
+    /// waits need it to keep taking in what the hub sends.
+    block: (u64, usize),
+    looping: Option<(u64, u64)>,
+    /// A schedule that arrived while the current one was in use.
+    deferred: Option<(u64, Box<Schedule>)>,
 }
 
 impl TrackInputNode {
@@ -125,6 +139,10 @@ impl TrackInputNode {
             right: vec![0.0; max_frames],
             level: 0.0,
             step: 1.0 / fade_len,
+            version: 0,
+            block: (0, 0),
+            looping: None,
+            deferred: None,
         }
     }
 
@@ -147,39 +165,101 @@ impl TrackInputNode {
 
     /// Takes what the hub has sent. A new schedule that changes what is heard
     /// over this block waits for the dip; any other takes over at once.
-    fn receive(&mut self, ctx: &Context) {
+    fn receive(&mut self, position: u64, frames: usize) {
+        if let Some((version, next)) = self.deferred.take() {
+            self.take_schedule(version, next, position, frames);
+        }
         while let Ok(message) = self.from_hub.pop() {
             match message {
-                ToNode::Stream(prepared) => {
-                    match self.streams.iter_mut().find(|slot| slot.is_none()) {
-                        Some(slot) => *slot = Some(prepared),
-                        None => self.retire(Retired::Stream(prepared)),
-                    }
+                ToNode::Stream(prepared) => self.take_stream(prepared),
+                ToNode::Schedule(version, next) => {
+                    self.take_schedule(version, next, position, frames)
                 }
-                ToNode::Schedule(next) => {
-                    let from = ctx.transport.position;
-                    let to = from + ctx.frames as u64;
-                    let audible = self.level > 0.0
-                        && self
-                            .schedule
-                            .as_ref()
-                            .is_some_and(|now| !same_sound(now, &next, from, to));
-                    if audible {
-                        if let Some(older) = self.pending.replace(next) {
-                            self.retire(Retired::Schedule(older));
-                        }
-                    } else {
-                        // Nothing audible changes, so it can take over now,
-                        // including over a dip that is waiting.
-                        if let Some(older) = self.pending.take() {
-                            self.retire(Retired::Schedule(older));
-                        }
-                        if let Some(old) = self.schedule.replace(next) {
-                            self.retire(Retired::Schedule(old));
-                        }
+            }
+        }
+    }
+
+    /// Like [`receive`](Self::receive) in the middle of a block, where the
+    /// schedule is in use: streams are taken in, and a schedule is kept for
+    /// the start of the next block.
+    fn receive_streams(&mut self) {
+        while let Ok(message) = self.from_hub.pop() {
+            match message {
+                ToNode::Stream(prepared) => self.take_stream(prepared),
+                ToNode::Schedule(version, next) => {
+                    if let Some((_, older)) = self.deferred.replace((version, next)) {
+                        self.retire(Retired::Schedule(older));
                     }
                 }
             }
+        }
+    }
+
+    fn take_stream(&mut self, prepared: Box<Prepared>) {
+        match self.streams.iter_mut().find(|slot| slot.is_none()) {
+            Some(slot) => *slot = Some(prepared),
+            None => self.retire(Retired::Stream(prepared)),
+        }
+    }
+
+    fn take_schedule(&mut self, version: u64, next: Box<Schedule>, position: u64, frames: usize) {
+        self.version = version;
+        let (from, to) = (position, position + frames as u64);
+        let audible = self.level > 0.0
+            && self
+                .schedule
+                .as_ref()
+                .is_some_and(|now| !same_sound(now, &next, from, to));
+        if audible {
+            if let Some(older) = self.pending.replace(next) {
+                self.retire(Retired::Schedule(older));
+            }
+        } else {
+            // Nothing audible changes, so it can take over now, including
+            // over a dip that is waiting.
+            if let Some(older) = self.pending.take() {
+                self.retire(Retired::Schedule(older));
+            }
+            if let Some(old) = self.schedule.replace(next) {
+                self.retire(Retired::Schedule(old));
+            }
+        }
+    }
+
+    /// Offline: waits until the hub has handed over the newest schedule.
+    fn wait_for_schedule(&mut self) {
+        let started = Instant::now();
+        while self.version != self.shared.version() {
+            if started.elapsed() > WAIT_LIMIT {
+                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            std::thread::sleep(WAIT_STEP);
+            let (position, frames) = self.block;
+            self.receive(position, frames);
+        }
+    }
+
+    /// Offline: waits for the hub to open the stream for `key`, handing back
+    /// streams of clips that have ended meanwhile to make room.
+    fn wait_for_stream(
+        &mut self,
+        key: (ClipId, u64),
+        rel: u64,
+        at: u64,
+        current: &[ScheduledClip],
+    ) -> Option<usize> {
+        let started = Instant::now();
+        loop {
+            if let Some(slot) = self.pick(key, rel) {
+                return Some(slot);
+            }
+            if started.elapsed() > WAIT_LIMIT {
+                return None;
+            }
+            std::thread::sleep(WAIT_STEP);
+            self.receive_streams();
+            self.sweep(at, self.looping, Some(current));
         }
     }
 
@@ -187,14 +267,19 @@ impl TrackInputNode {
     /// gone, a stream for a clip that hasn't started yet was left part-way
     /// through (by a loop wrap or a seek back, so it would have to seek), or
     /// it was opened for the loop's start and looping is off.
-    fn sweep(&mut self, position: u64, looping: Option<(u64, u64)>) {
+    fn sweep(
+        &mut self,
+        position: u64,
+        looping: Option<(u64, u64)>,
+        current: Option<&[ScheduledClip]>,
+    ) {
         for i in 0..self.streams.len() {
             let Some(stream) = &self.streams[i] else {
                 continue;
             };
             let at = stream.stream.position();
-            let wanted = |schedule: &Option<Box<Schedule>>| {
-                schedule.as_ref().is_some_and(|s| {
+            let wanted = |schedule: Option<&[ScheduledClip]>| {
+                schedule.is_some_and(|s| {
                     s.iter().any(|c| {
                         c.stream_key() == (stream.id, stream.key)
                             && if stream.head {
@@ -205,7 +290,7 @@ impl TrackInputNode {
                     })
                 })
             };
-            if !(wanted(&self.schedule) || wanted(&self.pending))
+            if !(wanted(current) || wanted(self.pending.as_deref().map(Vec::as_slice)))
                 && let Some(stream) = self.streams[i].take()
             {
                 self.retire(Retired::Stream(stream));
@@ -287,7 +372,7 @@ impl TrackInputNode {
         for (a, b, clip) in Segments::new(&schedule, position + from as u64, position + to as u64) {
             let (fa, fb) = ((a - position) as usize, (b - position) as usize);
             match clip {
-                Some(clip) => self.play(clip, a, fa, fb, target),
+                Some(clip) => self.play(clip, &schedule, a, fa, fb, target),
                 None => self.advance(target, fb - fa),
             }
         }
@@ -296,16 +381,30 @@ impl TrackInputNode {
 
     /// Plays `clip` over block frames `fa..fb`, which start at timeline
     /// sample `a`.
-    fn play(&mut self, clip: &ScheduledClip, a: u64, fa: usize, fb: usize, target: f32) {
+    fn play(
+        &mut self,
+        clip: &ScheduledClip,
+        schedule: &[ScheduledClip],
+        a: u64,
+        fa: usize,
+        fb: usize,
+        target: f32,
+    ) {
         let len = fb - fa;
         let key = clip.stream_key();
         let rel = a - clip.start;
-        let Some(slot) = self.pick(key, rel) else {
+        let found = if self.shared.blocking {
+            self.wait_for_stream(key, rel, a, schedule)
+        } else {
+            self.pick(key, rel)
+        };
+        let Some(slot) = found else {
             // Not opened yet: silence, and the hub is on it.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             self.advance(target, len);
             return;
         };
+        let blocking = self.shared.blocking;
         let prepared = self.streams[slot].as_mut().expect("found above");
         let stream = &mut prepared.stream;
         let channels = stream.channels();
@@ -317,7 +416,12 @@ impl TrackInputNode {
         if at < rel && rel - at <= MAX_SKIP {
             while stream.position() < rel {
                 let want = (rel - stream.position()).min((self.scratch.len() / channels) as u64);
-                if stream.read(&mut self.scratch[..want as usize * channels]) == 0 {
+                if read_frames(
+                    stream,
+                    &mut self.scratch[..want as usize * channels],
+                    blocking,
+                ) == 0
+                {
                     break;
                 }
             }
@@ -331,7 +435,7 @@ impl TrackInputNode {
             return;
         }
         let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
-        let got = stream.read(&mut self.scratch[..len * channels]);
+        let got = read_frames(stream, &mut self.scratch[..len * channels], blocking);
         if let Some(serial) = promoted {
             // Playing from it now, so it is an ordinary stream.
             let _ = self.to_hub.push(Retired::Promoted(serial));
@@ -365,6 +469,27 @@ impl TrackInputNode {
     }
 }
 
+/// Reads from `stream` into `out` (whole frames). Offline, it waits until the
+/// disk has caught up, or the clip ends or the stream fails, so it returns
+/// fewer frames than asked for only at the end of the clip.
+fn read_frames(stream: &mut ClipStream, out: &mut [f32], blocking: bool) -> usize {
+    let channels = stream.channels();
+    let want = out.len() / channels;
+    let mut got = stream.read(out);
+    if blocking {
+        let started = Instant::now();
+        while got < want
+            && !stream.failed()
+            && stream.position() < stream.total_frames()
+            && started.elapsed() < WAIT_LIMIT
+        {
+            std::thread::sleep(WAIT_STEP);
+            got += stream.read(&mut out[got * channels..]);
+        }
+    }
+    got
+}
+
 impl Node for TrackInputNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let n = ctx.frames;
@@ -375,8 +500,19 @@ impl Node for TrackInputNode {
         let (start, end) = transport.loop_range.unwrap_or((0, 0));
         self.shared.loop_start.store(start, Ordering::Relaxed);
         self.shared.loop_end.store(end, Ordering::Relaxed);
-        self.receive(ctx);
-        self.sweep(transport.position, transport.loop_range);
+        self.block = (transport.position, n);
+        self.looping = transport.loop_range;
+        self.receive(transport.position, n);
+        if self.shared.blocking {
+            self.wait_for_schedule();
+        }
+        let current = self.schedule.take();
+        self.sweep(
+            transport.position,
+            transport.loop_range,
+            current.as_deref().map(Vec::as_slice),
+        );
+        self.schedule = current;
         self.left[..n].fill(0.0);
         self.right[..n].fill(0.0);
 

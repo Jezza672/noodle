@@ -44,6 +44,9 @@ const STREAM_CHUNKS: usize = 8;
 /// What the UI side, the hub and the node share.
 pub(super) struct Shared {
     latest: Mutex<(u64, Arc<Schedule>)>,
+    /// Offline rendering: the node waits for the hub and the disk instead of
+    /// playing silence, so the output doesn't depend on timing.
+    pub blocking: bool,
     error: Mutex<Option<String>>,
     /// The node's playhead at its last block, in samples.
     pub position: AtomicU64,
@@ -55,9 +58,10 @@ pub(super) struct Shared {
     pub underruns: AtomicU64,
 }
 
-impl Default for Shared {
-    fn default() -> Self {
+impl Shared {
+    pub fn new(blocking: bool) -> Self {
         Self {
+            blocking,
             latest: Mutex::new((0, Arc::new(Vec::new()))),
             error: Mutex::new(None),
             position: AtomicU64::new(0),
@@ -67,9 +71,12 @@ impl Default for Shared {
             underruns: AtomicU64::new(0),
         }
     }
-}
 
-impl Shared {
+    /// The version of the newest schedule set.
+    pub fn version(&self) -> u64 {
+        self.latest.lock().expect("schedule lock").0
+    }
+
     pub fn set(&self, schedule: Schedule) {
         let mut latest = self.latest.lock().expect("schedule lock");
         if *latest.1 != schedule {
@@ -105,7 +112,8 @@ pub(super) struct Prepared {
 }
 
 pub(super) enum ToNode {
-    Schedule(Box<Schedule>),
+    /// A schedule and its version.
+    Schedule(u64, Box<Schedule>),
     Stream(Box<Prepared>),
 }
 
@@ -178,7 +186,7 @@ fn run(
             (latest.0, latest.1.clone())
         };
         if sent != Some(version) && outstanding < MAX_OUTSTANDING {
-            let message = ToNode::Schedule(Box::new(schedule.to_vec()));
+            let message = ToNode::Schedule(version, Box::new(schedule.to_vec()));
             if to_node.push(message).is_ok() {
                 sent = Some(version);
                 outstanding += 1;
