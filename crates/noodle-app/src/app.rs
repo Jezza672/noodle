@@ -7,6 +7,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::session::{Edit, Saved, Session};
+use crate::timeline::{self, TimelineState};
 use crate::{properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -35,6 +36,7 @@ const SHORTCUTS: [(KeyboardShortcut, Action); 8] = [
 pub struct App {
     session: Session,
     editor: EditorState,
+    timeline: TimelineState,
     devices: DevicePicker,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -88,6 +90,7 @@ impl App {
         Self {
             session,
             editor: EditorState::default(),
+            timeline: TimelineState::default(),
             devices: DevicePicker::default(),
             confirming: None,
             after_save: None,
@@ -138,6 +141,15 @@ impl App {
                 self.session.edit(edits);
             });
 
+        egui::Panel::top("arrangement")
+            .resizable(true)
+            .default_size(theme::timeline::DEFAULT_HEIGHT)
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                let edits = timeline::show(ui, &mut self.timeline, &self.session, None);
+                self.session.edit(edits);
+            });
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::CANVAS))
             .show(ui, |ui| {
@@ -173,7 +185,10 @@ impl App {
 
     fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
         // A text field keeps the keys it uses itself.
-        let typing = ctx.egui_wants_keyboard_input();
+        // The editor canvas holds focus so it can receive Tab, and isn't a
+        // text field.
+        let typing = ctx.egui_wants_keyboard_input()
+            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.

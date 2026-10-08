@@ -1284,7 +1284,7 @@ mod automation {
     }
 
     #[test]
-    fn editing_a_lane_swaps_its_points() {
+    fn editing_a_lane_swaps_its_points_without_a_fade() {
         let (mut rig, offset) = lane_rig(&[(0, 1.0, Linear)]);
         assert!(rig.update().is_empty());
         assert_eq!(rig.render(4), [1.0; 4]);
@@ -1301,9 +1301,20 @@ mod automation {
             ),
         });
         assert!(rig.update().is_empty());
-        // The edit changes what is heard, so the output fades in again.
+        // The new points apply from the next block, with no dip.
+        assert_eq!(rig.render(4), [2.0; 4]);
+    }
+
+    #[test]
+    fn removing_a_lane_fades_because_the_wiring_changes() {
+        let (mut rig, _) = lane_rig(&[(0, 1.0, Linear)]);
+        assert!(rig.update().is_empty());
+        rig.render(4);
+        let id = rig.project.lanes().next().unwrap().0;
+        rig.edit(Command::RemoveLane { id });
+        assert!(rig.update().is_empty());
         let out = rig.render(4 + 2 * FADE);
-        assert_eq!(out[4 + 2 * FADE - 1], 2.0);
+        assert_eq!(out[FADE - 1], 0.0, "{out:?}");
     }
 
     #[test]

@@ -497,22 +497,28 @@ Settled for M2 (Phase 0):
     plan is installed, from the playhead's tick under the old map and the
     new map's table. The playhead moves while the UI thread builds the plan,
     so working it out on the UI thread would be racy.
-  - **The plan is marked as a discontinuity** when installing it changes
-    what is heard at the playhead: its sample position moves, or the schedule
-    of a clip that is playing (or about to, within a block) changes. A clip
-    edited far from the playhead, or a tempo edit after it, changes nothing
-    audible and installs seamlessly. Steps of one drag don't each trigger a
-    fresh fade while one is still running. Today only a
-    change to the audible wiring makes a plan non-seamless (and so gets the 5
-    ms structural-edit fade); the discontinuity flag joins that, so a tempo
-    or clip edit fades out and back in rather than jumping. Until clip
-    schedules exist (stream 3), nothing raises the flag for a tempo edit, so
-    tempo edits install at once.
+  - **A change to what is heard at the playhead dips the track.** The track
+    input does this itself, in its own 5 ms fade, so other tracks play on
+    untouched and the engine needs no discontinuity flag. When a new schedule
+    arrives, the node compares it with the old one over the coming block. If
+    they sound the same (a clip edited far from the playhead, a tempo edit
+    after it), it swaps at once. If not, it fades the old schedule out, swaps
+    at silence, and fades the new one in. Steps of one drag arriving while it
+    is down replace each other, so they don't each trigger a fresh dip. The
+    node also fades in when the transport starts or jumps, and out when it
+    stops.
   - **A schedule reaches a carried-over track input without rebuilding it.**
     Instances are carried over by their `NodeKey` (type, config, shapes), and
     the schedule is not part of it: rebuilding would throw away the decoder
-    and streaming state mid-clip. The schedule is handed over lock-free, like
-    parameter cells, and the node switches at the start of a block.
+    and streaming state mid-clip. `ClipFeeds::update` (in `noodle-nodes`)
+    turns the project's clips and tempo map into a schedule per track input,
+    in samples, and a hub thread per node instance passes it to the node
+    through a lock-free queue, along with the audio streams the node will
+    need. The node reads both at the start of a block and hands what it is
+    done with back to the hub to be freed. The hub opens a stream for the
+    clip at the playhead and the ones starting within the next second, so no
+    file is opened on the audio thread. After a seek, the first few
+    milliseconds of a clip may be silent while its stream positions itself.
 
 ### Clips
 
@@ -530,8 +536,9 @@ start; the node only reads that. Clip commands are undoable like any other.
   one audio clip at a time: the one that started last (the higher ID on a
   tie), and the earlier clip is cut where the later one begins. This holds per
   kind: an audio clip and a MIDI clip on the same track play together. There is no automatic
-  crossfade; a clip's own fades apply. The arrangement view stops you
-  placing clips on top of each other, so overlaps only come from tempo edits.
+  crossfade; a clip's own fades apply. The arrangement view doesn't stop you
+  placing clips on top of each other: overlaps are legal, and the later start
+  wins.
 - **Nodes that go.** Removing a node removes the clips it plays (a track input node) and the lanes
   driving its inputs, in the same undo step. Node IDs don't change when a
   node moves in or out of a group, so those clips and lanes stay valid. A lane
@@ -572,10 +579,11 @@ into a parameter port.** It is not a clip and not a node the user wires.
   node, or on a group's boundary node (flattening drops those), is skipped
   without a diagnostic; one on a missing port or an audio input, or on a
   parameter with a wire, gets one.
-- **Editing a lane** rebuilds its source node, which makes the plan
-  non-seamless, so each edit fades the output. That is too coarse for
-  dragging a point; it needs the same hand-over the track input gets for its
-  schedule, and belongs with the arrangement view.
+- **Editing a lane** rebuilds its source node with the new points. The
+  source has no state, so the plan stays seamless: the new points apply from
+  the next block, like a parameter being moved. If the edit changes the value
+  at the playhead, the value jumps (a hold step can click); adding or
+  removing a lane changes the wiring, and fades like any other.
 - **The parameter widget.** For a parameter with a lane, the widget shows the
   lane's value at the playhead and is greyed like a wired parameter. The lane
   is edited as a lane.
@@ -658,7 +666,15 @@ style. It has these views:
 
 - **Node editor** (`noodle-app/src/editor`): pan and zoom, Shift+A to search
   for and add a node, box select, drag to connect, Ctrl+right-drag to cut
-  wires, reroute points, frames, and Tab to enter and leave a group (M2).
+  wires, reroute points, frames, and groups: Tab (or a double-click) enters the selected group
+  and leaves the current one, Ctrl+G folds the selection into a group, and a
+  breadcrumb leads back up. Inside a group the editor shows only that level;
+  frames are top-level only for now.
+  - **Tab and focus.** The canvas holds focus and asks egui to pass it Tab,
+    which egui otherwise uses to move focus, so Tab can't leave the canvas by
+    keyboard. `app.rs` knows the canvas isn't a text field, so the app's
+    shortcuts still work. `group_nodes` takes a shared `&Project` and an ID
+    allocator, so the editor can call it while the session owns the project.
   - **A custom canvas**, not `egui-snarl`, so the interactions can follow
     Blender's exactly: picking a wire up off an input, cutting and rerouting
     with a stroke, frames that carry their nodes. The full list of inputs is
@@ -682,7 +698,20 @@ style. It has these views:
     under a node in front ignores the pointer so the front node gets it.
   - **Custom node bodies.** Nodes that draw something other than parameters,
     such as meters and scopes, reserve space and draw it in `editor/body.rs`.
-- **Timeline:** tracks, clips, automation lanes.
+- **Timeline** (`noodle-app/src/timeline`, the arrangement above the node
+  editor): a lane per track input node, a ruler of bars and beats from the
+  tempo map, and clips as wide as their audio at that tempo.
+  - **Ticks on the x axis**, so the view doesn't stretch when the tempo
+    changes. Zoom is points per quarter note.
+  - **Moving and trimming** are `SetClip` commands, one undo step per drag.
+    Each frame's edit is worked out from the clips as they were when the
+    drag began, so snapping can't accumulate error. Moves and the grabbed
+    edge snap to beats; Alt turns that off. Trimming turns the dragged tick
+    back into file frames (`timeline/clips.rs`), and shortens fades that no
+    longer fit.
+  - A clip's file is read once for its sample rate and length, and
+    remembered as missing if it can't be, so a broken path costs one read.
+  - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
   and compile problems. A parameter with a wire into it is greyed out,
