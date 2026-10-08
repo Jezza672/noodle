@@ -28,6 +28,8 @@ pub struct Rig {
     pub history: History,
     pub dir: PathBuf,
     pub problems: Vec<ClipProblem>,
+    /// The loop in samples, handed to the node with every block.
+    pub looping: Option<(u64, u64)>,
     out: SignalBuffer,
     midi: Vec<noodle_engine::Event>,
 }
@@ -73,6 +75,7 @@ impl Rig {
             history,
             dir,
             problems: Vec::new(),
+            looping: None,
             out: SignalBuffer::new(Shape::STEREO, BLOCK),
             midi: Vec::with_capacity(16),
         }
@@ -139,6 +142,7 @@ impl Rig {
             transport: Transport {
                 playing,
                 position,
+                loop_range: self.looping,
                 ..Transport::default()
             },
         };
@@ -166,6 +170,27 @@ impl Rig {
             right.extend(r);
             at += n as u64;
             // The test runs faster than real time; let the disk keep up.
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        (left, right)
+    }
+
+    /// Plays from `from` for `frames` frames, wrapping at the end of the loop
+    /// the way the engine does (a block never crosses it), and returns the
+    /// whole output.
+    pub fn play_looping(&mut self, from: u64, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let (start, end) = self.looping.expect("set `looping` first");
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut at = from;
+        while left.len() < frames {
+            let n = BLOCK.min((end - at) as usize).min(frames - left.len());
+            let (l, r) = self.run(at, n, true);
+            left.extend(l);
+            right.extend(r);
+            at += n as u64;
+            if at == end {
+                at = start;
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
         (left, right)

@@ -537,8 +537,18 @@ Settled for M2 (Phase 0):
     need. The node reads both at the start of a block and hands what it is
     done with back to the hub to be freed. The hub opens a stream for the
     clip at the playhead and the ones starting within the next second, so no
-    file is opened on the audio thread. After a seek, the first few
-    milliseconds of a clip may be silent while its stream positions itself.
+    file is opened on the audio thread.
+  - **Loops are gapless.** `Transport::loop_range` tells nodes where the
+    loop is. When the loop's end is within that second, the hub also opens a
+    stream for each clip at the loop's start (the one playing there too),
+    positioned at the loop's start. The node plays from whichever stream is
+    already at the playhead, so the wrap needs no seek; it hands back the
+    streams the lap left behind, and the hub opens the next lap's. At most four
+    such streams are open at once (the ordinary ones have their own six), so a
+    loop with more clips than that near its start falls back to a short gap for
+    the rest. After a
+    seek that isn't a wrap, the first few milliseconds of a clip may be
+    silent while its stream positions itself.
 
 ### Clips
 

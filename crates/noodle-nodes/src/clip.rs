@@ -21,12 +21,13 @@ mod schedule;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use noodle_core::ClipId;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Setup, Shape,
 };
 use rtrb::{Consumer, Producer, PushError};
 
-use hub::{Links, MAX_CHANNELS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
+use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, Schedule, ScheduledClip, active_at,
 };
@@ -118,7 +119,7 @@ impl TrackInputNode {
             to_hub: links.to_hub,
             schedule: None,
             pending: None,
-            streams: (0..MAX_STREAMS).map(|_| None).collect(),
+            streams: (0..MAX_STREAMS + MAX_HEADS).map(|_| None).collect(),
             scratch: vec![0.0; max_frames * MAX_CHANNELS],
             left: vec![0.0; max_frames],
             right: vec![0.0; max_frames],
@@ -182,16 +183,26 @@ impl TrackInputNode {
         }
     }
 
-    /// Hands back streams whose clip has ended or gone.
-    fn sweep(&mut self, position: u64) {
+    /// Hands back streams that are no use any more: the clip has ended or
+    /// gone, a stream for a clip that hasn't started yet was left part-way
+    /// through (by a loop wrap or a seek back, so it would have to seek), or
+    /// it was opened for the loop's start and looping is off.
+    fn sweep(&mut self, position: u64, looping: Option<(u64, u64)>) {
         for i in 0..self.streams.len() {
             let Some(stream) = &self.streams[i] else {
                 continue;
             };
+            let at = stream.stream.position();
             let wanted = |schedule: &Option<Box<Schedule>>| {
                 schedule.as_ref().is_some_and(|s| {
-                    s.iter()
-                        .any(|c| c.stream_key() == (stream.id, stream.key) && c.end() > position)
+                    s.iter().any(|c| {
+                        c.stream_key() == (stream.id, stream.key)
+                            && if stream.head {
+                                looping.is_some_and(|(start, _)| c.end() > start)
+                            } else {
+                                c.end() > position && !(position < c.start && at != 0)
+                            }
+                    })
                 })
             };
             if !(wanted(&self.schedule) || wanted(&self.pending))
@@ -202,6 +213,41 @@ impl TrackInputNode {
         }
         let bound = self.streams.iter().flatten().count();
         self.shared.bound.store(bound, Ordering::Relaxed);
+    }
+
+    /// Finds the stream to play `key` from at clip frame `rel`: one that is
+    /// already there, else the nearest one behind it, else any. Once one is
+    /// there, other streams for the clip that are ahead of the playhead are
+    /// left over from before a loop wrap and are handed back.
+    fn pick(&mut self, key: (ClipId, u64), rel: u64) -> Option<usize> {
+        let mut exact = None;
+        let mut behind: Option<(usize, u64)> = None;
+        let mut any = None;
+        for (i, slot) in self.streams.iter().enumerate() {
+            let Some(p) = slot else { continue };
+            if (p.id, p.key) != key {
+                continue;
+            }
+            let at = p.stream.position();
+            any.get_or_insert(i);
+            if at == rel {
+                exact.get_or_insert(i);
+            } else if at < rel && behind.is_none_or(|(_, best)| at > best) {
+                behind = Some((i, at));
+            }
+        }
+        if let Some(keep) = exact {
+            for i in 0..self.streams.len() {
+                let stale = i != keep
+                    && self.streams[i].as_ref().is_some_and(|p| {
+                        (p.id, p.key) == key && !p.head && p.stream.position() > rel
+                    });
+                if stale && let Some(old) = self.streams[i].take() {
+                    self.retire(Retired::Stream(old));
+                }
+            }
+        }
+        exact.or(behind.map(|(i, _)| i)).or(any)
     }
 
     /// Moves `level` towards `target` over `frames` frames.
@@ -253,19 +299,16 @@ impl TrackInputNode {
     fn play(&mut self, clip: &ScheduledClip, a: u64, fa: usize, fb: usize, target: f32) {
         let len = fb - fa;
         let key = clip.stream_key();
-        let Some(slot) = self
-            .streams
-            .iter()
-            .position(|s| s.as_ref().is_some_and(|p| (p.id, p.key) == key))
-        else {
+        let rel = a - clip.start;
+        let Some(slot) = self.pick(key, rel) else {
             // Not opened yet: silence, and the hub is on it.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             self.advance(target, len);
             return;
         };
-        let stream = &mut self.streams[slot].as_mut().expect("found above").stream;
+        let prepared = self.streams[slot].as_mut().expect("found above");
+        let stream = &mut prepared.stream;
         let channels = stream.channels();
-        let rel = a - clip.start;
         // Line the stream up with the playhead. If it's a little behind (it
         // missed some blocks while it caught up after a seek), drop audio to
         // join in rather than seeking again, which would restart it. Anything
@@ -287,7 +330,12 @@ impl TrackInputNode {
             self.advance(target, len);
             return;
         }
+        let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
         let got = stream.read(&mut self.scratch[..len * channels]);
+        if let Some(serial) = promoted {
+            // Playing from it now, so it is an ordinary stream.
+            let _ = self.to_hub.push(Retired::Promoted(serial));
+        }
         if got < len {
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
         }
@@ -324,8 +372,11 @@ impl Node for TrackInputNode {
         self.shared
             .position
             .store(transport.position, Ordering::Relaxed);
+        let (start, end) = transport.loop_range.unwrap_or((0, 0));
+        self.shared.loop_start.store(start, Ordering::Relaxed);
+        self.shared.loop_end.store(end, Ordering::Relaxed);
         self.receive(ctx);
-        self.sweep(transport.position);
+        self.sweep(transport.position, transport.loop_range);
         self.left[..n].fill(0.0);
         self.right[..n].fill(0.0);
 

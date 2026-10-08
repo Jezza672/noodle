@@ -102,5 +102,21 @@ fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
         at += BLOCK as u64;
         pause();
     }
+    // Loop over a stretch with both clips' audio, several times round, so
+    // streams opened for the loop's start are taken in and promoted, and the
+    // ones a lap leaves behind are handed back.
+    let (start, end) = (12_000u64, 4 * BEAT);
+    rig.looping = Some((start, end));
+    rig.node.reset();
+    at = start;
+    for _ in 0..4 * ((end - start) as usize / BLOCK + 1) {
+        let n = BLOCK.min((end - at) as usize);
+        violations += realtime(|| rig.run_quiet(at, n, true));
+        at += n as u64;
+        if at == end {
+            at = start;
+        }
+        pause();
+    }
     assert_eq!(violations, 0, "the audio thread allocated or freed memory");
 }

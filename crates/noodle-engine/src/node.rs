@@ -311,6 +311,11 @@ pub struct Transport {
     pub playing: bool,
     /// Timeline position of the block's first frame, in samples.
     pub position: u64,
+    /// The loop's start and end in samples, while looping is on (whether or
+    /// not the transport is playing). A block never crosses the end: the position wraps to the start at the
+    /// block boundary. Nodes that read ahead (clip streams) use it to have
+    /// the audio at the loop's start ready before the wrap.
+    pub loop_range: Option<(u64, u64)>,
     /// The same position in ticks, 960 to a quarter note, fractions included.
     pub tick: f64,
     /// The tempo at the block's start, in quarter notes per minute. A tempo
@@ -326,6 +331,7 @@ impl Default for Transport {
         Self {
             playing: false,
             position: 0,
+            loop_range: None,
             tick: 0.0,
             bpm: 120.0,
             signature: noodle_core::TimeSignature::COMMON,
