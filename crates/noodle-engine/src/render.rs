@@ -2,9 +2,9 @@
 
 use std::fmt;
 
-use noodle_core::Graph;
+use noodle_core::{Graph, Project};
 
-use crate::{Diagnostic, Registry, Settings, SettingsError, engine};
+use crate::{Controller, Diagnostic, Registry, Settings, SettingsError, engine};
 
 pub struct Render {
     /// Interleaved, with `settings.channels` channels.
@@ -52,6 +52,29 @@ pub fn render(
     settings: Settings,
     frames: usize,
 ) -> Result<Render, RenderError> {
+    render_with(settings, frames, |controller| {
+        controller.update(graph, registry)
+    })
+}
+
+/// [`render`] for a whole project: its tempo map and automation lanes play
+/// from the start of the timeline.
+pub fn render_project(
+    project: &Project,
+    registry: &Registry,
+    settings: Settings,
+    frames: usize,
+) -> Result<Render, RenderError> {
+    render_with(settings, frames, |controller| {
+        controller.update_project(project, registry)
+    })
+}
+
+fn render_with(
+    settings: Settings,
+    frames: usize,
+    update: impl FnOnce(&mut Controller) -> Vec<Diagnostic>,
+) -> Result<Render, RenderError> {
     let (mut controller, mut processor) = engine(settings)?;
     let too_long = RenderError::TooLong { frames };
     let len = frames.checked_mul(settings.channels).ok_or(too_long)?;
@@ -59,7 +82,7 @@ pub fn render(
     samples.try_reserve_exact(len).map_err(|_| too_long)?;
     samples.resize(len, 0.0);
 
-    let diagnostics = controller.update(graph, registry);
+    let diagnostics = update(&mut controller);
     processor.process(&mut samples);
     Ok(Render {
         samples,

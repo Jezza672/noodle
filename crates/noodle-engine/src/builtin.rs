@@ -112,6 +112,7 @@ impl Registry {
         let mut registry = Self::new();
         registry.register(Output);
         registry.register(Input);
+        registry.register(crate::automation::Automation);
         registry
     }
 }
