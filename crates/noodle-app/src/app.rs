@@ -146,7 +146,7 @@ impl App {
             .default_size(theme::timeline::DEFAULT_HEIGHT)
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                let playhead = self.session.playhead();
+                let playhead = Some(self.session.playhead());
                 let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
                 self.session.edit(out.edits);
                 if let Some(tick) = out.seek {
@@ -272,13 +272,12 @@ impl App {
                 actions.push(Action::TogglePause);
             }
         });
-        let position = self.session.playhead().map_or_else(
-            || "– . – . –".to_owned(),
-            |tick| {
-                let at = self.session.project().tempo_map().position(tick);
-                format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick)
-            },
-        );
+        let at = self
+            .session
+            .project()
+            .tempo_map()
+            .position(self.session.playhead());
+        let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
     }
 
