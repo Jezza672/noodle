@@ -245,6 +245,13 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
   follow any scope in the graph. Both read through the telemetry API as the
   node on the canvas does. This makes "open the view for this node" a
   general mechanism that other node types can use later.
+- **Meters on mixer inputs.** Each input channel of a Mixer node shows a
+  level meter inside the node, next to its port (and the mixer view's strips
+  get the same meters, which ARCHITECTURE.md notes are missing). The Mixer
+  node would report per-channel peak and RMS through the telemetry hub, like
+  the Meter node, with one channel per input. Reporting must stay
+  allocation-free, and `realtime.rs` is extended to cover it. The spare input
+  (see the auto-growing ports item) has no meter.
 
 **Outputs (M2, after the mixer view).**
 
