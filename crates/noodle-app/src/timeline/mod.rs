@@ -53,6 +53,8 @@ pub struct TimelineState {
     waveforms: waveform::Cache,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
+    #[cfg(test)]
+    fade_handles: HashMap<(ClipId, bool), Rect>,
     /// The text drawn on the lanes last frame; painted text isn't in the
     /// accessibility tree.
     #[cfg(test)]
@@ -75,6 +77,8 @@ impl Default for TimelineState {
             waveforms: waveform::Cache::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
+            #[cfg(test)]
+            fade_handles: HashMap::new(),
             #[cfg(test)]
             drawn_text: Vec::new(),
             #[cfg(test)]
@@ -118,6 +122,11 @@ impl TimelineState {
     }
 
     #[cfg(test)]
+    pub fn fade_handle(&self, id: ClipId, fade_in: bool) -> Option<Rect> {
+        self.fade_handles.get(&(id, fade_in)).copied()
+    }
+
+    #[cfg(test)]
     pub fn clip_rect(&self, id: ClipId) -> Option<Rect> {
         self.clip_rects.get(&id).copied()
     }
@@ -138,6 +147,9 @@ enum Mode {
     Move,
     TrimStart,
     TrimEnd,
+    /// Dragging a fade handle; worked out where the handle is drawn.
+    FadeIn,
+    FadeOut,
 }
 
 /// The track lanes, top to bottom: every track input node, and any other node
@@ -226,13 +238,15 @@ pub fn show(
     #[cfg(test)]
     {
         state.clip_rects.clear();
+        state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
     }
 
     let painter = ui.painter_at(content);
     painter.rect_filled(rect, 0.0, colors::BACKGROUND);
-    let lane_top = |i: usize| content.top() - state.scroll_y + i as f32 * colors::LANE_HEIGHT;
+    let scroll_y = state.scroll_y;
+    let lane_top = |i: usize| content.top() - scroll_y + i as f32 * colors::LANE_HEIGHT;
     for i in 0..tracks.len() {
         let top = lane_top(i);
         let fill = if i % 2 == 0 {
@@ -434,6 +448,19 @@ pub fn show(
                     StrokeKind::Inside,
                 );
             }
+            if full.width() >= MIN_TRIMMABLE * 2.0 && source.is_some() {
+                let handles = Handles {
+                    ui,
+                    state,
+                    map,
+                    axis,
+                    rate,
+                    full,
+                    visible,
+                    project,
+                };
+                edits.extend(fade_handles(handles, id, clip));
+            }
         }
     }
 
@@ -526,6 +553,124 @@ fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tracks: usi
         .clamp(0.0, (tall - content.height()).max(0.0));
 }
 
+struct Handles<'a> {
+    ui: &'a mut egui::Ui,
+    state: &'a mut TimelineState,
+    map: &'a TempoMap,
+    axis: Axis,
+    rate: u32,
+    full: Rect,
+    visible: Rect,
+    project: &'a Project,
+}
+
+/// Size of a fade handle, and how far in from the clip's edge it sits when
+/// there is no fade.
+const HANDLE: f32 = 10.0;
+
+/// Draws a clip's fades and the handles that drag them. Dragging one is an
+/// undo group like any other drag.
+fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
+    let Handles {
+        ui,
+        state,
+        map,
+        axis,
+        rate,
+        full,
+        visible,
+        project,
+    } = h;
+    let mut edits = Vec::new();
+    let Some(audio) = clip.as_audio() else {
+        return edits;
+    };
+    let rate_f = f64::from(rate);
+    let start = map.sample_at(clip.start, rate_f);
+    let x_of = |sample: u64| axis.x(Tick(map.tick_at_sample(sample, rate_f).round() as i64));
+    let fade_in_x = x_of(start + audio.fade_in);
+    let fade_out_x = x_of(start + audio.length - audio.fade_out);
+    let half = HANDLE / 2.0;
+    let painter = ui.painter_at(visible);
+    let shade = Color32::BLACK.gamma_multiply(0.35);
+    if audio.fade_in > 0 {
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                full.left_bottom(),
+                full.left_top(),
+                Pos2::new(fade_in_x, full.top()),
+            ],
+            shade,
+            Stroke::NONE,
+        ));
+    }
+    if audio.fade_out > 0 {
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                full.right_bottom(),
+                full.right_top(),
+                Pos2::new(fade_out_x, full.top()),
+            ],
+            shade,
+            Stroke::NONE,
+        ));
+    }
+    let lo = full.left() + half + 1.0;
+    let hi = full.right() - half - 1.0;
+    for (mode, x) in [
+        (Mode::FadeIn, fade_in_x.clamp(lo, hi)),
+        (Mode::FadeOut, fade_out_x.clamp(lo, hi)),
+    ] {
+        let rect =
+            Rect::from_center_size(Pos2::new(x, full.top() + half + 1.0), Vec2::splat(HANDLE));
+        #[cfg(test)]
+        state.fade_handles.insert((id, mode == Mode::FadeIn), rect);
+        let response = ui.interact(
+            rect.intersect(visible),
+            ui.id().with(("fade", id, mode == Mode::FadeIn)),
+            Sense::drag(),
+        );
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        }
+        if response.drag_started() {
+            state.selected = BTreeSet::from([id]);
+            state.drag = Some(Drag {
+                mode,
+                grabbed: id,
+                originals: vec![(id, clip.clone())],
+                press_x: x,
+            });
+        }
+        if response.dragged()
+            && let Some(pos) = response.interact_pointer_pos()
+            && let Some(current) = project.clip(id)
+        {
+            let at = axis.tick(pos.x);
+            let changed = match mode {
+                Mode::FadeIn => clips::set_fade_in(map, current, at, rate),
+                _ => clips::set_fade_out(map, current, at, rate),
+            };
+            if let Some(changed) = changed
+                && &changed != current
+            {
+                edits.push(Edit::Drag(Command::SetClip { id, clip: changed }));
+            }
+        }
+        if response.drag_stopped() {
+            state.drag = None;
+            edits.push(Edit::EndDrag);
+        }
+        let fill = if response.hovered() || response.dragged() {
+            Color32::WHITE
+        } else {
+            Color32::WHITE.gamma_multiply(0.7)
+        };
+        painter.rect_filled(rect, 2.0, fill);
+    }
+    edits
+}
+
 /// Whether a press at `x` on a clip spanning `full` moves it or trims an edge.
 fn mode_for(full: Rect, x: f32) -> Mode {
     if full.width() < MIN_TRIMMABLE {
@@ -594,6 +739,7 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
                 clip,
             }]
         }
+        Mode::FadeIn | Mode::FadeOut => return None,
         Mode::TrimEnd => {
             let audio = grabbed.as_audio()?;
             let end = clips::end_tick(map, grabbed.start, audio.length, rate);

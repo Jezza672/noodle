@@ -700,3 +700,60 @@ fn add_track_works_with_no_tracks() {
     h.run();
     assert_eq!(track_inputs(&h), 1);
 }
+
+fn fades(h: &H, id: ClipId) -> (u64, u64) {
+    let audio = clip(h, id).as_audio().unwrap().clone();
+    (audio.fade_in, audio.fade_out)
+}
+
+fn drag_handle(h: &mut H, id: ClipId, fade_in: bool, by: f32) {
+    let from = h
+        .state()
+        .timeline
+        .fade_handle(id, fade_in)
+        .unwrap()
+        .center();
+    let path: Vec<Pos2> = (0..=6)
+        .map(|i| from + Vec2::new(by * i as f32 / 6.0, 0.0))
+        .collect();
+    drag(h, Modifiers::NONE, &path);
+}
+
+#[test]
+fn dragging_the_fade_in_handle_sets_the_fade_without_moving_the_clip() {
+    let (mut h, id) = rig();
+    let before = clip(&h, id);
+    drag_handle(&mut h, id, true, 60.0);
+    let (fade_in, fade_out) = fades(&h, id);
+    // The pointer ended 66 points in: a beat is 60 points and 24000 frames.
+    assert!(fade_in.abs_diff(26_400) < 1_500, "{fade_in}");
+    assert_eq!(fade_out, 0);
+    let after = clip(&h, id);
+    assert_eq!((after.start, length(&h, id)), (before.start, 96_000));
+    h.state_mut().session.undo();
+    assert_eq!(fades(&h, id), (0, 0), "one undo step");
+}
+
+#[test]
+fn dragging_the_fade_out_handle_and_the_two_fades_never_cross() {
+    let (mut h, id) = rig();
+    drag_handle(&mut h, id, true, 150.0);
+    let (fade_in, _) = fades(&h, id);
+    assert!(fade_in > 55_000, "{fade_in}");
+    // The fade out handle drags left past the end of the fade in.
+    drag_handle(&mut h, id, false, -230.0);
+    let (fade_in, fade_out) = fades(&h, id);
+    assert!(fade_in + fade_out <= 96_000, "{fade_in} + {fade_out}");
+    assert!(fade_out > 0);
+}
+
+#[test]
+fn a_clip_too_narrow_for_trimming_has_no_fade_handles() {
+    let (mut h, id) = rig();
+    h.state_mut().session.edit([Edit::Apply(Command::SetClip {
+        id,
+        clip: Clip::audio(NodeId(1), Tick(0), "a.wav", 2_000),
+    })]);
+    h.run();
+    assert!(h.state().timeline.fade_handle(id, true).is_none());
+}
