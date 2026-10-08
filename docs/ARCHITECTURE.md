@@ -756,6 +756,10 @@ style. It has these views:
   - **The playhead** is drawn from the transport's position, and clicking or
     dragging the ruler seeks (to the nearest beat; Alt for free). Seeking
     isn't a project edit, so `show` returns it beside the edits.
+  - **Track headers** show the controls on the track group's output node:
+    mute and solo buttons and a gain slider in decibels (double-click
+    resets), written as `SetParam` commands, so a slider drag is one undo
+    step. A track input node outside any group has no controls.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters

@@ -8,6 +8,7 @@
 
 mod clips;
 mod grid;
+mod header;
 mod sources;
 mod waveform;
 
@@ -459,7 +460,14 @@ pub fn show(
         edits.push(Edit::Apply(Command::Batch(removals)));
     }
 
-    draw_headers(ui, rect, content, &tracks, state.scroll_y);
+    edits.extend(draw_headers(
+        ui,
+        rect,
+        content,
+        &tracks,
+        project.graph(),
+        state.scroll_y,
+    ));
     draw_ruler(ui, rect, axis, &lines);
     let ruler = Rect::from_min_max(
         Pos2::new(content.left(), rect.top()),
@@ -610,37 +618,41 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
     }
 }
 
-fn draw_headers(ui: &egui::Ui, rect: Rect, content: Rect, tracks: &[NodeId], scroll_y: f32) {
+fn draw_headers(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    content: Rect,
+    tracks: &[NodeId],
+    graph: &noodle_core::Graph,
+    scroll_y: f32,
+) -> Vec<Edit> {
     let column = Rect::from_min_max(
         Pos2::new(rect.left(), content.top()),
         Pos2::new(content.left(), rect.bottom()),
     );
-    let painter = ui.painter_at(column);
-    painter.rect_filled(column, 0.0, colors::HEADER);
-    for (index, _) in tracks.iter().enumerate() {
+    ui.painter_at(column)
+        .rect_filled(column, 0.0, colors::HEADER);
+    let mut edits = Vec::new();
+    let clip = ui.clip_rect();
+    ui.set_clip_rect(column.intersect(clip));
+    for (index, &input) in tracks.iter().enumerate() {
         let top = content.top() - scroll_y + index as f32 * colors::LANE_HEIGHT;
         let lane = Rect::from_min_size(
             Pos2::new(column.left(), top),
             vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
         );
-        painter.rect_filled(
-            Rect::from_min_size(lane.min, vec2(4.0, lane.height() - 1.0)),
-            0.0,
-            colors::track_colour(index),
-        );
-        painter.text(
-            lane.left_top() + vec2(12.0, 8.0),
-            Align2::LEFT_TOP,
-            format!("Track {}", index + 1),
-            FontId::proportional(13.0),
-            colors::TEXT,
-        );
-        painter.hline(
-            lane.x_range(),
-            lane.bottom() - 0.5,
-            Stroke::new(1.0, colors::LANE_EVEN),
-        );
+        if lane.bottom() < column.top() || lane.top() > column.bottom() {
+            continue;
+        }
+        edits.extend(header::show(
+            ui,
+            lane,
+            index,
+            header::controls_for(graph, input),
+        ));
     }
+    ui.set_clip_rect(clip);
+    edits
 }
 
 fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {
