@@ -633,6 +633,7 @@ fn draw_headers(
     ui.painter_at(column)
         .rect_filled(column, 0.0, colors::HEADER);
     let mut edits = Vec::new();
+    let muted_by_solo = graph.solo_muted();
     let clip = ui.clip_rect();
     ui.set_clip_rect(column.intersect(clip));
     for (index, &input) in tracks.iter().enumerate() {
@@ -646,9 +647,11 @@ fn draw_headers(
         }
         edits.extend(header::show(
             ui,
+            graph,
             lane,
             index,
-            header::controls_for(graph, input),
+            input,
+            header::controls_for(graph, input, &muted_by_solo),
         ));
     }
     ui.set_clip_rect(clip);
