@@ -256,7 +256,7 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     assert!(playhead(&h) > Tick(0), "the playhead moves while playing");
 
     // Paused, it holds still.
-    h.state().session().set_transport_running(false);
+    h.state_mut().session_mut().set_transport_running(false);
     play_for(&mut h, Duration::from_millis(100));
     let held = playhead(&h);
     play_for(&mut h, Duration::from_millis(200));
@@ -268,9 +268,9 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
 
     // A new project starts at the beginning, running. The null device isn't
     // clocked, so the playhead runs far ahead; it should drop back.
-    h.state().session().set_transport_running(true);
+    h.state_mut().session_mut().set_transport_running(true);
     play_for(&mut h, Duration::from_millis(200));
-    h.state().session().set_transport_running(false);
+    h.state_mut().session_mut().set_transport_running(false);
     play_for(&mut h, Duration::from_millis(100));
     let far = playhead(&h);
     h.state_mut().session_mut().new_project();

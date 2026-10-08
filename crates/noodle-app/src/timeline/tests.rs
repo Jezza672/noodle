@@ -64,6 +64,9 @@ fn rig() -> (H, ClipId) {
                 rig.seeks.extend(out.seek);
                 rig.notices.extend(out.notice);
                 rig.picks.extend(out.pick);
+                for (track, on) in out.arm {
+                    rig.session.arm(track, on);
+                }
             },
             rig,
         );
@@ -1069,4 +1072,17 @@ fn drops_find_their_track_below_an_automation_lane() {
     let below = top + Vec2::new(0.0, colors::LANE_HEIGHT + automation::HEIGHT);
     drop_files(&mut h, below, &[file]);
     assert_eq!(clips_on(&h, 2).len(), 1, "the second track took it");
+}
+
+#[test]
+fn the_arm_button_arms_and_disarms_its_track() {
+    let (mut h, _) = grouped();
+    let first = NodeId(1);
+    assert!(!h.state().session.is_armed(first));
+    h.get_all_by_label("R").next().unwrap().click();
+    h.run();
+    assert!(h.state().session.is_armed(first));
+    h.get_all_by_label("R").next().unwrap().click();
+    h.run();
+    assert!(!h.state().session.is_armed(first));
 }

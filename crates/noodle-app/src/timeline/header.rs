@@ -46,7 +46,7 @@ pub struct Automated {
     pub mute: bool,
 }
 
-const AUTOMATED: &str = "Automated by a lane; edit or remove the lane to change it";
+pub(crate) const AUTOMATED: &str = "Automated by a lane; edit or remove the lane to change it";
 
 /// A track's controls: where they are set and what they say now.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,6 +56,9 @@ pub struct TrackControls {
     pub controls: Controls,
     /// Silent because another track is soloed.
     pub muted_by_solo: bool,
+    /// Armed for recording. Session state, so `controls_for` leaves it off
+    /// for the caller to set.
+    pub armed: bool,
 }
 
 /// The controls for the track whose clips `input` plays, if it sits in a group
@@ -73,6 +76,7 @@ pub fn controls_for(
         node,
         controls: graph.group_controls(group),
         muted_by_solo: muted_by_solo.contains(&group),
+        armed: false,
     })
 }
 
@@ -114,7 +118,16 @@ pub struct Lane {
     pub input: NodeId,
 }
 
+/// What the user did in a header.
+#[derive(Default)]
+pub struct Changes {
+    pub edits: Vec<Edit>,
+    /// The record-arm button was pressed: the arm state it asks for.
+    pub arm: Option<bool>,
+}
+
 /// Draws one track's header in `lane` and returns what the user changed.
+/// `armed` is whether the track is armed for recording.
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
@@ -122,13 +135,14 @@ pub fn show(
     track: Option<TrackControls>,
     automated: Automated,
     renaming: &mut Option<Rename>,
-) -> Vec<Edit> {
+) -> Changes {
     let Lane {
         rect: lane,
         index,
         input,
     } = lane;
-    let mut edits = Vec::new();
+    let mut changes = Changes::default();
+    let edits = &mut changes.edits;
     let painter = ui.painter_at(lane);
     painter.rect_filled(
         Rect::from_min_size(lane.min, vec2(4.0, lane.height() - 1.0)),
@@ -199,9 +213,16 @@ pub fn show(
             });
         }
     }
-    let Some(TrackControls { node, controls, .. }) = track else {
-        return edits;
+    let Some(TrackControls {
+        node,
+        controls,
+        armed,
+        ..
+    }) = track
+    else {
+        return changes;
     };
+    let arm = &mut changes.arm;
     child.horizontal(|ui| {
         let button = |ui: &mut egui::Ui, text: &str, on: bool, tip: &str| {
             let text = RichText::new(text).size(11.0);
@@ -209,6 +230,9 @@ pub fn show(
                 .on_hover_text(tip)
                 .clicked()
         };
+        if button(ui, "R", armed, "Arm for recording") {
+            *arm = Some(!armed);
+        }
         let mute = ui
             .add_enabled_ui(!automated.mute, |ui| button(ui, "M", controls.mute, "Mute"))
             .inner;
@@ -256,5 +280,5 @@ pub fn show(
             edits.push(Edit::EndDrag);
         }
     });
-    edits
+    changes
 }

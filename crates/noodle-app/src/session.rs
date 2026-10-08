@@ -7,13 +7,17 @@
 //! the engine's parameter cells.
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use noodle_core::{Command, EditError, FrameId, History, NodeId, Project, Tick};
+use noodle_core::{Clip, Command, EditError, FrameId, History, NodeId, Project, Tick};
 use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, TempoTable, compile_with_lanes};
-use noodle_io::{AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, Stream};
+use noodle_io::{
+    AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, RecordError, Recorder, Stream,
+    Take,
+};
 use noodle_nodes::{ClipFeeds, ClipProblem, Library};
 
 /// Frames per block while playing: about 11 ms at 48 kHz.
@@ -94,9 +98,70 @@ pub struct Session {
     audio_config: AudioConfig,
     audio: Option<Audio>,
     reroutes: Reroutes,
+    /// The tracks that record when the record button is pressed.
+    armed: BTreeSet<NodeId>,
+    /// The take being recorded, if there is one.
+    recording: Option<Recording>,
+    /// Stands in for the input stream's recorder in tests.
+    #[cfg(test)]
+    fake_input: Option<Recorder>,
     /// Something the user should know, such as a failed save, shown until the
     /// next one replaces it.
     message: Option<String>,
+}
+
+/// A take being recorded.
+struct Recording {
+    /// The tracks that get a clip of it.
+    tracks: Vec<NodeId>,
+    /// Where the take starts on the timeline.
+    start: Tick,
+    /// The file, relative to the project file.
+    relative: String,
+}
+
+/// Something that can record the input to a file.
+trait TakeSink {
+    fn start(&mut self, path: &Path) -> Result<(), RecordError>;
+    fn stop(&mut self) -> Result<Take, RecordError>;
+}
+
+impl TakeSink for Playback {
+    fn start(&mut self, path: &Path) -> Result<(), RecordError> {
+        self.start_recording(path)
+    }
+    fn stop(&mut self) -> Result<Take, RecordError> {
+        self.stop_recording()
+    }
+}
+
+impl TakeSink for Recorder {
+    fn start(&mut self, path: &Path) -> Result<(), RecordError> {
+        Recorder::start(self, path)
+    }
+    fn stop(&mut self) -> Result<Take, RecordError> {
+        Recorder::stop(self)
+    }
+}
+
+/// A free file name for the next take, in a folder beside the project file
+/// named after it. Returns the path and the same relative to the project.
+fn next_take_path(project: &Path) -> std::io::Result<(PathBuf, String)> {
+    let dir = project.parent().unwrap_or(Path::new("."));
+    let stem = project
+        .file_stem()
+        .map_or_else(|| "project".into(), |s| s.to_string_lossy().into_owned());
+    let folder = format!("{stem} recordings");
+    std::fs::create_dir_all(dir.join(&folder))?;
+    let mut number = 1;
+    loop {
+        let relative = format!("{folder}/take-{number:03}.wav");
+        let path = dir.join(&relative);
+        if !path.exists() {
+            return Ok((path, relative));
+        }
+        number += 1;
+    }
 }
 
 struct Audio {
@@ -165,6 +230,10 @@ impl Session {
             audio_config: AudioConfig::default(),
             audio: None,
             reroutes: Reroutes::default(),
+            armed: BTreeSet::new(),
+            recording: None,
+            #[cfg(test)]
+            fake_input: None,
             message: None,
         };
         session.replace(project, path);
@@ -376,6 +445,8 @@ impl Session {
     }
 
     fn replace(&mut self, project: Project, path: Option<PathBuf>) {
+        // The take belongs to the project it was recorded in.
+        self.stop_recording();
         self.saved = project.clone();
         self.project = project;
         self.history = History::new();
@@ -449,6 +520,7 @@ impl Session {
     /// Closes the stream, keeping the playhead for the next play. Stopping
     /// again while stopped rewinds, as in Logic and GarageBand.
     pub fn stop(&mut self) {
+        self.stop_recording();
         if self.audio.is_none() {
             self.parked = Tick(0);
         }
@@ -466,7 +538,12 @@ impl Session {
 
     /// Pauses or resumes the timeline. Needs the stream open; does nothing
     /// otherwise.
-    pub fn set_transport_running(&self, running: bool) {
+    pub fn set_transport_running(&mut self, running: bool) {
+        // A take is laid down against the running timeline, so pausing it
+        // ends the take.
+        if !running {
+            self.stop_recording();
+        }
         if let Some(audio) = &self.audio {
             let transport = audio.controller.transport();
             if running {
@@ -484,6 +561,9 @@ impl Session {
 
     /// Moves the playhead. Works stopped too: playing starts from there.
     pub fn seek(&mut self, tick: Tick) {
+        // The clip would start where the take began, no longer where the
+        // audio is on the timeline.
+        self.stop_recording();
         let tick = Tick(tick.0.max(0));
         self.parked = tick;
         if let Some(audio) = &self.audio {
@@ -493,6 +573,15 @@ impl Session {
 
     /// Closes the stream, keeping the playhead where it was.
     fn close_stream(&mut self) {
+        // The take so far is kept, since the stream it came from is going.
+        if self.recording.is_some() {
+            self.stop_recording();
+            let kept = "Recording stopped and the take so far was kept";
+            self.message = Some(match self.message.take() {
+                Some(also) => format!("{also}. {kept}"),
+                None => kept.into(),
+            });
+        }
         self.parked = self.playhead();
         self.audio = None;
     }
@@ -575,6 +664,151 @@ impl Session {
         self.message = Some(match self.message.take() {
             Some(also) => format!("{changed}. {also}"),
             None => changed,
+        });
+    }
+
+    /// Arms or disarms a track (by its track input node) for recording.
+    pub fn arm(&mut self, track: NodeId, on: bool) {
+        if on {
+            self.armed.insert(track);
+        } else {
+            self.armed.remove(&track);
+        }
+    }
+
+    pub fn is_armed(&self, track: NodeId) -> bool {
+        self.armed.contains(&track)
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recording.is_some()
+    }
+
+    /// What records the input: the stream's recorder, or a stand-in in tests.
+    fn sink(&mut self) -> Option<&mut dyn TakeSink> {
+        #[cfg(test)]
+        if let Some(fake) = &mut self.fake_input {
+            return Some(fake);
+        }
+        self.audio
+            .as_mut()
+            .map(|audio| &mut audio.playback as &mut dyn TakeSink)
+    }
+
+    /// Starts recording the input into a new audio file next to the project,
+    /// from the playhead, on every armed track. Starts playing if it isn't.
+    /// The take becomes a clip on each armed track when it ends; see
+    /// [`Session::stop_recording`].
+    pub fn record(&mut self) {
+        if self.recording.is_some() {
+            return;
+        }
+        let tracks: Vec<NodeId> = self
+            .armed
+            .iter()
+            .copied()
+            .filter(|&track| self.project.graph().node(track).is_some())
+            .collect();
+        if tracks.is_empty() {
+            self.message = Some("Arm a track to record on (R on its header)".into());
+            return;
+        }
+        let Some(project_path) = self.path.clone() else {
+            self.message = Some("Save the project first: takes are stored next to it".into());
+            return;
+        };
+        #[cfg(test)]
+        let faked = self.fake_input.is_some();
+        #[cfg(not(test))]
+        let faked = false;
+        if !faked {
+            self.play();
+            if self.audio.is_none() {
+                // `play` has said why.
+                return;
+            }
+            self.set_transport_running(true);
+        }
+        let start = self.playhead();
+        let (path, relative) = match next_take_path(&project_path) {
+            Ok(found) => found,
+            Err(error) => {
+                self.message = Some(format!("Couldn't make a place for the take: {error}"));
+                return;
+            }
+        };
+        let started = match self.sink() {
+            Some(sink) => sink.start(&path),
+            None => Err(RecordError::NoInput),
+        };
+        match started {
+            Ok(()) => {
+                self.recording = Some(Recording {
+                    tracks,
+                    start,
+                    relative,
+                });
+                self.message = None;
+            }
+            Err(error) => self.message = Some(format!("Couldn't record: {error}")),
+        }
+    }
+
+    /// Ends the take and adds it to the project: one audio clip on each track
+    /// that was armed, all in one undo step. Does nothing if not recording.
+    pub fn stop_recording(&mut self) {
+        let Some(recording) = self.recording.take() else {
+            return;
+        };
+        let taken = match self.sink() {
+            Some(sink) => sink.stop(),
+            None => Err(RecordError::NotRecording),
+        };
+        let take = match taken {
+            Ok(take) => take,
+            Err(error) => {
+                self.message = Some(format!("The recording failed: {error}"));
+                return;
+            }
+        };
+        if take.frames == 0 {
+            let _ = std::fs::remove_file(&take.path);
+            self.message = Some("Nothing was recorded".into());
+            return;
+        }
+        let tracks: Vec<NodeId> = recording
+            .tracks
+            .iter()
+            .copied()
+            .filter(|&track| self.project.graph().node(track).is_some())
+            .collect();
+        if tracks.is_empty() {
+            // An empty batch would be an undo step that does nothing.
+            self.message = Some(format!(
+                "The armed tracks were deleted, so the take was kept as {}",
+                recording.relative
+            ));
+            return;
+        }
+        let commands = tracks
+            .into_iter()
+            .map(|track| Command::AddClip {
+                id: self.project.new_clip_id(),
+                clip: Clip::audio(
+                    track,
+                    recording.start,
+                    recording.relative.clone(),
+                    take.frames,
+                ),
+            })
+            .collect();
+        self.edit([Edit::Apply(Command::Batch(commands))]);
+        self.message = Some(match take.dropped {
+            0 => format!("Recorded {}", recording.relative),
+            lost => format!(
+                "Recorded {}, but {lost} frames of input were lost",
+                recording.relative
+            ),
         });
     }
 
@@ -1427,5 +1661,209 @@ mod tests {
             reported.report(input).as_deref(),
             Some("4 input glitches since playback started")
         );
+    }
+
+    /// A saved project with `count` tracks, a recorder standing in for the
+    /// input stream, and the track input nodes.
+    fn recording_session(dir: &Path, count: usize) -> (Session, noodle_io::RecordTap, Vec<NodeId>) {
+        let mut session = Session::new(Nodes::all());
+        for _ in 0..count {
+            let (_, create) =
+                noodle_core::group::create_track(None, Position { x: 0.0, y: 0.0 }, || {
+                    session.new_node_id()
+                });
+            session.edit([Edit::Apply(create)]);
+        }
+        let tracks: Vec<NodeId> = session
+            .project()
+            .graph()
+            .nodes()
+            .filter(|(_, node)| node.type_id == noodle_core::group::TRACK_INPUT)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(tracks.len(), count);
+        assert!(session.save_as(&dir.join("song.ron")));
+        let (tap, recorder) = noodle_io::record_path(1, 48_000.0);
+        session.fake_input = Some(recorder);
+        (session, tap, tracks)
+    }
+
+    fn clips(session: &Session) -> Vec<(NodeId, Tick, String, u64)> {
+        session
+            .project()
+            .clips()
+            .map(|(_, clip)| {
+                let audio = clip.as_audio().unwrap();
+                (clip.node, clip.start, audio.source.clone(), audio.length)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_take_becomes_a_clip_on_each_armed_track_in_one_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 3);
+        session.arm(tracks[0], true);
+        session.arm(tracks[2], true);
+        session.seek(Tick(960));
+        session.record();
+        assert!(session.is_recording());
+        tap.push(&vec![0.25_f32; 4_800]);
+        session.stop_recording();
+        assert!(!session.is_recording());
+
+        let source = "song recordings/take-001.wav";
+        assert_eq!(
+            clips(&session),
+            [
+                (tracks[0], Tick(960), source.into(), 4_800),
+                (tracks[2], Tick(960), source.into(), 4_800),
+            ]
+        );
+        let audio = noodle_io::read_wav(&dir.path().join(source)).unwrap();
+        assert_eq!(audio.samples.len() / audio.channels, 4_800);
+        assert!(session.is_dirty());
+
+        session.undo();
+        assert!(
+            clips(&session).is_empty(),
+            "one undo removes the whole take"
+        );
+        session.redo();
+        assert_eq!(clips(&session).len(), 2);
+    }
+
+    #[test]
+    fn each_take_gets_its_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        for _ in 0..2 {
+            session.record();
+            tap.push(&vec![0.1_f32; 480]);
+            session.stop_recording();
+        }
+        let sources: Vec<String> = clips(&session).into_iter().map(|c| c.2).collect();
+        assert_eq!(
+            sources,
+            [
+                "song recordings/take-001.wav",
+                "song recordings/take-002.wav"
+            ]
+        );
+    }
+
+    #[test]
+    fn recording_needs_an_armed_track_and_a_saved_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.record();
+        assert!(!session.is_recording());
+        assert!(session.message().unwrap().contains("Arm a track"));
+
+        session.arm(tracks[0], true);
+        session.arm(tracks[0], false);
+        session.record();
+        assert!(!session.is_recording(), "disarming undoes arming");
+
+        session.arm(tracks[0], true);
+        session.new_project();
+        let mut unsaved = Session::new(Nodes::all());
+        unsaved.arm(tracks[0], true);
+        unsaved.record();
+        assert!(!unsaved.is_recording());
+        // The armed track doesn't exist in the empty project either; arming
+        // is checked first.
+        assert!(unsaved.message().unwrap().contains("Arm a track"));
+
+        let (mut saved_later, _tap, tracks) = recording_session(dir.path(), 1);
+        saved_later.path = None;
+        saved_later.arm(tracks[0], true);
+        saved_later.record();
+        assert!(!saved_later.is_recording());
+        assert!(saved_later.message().unwrap().contains("Save the project"));
+    }
+
+    #[test]
+    fn a_take_with_nothing_in_it_adds_no_clip_and_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.record();
+        session.stop_recording();
+        assert!(clips(&session).is_empty());
+        assert_eq!(session.message(), Some("Nothing was recorded"));
+        let folder = dir.path().join("song recordings");
+        assert_eq!(std::fs::read_dir(folder).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stopping_the_transport_keeps_the_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.record();
+        tap.push(&vec![0.5_f32; 960]);
+        session.stop();
+        assert!(!session.is_recording());
+        assert_eq!(clips(&session).len(), 1);
+    }
+
+    #[test]
+    fn a_track_removed_during_the_take_gets_no_clip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        session.record();
+        tap.push(&vec![0.5_f32; 960]);
+        let group = session
+            .project()
+            .graph()
+            .node(tracks[1])
+            .unwrap()
+            .parent
+            .unwrap();
+        session.edit([Edit::Apply(Command::RemoveNode { id: group })]);
+        session.stop_recording();
+        let on: Vec<NodeId> = clips(&session).into_iter().map(|c| c.0).collect();
+        assert_eq!(on, [tracks[0]]);
+    }
+
+    #[test]
+    fn deleting_every_armed_track_keeps_the_take_without_an_empty_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.record();
+        tap.push(&vec![0.5_f32; 960]);
+        let group = session
+            .project()
+            .graph()
+            .node(tracks[0])
+            .unwrap()
+            .parent
+            .unwrap();
+        session.edit([Edit::Apply(Command::RemoveNode { id: group })]);
+        session.stop_recording();
+        assert!(clips(&session).is_empty());
+        assert!(session.message().unwrap().contains("take was kept"));
+        assert!(dir.path().join("song recordings/take-001.wav").exists());
+        // The next undo undoes the deletion, not a no-op.
+        session.undo();
+        assert!(session.project().graph().node(tracks[0]).is_some());
+    }
+
+    #[test]
+    fn seeking_ends_the_take_where_it_was_laid_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.seek(Tick(480));
+        session.record();
+        tap.push(&vec![0.5_f32; 960]);
+        session.seek(Tick(0));
+        assert!(!session.is_recording());
+        assert_eq!(clips(&session)[0].1, Tick(480));
     }
 }
