@@ -95,7 +95,7 @@ It does not show that a user can do this in the app.
 
 - The app can't yet add clips (no import) or create or edit automation
   lanes; only the project file and the CLI can.
-- The mixer view (#57) isn't merged, and fades aren't draggable yet (#69).
+- The mixer view hasn't merged, and clip fades can't be dragged yet.
 - Recording audio input to clips hasn't started.
 - Nothing has been listened to on a real device: the Mac checks and the
   Windows CI run for the milestone are still to do.

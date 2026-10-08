@@ -350,4 +350,8 @@ fn the_same_mix_plays_live() {
         std::thread::sleep(Duration::from_millis(3));
     }
     check_mix(&samples, expect_level);
+    // Right levels by luck would still be a disk that fell behind.
+    for input in arrangement.inputs {
+        assert_eq!(library.clips.status(input).underruns, 0);
+    }
 }
