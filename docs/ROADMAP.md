@@ -263,6 +263,13 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 - Centre node names on the title bar (9). **Now.**
 - Inputs and outputs on a node are separate columns that grow independently,
   rather than sharing a row (26). **Now**, and this includes how wires attach.
+- Drag a node's ports up and down to reorder them, so wires can be uncrossed.
+  Nodes refer to ports by position, so this is a per-node *display order*
+  saved with the node's editor layout, and never changes port indices or the
+  compiled graph. The order applies within a column (see the separate input
+  and output columns above), and new ports on a growing node
+  (see the group items) go last. One undo step per drag. Builds on the
+  column layout fix, so it follows it.
 - Edit menu can delete the selected object (27). **Now.** Same command as
   the Delete key (see "M1 follow-ups: wire editing").
 - Copy and paste for nodes, including a multi-node selection and the wires
