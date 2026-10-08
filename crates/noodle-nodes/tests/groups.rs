@@ -140,3 +140,52 @@ fn soloing_another_group_silences_this_one() {
     let rendered = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
     assert!(rendered.samples.iter().all(|&x| x == 0.0));
 }
+
+#[test]
+fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
+    use noodle_core::group::{GAIN, GROUP_STAGE, create_track};
+    use noodle_core::{Command, Position};
+
+    let mut project = Project::new();
+    let mut history = History::new();
+    let (group, command) = create_track(None, Position::default(), || project.new_node_id());
+    history.apply(&mut project, command).unwrap();
+
+    // The track input is registered by `register_all`, so a fresh track
+    // compiles without diagnostics.
+    let mut registry = Registry::with_builtins();
+    let _telemetry = noodle_nodes::register_all(&mut registry);
+    let rendered = render(project.graph(), &registry, SETTINGS, 512).unwrap();
+    assert!(
+        rendered.diagnostics.is_empty(),
+        "{:?}",
+        rendered.diagnostics
+    );
+
+    // Both ends already have their stage.
+    let shape = |project: &Project| {
+        let flat = noodle_engine::flatten(project.graph());
+        let stages = flat
+            .nodes()
+            .filter(|(_, n)| n.type_id == GROUP_STAGE)
+            .count();
+        let ids: Vec<NodeId> = flat.nodes().map(|(id, _)| id).collect();
+        let wires: Vec<_> = flat.connections().collect();
+        (stages, ids, wires)
+    };
+    let before = shape(&project);
+    assert_eq!(before.0, 2);
+
+    let ports = project.graph().group_ports(group);
+    let command = Command::SetParam {
+        node: ports.outputs[0].node,
+        key: GAIN.into(),
+        value: Some(-6.0),
+    };
+    history.apply(&mut project, command).unwrap();
+    assert_eq!(
+        shape(&project),
+        before,
+        "a control change reshaped the graph"
+    );
+}
