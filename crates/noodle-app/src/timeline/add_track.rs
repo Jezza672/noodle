@@ -1,7 +1,7 @@
 //! The Add track button's command: a track group, wired to an Output node so
 //! it can be heard.
 
-use noodle_core::group::{GROUP, create_track};
+use noodle_core::group::create_track;
 use noodle_core::{Command, Connection, Endpoint, Graph, Node, NodeId, Position};
 use noodle_engine::OUTPUT_ID;
 
@@ -41,6 +41,7 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use noodle_core::group::GROUP;
     use noodle_core::{History, Project};
     use noodle_engine::{Registry, Settings, flatten, render};
 
