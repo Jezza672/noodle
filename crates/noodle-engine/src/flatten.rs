@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use noodle_core::group::{
-    GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE, INPUT_PORT, MUTE, OUTPUT_PORT,
+    GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE, INPUT_PORT, MUTE, OUTPUT_PORT, SOLO_MUTE,
 };
 use noodle_core::{Connection, Endpoint, Graph, Node, NodeId};
 
@@ -34,6 +34,12 @@ const STAGE_OUT: &str = "out";
 /// dropped, so a group left at its defaults costs nothing and renders like
 /// the flat patch.
 pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
+    flatten_keeping(graph, &BTreeSet::new())
+}
+
+/// [`flatten`], also keeping a stage for each boundary node in `keep`, so an
+/// automation lane has a gain or mute port to drive.
+pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> Cow<'a, Graph> {
     if !has_groups(graph) {
         return Cow::Borrowed(graph);
     }
@@ -42,7 +48,7 @@ pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
             .node(id)
             .is_some_and(|node| matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT))
     };
-    let stages = stages(graph);
+    let stages = stages(graph, keep);
 
     let nodes = graph
         .nodes()
@@ -99,7 +105,7 @@ pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
 /// then moving it is only a parameter change. Soloing works the same way:
 /// the muted tracks get their stages at their outputs, and while solo is in
 /// use on a level, every group on it keeps one.
-fn stages(graph: &Graph) -> BTreeMap<NodeId, Node> {
+fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Node> {
     let muted_by_solo = graph.solo_muted();
     graph
         .nodes()
@@ -114,12 +120,18 @@ fn stages(graph: &Graph) -> BTreeMap<NodeId, Node> {
             let by_solo = solo_here && muted_by_solo.contains(&group);
             let keep_for_solo = solo_here && graph.solo_in_use(group);
             let mute = controls.mute || by_solo;
-            if !(node.has_gain_or_mute() || mute || keep_for_solo) {
+            if !(node.has_gain_or_mute() || mute || keep_for_solo || keep.contains(&id)) {
                 return None;
             }
             let mut stage = Node::new(GROUP_STAGE);
             stage.params.insert(GAIN.into(), controls.gain_db);
-            stage.params.insert(MUTE.into(), f32::from(u8::from(mute)));
+            // Solo goes in its own input, so a lane on the mute can't undo it.
+            stage
+                .params
+                .insert(MUTE.into(), f32::from(u8::from(controls.mute)));
+            stage
+                .params
+                .insert(SOLO_MUTE.into(), f32::from(u8::from(by_solo)));
             stage.position = node.position;
             Some((id, stage))
         })
@@ -174,7 +186,7 @@ fn resolve(graph: &Graph, stages: &BTreeMap<NodeId, Node>, input: &Endpoint) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noodle_core::group::{GAIN, MUTE, PORT_NAME, SOLO, group_nodes};
+    use noodle_core::group::{GAIN, MUTE, PORT_NAME, SOLO, SOLO_MUTE, group_nodes};
     use noodle_core::{Command, Config, History, Node, Project, Value};
 
     fn add(project: &mut Project, history: &mut History, node: Node) -> NodeId {
@@ -455,7 +467,7 @@ mod tests {
         assert_eq!(flatten(project.graph()).nodes().count(), 4);
         set(&mut project, &mut history, a, SOLO, 1.0);
         let flat = flatten(project.graph());
-        let muted = |id| flat.node(id).map(|n| n.params[MUTE]);
+        let muted = |id| flat.node(id).map(|n| n.params[SOLO_MUTE]);
         assert_eq!(muted(b), Some(1.0), "the other track is muted");
         assert_eq!(muted(a), Some(0.0), "the soloed track has a stage, open");
         // Muting at the output is enough: the inputs have no stage.
@@ -477,7 +489,7 @@ mod tests {
         set(&mut project, &mut history, a, SOLO, 0.0);
         let flat = flatten(project.graph());
         assert_eq!(shape(&project), soloed);
-        assert_eq!(flat.node(b).unwrap().params[MUTE], 0.0);
+        assert_eq!(flat.node(b).unwrap().params[SOLO_MUTE], 0.0);
     }
 
     #[test]
@@ -486,8 +498,8 @@ mod tests {
         set(&mut project, &mut history, a, SOLO, 1.0);
         set(&mut project, &mut history, b, SOLO, 1.0);
         let flat = flatten(project.graph());
-        assert_eq!(flat.node(a).unwrap().params[MUTE], 0.0);
-        assert_eq!(flat.node(b).unwrap().params[MUTE], 0.0);
+        assert_eq!(flat.node(a).unwrap().params[SOLO_MUTE], 0.0);
+        assert_eq!(flat.node(b).unwrap().params[SOLO_MUTE], 0.0);
     }
 
     #[test]

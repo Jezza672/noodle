@@ -606,9 +606,15 @@ into a parameter port.** It is not a clip and not a node the user wires.
   `u64::MAX` by lane ID, so it can't clash with a project node and its
   instance carries over between compiles. The points travel as text in the
   node's config, so they are part of its `NodeKey`. A lane on a missing
-  node, or on a group's boundary node (flattening drops those), is skipped
-  without a diagnostic; one on a missing port or an audio input, or on a
+  node is skipped without a diagnostic; one on a missing port or an audio input, or on a
   parameter with a wire, gets one.
+- **Group boundaries.** A lane on a group's boundary node can drive its
+  `gain` or `mute`: compiling keeps a stage for that node (the same stage a
+  set control keeps), and the lane is wired into the stage's port. A lane on
+  `solo` gets a diagnostic and does nothing, since solo is read when the
+  project is compiled. Solo-muting goes to its own
+  `solo_mute` input on the stage (OR-ed with `mute`), so a mute lane can't
+  make a track audible while another is soloed.
 - **Editing a lane** rebuilds its source node with the new points. The
   source has no state, so the plan stays seamless: the new points apply from
   the next block, like a parameter being moved. If the edit changes the value
