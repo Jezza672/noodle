@@ -772,7 +772,9 @@ style. It has these views:
     a track silenced by another's solo is dimmed.
   - **Add track:** the button after the last header runs
     `group::create_track`, one undo step, and the new track shows up with
-    its controls at once.
+    its controls at once. It also wires the track to an Output node, using
+    a top level one whose input is free or adding one (Output nodes are
+    mixed together), so a new track is audible without further wiring.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters

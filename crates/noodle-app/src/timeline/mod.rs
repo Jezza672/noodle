@@ -6,6 +6,7 @@
 //! tempo. Every change is an [`Edit`] using the core's clip commands, so it
 //! can be undone.
 
+mod add_track;
 mod clips;
 mod grid;
 mod header;
@@ -664,15 +665,7 @@ fn draw_headers(
     if spot.bottom() >= column.top() && spot.top() <= column.bottom() {
         let place = Rect::from_center_size(spot.center(), vec2(spot.width() - 24.0, 24.0));
         if ui.put(place, egui::Button::new("+ Add track")).clicked() {
-            // Below everything already in the graph, so the new track's nodes
-            // don't land on top of another's.
-            let below = graph.nodes().map(|(_, n)| n.position.y).fold(0.0, f32::max);
-            let position = noodle_core::Position {
-                x: 0.0,
-                y: below + 200.0,
-            };
-            let (_, command) =
-                noodle_core::group::create_track(None, position, || session.new_node_id());
+            let command = add_track::command(graph, || session.new_node_id());
             edits.push(Edit::Apply(command));
         }
     }
