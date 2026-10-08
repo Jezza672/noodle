@@ -186,6 +186,11 @@ impl ClipFeeds {
             .clone()
     }
 
+    /// How many nodes the feeds are keeping a schedule for.
+    pub fn tracked(&self) -> usize {
+        self.inner.hubs.lock().expect("feeds lock").len()
+    }
+
     pub fn status(&self, node: NodeId) -> ClipStatus {
         self.shared(node).status()
     }
@@ -251,6 +256,9 @@ impl ClipFeeds {
             schedule.sort_by_key(|c| (c.start, c.id));
             shared.set(schedule);
         }
+        // Forget nodes that are gone: nothing holds their entry but this map
+        // once the node (and with it the hub thread) has been dropped.
+        hubs.retain(|_, shared| Arc::strong_count(shared) > 1 || !shared.is_empty());
         problems
     }
 
