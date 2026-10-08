@@ -6,6 +6,7 @@ mod acceptance;
 mod app;
 mod devices;
 mod editor;
+mod mixer;
 mod prefs;
 mod properties;
 mod session;

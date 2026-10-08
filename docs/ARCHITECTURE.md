@@ -801,7 +801,22 @@ style. It has these views:
     its controls at once. It also wires the track to an Output node, using
     a top level one whose input is free or adding one (Output nodes are
     mixed together), so a new track is audible without further wiring.
-  - Automation lanes and the mixer are still to come.
+  - **Automation lanes** (`timeline/automation.rs`): under each track, a
+    row for every lane that drives a boundary node of the track's group.
+    The track header's `~` menu adds a gain or mute lane, starting as one
+    point holding the control's value now, so adding it changes nothing you
+    hear. Click an empty spot to add a point (on the nearest beat, Alt for
+    free; a mute lane holds and snaps to off or on, a gain lane is
+    linear), drag a point to move it in time and value (it can't pass its
+    neighbours or go before the start), and right-click it or press Delete
+    to remove it. A lane's header has a button to remove the lane. Each
+    edit is one undo step. A lane on solo is drawn greyed out with a note,
+    since solo is read at compile time and the lane does nothing. A lane
+    overrides the control it drives, so the track header's gain slider and
+    M button are greyed out with a note while one exists. Selecting a
+    point drops the clip selection and vice versa, so Delete only ever
+    acts on one.
+  - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
   and compile problems. A parameter with a wire into it is greyed out,
@@ -833,6 +848,23 @@ through the telemetry API.
   step, and each step goes straight to the parameter cells.
 - **Config fields** (`ConfigField`) only commit when a drag or typing
   finishes, because changing config recompiles the node.
+
+### Mixer
+
+The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view
+over the project and keeps no state of its own. It has one strip per
+top-level group, in the order they were made, named by the group's `name`
+config. A strip reads the group's gain, mute and solo from its boundary
+nodes (`Graph::group_controls`) and a fader move, a mute or a solo click is
+a `SetParam` on the node `Graph::control_node` picks, so it is undoable like
+any edit and one drag is one undo step. The reading under the fader resets
+the gain to 0 dB. Resets write the default and never remove the parameter,
+since a set control keeps its stage in the compiled graph and removing it
+would fade the whole output. A group with several outputs shows the first
+output node's controls. Solo mutes the other tracks as the compiler reads it
+(`Graph::solo_muted`), so a strip silenced by another's solo shows that, and
+its mute and solo buttons stay live. Turning solo off clears it on every
+boundary node of the group, since any can hold it. There are no meters yet.
 
 ## Testing
 

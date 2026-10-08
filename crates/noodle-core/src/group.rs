@@ -181,14 +181,25 @@ impl Graph {
         path
     }
 
+    /// The boundary node a group's gain and mute are shown and set on: its
+    /// first output node (a track has one), or failing that its first input
+    /// node. `None` for a group with no boundary nodes.
+    pub fn control_node(&self, group: NodeId) -> Option<NodeId> {
+        let ports = self.group_ports(group);
+        ports
+            .outputs
+            .first()
+            .or(ports.inputs.first())
+            .map(|port| port.node)
+    }
+
     /// A group's gain, mute and solo, as the mixer shows them: the gain and
-    /// mute of its first output node (a track has one), and solo if any of
+    /// mute of its [`control_node`](Self::control_node), and solo if any of
     /// the group's boundary nodes has it on.
     pub fn group_controls(&self, group: NodeId) -> Controls {
-        let ports = self.group_ports(group);
-        let first = ports.outputs.first().or(ports.inputs.first());
-        let mut controls = first
-            .and_then(|port| self.node(port.node))
+        let mut controls = self
+            .control_node(group)
+            .and_then(|id| self.node(id))
             .map(Node::controls)
             .unwrap_or_default();
         controls.solo = self.has_own_solo(group);
@@ -828,6 +839,17 @@ mod tests {
         set(&mut project, &mut history, vocal_out, SOLO, 1.0);
         // Only the drums, which the vocal doesn't feed, are silenced.
         assert_eq!(project.graph().solo_muted(), [drums].into());
+    }
+
+    #[test]
+    fn controls_are_set_on_the_output_node_when_there_is_one() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (group, output) = group_with_ports(&mut project, &mut history, None);
+        assert_eq!(project.graph().control_node(group), Some(output));
+        let bare = add(&mut project, &mut history, Node::new(GROUP));
+        assert_eq!(project.graph().control_node(bare), None);
+        assert_eq!(project.graph().group_controls(bare), Controls::default());
     }
 }
 

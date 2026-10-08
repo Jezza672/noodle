@@ -8,7 +8,7 @@ use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::session::{Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
-use crate::{properties, theme};
+use crate::{mixer, properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 const REDO: KeyboardShortcut =
@@ -50,6 +50,8 @@ pub struct App {
     title: String,
     /// Whether a widget was being dragged last frame. See [`App::show`].
     dragging: bool,
+    /// Whether the mixer panel is showing.
+    mixer_open: bool,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -67,6 +69,7 @@ enum Action {
     Rewind,
     TogglePause,
     AudioSettings,
+    ToggleMixer,
     Close,
 }
 
@@ -97,6 +100,7 @@ impl App {
             closing: false,
             title: String::new(),
             dragging: false,
+            mixer_open: false,
         }
     }
 
@@ -131,6 +135,15 @@ impl App {
         });
 
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+
+        if self.mixer_open {
+            egui::Panel::bottom("mixer")
+                .resizable(false)
+                .show(ui, |ui| {
+                    let edits = mixer::show(ui, self.session.project().graph());
+                    self.session.edit(edits);
+                });
+        }
 
         let active = self.editor.active;
         egui::Panel::right("properties")
@@ -244,6 +257,15 @@ impl App {
         ui.menu_button("Edit", |ui| {
             item(ui, "Undo", &UNDO, self.session.can_undo(), Action::Undo);
             item(ui, "Redo", &REDO, self.session.can_redo(), Action::Redo);
+        });
+        ui.menu_button("View", |ui| {
+            if ui
+                .selectable_label(self.mixer_open, "Mixer")
+                .on_hover_text("Gain, mute and solo for each track")
+                .clicked()
+            {
+                actions.push(Action::ToggleMixer);
+            }
         });
     }
 
@@ -426,6 +448,7 @@ impl App {
                 self.session.set_transport_running(!running);
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
+            Action::ToggleMixer => self.mixer_open = !self.mixer_open,
             Action::Close => {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -505,6 +528,30 @@ mod tests {
         harness.get_by_label("No nodes yet. Shift+A adds one.");
         harness.get_by_label("No problems");
         harness.get_by_label("▶ Play");
+    }
+
+    #[test]
+    fn the_mixer_opens_from_the_view_menu_and_shows_the_tracks() {
+        use noodle_core::group::GROUP;
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new(GROUP),
+        })]);
+        let mut harness = harness(app);
+        harness.run();
+        assert!(harness.query_by_label("Group 1").is_none());
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Mixer").click();
+        harness.run();
+        harness.get_by_label("Group 1");
+        // And closes again.
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Mixer").click();
+        harness.run();
+        assert!(harness.query_by_label("Group 1").is_none());
     }
 
     #[test]
@@ -640,6 +687,7 @@ mod tests {
             Action::Redo,
             Action::TogglePlayback,
             Action::AudioSettings,
+            Action::ToggleMixer,
             Action::Close,
         ]
         .into_iter()
