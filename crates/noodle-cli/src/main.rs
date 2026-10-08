@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
-use noodle_engine::{Diagnostic, Registry, Settings, render};
+use noodle_engine::{Diagnostic, Registry, Settings, render_project};
 use noodle_io::{AudioConfig, InputChoice, Stream};
 
 #[derive(Parser)]
@@ -125,7 +125,7 @@ fn run(command: Command) -> Result<(), String> {
                 return Err(format!("can't render {seconds} seconds: too long"));
             }
             let frames = frames as usize;
-            let rendered = render(project.graph(), &registry(), settings, frames)
+            let rendered = render_project(&project, &registry(), settings, frames)
                 .map_err(|error| error.to_string())?;
             report(&rendered.diagnostics);
             noodle_io::write_wav(&output, &rendered.samples, channels, sample_rate)
@@ -178,7 +178,7 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     let registry = registry();
     let (mut playback, mut controller) =
         noodle_io::play(config, MAX_FRAMES).map_err(|error| error.to_string())?;
-    report(&controller.update(project.graph(), &registry));
+    report(&controller.update_project(&project, &registry));
     let settings = playback.settings();
     eprintln!(
         "Playing {} on {} ({} Hz, {} channels). Press Ctrl-C to stop.",
@@ -232,7 +232,7 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
             // A bad edit keeps the last good version playing.
             match parse(path, &text) {
                 Ok(project) => {
-                    report(&controller.update(project.graph(), &registry));
+                    report(&controller.update_project(&project, &registry));
                     eprintln!("Reloaded {}.", path.display());
                 }
                 Err(message) => eprintln!("noodle: {message}"),

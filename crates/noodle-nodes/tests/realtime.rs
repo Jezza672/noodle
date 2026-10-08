@@ -108,7 +108,9 @@ impl Session {
     }
 
     fn update(&mut self) {
-        let diagnostics = self.controller.update(self.project.graph(), &self.registry);
+        let diagnostics = self
+            .controller
+            .update_project(&self.project, &self.registry);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }
@@ -386,7 +388,8 @@ fn group_stages_never_allocate_while_controls_change() {
     use noodle_core::group::group_nodes;
 
     let (mut s, gain, ..) = busy_session();
-    let (group, command) = group_nodes(&mut s.project, &[gain]).unwrap();
+    let (group, command) =
+        group_nodes(&s.project.clone(), &[gain], || s.project.new_node_id()).unwrap();
     command.apply(&mut s.project).unwrap();
     s.update();
     let output = s.project.graph().group_ports(group).outputs[0].node;
@@ -436,7 +439,8 @@ fn two_tracks_session(touch_first: bool) -> (Session, NodeId) {
         let gain = s.add(Node::new("noodle.util.gain"));
         s.wire(sine, "out", gain, "in");
         s.wire(gain, "out", mix, ["in1", "in2"][i]);
-        let (group, command) = group_nodes(&mut s.project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&s.project.clone(), &[gain], || s.project.new_node_id()).unwrap();
         command.apply(&mut s.project).unwrap();
         outputs.push(s.project.graph().group_ports(group).outputs[0].node);
     }
@@ -491,4 +495,51 @@ fn muting_a_track_whose_stage_is_in_place_does_not_dip_the_others() {
     // is what the test above guards against, and shows it can fail.
     let first = lowest_peak_across(false, mute);
     assert!(first < 0.2, "expected the structural fade, lowest {first}");
+}
+
+#[test]
+fn automation_lanes_never_allocate_on_the_audio_thread() {
+    use noodle_core::{AutomationLane, AutomationPoint, Curve, Endpoint, Tick};
+
+    let (mut s, gain, ..) = busy_session();
+    let points = |n: i64| {
+        (0..n)
+            .map(|i| AutomationPoint {
+                tick: Tick(i * 480),
+                value: -(i as f32),
+                curve: if i % 2 == 0 {
+                    Curve::Linear
+                } else {
+                    Curve::Hold
+                },
+            })
+            .collect()
+    };
+    let id = s.project.new_lane_id();
+    s.edit(Command::AddLane {
+        id,
+        lane: AutomationLane::new(Endpoint::new(gain, "gain"), points(8)),
+    });
+    s.update();
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..8 {
+        if round == 4 {
+            // Editing the lane rebuilds its source off the audio thread.
+            s.edit(Command::SetLane {
+                id,
+                lane: AutomationLane::new(Endpoint::new(gain, "gain"), points(12)),
+            });
+            s.update();
+        }
+        transport.seek(Tick(300 * round));
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
 }

@@ -4,6 +4,7 @@
 //!
 //! The node API, for writing nodes, starts at [`NodeType`].
 
+mod automation;
 mod builtin;
 mod compile;
 mod denormals;
@@ -23,10 +24,11 @@ mod tempo;
 pub mod testing;
 mod transport;
 
+pub use automation::{AUTOMATION_ID, INTERNAL_CATEGORY, Lanes};
 pub use builtin::{INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_ID, Output};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Problem, Schedule, ScheduledNode,
-    compile,
+    compile, compile_with_lanes,
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
@@ -39,7 +41,7 @@ pub use noodle_core::{Config, NodeId, Value};
 pub use offline::{Cancelled, OfflineNode, Progress};
 pub use param::{ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
-pub use render::{Render, RenderError, render};
+pub use render::{Render, RenderError, render, render_project};
 pub use runtime::{Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{Level, MeterReader, MeterWriter, ScopeView, ScopeWriter, Telemetry};
