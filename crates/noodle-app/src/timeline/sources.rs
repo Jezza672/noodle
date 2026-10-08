@@ -76,7 +76,10 @@ impl Default for Sources {
             let (queue, sender) = (queue.clone(), sender.clone());
             std::thread::spawn(move || {
                 // Ends when the `Sources` is dropped.
-                while let Ok(job) = queue.lock().unwrap().recv() {
+                loop {
+                    // Take the job first, so the lock isn't held while it runs.
+                    let job = queue.lock().unwrap().recv();
+                    let Ok(job) = job else { break };
                     let peaks = Peaks::from_file(&job.path).ok().map(Arc::new);
                     let _ = sender.send((job.path, job.modified, peaks));
                     job.ctx.request_repaint();

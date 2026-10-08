@@ -22,13 +22,20 @@ pub struct Cache {
 }
 
 /// What a clip's columns were worked out from.
-#[derive(PartialEq)]
 struct Key {
-    /// The peaks, by identity: a reloaded file has new ones.
-    peaks: usize,
+    /// The peaks, by identity: a reloaded file has new ones. Held, so their
+    /// address can't be reused by the next ones while this is compared.
+    peaks: Arc<Peaks>,
     start: u64,
     end: u64,
     columns: usize,
+}
+
+impl Key {
+    fn matches(&self, other: &Key) -> bool {
+        Arc::ptr_eq(&self.peaks, &other.peaks)
+            && (self.start, self.end, self.columns) == (other.start, other.end, other.columns)
+    }
 }
 
 impl Cache {
@@ -41,16 +48,23 @@ impl Cache {
         n: usize,
     ) -> &[Peak] {
         let key = Key {
-            peaks: Arc::as_ptr(peaks) as usize,
+            peaks: peaks.clone(),
             start,
             end,
             columns: n,
         };
-        let entry = self
-            .columns
-            .entry(id)
-            .or_insert_with(|| (Key { peaks: 0, ..key }, Vec::new()));
-        if entry.0 != key {
+        let entry = self.columns.entry(id).or_insert_with(|| {
+            (
+                Key {
+                    peaks: peaks.clone(),
+                    start: 0,
+                    end: 0,
+                    columns: 0,
+                },
+                Vec::new(),
+            )
+        });
+        if !entry.0.matches(&key) {
             *entry = (key, peaks.columns(None, start, end, n));
             #[cfg(test)]
             {
@@ -160,5 +174,25 @@ mod tests {
             4.0,
         );
         assert_eq!((p.min, p.max), (-1.0, 1.0));
+    }
+
+    #[test]
+    fn a_reloaded_file_is_not_mistaken_for_the_old_one() {
+        let audio = noodle_io::Audio {
+            samples: vec![0.5; 4096],
+            channels: 1,
+            sample_rate: 48_000,
+        };
+        let (old, new) = (
+            Arc::new(Peaks::from_audio(&audio)),
+            Arc::new(Peaks::from_audio(&audio)),
+        );
+        let mut cache = Cache::default();
+        cache.columns(ClipId(1), &old, 0, 4096, 8);
+        cache.columns(ClipId(1), &old, 0, 4096, 8);
+        assert_eq!(cache.computed(), 1);
+        // Identical contents and range, but a different load.
+        cache.columns(ClipId(1), &new, 0, 4096, 8);
+        assert_eq!(cache.computed(), 2);
     }
 }
