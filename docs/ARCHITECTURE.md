@@ -128,6 +128,10 @@ The **Project** is the single source of truth. It holds one global graph:
     rest. So a group whose controls are at their defaults still costs
     nothing and renders bit-for-bit like the flat patch, and one with a
     non-default gain costs one gain stage. The tracks work builds this.
+  - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
+    the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
+    group output `out` with `audio` wired to it, and a group input `in`, so
+    both ends have the controls. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
