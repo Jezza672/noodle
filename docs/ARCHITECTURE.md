@@ -602,8 +602,9 @@ into a parameter port.** It is not a clip and not a node the user wires.
   `gain` or `mute`: compiling keeps a stage for that node (the same stage a
   set control keeps), and the lane is wired into the stage's port. A lane on
   `solo` gets a diagnostic and does nothing, since solo is read when the
-  project is compiled. A mute lane replaces the stage's mute input, so it also
-  overrides a mute that soloing another track would bring.
+  project is compiled. Solo-muting goes to its own
+  `solo_mute` input on the stage (OR-ed with `mute`), so a mute lane can't
+  make a track audible while another is soloed.
 - **Editing a lane** rebuilds its source node with the new points. The
   source has no state, so the plan stays seamless: the new points apply from
   the next block, like a parameter being moved. If the edit changes the value

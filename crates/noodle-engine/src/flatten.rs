@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use noodle_core::group::{
-    GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE, INPUT_PORT, MUTE, OUTPUT_PORT,
+    GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE, INPUT_PORT, MUTE, OUTPUT_PORT, SOLO_MUTE,
 };
 use noodle_core::{Connection, Endpoint, Graph, Node, NodeId};
 
@@ -125,7 +125,13 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Node> {
             }
             let mut stage = Node::new(GROUP_STAGE);
             stage.params.insert(GAIN.into(), controls.gain_db);
-            stage.params.insert(MUTE.into(), f32::from(u8::from(mute)));
+            // Solo goes in its own input, so a lane on the mute can't undo it.
+            stage
+                .params
+                .insert(MUTE.into(), f32::from(u8::from(controls.mute)));
+            stage
+                .params
+                .insert(SOLO_MUTE.into(), f32::from(u8::from(by_solo)));
             stage.position = node.position;
             Some((id, stage))
         })
@@ -180,7 +186,7 @@ fn resolve(graph: &Graph, stages: &BTreeMap<NodeId, Node>, input: &Endpoint) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noodle_core::group::{GAIN, MUTE, PORT_NAME, SOLO, group_nodes};
+    use noodle_core::group::{GAIN, MUTE, PORT_NAME, SOLO, SOLO_MUTE, group_nodes};
     use noodle_core::{Command, Config, History, Node, Project, Value};
 
     fn add(project: &mut Project, history: &mut History, node: Node) -> NodeId {
@@ -461,7 +467,7 @@ mod tests {
         assert_eq!(flatten(project.graph()).nodes().count(), 4);
         set(&mut project, &mut history, a, SOLO, 1.0);
         let flat = flatten(project.graph());
-        let muted = |id| flat.node(id).map(|n| n.params[MUTE]);
+        let muted = |id| flat.node(id).map(|n| n.params[SOLO_MUTE]);
         assert_eq!(muted(b), Some(1.0), "the other track is muted");
         assert_eq!(muted(a), Some(0.0), "the soloed track has a stage, open");
         // Muting at the output is enough: the inputs have no stage.
@@ -483,7 +489,7 @@ mod tests {
         set(&mut project, &mut history, a, SOLO, 0.0);
         let flat = flatten(project.graph());
         assert_eq!(shape(&project), soloed);
-        assert_eq!(flat.node(b).unwrap().params[MUTE], 0.0);
+        assert_eq!(flat.node(b).unwrap().params[SOLO_MUTE], 0.0);
     }
 
     #[test]
@@ -492,8 +498,8 @@ mod tests {
         set(&mut project, &mut history, a, SOLO, 1.0);
         set(&mut project, &mut history, b, SOLO, 1.0);
         let flat = flatten(project.graph());
-        assert_eq!(flat.node(a).unwrap().params[MUTE], 0.0);
-        assert_eq!(flat.node(b).unwrap().params[MUTE], 0.0);
+        assert_eq!(flat.node(a).unwrap().params[SOLO_MUTE], 0.0);
+        assert_eq!(flat.node(b).unwrap().params[SOLO_MUTE], 0.0);
     }
 
     #[test]
