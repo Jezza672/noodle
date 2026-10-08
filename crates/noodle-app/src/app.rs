@@ -146,8 +146,12 @@ impl App {
             .default_size(theme::timeline::DEFAULT_HEIGHT)
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                let edits = timeline::show(ui, &mut self.timeline, &self.session, None);
-                self.session.edit(edits);
+                let playhead = self.session.playhead();
+                let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
+                self.session.edit(out.edits);
+                if let Some(tick) = out.seek {
+                    self.session.seek(tick);
+                }
             });
 
         egui::CentralPanel::default()
