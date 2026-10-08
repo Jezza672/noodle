@@ -137,6 +137,14 @@ The **Project** is the single source of truth. It holds one global graph:
     remove the parameter, or the stage goes and the fade comes back. Boundary
     nodes have no parameter ports in the editor yet, so wiring into them
     waits for that.
+  - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
+    the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
+    group output `out` with `audio` wired to it, and a group input `in`. The
+    output starts with gain 0 dB and mute 0 already set, so the track's stage
+    exists from creation (solo and mute act at the output, so the input needs
+    none) and the first fader or mute touch is a parameter change, not a
+    graph change with a fade. The track input's `midi` output is left unwired and the group has no MIDI port yet; the MIDI work
+    adds both. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
@@ -606,9 +614,15 @@ into a parameter port.** It is not a clip and not a node the user wires.
   `u64::MAX` by lane ID, so it can't clash with a project node and its
   instance carries over between compiles. The points travel as text in the
   node's config, so they are part of its `NodeKey`. A lane on a missing
-  node, or on a group's boundary node (flattening drops those), is skipped
-  without a diagnostic; one on a missing port or an audio input, or on a
+  node is skipped without a diagnostic; one on a missing port or an audio input, or on a
   parameter with a wire, gets one.
+- **Group boundaries.** A lane on a group's boundary node can drive its
+  `gain` or `mute`: compiling keeps a stage for that node (the same stage a
+  set control keeps), and the lane is wired into the stage's port. A lane on
+  `solo` gets a diagnostic and does nothing, since solo is read when the
+  project is compiled. Solo-muting goes to its own
+  `solo_mute` input on the stage (OR-ed with `mute`), so a mute lane can't
+  make a track audible while another is soloed.
 - **Editing a lane** rebuilds its source node with the new points. The
   source has no state, so the plan stays seamless: the new points apply from
   the next block, like a parameter being moved. If the edit changes the value
@@ -747,6 +761,13 @@ style. It has these views:
     looked at again: one that couldn't be read is retried, a failed waveform
     gets another go, and a changed modification time (a re-export) reads
     the file afresh.
+  - **The playhead** is drawn from the transport's position, and clicking or
+    dragging the ruler seeks (to the nearest beat; Alt for free). Seeking
+    isn't a project edit, so `show` returns it beside the edits.
+  - **Track headers** show the controls on the track group's output node:
+    mute and solo buttons and a gain slider in decibels (double-click
+    resets), written as `SetParam` commands, so a slider drag is one undo
+    step. A track input node outside any group has no controls.
   - Automation lanes and the mixer are still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters

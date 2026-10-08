@@ -3,6 +3,7 @@
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use noodle_core::{Clip, ClipId, Command, Node, NodeId, Tick};
 use noodle_io::write_wav;
 
@@ -13,6 +14,8 @@ struct Rig {
     session: Session,
     timeline: TimelineState,
     playhead: Option<Tick>,
+    /// Every place the ruler asked the playhead to go.
+    seeks: Vec<Tick>,
     /// Keeps the audio files alive.
     _dir: tempfile::TempDir,
 }
@@ -42,6 +45,7 @@ fn rig() -> (H, ClipId) {
         session,
         timeline: TimelineState::default(),
         playhead: None,
+        seeks: Vec::new(),
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -49,8 +53,9 @@ fn rig() -> (H, ClipId) {
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             |ui, rig: &mut Rig| {
-                let edits = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
-                rig.session.edit(edits);
+                let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
+                rig.session.edit(out.edits);
+                rig.seeks.extend(out.seek);
             },
             rig,
         );
@@ -445,4 +450,208 @@ fn a_file_that_changes_on_disk_is_read_again() {
         .unwrap();
     h.run_steps(3);
     assert_eq!(rect(&h, id).width(), before * 2.0);
+}
+
+#[test]
+fn clicking_the_ruler_asks_for_the_nearest_beat() {
+    let (mut h, id) = rig();
+    // The clip starts at tick 0; 60 points a beat, so 130 is a bit past two.
+    let x = rect(&h, id).left() + 130.0;
+    drag(&mut h, Modifiers::NONE, &[Pos2::new(x, 10.0)]);
+    assert_eq!(h.state().seeks.last(), Some(&Tick(1920)));
+}
+
+#[test]
+fn alt_clicking_the_ruler_does_not_snap() {
+    let (mut h, id) = rig();
+    let x = rect(&h, id).left() + 130.0;
+    drag(&mut h, Modifiers::ALT, &[Pos2::new(x, 10.0)]);
+    let tick = h.state().seeks.last().unwrap().0;
+    assert!((2075..=2085).contains(&tick), "{tick}");
+}
+
+#[test]
+fn clicking_the_ruler_leaves_clips_selected() {
+    let (mut h, id) = rig();
+    let c = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    drag(&mut h, Modifiers::NONE, &[Pos2::new(400.0, 10.0)]);
+    assert!(h.state().timeline.selected().contains(&id));
+}
+
+#[test]
+fn holding_the_ruler_still_seeks_once() {
+    let (mut h, id) = rig();
+    let x = rect(&h, id).left() + 130.0;
+    let at = Pos2::new(x, 10.0);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(h.state().seeks, [Tick(1920)]);
+    // Letting go and pressing again is a new request.
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    h.event(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.step();
+    assert_eq!(h.state().seeks, [Tick(1920), Tick(1920)]);
+}
+
+/// The rig with its first track inside a group that has an output node, as a
+/// created track has: the group is node 10, its output node 11.
+fn grouped() -> (H, ClipId) {
+    use noodle_core::group::{GROUP, GROUP_OUTPUT};
+    let (mut h, id) = rig();
+    let inside = |type_id: &str| {
+        let mut node = Node::new(type_id);
+        node.parent = Some(NodeId(10));
+        node
+    };
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::AddNode {
+        id: NodeId(10),
+        node: Node::new(GROUP),
+    })]);
+    session.edit([Edit::Apply(Command::AddNode {
+        id: NodeId(11),
+        node: inside(GROUP_OUTPUT),
+    })]);
+    session.edit([Edit::Apply(Command::SetParent {
+        node: NodeId(1),
+        parent: Some(NodeId(10)),
+    })]);
+    h.run();
+    (h, id)
+}
+
+fn param(h: &H, key: &str) -> Option<f32> {
+    let graph = h.state().session.project().graph();
+    graph.node(NodeId(11)).unwrap().params.get(key).copied()
+}
+
+#[test]
+fn the_mute_button_sets_the_output_nodes_mute() {
+    let (mut h, _) = grouped();
+    h.get_by_label("M").click();
+    h.run();
+    assert_eq!(param(&h, "mute"), Some(1.0));
+    h.get_by_label("M").click();
+    h.run();
+    assert_eq!(param(&h, "mute"), Some(0.0));
+}
+
+#[test]
+fn the_solo_button_sets_solo() {
+    let (mut h, _) = grouped();
+    h.get_by_label("S").click();
+    h.run();
+    assert_eq!(param(&h, "solo"), Some(1.0));
+}
+
+#[test]
+fn dragging_the_gain_slider_is_one_undo_step() {
+    let (mut h, _) = grouped();
+    let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
+    // From the middle to the far left: down to the bottom of the range.
+    let from = slider.center();
+    let path: Vec<Pos2> = (0..=6)
+        .map(|i| from + Vec2::new(-200.0 * i as f32 / 6.0, 0.0))
+        .collect();
+    drag(&mut h, Modifiers::NONE, &path);
+    let gain = param(&h, "gain").unwrap();
+    assert!(gain < -20.0, "{gain}");
+    h.state_mut().session.undo();
+    assert_eq!(param(&h, "gain"), None, "one undo puts it back");
+}
+
+#[test]
+fn a_track_outside_a_group_has_no_controls() {
+    let (h, _) = rig();
+    assert!(h.query_by_label("M").is_none());
+}
+
+fn set_param(h: &mut H, node: u64, key: &str, value: f32) {
+    h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+        node: NodeId(node),
+        key: key.into(),
+        value: Some(value),
+    })]);
+    h.run();
+}
+
+#[test]
+fn turning_solo_off_clears_it_on_every_boundary_node() {
+    use noodle_core::group::GROUP_INPUT;
+    let (mut h, _) = grouped();
+    let mut input = Node::new(GROUP_INPUT);
+    input.parent = Some(NodeId(10));
+    h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+        id: NodeId(12),
+        node: input,
+    })]);
+    set_param(&mut h, 12, "solo", 1.0);
+    set_param(&mut h, 11, "solo", 1.0);
+    h.get_by_label("S").click();
+    h.run();
+    assert_eq!(param(&h, "solo"), Some(0.0));
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.node(NodeId(12)).unwrap().params["solo"], 0.0);
+}
+
+#[test]
+fn solo_on_the_input_node_shows_as_soloed() {
+    use noodle_core::group::GROUP_INPUT;
+    let (mut h, _) = grouped();
+    let mut input = Node::new(GROUP_INPUT);
+    input.parent = Some(NodeId(10));
+    h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+        id: NodeId(12),
+        node: input,
+    })]);
+    set_param(&mut h, 12, "solo", 1.0);
+    // Pressing S turns it off, rather than setting it again.
+    h.get_by_label("S").click();
+    h.run();
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.node(NodeId(12)).unwrap().params["solo"], 0.0);
+}
+
+#[test]
+fn double_clicking_the_gain_slider_writes_zero_db() {
+    let (mut h, _) = grouped();
+    set_param(&mut h, 11, "gain", -12.0);
+    let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
+    h.event(Event::PointerMoved(slider.center()));
+    h.step();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos: slider.center(),
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+    }
+    h.run();
+    assert_eq!(param(&h, "gain"), Some(0.0));
 }
