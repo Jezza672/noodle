@@ -390,3 +390,28 @@ fn each_bad_file_is_named_separately() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
+
+#[test]
+fn an_error_stays_while_the_schedule_changes() {
+    let mut rig = Rig::new("steady-errors");
+    rig.wav("a.wav", 1, 20_000, |_, _| 0.5);
+    let clip = rig.add_clip(0, "a.wav", 0, 5_000);
+    std::fs::write(rig.dir.join("a.wav"), b"not audio").unwrap();
+    let started = std::time::Instant::now();
+    while rig.feeds.status(rig.id).errors.is_empty() {
+        rig.run(0, BLOCK, false);
+        assert!(started.elapsed().as_secs() < 5, "no error was reported");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Move the clip about, as a drag does; the error must never vanish.
+    for beat in 1..200u64 {
+        rig.edit_clip(clip, |c| c.start = noodle_core::Tick(beat as i64 * 10));
+        rig.run(0, BLOCK, false);
+        for _ in 0..20 {
+            assert!(
+                !rig.feeds.status(rig.id).errors.is_empty(),
+                "the error vanished at step {beat}"
+            );
+        }
+    }
+}

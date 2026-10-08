@@ -222,7 +222,14 @@ fn run(
                 outstanding += 1;
                 busy = true;
                 failed.clear();
-                shared.failed.lock().expect("failed lock").clear();
+                // Files still in the schedule keep their error until they open,
+                // so a status display doesn't flicker while the schedule is
+                // being dragged about.
+                shared
+                    .failed
+                    .lock()
+                    .expect("failed lock")
+                    .retain(|(k, _)| schedule.iter().any(|c| c.stream_key() == *k));
             }
         }
         if sent == Some(version) {
