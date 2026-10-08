@@ -251,6 +251,10 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
   editing (split, duplicate, slip) is expected after this.
 - Import audio moves to the File menu, and the timeline's right-click menu
   offers it too (21). **Now.**
+- With a clip selected, Ctrl or Cmd+Left and Right move the playhead to the
+  clip's start or end, and the arrangement scrolls to keep the playhead in
+  view. The playhead can already be set while stopped, so this is a key
+  binding plus a scroll-into-view call. **Now.**
 - Clip waveforms (25) are **already done** (see "Files and waveforms" in
   ARCHITECTURE.md), and need no work.
 
