@@ -905,3 +905,133 @@ fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
     h.run();
     assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
 }
+
+fn double_click(h: &mut H, at: Pos2) {
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+    }
+    h.run();
+}
+
+fn type_and_press(h: &mut H, text: &str, key: Key) {
+    h.event(Event::Text(text.into()));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+fn track_name(h: &H) -> Option<noodle_core::Value> {
+    let graph = h.state().session.project().graph();
+    graph.node(NodeId(10)).unwrap().config.get("name").cloned()
+}
+
+#[test]
+fn double_clicking_a_track_name_renames_it_in_one_undo_step() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    type_and_press(&mut h, "Drums", Key::Enter);
+    assert_eq!(
+        track_name(&h),
+        Some(noodle_core::Value::Text("Drums".into()))
+    );
+    assert!(h.query_by_label("Drums").is_some());
+    h.state_mut().session.undo();
+    assert_eq!(track_name(&h), None);
+}
+
+#[test]
+fn escape_keeps_the_name() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    type_and_press(&mut h, "Nope", Key::Escape);
+    assert_eq!(track_name(&h), None);
+    assert!(h.query_by_label("Track 1").is_some());
+    // It can be renamed again afterwards. (Wait out the double click window,
+    // or the next two clicks would count as a triple click.)
+    h.run_steps(60);
+    double_click(&mut h, at);
+    assert!(h.state().timeline.renaming.is_some());
+    type_and_press(&mut h, "Bass", Key::Enter);
+    assert_eq!(
+        track_name(&h),
+        Some(noodle_core::Value::Text("Bass".into()))
+    );
+}
+
+#[test]
+fn an_empty_name_puts_the_default_back() {
+    let (mut h, _) = grouped();
+    h.state_mut().session.edit([Edit::Apply(Command::SetConfig {
+        node: NodeId(10),
+        key: "name".into(),
+        value: Some(noodle_core::Value::Text("Bass".into())),
+    })]);
+    h.run();
+    let at = h.get_by_label("Bass").rect().center();
+    double_click(&mut h, at);
+    h.event(Event::Key {
+        key: Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    h.step();
+    type_and_press(&mut h, "", Key::Backspace);
+    type_and_press(&mut h, "", Key::Enter);
+    assert_eq!(track_name(&h), None);
+    assert!(h.query_by_label("Track 1").is_some());
+}
+
+#[test]
+fn a_track_outside_a_group_cannot_be_renamed() {
+    let (mut h, _) = rig();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    assert!(h.state().timeline.renaming.is_none());
+}
+
+#[test]
+fn spaces_around_a_name_are_trimmed_and_spaces_alone_are_no_name() {
+    let (mut h, _) = grouped();
+    let at = h.get_by_label("Track 1").rect().center();
+    double_click(&mut h, at);
+    type_and_press(&mut h, "  Lead  ", Key::Enter);
+    assert_eq!(
+        track_name(&h),
+        Some(noodle_core::Value::Text("Lead".into()))
+    );
+    h.run_steps(60);
+    let at = h.get_by_label("Lead").rect().center();
+    double_click(&mut h, at);
+    h.event(Event::Key {
+        key: Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    h.step();
+    type_and_press(&mut h, "   ", Key::Enter);
+    assert_eq!(track_name(&h), None);
+}

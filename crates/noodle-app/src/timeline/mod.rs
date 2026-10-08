@@ -51,6 +51,8 @@ pub struct TimelineState {
     /// The tick the ruler last asked for, while the button is held.
     last_seek: Option<Tick>,
     sources: Sources,
+    /// A track name being typed.
+    renaming: Option<header::Rename>,
     waveforms: waveform::Cache,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
@@ -75,6 +77,7 @@ impl Default for TimelineState {
             drag: None,
             last_seek: None,
             sources: Sources::default(),
+            renaming: None,
             waveforms: waveform::Cache::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -507,6 +510,7 @@ pub fn show(
         &tracks,
         session,
         state.scroll_y,
+        &mut state.renaming,
     ));
     draw_ruler(ui, rect, axis, &lines);
     let ruler = Rect::from_min_max(
@@ -842,6 +846,7 @@ fn draw_headers(
     tracks: &[NodeId],
     session: &Session,
     scroll_y: f32,
+    renaming: &mut Option<header::Rename>,
 ) -> Vec<Edit> {
     let graph = session.project().graph();
     let column = Rect::from_min_max(
@@ -870,6 +875,7 @@ fn draw_headers(
             index,
             input,
             header::controls_for(graph, input, &muted_by_solo),
+            renaming,
         ));
     }
     // The button sits in the lane after the last track, so it scrolls with them.

@@ -792,6 +792,10 @@ style. It has these views:
     step. A track input node outside any group has no controls. Solo counts
     if either boundary node has it, so turning it off clears every one, and
     a track silenced by another's solo is dimmed.
+  - **Track names** are the track group's `name` config setting. Double-click
+    a header's name to type one; Enter keeps it, Escape throws it away, and
+    an empty name puts the default ("Track N", by position) back. One undo
+    step per rename.
   - **Add track:** the button after the last header runs
     `group::create_track`, one undo step, and the new track shows up with
     its controls at once. It also wires the track to an Output node, using
