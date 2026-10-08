@@ -16,7 +16,7 @@ static INFO: NodeInfo = NodeInfo {
     id: "noodle.group.stage",
     version: 1,
     name: "Group stage",
-    category: "Utilities",
+    category: noodle_engine::INTERNAL_CATEGORY,
 };
 
 impl NodeType for GroupStage {

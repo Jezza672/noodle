@@ -108,7 +108,9 @@ impl Session {
     }
 
     fn update(&mut self) {
-        let diagnostics = self.controller.update_project(&self.project, &self.registry);
+        let diagnostics = self
+            .controller
+            .update_project(&self.project, &self.registry);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }
@@ -386,7 +388,8 @@ fn group_stages_never_allocate_while_controls_change() {
     use noodle_core::group::group_nodes;
 
     let (mut s, gain, ..) = busy_session();
-    let (group, command) = group_nodes(&mut s.project, &[gain]).unwrap();
+    let (group, command) =
+        group_nodes(&s.project.clone(), &[gain], || s.project.new_node_id()).unwrap();
     command.apply(&mut s.project).unwrap();
     s.update();
     let output = s.project.graph().group_ports(group).outputs[0].node;
@@ -436,7 +439,8 @@ fn two_tracks_session(touch_first: bool) -> (Session, NodeId) {
         let gain = s.add(Node::new("noodle.util.gain"));
         s.wire(sine, "out", gain, "in");
         s.wire(gain, "out", mix, ["in1", "in2"][i]);
-        let (group, command) = group_nodes(&mut s.project, &[gain]).unwrap();
+        let (group, command) =
+            group_nodes(&s.project.clone(), &[gain], || s.project.new_node_id()).unwrap();
         command.apply(&mut s.project).unwrap();
         outputs.push(s.project.graph().group_ports(group).outputs[0].node);
     }

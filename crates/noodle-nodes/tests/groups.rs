@@ -70,7 +70,10 @@ fn grouped_output() -> (Project, History, Vec<f32>, NodeId) {
     let mut project = Project::from_ron(&fs::read_to_string(path).unwrap()).unwrap();
     let flat = render_project(&project);
     let mut history = History::new();
-    let (group, command) = group_nodes(&mut project, &[NodeId(4), NodeId(5)]).unwrap();
+    let (group, command) = group_nodes(&project.clone(), &[NodeId(4), NodeId(5)], || {
+        project.new_node_id()
+    })
+    .unwrap();
     history.apply(&mut project, command).unwrap();
     let output = project.graph().group_ports(group).outputs[0].node;
     (project, history, flat, output)
