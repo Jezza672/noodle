@@ -530,7 +530,8 @@ Settled for M2 (Phase 0):
     untouched and the engine needs no discontinuity flag. When a new schedule
     arrives, the node compares it with the old one over the coming block. If
     they sound the same (a clip edited far from the playhead, a tempo edit
-    after it), it swaps at once. If not, it fades the old schedule out, swaps
+    after it, a fade handle dragged where the block doesn't reach the fade),
+    it swaps at once. If not, it fades the old schedule out, swaps
     at silence, and fades the new one in. Steps of one drag arriving while it
     is down replace each other, so they don't each trigger a fresh dip. The
     node also fades in when the transport starts or jumps, and out when it

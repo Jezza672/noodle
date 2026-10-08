@@ -15,8 +15,8 @@ mod svf;
 mod voice_mix;
 
 pub use clip::{
-    ClipFeeds, ClipProblem, ClipSource, ClipStatus, Schedule, ScheduledClip, TRACK_INPUT_ID,
-    TrackInput, active_at,
+    ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
+    TRACK_INPUT_ID, TrackInput, active_at,
 };
 pub use gain::Gain;
 pub use meter::{METER_ID, Meter};
@@ -94,6 +94,9 @@ pub struct ClipRender {
     /// Blocks where a clip's audio was missing even after waiting (the disk
     /// stopped answering). Zero in a render that went as it should.
     pub underruns: u64,
+    /// Files that couldn't be opened during the render; their clips were
+    /// left silent from then on.
+    pub errors: Vec<FileError>,
 }
 
 /// Renders `frames` frames of `project` offline, with its tempo map,
@@ -121,6 +124,7 @@ pub fn render_project_with_clips(
         render,
         problems,
         underruns: library.clips.underruns(),
+        errors: library.clips.errors(),
     })
 }
 

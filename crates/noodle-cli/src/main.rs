@@ -136,6 +136,9 @@ fn run(command: Command) -> Result<(), String> {
             for problem in &rendered.problems {
                 eprintln!("warning: clip {}: {}", problem.clip.0, problem.message);
             }
+            for error in &rendered.errors {
+                eprintln!("warning: can't read {error}");
+            }
             if rendered.underruns > 0 {
                 eprintln!(
                     "warning: {} blocks of clip audio could not be read",

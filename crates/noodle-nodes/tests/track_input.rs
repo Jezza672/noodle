@@ -193,6 +193,39 @@ fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
 }
 
 #[test]
+fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
+    let mut rig = Rig::new("fade-drag");
+    rig.wav("one.wav", 1, 60_000, |_, _| 1.0);
+    let id = rig.add_clip(0, "one.wav", 0, 50_000);
+    rig.wait_ready(0, 1);
+    rig.play(0, 2_000);
+    // Both handles are dragged while the playhead is in the middle of the
+    // clip, nowhere near either fade.
+    let mut position = 2_000;
+    for (fade_in, fade_out) in [(300, 0), (600, 1_000), (900, 3_000), (1_200, 6_000)] {
+        rig.edit_clip(id, |clip| {
+            let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+            audio.fade_in = fade_in;
+            audio.fade_out = fade_out;
+        });
+        rig.settle();
+        let (left, _) = rig.play(position, position + 1_000);
+        assert_close(&left, |_| 1.0, "no dip");
+        position += 1_000;
+    }
+    // A fade that reaches the playhead is heard, with a dip.
+    rig.edit_clip(id, |clip| {
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        audio.fade_in = 0;
+        audio.fade_out = 49_000;
+    });
+    rig.settle();
+    let (left, _) = rig.play(position, position + 3_000);
+    let min = left.iter().copied().fold(f32::MAX, f32::min);
+    assert!(min < 0.01, "never dipped: {min}");
+}
+
+#[test]
 fn a_clip_whose_file_is_missing_is_reported_and_the_rest_play() {
     let mut rig = Rig::new("missing");
     rig.wav("here.wav", 1, 20_000, |_, _| 0.5);
@@ -310,14 +343,14 @@ fn a_file_that_fails_to_open_is_tried_again_later() {
     // The file is damaged after the project looked at it, and mended later.
     std::fs::write(rig.dir.join("file.wav"), b"not audio").unwrap();
     let started = std::time::Instant::now();
-    while rig.feeds.status(rig.id).error.is_none() {
+    while rig.feeds.status(rig.id).errors.is_empty() {
         rig.run(0, BLOCK, false);
         assert!(started.elapsed().as_secs() < 5, "no error was reported");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
     rig.wait_ready(0, 1);
-    assert_eq!(rig.feeds.status(rig.id).error, None);
+    assert!(rig.feeds.status(rig.id).errors.is_empty());
     let (left, _) = rig.play(0, 2_000);
     assert_close(&left[300..], |_| 0.5, "after the retry");
 }
@@ -358,5 +391,87 @@ fn an_offline_render_does_not_wait_on_a_file_that_cannot_be_opened() {
         "20 blocks took {:?}",
         started.elapsed()
     );
-    assert!(rig.feeds.status(rig.id).error.is_some());
+    let errors = rig.feeds.status(rig.id).errors;
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].path, rig.dir.join("file.wav"));
+    assert_eq!(rig.feeds.errors(), errors);
+}
+
+#[test]
+fn each_bad_file_is_named_separately() {
+    let mut rig = Rig::new("named-errors");
+    rig.wav("a.wav", 1, 20_000, |_, _| 0.5);
+    rig.wav("b.wav", 1, 20_000, |_, _| 0.5);
+    rig.add_clip(0, "a.wav", 0, 5_000);
+    rig.add_clip(0, "b.wav", 6_000, 5_000);
+    std::fs::write(rig.dir.join("a.wav"), b"not audio").unwrap();
+    std::fs::write(rig.dir.join("b.wav"), b"not audio").unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        rig.run(0, BLOCK, false);
+        let errors = rig.feeds.status(rig.id).errors;
+        if errors.len() == 2 {
+            let mut names: Vec<_> = errors
+                .iter()
+                .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(names, ["a.wav", "b.wav"]);
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 5, "got {errors:?}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn an_error_stays_while_the_schedule_changes() {
+    let mut rig = Rig::new("steady-errors");
+    rig.wav("a.wav", 1, 20_000, |_, _| 0.5);
+    let clip = rig.add_clip(0, "a.wav", 0, 5_000);
+    // Damage the file but keep its timestamp, so edits don't look at it again
+    // and the clip stays in the schedule.
+    let path = rig.dir.join("a.wav");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, b"not audio").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let started = std::time::Instant::now();
+    while rig.feeds.status(rig.id).errors.is_empty() {
+        rig.run(0, BLOCK, false);
+        assert!(started.elapsed().as_secs() < 5, "no error was reported");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Move the clip about, as a drag does, while another thread watches the
+    // status: the error must never vanish.
+    let feeds = rig.feeds.clone();
+    let node = rig.id;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut gaps = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if feeds.status(node).errors.is_empty() {
+                    gaps += 1;
+                }
+            }
+            gaps
+        })
+    };
+    for step in 1..300u64 {
+        rig.edit_clip(clip, |c| c.start = noodle_core::Tick(step as i64 * 10));
+        rig.run(0, BLOCK, false);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        watcher.join().unwrap(),
+        0,
+        "the error vanished while editing"
+    );
 }
