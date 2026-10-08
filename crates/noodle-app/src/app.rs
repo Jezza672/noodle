@@ -267,13 +267,12 @@ impl App {
                 actions.push(Action::TogglePause);
             }
         });
-        let position = self.session.playhead().map_or_else(
-            || "– . – . –".to_owned(),
-            |tick| {
-                let at = self.session.project().tempo_map().position(tick);
-                format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick)
-            },
-        );
+        let at = self
+            .session
+            .project()
+            .tempo_map()
+            .position(self.session.playhead());
+        let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
     }
 

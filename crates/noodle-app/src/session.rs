@@ -75,6 +75,9 @@ pub struct Session {
     clips: ClipFeeds,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
+    /// Where the playhead is while no stream is open, so it can be set and
+    /// read when stopped, and playing starts from it.
+    parked: Tick,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
     /// The project as it was last saved or loaded, to tell whether it has
@@ -153,6 +156,7 @@ impl Session {
             telemetry,
             clips,
             clip_problems: Vec::new(),
+            parked: Tick(0),
             path: None,
             dirty: false,
             next_id: Cell::new(0),
@@ -187,7 +191,8 @@ impl Session {
     /// Chooses the device to play on. If playing, playback restarts there.
     pub fn set_audio_config(&mut self, config: AudioConfig) {
         self.audio_config = config;
-        if self.audio.take().is_some() {
+        if self.audio.is_some() {
+            self.close_stream();
             self.play();
         }
     }
@@ -372,6 +377,7 @@ impl Session {
         self.path = path;
         self.dirty = false;
         self.message = None;
+        self.parked = Tick(0);
         self.recompile();
         // A new project starts from its beginning, running, whatever the
         // last one's playhead was doing.
@@ -415,6 +421,10 @@ impl Session {
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
                     audio.controller.set_tempo_map(self.project.tempo_map());
+                    // Carry on from where the playhead was left.
+                    if self.parked != Tick(0) {
+                        audio.controller.transport().seek(self.parked);
+                    }
                 }
             }
             Err(error) => self.message = Some(play_error(&error)),
@@ -432,7 +442,7 @@ impl Session {
     }
 
     pub fn stop(&mut self) {
-        self.audio = None;
+        self.close_stream();
         self.feed_clips();
     }
 
@@ -458,10 +468,23 @@ impl Session {
     }
 
     /// Moves the playhead to the start of the timeline.
-    pub fn rewind(&self) {
+    pub fn rewind(&mut self) {
+        self.seek(Tick(0));
+    }
+
+    /// Moves the playhead. Works stopped too: playing starts from there.
+    pub fn seek(&mut self, tick: Tick) {
+        let tick = Tick(tick.0.max(0));
+        self.parked = tick;
         if let Some(audio) = &self.audio {
-            audio.controller.transport().seek(Tick(0));
+            audio.controller.transport().seek(tick);
         }
+    }
+
+    /// Closes the stream, keeping the playhead where it was.
+    fn close_stream(&mut self) {
+        self.parked = self.playhead();
+        self.audio = None;
     }
 
     /// The tempo map the audio thread is using, if the stream is open.
@@ -472,13 +495,16 @@ impl Session {
             .map(|audio| audio.controller.tempo_map())
     }
 
-    /// Where the playhead is, if the stream is open.
-    pub fn playhead(&self) -> Option<Tick> {
-        let audio = self.audio.as_ref()?;
+    /// Where the playhead is: the transport's while playing, else where it
+    /// was left or set.
+    pub fn playhead(&self) -> Tick {
+        let Some(audio) = &self.audio else {
+            return self.parked;
+        };
         let samples = audio.controller.transport().position();
         let rate = f64::from(audio.controller.settings().sample_rate);
         let tick = audio.controller.tempo_map().tick_at_sample(samples, rate);
-        Some(Tick(tick.round() as i64))
+        Tick(tick.round() as i64)
     }
 
     /// Housekeeping to do every frame: frees plans the audio thread is done
@@ -510,12 +536,12 @@ impl Session {
             self.message = Some(message);
         }
         if check.stopped {
-            self.audio = None;
+            self.close_stream();
         } else if check.restart {
             if self.reroutes.allow(Instant::now()) {
                 self.restart_on_new_output();
             } else {
-                self.audio = None;
+                self.close_stream();
                 self.message = Some("Playback stopped: the audio output keeps changing".into());
             }
         }
@@ -525,7 +551,7 @@ impl Session {
     /// backends reroute the stream by themselves but leave it silent, so
     /// start again on whatever is now the default, and say so.
     fn restart_on_new_output(&mut self) {
-        self.audio = None;
+        self.close_stream();
         self.play();
         let Some(audio) = &self.audio else {
             // `play` has said why it couldn't.
@@ -842,6 +868,19 @@ mod tests {
 
     fn error(kind: noodle_io::DeviceErrorKind) -> DeviceError {
         kind.into()
+    }
+
+    #[test]
+    fn the_playhead_can_be_set_and_read_while_stopped() {
+        let mut session = Session::new(Nodes::all());
+        assert_eq!(session.playhead(), Tick(0));
+        session.seek(Tick(1920));
+        assert_eq!(session.playhead(), Tick(1920));
+        session.seek(Tick(-5));
+        assert_eq!(session.playhead(), Tick(0));
+        session.seek(Tick(960));
+        session.new_project();
+        assert_eq!(session.playhead(), Tick(0), "a new project starts over");
     }
 
     #[test]

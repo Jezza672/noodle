@@ -251,7 +251,7 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     h.run_steps(3);
     assert!(h.state().session().is_playing());
 
-    let playhead = |h: &H| h.state().session().playhead().expect("the stream is open");
+    let playhead = |h: &H| h.state().session().playhead();
     play_for(&mut h, Duration::from_millis(300));
     assert!(playhead(&h) > Tick(0), "the playhead moves while playing");
 
@@ -262,7 +262,7 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     play_for(&mut h, Duration::from_millis(200));
     assert_eq!(playhead(&h), held);
 
-    h.state().session().rewind();
+    h.state_mut().session_mut().rewind();
     play_for(&mut h, Duration::from_millis(200));
     assert_eq!(playhead(&h), Tick(0));
 
@@ -284,6 +284,29 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
         "rewound from {far:?}, lowest {lowest:?}"
     );
     assert!(h.state().session().transport_running());
+
+    // Stopping keeps the playhead; it can be moved while stopped, and
+    // playing starts from there.
+    h.state_mut().session_mut().set_transport_running(false);
+    h.state_mut().session_mut().seek(Tick(7680));
+    // The audio thread takes the seek at its next block.
+    for _ in 0..100 {
+        if h.state().session().playhead() == Tick(7680) {
+            break;
+        }
+        play_for(&mut h, Duration::from_millis(10));
+    }
+    let session = h.state_mut().session_mut();
+    session.stop();
+    assert_eq!(session.playhead(), Tick(7680));
+    session.seek(Tick(3840));
+    assert_eq!(session.playhead(), Tick(3840));
+    session.play();
+    assert!(session.is_playing(), "{:?}", session.message());
+    session.set_transport_running(false);
+    play_for(&mut h, Duration::from_millis(200));
+    assert_eq!(playhead(&h), Tick(3840), "playing started from the seek");
+    h.state_mut().session_mut().set_transport_running(true);
 
     // A tempo edit reaches the engine.
     let fast = TempoMap::constant(240.0, TimeSignature::COMMON).unwrap();
