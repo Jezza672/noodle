@@ -19,8 +19,9 @@ use crate::theme::timeline as colors;
 /// mixer's faders cover, so a gain set in one shows in the other.
 const GAIN_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
 
-/// The group's config setting that holds the track's name.
-const NAME: &str = "name";
+/// The group's config setting that holds the track's name; the mixer reads
+/// the same one.
+use crate::mixer::NAME;
 
 /// A name being typed in a header.
 #[derive(Clone, Debug, PartialEq, Eq)]

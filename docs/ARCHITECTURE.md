@@ -813,7 +813,8 @@ style. It has these views:
   - **Track names** are the track group's `name` config setting. Double-click
     a header's name to type one; Enter keeps it, Escape throws it away, and
     an empty name puts the default ("Track N", by position) back. One undo
-    step per rename.
+    step per rename. A rename whose header scrolls out of view, or whose track
+    goes away, is dropped.
   - **Add track:** the button after the last header runs
     `group::create_track`, one undo step, and the new track shows up with
     its controls at once. It also wires the track to an Output node, using
