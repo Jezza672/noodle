@@ -83,7 +83,9 @@ trimmable clips, and the audio side of the track input node. Automation has land
 sources that ramp hold steps, including lanes on a track's gain and mute;
 solo can't be automated), and the app feeds the project's lanes, tempo and
 clips to the running engine. The playhead can be set and read while stopped.
-The M2 acceptance test is next. The UI follows the Studio direction: inspector on the left, the
+The offline acceptance test (`noodle-nodes/tests/m2_acceptance.rs`) arranges
+clips on two tracks, runs one through a gain node, automates the other's
+output gain and mixes down, checking the samples. The UI follows the Studio direction: inspector on the left, the
 arrangement on top, and the selected track's node graph below.
 
 - **Transport:** play, stop, loop, tempo map and time signature.
