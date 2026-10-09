@@ -634,7 +634,8 @@ mod tests {
         let (project, ..) = with_timeline();
         let text = project.to_ron();
         assert!(Project::from_ron(&text).is_ok());
-        let no_player = text.replace("node: 1,\n", "node: 9,\n");
+        // Not `"node: 1,\n"`: RON writes `\r\n` on Windows.
+        let no_player = text.replace("node: 1,", "node: 9,");
         assert!(matches!(
             Project::from_ron(&no_player),
             Err(LoadError::Broken(EditError::NoSuchNode(NodeId(9))))
