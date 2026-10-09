@@ -77,10 +77,10 @@ impl Fields {
                 let PortKind::Param(info) = &port.kind else {
                     continue;
                 };
+                let input = Endpoint::new(node.id, port.key.clone());
                 if port.side != Side::Input
-                    || graph
-                        .source(&Endpoint::new(node.id, port.key.clone()))
-                        .is_some()
+                    || graph.source(&input).is_some()
+                    || f.project.lane_for(&input).is_some()
                 {
                     continue;
                 }

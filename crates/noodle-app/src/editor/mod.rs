@@ -614,29 +614,28 @@ fn drop_target(
         Side::Output => kind.feeds(other),
         Side::Input => other.feeds(kind),
     };
+    let graph = f.project.graph();
     for &i in f.order.iter().rev() {
         let node = &f.scene.nodes[i];
         if node.id == anchor.node {
             continue;
         }
-        let mut candidates = node
-            .ports
-            .iter()
-            .filter(|port| port.side != side && compatible(&port.kind));
+        // A lane's port only shows the lane, so no wire can land on it.
+        let usable = |port: &layout::PortGeom| {
+            port.side != side
+                && compatible(&port.kind)
+                && !layout::is_lane_port(graph, &Endpoint::new(node.id, port.key.clone()))
+        };
+        let mut candidates = node.ports.iter().filter(|port| usable(port));
         // The row under the pointer, then the nearest socket in reach.
         let target = candidates
             .clone()
             .find(|port| port.row.contains(g))
-            .or_else(|| {
-                nearest_socket(f, node, p, |port| {
-                    port.side != side && compatible(&port.kind)
-                })
-            });
+            .or_else(|| nearest_socket(f, node, p, usable));
         if let Some(port) = target {
             return Some(Endpoint::new(node.id, port.key.clone()));
         }
         if node.rect.contains(g) {
-            let graph = f.project.graph();
             let free = |port: &&layout::PortGeom| {
                 port.side == Side::Output
                     || graph

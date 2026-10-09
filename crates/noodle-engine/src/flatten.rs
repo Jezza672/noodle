@@ -30,7 +30,8 @@ const STAGE_OUT: &str = "out";
 ///
 /// A boundary node whose controls are off their defaults (a gain, or mute,
 /// including a mute that soloing another track brings) stays as a stage: a
-/// real node in the flat graph under the boundary node's ID. The rest are
+/// real node in the flat graph under the boundary node's ID, as does one with
+/// a wire into its gain or mute. The rest are
 /// dropped, so a group left at its defaults costs nothing and renders like
 /// the flat patch.
 pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
@@ -99,8 +100,8 @@ pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> 
 /// replace them.
 ///
 /// A stage stays when its gain or mute is off its default or has a wire into
-/// it, and also once either has been set at all (even back to its default): adding or removing
-/// a node in the audible path makes the engine fade the whole output out and
+/// it, and also once either has been set at all (even back to its default):
+/// adding or removing a node in the audible path makes the engine fade the whole output out and
 /// in, so a control that is moved again has to find its stage in place, and
 /// then moving it is only a parameter change. Soloing works the same way:
 /// the muted tracks get their stages at their outputs, and while solo is in

@@ -126,7 +126,7 @@ The **Project** is the single source of truth. It holds one global graph:
     `Graph::group_controls`). Flatten keeps a boundary node as a
     `noodle.group.stage` node, under the boundary node's ID so a lane aimed
     at it reaches it, once its gain or mute has been set at all (even back to
-    its default) or it is muted, and drops the rest. So a group nobody has
+    its default), is wired, or it is muted, and drops the rest. So a group nobody has
     touched costs nothing and renders bit-for-bit like the flat patch, and a
     touched one costs a stage that is exact at unity. The stage stays once
     set because adding or removing a node in the audible path makes the

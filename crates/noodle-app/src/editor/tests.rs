@@ -2136,3 +2136,60 @@ fn the_add_node_list_offers_group_input_and_output_inside_a_group() {
         );
     }
 }
+
+#[test]
+fn a_wire_cannot_be_dropped_on_a_lanes_port() {
+    use noodle_core::group::{GAIN, GROUP_OUTPUT, TRACK_INPUT, create_track};
+    use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
+    let mut h = rig();
+    let session = &mut h.state_mut().session;
+    let (group, create) = create_track(None, Position { x: 0.0, y: 0.0 }, || session.new_node_id());
+    session.edit([Edit::Apply(create)]);
+    let find = |h: &H, kind: &str| {
+        h.state()
+            .session
+            .project()
+            .graph()
+            .children(Some(group))
+            .find(|(_, n)| n.type_id == kind)
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    let (input, output) = (find(&h, TRACK_INPUT), find(&h, GROUP_OUTPUT));
+    let session = &mut h.state_mut().session;
+    let id = session.project().next_lane_id();
+    let lane = AutomationLane::new(
+        Endpoint::new(output, GAIN),
+        vec![AutomationPoint {
+            tick: Tick(0),
+            value: 0.0,
+            curve: Curve::Linear,
+        }],
+    );
+    session.edit([Edit::Apply(Command::AddLane { id, lane })]);
+    h.state_mut().editor.group = Some(group);
+    let osc = add(
+        &mut h,
+        Node::new("noodle.osc.saw")
+            .at(-100.0, 400.0)
+            .in_group(group),
+    );
+    h.run();
+    let key = format!("lane{}", id.0);
+    let (from, to) = (
+        socket(&h, osc, Side::Output, "out"),
+        socket(&h, input, Side::Output, &key),
+    );
+    // Dragging the other way round, from a parameter input onto the lane.
+    let gain_in = socket(&h, output, Side::Input, GAIN);
+    link(&mut h, from, to);
+    link(&mut h, gain_in, to);
+    let graph = h.state().session.project().graph();
+    assert!(
+        graph
+            .connections()
+            .all(|c| !c.from.port.starts_with("lane")),
+        "{:?}",
+        graph.connections().collect::<Vec<_>>()
+    );
+}

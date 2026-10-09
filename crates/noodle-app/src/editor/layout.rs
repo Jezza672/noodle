@@ -147,13 +147,6 @@ pub fn is_lane_port(graph: &Graph, endpoint: &Endpoint) -> bool {
             .is_some_and(|n| n.type_id == group::TRACK_INPUT)
 }
 
-fn capitalised(key: &str) -> String {
-    let mut chars = key.chars();
-    chars
-        .next()
-        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
-}
-
 /// The lanes shown as wires from `node`, when it is a track's input: those
 /// driving a boundary node of its group. A lane has no wire of its own in
 /// the project, so the first track input in a group stands for all of them.
@@ -172,7 +165,10 @@ fn lane_wires(project: &Project, node: NodeId) -> Vec<(LaneId, Endpoint)> {
     project
         .lanes()
         .filter(|(_, lane)| {
-            !lane.points.is_empty()
+            // Solo has no port, and a real wire in the way hides the lane.
+            matches!(lane.target.port.as_str(), group::GAIN | group::MUTE)
+                && graph.source(&lane.target).is_none()
+                && !lane.points.is_empty()
                 && graph.node(lane.target.node).is_some_and(|n| {
                     n.parent == input.parent
                         && matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT)
@@ -326,7 +322,14 @@ impl Scene {
                 for (lane, target) in lane_wires(project, id) {
                     ports.push(PortGeom {
                         key: lane_key(lane),
-                        name: format!("{} lane", capitalised(&target.port)),
+                        name: format!(
+                            "{} {} lane",
+                            match graph.node(target.node).map(|n| n.type_id.as_str()) {
+                                Some(GROUP_INPUT) => "In",
+                                _ => "Out",
+                            },
+                            target.port
+                        ),
                         side: Side::Output,
                         kind: PortKind::Audio,
                         socket: Pos2::ZERO,
@@ -365,6 +368,9 @@ impl Scene {
                     p.side == Side::Input
                         && matches!(p.kind, PortKind::Param(_))
                         && graph.source(&Endpoint::new(id, p.key.clone())).is_none()
+                        && project
+                            .lane_for(&Endpoint::new(id, p.key.clone()))
+                            .is_none()
                 };
                 let rect = place_columns(origin, &mut ports, has_field);
                 let height = super::body::height(&node.type_id);
@@ -428,10 +434,6 @@ impl Scene {
         // Lanes show as wires from their track's input node.
         for &id in scene.index.keys() {
             for (lane, target) in lane_wires(project, id) {
-                // A real wire into the port wins; the lane waits behind it.
-                if graph.source(&target).is_some() {
-                    continue;
-                }
                 let from = Endpoint::new(id, lane_key(lane));
                 let (Some(a), Some(b)) = (
                     scene.port(&from, Side::Output),
@@ -540,7 +542,7 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
                 "Gain",
                 ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
             ),
-            (group::MUTE, "Mute", ParamInfo::new(0.0, 1.0, 0.0)),
+            (group::MUTE, "Mute", ParamInfo::choice(["Off", "On"])),
         ]
         .map(|(key, name, info)| {
             let mut port = port(Side::Input, name);
