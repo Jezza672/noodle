@@ -73,9 +73,9 @@ impl NodeType for Metronome {
 
 #[derive(Default)]
 struct Click {
-    /// The beat (counted from tick 0) that last started a click, so a beat on
+    /// The tick of the beat that last started a click, so a beat on
     /// the border between two blocks sounds once.
-    last_beat: Option<i64>,
+    last_tick: Option<f64>,
     /// Where the next block should start if time is going on unbroken. A
     /// different position means a seek or a loop wrap.
     next_position: Option<u64>,
@@ -91,14 +91,11 @@ impl Node for Click {
         let out = io.outputs[OUT].lane_mut(0, 0);
         out.fill(0.0);
         let transport = &ctx.transport;
-        if !transport.playing {
-            self.reset();
-            return;
+        let playing = transport.playing;
+        if !playing || self.next_position != Some(transport.position) {
+            self.last_tick = None;
         }
-        if self.next_position != Some(transport.position) {
-            self.last_beat = None;
-        }
-        self.next_position = Some(transport.position + ctx.frames as u64);
+        self.next_position = playing.then(|| transport.position + ctx.frames as u64);
 
         let on = io.inputs[ON]
             .lane(0, 0)
@@ -111,23 +108,29 @@ impl Node for Click {
             .unwrap_or(-12.0);
         let level = 10f32.powf(db / 20.0);
 
-        // The first beat to start in this block, as a frame.
+        // The first beat to start in this block, as a frame. Beats are
+        // counted from tick 0 (see the roadmap for signature changes). A
+        // stopped transport starts none, but a click that's sounding rings out.
         let beat_ticks =
             TICKS_PER_QUARTER * 4.0 / f64::from(transport.signature.denominator.max(1));
         let frames_per_tick =
             60.0 * f64::from(ctx.sample_rate) / (transport.bpm.max(1.0) * TICKS_PER_QUARTER);
         let end_tick = transport.tick + ctx.frames as f64 / frames_per_tick;
         let mut beat = ((transport.tick - EPSILON) / beat_ticks).ceil() as i64;
-        if self.last_beat.is_some_and(|last| beat <= last) {
-            beat = self.last_beat.unwrap_or(0) + 1;
+        if self
+            .last_tick
+            .is_some_and(|last| beat as f64 * beat_ticks <= last + EPSILON)
+        {
+            beat += 1;
         }
         let beat_tick = beat as f64 * beat_ticks;
-        let start = (beat_tick < end_tick - EPSILON && on).then(|| {
+        let starts = playing && beat_tick < end_tick - EPSILON;
+        let start = (starts && on).then(|| {
             let frame = ((beat_tick - transport.tick).max(0.0) * frames_per_tick) as usize;
             (frame.min(ctx.frames.saturating_sub(1)), beat)
         });
-        if beat_tick < end_tick - EPSILON {
-            self.last_beat = Some(beat);
+        if starts {
+            self.last_tick = Some(beat_tick);
         }
 
         let decay = (-1.0 / (DECAY_SECONDS * ctx.sample_rate)).exp();
@@ -151,7 +154,7 @@ impl Node for Click {
     }
 
     fn reset(&mut self) {
-        self.last_beat = None;
+        self.last_tick = None;
         self.next_position = None;
         self.envelope = 0.0;
     }
@@ -294,6 +297,29 @@ mod tests {
         assert_eq!(peak(&rig.run(BEAT_FRAMES * 2, 512)), 0.0);
         rig.on = true;
         assert_eq!(peak(&rig.block(512, false)), 0.0);
+    }
+
+    #[test]
+    fn a_signature_change_to_bigger_beats_does_not_silence_the_metronome() {
+        let mut rig = Rig::new();
+        rig.signature = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        // Two bars of 6/8 are 12 eighths of 12 000 frames.
+        rig.run(12_000 * 12, 512);
+        rig.signature = TimeSignature::COMMON;
+        let samples = rig.run(BEAT_FRAMES * 3, 512);
+        assert!(onsets(&samples).len() >= 2, "{:?}", onsets(&samples));
+    }
+
+    #[test]
+    fn stopping_lets_a_click_ring_out_and_starts_no_more() {
+        let mut rig = Rig::new();
+        rig.run(100, 100);
+        let tail = rig.block(512, false);
+        assert!(peak(&tail) > 0.0);
+        assert_eq!(peak(&rig.block(BEAT_FRAMES, false)[1_500..]), 0.0);
     }
 
     #[test]

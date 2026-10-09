@@ -587,6 +587,21 @@ fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
             "allocated on the audio thread in round {round}"
         );
     }
+    // A loop that really wraps: 30 blocks of 1000 frames pass the 24 000
+    // frames of a one-beat loop at 120 bpm.
+    s.controller
+        .set_tempo_map(&TempoMap::constant(120.0, TimeSignature::COMMON).unwrap());
+    transport.set_loop(Some((Tick(0), Tick(960))));
+    transport.seek(Tick(0));
+    s.controller.maintain();
+    let violations = realtime(|| {
+        for _ in 0..30 {
+            s.processor.process(&mut out);
+            heard |= out.iter().any(|&x| x.abs() > 1e-3);
+        }
+    });
+    assert_eq!(violations, 0, "allocated while the loop wrapped");
+    assert!(transport.position() < 30_000, "the loop never wrapped");
     assert!(heard, "the metronome never sounded");
     assert!(out.iter().all(|x| x.is_finite()));
 }

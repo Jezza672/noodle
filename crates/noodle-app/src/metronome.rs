@@ -22,26 +22,35 @@ pub enum Binding {
     Broken(String),
 }
 
-/// Finds the metronome the button controls: the first one at the top level.
+/// Finds the metronome the button controls: the first top-level one whose
+/// `on` input is fed by a Button. If there is none, the first metronome's
+/// problem is reported.
 pub fn binding(project: &Project) -> Binding {
     let graph = project.graph();
-    let Some((metronome, _)) = graph
+    let mut first_problem = None;
+    for (metronome, _) in graph
         .nodes()
-        .find(|(_, node)| node.type_id == METRONOME_ID && node.parent.is_none())
-    else {
-        return Binding::Missing;
-    };
-    let input = Endpoint::new(metronome, METRONOME_ON);
-    let Some(source) = graph.source(&input) else {
-        return Binding::Broken("Nothing is wired into the metronome's On input".to_owned());
-    };
-    match graph.node(source.node) {
-        Some(node) if node.type_id == BUTTON_ID => Binding::Bound {
-            button: source.node,
-            on: node.params.get(BUTTON_STATE).copied().unwrap_or(0.0) >= 0.5,
-        },
-        _ => Binding::Broken("The metronome's On input isn't driven by a Button node".to_owned()),
+        .filter(|(_, node)| node.type_id == METRONOME_ID && node.parent.is_none())
+    {
+        let input = Endpoint::new(metronome, METRONOME_ON);
+        let Some(source) = graph.source(&input) else {
+            first_problem.get_or_insert("Nothing is wired into the metronome's On input");
+            continue;
+        };
+        match graph.node(source.node) {
+            Some(node) if node.type_id == BUTTON_ID => {
+                return Binding::Bound {
+                    button: source.node,
+                    on: node.params.get(BUTTON_STATE).copied().unwrap_or(0.0) >= 0.5,
+                };
+            }
+            _ => {
+                first_problem
+                    .get_or_insert("The metronome's On input isn't driven by a Button node");
+            }
+        }
     }
+    first_problem.map_or(Binding::Missing, |why| Binding::Broken(why.to_owned()))
 }
 
 /// The command for pressing the button: flip a bound button, or add the
@@ -200,5 +209,23 @@ mod tests {
                 assert!(node.position.y > 300.0);
             }
         }
+    }
+
+    #[test]
+    fn a_bound_pair_wins_over_a_loose_metronome() {
+        let mut session = session();
+        let id = session.new_node_id();
+        session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new(METRONOME_ID),
+        })]);
+        assert!(matches!(binding(session.project()), Binding::Broken(_)));
+        // The press is refused while it's broken, so add a pair by hand.
+        let command = default_setup(
+            session.project(),
+            std::array::from_fn(|_| session.new_node_id()),
+        );
+        session.edit([Edit::Apply(command)]);
+        assert!(matches!(binding(session.project()), Binding::Bound { .. }));
     }
 }

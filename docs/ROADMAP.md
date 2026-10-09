@@ -353,8 +353,9 @@ Metronome node and the metronome button.
 - **Still to do:** a way to add other buttons to the pill, and binding a
   button to a chosen node or parameter from the pill itself. The metronome
   has no accent or sound settings beyond `level` yet. A signature change
-  inside the project counts beats from tick 0, so the bar's first beat can be
-  misplaced after one.
+  inside the project counts beats from tick 0 (each beat a multiple of the
+  current beat length), so after one the clicks and the bar accent can land
+  off the new meter's grid. Fixing it needs the meter's start tick on `Transport`.
 
 ## M3: Events and polyphony
 

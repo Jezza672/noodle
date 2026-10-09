@@ -418,7 +418,7 @@ impl App {
             ),
             metronome::Binding::Broken(why) => (theme::editor::PROBLEM, false, why.clone()),
         };
-        let button = egui::Button::new(egui::RichText::new("𝅘𝅥").color(colour)).selected(selected);
+        let button = egui::Button::new(egui::RichText::new("♩").color(colour)).selected(selected);
         if ui.add(button).on_hover_text(tip).clicked() {
             actions.push(Action::ToggleMetronome);
         }
@@ -575,9 +575,13 @@ impl App {
                 let ids = || std::array::from_fn(|_| self.session.new_node_id());
                 match metronome::press(self.session.project(), ids) {
                     Some(command) => self.session.edit([Edit::Apply(command)]),
-                    None => self
-                        .session
-                        .notify("The metronome isn't driven by a Button node".to_owned()),
+                    None => {
+                        let why = match metronome::binding(self.session.project()) {
+                            metronome::Binding::Broken(why) => why,
+                            _ => "The metronome can't be pressed".to_owned(),
+                        };
+                        self.session.notify(why);
+                    }
                 }
             }
             Action::ImportAudio => {
@@ -1192,13 +1196,13 @@ mod tests {
     fn the_metronome_button_adds_a_metronome_then_toggles_it() {
         let mut harness = harness(empty());
         harness.run();
-        harness.get_by_label("𝅘𝅥").click();
+        harness.get_by_label("♩").click();
         harness.run();
         assert!(matches!(
             metronome::binding(harness.state().session.project()),
             metronome::Binding::Bound { on: true, .. }
         ));
-        harness.get_by_label("𝅘𝅥").click();
+        harness.get_by_label("♩").click();
         harness.run();
         assert!(matches!(
             metronome::binding(harness.state().session.project()),
