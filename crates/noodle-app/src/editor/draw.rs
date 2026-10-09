@@ -57,7 +57,10 @@ pub fn frames(painter: &Painter, f: &Frame_<'_>, state: &EditorState) {
                 StrokeKind::Outside,
             );
         }
-        let renaming = state.rename.as_ref().is_some_and(|r| r.id == frame.id);
+        let renaming = state
+            .rename
+            .as_ref()
+            .is_some_and(|r| r.target == super::RenameTarget::Frame(frame.id));
         if z >= MIN_TEXT_ZOOM && !renaming {
             let header = f.t.rect_to_screen(frame.header());
             painter.with_clip_rect(header).text(

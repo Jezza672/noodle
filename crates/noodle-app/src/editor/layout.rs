@@ -214,6 +214,20 @@ impl Scene {
                 }
             };
 
+            // A track's source node is named after its group.
+            let title = match node.parent {
+                Some(parent) if node.type_id == group::TRACK_INPUT => {
+                    match graph
+                        .node(parent)
+                        .and_then(|n| n.config.get(group::PORT_NAME))
+                    {
+                        Some(noodle_core::Value::Text(name)) if !name.is_empty() => name.clone(),
+                        _ => title,
+                    }
+                }
+                _ => title,
+            };
+
             // Ports that wires refer to but the node doesn't have.
             for connection in &connections {
                 for (endpoint, side) in [
@@ -622,6 +636,35 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert!(inputs[0].spare);
         assert_eq!(inputs[0].key, "in1");
+    }
+
+    #[test]
+    fn a_track_input_is_named_after_its_group() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let mut next = 0;
+        let (group, create) = noodle_core::group::create_track(None, Position::default(), || {
+            next += 1;
+            NodeId(next)
+        });
+        history.apply(&mut project, create).unwrap();
+        let input = |project: &Project| {
+            let scene = Scene::build(project, &registry(), Some(group));
+            let id = project
+                .graph()
+                .children(Some(group))
+                .find(|(_, n)| n.type_id == noodle_core::group::TRACK_INPUT)
+                .map(|(id, _)| id)
+                .unwrap();
+            scene.node(id).unwrap().title.clone()
+        };
+        assert_eq!(input(&project), "Track Input");
+        let name = Command::SetConfig {
+            node: group,
+            key: "name".into(),
+            value: Some(noodle_core::Value::Text("Drums".into())),
+        };
+        history.apply(&mut project, name).unwrap();
+        assert_eq!(input(&project), "Drums");
     }
 
     #[test]

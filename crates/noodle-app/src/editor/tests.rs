@@ -1971,3 +1971,120 @@ fn a_spare_that_gets_no_wire_stores_nothing() {
     link(&mut h, spare, empty);
     assert_eq!(h.state().session.project(), &before);
 }
+
+/// Types `text` into the rename box and presses Enter.
+fn type_name(h: &mut H, text: &str) {
+    h.run();
+    h.event(Event::Key {
+        key: Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    if text.is_empty() {
+        h.key_press(Key::Backspace);
+    } else {
+        h.event(Event::Text(text.to_owned()));
+    }
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+}
+
+fn group_name(h: &H, group: NodeId) -> Option<String> {
+    match h
+        .state()
+        .session
+        .project()
+        .graph()
+        .node(group)?
+        .config
+        .get("name")
+    {
+        Some(noodle_core::Value::Text(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+#[test]
+fn f2_renames_the_selected_group_and_an_empty_name_puts_the_default_back() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    let p = title(&h, group);
+    click(&mut h, p, Modifiers::NONE);
+    let at = empty_space(&h);
+    press(&mut h, at, Modifiers::NONE, Key::F2);
+    assert!(h.state().editor.rename.is_some());
+    type_name(&mut h, "Drums");
+    assert_eq!(group_name(&h, group).as_deref(), Some("Drums"));
+    assert_eq!(scene(&h).node(group).unwrap().title, "Drums");
+    h.state_mut().session.undo();
+    assert_eq!(group_name(&h, group), None);
+    // Empty puts the default back.
+    h.state_mut().session.redo();
+    press(&mut h, at, Modifiers::NONE, Key::F2);
+    type_name(&mut h, "");
+    assert_eq!(group_name(&h, group), None);
+}
+
+#[test]
+fn double_clicking_a_group_ports_label_renames_it_and_keeps_its_wire() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    let src = add(&mut h, Node::new("noodle.osc.sine").at(-100.0, 300.0));
+    h.run();
+    let from = socket(&h, src, Side::Output, "out");
+    let spare = socket(&h, group, Side::Input, "in1");
+    link(&mut h, from, spare);
+    h.run();
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "in1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    assert!(h.state().editor.rename.is_some(), "the port's box opened");
+    assert_eq!(h.state().editor.group, None, "and the group wasn't entered");
+    type_name(&mut h, "feed");
+    assert_eq!(source(&h, group, "feed"), Some(Endpoint::new(src, "out")));
+    assert_eq!(source(&h, group, "in1"), None);
+    assert!(h.state().session.diagnostics().is_empty());
+}
+
+#[test]
+fn a_port_name_already_taken_is_refused() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    for name in ["x", "y"] {
+        let session = &mut h.state_mut().session;
+        let id = session.new_node_id();
+        let command = noodle_core::spare::add_group_port(
+            session.project().graph(),
+            group,
+            noodle_core::spare::Side::Input,
+            name,
+            id,
+        );
+        session.edit([Edit::Apply(command)]);
+    }
+    h.run();
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "x")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    type_name(&mut h, "y");
+    let ports = h.state().session.project().graph().group_ports(group);
+    assert!(ports.input("x").is_some() && ports.input("y").is_some());
+}

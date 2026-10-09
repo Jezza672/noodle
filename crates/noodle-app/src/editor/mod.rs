@@ -283,9 +283,25 @@ enum StrokeAction {
     Reroute,
 }
 
-/// Renaming a frame in place.
+/// What is being renamed in place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenameTarget {
+    Frame(FrameId),
+    /// A group: its name is its `name` config, which a track shares.
+    Group(NodeId),
+    /// A group's port, named by the boundary node inside; `shown_on` is the
+    /// node the box opens over.
+    Port {
+        boundary: NodeId,
+        shown_on: NodeId,
+    },
+    /// A group's input or output node, whose name is its port's.
+    Boundary(NodeId),
+}
+
+/// Renaming in place.
 struct Rename {
-    id: FrameId,
+    target: RenameTarget,
     label: String,
     focused: bool,
 }
@@ -721,7 +737,18 @@ fn pointer(
     {
         match hit(f, p) {
             Hit::FrameHeader(id) => start_rename(state, f.project, id),
-            Hit::Node(id) if is_group(f.project, id) => state.enter(Some(id), None),
+            // A group's port rows rename the port; the rest of the node
+            // opens it.
+            Hit::Node(id) if is_group(f.project, id) => {
+                let port = f
+                    .scene
+                    .node(id)
+                    .and_then(|node| port_row_at(node, f.t.to_graph(p)));
+                match port {
+                    Some(port) => start_port_rename(state, f.project, id, port),
+                    None => state.enter(Some(id), None),
+                }
+            }
             Hit::Nothing => {
                 if let Some(wire) = wire_at(f, p) {
                     let input = wire.connection.to.clone();
@@ -939,30 +966,36 @@ fn splice_while_dragging(state: &EditorState, f: &Frame_<'_>, alt: bool) -> Opti
 /// not on the title bar, not one the node refers to without having, and not
 /// the only one on its side.
 fn label_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
-    let in_row: Vec<_> = node
-        .ports
-        .iter()
-        .filter(|p| !p.in_header && !p.spare && p.kind != PortKind::Unknown && p.row.contains(g))
-        .collect();
-    // Inputs and outputs can share a row, one on each half.
-    let port = match in_row.as_slice() {
-        [] => return None,
-        [only] => *only,
-        _ => {
-            let side = if g.x < node.rect.center().x {
-                Side::Input
-            } else {
-                Side::Output
-            };
-            in_row.into_iter().find(|p| p.side == side)?
-        }
-    };
+    let port = port_row_at(node, g)?;
     let siblings = node
         .ports
         .iter()
         .filter(|p| p.side == port.side && !p.spare)
         .count();
     (siblings > 1).then_some(port)
+}
+
+/// The port whose row is at the graph point `g`, on the title bar excepted.
+/// Spare ports and ones the node doesn't really have don't count.
+fn port_row_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
+    let in_row: Vec<_> = node
+        .ports
+        .iter()
+        .filter(|p| !p.in_header && !p.spare && p.kind != PortKind::Unknown && p.row.contains(g))
+        .collect();
+    // Inputs and outputs can share a row, one on each half.
+    match in_row.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        _ => {
+            let side = if g.x < node.rect.center().x {
+                Side::Input
+            } else {
+                Side::Output
+            };
+            in_row.into_iter().find(|p| p.side == side)
+        }
+    }
 }
 
 /// Where a port dragged to graph height `y` would land among the other ports
@@ -1450,11 +1483,16 @@ fn keyboard(
     if pressed(Modifiers::NONE, Key::Tab) {
         enter_or_leave(state, f.project);
     }
-    if pressed(Modifiers::NONE, Key::F2)
-        && state.selected_frames.len() == 1
-        && let Some(&id) = state.selected_frames.first()
-    {
-        start_rename(state, f.project, id);
+    if pressed(Modifiers::NONE, Key::F2) {
+        if state.selected_frames.len() == 1
+            && let Some(&id) = state.selected_frames.first()
+        {
+            start_rename(state, f.project, id);
+        } else if state.selected.len() == 1
+            && let Some(&id) = state.selected.first()
+        {
+            start_node_rename(state, f.project, id);
+        }
     }
 }
 
@@ -1773,8 +1811,48 @@ fn frame_selection(
 fn start_rename(state: &mut EditorState, project: &Project, id: FrameId) {
     if let Some(frame) = project.frame(id) {
         state.rename = Some(Rename {
-            id,
+            target: RenameTarget::Frame(id),
             label: frame.label.clone(),
+            focused: false,
+        });
+    }
+}
+
+/// Starts renaming a group, or a group's input or output node.
+fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
+    let graph = project.graph();
+    let Some(node) = graph.node(id) else { return };
+    let (target, label) = match node.type_id.as_str() {
+        GROUP => (RenameTarget::Group(id), layout::group_title(graph, id)),
+        GROUP_INPUT | GROUP_OUTPUT => (RenameTarget::Boundary(id), group::port_name(id, node)),
+        _ => return,
+    };
+    state.rename = Some(Rename {
+        target,
+        label,
+        focused: false,
+    });
+}
+
+/// Starts renaming the port of a group node that `key` names.
+fn start_port_rename(
+    state: &mut EditorState,
+    project: &Project,
+    group: NodeId,
+    port: &layout::PortGeom,
+) {
+    let ports = project.graph().group_ports(group);
+    let found = match port.side {
+        Side::Input => ports.input(&port.key),
+        Side::Output => ports.output(&port.key),
+    };
+    if let Some(found) = found {
+        state.rename = Some(Rename {
+            target: RenameTarget::Port {
+                boundary: found.node,
+                shown_on: group,
+            },
+            label: found.name.clone(),
             focused: false,
         });
     }
@@ -1835,14 +1913,23 @@ fn popups(
     let Some(rename) = &mut state.rename else {
         return;
     };
-    let Some(frame) = f.project.frame(rename.id) else {
+    // Where the box opens, and the width it gets.
+    let anchor = match rename.target {
+        RenameTarget::Frame(id) => f.project.frame(id).map(|frame| {
+            Rect::from_min_size(
+                Pos2::new(frame.position.x, frame.position.y),
+                Vec2::new(frame.width, FRAME_HEADER_HEIGHT),
+            )
+        }),
+        RenameTarget::Group(id)
+        | RenameTarget::Boundary(id)
+        | RenameTarget::Port { shown_on: id, .. } => f.scene.node(id).map(|n| n.header()),
+    };
+    let Some(anchor) = anchor else {
         state.rename = None;
         return;
     };
-    let header = f.t.rect_to_screen(Rect::from_min_size(
-        Pos2::new(frame.position.x, frame.position.y),
-        Vec2::new(frame.width, FRAME_HEADER_HEIGHT),
-    ));
+    let header = f.t.rect_to_screen(anchor);
     let id = egui::Id::new("noodle-editor-rename");
     let mut done = false;
     let mut cancelled = false;
@@ -1868,18 +1955,42 @@ fn popups(
         state.rename = None;
     } else if done {
         let label = std::mem::take(&mut rename.label);
-        let id = rename.id;
+        let target = rename.target;
         state.rename = None;
-        if label != frame.label {
-            edits.push(Edit::Apply(Command::SetFrame {
+        edits.extend(rename_edit(f.project, target, label));
+    }
+}
+
+/// The edit that gives `target` the name `label`, if that changes anything.
+fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option<Edit> {
+    let command = match target {
+        RenameTarget::Frame(id) => {
+            let frame = project.frame(id)?;
+            (label != frame.label).then(|| Command::SetFrame {
                 id,
                 frame: Frame {
                     label,
                     ..frame.clone()
                 },
-            }));
+            })?
         }
-    }
+        RenameTarget::Group(id) => {
+            let graph = project.graph();
+            if label == layout::group_title(graph, id) {
+                return None;
+            }
+            // An empty name puts the default back.
+            Command::SetConfig {
+                node: id,
+                key: group::PORT_NAME.into(),
+                value: (!label.is_empty()).then(|| noodle_core::Value::Text(label)),
+            }
+        }
+        RenameTarget::Boundary(id) | RenameTarget::Port { boundary: id, .. } => {
+            spare::rename_group_port(project, id, &label)?
+        }
+    };
+    Some(Edit::Apply(command))
 }
 
 /// The tooltip for whatever's under the pointer: the name of a socket that
