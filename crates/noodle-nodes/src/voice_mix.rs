@@ -1,17 +1,34 @@
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Setup, Shape,
+    Telemetry,
 };
+
+use crate::meter::{LevelProbe, voice_sum_out};
 
 /// Sums the voices of a polyphonic signal, keeping its channels. It works
 /// across lanes, so it implements [`Node`] directly instead of using a lane
-/// kernel.
-pub struct VoiceMix;
+/// kernel. It reports its output's level through [`Telemetry`], for the meter
+/// drawn on the node.
+pub struct VoiceMix {
+    telemetry: Telemetry,
+}
+
+impl VoiceMix {
+    pub fn new(telemetry: &Telemetry) -> Self {
+        Self {
+            telemetry: telemetry.clone(),
+        }
+    }
+}
+
+/// The Voice Mix's type ID.
+pub const VOICE_MIX_ID: &str = "noodle.poly.voice_mix";
 
 const IN: usize = 0;
 const OUT: usize = 0;
 
 static INFO: NodeInfo = NodeInfo {
-    id: "noodle.poly.voice_mix",
+    id: VOICE_MIX_ID,
     version: 1,
     name: "Voice Mix",
     category: "Polyphony",
@@ -35,15 +52,24 @@ impl NodeType for VoiceMix {
         Ok(vec![Shape::new(1, inputs[IN].channels)])
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(VoiceMixNode))
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        let channels = setup.output_shapes[OUT].channels;
+        Ok(Instance::realtime(VoiceMixNode {
+            probe: LevelProbe::new(&self.telemetry, setup.node, channels, setup.sample_rate),
+        }))
     }
 }
 
-struct VoiceMixNode;
+struct VoiceMixNode {
+    probe: LevelProbe,
+}
 
 impl Node for VoiceMixNode {
-    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+    fn reset(&mut self) {
+        self.probe.reset();
+    }
+
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let input = io.inputs[IN];
         let out = &mut io.outputs[OUT];
         for channel in 0..out.shape().channels {
@@ -54,6 +80,12 @@ impl Node for VoiceMixNode {
                     *o += x;
                 }
             }
+        }
+        for channel in 0..self.probe.slots() {
+            self.probe.measure(channel, ctx.frames, |frame| {
+                let x = voice_sum_out(out, channel, frame);
+                (x * x, x.abs())
+            });
         }
     }
 }
@@ -66,7 +98,14 @@ mod tests {
     #[test]
     fn sums_voices_and_keeps_channels() {
         let shape = Shape::new(3, 2);
-        let mut h = Harness::new(&VoiceMix, &Config::new(), &[(IN, shape)], 48_000.0, 4).unwrap();
+        let mut h = Harness::new(
+            &VoiceMix::new(&Telemetry::new()),
+            &Config::new(),
+            &[(IN, shape)],
+            48_000.0,
+            4,
+        )
+        .unwrap();
         let mut input = h.input(IN, 4);
         for voice in 0..3 {
             input.lane_mut(voice, 0).fill(1.0);

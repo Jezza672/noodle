@@ -21,7 +21,7 @@ pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
     TRACK_INPUT_ID, TrackInput, active_at,
 };
-pub use gain::Gain;
+pub use gain::{GAIN_ID, Gain};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use mix::Mix;
@@ -32,7 +32,7 @@ pub use reverse::Reverse;
 pub use scope::{SCOPE_ID, Scope};
 pub use stage::GroupStage;
 pub use svf::Svf;
-pub use voice_mix::VoiceMix;
+pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 
 use std::path::Path;
 
@@ -40,6 +40,9 @@ use noodle_core::Project;
 use noodle_engine::{
     Registry, Render, RenderError, Settings, Telemetry, TempoTable, render_project,
 };
+
+/// The node types that draw a meter of their output in the editor.
+pub const METERED: [&str; 3] = [METER_ID, GAIN_ID, VOICE_MIX_ID];
 
 /// What [`register_library`] gives back.
 pub struct Library {
@@ -70,12 +73,12 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Sine);
     registry.register(Saw);
     registry.register(WhiteNoise);
-    registry.register(Gain);
+    registry.register(Gain::new(&telemetry));
     registry.register(Button);
     registry.register(Metronome);
     registry.register(Mix::new(&telemetry));
     registry.register(Svf);
-    registry.register(VoiceMix);
+    registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);
     registry.register(Reroute);
     registry.register(GroupStage);

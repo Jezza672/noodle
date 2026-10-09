@@ -13,14 +13,14 @@ use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::{Level, MeterReader, ScopeView, Telemetry};
-use noodle_nodes::{METER_ID, SCOPE_ID};
+use noodle_nodes::{METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
 
 /// Extra space below a node's ports, in graph units. Zero for most nodes.
 pub fn height(type_id: &str) -> f32 {
     match type_id {
-        METER_ID => 30.0,
+        id if METERED.contains(&id) => 30.0,
         SCOPE_ID => 80.0,
         _ => 0.0,
     }
@@ -38,7 +38,13 @@ pub fn paint(
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
     match type_id {
-        METER_ID => meter(painter, area, zoom, bodies.input_meters(node)),
+        id if METERED.contains(&id) => meter(
+            painter,
+            area,
+            zoom,
+            bodies.input_meters(node),
+            MeterAxis::Horizontal,
+        ),
         SCOPE_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
         _ => {}
     }
@@ -67,7 +73,7 @@ impl Bodies {
         self.scopes.retain(|&id, _| graph.node(id).is_some());
         for (id, node) in graph.nodes() {
             match node.type_id.as_str() {
-                METER_ID => {
+                kind if METERED.contains(&kind) => {
                     let channels = self.meters.entry(id).or_default();
                     let levels = reader.meter(id).unwrap_or_default();
                     channels.resize_with(levels.len(), MeterChannel::default);
@@ -162,31 +168,61 @@ fn meter_fraction(amplitude: f32) -> f32 {
     ((db - METER_FLOOR_DB) / (METER_CEILING_DB - METER_FLOOR_DB)).clamp(0.0, 1.0)
 }
 
-/// The gap between a meter's bars and their height, for `count` bars in
-/// `height`. Gaps shrink with many channels, so every bar keeps some height.
-fn meter_bars(height: f32, count: usize, zoom: f32) -> (f32, f32) {
+/// The gap between a meter's bars and their thickness, for `count` bars in
+/// `thickness`. Gaps shrink with many channels, so every bar keeps some.
+fn meter_bars(thickness: f32, count: usize, zoom: f32) -> (f32, f32) {
     let count = count.max(1) as f32;
-    let gap = (2.0 * zoom).min(height / (3.0 * count + 1.0));
-    (gap, (height - gap * (count + 1.0)) / count)
+    let gap = (2.0 * zoom).min(thickness / (3.0 * count + 1.0));
+    (gap, (thickness - gap * (count + 1.0)) / count)
 }
 
-/// Horizontal bars, one per channel: the RMS level filled, the peak as a bar
-/// tip, and the held peak as a tick that turns red above 0 dB.
-pub fn meter(painter: &Painter, area: Rect, zoom: f32, channels: &[MeterChannel]) {
+/// Which way a meter's bars grow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeterAxis {
+    /// Bars stacked top to bottom, growing to the right: on a node.
+    Horizontal,
+    /// Bars side by side, growing up: in the mixer.
+    Vertical,
+}
+
+/// Bars, one per channel: the RMS level filled, the peak as a bar tip, and
+/// the held peak as a tick that turns red above 0 dB.
+pub fn meter(painter: &Painter, area: Rect, zoom: f32, channels: &[MeterChannel], axis: MeterAxis) {
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
-    let (gap, bar_height) = meter_bars(area.height(), channels.len(), zoom);
-    let x_at = |amplitude: f32| area.left() + area.width() * meter_fraction(amplitude);
+    let (across, along) = match axis {
+        MeterAxis::Horizontal => (area.height(), area.width()),
+        MeterAxis::Vertical => (area.width(), area.height()),
+    };
+    let (gap, thickness) = meter_bars(across, channels.len(), zoom);
+    // The position of `amplitude` along the bars.
+    let at = |amplitude: f32| match axis {
+        MeterAxis::Horizontal => area.left() + along * meter_fraction(amplitude),
+        MeterAxis::Vertical => area.bottom() - along * meter_fraction(amplitude),
+    };
+    let line = Stroke::new(zoom.max(1.0), colors::TEXT_WEAK);
 
     for (i, channel) in channels.iter().enumerate() {
-        let top = area.top() + gap + i as f32 * (bar_height + gap);
-        let bar = Rect::from_min_max(
-            Pos2::new(area.left(), top),
-            Pos2::new(area.right(), top + bar_height),
-        );
+        let offset = gap + i as f32 * (thickness + gap);
+        let bar = match axis {
+            MeterAxis::Horizontal => Rect::from_min_size(
+                Pos2::new(area.left(), area.top() + offset),
+                Vec2::new(along, thickness),
+            ),
+            MeterAxis::Vertical => Rect::from_min_size(
+                Pos2::new(area.left() + offset, area.top()),
+                Vec2::new(thickness, along),
+            ),
+        };
         let fill = |amplitude: f32, color| {
-            let right = x_at(amplitude);
-            if right > bar.left() {
-                painter.rect_filled(bar.with_max_x(right), 0.0, color);
+            let end = at(amplitude);
+            match axis {
+                MeterAxis::Horizontal if end > bar.left() => {
+                    painter.rect_filled(bar.with_max_x(end), 0.0, color);
+                }
+                MeterAxis::Vertical if end < bar.bottom() => {
+                    painter.rect_filled(bar.with_min_y(end), 0.0, color);
+                }
+                _ => {}
             }
         };
         fill(channel.peak, colors::METER_PEAK);
@@ -197,19 +233,18 @@ pub fn meter(painter: &Painter, area: Rect, zoom: f32, channels: &[MeterChannel]
             } else {
                 colors::TEXT
             };
-            painter.vline(
-                x_at(channel.hold),
-                bar.y_range(),
-                Stroke::new(zoom.max(1.0), color),
-            );
+            let stroke = Stroke::new(zoom.max(1.0), color);
+            match axis {
+                MeterAxis::Horizontal => painter.vline(at(channel.hold), bar.y_range(), stroke),
+                MeterAxis::Vertical => painter.hline(bar.x_range(), at(channel.hold), stroke),
+            };
         }
     }
     // 0 dB, so overs are easy to see.
-    painter.vline(
-        x_at(1.0),
-        area.y_range(),
-        Stroke::new(zoom.max(1.0), colors::TEXT_WEAK),
-    );
+    match axis {
+        MeterAxis::Horizontal => painter.vline(at(1.0), area.y_range(), line),
+        MeterAxis::Vertical => painter.hline(area.x_range(), at(1.0), line),
+    };
 }
 
 /// How many frames of a scope are shown: about 21 ms at 48 kHz.
@@ -313,6 +348,7 @@ fn min_max_columns(samples: &[f32], columns: usize, window: usize) -> Vec<(f32, 
 mod tests {
     use super::*;
     use noodle_core::{Command, Node};
+    use noodle_nodes::METER_ID;
 
     #[test]
     fn meter_scale_runs_from_floor_to_ceiling() {
@@ -472,6 +508,37 @@ mod tests {
             .unwrap();
         bodies.update(&telemetry, &project, 1.0 / 60.0);
         assert!(!bodies.meters.contains_key(&meter));
+    }
+
+    #[test]
+    fn gain_and_voice_mix_nodes_show_their_output_level() {
+        let mut project = Project::new();
+        let telemetry = Telemetry::new();
+        let mut writers = Vec::new();
+        for kind in [noodle_nodes::GAIN_ID, noodle_nodes::VOICE_MIX_ID] {
+            let id = project.new_node_id();
+            Command::AddNode {
+                id,
+                node: Node::new(kind),
+            }
+            .apply(&mut project)
+            .unwrap();
+            assert!(height(kind) > 0.0, "{kind} reserves room for a meter");
+            let writer = telemetry.open_meter(id, 1);
+            writer.write(
+                0,
+                Level {
+                    peak: 0.5,
+                    rms: 0.25,
+                },
+            );
+            writers.push((id, writer));
+        }
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, 1.0 / 60.0);
+        for (id, _) in &writers {
+            assert_eq!(bodies.input_meters(*id)[0].peak, 0.5);
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use noodle_engine::{
-    Config, Context, Instance, Io, Layout, Level, MeterWriter, Node, NodeError, NodeInfo, NodeType,
-    Setup, SignalIn, Telemetry,
+    Config, Context, Instance, Io, Layout, Level, MeterWriter, Node, NodeError, NodeId, NodeInfo,
+    NodeType, Setup, SignalIn, SignalOut, Telemetry,
 };
 
 /// Reports its input's peak and RMS level, per channel, through
@@ -47,48 +47,95 @@ impl NodeType for Meter {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let channels = setup.input_shapes[IN].channels;
         Ok(Instance::realtime(MeterNode {
-            writer: self.telemetry.open_meter(setup.node, channels),
-            mean_squares: vec![0.0; channels].into_boxed_slice(),
-            coefficient: 1.0 - (-1.0 / (RMS_TIME_SECONDS * setup.sample_rate)).exp(),
+            probe: LevelProbe::new(&self.telemetry, setup.node, channels, setup.sample_rate),
         }))
     }
 }
 
 struct MeterNode {
-    writer: MeterWriter,
-    /// The smoothed mean square of each channel.
-    mean_squares: Box<[f32]>,
-    /// The one-pole smoothing coefficient per sample.
-    coefficient: f32,
+    probe: LevelProbe,
 }
 
 impl Node for MeterNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let input = &io.inputs[IN];
-        for (channel, mean_square) in self.mean_squares.iter_mut().enumerate() {
-            let mut peak = 0.0f32;
-            for frame in 0..ctx.frames {
+        for channel in 0..self.probe.slots() {
+            self.probe.measure(channel, ctx.frames, |frame| {
                 let x = voice_sum(input, channel, frame);
-                peak = peak.max(x.abs());
-                *mean_square += self.coefficient * (x * x - *mean_square);
-            }
-            // Recover from a NaN or infinity once the input does.
-            // Flush a level too small to matter, so silence doesn't leave it
-            // decaying through the slow subnormals (see `svf.rs`).
-            if !mean_square.is_finite() || *mean_square < TINY {
-                *mean_square = 0.0;
-            }
-            let level = Level {
-                peak,
-                rms: mean_square.sqrt(),
-            };
-            self.writer.write(channel, level);
+                (x * x, x.abs())
+            });
         }
     }
 
     fn reset(&mut self) {
+        self.probe.reset();
+    }
+}
+
+/// Measures peak and smoothed RMS levels for a node's [`MeterWriter`]: shared
+/// by the Meter and by the nodes that show a meter of their own.
+pub(crate) struct LevelProbe {
+    writer: MeterWriter,
+    /// The smoothed mean square of each slot.
+    mean_squares: Box<[f32]>,
+    /// The one-pole smoothing coefficient per sample.
+    coefficient: f32,
+}
+
+impl LevelProbe {
+    /// A probe with `slots` meter channels, reporting for `node`.
+    pub(crate) fn new(telemetry: &Telemetry, node: NodeId, slots: usize, sample_rate: f32) -> Self {
+        Self {
+            writer: telemetry.open_meter(node, slots),
+            mean_squares: vec![0.0; slots].into_boxed_slice(),
+            coefficient: 1.0 - (-1.0 / (RMS_TIME_SECONDS * sample_rate)).exp(),
+        }
+    }
+
+    pub(crate) fn slots(&self) -> usize {
+        self.mean_squares.len()
+    }
+
+    /// Reports `slot`'s level over a block. `sample` gives each frame's
+    /// power (what is averaged for the RMS) and absolute peak.
+    pub(crate) fn measure(
+        &mut self,
+        slot: usize,
+        frames: usize,
+        mut sample: impl FnMut(usize) -> (f32, f32),
+    ) {
+        let mean_square = &mut self.mean_squares[slot];
+        let mut peak = 0.0f32;
+        for frame in 0..frames {
+            let (power, abs) = sample(frame);
+            peak = peak.max(abs);
+            *mean_square += self.coefficient * (power - *mean_square);
+        }
+        // Recover from a NaN or infinity once the input does.
+        // Flush a level too small to matter, so silence doesn't leave it
+        // decaying through the slow subnormals (see `svf.rs`).
+        if !mean_square.is_finite() || *mean_square < TINY {
+            *mean_square = 0.0;
+        }
+        self.writer.write(
+            slot,
+            Level {
+                peak,
+                rms: mean_square.sqrt(),
+            },
+        );
+    }
+
+    pub(crate) fn reset(&mut self) {
         self.mean_squares.fill(0.0);
     }
+}
+
+/// [`voice_sum`] for an output, which has just been written.
+pub(crate) fn voice_sum_out(output: &mut SignalOut<'_>, channel: usize, frame: usize) -> f32 {
+    (0..output.shape().voices)
+        .map(|voice| output.lane_mut(voice, channel)[frame])
+        .sum()
 }
 
 /// One sample of `channel` with every voice summed.

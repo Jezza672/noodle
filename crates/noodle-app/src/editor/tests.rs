@@ -1646,7 +1646,12 @@ fn input_labels(h: &H, node: NodeId) -> Vec<(String, Pos2)> {
     let mut rows: Vec<_> = geom
         .ports
         .iter()
-        .filter(|p| p.side == Side::Input && !p.in_header && !p.spare)
+        .filter(|p| {
+            p.side == Side::Input
+                && !p.in_header
+                && !p.spare
+                && noodle_core::spare::mixer_input_index(&p.key).is_some()
+        })
         .map(|p| (p.key.clone(), p.row.center() + Vec2::new(-20.0, 0.0)))
         .collect();
     rows.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));

@@ -161,6 +161,15 @@ fn rendering_never_allocates_even_while_editing() {
             value: Some(db),
         });
         s.controller.set_param(gain, "gain", db);
+        // The mixer's first input gets its own gain, and its mute flips.
+        for (key, value) in [("gain1", db), ("mute1", (round % 2) as f32)] {
+            s.edit(Command::SetParam {
+                node: mix,
+                key: key.into(),
+                value: Some(value),
+            });
+            s.controller.set_param(mix, key, value);
+        }
         match round % 3 {
             // A new node: everything else carries over.
             1 => {
@@ -200,6 +209,11 @@ fn rendering_never_allocates_even_while_editing() {
         assert!(
             inputs.len() >= 2 && inputs.iter().any(|l| l.peak > 0.0),
             "no mixer input levels in round {round}: {inputs:?}"
+        );
+        // The gain node shows a meter of its own.
+        assert!(
+            reader.meter(gain).is_some(),
+            "no gain level in round {round}"
         );
         assert!(s.telemetry.read_scope(scope, &mut view));
         assert!(
