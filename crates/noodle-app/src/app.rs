@@ -20,6 +20,9 @@ const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S)
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+/// Shown in the Edit menu. The node editor handles the key itself, so this
+/// is not in [`SHORTCUTS`].
+const ARRANGE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
 /// Shown in the Edit menu. The canvas handles the key itself, with the
 /// pointer over it, so this is not in [`SHORTCUTS`].
 const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
@@ -83,6 +86,7 @@ enum Action {
     ToggleScope,
     ImportAudio,
     DeleteSelection,
+    ArrangeNodes,
     Close,
 }
 
@@ -385,6 +389,13 @@ impl App {
                 selected,
                 Action::DeleteSelection,
             );
+            item(
+                ui,
+                "Arrange Nodes",
+                Some(&ARRANGE),
+                true,
+                Action::ArrangeNodes,
+            );
         });
         ui.menu_button("View", |ui| {
             if ui
@@ -620,6 +631,10 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
+            Action::ArrangeNodes => {
+                self.editor.request_arrange();
+                ctx.request_repaint();
+            }
             Action::DeleteSelection => {
                 if let Some(edit) = self.editor.delete_selection() {
                     self.session.edit([edit]);
@@ -777,6 +792,34 @@ mod tests {
         harness.get_by_label_contains("Delete").click();
         harness.run();
         assert!(harness.state().session.project().graph().node(id).is_none());
+    }
+
+    #[test]
+    fn edit_arrange_nodes_lays_the_graph_out_left_to_right() {
+        let mut app = empty();
+        let (a, b) = (noodle_core::NodeId(1), noodle_core::NodeId(2));
+        app.session.edit([
+            Edit::Apply(Command::AddNode {
+                id: a,
+                node: Node::new("noodle.util.gain").at(0.0, 0.0),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: b,
+                node: Node::new("noodle.osc.sine").at(400.0, 300.0),
+            }),
+            Edit::Apply(Command::Connect(noodle_core::Connection {
+                from: noodle_core::Endpoint::new(b, "out"),
+                to: noodle_core::Endpoint::new(a, "in"),
+            })),
+        ]);
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.get_by_label_contains("Arrange Nodes").click();
+        harness.run();
+        let graph = harness.state().session.project().graph();
+        assert!(graph.node(b).unwrap().position.x < graph.node(a).unwrap().position.x);
     }
 
     #[test]

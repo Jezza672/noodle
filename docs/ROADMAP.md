@@ -322,12 +322,11 @@ parameter ports on boundary nodes in the engine), then outputs.
 - **Done.** Copy and paste for nodes, including a multi-node selection and the wires
   between them (20). Duplicate already exists, so paste reuses its code and
   adds a clipboard. Pasting is one undo step.
-- **Auto-arrange (3).** A layout command, bound to a shortcut and to a menu
+- **Done.** **Auto-arrange (3).** A layout command, bound to a shortcut and to a menu
   item, that tidies the selected nodes or the whole graph. This is complex
-  and so gets its own PR: layered layout by topological depth (the compiler
-  already has this order), crossing reduction, and one undo step that moves
-  every node. Frames and groups need a rule. Planned for M3, when graphs
-  get large.
+  and so gets its own PR: layered layout by topological depth, crossing
+  reduction, and one undo step that moves every node. Frames and the nodes in them are left in place, and
+  the layout keeps clear of them.
 
 **Buttons bound to nodes (M3).**
 
