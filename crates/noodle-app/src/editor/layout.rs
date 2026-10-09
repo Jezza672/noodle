@@ -74,6 +74,9 @@ pub struct PortGeom {
     /// A port that isn't stored yet: the spare on a mixer or a group, which
     /// becomes real when a wire is dropped on it. Drawn greyed.
     pub spare: bool,
+    /// An output nothing feeds, such as a track's `midi` with no MIDI clips.
+    /// Drawn greyed, but it can still be wired.
+    pub idle: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +178,7 @@ impl Scene {
                                     row: Rect::NOTHING,
                                     in_header: false,
                                     spare: false,
+                                    idle: false,
                                 };
                                 for p in &layout.outputs {
                                     ports.push(port(
@@ -248,11 +252,23 @@ impl Scene {
                             row: Rect::NOTHING,
                             in_header: false,
                             spare: false,
+                            idle: false,
                         });
                     }
                 }
             }
             add_spares(graph, id, node, &mut ports);
+            if node.type_id == group::TRACK_INPUT {
+                // A track's outputs carry what its clips make.
+                let audio = project.clips_on(id).any(|(_, c)| c.as_audio().is_some());
+                for port in &mut ports {
+                    port.idle = match port.key.as_str() {
+                        group::AUDIO => !audio,
+                        group::MIDI => true,
+                        _ => false,
+                    };
+                }
+            }
 
             // The user's order first, then the rest in the node's own.
             let order = &node.port_order;
@@ -365,6 +381,7 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
         row: Rect::NOTHING,
         in_header: false,
         spare: true,
+        idle: false,
     };
     match node.type_id.as_str() {
         spare::MIXER if !ports.is_empty() => {
@@ -404,6 +421,7 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
         row: Rect::NOTHING,
         in_header: false,
         spare: false,
+        idle: false,
     };
     let category = "Group".to_owned();
     match node.type_id.as_str() {
@@ -668,6 +686,31 @@ mod tests {
     }
 
     #[test]
+    fn a_track_inputs_outputs_are_idle_until_a_clip_feeds_them() {
+        use noodle_core::{Clip, Tick};
+        let (mut project, mut history) = (Project::new(), History::new());
+        let input = add(
+            &mut project,
+            &mut history,
+            Node::new(noodle_core::group::TRACK_INPUT),
+        );
+        let idle = |project: &Project| {
+            let scene = Scene::build(project, &registry(), None);
+            let node = scene.node(input).unwrap();
+            let get = |key| node.port(Side::Output, key).unwrap().idle;
+            (get("audio"), get("midi"))
+        };
+        assert_eq!(idle(&project), (true, true));
+        let id = project.new_clip_id();
+        let clip = Clip::audio(input, Tick(0), "a.wav", 100);
+        history
+            .apply(&mut project, Command::AddClip { id, clip })
+            .unwrap();
+        // There are no MIDI clips yet, so midi stays idle.
+        assert_eq!(idle(&project), (false, true));
+    }
+
+    #[test]
     fn a_group_has_a_spare_input_and_output() {
         let (mut project, mut history) = (Project::new(), History::new());
         let group = add(&mut project, &mut history, Node::new(GROUP));
@@ -749,6 +792,7 @@ mod tests {
             row: Rect::NOTHING,
             in_header: false,
             spare: false,
+            idle: false,
         }
     }
 

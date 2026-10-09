@@ -225,7 +225,7 @@ fn boxed(
                     };
                     let color = if port.kind == PortKind::Unknown {
                         colors::PROBLEM
-                    } else if port.spare {
+                    } else if port.spare || port.idle {
                         colors::TEXT_WEAK
                     } else {
                         colors::TEXT
@@ -290,6 +290,11 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
                 PortKind::Audio => colors::AUDIO_SOCKET,
                 PortKind::Param(_) => colors::PARAM_SOCKET,
                 _ => colors::PROBLEM,
+            };
+            let fill = if port.idle {
+                fill.gamma_multiply(0.35)
+            } else {
+                fill
             };
             painter.circle(center, radius, fill, outline);
         }
