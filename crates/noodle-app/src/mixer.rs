@@ -11,6 +11,7 @@ use egui::{Align, Color32, Layout, RichText, Slider, Ui, Vec2};
 use noodle_core::group::{Controls, GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
 use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value, spare};
 
+use crate::editor::MeterChannel;
 use crate::session::Edit;
 use crate::timeline::header;
 
@@ -36,6 +37,8 @@ pub struct Strip {
     pub gain_automated: bool,
     /// The same for mute.
     pub mute_automated: bool,
+    /// Which input of the mixer node this strip is, from 0, in a mixer view.
+    pub channel: Option<usize>,
 }
 
 /// Every mixer node in the graph, in ID order: what the mixer can be shown
@@ -61,10 +64,15 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
     (1..=spare::mixer_inputs(node))
         .filter_map(|i| {
             let source = graph.source(&Endpoint::new(mixer, spare::mixer_input_key(i as usize)))?;
+            let channel = Some(i as usize - 1);
             Some(
                 match tracks.iter().find(|strip| strip.group == source.node) {
-                    Some(strip) => strip.clone(),
+                    Some(strip) => Strip {
+                        channel,
+                        ..strip.clone()
+                    },
                     None => Strip {
+                        channel,
                         group: source.node,
                         name: format!("In {i}"),
                         controls: Controls::default(),
@@ -102,6 +110,7 @@ pub fn strips(project: &Project) -> Vec<Strip> {
             muted_by_solo: muted_by_solo.contains(&id),
             gain_automated: driven(project, graph.control_node(id), GAIN),
             mute_automated: driven(project, graph.control_node(id), MUTE),
+            channel: None,
         })
         .collect()
 }
@@ -145,7 +154,12 @@ pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
 /// Draws the mixer and returns the edits made in it. `view` is the mixer
 /// node shown, or `None` for one strip per track; a node that has gone falls
 /// back to that.
-pub fn show(ui: &mut Ui, project: &Project, view: &mut Option<NodeId>) -> Vec<Edit> {
+pub fn show(
+    ui: &mut Ui,
+    project: &Project,
+    view: &mut Option<NodeId>,
+    levels: &dyn Fn(NodeId, usize) -> Option<MeterChannel>,
+) -> Vec<Edit> {
     let graph = project.graph();
     let mixers = mixers(project);
     if view.is_some_and(|m| !mixers.contains(&m)) {
@@ -183,7 +197,10 @@ pub fn show(ui: &mut Ui, project: &Project, view: &mut Option<NodeId>) -> Vec<Ed
         ui.horizontal_top(|ui| {
             for (index, strip) in strips.iter().enumerate() {
                 ui.push_id((strip.group, index), |ui| {
-                    strip_ui(ui, graph, strip, &mut edits);
+                    let level = (*view)
+                        .zip(strip.channel)
+                        .and_then(|(mixer, channel)| levels(mixer, channel));
+                    strip_ui(ui, graph, strip, level, &mut edits);
                 });
                 ui.separator();
             }
@@ -192,13 +209,25 @@ pub fn show(ui: &mut Ui, project: &Project, view: &mut Option<NodeId>) -> Vec<Ed
     edits
 }
 
-fn strip_ui(ui: &mut Ui, graph: &Graph, strip: &Strip, edits: &mut Vec<Edit>) {
+fn strip_ui(
+    ui: &mut Ui,
+    graph: &Graph,
+    strip: &Strip,
+    level: Option<MeterChannel>,
+    edits: &mut Vec<Edit>,
+) {
     ui.allocate_ui_with_layout(
         Vec2::new(STRIP_WIDTH, 0.0),
         Layout::top_down(Align::Center),
         |ui| {
             ui.set_width(STRIP_WIDTH);
             ui.label(RichText::new(&strip.name).strong());
+            // The input's level, in a mixer view.
+            if strip.channel.is_some() {
+                let (area, _) = ui
+                    .allocate_exact_size(Vec2::new(STRIP_WIDTH - 12.0, 8.0), egui::Sense::hover());
+                crate::editor::draw_level(ui.painter(), area, &level.unwrap_or_default());
+            }
             // A silent strip's fader is greyed, but its buttons stay live so
             // it can be unmuted or unsoloed.
             let silent = strip.controls.mute || strip.muted_by_solo;
@@ -330,7 +359,7 @@ mod tests {
     fn harness(session: Session) -> Harness<'static, Session> {
         let mut harness = Harness::new_ui_state(
             |ui, session: &mut Session| {
-                let edits = show(ui, session.project(), &mut None);
+                let edits = show(ui, session.project(), &mut None, &|_, _| None);
                 session.edit(edits);
             },
             session,
@@ -606,7 +635,7 @@ mod tests {
         let session = two_tracks();
         let mut harness = Harness::new_ui_state(
             |ui, view: &mut Option<NodeId>| {
-                show(ui, session.project(), view);
+                show(ui, session.project(), view, &|_, _| None);
             },
             Some(NodeId(100)),
         );

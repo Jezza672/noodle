@@ -174,13 +174,13 @@ pub fn show(
         egui::Sense::click_and_drag(),
     );
     changes.select = background.clicked() || background.drag_started();
-    if background.dragged() || background.drag_stopped() {
-        if let Some(pos) = background.interact_pointer_pos() {
-            changes.drag = Some(HeaderDrag {
-                y: pos.y,
-                released: background.drag_stopped(),
-            });
-        }
+    if (background.dragged() || background.drag_stopped())
+        && let Some(pos) = background.interact_pointer_pos()
+    {
+        changes.drag = Some(HeaderDrag {
+            y: pos.y,
+            released: background.drag_stopped(),
+        });
     }
     let group_of_track = graph.node(input).and_then(|n| n.parent);
     background.context_menu(|ui| {

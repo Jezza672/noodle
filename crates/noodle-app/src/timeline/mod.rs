@@ -1013,7 +1013,7 @@ fn reorder(project: &Project, tracks: &[NodeId], moved: NodeId, slot: usize) -> 
     let mut order = before.clone();
     let moved = order.remove(from);
     order.insert(slot.saturating_sub(usize::from(slot > from)), moved);
-    (order != before).then(|| Edit::Apply(Command::SetTrackOrder(order)))
+    (order != before).then_some(Edit::Apply(Command::SetTrackOrder(order)))
 }
 
 fn draw_headers(

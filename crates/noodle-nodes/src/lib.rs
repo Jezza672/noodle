@@ -67,7 +67,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Saw);
     registry.register(WhiteNoise);
     registry.register(Gain);
-    registry.register(Mix);
+    registry.register(Mix::new(&telemetry));
     registry.register(Svf);
     registry.register(VoiceMix);
     registry.register(Reverse);

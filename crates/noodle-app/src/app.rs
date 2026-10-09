@@ -222,7 +222,12 @@ impl App {
             egui::Panel::bottom("mixer")
                 .resizable(false)
                 .show(ui, |ui| {
-                    let edits = mixer::show(ui, self.session.project(), &mut self.mixer_view);
+                    let edits = mixer::show(
+                        ui,
+                        self.session.project(),
+                        &mut self.mixer_view,
+                        &|mixer, channel| self.editor.input_level(mixer, channel),
+                    );
                     self.session.edit(edits);
                 });
         }

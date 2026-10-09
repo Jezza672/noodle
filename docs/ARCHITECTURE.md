@@ -925,8 +925,11 @@ through the telemetry API.
 
 The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view
 over the project and keeps no state of its own. It has one strip per
-top-level group, in the order they were made, named by the group's `name`
-config. A strip reads the group's gain, mute and solo from its boundary
+top-level group, in track order (see below), named by the group's `name`
+config. A drop-down at the top can instead show a **mixer node**: one strip
+per wired input in input order, a track's controls where a group feeds the
+input and a strip with nothing to set for anything else, each with a level
+bar. Double-clicking a Mix node in the editor opens the mixer on it. A strip reads the group's gain, mute and solo from its boundary
 nodes (`Graph::group_controls`) and a fader move, a mute or a solo click is
 a `SetParam` on the node `Graph::control_node` picks, so it is undoable like
 any edit and one drag is one undo step. The reading under the fader resets
@@ -938,7 +941,30 @@ output node's controls. Solo mutes the other tracks as the compiler reads it
 its mute and solo buttons stay live. Turning solo off clears it on every
 boundary node of the group, since any can hold it. A strip's fader or mute
 is greyed, with the track header's tooltip, while an automation lane drives
-that parameter, since the lane overrides it. There are no meters yet.
+that parameter, since the lane overrides it.
+
+The Mix node reports each input's peak and RMS through the telemetry hub
+(`MixNode` in `noodle-nodes/src/mix.rs`, one meter channel per input, voices
+summed and channels averaged), allocation-free like the Meter node and
+covered by `realtime.rs`. The editor reads it with the other meters
+(`Bodies::input_meters`), and draws a small bar on each input row of the Mix
+node and on the mixer view's strips.
+
+### Track order
+
+`Project.track_order` is a list of group IDs, set by `Command::SetTrackOrder`
+(one undo step; it has no engine effect). The arrangement, the mixer's
+"All tracks" view and Add Track read it through `Project::sort_tracks`:
+groups it names come first in that order, the rest follow by ID, and IDs
+that no longer exist are ignored, so deleting then undoing a track keeps its
+place. Dragging a track's header on the arrangement writes it.
+
+### Scope view
+
+View > Scope, or double-clicking a Scope node, opens a pane with a drop-down
+over the Scope nodes and a larger drawing of the chosen one. It keeps no
+state of its own: it reads the capture the editor already reads from the
+telemetry hub (`EditorState::scope_view`).
 
 ## Testing
 

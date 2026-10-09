@@ -132,6 +132,13 @@ impl Default for EditorState {
     }
 }
 
+pub use body::MeterChannel;
+
+/// Draws one level as a bar in `area`.
+pub fn draw_level(painter: &egui::Painter, area: Rect, level: &MeterChannel) {
+    body::meter(painter, area, 1.0, std::slice::from_ref(level));
+}
+
 /// Draws a scope's capture in `area`, as the node draws it on the canvas.
 pub fn draw_scope(painter: &egui::Painter, area: Rect, view: Option<&noodle_engine::ScopeView>) {
     body::scope(painter, area, 1.0, view);
@@ -141,6 +148,11 @@ impl EditorState {
     /// The node whose view a double-click asked for, once.
     pub fn take_view_request(&mut self) -> Option<NodeId> {
         self.view_request.take()
+    }
+
+    /// The level of input `channel` (from 0) of a mixer node.
+    pub fn input_level(&self, node: NodeId, channel: usize) -> Option<MeterChannel> {
+        self.bodies.input_meters(node).get(channel).copied()
     }
 
     /// What a scope node last captured, for a view of it elsewhere.
