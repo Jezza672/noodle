@@ -339,7 +339,7 @@ fn cable(painter: &Painter, points: [Pos2; 4], z: f32, color: Color32) {
     curve(
         painter,
         points,
-        Stroke::new((1.4 * z).max(0.5), theme::CANVAS),
+        Stroke::new((1.4 * z).max(0.5), colors::WIRE_CORE),
     );
 }
 
