@@ -71,6 +71,11 @@ with no glitches, save it, and reopen it exactly as it was.
 
 ### M1 follow-ups: wire editing
 
+**Status:** done. Delete and Backspace delete the selection (Backspace is
+the key a Mac calls Delete, and was the missing one), double-clicking a wire
+breaks it, and dropping a node onto a wire splices it in as the design below
+describes.
+
 Small node-editor changes requested after M1 landed. They share the editor's
 hit-testing and wire code, so they go in one PR, alongside the M2 app work.
 
@@ -197,6 +202,10 @@ Requested by Jeremy while trying the M2 build. They're grouped by theme, with
 a milestone for each theme, and the numbers are the order in his list. Items
 marked **now** are small fixes or bugs worth doing before the bigger work.
 
+**Status:** the node editor polish and the clip and arrangement items are
+done (marked below). Group, track and mixer work, the mixer and node views,
+and outputs are next, in that order.
+
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 
 - The Add Node list doesn't offer group input and output nodes (1). **Now.**
@@ -267,11 +276,11 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 
 **Clips and the arrangement (M2).**
 
-- Ctrl or Cmd-drag a clip to copy it to the new place (17). More clip
+- **Done.** Ctrl or Cmd-drag a clip to copy it to the new place (17). More clip
   editing (split, duplicate, slip) is expected after this.
-- Import audio moves to the File menu, and the timeline's right-click menu
+- **Done.** Import audio moves to the File menu, and the timeline's right-click menu
   offers it too (21). **Now.**
-- With a clip selected, Ctrl or Cmd+Left and Right move the playhead to the
+- **Done.** With a clip selected, Ctrl or Cmd+Left and Right move the playhead to the
   clip's start or end, and the arrangement scrolls to keep the playhead in
   view. The playhead can already be set while stopped, so this is a key
   binding plus a scroll-into-view call. **Now.**
@@ -280,28 +289,28 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 
 **Node editor polish (M1 follow-ups).**
 
-- **Bug:** selecting a node resets the right-hand panel (the properties
+- **Done.** **Bug:** selecting a node resets the right-hand panel (the properties
   panel) to its default width. A resized panel should keep its width.
   Likely the panel's egui id changes with the selection, or its width is
   set every frame, so check that first. **Now.**
-- Centre node names on the title bar (9). **Now.**
-- Inputs and outputs on a node are separate columns that grow independently,
+- **Done.** Centre node names on the title bar (9). **Now.**
+- **Done.** Inputs and outputs on a node are separate columns that grow independently,
   rather than sharing a row (26). **Now**, and this includes how wires attach.
-- A node with a single input or a single output doesn't show a label for it.
+- **Done.** A node with a single input or a single output doesn't show a label for it.
   The port sits directly beside the title bar, on the left for an input and
   the right for an output, which also makes such nodes shorter. This is part
   of the column layout change above, and ports keep their names for tooltips
   and the properties panel.
-- Drag a node's ports up and down to reorder them, so wires can be uncrossed.
+- **Done.** Drag a node's ports up and down to reorder them, so wires can be uncrossed.
   Nodes refer to ports by position, so this is a per-node *display order*
   saved with the node's editor layout, and never changes port indices or the
   compiled graph. The order applies within a column (see the separate input
   and output columns above), and new ports on a growing node
   (see the group items) go last. One undo step per drag. Builds on the
   column layout fix, so it follows it.
-- Edit menu can delete the selected object (27). **Now.** Same command as
+- **Done.** Edit menu can delete the selected object (27). **Now.** Same command as
   the Delete key (see "M1 follow-ups: wire editing").
-- Copy and paste for nodes, including a multi-node selection and the wires
+- **Done.** Copy and paste for nodes, including a multi-node selection and the wires
   between them (20). Duplicate already exists, so paste reuses its code and
   adds a clipboard. Pasting is one undo step.
 - **Auto-arrange (3).** A layout command, bound to a shortcut and to a menu

@@ -763,6 +763,23 @@ style. It has these views:
     wire can fan out from one, as in Blender. **Frames** are layout only:
     they're saved in the project, edited through commands, and never reach
     the engine. Dragging a frame moves the nodes inside it.
+  - **Node layout.** A node is a title bar (the name centred), then rows
+    with inputs down the left and outputs down the right. The two sides fill
+    rows independently, except that an input with a parameter field takes
+    its whole row. A side with a single port puts its socket on the title
+    bar with no label (its name is a tooltip), so such nodes need no row.
+  - **Port order** is display only. `Node::port_order` lists port keys in the
+    order the editor shows them, set by dragging a port's label up or down its
+    column (`Command::SetPortOrder`, one undo step). Ports are still found
+    by key, the compiler ignores the order, and ports it doesn't name go
+    last in the node's own order.
+  - **Wire editing.** Double-click a wire to break it, or drop a node with
+    no wires onto one to splice it in (Alt turns that off). A splice picks
+    the first input and output of the wire's signal type, the main signal
+    port before a parameter port, and is part of the move's undo step.
+    Copy, Cut and Paste (Ctrl/Cmd+C, X, V) keep the nodes, the wires
+    between them and frames in an in-app clipboard, pasted at the pointer
+    into the group being edited as one undo step.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -782,13 +799,18 @@ style. It has these views:
     edge snap to beats; Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
+  - **Copying.** Ctrl/Cmd-dragging a clip adds copies in the drag's own undo
+    step and moves those, leaving the originals. With a clip selected,
+    Ctrl/Cmd+Left and Right take the playhead to the start of the earliest
+    selected clip or the end of the latest, scrolling to keep it in view.
   - **Fades** are dragged by the handles on a clip's top corners (clips too
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
-  - **Adding audio.** Dropping files on a lane, or the Import audio button
-    in the corner (which opens a file dialog and targets the selected clip's
-    track, or the first, at the playhead), creates one clip per file, laid end
+  - **Adding audio.** Dropping files on a lane, or Import audio (the button
+    in the corner and File → Import Audio…, which open a file dialog and
+    target the selected clip's track, or the first, at the playhead; the
+    right-click menu on a lane targets the lane and tick clicked), creates one clip per file, laid end
     to end from the drop position (snapped to beats; Alt turns that off).
     The clip's length is the file's frame count, read when it's added; a file
     that can't be read, or doesn't say how long it is, is left out and the

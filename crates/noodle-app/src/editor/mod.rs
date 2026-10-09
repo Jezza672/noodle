@@ -213,7 +213,7 @@ impl EditorState {
             )
             .collect();
         self.clear_selection();
-        (!commands.is_empty()).then(|| Edit::Apply(Command::Batch(commands)))
+        (!commands.is_empty()).then_some(Edit::Apply(Command::Batch(commands)))
     }
 
     fn clear_selection(&mut self) {
@@ -1357,9 +1357,11 @@ fn keyboard(
         ));
     }
     // Backspace too: it's the key a Mac calls Delete.
-    let delete = [Key::X, Key::Delete, Key::Backspace]
-        .into_iter()
-        .fold(false, |any, key| pressed(Modifiers::NONE, key) || any);
+    // Every key is checked, so each press is consumed.
+    let mut delete = false;
+    for key in [Key::X, Key::Delete, Key::Backspace] {
+        delete |= pressed(Modifiers::NONE, key);
+    }
     if delete {
         edits.extend(state.delete_selection());
     }
