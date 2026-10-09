@@ -72,12 +72,13 @@ pub fn mixer_inputs(node: &Node) -> i64 {
     }
 }
 
-/// The highest-numbered input of mixer `id` with a wire on it, or 0.
+/// The highest-numbered input of mixer `id` with a wire on it or on its gain
+/// or mute, or 0.
 pub fn mixer_used(graph: &Graph, id: NodeId) -> usize {
     graph
         .connections()
         .filter(|c| c.to.node == id)
-        .filter_map(|c| mixer_input_index(&c.to.port))
+        .filter_map(|c| mixer_input_index(&c.to.port).or_else(|| mixer_param_index(&c.to.port)))
         .max()
         .unwrap_or(0)
 }

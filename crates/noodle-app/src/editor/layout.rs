@@ -782,6 +782,22 @@ mod tests {
     }
 
     #[test]
+    fn a_wire_on_a_mixers_gain_keeps_that_input_shown() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let mix = wired_mixer(&mut project, &mut history, 4, 1);
+        let lfo = add(&mut project, &mut history, Node::new("noodle.osc.sine"));
+        let wire = Command::Connect(Connection {
+            from: Endpoint::new(lfo, "out"),
+            to: Endpoint::new(mix, "gain3"),
+        });
+        history.apply(&mut project, wire).unwrap();
+        let scene = Scene::build(&project, &registry(), None);
+        let node = scene.node(mix).unwrap();
+        assert!(node.port(Side::Input, "gain3").is_some());
+        assert!(scene.wires.iter().any(|w| w.connection.to.port == "gain3"));
+    }
+
+    #[test]
     fn a_mixer_shows_its_wired_inputs_and_one_spare() {
         let (mut project, mut history) = (Project::new(), History::new());
         // Five inputs in the config, two wired.
