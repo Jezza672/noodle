@@ -48,11 +48,17 @@ pub fn frames(painter: &Painter, f: &Frame_<'_>, state: &EditorState) {
     for &i in &f.frame_order {
         let frame = &f.scene.frames[i];
         let rect = f.t.rect_to_screen(frame.rect);
-        painter.rect_filled(rect, f32::from(theme::RADIUS) * z, colors::FRAME);
+        painter.rect(
+            rect,
+            f32::from(theme::NODE_RADIUS + 4) * z,
+            colors::FRAME,
+            Stroke::new(1.5, colors::FRAME_OUTLINE),
+            StrokeKind::Inside,
+        );
         if state.selected_frames.contains(&frame.id) {
             painter.rect_stroke(
                 rect,
-                f32::from(theme::RADIUS) * z,
+                f32::from(theme::NODE_RADIUS + 4) * z,
                 Stroke::new(1.5, colors::SELECTED),
                 StrokeKind::Outside,
             );
@@ -112,7 +118,7 @@ pub fn wires(
             colors::WIRE
         };
         let points = wire::curve(wire.from, wire.to).map(|p| f.t.to_screen(p));
-        curve(painter, points, Stroke::new((2.5 * z).max(1.0), color));
+        cable(painter, points, z, color);
         if problem && z >= MIN_TEXT_ZOOM {
             let middle = wire::flatten(wire::curve(wire.from, wire.to))[12];
             warning(painter, f.t.to_screen(middle), z, Align2::CENTER_CENTER);
@@ -169,12 +175,12 @@ fn boxed(
 ) {
     let z = f.t.zoom;
     let rect = f.t.rect_to_screen(node.rect);
-    let radius = f32::from(theme::RADIUS + 2) * z;
+    let radius = f32::from(theme::NODE_RADIUS) * z;
     // A soft drop shadow lifts the node off the canvas.
     painter.rect_filled(
         rect.translate(Vec2::new(0.0, 3.0 * z)).expand(1.0 * z),
         radius,
-        Color32::from_black_alpha(70),
+        Color32::from_black_alpha(100),
     );
     painter.rect_filled(rect, radius, colors::NODE);
     let header = f.t.rect_to_screen(node.header());
@@ -184,15 +190,24 @@ fn boxed(
         sw: 0,
         se: 0,
     };
-    painter.rect_filled(header, top, colors::header(&node.category));
+    painter.rect_filled(header, top, colors::NODE_HEADER);
+    painter.circle_filled(
+        header.left_center() + Vec2::new(13.0 * z, 0.0),
+        3.5 * z,
+        colors::header(&node.category),
+    );
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
 
     let text = z >= MIN_TEXT_ZOOM;
     if text {
-        let clipped = painter.with_clip_rect(header.shrink(2.0 * z));
+        // Leave room on the right for the warning and a header socket.
+        let clipped = painter.with_clip_rect(Rect::from_min_max(
+            header.min + Vec2::splat(2.0 * z),
+            header.max - Vec2::new(22.0 * z, 2.0 * z),
+        ));
         clipped.text(
-            header.center(),
-            Align2::CENTER_CENTER,
+            header.left_center() + Vec2::new(24.0 * z, 0.0),
+            Align2::LEFT_CENTER,
             &node.title,
             FontId::proportional(13.0 * z),
             colors::TEXT,
@@ -318,6 +333,16 @@ fn warning(painter: &Painter, at: Pos2, z: f32, align: Align2) {
     );
 }
 
+/// A wire drawn as a thick cable with a dark core.
+fn cable(painter: &Painter, points: [Pos2; 4], z: f32, color: Color32) {
+    curve(painter, points, Stroke::new((4.0 * z).max(1.5), color));
+    curve(
+        painter,
+        points,
+        Stroke::new((1.4 * z).max(0.5), colors::WIRE_CORE),
+    );
+}
+
 fn curve(painter: &Painter, points: [Pos2; 4], stroke: Stroke) {
     painter.add(CubicBezierShape::from_points_stroke(
         points,
@@ -343,11 +368,7 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
                 Side::Input => (end, anchor),
             };
             let points = wire::curve(from, to).map(|p| f.t.to_screen(p));
-            curve(
-                painter,
-                points,
-                Stroke::new((2.0 * z).max(1.0), colors::WIRE_SELECTED),
-            );
+            cable(painter, points, z, colors::WIRE_SELECTED);
         }
         Gesture::BoxSelect { start, .. } => {
             let rect = Rect::from_two_pos(f.t.to_screen(*start), pointer);

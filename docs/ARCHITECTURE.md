@@ -734,8 +734,9 @@ ports become graph ports. Plugin state is saved in the Project.
 
 ## UI (`noodle-app`)
 
-The UI is egui, rendered on the GPU, in the "Studio" look chosen from the design
-workshop (graphite, a yellow accent, rounded nodes; all in `theme.rs`), with
+The UI is egui, rendered on the GPU, in the "Canvas" look chosen from the design
+workshop (blue-black ground, a lime accent, rounded cards, cable-style wires;
+all in `theme.rs`), with
 Blender's keyboard-driven editing.
 It has these views:
 

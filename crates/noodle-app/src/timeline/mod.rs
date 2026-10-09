@@ -472,7 +472,7 @@ pub fn show(
             }
 
             let painter = ui.painter_at(visible);
-            painter.rect_filled(full, 4.0, colour);
+            painter.rect_filled(full, f32::from(crate::theme::RADIUS), colour);
             if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
                 let drawn = waveform::draw(
                     &painter,
@@ -514,14 +514,14 @@ pub fn show(
             if source.is_none() {
                 painter.rect_stroke(
                     full,
-                    4.0,
+                    f32::from(crate::theme::RADIUS),
                     Stroke::new(1.5, colors::MISSING),
                     StrokeKind::Inside,
                 );
             } else if selected {
                 painter.rect_stroke(
                     full,
-                    4.0,
+                    f32::from(crate::theme::RADIUS),
                     Stroke::new(1.5, colors::SELECTED),
                     StrokeKind::Inside,
                 );
