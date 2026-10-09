@@ -6,6 +6,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push to the same PR makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # No debug info: it only slows compiling and linking (the PDBs on Windows
+  # are the worst), and CI never opens a debugger.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # rust-cache turns this off too; say so even if the action changes.
+  CARGO_INCREMENTAL: 0
+
 jobs:
   check:
     name: ${{ matrix.os }}
@@ -19,6 +31,11 @@ jobs:
       - uses: actions/checkout@v5
       # The toolchain and components come from rust-toolchain.toml.
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save the cache even when a step fails. By default a failing job
+          # skips the save, so a red Windows run started from scratch (and
+          # recompiled every dependency) every time.
+          cache-on-failure: true
       # cpal needs the ALSA headers on Linux.
       - name: Install ALSA
         if: runner.os == 'Linux'
