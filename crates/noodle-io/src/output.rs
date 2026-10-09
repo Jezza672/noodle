@@ -100,9 +100,10 @@ impl DeviceWriter {
         glitches: &Arc<AtomicU64>,
     ) -> (Self, Vec<ExtraOutput>) {
         let rate = self.processor.settings().sample_rate;
-        debug_assert_eq!(
+        assert_eq!(
             main_channels + extra_channels.iter().sum::<usize>(),
-            self.processor.settings().channels
+            self.processor.settings().channels,
+            "the devices' channels must add up to the engine's"
         );
         self.channels = main_channels;
         let mut first = main_channels;
@@ -115,6 +116,7 @@ impl DeviceWriter {
                 first,
                 channels,
                 overruns: Arc::clone(glitches),
+                full: false,
             });
             outputs.push(ExtraOutput {
                 queue: playing,
@@ -122,6 +124,7 @@ impl DeviceWriter {
                 main_period: Arc::clone(&self.fade),
                 filling: true,
                 glitches: Arc::clone(glitches),
+                drained: Arc::default(),
             });
             first += channels;
         }
@@ -190,17 +193,28 @@ struct Tap {
     channels: usize,
     /// Counted with the devices' underruns: a block that didn't fit is a gap.
     overruns: Arc<AtomicU64>,
+    /// The last block didn't fit. A queue that stays full (a device that has
+    /// stopped) counts once, not on every block.
+    full: bool,
 }
 
 impl Tap {
     /// Queues this device's channels from interleaved `block`. If the device
     /// is behind and the queue is full, the block is dropped.
     fn push(&mut self, block: &[f32], engine_channels: usize) {
+        // A device whose stream couldn't start has dropped its end.
+        if self.queue.is_abandoned() {
+            return;
+        }
         let frames = block.len() / engine_channels;
         let Ok(chunk) = self.queue.write_chunk_uninit(frames * self.channels) else {
-            self.overruns.fetch_add(1, Ordering::Relaxed);
+            if !self.full {
+                self.overruns.fetch_add(1, Ordering::Relaxed);
+            }
+            self.full = true;
             return;
         };
+        self.full = false;
         let (first, channels) = (self.first, self.channels);
         chunk.fill_from_iter(
             block
@@ -229,6 +243,9 @@ pub struct ExtraOutput {
     /// Waiting for enough to be queued before playing.
     filling: bool,
     glitches: Arc<AtomicU64>,
+    /// Set once the fade-out has played here: the main stream has finished
+    /// it and this device has since played a whole block of silence.
+    drained: Arc<AtomicBool>,
 }
 
 impl ExtraOutput {
@@ -241,6 +258,8 @@ impl ExtraOutput {
         // and this callback's.
         let lead = (self.main_period.period.load(Ordering::Relaxed) as usize + wanted / channels)
             * channels;
+        // A queue too small for that would never fill.
+        let lead = lead.min(self.queue.buffer().capacity() / 3);
         if self.filling {
             if available < lead {
                 out.fill(T::EQUILIBRIUM);
@@ -265,10 +284,17 @@ impl ExtraOutput {
         }
         if let Ok(chunk) = self.queue.read_chunk(take) {
             let (a, b) = chunk.as_slices();
+            let mut silent = true;
             for (out, &x) in out.iter_mut().zip(a.iter().chain(b)) {
+                silent &= x == 0.0;
                 *out = T::from_sample(x);
             }
             chunk.commit_all();
+            // After the fade has finished, a block of silence means the ramp
+            // has been heard.
+            if silent && self.main_period.done.load(Ordering::Acquire) {
+                self.drained.store(true, Ordering::Release);
+            }
         }
         out[take..].fill(T::EQUILIBRIUM);
     }
@@ -301,6 +327,8 @@ pub struct Playback {
     _input_stream: Option<cpal::Stream>,
     /// The streams of the extra output devices that opened.
     _extra_streams: Vec<cpal::Stream>,
+    /// Each extra stream's flag for having played the fade-out.
+    drained: Vec<Arc<AtomicBool>>,
     outputs: Vec<OutputStatus>,
     device: String,
     input: Option<(String, usize)>,
@@ -326,6 +354,17 @@ impl Drop for Playback {
             let frames = self.fade.period.load(Ordering::Relaxed) as f32;
             let queued = Duration::from_secs_f32(2.0 * frames / self.settings.sample_rate);
             std::thread::sleep(queued.min(Duration::from_millis(500)));
+            // The extra devices play from queues that were behind the main
+            // one, so the ramp reaches them later.
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while self.drained.iter().any(|d| !d.load(Ordering::Acquire))
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if !self.drained.is_empty() {
+                std::thread::sleep(queued.min(Duration::from_millis(500)));
+            }
         }
     }
 }
@@ -555,7 +594,10 @@ pub fn play_with_outputs(
                     name: opened.name.clone(),
                     channels: opened.channels,
                 };
-                extras.push(opened);
+                extras.push(OpenedExtra {
+                    status: statuses.len(),
+                    ..opened
+                });
                 Ok(info)
             }
             Err(error) => Err(error),
@@ -616,17 +658,23 @@ pub fn play_with_outputs(
         &health.underruns,
     );
     let fade = Arc::clone(&writer.fade);
+    // An extra that won't build keeps its channels, which are then dropped,
+    // but doesn't stop the rest from playing.
     let mut extra_streams = Vec::with_capacity(extras.len());
     for (opened, output) in extras.into_iter().zip(outputs) {
+        let flag = Arc::clone(&output.drained);
         let mut reporter = health.reporter(Stream::ExtraOutput);
         let on_error = move |error| reporter.report(error);
-        extra_streams.push(open_format(
+        match open_format(
             &opened.device_handle,
             opened.config,
             opened.format,
             output,
             on_error,
-        )?);
+        ) {
+            Ok(stream) => extra_streams.push((opened.status, stream, flag)),
+            Err(error) => statuses[opened.status].result = Err(error),
+        }
     }
     let mut reporter = health.reporter(Stream::Output);
     let on_error = move |error| reporter.report(error);
@@ -644,9 +692,18 @@ pub fn play_with_outputs(
     };
     // The extras wait for the main stream's first blocks before they make a
     // sound, so they can start first.
-    for stream in &extra_streams {
-        stream.play()?;
+    let mut playing = Vec::with_capacity(extra_streams.len());
+    let mut drained = Vec::with_capacity(extra_streams.len());
+    for (status, stream, flag) in extra_streams {
+        match stream.play() {
+            Ok(()) => {
+                playing.push(stream);
+                drained.push(flag);
+            }
+            Err(error) => statuses[status].result = Err(error.into()),
+        }
     }
+    let extra_streams = playing;
     stream.play()?;
     Ok((
         Playback {
@@ -655,6 +712,7 @@ pub fn play_with_outputs(
             recorder,
             _input_stream: input_stream,
             _extra_streams: extra_streams,
+            drained,
             outputs: statuses,
             device: name,
             input,
@@ -668,6 +726,8 @@ pub fn play_with_outputs(
 
 /// An extra output device, ready to open a stream on.
 struct OpenedExtra {
+    /// Its place in the statuses.
+    status: usize,
     device: String,
     name: String,
     channels: usize,
@@ -686,6 +746,7 @@ fn open_extra(id: &str, rate: u32) -> Result<OpenedExtra, AudioError> {
     let Chosen { config, format } =
         choose_config(&ranges, device.default_output_config()?, Some(rate), None)?;
     Ok(OpenedExtra {
+        status: 0,
         device: id.to_owned(),
         name: device_name(&device),
         channels: usize::from(config.channels),
@@ -1115,7 +1176,8 @@ mod tests {
         for _ in 0..400 {
             writer.write(&mut vec![0.0f32; 64 * 2]);
         }
-        assert!(extra.glitches.load(Ordering::Relaxed) > 0);
+        // A queue that stays full is one gap, not one per block.
+        assert_eq!(extra.glitches.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -1129,5 +1191,34 @@ mod tests {
         extra.fill(&mut second);
         assert!(second.iter().all(|&x| x <= 0.5), "{second:?}");
         assert!(*second.last().unwrap() == 0.0 || extra.filling);
+    }
+
+    #[test]
+    fn an_extra_device_says_when_the_fade_out_has_played() {
+        let (mut writer, mut extra) = two_devices();
+        writer.fade.stop.store(true, Ordering::Relaxed);
+        for _ in 0..20 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        assert!(writer.fade.done.load(Ordering::Acquire));
+        assert!(!extra.drained.load(Ordering::Acquire));
+        let mut block = vec![0.0f32; 32];
+        // Playing the queued audio, the ramp comes down and then it is silent.
+        for _ in 0..100 {
+            extra.fill(&mut block);
+        }
+        assert!(extra.drained.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn an_extra_whose_cushion_is_bigger_than_its_queue_still_plays() {
+        let (mut writer, mut extra) = two_devices();
+        for _ in 0..130 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        // Asking for more than the queue could ever hold ahead.
+        let mut block = vec![9.0f32; 40_000];
+        extra.fill(&mut block);
+        assert!(block.contains(&0.5), "never started");
     }
 }

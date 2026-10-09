@@ -610,9 +610,12 @@ fn an_output_tied_to_another_device_restarts_playback_and_reports_when_it_cannot
     assert!(session.is_playing(), "{:?}", session.message());
     assert!(session.output_devices().is_empty());
 
+    // A pause survives the restart.
+    session.set_transport_running(false);
     let output = session.new_node_id();
     session.edit([crate::outputs::add(output, "alsa:missing")]);
     assert!(session.is_playing(), "playback carries on");
+    assert!(!session.transport_running());
     let [status] = session.output_devices() else {
         panic!("the device was asked for: {:?}", session.output_devices());
     };

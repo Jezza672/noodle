@@ -9,7 +9,7 @@
 
 use egui::{ComboBox, RichText, Ui};
 use noodle_core::{Command, Config, Node, NodeId, Project, Value};
-use noodle_engine::{OUTPUT_DEVICE, OUTPUT_DEVICE_KEY, OUTPUT_ID};
+use noodle_engine::{OUTPUT_DEVICE, OUTPUT_DEVICE_KEY, OUTPUT_ID, Problem};
 use noodle_io::{AudioError, DeviceInfo, DeviceList, OutputStatus};
 
 use crate::session::{Edit, Session};
@@ -170,7 +170,22 @@ impl OutputsView {
                     {
                         edits.push(edit);
                     }
-                    status_label(ui, row, status, session.is_playing());
+                    let problem = session.diagnostics().iter().find_map(|d| {
+                        (d.location == noodle_engine::Location::Node(row.node)
+                            && matches!(
+                                d.problem,
+                                Problem::DeviceTaken(_) | Problem::DeviceUnavailable(_)
+                            ))
+                        .then(|| d.problem.to_string())
+                    });
+                    status_label(
+                        ui,
+                        row,
+                        status,
+                        session.is_playing(),
+                        main.as_deref(),
+                        problem,
+                    );
                     ui.end_row();
                 }
             });
@@ -246,8 +261,20 @@ impl OutputsView {
 }
 
 /// What became of `row`'s device while playing.
-fn status_label(ui: &mut Ui, row: &Row, status: &[OutputStatus], playing: bool) {
-    if row.device.is_empty() {
+fn status_label(
+    ui: &mut Ui,
+    row: &Row,
+    status: &[OutputStatus],
+    playing: bool,
+    main: Option<&str>,
+    problem: Option<String>,
+) {
+    if let Some(problem) = problem.filter(|_| playing) {
+        ui.colored_label(ui.visuals().warn_fg_color, problem);
+        return;
+    }
+    // The main device's own ID is the main output.
+    if row.device.is_empty() || Some(row.device.as_str()) == main {
         ui.weak(if playing { "Playing" } else { "Not playing" });
         return;
     }

@@ -149,11 +149,24 @@ pub(crate) fn build(
         channels,
     } = settings;
     let routing = Routing { channels, buses };
+    // The main device's own ID is the main output, so it can't also be
+    // another Output node's device.
+    let main = buses
+        .and_then(|b| b.first())
+        .map(|b| b.device.as_str())
+        .filter(|d| !d.is_empty());
+    let canonical = |device: String| {
+        if Some(device.as_str()) == main {
+            String::new()
+        } else {
+            device
+        }
+    };
     // At most one Output node plays on each named device: the lowest ID.
     let mut device_owners: HashMap<String, NodeId> = HashMap::new();
     for scheduled in &schedule.nodes {
         if scheduled.node_type.info().id == OUTPUT_ID {
-            let device = OUTPUT_DEVICE.get_text(&scheduled.config);
+            let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let owner = device_owners.entry(device).or_insert(scheduled.id);
             *owner = (*owner).min(scheduled.id);
         }
@@ -322,7 +335,7 @@ pub(crate) fn build(
         let is_output = scheduled.node_type.info().id == OUTPUT_ID;
         let mut bus = None;
         if is_output {
-            let device = OUTPUT_DEVICE.get_text(&scheduled.config);
+            let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let device = device.as_str();
             if !device.is_empty() && device_owners.get(device) != Some(&id) {
                 diagnostics.push(Diagnostic::node(

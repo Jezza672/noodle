@@ -863,8 +863,13 @@ impl Session {
         // to another one means playing afresh. `play` compiles.
         let wanted = noodle_engine::output_devices(self.project.graph());
         if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
+            // A new engine starts running, so keep a pause.
+            let paused = !self.transport_running();
             self.close_stream();
             self.play();
+            if paused && let Some(audio) = &self.audio {
+                audio.controller.transport().stop();
+            }
             if self.audio.is_some() {
                 return;
             }
