@@ -8,7 +8,7 @@ use noodle_core::{
 use super::*;
 use crate::{
     ConfigInfo, Event, EventKind, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError,
-    NodeInfo, NodeType, NoteId, OUTPUT_ID, ParamInfo, PerLane, Setup, Shape,
+    NodeInfo, NodeType, NoteId, OUTPUT_ID, ParamInfo, PerLane, Problem, Setup, Shape,
 };
 
 /// Smoothing for the `offset` parameter: 4 ms, which is 4 samples at the test
@@ -1336,4 +1336,154 @@ mod automation {
         }
         assert_eq!(whole, pieces);
     }
+}
+
+/// Two Output nodes, one on the main bus and one tied to `"other"`, fed by
+/// different counters, on an engine of two buses: one channel each.
+fn two_bus_rig() -> (Rig, NodeId, NodeId) {
+    let mut rig = Rig::new(Settings {
+        channels: 3,
+        ..SETTINGS
+    });
+    rig.controller
+        .set_buses(vec![
+            Bus {
+                device: "main".into(),
+                channels: 2,
+            },
+            Bus {
+                device: "other".into(),
+                channels: 1,
+            },
+        ])
+        .unwrap();
+    let a = rig.add("counter");
+    let b = rig.add("counter");
+    rig.edit(Command::SetConfig {
+        node: b,
+        key: "start".into(),
+        value: Some(Value::Int(100)),
+    });
+    let main = rig.add(OUTPUT_ID);
+    let other = rig.add(OUTPUT_ID);
+    rig.edit(Command::SetConfig {
+        node: other,
+        key: "device".into(),
+        value: Some(Value::Text("other".into())),
+    });
+    rig.wire(a, main, "in");
+    rig.wire(b, other, "in");
+    (rig, main, other)
+}
+
+#[test]
+fn output_nodes_play_on_the_bus_of_their_device() {
+    let (mut rig, _, _) = two_bus_rig();
+    assert!(rig.update().is_empty());
+    // Main is channels 0 and 1 (a mono signal fills both); "other" is 2.
+    assert_eq!(
+        rig.render(3),
+        [0.0, 0.0, 100.0, 1.0, 1.0, 101.0, 2.0, 2.0, 102.0]
+    );
+}
+
+#[test]
+fn naming_the_main_device_plays_on_the_main_bus() {
+    let (mut rig, main, _) = two_bus_rig();
+    rig.edit(Command::SetConfig {
+        node: main,
+        key: "device".into(),
+        value: Some(Value::Text("main".into())),
+    });
+    assert!(rig.update().is_empty());
+    assert_eq!(rig.render(1), [0.0, 0.0, 100.0]);
+}
+
+#[test]
+fn an_output_on_a_device_that_is_not_open_plays_nothing() {
+    let (mut rig, _, other) = two_bus_rig();
+    rig.edit(Command::SetConfig {
+        node: other,
+        key: "device".into(),
+        value: Some(Value::Text("unplugged".into())),
+    });
+    let diagnostics = rig.update();
+    assert_eq!(
+        diagnostics,
+        [Diagnostic::node(
+            other,
+            Problem::DeviceUnavailable("unplugged".into())
+        )]
+    );
+    assert_eq!(rig.render(1), [0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn only_one_output_may_play_on_a_device() {
+    let (mut rig, _, _) = two_bus_rig();
+    let second = rig.add(OUTPUT_ID);
+    rig.edit(Command::SetConfig {
+        node: second,
+        key: "device".into(),
+        value: Some(Value::Text("other".into())),
+    });
+    let counter = rig.add("counter");
+    rig.wire(counter, second, "in");
+    // The lower ID keeps the device; the newer one is ignored.
+    assert_eq!(
+        rig.update(),
+        [Diagnostic::node(
+            second,
+            Problem::DeviceTaken("other".into())
+        )]
+    );
+    assert_eq!(rig.render(1)[2], 100.0);
+}
+
+#[test]
+fn unassigned_outputs_all_share_the_main_bus() {
+    let (mut rig, _, _) = two_bus_rig();
+    let extra = rig.add(OUTPUT_ID);
+    let counter = rig.add("counter");
+    rig.wire(counter, extra, "in");
+    assert!(rig.update().is_empty());
+    assert_eq!(rig.render(1)[..2], [0.0, 0.0]);
+    assert_eq!(rig.render(1)[..2], [2.0, 2.0]);
+}
+
+#[test]
+fn without_buses_every_output_mixes_into_every_channel() {
+    let mut rig = Rig::new(Settings {
+        channels: 2,
+        ..SETTINGS
+    });
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "device".into(),
+        value: Some(Value::Text("anything".into())),
+    });
+    rig.wire(counter, output, "in");
+    assert!(rig.update().is_empty());
+    assert_eq!(rig.render(2), [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
+fn buses_must_add_up_to_the_engines_channels() {
+    let (mut controller, _) = engine(Settings {
+        channels: 2,
+        ..SETTINGS
+    })
+    .unwrap();
+    let bus = |channels| Bus {
+        device: String::new(),
+        channels,
+    };
+    assert_eq!(
+        controller.set_buses(vec![bus(1)]),
+        Err(SettingsError::Buses)
+    );
+    assert_eq!(controller.set_buses(vec![]), Err(SettingsError::Buses));
+    assert!(controller.set_buses(vec![bus(1), bus(1)]).is_ok());
 }

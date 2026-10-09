@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
-use noodle_engine::{Controller, Processor, Settings, engine};
+use noodle_engine::{Bus, Controller, Processor, Settings, engine};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
@@ -26,11 +26,19 @@ pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
 /// Runs the [`Processor`] for an audio callback, converting its output to the
 /// device's sample format, and feeding it device input if there is any.
 /// Real-time safe: its buffers are allocated up front.
+///
+/// The engine can render more channels than the device has: the device takes
+/// the first ones, and each [`Tap`] hands a later range to another device's
+/// stream.
 pub struct DeviceWriter {
     processor: Processor,
-    /// One block of interleaved samples.
+    /// One block of interleaved samples, at the engine's channel count.
     scratch: Box<[f32]>,
+    /// The channels this device plays: the first ones the engine renders.
+    channels: usize,
     input: Option<Feed>,
+    /// The other devices' channels.
+    taps: Vec<Tap>,
     fade: Arc<Fade>,
     /// The gain applied to the output: 1 until a fade-out starts.
     gain: f32,
@@ -63,7 +71,9 @@ impl DeviceWriter {
         Self {
             processor,
             scratch: vec![0.0; max_frames * channels].into_boxed_slice(),
+            channels,
             input: None,
+            taps: Vec::new(),
             fade: Arc::default(),
             gain: 1.0,
             step: 1.0 / (FADE_OUT.as_secs_f32() * sample_rate).max(1.0),
@@ -78,43 +88,206 @@ impl DeviceWriter {
         }
     }
 
-    /// Fills `output`, interleaved with the engine's channel count. Samples
-    /// are clamped to between -1 and 1, and anything that isn't finite
-    /// becomes silence, so a misbehaving graph can't blast the speakers.
+    /// Splits the engine's channels among devices: this one plays the first
+    /// `main_channels`, and each of the `extra_channels` counts that follow
+    /// gets an [`ExtraOutput`] to play on its own device. The counts must add
+    /// up to the engine's channels. Anything the devices fall behind by
+    /// counts in `glitches`.
+    pub fn with_outputs(
+        mut self,
+        main_channels: usize,
+        extra_channels: &[usize],
+        glitches: &Arc<AtomicU64>,
+    ) -> (Self, Vec<ExtraOutput>) {
+        let rate = self.processor.settings().sample_rate;
+        debug_assert_eq!(
+            main_channels + extra_channels.iter().sum::<usize>(),
+            self.processor.settings().channels
+        );
+        self.channels = main_channels;
+        let mut first = main_channels;
+        let mut outputs = Vec::with_capacity(extra_channels.len());
+        for &channels in extra_channels {
+            let capacity = (EXTRA_QUEUE_SECONDS * rate) as usize * channels;
+            let (queue, playing) = RingBuffer::new(capacity);
+            self.taps.push(Tap {
+                queue,
+                first,
+                channels,
+                overruns: Arc::clone(glitches),
+            });
+            outputs.push(ExtraOutput {
+                queue: playing,
+                channels,
+                main_period: Arc::clone(&self.fade),
+                filling: true,
+                glitches: Arc::clone(glitches),
+            });
+            first += channels;
+        }
+        (self, outputs)
+    }
+
+    /// Fills `output`, interleaved with the device's channels. Samples are
+    /// clamped to between -1 and 1, and anything that isn't finite becomes
+    /// silence, so a misbehaving graph can't blast the speakers.
     pub fn write<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
-        let channels = self.processor.settings().channels;
+        let engine_channels = self.processor.settings().channels;
+        let channels = self.channels;
         self.fade
             .period
             .fetch_max((output.len() / channels) as u32, Ordering::Relaxed);
-        for chunk in output.chunks_mut(self.scratch.len()) {
-            let scratch = &mut self.scratch[..chunk.len()];
+        let block = self.scratch.len() / engine_channels;
+        for chunk in output.chunks_mut(block * channels) {
+            let frames = chunk.len() / channels;
+            let scratch = &mut self.scratch[..frames * engine_channels];
             match &mut self.input {
                 Some(feed) => {
                     let channels_in = feed.channels();
-                    let input = feed.read(chunk.len() / channels);
+                    let input = feed.read(frames);
                     self.processor
                         .process_with_input(input, channels_in, scratch);
                 }
                 None => self.processor.process(scratch),
             }
             let stopping = self.fade.stop.load(Ordering::Relaxed);
-            for (frame_out, frame) in chunk.chunks_mut(channels).zip(scratch.chunks(channels)) {
+            for (frame_out, frame) in chunk
+                .chunks_mut(channels)
+                .zip(scratch.chunks_mut(engine_channels))
+            {
                 if stopping {
                     self.gain = (self.gain - self.step).max(0.0);
                 }
-                for (out, &x) in frame_out.iter_mut().zip(frame) {
-                    let x = if x.is_finite() {
+                for x in frame.iter_mut() {
+                    let finite = if x.is_finite() {
                         x.clamp(-1.0, 1.0)
                     } else {
                         0.0
                     };
-                    *out = T::from_sample(x * self.gain);
+                    *x = finite * self.gain;
                 }
+                for (out, &x) in frame_out.iter_mut().zip(frame.iter()) {
+                    *out = T::from_sample(x);
+                }
+            }
+            for tap in &mut self.taps {
+                tap.push(scratch, engine_channels);
             }
             if stopping && self.gain == 0.0 {
                 self.fade.done.store(true, Ordering::Release);
             }
         }
+    }
+}
+
+/// The writing end of the path to another output device: some of the
+/// engine's channels, queued for that device's own callback to play. Real-time
+/// safe.
+struct Tap {
+    queue: Producer<f32>,
+    /// The first engine channel this device plays, and how many it has.
+    first: usize,
+    channels: usize,
+    /// Counted with the devices' underruns: a block that didn't fit is a gap.
+    overruns: Arc<AtomicU64>,
+}
+
+impl Tap {
+    /// Queues this device's channels from interleaved `block`. If the device
+    /// is behind and the queue is full, the block is dropped.
+    fn push(&mut self, block: &[f32], engine_channels: usize) {
+        let frames = block.len() / engine_channels;
+        let Ok(chunk) = self.queue.write_chunk_uninit(frames * self.channels) else {
+            self.overruns.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let (first, channels) = (self.first, self.channels);
+        chunk.fill_from_iter(
+            block
+                .chunks(engine_channels)
+                .flat_map(|frame| frame[first..first + channels].iter().copied()),
+        );
+    }
+}
+
+/// How much one extra output queues, in seconds. The queue is for tolerating
+/// the gap between the two devices' callbacks, not for latency: playback
+/// starts with only as much as the callbacks need.
+const EXTRA_QUEUE_SECONDS: f32 = 0.5;
+
+/// The playing end of an extra output device: the callback of a stream that
+/// plays what the main stream's [`Tap`] queued. The two devices' clocks drift
+/// apart, so it watches its backlog the way the input feed does: when it runs
+/// dry it plays silence until enough has built up again, and when too much
+/// has built up it skips ahead.
+pub struct ExtraOutput {
+    queue: Consumer<f32>,
+    channels: usize,
+    /// How much the main stream asks for at once, which the queue must cover
+    /// to keep the two apart.
+    main_period: Arc<Fade>,
+    /// Waiting for enough to be queued before playing.
+    filling: bool,
+    glitches: Arc<AtomicU64>,
+}
+
+impl ExtraOutput {
+    /// Fills a device's `out`, interleaved at its channel count.
+    pub fn fill<T: Sample + FromSample<f32>>(&mut self, out: &mut [T]) {
+        let channels = self.channels;
+        let wanted = out.len();
+        let available = self.queue.slots();
+        // Enough to survive until the main stream's next callback: its block,
+        // and this callback's.
+        let lead = (self.main_period.period.load(Ordering::Relaxed) as usize + wanted / channels)
+            * channels;
+        if self.filling {
+            if available < lead {
+                out.fill(T::EQUILIBRIUM);
+                return;
+            }
+            self.filling = false;
+        }
+        let mut available = available;
+        if available > 3 * lead {
+            // Too far behind: skip to a safe backlog, a glitch like a gap.
+            let skip = (available - lead) / channels * channels;
+            if let Ok(chunk) = self.queue.read_chunk(skip) {
+                chunk.commit_all();
+            }
+            available -= skip;
+            self.glitches.fetch_add(1, Ordering::Relaxed);
+        }
+        let take = wanted.min(available / channels * channels);
+        if take < wanted {
+            self.glitches.fetch_add(1, Ordering::Relaxed);
+            self.filling = true;
+        }
+        if let Ok(chunk) = self.queue.read_chunk(take) {
+            let (a, b) = chunk.as_slices();
+            for (out, &x) in out.iter_mut().zip(a.iter().chain(b)) {
+                *out = T::from_sample(x);
+            }
+            chunk.commit_all();
+        }
+        out[take..].fill(T::EQUILIBRIUM);
+    }
+}
+
+/// Something a stream's callback fills with audio.
+trait Fill: Send + 'static {
+    fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]);
+}
+
+impl Fill for DeviceWriter {
+    fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
+        self.write(output);
+    }
+}
+
+impl Fill for ExtraOutput {
+    fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
+        ExtraOutput::fill(self, output);
     }
 }
 
@@ -126,6 +299,9 @@ pub struct Playback {
     /// finished while the input is still running.
     recorder: Option<Recorder>,
     _input_stream: Option<cpal::Stream>,
+    /// The streams of the extra output devices that opened.
+    _extra_streams: Vec<cpal::Stream>,
+    outputs: Vec<OutputStatus>,
     device: String,
     input: Option<(String, usize)>,
     input_problem: Option<AudioError>,
@@ -154,9 +330,32 @@ impl Drop for Playback {
     }
 }
 
+/// What became of one extra output device that playback was asked to open.
+#[derive(Debug)]
+pub struct OutputStatus {
+    /// The device's ID, as asked for.
+    pub device: String,
+    /// What it opened as, or why it couldn't.
+    pub result: Result<OpenedOutput, AudioError>,
+}
+
+/// An extra output device that is playing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenedOutput {
+    pub name: String,
+    pub channels: usize,
+}
+
 impl Playback {
     pub fn device(&self) -> &str {
         &self.device
+    }
+
+    /// How each extra output device fared, in the order asked for. Devices
+    /// that couldn't open are left out of the engine's buses, so Output nodes
+    /// tied to them report that they have nowhere to play.
+    pub fn outputs(&self) -> &[OutputStatus] {
+        &self.outputs
     }
 
     /// The input device's name and channel count, if input is on.
@@ -221,6 +420,9 @@ pub fn is_fatal(error: &DeviceError) -> bool {
 pub enum Stream {
     Output,
     Input,
+    /// An output device other than the main one. Losing it silences the
+    /// Output nodes tied to it and nothing else.
+    ExtraOutput,
 }
 
 /// What the devices have reported. Some backends (ALSA among them) report
@@ -297,6 +499,26 @@ impl Reporter {
 ///
 /// Errors while playing are reported through [`Playback::health`].
 pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Controller), AudioError> {
+    play_with_outputs(choice, &[], max_frames)
+}
+
+/// [`play`] with more output devices, `extra` by ID, for Output nodes tied to
+/// them. The main device drives the engine; the others play what it renders
+/// for them through a queue each, at the main device's sample rate, so a
+/// device that can't take that rate can't open. A device that can't open
+/// doesn't stop playback: see [`Playback::outputs`]. The extras' channels
+/// follow the main device's in the engine's output, and the returned
+/// controller's buses say so ([`Controller::set_buses`]).
+///
+/// The devices' clocks drift apart unless they share one, and the queue
+/// between them copes by playing silence or skipping ahead, each counted as
+/// an underrun in [`Health`]. Devices equal to the main one, and repeats,
+/// are ignored.
+pub fn play_with_outputs(
+    choice: &AudioConfig,
+    extra: &[String],
+    max_frames: usize,
+) -> Result<(Playback, Controller), AudioError> {
     let host_id = host_for(
         choice.host.as_deref(),
         choice.output.as_deref(),
@@ -305,6 +527,7 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
     let host = open_host(host_id)?;
     let device = find_device(&host, choice.output.as_deref(), Direction::Output)?;
     let name = device_name(&device);
+    let main_id = device.id().ok().map(|id| id.to_string());
     let ranges: Vec<_> = device.supported_output_configs()?.collect();
     let Chosen { config, format } = choose_config(
         &ranges,
@@ -312,13 +535,53 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
         choice.sample_rate,
         choice.buffer_size,
     )?;
-    let settings = Settings {
-        sample_rate: config.sample_rate as f32,
-        max_frames,
-        channels: usize::from(config.channels),
-    };
-    let (controller, processor) = engine(settings)?;
     let mut health = Health::new();
+    let main_channels = usize::from(config.channels);
+    let rate = config.sample_rate;
+
+    // The extra devices, opened but not started. The engine's channels are
+    // the main device's and then each of these, in order.
+    let mut statuses = Vec::new();
+    let mut extras: Vec<OpenedExtra> = Vec::new();
+    let mut seen = Vec::new();
+    for id in extra {
+        if Some(id) == main_id.as_ref() || seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        let result = match open_extra(id, rate) {
+            Ok(opened) => {
+                let info = OpenedOutput {
+                    name: opened.name.clone(),
+                    channels: opened.channels,
+                };
+                extras.push(opened);
+                Ok(info)
+            }
+            Err(error) => Err(error),
+        };
+        statuses.push(OutputStatus {
+            device: id.clone(),
+            result,
+        });
+    }
+
+    let engine_channels = main_channels + extras.iter().map(|e| e.channels).sum::<usize>();
+    let settings = Settings {
+        sample_rate: rate as f32,
+        max_frames,
+        channels: engine_channels,
+    };
+    let (mut controller, processor) = engine(settings)?;
+    let mut buses = vec![Bus {
+        device: main_id.clone().unwrap_or_default(),
+        channels: main_channels,
+    }];
+    buses.extend(extras.iter().map(|e| Bus {
+        device: e.device.clone(),
+        channels: e.channels,
+    }));
+    controller.set_buses(buses)?;
 
     // Input that can't be opened doesn't stop the sound: playback goes on
     // without it, and says why.
@@ -347,22 +610,27 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
             }
         }
     };
-    let fade = writer.fade.clone();
+    let (writer, outputs) = writer.with_outputs(
+        main_channels,
+        &extras.iter().map(|e| e.channels).collect::<Vec<_>>(),
+        &health.underruns,
+    );
+    let fade = Arc::clone(&writer.fade);
+    let mut extra_streams = Vec::with_capacity(extras.len());
+    for (opened, output) in extras.into_iter().zip(outputs) {
+        let mut reporter = health.reporter(Stream::ExtraOutput);
+        let on_error = move |error| reporter.report(error);
+        extra_streams.push(open_format(
+            &opened.device_handle,
+            opened.config,
+            opened.format,
+            output,
+            on_error,
+        )?);
+    }
     let mut reporter = health.reporter(Stream::Output);
     let on_error = move |error| reporter.report(error);
-
-    let stream = match format {
-        SampleFormat::F32 => open::<f32>(&device, config, writer, on_error),
-        SampleFormat::F64 => open::<f64>(&device, config, writer, on_error),
-        SampleFormat::I8 => open::<i8>(&device, config, writer, on_error),
-        SampleFormat::I16 => open::<i16>(&device, config, writer, on_error),
-        SampleFormat::I24 => open::<I24>(&device, config, writer, on_error),
-        SampleFormat::I32 => open::<i32>(&device, config, writer, on_error),
-        SampleFormat::U8 => open::<u8>(&device, config, writer, on_error),
-        SampleFormat::U16 => open::<u16>(&device, config, writer, on_error),
-        SampleFormat::U32 => open::<u32>(&device, config, writer, on_error),
-        format => return Err(AudioError::UnsupportedFormat(format)),
-    }?;
+    let stream = open_format(&device, config, format, writer, on_error)?;
     // Input first, so the output finds some waiting.
     let (input_stream, input, recorder) = match input {
         Some((input_stream, name, channels, recorder)) => match input_stream.play() {
@@ -374,6 +642,11 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
         },
         None => (None, None, None),
     };
+    // The extras wait for the main stream's first blocks before they make a
+    // sound, so they can start first.
+    for stream in &extra_streams {
+        stream.play()?;
+    }
     stream.play()?;
     Ok((
         Playback {
@@ -381,6 +654,8 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
             _stream: stream,
             recorder,
             _input_stream: input_stream,
+            _extra_streams: extra_streams,
+            outputs: statuses,
             device: name,
             input,
             input_problem,
@@ -389,6 +664,57 @@ pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Contro
         },
         controller,
     ))
+}
+
+/// An extra output device, ready to open a stream on.
+struct OpenedExtra {
+    device: String,
+    name: String,
+    channels: usize,
+    device_handle: cpal::Device,
+    config: StreamConfig,
+    format: SampleFormat,
+}
+
+/// Finds the extra output device `id` and picks its configuration at `rate`.
+fn open_extra(id: &str, rate: u32) -> Result<OpenedExtra, AudioError> {
+    let host = open_host(host_for(None, Some(id), Direction::Output)?)?;
+    let device = find_device(&host, Some(id), Direction::Output)?;
+    let ranges: Vec<_> = device.supported_output_configs()?.collect();
+    // The queue decouples the callbacks, so the device uses whatever buffer
+    // size suits it.
+    let Chosen { config, format } =
+        choose_config(&ranges, device.default_output_config()?, Some(rate), None)?;
+    Ok(OpenedExtra {
+        device: id.to_owned(),
+        name: device_name(&device),
+        channels: usize::from(config.channels),
+        device_handle: device,
+        config,
+        format,
+    })
+}
+
+/// Opens (but doesn't start) an output stream in the device's sample format.
+fn open_format(
+    device: &cpal::Device,
+    config: StreamConfig,
+    format: SampleFormat,
+    filler: impl Fill,
+    on_error: impl FnMut(DeviceError) + Send + 'static,
+) -> Result<cpal::Stream, AudioError> {
+    Ok(match format {
+        SampleFormat::F32 => open::<f32>(device, config, filler, on_error),
+        SampleFormat::F64 => open::<f64>(device, config, filler, on_error),
+        SampleFormat::I8 => open::<i8>(device, config, filler, on_error),
+        SampleFormat::I16 => open::<i16>(device, config, filler, on_error),
+        SampleFormat::I24 => open::<I24>(device, config, filler, on_error),
+        SampleFormat::I32 => open::<i32>(device, config, filler, on_error),
+        SampleFormat::U8 => open::<u8>(device, config, filler, on_error),
+        SampleFormat::U16 => open::<u16>(device, config, filler, on_error),
+        SampleFormat::U32 => open::<u32>(device, config, filler, on_error),
+        format => return Err(AudioError::UnsupportedFormat(format)),
+    }?)
 }
 
 fn open_host(id: Option<cpal::HostId>) -> Result<cpal::Host, AudioError> {
@@ -471,12 +797,12 @@ where
 fn open<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: StreamConfig,
-    mut writer: DeviceWriter,
+    mut filler: impl Fill,
     on_error: impl FnMut(DeviceError) + Send + 'static,
 ) -> Result<cpal::Stream, DeviceError> {
     device.build_output_stream(
         config,
-        move |output: &mut [T], _: &cpal::OutputCallbackInfo| writer.write(output),
+        move |output: &mut [T], _: &cpal::OutputCallbackInfo| filler.fill(output),
         on_error,
         None,
     )
@@ -671,5 +997,137 @@ mod tests {
         let mut output = vec![1.0f32; 10 * 2];
         writer(f32::NAN).write(&mut output);
         assert!(output.iter().all(|&x| x == 0.0), "{output:?}");
+    }
+
+    /// Two Output nodes: one on the main device (2 channels, playing 0.25)
+    /// and one tied to "second" (1 channel, playing 0.5). Returns the main
+    /// writer and what the second device would play.
+    fn two_devices() -> (DeviceWriter, ExtraOutput) {
+        let mut project = Project::new();
+        for (device, level) in [("", 0.25), ("second", 0.5)] {
+            let id = project.new_node_id();
+            let mut node = Node::new(OUTPUT_ID).with_param("in", level);
+            if !device.is_empty() {
+                let mut config = noodle_core::Config::new();
+                config.set("device", noodle_core::Value::Text(device.into()));
+                node = node.with_config(config);
+            }
+            Command::AddNode { id, node }.apply(&mut project).unwrap();
+        }
+        let settings = Settings {
+            channels: 3,
+            ..SETTINGS
+        };
+        let (mut controller, processor) = engine(settings).unwrap();
+        controller
+            .set_buses(vec![
+                Bus {
+                    device: "main".into(),
+                    channels: 2,
+                },
+                Bus {
+                    device: "second".into(),
+                    channels: 1,
+                },
+            ])
+            .unwrap();
+        let diagnostics = controller.update(project.graph(), &Registry::with_builtins());
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let glitches = Arc::new(AtomicU64::new(0));
+        let (writer, mut extras) = DeviceWriter::new(processor).with_outputs(2, &[1], &glitches);
+        let extra = extras.remove(0);
+        (writer, extra)
+    }
+
+    #[test]
+    fn each_device_plays_only_its_own_channels() {
+        let (mut writer, mut extra) = two_devices();
+        let mut main = vec![0.0f32; 64 * 2];
+        writer.write(&mut main);
+        assert!(main.iter().all(|&x| x == 0.25), "{main:?}");
+        writer.write(&mut main);
+        // The second device has what it needs once the main stream has
+        // delivered a period plus its own block.
+        let mut second = vec![9.0f32; 32];
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
+    }
+
+    #[test]
+    fn an_extra_device_waits_for_a_cushion_before_it_plays() {
+        let (mut writer, mut extra) = two_devices();
+        // The main stream asks for 64 frames at a time and has delivered
+        // one block; this device wants 128, so it can't be covered yet.
+        writer.write(&mut vec![0.0f32; 64 * 2]);
+        let mut second = vec![9.0f32; 128];
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.0), "{second:?}");
+        assert_eq!(extra.glitches.load(Ordering::Relaxed), 0);
+        writer.write(&mut vec![0.0f32; 64 * 2]);
+        writer.write(&mut vec![0.0f32; 64 * 2]);
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
+    }
+
+    #[test]
+    fn an_extra_device_that_runs_dry_plays_silence_and_refills() {
+        let (mut writer, mut extra) = two_devices();
+        writer.write(&mut vec![0.0f32; 64 * 2]);
+        writer.write(&mut vec![0.0f32; 64 * 2]);
+        let mut second = vec![9.0f32; 32];
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5));
+        // 96 frames are left; asking for 120 runs dry: the 96 that exist,
+        // then silence, then silence until a cushion has built up.
+        let mut second = vec![9.0f32; 120];
+        extra.fill(&mut second);
+        assert!(second[..96].iter().all(|&x| x == 0.5), "{second:?}");
+        assert!(second[96..].iter().all(|&x| x == 0.0), "{second:?}");
+        assert_eq!(extra.glitches.load(Ordering::Relaxed), 1);
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.0));
+        for _ in 0..3 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
+    }
+
+    #[test]
+    fn an_extra_device_that_falls_behind_skips_ahead() {
+        let (mut writer, mut extra) = two_devices();
+        // The main stream delivers far more than the device takes.
+        for _ in 0..20 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        let mut second = vec![9.0f32; 32];
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5));
+        assert_eq!(extra.glitches.load(Ordering::Relaxed), 1);
+        // What's left is a cushion, not the whole backlog.
+        assert!(extra.queue.slots() <= 3 * (64 + 32));
+    }
+
+    #[test]
+    fn a_full_queue_drops_blocks_and_counts_them() {
+        let (mut writer, extra) = two_devices();
+        // Half a second (24000 frames) fits; each block queues 64.
+        for _ in 0..400 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        assert!(extra.glitches.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn the_fade_out_reaches_the_extra_devices() {
+        let (mut writer, mut extra) = two_devices();
+        writer.fade.stop.store(true, Ordering::Relaxed);
+        for _ in 0..20 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        let mut second = vec![9.0f32; 32];
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x <= 0.5), "{second:?}");
+        assert!(*second.last().unwrap() == 0.0 || extra.filling);
     }
 }

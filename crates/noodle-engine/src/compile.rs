@@ -101,6 +101,12 @@ pub enum Problem {
     /// A wire feeds a parameter that also has an automation lane. The wire
     /// wins, and the lane does nothing.
     LaneOverridden,
+    /// An Output node is tied to a device that isn't open: unplugged, or
+    /// not one the audio settings could start. The node plays nothing.
+    DeviceUnavailable(String),
+    /// Another Output node already plays on this device, and at most one may.
+    /// This one plays nothing.
+    DeviceTaken(String),
 }
 
 impl fmt::Display for Problem {
@@ -130,6 +136,16 @@ impl fmt::Display for Problem {
             Self::LaneOverridden => {
                 f.write_str("this input has a wire, which wins over its automation lane")
             }
+            Self::DeviceUnavailable(device) => {
+                write!(
+                    f,
+                    "output device `{device}` isn't available, so this plays nothing"
+                )
+            }
+            Self::DeviceTaken(device) => write!(
+                f,
+                "another output already plays on `{device}`, and there can be only one"
+            ),
         }
     }
 }

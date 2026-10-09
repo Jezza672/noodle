@@ -4,9 +4,11 @@ use std::path::PathBuf;
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::NodeId;
+use noodle_engine::OUTPUT_ID;
 
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
+use crate::outputs::OutputsView;
 use crate::session::{Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
 use crate::{metronome, mixer, properties, theme};
@@ -64,6 +66,9 @@ pub struct App {
     scope_open: bool,
     /// The scope node the scope view shows; `None` is the first one.
     scope_view: Option<NodeId>,
+    /// Whether the outputs view is showing.
+    outputs_open: bool,
+    outputs: OutputsView,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -85,6 +90,7 @@ enum Action {
     ToggleMixer,
     ToggleMetronome,
     ToggleScope,
+    ToggleOutputs,
     ImportAudio,
     DeleteSelection,
     ArrangeNodes,
@@ -122,6 +128,8 @@ impl App {
             mixer_view: None,
             scope_open: false,
             scope_view: None,
+            outputs_open: false,
+            outputs: OutputsView::default(),
         }
     }
 
@@ -170,34 +178,39 @@ impl App {
         }
     }
 
-    /// The scope view: a drop-down over the project's Scope nodes and a
-    /// larger drawing of the chosen one.
+    /// The scope view: a drop-down over the project's Scope and Output nodes
+    /// and a larger drawing of the chosen one.
     fn scope_pane(&mut self, ui: &mut egui::Ui) {
         let scopes: Vec<NodeId> = self
             .session
             .project()
             .graph()
             .nodes()
-            .filter(|(_, n)| n.type_id == noodle_nodes::SCOPE_ID)
+            .filter(|(_, n)| matches!(n.type_id.as_str(), noodle_nodes::SCOPE_ID | OUTPUT_ID))
             .map(|(id, _)| id)
             .collect();
         if self.scope_view.is_some_and(|n| !scopes.contains(&n)) {
             self.scope_view = None;
         }
         let Some(shown) = self.scope_view.or(scopes.first().copied()) else {
-            ui.weak("No Scope nodes yet. Add one in the node editor.");
+            ui.weak("No Scope or Output nodes yet. Add one in the node editor.");
             return;
         };
-        let label = |n: NodeId| format!("Scope {}", n.0);
+        let graph = self.session.project().graph();
+        let label = |n: NodeId| match graph.node(n).map(|node| node.type_id.as_str()) {
+            Some(OUTPUT_ID) => format!("Output {}", n.0),
+            _ => format!("Scope {}", n.0),
+        };
         ui.horizontal(|ui| {
-            ui.label("Scope");
-            egui::ComboBox::from_id_salt("scope view")
+            let name = ui.label("Scope");
+            let combo = egui::ComboBox::from_id_salt("scope view")
                 .selected_text(label(shown))
                 .show_ui(ui, |ui| {
                     for &n in &scopes {
                         ui.selectable_value(&mut self.scope_view, Some(n), label(n));
                     }
                 });
+            combo.response.labelled_by(name.id);
         });
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), theme::SCOPE_VIEW_HEIGHT),
@@ -233,6 +246,15 @@ impl App {
                         &mut self.mixer_view,
                         &|mixer, channel| self.editor.input_level(mixer, channel),
                     );
+                    self.session.edit(edits);
+                });
+        }
+
+        if self.outputs_open {
+            egui::Panel::bottom("outputs")
+                .resizable(false)
+                .show(ui, |ui| {
+                    let edits = self.outputs.show(ui, &self.session);
                     self.session.edit(edits);
                 });
         }
@@ -412,6 +434,13 @@ impl App {
                 .clicked()
             {
                 actions.push(Action::ToggleMixer);
+            }
+            if ui
+                .selectable_label(self.outputs_open, "Outputs")
+                .on_hover_text("Which audio device each Output node plays on")
+                .clicked()
+            {
+                actions.push(Action::ToggleOutputs);
             }
         });
     }
@@ -686,6 +715,13 @@ impl App {
                 }
             }
             Action::ToggleScope => self.scope_open = !self.scope_open,
+            Action::ToggleOutputs => {
+                self.outputs_open = !self.outputs_open;
+                if self.outputs_open {
+                    self.outputs
+                        .refresh(self.session.audio_config().host.as_deref());
+                }
+            }
             Action::ImportAudio => {
                 let playhead = self.session.playhead();
                 match self
@@ -931,7 +967,44 @@ mod tests {
         harness.run();
         harness.get_by_label("Scope").click();
         harness.run();
-        harness.get_by_label_contains("No Scope nodes yet");
+        harness.get_by_label_contains("No Scope or Output nodes yet");
+    }
+
+    #[test]
+    fn the_outputs_view_opens_from_the_view_menu_and_lists_output_nodes() {
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new(noodle_engine::OUTPUT_ID),
+        })]);
+        let mut harness = harness(app);
+        harness.run();
+        assert!(harness.query_by_label("Output 1").is_none());
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Outputs").click();
+        harness.run();
+        harness.get_by_label("Output 1");
+        harness.get_by_label("Add output");
+    }
+
+    #[test]
+    fn the_scope_view_can_show_an_output_nodes_scope() {
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new(noodle_engine::OUTPUT_ID),
+        })]);
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Scope").click();
+        harness.run();
+        assert_eq!(
+            harness.get_by_label("Scope").value().as_deref(),
+            Some("Output 1")
+        );
     }
 
     #[test]

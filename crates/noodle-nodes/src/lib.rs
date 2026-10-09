@@ -74,6 +74,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Button);
     registry.register(Metronome);
     registry.register(Mix::new(&telemetry));
+    // The builtin Output has no scope; this one reports to the hub.
+    registry.replace(noodle_engine::Output::new(&telemetry));
     registry.register(Svf);
     registry.register(VoiceMix);
     registry.register(Reverse);

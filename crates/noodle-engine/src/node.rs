@@ -228,6 +228,24 @@ impl ConfigInfo {
         }
     }
 
+    /// A text setting that is empty by default.
+    pub const fn text(key: &'static str, name: &'static str) -> Self {
+        Self {
+            key,
+            name,
+            default: Value::Text(String::new()),
+        }
+    }
+
+    /// Reads this setting from `config` as text, falling back to the default
+    /// if it's missing or has the wrong type.
+    pub fn get_text(&self, config: &Config) -> String {
+        match (config.get(self.key), &self.default) {
+            (Some(Value::Text(text)), _) | (_, Value::Text(text)) => text.clone(),
+            _ => String::new(),
+        }
+    }
+
     /// Reads this setting from `config`, falling back to the default if it's
     /// missing or has the wrong type.
     pub fn get_int(&self, config: &Config) -> i64 {

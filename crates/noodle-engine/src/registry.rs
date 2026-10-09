@@ -21,6 +21,13 @@ impl Registry {
         assert!(previous.is_none(), "node type {id} registered twice");
     }
 
+    /// Registers a type, replacing one with the same ID if there is one.
+    /// For a type that has a plain version in
+    /// [`with_builtins`](Self::with_builtins) and a fuller one elsewhere.
+    pub fn replace(&mut self, node_type: impl NodeType) {
+        self.types.insert(node_type.info().id, Arc::new(node_type));
+    }
+
     pub fn get(&self, id: &str) -> Option<&Arc<dyn NodeType>> {
         self.types.get(id)
     }

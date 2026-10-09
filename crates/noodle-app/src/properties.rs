@@ -61,6 +61,19 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
     ui.separator();
     ui.label(RichText::new("Settings").strong());
     for info in settings {
+        // Chosen in the outputs view, which knows what devices there are.
+        if node_type.info().id == noodle_engine::OUTPUT_ID
+            && info.key == noodle_engine::OUTPUT_DEVICE_KEY
+        {
+            let device = info.get_text(&node.config);
+            ui.label(if device.is_empty() {
+                "Plays on the main output".to_owned()
+            } else {
+                format!("Plays on {device}")
+            })
+            .on_hover_text("Choose the device in View → Outputs.");
+            continue;
+        }
         let out = ConfigField::new(info, node.config.get(info.key))
             .id_salt((id, info.key))
             .show(ui);

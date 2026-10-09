@@ -611,3 +611,70 @@ fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
     assert!(heard, "the metronome never sounded");
     assert!(out.iter().all(|x| x.is_finite()));
 }
+
+#[test]
+fn outputs_on_two_devices_never_allocate_and_each_has_a_scope() {
+    let settings = Settings {
+        channels: 4,
+        ..SETTINGS
+    };
+    let mut registry = Registry::with_builtins();
+    let telemetry = noodle_nodes::register_all(&mut registry);
+    let (mut controller, processor) = engine(settings).unwrap();
+    controller
+        .set_buses(vec![
+            noodle_engine::Bus {
+                device: "main".into(),
+                channels: 2,
+            },
+            noodle_engine::Bus {
+                device: "second".into(),
+                channels: 2,
+            },
+        ])
+        .unwrap();
+    let mut s = Session {
+        project: Project::new(),
+        registry,
+        telemetry,
+        controller,
+        processor,
+    };
+    let mut outputs = Vec::new();
+    for (frequency, device) in [(220.0, ""), (330.0, "second")] {
+        let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", frequency));
+        let mut config = Config::new();
+        config.set("device", Value::Text(device.into()));
+        let output = s.add(Node::new(OUTPUT_ID).with_config(config));
+        s.wire(sine, "out", output, "in");
+        outputs.push(output);
+    }
+    s.update();
+
+    let glitches = Arc::new(AtomicU64::new(0));
+    let (mut writer, mut extras) = DeviceWriter::new(s.processor).with_outputs(2, &[2], &glitches);
+    let mut extra = extras.remove(0);
+    let mut main_out = vec![0i16; 1000 * 2];
+    let mut second_out = vec![0i16; 500 * 2];
+    let violations = realtime(|| {
+        for _ in 0..6 {
+            writer.write(&mut main_out);
+            extra.fill(&mut second_out);
+        }
+    });
+    assert_eq!(violations, 0, "allocated in the audio callbacks");
+    assert!(
+        main_out.iter().any(|&x| x != 0),
+        "the main device is silent"
+    );
+    assert!(second_out.iter().any(|&x| x != 0), "the second is silent");
+
+    let mut view = ScopeView::default();
+    for output in outputs {
+        assert!(s.telemetry.read_scope(output, &mut view));
+        assert!(
+            view.samples().iter().any(|&x| x != 0.0),
+            "no scope samples for {output:?}"
+        );
+    }
+}

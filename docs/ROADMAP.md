@@ -210,8 +210,9 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 done (marked below), and so are the spare ports, renaming, adding tracks
 through the default mixer and deleting tracks, track reordering, the mixer
 view over any mixer node, the scope view and meters on mixer inputs, group
-output controls as wires and automation lanes as plain wires. Still to do:
-outputs.
+output controls as wires and automation lanes as plain wires, and outputs
+(a scope on every Output node, and several Output nodes each tied to one
+device). All of this theme is done.
 
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 
@@ -277,12 +278,15 @@ outputs.
 
 **Outputs (M2, after the mixer view).**
 
-- The final output has a built-in scope (18).
-- Several output nodes, each tied to one audio device, with at most one per
-  device (19), and a view for mapping the output nodes to real devices. This
-  needs the engine to drive several streams from one plan, so it's the
-  largest item here. Today there is one stream and one device
-  (see "Choosing a device" under the audio output in ARCHITECTURE.md).
+- **Done.** The final output has a built-in scope (18): every Output node draws
+  one in its body and the scope view can show it.
+- **Done.** Several output nodes, each tied to one audio device, with at most
+  one per device (19), and a view for mapping the output nodes to real devices
+  (View > Outputs). The engine renders one buffer for all the devices'
+  channels and the main device's callback hands the rest to the other devices'
+  streams through queues; see "Playing on several devices" in
+  ARCHITECTURE.md. Still open: the extra devices follow the main device's
+  sample rate (no resampling), and their latency isn't compensated.
 
 **Clips and the arrangement (M2).**
 

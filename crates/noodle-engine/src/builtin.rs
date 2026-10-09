@@ -5,16 +5,36 @@ use noodle_core::Config;
 
 use crate::{
     ConfigInfo, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Registry,
-    Setup, Shape,
+    ScopeWriter, Setup, Shape, Telemetry,
 };
 
 pub const OUTPUT_ID: &str = "noodle.io.output";
 pub const INPUT_ID: &str = "noodle.io.input";
 
-/// Sends its input to the audio device. Every Output node's input is mixed
-/// into the device output: a mono signal goes to every channel, and voices are
-/// summed.
-pub struct Output;
+/// Sends its input to an audio device. Every Output node's input is mixed
+/// into the device it is tied to: a mono signal goes to every channel, and
+/// voices are summed.
+///
+/// Which device is the `device` setting, a device ID. It is config rather
+/// than a parameter because it routes the node to a stream and can't be
+/// modulated. Empty means the main output, the one chosen in the audio
+/// settings. At most one Output node may use each device. The executor does
+/// the mixing; the node itself only feeds its built-in scope, which shows
+/// what is being sent.
+#[derive(Default)]
+pub struct Output {
+    telemetry: Option<Telemetry>,
+}
+
+impl Output {
+    /// An Output node whose scope reports to `telemetry`. Without a hub, as
+    /// from [`Registry::with_builtins`], the node has no scope.
+    pub fn new(telemetry: &Telemetry) -> Self {
+        Self {
+            telemetry: Some(telemetry.clone()),
+        }
+    }
+}
 
 static OUTPUT: NodeInfo = NodeInfo {
     id: OUTPUT_ID,
@@ -23,17 +43,68 @@ static OUTPUT: NodeInfo = NodeInfo {
     category: "Input/Output",
 };
 
+/// The config key of the device an Output node plays on.
+pub const OUTPUT_DEVICE_KEY: &str = "device";
+
+/// The device an Output node plays on.
+pub const OUTPUT_DEVICE: ConfigInfo = ConfigInfo::text(OUTPUT_DEVICE_KEY, "Device");
+
+/// The devices that Output nodes in `graph` are tied to, each once, in
+/// order. Output nodes with no device play on the main output and aren't
+/// listed.
+pub fn output_devices(graph: &noodle_core::Graph) -> Vec<String> {
+    let devices: std::collections::BTreeSet<String> = graph
+        .nodes()
+        .filter(|(_, node)| node.type_id == OUTPUT_ID)
+        .map(|(_, node)| OUTPUT_DEVICE.get_text(&node.config))
+        .filter(|device| !device.is_empty())
+        .collect();
+    devices.into_iter().collect()
+}
+
+/// How much an Output node's scope buffers for the UI, in seconds.
+const SCOPE_SECONDS: f32 = 1.0;
+
 impl NodeType for Output {
     fn info(&self) -> &NodeInfo {
         &OUTPUT
+    }
+
+    fn config(&self) -> &[ConfigInfo] {
+        static CONFIG: [ConfigInfo; 1] = [OUTPUT_DEVICE];
+        &CONFIG
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(Layout::realtime().input("in", "In"))
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(Passive))
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        let Some(telemetry) = &self.telemetry else {
+            return Ok(Instance::realtime(Passive));
+        };
+        let capacity = ((SCOPE_SECONDS * setup.sample_rate) as usize).max(setup.max_frames);
+        let channels = setup.input_shapes[0].channels;
+        Ok(Instance::realtime(OutputScope {
+            writer: telemetry.open_scope(setup.node, channels, capacity),
+        }))
+    }
+}
+
+/// Feeds the Output node's scope with its input, voices summed as the mix
+/// does.
+struct OutputScope {
+    writer: ScopeWriter,
+}
+
+impl Node for OutputScope {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let input = &io.inputs[0];
+        self.writer.write(ctx.frames, |frame, channel| {
+            (0..input.shape().voices)
+                .map(|voice| input.lane(voice, channel)[frame])
+                .sum()
+        });
     }
 }
 
@@ -110,7 +181,7 @@ impl Registry {
     /// A registry holding the engine's own node types.
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
-        registry.register(Output);
+        registry.register(Output::default());
         registry.register(Input);
         registry.register(crate::automation::Automation);
         registry

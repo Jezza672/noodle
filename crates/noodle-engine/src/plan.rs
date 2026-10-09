@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use noodle_core::NodeId;
 
-use crate::builtin::{INPUT_ID, OUTPUT_ID};
+use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
 use crate::{
     Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
-    ParamKind, Problem, Schedule, Setup, Shape, SignalIn, SignalOut,
+    ParamKind, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -98,6 +98,10 @@ struct PlanNode {
     event_outputs: Vec<usize>,
     /// An Output node, whose input is mixed into the device output.
     is_output: bool,
+    /// Where an Output node mixes to: the first output channel and the
+    /// number of channels. `None` for an Output node that plays nothing
+    /// (its device isn't open) and for every other node.
+    bus: Option<(usize, usize)>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
     scratch: Scratch,
@@ -134,11 +138,26 @@ pub(crate) fn build(
     schedule: Schedule,
     previous: Option<&PlanInfo>,
     generation: u64,
-    sample_rate: f32,
-    max_frames: usize,
+    settings: Settings,
+    buses: Option<&[Bus]>,
     cells: &mut Cells,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (Box<Plan>, PlanInfo) {
+    let Settings {
+        sample_rate,
+        max_frames,
+        channels,
+    } = settings;
+    let routing = Routing { channels, buses };
+    // At most one Output node plays on each named device: the lowest ID.
+    let mut device_owners: HashMap<String, NodeId> = HashMap::new();
+    for scheduled in &schedule.nodes {
+        if scheduled.node_type.info().id == OUTPUT_ID {
+            let device = OUTPUT_DEVICE.get_text(&scheduled.config);
+            let owner = device_owners.entry(device).or_insert(scheduled.id);
+            *owner = (*owner).min(scheduled.id);
+        }
+    }
     let mut offsets = Vec::with_capacity(schedule.buffer_lanes.len());
     let mut pool_len = 0;
     for lanes in &schedule.buffer_lanes {
@@ -300,6 +319,26 @@ pub(crate) fn build(
             event_outputs: Vec::with_capacity(event_outputs.len()),
         };
 
+        let is_output = scheduled.node_type.info().id == OUTPUT_ID;
+        let mut bus = None;
+        if is_output {
+            let device = OUTPUT_DEVICE.get_text(&scheduled.config);
+            let device = device.as_str();
+            if !device.is_empty() && device_owners.get(device) != Some(&id) {
+                diagnostics.push(Diagnostic::node(
+                    id,
+                    Problem::DeviceTaken(device.to_owned()),
+                ));
+            } else {
+                bus = routing.route(device);
+                if bus.is_none() {
+                    diagnostics.push(Diagnostic::node(
+                        id,
+                        Problem::DeviceUnavailable(device.to_owned()),
+                    ));
+                }
+            }
+        }
         if carries_over {
             info.nodes.insert(id, (key, slot));
         }
@@ -309,7 +348,8 @@ pub(crate) fn build(
             outputs,
             event_inputs,
             event_outputs,
-            is_output: scheduled.node_type.info().id == OUTPUT_ID,
+            is_output,
+            bus,
             is_input: scheduled.node_type.info().id == INPUT_ID,
             scratch,
         });
@@ -510,8 +550,8 @@ impl Plan {
             }
             // Mixed now, not after the whole schedule: the compiler frees a
             // buffer after its last reader, so a later node may reuse it.
-            if node.is_output {
-                mix_into(inputs[0], output, channels);
+            if let Some((first, count)) = node.bus {
+                mix_into(inputs[0], output, channels, first, count);
             }
 
             node.scratch.inputs = recycle(inputs);
@@ -596,11 +636,12 @@ pub(crate) fn read_input(input: Interleaved<'_>, signal: &mut SignalOut<'_>) {
     }
 }
 
-/// Adds a signal into interleaved output. A mono signal goes to every
-/// channel; otherwise channel n goes to channel n, and voices are summed.
-fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize) {
+/// Adds a signal into the `count` channels of interleaved output that start
+/// at `first`. A mono signal goes to every channel; otherwise channel n goes
+/// to channel n, and voices are summed.
+fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize, first: usize, count: usize) {
     let shape = signal.shape();
-    for channel in 0..channels {
+    for channel in 0..count {
         let source = match shape.channels {
             1 => 0,
             n if channel < n => channel,
@@ -609,9 +650,47 @@ fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize) {
         for voice in 0..shape.voices {
             let lane = signal.lane(voice, source);
             for (frame, sample) in lane.iter().enumerate() {
-                output[frame * channels + channel] += sample;
+                output[frame * channels + first + channel] += sample;
             }
         }
+    }
+}
+
+/// One audio device's share of the engine's interleaved output: `channels`
+/// channels, after those of the buses before it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bus {
+    /// The device's ID, or empty if it is unknown. The first bus is the main
+    /// output, which Output nodes with no device use as well.
+    pub device: String,
+    pub channels: usize,
+}
+
+/// How the engine's output channels are shared out, for placing Output nodes.
+#[derive(Clone, Copy)]
+pub(crate) struct Routing<'a> {
+    /// The engine's channel count.
+    pub channels: usize,
+    /// The devices sharing them, or `None` to mix every Output node into all
+    /// of them, as when rendering offline.
+    pub buses: Option<&'a [Bus]>,
+}
+
+impl Routing<'_> {
+    /// Where an Output node tied to `device` mixes to: the first output
+    /// channel and the channel count. `None` if no bus has that device.
+    fn route(&self, device: &str) -> Option<(usize, usize)> {
+        let Some(buses) = self.buses else {
+            return Some((0, self.channels));
+        };
+        let mut first = 0;
+        for (index, bus) in buses.iter().enumerate() {
+            if (index == 0 && device.is_empty()) || (!device.is_empty() && bus.device == device) {
+                return Some((first, bus.channels));
+            }
+            first += bus.channels;
+        }
+        None
     }
 }
 
