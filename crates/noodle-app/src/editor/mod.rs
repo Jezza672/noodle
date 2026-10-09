@@ -19,6 +19,7 @@
 //! | Double-click a wire | Break it |
 //! | Ctrl/Cmd+C, X, V | Copy, cut and paste the selection, at the pointer |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
+//! | Ctrl/Cmd+L | Auto-arrange the selected nodes, or all of them |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame (top level only) |
 //! | Ctrl+G | Fold the selected nodes into a new group |
@@ -30,6 +31,7 @@
 //! [`layout`]), handles input against that, then draws it. It never changes
 //! the project itself: it returns [`Edit`]s for the session to apply.
 
+mod arrange;
 mod body;
 mod draw;
 mod layout;
@@ -98,6 +100,9 @@ pub struct EditorState {
     bodies: body::Bodies,
     /// What Copy and Cut last took, for Paste.
     clipboard: Option<Clipboard>,
+    /// Set by the Arrange menu item, done on the next frame, when the
+    /// editor has the scene to work from.
+    arrange_requested: bool,
 }
 
 /// Nodes, the wires between them and frames, as copied.
@@ -124,11 +129,18 @@ impl Default for EditorState {
             rename: None,
             bodies: body::Bodies::default(),
             clipboard: None,
+            arrange_requested: false,
         }
     }
 }
 
 impl EditorState {
+    /// Asks for the nodes to be auto-arranged (see [`arrange`]) on the next
+    /// frame: the selection, or everything if nothing is selected.
+    pub fn request_arrange(&mut self) {
+        self.arrange_requested = true;
+    }
+
     /// Where a graph point is on screen, as of the last frame.
     #[cfg(test)]
     pub fn to_screen(&self, p: Pos2) -> Pos2 {
@@ -442,6 +454,10 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         && (!ui.ctx().egui_wants_keyboard_input() || response.has_focus())
     {
         keyboard(ui, state, &f, canvas, &mut inputs, &mut edits);
+    }
+    // From the menu, so the pointer isn't over the canvas.
+    if std::mem::take(&mut state.arrange_requested) {
+        arrange_nodes(state, &f, &mut edits);
     }
 
     let painter = ui.painter_at(canvas);
@@ -1472,6 +1488,9 @@ fn keyboard(
     if pressed(Modifiers::ALT, Key::A) {
         state.clear_selection();
     }
+    if pressed(Modifiers::COMMAND, Key::L) {
+        arrange_nodes(state, f, edits);
+    }
     if pressed(Modifiers::COMMAND, Key::J) && state.group.is_none() {
         frame_selection(state, f, inputs, edits);
     }
@@ -1491,6 +1510,48 @@ fn keyboard(
         {
             start_node_rename(state, f.project, id);
         }
+    }
+}
+
+/// Auto-arranges the selected nodes, or all of them when none are selected,
+/// as one undo step. Frames, and the nodes inside them, stay where they are.
+fn arrange_nodes(state: &EditorState, f: &Frame_<'_>, edits: &mut Vec<Edit>) {
+    let frames: Vec<Rect> = f.scene.frames.iter().map(|fr| fr.rect).collect();
+    let framed = |rect: Rect| frames.iter().any(|fr| fr.contains_rect(rect));
+    let items: BTreeMap<NodeId, arrange::Item> = f
+        .scene
+        .nodes
+        .iter()
+        .filter(|n| state.selected.is_empty() || state.selected.contains(&n.id))
+        .filter(|n| !framed(n.rect))
+        .map(|n| (n.id, arrange::Item { rect: n.rect }))
+        .collect();
+    let wires: Vec<(NodeId, NodeId)> = f
+        .scene
+        .wires
+        .iter()
+        .map(|w| (w.connection.from.node, w.connection.to.node))
+        .collect();
+    // Keep clear of frames, and of nodes that aren't being moved.
+    let mut avoid = frames.clone();
+    avoid.extend(
+        f.scene
+            .nodes
+            .iter()
+            .filter(|n| !items.contains_key(&n.id))
+            .map(|n| n.rect),
+    );
+    let placed = arrange::arrange(&items, &wires, &avoid);
+    let commands: Vec<Command> = placed
+        .into_iter()
+        .filter(|(node, to)| (*to - items[node].rect.min).length() > 0.01)
+        .map(|(node, to)| Command::MoveNode {
+            node,
+            position: position(to),
+        })
+        .collect();
+    if !commands.is_empty() {
+        edits.push(Edit::Apply(Command::Batch(commands)));
     }
 }
 
