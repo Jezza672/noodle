@@ -23,6 +23,10 @@ pub const RECORD: Color32 = Color32::from_rgb(255, 90, 79);
 pub const RADIUS: u8 = 8;
 /// Corner radius of a node.
 pub const NODE_RADIUS: u8 = 10;
+/// The transport pill: its fill, outline and corner radius.
+pub const TRANSPORT_FILL: Color32 = Color32::from_rgb(15, 18, 22);
+pub const TRANSPORT_OUTLINE: Color32 = Color32::from_rgb(52, 58, 71);
+pub const PILL_RADIUS: u8 = 14;
 /// How tall the scope view's drawing is.
 pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
 

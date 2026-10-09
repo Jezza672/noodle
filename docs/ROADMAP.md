@@ -328,17 +328,31 @@ parameter ports on boundary nodes in the engine), then outputs.
   reduction, and one undo step that moves every node. Frames and the nodes in them are left in place, and
   the layout keeps clear of them.
 
-**Buttons bound to nodes (M3).**
+**Buttons bound to nodes (M3).** *First part done:* the Button node, the
+Metronome node and the metronome button.
 
 - The transport bar can hold buttons that become input nodes in the graph,
   outputting the button's state (23). Wherever a UI control can be a graph
-  node, it should be.
-- A metronome button (22) is the first one: a default arrangement of a
-  button input wired to the mute of the mixer channel for the default
-  metronome node. This needs a metronome node, so it comes with M3's
-  events work.
-- A button shows a distinct state when its node is missing or broken, and
-  what it's bound to can be edited (24).
+  node, it should be. **Done for the metronome:** a `Button` node
+  (`noodle.input.button`) has a `state` parameter and outputs it, and the
+  transport pill presses it with an ordinary undoable `SetParam`. More buttons
+  can use the same node.
+- **Done.** A metronome button (22). The `Metronome` node clicks on every
+  beat while the transport plays, higher on the first beat of the bar, and
+  follows the tempo map and signature. The first press in a project adds the
+  default arrangement (Button → Metronome `on` → Output, as one undo step), and
+  later presses flip the button. It is bound by wiring, not by a setting: the
+  button controls the first top-level Metronome whose `on` input is fed by a
+  Button.
+- **Done.** A button shows a distinct state when its node is missing (dimmed;
+  pressing adds one) or broken (red, with the reason on hover), and what it's
+  bound to can be edited (24) by rewiring in the node editor.
+- **Still to do:** a way to add other buttons to the pill, and binding a
+  button to a chosen node or parameter from the pill itself. The metronome
+  has no accent or sound settings beyond `level` yet. A signature change
+  inside the project counts beats from tick 0 (each beat a multiple of the
+  current beat length), so after one the clicks and the bar accent can land
+  off the new meter's grid. Fixing it needs the meter's start tick on `Transport`.
 
 ## M3: Events and polyphony
 

@@ -1,9 +1,11 @@
 //! Built-in node library: oscillators, filters, mixing, utilities, and views
 //! (meters and scopes) that report to the UI.
 
+mod button;
 mod clip;
 mod gain;
 mod meter;
+mod metronome;
 mod mix;
 mod noise;
 mod osc;
@@ -14,12 +16,14 @@ mod stage;
 mod svf;
 mod voice_mix;
 
+pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
     TRACK_INPUT_ID, TrackInput, active_at,
 };
 pub use gain::Gain;
 pub use meter::{METER_ID, Meter};
+pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use osc::{Saw, Sine};
@@ -67,6 +71,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Saw);
     registry.register(WhiteNoise);
     registry.register(Gain);
+    registry.register(Button);
+    registry.register(Metronome);
     registry.register(Mix::new(&telemetry));
     registry.register(Svf);
     registry.register(VoiceMix);

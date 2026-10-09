@@ -511,6 +511,16 @@ Settled for M2 (Phase 0):
   clicks.
 - A block ends exactly at the loop end, and the playhead wraps there.
 
+### Transport-bar controls as nodes
+
+The transport pill (rewind, play or stop, pause, record, metronome, position)
+draws from the session. The metronome button is the first control that is a
+graph node: it presses a `Button` node (`state` parameter, outputs 0 or 1)
+wired into a `Metronome` node's `on` input. The metronome reads
+`Context::transport` (tick, tempo, signature) like any tempo-synced node and
+keeps no clock of its own, so seeks, loops and tempo changes need no special
+handling beyond forgetting the last beat on a position jump.
+
 ### Playing along the timeline
 
 - **Blocks.** The transport splits a block at the loop end, so a block never
