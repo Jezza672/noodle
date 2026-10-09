@@ -261,6 +261,18 @@ fn boxed(
                 }
             }
         }
+        if text
+            && !port.spare
+            && port.side == Side::Input
+            && let Some(channel) = mixer_channel(graph, node.id, &port.key)
+        {
+            let row = f.t.rect_to_screen(port.row);
+            let area = Rect::from_center_size(
+                Pos2::new(row.right() - 30.0 * z, row.center().y),
+                Vec2::new(48.0 * z, 7.0 * z),
+            );
+            body::meter(painter, area, z, bodies.input_meters_of(node.id, channel));
+        }
         socket(painter, f, port);
     }
 
@@ -420,4 +432,11 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
         }
         Gesture::Idle | Gesture::Pan | Gesture::Move { .. } | Gesture::Resize { .. } => {}
     }
+}
+
+/// The meter channel of a mixer node's input `key`: its position from 0.
+fn mixer_channel(graph: &noodle_core::Graph, id: noodle_core::NodeId, key: &str) -> Option<usize> {
+    let mixer = graph.node(id)?.type_id == noodle_core::spare::MIXER;
+    let index = noodle_core::spare::mixer_input_index(key)?;
+    mixer.then(|| index - 1)
 }

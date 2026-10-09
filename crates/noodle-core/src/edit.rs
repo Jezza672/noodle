@@ -66,6 +66,9 @@ pub enum Command {
     },
     /// Replaces the tempo map.
     SetTempoMap(TempoMap),
+    /// Replaces the order tracks (their groups) are listed in. Groups it
+    /// doesn't name go after the ones it does, in ID order.
+    SetTrackOrder(Vec<NodeId>),
     AddClip {
         id: ClipId,
         clip: Clip,
@@ -132,6 +135,9 @@ impl Command {
             }
             Command::SetTempoMap(map) => {
                 return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
+            }
+            Command::SetTrackOrder(order) => {
+                return Ok(Command::SetTrackOrder(project.replace_track_order(order)));
             }
             Command::AddClip { id, clip } => {
                 project.insert_clip(id, clip)?;
@@ -254,6 +260,7 @@ impl Command {
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
+            | Command::SetTrackOrder(_)
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
@@ -274,6 +281,7 @@ enum Target<'a> {
     Clip(ClipId),
     Lane(LaneId),
     TempoMap,
+    TrackOrder,
 }
 
 fn target(command: &Command) -> Option<Target<'_>> {
@@ -284,6 +292,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetClip { id, .. } => Some(Target::Clip(*id)),
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
+        Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         _ => None,
     }
 }

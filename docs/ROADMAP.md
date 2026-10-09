@@ -208,10 +208,10 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 
 **Status:** the node editor polish and the clip and arrangement items are
 done (marked below), and so are the spare ports, renaming, adding tracks
-through the default mixer and deleting tracks. Still to do: dragging tracks
-to reorder them (which needs a stored track order), group output controls
-and automation lanes as plain wires (which need parameter ports on boundary
-nodes in the engine), then the mixer and node views, and outputs.
+through the default mixer and deleting tracks, track reordering, the mixer
+view over any mixer node, the scope view and meters on mixer inputs. Still
+to do: group output controls and automation lanes as plain wires (which need
+parameter ports on boundary nodes in the engine), then outputs.
 
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 
@@ -238,9 +238,9 @@ nodes in the engine), then the mixer and node views, and outputs.
   with no new output node (4).
 - **Done.** A track's group is named after the track, and the two stay in sync both
   ways (6). A track input node is named after its group (13).
-- Tracks can be dragged by their header to reorder them. The order is the
-  order of the groups, which the mixer also follows, so it's one undo step
-  that changes that order and the arrangement and mixer both follow it.
+- **Done.** Tracks can be dragged by their header to reorder them. The order is
+  `Project.track_order`, which the arrangement and mixer both follow, so it's
+  one undo step.
 - **Done.** Tracks can be deleted, with Backspace or Delete on a selected track and
   from the right-click menu (10). Deleting also removes its group.
 - **Done.** A track input's outputs grey out when nothing feeds them, for example the
@@ -256,19 +256,17 @@ nodes in the engine), then the mixer and node views, and outputs.
 
 **Mixer as a view over any mixer node (M2).**
 
-- The mixer view maps onto a mixer node in the graph, with a drop-down to
+- **Done.** The mixer view maps onto a mixer node in the graph, with a drop-down to
   choose which one, so more mixers can be added and the default one
-  removed (11). Today it has one strip per track group
-  (see "Mixer" in ARCHITECTURE.md), so this changes the strips to follow the
-  mixer node's channels.
-- **Node views by double-click.** Double-clicking a Scope node opens a scope
+  removed (11). "All tracks" is still there as the first choice.
+- **Done.** **Node views by double-click.** Double-clicking a Scope node opens a scope
   view pane, and double-clicking a Mixer node opens the mixer view on that
   mixer. Like the mixer view, the scope view keeps no state of its own and
   has a drop-down to choose which Scope node it shows, so one pane can
   follow any scope in the graph. Both read through the telemetry API as the
   node on the canvas does. This makes "open the view for this node" a
   general mechanism that other node types can use later.
-- **Meters on mixer inputs.** Each input channel of a Mixer node shows a
+- **Done.** **Meters on mixer inputs.** Each input channel of a Mixer node shows a
   level meter inside the node, next to its port (and the mixer view's strips
   get the same meters, which ARCHITECTURE.md notes are missing). The Mixer
   node would report per-channel peak and RMS through the telemetry hub, like

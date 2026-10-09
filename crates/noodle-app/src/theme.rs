@@ -27,6 +27,9 @@ pub const NODE_RADIUS: u8 = 10;
 pub const TRANSPORT_FILL: Color32 = Color32::from_rgb(15, 18, 22);
 pub const TRANSPORT_OUTLINE: Color32 = Color32::from_rgb(52, 58, 71);
 pub const PILL_RADIUS: u8 = 14;
+/// How tall the scope view's drawing is.
+pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
+
 /// The properties panel's starting width.
 pub const PROPERTIES_WIDTH: f32 = 260.0;
 

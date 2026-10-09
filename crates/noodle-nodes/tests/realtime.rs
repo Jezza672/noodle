@@ -195,6 +195,12 @@ fn rendering_never_allocates_even_while_editing() {
         // UI thread: the meter and scope have reported.
         let levels = reader.meter(meter).unwrap();
         assert!(levels[0].peak > 0.0, "no meter level in round {round}");
+        // And the mixer has reported levels per input (the test adds one).
+        let inputs = reader.meter(mix).unwrap();
+        assert!(
+            inputs.len() >= 2 && inputs.iter().any(|l| l.peak > 0.0),
+            "no mixer input levels in round {round}: {inputs:?}"
+        );
         assert!(s.telemetry.read_scope(scope, &mut view));
         assert!(
             !view.samples().is_empty(),

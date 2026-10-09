@@ -884,6 +884,7 @@ impl Effect {
             // Changes nothing the engine sees.
             Command::MoveNode { .. }
             | Command::SetPortOrder { .. }
+            | Command::SetTrackOrder(_)
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}

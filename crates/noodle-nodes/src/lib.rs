@@ -73,7 +73,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Gain);
     registry.register(Button);
     registry.register(Metronome);
-    registry.register(Mix);
+    registry.register(Mix::new(&telemetry));
     registry.register(Svf);
     registry.register(VoiceMix);
     registry.register(Reverse);
