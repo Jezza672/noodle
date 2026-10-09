@@ -15,7 +15,8 @@
 //! | Ctrl+right-drag | Cut the wires crossed |
 //! | Shift+right-drag | Add a reroute on each wire crossed |
 //! | Shift+A | Search for a node to add |
-//! | X, Delete | Delete the selection |
+//! | X, Delete, Backspace | Delete the selection |
+//! | Double-click a wire | Break it |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame (top level only) |
@@ -180,6 +181,27 @@ impl EditorState {
         self.selected = nodes.into_iter().collect();
         self.active = self.selected.iter().next_back().copied();
         self.selected_frames.clear();
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.selected.is_empty() || !self.selected_frames.is_empty()
+    }
+
+    /// Deleting the selection as one edit, and forgetting the selection.
+    /// `None` if nothing is selected.
+    pub fn delete_selection(&mut self) -> Option<Edit> {
+        let commands: Vec<Command> = self
+            .selected
+            .iter()
+            .map(|&id| Command::RemoveNode { id })
+            .chain(
+                self.selected_frames
+                    .iter()
+                    .map(|&id| Command::RemoveFrame { id }),
+            )
+            .collect();
+        self.clear_selection();
+        (!commands.is_empty()).then(|| Edit::Apply(Command::Batch(commands)))
     }
 
     fn clear_selection(&mut self) {
@@ -678,9 +700,32 @@ fn pointer(
         match hit(f, p) {
             Hit::FrameHeader(id) => start_rename(state, f.project, id),
             Hit::Node(id) if is_group(f.project, id) => state.enter(Some(id), None),
+            Hit::Nothing => {
+                if let Some(wire) = wire_at(f, p) {
+                    let input = wire.connection.to.clone();
+                    edits.push(Edit::Apply(Command::Disconnect { input }));
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// The wire under the screen point `p`, the nearest if several are in reach.
+fn wire_at<'a>(f: &'a Frame_<'_>, p: Pos2) -> Option<&'a layout::WireGeom> {
+    f.scene
+        .wires
+        .iter()
+        .map(|wire| {
+            let line: Vec<Pos2> = wire::flatten(wire::curve(wire.from, wire.to))
+                .into_iter()
+                .map(|g| f.t.to_screen(g))
+                .collect();
+            (wire::distance_to_polyline(p, &line), wire)
+        })
+        .filter(|(d, _)| *d <= WIRE_REACH)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, wire)| wire)
 }
 
 fn is_group(project: &Project, id: NodeId) -> bool {
@@ -1068,22 +1113,12 @@ fn keyboard(
             state.group.is_some(),
         ));
     }
-    if pressed(Modifiers::NONE, Key::X) || pressed(Modifiers::NONE, Key::Delete) {
-        let commands: Vec<Command> = state
-            .selected
-            .iter()
-            .map(|&id| Command::RemoveNode { id })
-            .chain(
-                state
-                    .selected_frames
-                    .iter()
-                    .map(|&id| Command::RemoveFrame { id }),
-            )
-            .collect();
-        if !commands.is_empty() {
-            edits.push(Edit::Apply(Command::Batch(commands)));
-        }
-        state.clear_selection();
+    // Backspace too: it's the key a Mac calls Delete.
+    let delete = [Key::X, Key::Delete, Key::Backspace]
+        .into_iter()
+        .fold(false, |any, key| pressed(Modifiers::NONE, key) || any);
+    if delete {
+        edits.extend(state.delete_selection());
     }
     if pressed(Modifiers::SHIFT, Key::D) {
         duplicate(state, f, inputs, edits);

@@ -19,6 +19,9 @@ const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S)
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+/// Shown in the Edit menu. The canvas handles the key itself, with the
+/// pointer over it, so this is not in [`SHORTCUTS`].
+const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
 /// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
@@ -71,6 +74,7 @@ enum Action {
     TogglePause,
     AudioSettings,
     ToggleMixer,
+    DeleteSelection,
     Close,
 }
 
@@ -261,6 +265,9 @@ impl App {
         ui.menu_button("Edit", |ui| {
             item(ui, "Undo", &UNDO, self.session.can_undo(), Action::Undo);
             item(ui, "Redo", &REDO, self.session.can_redo(), Action::Redo);
+            ui.separator();
+            let selected = self.editor.has_selection();
+            item(ui, "Delete", &DELETE, selected, Action::DeleteSelection);
         });
         ui.menu_button("View", |ui| {
             if ui
@@ -476,6 +483,11 @@ impl App {
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
+            Action::DeleteSelection => {
+                if let Some(edit) = self.editor.delete_selection() {
+                    self.session.edit([edit]);
+                }
+            }
             Action::Close => {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

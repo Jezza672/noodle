@@ -481,6 +481,49 @@ fn x_deletes_the_selection_and_undo_brings_it_back() {
 }
 
 #[test]
+fn backspace_deletes_the_selection_like_delete() {
+    let mut h = rig();
+    let (sine, _, _) = wired(&mut h);
+    let p = title(&h, sine);
+    click(&mut h, p, Modifiers::NONE);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::Backspace);
+    assert!(h.state().session.project().graph().node(sine).is_none());
+}
+
+fn double_click(h: &mut H, at: Pos2) {
+    h.event(Event::PointerMoved(at));
+    for pressed in [true, false, true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.step();
+    h.run();
+}
+
+#[test]
+fn double_clicking_a_wire_breaks_it_as_one_undo_step() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    double_click(&mut h, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), None);
+    h.state_mut().session.undo();
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+}
+
+#[test]
+fn double_clicking_beside_a_wire_changes_nothing() {
+    let mut h = rig();
+    let (_, gain, stroke) = wired(&mut h);
+    double_click(&mut h, stroke[1] + Vec2::new(0.0, 200.0));
+    assert!(source(&h, gain, "in").is_some());
+}
+
+#[test]
 fn delete_with_nothing_selected_does_nothing() {
     let mut h = rig();
     wired(&mut h);
