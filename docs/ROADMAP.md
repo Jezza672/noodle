@@ -203,19 +203,25 @@ a milestone for each theme, and the numbers are the order in his list. Items
 marked **now** are small fixes or bugs worth doing before the bigger work.
 
 **Status:** the node editor polish and the clip and arrangement items are
-done (marked below). Group, track and mixer work, the mixer and node views,
-and outputs are next, in that order.
+done (marked below), and so are the spare ports, renaming, adding tracks
+through the default mixer and deleting tracks. Still to do: dragging tracks
+to reorder them (which needs a stored track order), group output controls
+and automation lanes as plain wires (which need parameter ports on boundary
+nodes in the engine), then the mixer and node views, and outputs.
 
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 
-- The Add Node list doesn't offer group input and output nodes (1). **Now.**
-- A group's inputs and outputs are always one more than the number wired,
+- **Checked.** The Add Node list doesn't offer group input and output nodes
+  (1). It does inside a group (a test now covers it); at the top level they
+  would have no group to belong to, so they aren't offered there. If that
+  isn't what was meant, say where it was missed.
+- **Done.** A group's inputs and outputs are always one more than the number wired,
   with the spare one greyed out, so you can wire into it without limit (2).
   A mixer's inputs do the same (5). Both use one shared "spare port" rule
   that adds and removes ports as wires come and go. Ports are config, so a
   change recompiles; the spare port itself carries no signal and must not
   trigger a recompile when it's only drawn.
-- Groups can be renamed, and so can their inputs and outputs (7, 8). Track
+- **Done.** Groups can be renamed, and so can their inputs and outputs (7, 8). Track
   renaming already exists (#71), so this extends it to any group and port.
 - A group output's gain and mute can be wired from other nodes (14), like any
   other parameter, which also means an automation lane can be a plain wire
@@ -223,21 +229,21 @@ and outputs are next, in that order.
 
 **Tracks and the graph stay in sync (M2).**
 
-- Adding a track adds only the group and wires it into the default mixer,
+- **Done.** Adding a track adds only the group and wires it into the default mixer,
   with no new output node (4).
-- A track's group is named after the track, and the two stay in sync both
+- **Done.** A track's group is named after the track, and the two stay in sync both
   ways (6). A track input node is named after its group (13).
 - Tracks can be dragged by their header to reorder them. The order is the
   order of the groups, which the mixer also follows, so it's one undo step
   that changes that order and the arrangement and mixer both follow it.
-- Tracks can be deleted, with Backspace or Delete on a selected track and
+- **Done.** Tracks can be deleted, with Backspace or Delete on a selected track and
   from the right-click menu (10). Deleting also removes its group.
-- A track input's outputs grey out when nothing feeds them, for example the
+- **Done.** A track input's outputs grey out when nothing feeds them, for example the
   `midi` output on a track with no MIDI clips (12).
 - Adding automation to a track connects a generic automation output on the
   track input node to the track output's parameter input (15), so a lane is
   an ordinary wire.
-- **Inferred edits never delete anything (16).** When one of these edits has
+- **Done.** **Inferred edits never delete anything (16).** When one of these edits has
   to take over an input, it replaces the connection feeding it and leaves
   existing nodes alone. Outputs can fan out, so existing wires from an
   output stay. This is one rule in the graph-editing code, tested once, that

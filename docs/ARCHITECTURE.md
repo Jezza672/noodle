@@ -768,6 +768,25 @@ style. It has these views:
     rows independently, except that an input with a parameter field takes
     its whole row. A side with a single port puts its socket on the title
     bar with no label (its name is a tooltip), so such nodes need no row.
+  - **Spare ports** (`noodle_core::spare`). A mixer shows its wired inputs
+    plus one greyed spare, and a group shows a spare input and output after
+    its real ones. The spare is only drawn: nothing is stored until a wire is
+    dropped on it (or dragged from it), and then the same undo step raises the
+    mixer's `inputs` or adds a boundary node inside the group, named `in1`,
+    `in2`, … or `out1`, … Config beyond the last wired mixer input is
+    hidden, not removed, and a group port is never removed on its own,
+    because the boundary node may be used inside. Every edit made on the
+    user's behalf goes through `spare::wire`, which replaces whatever fed the
+    input, never removes a node, and leaves wires leaving an output alone.
+  - **Names.** F2 on a selected group, group input or group output renames it,
+    and double-clicking a port row of a group node renames that port (a
+    double-click elsewhere on a group enters it). A group's name is its
+    `name` config, which a track shares, and the track input inside shows its
+    group's name as its title. A port's name is its key, so `rename_group_port`
+    moves the wires on it in the same step, and refuses an empty name or one
+    another port on that side has. An empty group name puts the default back.
+  - **Idle outputs.** A track input's `audio` output is greyed while no clip
+    plays on the track, and `midi` is greyed until there are MIDI clips.
   - **Port order** is display only. `Node::port_order` lists port keys in the
     order the editor shows them, set by dragging a port's label up or down its
     column (`Command::SetPortOrder`, one undo step). Ports are still found
@@ -840,9 +859,17 @@ style. It has these views:
     goes away, is dropped.
   - **Add track:** the button after the last header runs
     `group::create_track`, one undo step, and the new track shows up with
-    its controls at once. It also wires the track to an Output node, using
-    a top level one whose input is free or adding one (Output nodes are
-    mixed together), so a new track is audible without further wiring.
+    its controls at once. It also wires the track into the **default
+    mixer**, the first top level Mix node, at the spare input after its last
+    wired one (raising its `inputs` in the same step). A project with no
+    mixer gets a Mix node wired to an Output node, using a top level one whose
+    input is free or adding one. So a new track is audible without further
+    wiring, and later tracks add only their own group.
+  - **Deleting a track:** click its header to select it (Delete or Backspace
+    then removes it, when no clip or lane point is selected to take the key)
+    or right-click the header for "Delete track". It is one `RemoveNode` of
+    the track's group, which takes the track input, its clips and its lanes
+    with it, in one undo step.
   - **Automation lanes** (`timeline/automation.rs`): under each track, a
     row for every lane that drives a boundary node of the track's group.
     The track header's `~` menu adds a gain or mute lane, starting as one

@@ -1983,7 +1983,7 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
             Command::SetConfig {
                 node: id,
                 key: group::PORT_NAME.into(),
-                value: (!label.is_empty()).then(|| noodle_core::Value::Text(label)),
+                value: (!label.is_empty()).then_some(noodle_core::Value::Text(label)),
             }
         }
         RenameTarget::Boundary(id) | RenameTarget::Port { boundary: id, .. } => {

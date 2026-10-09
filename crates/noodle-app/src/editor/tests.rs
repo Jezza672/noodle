@@ -2088,3 +2088,27 @@ fn a_port_name_already_taken_is_refused() {
     let ports = h.state().session.project().graph().group_ports(group);
     assert!(ports.input("x").is_some() && ports.input("y").is_some());
 }
+
+#[test]
+fn the_add_node_list_offers_group_input_and_output_inside_a_group() {
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    let p = title(&h, group);
+    click(&mut h, p, Modifiers::NONE);
+    let at = empty_space(&h);
+    press(&mut h, at, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().editor.group, Some(group));
+    for (query, kind) in [("group input", GROUP_INPUT), ("group output", GROUP_OUTPUT)] {
+        press(&mut h, at, Modifiers::SHIFT, Key::A);
+        h.event(Event::Text(query.into()));
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        let graph = h.state().session.project().graph();
+        assert!(
+            graph.children(Some(group)).any(|(_, n)| n.type_id == kind),
+            "{query} was added inside the group"
+        );
+    }
+}
