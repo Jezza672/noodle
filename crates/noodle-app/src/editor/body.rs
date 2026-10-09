@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use egui::epaint::PathShape;
 use egui::{Painter, Pos2, Rect, Stroke, Vec2};
+use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::{Level, MeterReader, ScopeView, Telemetry};
 use noodle_nodes::{METER_ID, SCOPE_ID};
@@ -37,7 +38,7 @@ pub fn paint(
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
     match type_id {
-        METER_ID => meter(painter, area, zoom, bodies.meters.get(&node)),
+        METER_ID => meter(painter, area, zoom, bodies.input_meters(node)),
         SCOPE_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
         _ => {}
     }
@@ -74,6 +75,15 @@ impl Bodies {
                         channel.update(level, dt);
                     }
                 }
+                // A mixer reports one level per input.
+                spare::MIXER => {
+                    let channels = self.meters.entry(id).or_default();
+                    let levels = reader.meter(id).unwrap_or_default();
+                    channels.resize_with(levels.len(), MeterChannel::default);
+                    for (channel, level) in channels.iter_mut().zip(levels) {
+                        channel.update(level, dt);
+                    }
+                }
                 SCOPE_ID => {
                     let view = self.scopes.entry(id).or_insert_with(scope_view);
                     if !telemetry.read_scope(id, view) {
@@ -83,6 +93,22 @@ impl Bodies {
                 _ => {}
             }
         }
+    }
+
+    /// The levels a mixer node's inputs last reported, one per input.
+    pub fn input_meters(&self, node: NodeId) -> &[MeterChannel] {
+        self.meters.get(&node).map_or(&[], Vec::as_slice)
+    }
+
+    /// The one channel `channel` of a mixer node, as a slice for drawing.
+    pub fn input_meters_of(&self, node: NodeId, channel: usize) -> &[MeterChannel] {
+        self.input_meters(node)
+            .get(channel..=channel)
+            .unwrap_or_default()
+    }
+
+    pub fn scope_view(&self, node: NodeId) -> Option<&ScopeView> {
+        self.scopes.get(&node)
     }
 
     /// Whether anything is shown that changes while audio plays.
@@ -102,7 +128,7 @@ const PEAK_HOLD_SECONDS: f32 = 1.5;
 
 /// One channel of a meter as shown, all as linear amplitudes.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct MeterChannel {
+pub struct MeterChannel {
     rms: f32,
     /// The peak, falling steadily after each rise.
     peak: f32,
@@ -146,9 +172,8 @@ fn meter_bars(height: f32, count: usize, zoom: f32) -> (f32, f32) {
 
 /// Horizontal bars, one per channel: the RMS level filled, the peak as a bar
 /// tip, and the held peak as a tick that turns red above 0 dB.
-fn meter(painter: &Painter, area: Rect, zoom: f32, channels: Option<&Vec<MeterChannel>>) {
+pub fn meter(painter: &Painter, area: Rect, zoom: f32, channels: &[MeterChannel]) {
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
-    let channels = channels.map_or(&[][..], Vec::as_slice);
     let (gap, bar_height) = meter_bars(area.height(), channels.len(), zoom);
     let x_at = |amplitude: f32| area.left() + area.width() * meter_fraction(amplitude);
 
@@ -192,7 +217,7 @@ const SCOPE_FRAMES: usize = 1024;
 
 /// One strip per channel, each a min/max trace per pixel column so dense
 /// waveforms stay readable, full scale ±1.
-fn scope(painter: &Painter, area: Rect, zoom: f32, view: Option<&ScopeView>) {
+pub fn scope(painter: &Painter, area: Rect, zoom: f32, view: Option<&ScopeView>) {
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
     let Some(view) = view.filter(|v| v.channels() > 0) else {
         return;
@@ -447,5 +472,33 @@ mod tests {
             .unwrap();
         bodies.update(&telemetry, &project, 1.0 / 60.0);
         assert!(!bodies.meters.contains_key(&meter));
+    }
+
+    #[test]
+    fn a_mixers_inputs_each_get_a_level() {
+        let mut project = Project::new();
+        let mix = project.new_node_id();
+        Command::AddNode {
+            id: mix,
+            node: Node::new(spare::MIXER),
+        }
+        .apply(&mut project)
+        .unwrap();
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_meter(mix, 2);
+        writer.write(
+            1,
+            Level {
+                peak: 0.5,
+                rms: 0.25,
+            },
+        );
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, 1.0 / 60.0);
+        assert_eq!(bodies.input_meters(mix).len(), 2);
+        assert_eq!(bodies.input_meters(mix)[0].peak, 0.0);
+        assert_eq!(bodies.input_meters(mix)[1].peak, 0.5);
+        assert_eq!(bodies.input_meters_of(mix, 1)[0].rms, 0.25);
+        assert!(bodies.input_meters_of(mix, 5).is_empty());
     }
 }
