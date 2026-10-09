@@ -197,3 +197,27 @@ fn it_is_deterministic_and_idempotent() {
         .collect();
     assert_eq!(first, arrange(&moved, &wires, &[]));
 }
+
+#[test]
+fn feedback_layouts_are_idempotent() {
+    // Review case: 0 -> 2, 2 -> 1, 1 -> 2.
+    let items = BTreeMap::from([
+        (id(0), item(100.0, 300.0, 80.0, 40.0)),
+        (id(1), item(0.0, 400.0, 80.0, 40.0)),
+        (id(2), item(0.0, 300.0, 80.0, 40.0)),
+    ]);
+    let wires = [(id(0), id(2)), (id(2), id(1)), (id(1), id(2))];
+    let first = arrange(&items, &wires, &[]);
+    let moved: BTreeMap<_, _> = items
+        .iter()
+        .map(|(n, i)| {
+            (
+                *n,
+                Item {
+                    rect: Rect::from_min_size(first[n], i.rect.size()),
+                },
+            )
+        })
+        .collect();
+    assert_eq!(first, arrange(&moved, &wires, &[]));
+}

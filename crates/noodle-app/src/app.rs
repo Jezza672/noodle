@@ -19,10 +19,11 @@ const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S)
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+/// Shown in the Edit menu. The node editor handles the key itself, so this
+/// is not in [`SHORTCUTS`].
+const ARRANGE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
 /// Shown in the Edit menu. The canvas handles the key itself, with the
 /// pointer over it, so this is not in [`SHORTCUTS`].
-/// Handled by the node editor, listed here for the menu.
-const ARRANGE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
 const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
@@ -539,7 +540,10 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
-            Action::ArrangeNodes => self.editor.request_arrange(),
+            Action::ArrangeNodes => {
+                self.editor.request_arrange();
+                ctx.request_repaint();
+            }
             Action::DeleteSelection => {
                 if let Some(edit) = self.editor.delete_selection() {
                     self.session.edit([edit]);

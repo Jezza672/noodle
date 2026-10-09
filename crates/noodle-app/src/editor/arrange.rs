@@ -74,6 +74,8 @@ pub fn arrange(
     let width = placed.iter().map(|(_, s)| s.x).fold(0.0, f32::max);
 
     // Move the whole layout clear of anything it must avoid, to the right.
+    // With a small selection in a busy graph this can send it a long way;
+    // that is deliberate, as the alternative is nodes on top of each other.
     let mut shift = Vec2::new(origin.x, origin.y);
     let block = |shift: Vec2| {
         Rect::from_min_size(Pos2::ZERO + shift, Vec2::new(width, height)).expand(ROW_GAP / 2.0)
@@ -106,9 +108,18 @@ fn acyclic_edges(
         targets.sort();
         targets.dedup();
     }
-    // Visit left-most first so the wires that run backwards are the ones cut.
+    // Start from nodes nothing feeds, so a loop is entered from its natural
+    // start, then left-most first, so the wires that run backwards are the
+    // ones cut. Ties go by height, not ID, so re-arranging cuts the same wires.
+    let fed: BTreeSet<NodeId> = out.values().flatten().copied().collect();
     let mut order: Vec<NodeId> = items.keys().copied().collect();
-    order.sort_by(|a, b| items[a].rect.min.x.total_cmp(&items[b].rect.min.x));
+    order.sort_by(|a, b| {
+        fed.contains(a)
+            .cmp(&fed.contains(b))
+            .then(items[a].rect.min.x.total_cmp(&items[b].rect.min.x))
+            .then(items[a].rect.min.y.total_cmp(&items[b].rect.min.y))
+            .then(a.cmp(b))
+    });
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
         Open,

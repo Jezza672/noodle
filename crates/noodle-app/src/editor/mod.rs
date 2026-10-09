@@ -1516,6 +1516,10 @@ fn keyboard(
 /// Auto-arranges the selected nodes, or all of them when none are selected,
 /// as one undo step. Frames, and the nodes inside them, stay where they are.
 fn arrange_nodes(state: &EditorState, f: &Frame_<'_>, edits: &mut Vec<Edit>) {
+    // A selected frame stays put, so selecting only frames arranges nothing.
+    if state.selected.is_empty() && !state.selected_frames.is_empty() {
+        return;
+    }
     let frames: Vec<Rect> = f.scene.frames.iter().map(|fr| fr.rect).collect();
     let framed = |rect: Rect| frames.iter().any(|fr| fr.contains_rect(rect));
     let items: BTreeMap<NodeId, arrange::Item> = f

@@ -326,11 +326,9 @@ nodes in the engine), then the mixer and node views, and outputs.
   adds a clipboard. Pasting is one undo step.
 - **Done.** **Auto-arrange (3).** A layout command, bound to a shortcut and to a menu
   item, that tidies the selected nodes or the whole graph. This is complex
-  and so gets its own PR: layered layout by topological depth (the compiler
-  already has this order), crossing reduction, and one undo step that moves
-  every node. Frames and groups need a rule. Planned for M3, when graphs
-  get large. Frames and the nodes in them are left in place, and the layout
-  keeps clear of them.
+  and so gets its own PR: layered layout by topological depth, crossing
+  reduction, and one undo step that moves every node. Frames and the nodes in them are left in place, and
+  the layout keeps clear of them.
 
 **Buttons bound to nodes (M3).**
 
