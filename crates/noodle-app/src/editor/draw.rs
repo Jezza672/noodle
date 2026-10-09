@@ -200,7 +200,11 @@ fn boxed(
 
     let text = z >= MIN_TEXT_ZOOM;
     if text {
-        let clipped = painter.with_clip_rect(header.shrink(2.0 * z));
+        // Leave room on the right for the warning and a header socket.
+        let clipped = painter.with_clip_rect(Rect::from_min_max(
+            header.min + Vec2::splat(2.0 * z),
+            header.max - Vec2::new(22.0 * z, 2.0 * z),
+        ));
         clipped.text(
             header.left_center() + Vec2::new(24.0 * z, 0.0),
             Align2::LEFT_CENTER,

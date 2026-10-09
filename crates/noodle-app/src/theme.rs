@@ -1,9 +1,8 @@
 //! The look of the app, kept in one place so it can be swapped wholesale.
 //!
-//! The "Canvas" direction from the design workshop: a blue-black ground with
-//! a dot grid, floating rounded cards, a lime accent for what is playing or
-//! selected, and
-//! signal types told apart by port colour and shape. Views should take
+//! The "Canvas" direction from the design workshop: a blue-black ground,
+//! floating rounded cards, a lime accent for what is playing or selected,
+//! and signal types told apart by port colour and shape. Views should take
 //! colours, sizes and spacing from here rather than hard-coding them.
 
 use egui::{Color32, CornerRadius, Stroke, Visuals};
@@ -80,6 +79,8 @@ pub mod editor {
     pub const GRID_MAJOR: Color32 = Color32::from_rgb(38, 43, 53);
     pub const NODE: Color32 = Color32::from_rgb(27, 31, 39);
     /// A node's title row, a shade lighter than its body.
+    /// The dark core of a wire, matching the canvas.
+    pub const WIRE_CORE: Color32 = super::CANVAS;
     pub const NODE_HEADER: Color32 = Color32::from_rgb(34, 39, 49);
     pub const NODE_OUTLINE: Color32 = Color32::from_rgb(44, 50, 62);
     pub const TEXT: Color32 = Color32::from_rgb(233, 235, 240);
@@ -96,16 +97,17 @@ pub mod editor {
     pub const AUDIO_SOCKET: Color32 = Color32::from_rgb(92, 200, 230);
     pub const PARAM_SOCKET: Color32 = Color32::from_rgb(138, 138, 147);
     pub const EVENT_SOCKET: Color32 = Color32::from_rgb(240, 160, 64);
+    /// Frames are barely tinted; the outline carries them.
     pub const FRAME: Color32 = Color32::from_rgba_premultiplied(6, 9, 16, 20);
     /// The border around a frame.
-    pub const FRAME_OUTLINE: Color32 = Color32::from_rgb(60, 90, 168);
+    pub const FRAME_OUTLINE: Color32 = super::SELECTED;
     pub const BOX_SELECT: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
     pub const CUT: Color32 = Color32::from_rgb(255, 90, 79);
     /// Behind a node's body, such as a meter or scope.
     pub const BODY: Color32 = Color32::from_rgb(15, 18, 22);
     pub const METER_RMS: Color32 = Color32::from_rgb(200, 241, 105);
     /// The part of a meter's bar between the RMS level and the peak.
-    pub const METER_PEAK: Color32 = Color32::from_rgb(40, 95, 55);
+    pub const METER_PEAK: Color32 = Color32::from_rgb(80, 96, 42);
     /// The held peak, once it's above 0 dB.
     pub const METER_OVER: Color32 = Color32::from_rgb(255, 90, 79);
     pub const SCOPE_TRACE: Color32 = Color32::from_rgb(92, 200, 230);
