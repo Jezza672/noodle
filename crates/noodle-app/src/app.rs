@@ -154,6 +154,10 @@ impl App {
         egui::Panel::right("properties")
             .default_size(theme::PROPERTIES_WIDTH)
             .show(ui, |ui| {
+                // A panel is remembered at the size of its contents, so
+                // short contents (nothing selected) would shrink it, and
+                // the next node would open it at its default width.
+                ui.set_min_width(ui.available_width());
                 ui.add_space(4.0);
                 let edits = properties::show(ui, &self.session, active);
                 self.session.edit(edits);
@@ -558,6 +562,58 @@ mod tests {
 
     fn empty() -> App {
         App::new(Session::new(crate::session::Nodes::all()))
+    }
+
+    fn properties_width(harness: &Harness<'static, App>) -> f32 {
+        egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new("properties"))
+            .expect("the panel has been shown")
+            .size()
+            .x
+    }
+
+    #[test]
+    fn the_properties_panel_keeps_its_width_when_a_node_is_selected() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        let mut harness = harness(app);
+        harness.run();
+        // The user drags the panel wider than its default.
+        let wanted = properties_width(&harness) + 120.0;
+        let state = egui::containers::panel::PanelState {
+            outer_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(wanted, 100.0)),
+        };
+        harness
+            .ctx
+            .data_mut(|d| d.insert_persisted(egui::Id::new("properties"), state));
+        harness.run();
+        assert_eq!(
+            properties_width(&harness),
+            wanted,
+            "kept with nothing selected"
+        );
+
+        let editor = &mut harness.state_mut().editor;
+        editor.selected.insert(id);
+        editor.active = Some(id);
+        harness.run();
+        assert_eq!(
+            properties_width(&harness),
+            wanted,
+            "kept when a node is selected"
+        );
+
+        harness.state_mut().editor.active = None;
+        harness.state_mut().editor.selected.clear();
+        harness.run();
+        assert_eq!(
+            properties_width(&harness),
+            wanted,
+            "kept when it is deselected"
+        );
     }
 
     #[test]
