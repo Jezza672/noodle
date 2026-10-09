@@ -210,8 +210,9 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 done (marked below), and so are the spare ports, renaming, adding tracks
 through the default mixer and deleting tracks, track reordering, the mixer
 view over any mixer node, the scope view and meters on mixer inputs, group
-output controls as wires and automation lanes as plain wires. Still to do:
-outputs.
+output controls as wires and automation lanes as plain wires, and
+vertical mixer meters, meters on Gain and Voice Mix nodes and a gain and mute
+parameter per Mix input that the mixer view sets. Still to do: outputs.
 
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 

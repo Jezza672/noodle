@@ -1,17 +1,20 @@
 //! The mixer: one strip per track, showing and setting that track's gain,
-//! mute and solo.
+//! mute and solo; or, over a mixer node, one strip per wired input, showing
+//! and setting that input's gain and mute.
 //!
 //! The mixer owns no state. A track is a group node, and its controls are
 //! parameters on the group's boundary nodes (see `noodle_core::group`), so a
 //! strip reads them from the project and a fader move is a `SetParam` on the
 //! boundary node. Strips show the top-level groups, in the order they were
-//! made.
+//! made. Over a mixer node the controls are the node's own `gainN` and
+//! `muteN` parameters instead, and the strips know nothing of the tracks
+//! feeding them: a track's own gain, mute and solo stay on the track.
 
 use egui::{Align, Color32, Layout, RichText, Slider, Ui, Vec2};
 use noodle_core::group::{Controls, GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
 use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value, spare};
 
-use crate::editor::MeterChannel;
+use crate::editor::{MeterAxis, MeterChannel};
 use crate::session::Edit;
 use crate::timeline::header;
 
@@ -21,6 +24,7 @@ pub const NAME: &str = "name";
 const FADER_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
 const STRIP_WIDTH: f32 = 84.0;
 const FADER_HEIGHT: f32 = 170.0;
+const METER_WIDTH: f32 = 16.0;
 
 /// What a strip shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +43,10 @@ pub struct Strip {
     pub mute_automated: bool,
     /// Which input of the mixer node this strip is, from 0, in a mixer view.
     pub channel: Option<usize>,
+    /// The parameter on `node` holding the gain, in dB.
+    pub gain_key: String,
+    /// The parameter on `node` holding the mute, 0 or 1.
+    pub mute_key: String,
 }
 
 /// Every mixer node in the graph, in ID order: what the mixer can be shown
@@ -52,9 +60,9 @@ pub fn mixers(project: &Project) -> Vec<NodeId> {
         .collect()
 }
 
-/// The strips for a mixer node, one per wired input in input order. An input
-/// fed by a track's group shows that track's controls; anything else has a
-/// strip with nothing to set.
+/// The strips for a mixer node, one per wired input in input order. A strip
+/// is named for the track feeding the input, if one does, but sets the
+/// mixer node's own gain and mute for that input.
 pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
     let graph = project.graph();
     let Some(node) = graph.node(mixer) else {
@@ -63,26 +71,29 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
     let tracks = strips(project);
     (1..=spare::mixer_inputs(node))
         .filter_map(|i| {
-            let source = graph.source(&Endpoint::new(mixer, spare::mixer_input_key(i as usize)))?;
-            let channel = Some(i as usize - 1);
-            Some(
-                match tracks.iter().find(|strip| strip.group == source.node) {
-                    Some(strip) => Strip {
-                        channel,
-                        ..strip.clone()
-                    },
-                    None => Strip {
-                        channel,
-                        group: source.node,
-                        name: format!("In {i}"),
-                        controls: Controls::default(),
-                        node: None,
-                        muted_by_solo: false,
-                        gain_automated: false,
-                        mute_automated: false,
-                    },
+            let i = i as usize;
+            let source = graph.source(&Endpoint::new(mixer, spare::mixer_input_key(i)))?;
+            let (gain_key, mute_key) = (spare::mixer_gain_key(i), spare::mixer_mute_key(i));
+            let read = |key: &str| node.params.get(key).copied();
+            Some(Strip {
+                group: source.node,
+                name: match tracks.iter().find(|strip| strip.group == source.node) {
+                    Some(strip) => strip.name.clone(),
+                    None => format!("In {i}"),
                 },
-            )
+                controls: Controls {
+                    gain_db: read(&gain_key).unwrap_or(0.0),
+                    mute: read(&mute_key).is_some_and(|mute| mute >= 0.5),
+                    solo: false,
+                },
+                node: Some(mixer),
+                muted_by_solo: false,
+                gain_automated: driven(project, Some(mixer), &gain_key),
+                mute_automated: driven(project, Some(mixer), &mute_key),
+                channel: Some(i - 1),
+                gain_key,
+                mute_key,
+            })
         })
         .collect()
 }
@@ -111,6 +122,8 @@ pub fn strips(project: &Project) -> Vec<Strip> {
             gain_automated: driven(project, graph.control_node(id), GAIN),
             mute_automated: driven(project, graph.control_node(id), MUTE),
             channel: None,
+            gain_key: GAIN.to_owned(),
+            mute_key: MUTE.to_owned(),
         })
         .collect()
 }
@@ -225,24 +238,33 @@ fn strip_ui(
         |ui| {
             ui.set_width(STRIP_WIDTH);
             ui.label(RichText::new(&strip.name).strong());
-            // The input's level, in a mixer view.
-            if strip.channel.is_some() {
-                let (area, _) = ui
-                    .allocate_exact_size(Vec2::new(STRIP_WIDTH - 12.0, 8.0), egui::Sense::hover());
-                crate::editor::draw_level(ui.painter(), area, &level.unwrap_or_default());
-            }
             // A silent strip's fader is greyed, but its buttons stay live so
             // it can be unmuted or unsoloed.
             let silent = strip.controls.mute || strip.muted_by_solo;
             // A lane overrides the parameter it drives, so those controls
             // are greyed out with the reason, as on the track header.
-            let faded = ui.add_enabled_ui(
-                strip.node.is_some() && !silent && !strip.gain_automated,
-                |ui| fader(ui, strip, edits),
-            );
-            if strip.gain_automated {
-                faded.response.on_disabled_hover_text(header::AUTOMATED);
-            }
+            ui.horizontal_top(|ui| {
+                // The input's level beside its fader, in a mixer view.
+                if strip.channel.is_some() {
+                    let (area, _) = ui.allocate_exact_size(
+                        Vec2::new(METER_WIDTH, FADER_HEIGHT),
+                        egui::Sense::hover(),
+                    );
+                    crate::editor::draw_level(
+                        ui.painter(),
+                        area,
+                        &level.unwrap_or_default(),
+                        MeterAxis::Vertical,
+                    );
+                }
+                let faded = ui.add_enabled_ui(
+                    strip.node.is_some() && !silent && !strip.gain_automated,
+                    |ui| ui.vertical(|ui| fader(ui, strip, edits)),
+                );
+                if strip.gain_automated {
+                    faded.response.on_disabled_hover_text(header::AUTOMATED);
+                }
+            });
             ui.add_enabled_ui(strip.node.is_some(), |ui| {
                 ui.horizontal(|ui| {
                     let mute = ui
@@ -262,11 +284,14 @@ fn strip_ui(
                         && let Some(node) = strip.node
                     {
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
-                        edits.push(Edit::Apply(set(node, MUTE, value)));
+                        edits.push(Edit::Apply(set(node, &strip.mute_key, value)));
                     }
-                    let solo = toggle(ui, "S", strip.controls.solo, crate::theme::SOLO);
-                    if solo.on_hover_text("Solo: mutes the other tracks").clicked() {
-                        edits.extend(solo_edit(graph, strip, !strip.controls.solo));
+                    // Solo belongs to the track, not to a mixer's input.
+                    if strip.channel.is_none() {
+                        let solo = toggle(ui, "S", strip.controls.solo, crate::theme::SOLO);
+                        if solo.on_hover_text("Solo: mutes the other tracks").clicked() {
+                            edits.extend(solo_edit(graph, strip, !strip.controls.solo));
+                        }
                     }
                 });
             });
@@ -297,6 +322,8 @@ fn toggle(ui: &mut Ui, label: &str, on: bool, lit: Color32) -> egui::Response {
 fn fader(ui: &mut Ui, strip: &Strip, edits: &mut Vec<Edit>) {
     let Some(node) = strip.node else { return };
     let mut db = strip.controls.gain_db;
+    // As long as the meter beside it.
+    ui.spacing_mut().slider_width = FADER_HEIGHT;
     let response = ui.add(
         Slider::new(&mut db, FADER_RANGE)
             .vertical()
@@ -304,20 +331,19 @@ fn fader(ui: &mut Ui, strip: &Strip, edits: &mut Vec<Edit>) {
             .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.5 })
             .trailing_fill(false),
     );
-    ui.set_min_height(FADER_HEIGHT);
     if response.dragged() {
-        edits.push(Edit::Drag(set(node, GAIN, Some(db))));
+        edits.push(Edit::Drag(set(node, &strip.gain_key, Some(db))));
     } else if response.drag_stopped() {
         edits.push(Edit::EndDrag);
     } else if response.changed() {
-        edits.push(Edit::Apply(set(node, GAIN, Some(db))));
+        edits.push(Edit::Apply(set(node, &strip.gain_key, Some(db))));
     }
     // The reading doubles as the reset: a click puts the gain back to 0 dB.
     let reading = ui
         .small_button(format!("{:+.1} dB", strip.controls.gain_db))
         .on_hover_text("Click to reset to 0 dB");
     if reading.clicked() {
-        edits.push(Edit::Apply(set(node, GAIN, Some(0.0))));
+        edits.push(Edit::Apply(set(node, &strip.gain_key, Some(0.0))));
     }
 }
 
@@ -620,17 +646,78 @@ mod tests {
             .into_iter()
             .map(|s| (s.name, s.node.is_some()))
             .collect();
-        // Tracks show their controls; the gain node's strip has none.
+        // Every input has the mixer's own controls, fed by a track or not.
         assert_eq!(
             names,
             [
                 ("Bass".to_string(), true),
                 ("Drums".to_string(), true),
-                ("In 3".to_string(), false)
+                ("In 3".to_string(), true)
             ]
         );
         assert_eq!(mixers(project), [NodeId(100)]);
         assert!(mixer_strips(project, NodeId(999)).is_empty());
+    }
+
+    #[test]
+    fn a_mixer_views_controls_are_the_mixers_own_not_the_tracks() {
+        let mut session = mixed();
+        session.edit([
+            // Bass (the first input) is quiet as a track, and the mixer's
+            // second input is muted and turned down.
+            Edit::Apply(set(NodeId(6), GAIN, Some(-9.0))),
+            Edit::Apply(set(NodeId(100), "gain2", Some(-3.0))),
+            Edit::Apply(set(NodeId(100), "mute2", Some(1.0))),
+        ]);
+        let strips = mixer_strips(session.project(), NodeId(100));
+        let summary: Vec<_> = strips
+            .iter()
+            .map(|s| (s.controls.gain_db, s.controls.mute, s.node))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (0.0, false, Some(NodeId(100))),
+                (-3.0, true, Some(NodeId(100))),
+                (0.0, false, Some(NodeId(100)))
+            ]
+        );
+
+        let mut harness = Harness::new_ui_state(
+            |ui, session: &mut Session| {
+                let mut view = Some(NodeId(100));
+                let edits = show(ui, session.project(), &mut view, &|_, _| None);
+                session.edit(edits);
+            },
+            session,
+        );
+        harness.set_size(vec2(600.0, 600.0));
+        harness.run();
+        // Solo is the track's, so a mixer view has none.
+        assert!(harness.query_by_label("S").is_none());
+        // Mute on the first input is the mixer's `mute1`.
+        harness.get_all_by_label("M").next().unwrap().click();
+        harness.run();
+        assert_eq!(param(&harness, 100, "mute1"), Some(1.0));
+        assert_eq!(param(&harness, 6, MUTE), None);
+        // Resetting the third reading writes `gain3`.
+        let third = harness.get_all_by_label("+0.0 dB").last().unwrap();
+        third.click();
+        harness.run();
+        assert_eq!(param(&harness, 100, "gain3"), Some(0.0));
+        assert_eq!(param(&harness, 6, GAIN), Some(-9.0));
+    }
+
+    #[test]
+    fn a_wire_or_lane_on_a_channels_gain_greys_its_fader() {
+        let mut session = mixed();
+        session.edit([Edit::Apply(spare::wire(
+            Endpoint::new(NodeId(101), "out"),
+            Endpoint::new(NodeId(100), "gain2"),
+        ))]);
+        let strips = mixer_strips(session.project(), NodeId(100));
+        let driven: Vec<_> = strips.iter().map(|s| s.gain_automated).collect();
+        assert_eq!(driven, [false, true, false]);
     }
 
     #[test]

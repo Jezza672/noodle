@@ -492,12 +492,28 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
     match node.type_id.as_str() {
         spare::MIXER if !ports.is_empty() => {
             let used = spare::mixer_used(graph, id);
+            // An input's gain and mute go with it.
             ports.retain(|p| {
-                p.side != Side::Input || spare::mixer_input_index(&p.key).is_none_or(|i| i <= used)
+                p.side != Side::Input
+                    || spare::mixer_input_index(&p.key)
+                        .or_else(|| spare::mixer_param_index(&p.key))
+                        .is_none_or(|i| i <= used)
             });
             if (used as i64) < spare::MIXER_MAX_INPUTS {
                 ports.push(spare(Side::Input, spare::mixer_spare_key(graph, id)));
             }
+            // Each input is followed by its own gain and mute.
+            ports.sort_by_key(|p| {
+                let index = spare::mixer_input_index(&p.key);
+                let param = spare::mixer_param_index(&p.key);
+                (
+                    p.side == Side::Output,
+                    index.or(param).unwrap_or(0),
+                    // Gain before mute.
+                    p.key.starts_with("mute"),
+                    param.is_some(),
+                )
+            });
         }
         GROUP => {
             let input = spare::spare_group_name(graph, id, spare::Side::Input);
@@ -710,7 +726,10 @@ mod tests {
         // The output is the only one, so it has no row of its own.
         assert_eq!(
             node.rect.height(),
-            HEADER_HEIGHT + 2.0 * ROW_HEIGHT + PADDING
+            HEADER_HEIGHT
+                + 2.0 * ROW_HEIGHT
+                + PADDING
+                + crate::editor::body::height("noodle.util.gain")
         );
         let out = node.port(Side::Output, "out").unwrap();
         assert!(out.in_header);
@@ -753,12 +772,12 @@ mod tests {
         let mix = wired_mixer(&mut project, &mut history, 3, 3);
         let scene = Scene::build(&project, &registry(), None);
         let node = scene.node(mix).unwrap();
-        // Three wired inputs and the spare, and a lone output on the title
-        // bar: the height is four rows.
-        assert_eq!(node.ports.iter().filter(|p| !p.in_header).count(), 4);
+        // Three wired inputs, each with a gain and a mute, and the spare,
+        // and a lone output on the title bar: ten rows.
+        assert_eq!(node.ports.iter().filter(|p| !p.in_header).count(), 10);
         assert_eq!(
             node.rect.height(),
-            HEADER_HEIGHT + 4.0 * ROW_HEIGHT + PADDING
+            HEADER_HEIGHT + 10.0 * ROW_HEIGHT + PADDING
         );
     }
 
@@ -776,7 +795,19 @@ mod tests {
             .filter(|p| p.side == Side::Input)
             .map(|p| (p.key.as_str(), p.spare))
             .collect();
-        assert_eq!(inputs, [("in1", false), ("in2", false), ("in3", true)]);
+        // Each wired input is followed by its own gain and mute.
+        assert_eq!(
+            inputs,
+            [
+                ("in1", false),
+                ("gain1", false),
+                ("mute1", false),
+                ("in2", false),
+                ("gain2", false),
+                ("mute2", false),
+                ("in3", true)
+            ]
+        );
         // Nothing wired: just the spare.
         let bare = wired_mixer(&mut project, &mut history, 5, 0);
         let scene = Scene::build(&project, &registry(), None);

@@ -271,7 +271,13 @@ fn boxed(
                 Pos2::new(row.right() - 30.0 * z, row.center().y),
                 Vec2::new(48.0 * z, 7.0 * z),
             );
-            body::meter(painter, area, z, bodies.input_meters_of(node.id, channel));
+            body::meter(
+                painter,
+                area,
+                z,
+                bodies.input_meters_of(node.id, channel),
+                body::MeterAxis::Horizontal,
+            );
         }
         socket(painter, f, port);
     }

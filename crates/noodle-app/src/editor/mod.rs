@@ -138,11 +138,11 @@ impl Default for EditorState {
     }
 }
 
-pub use body::MeterChannel;
+pub use body::{MeterAxis, MeterChannel};
 
 /// Draws one level as a bar in `area`.
-pub fn draw_level(painter: &egui::Painter, area: Rect, level: &MeterChannel) {
-    body::meter(painter, area, 1.0, std::slice::from_ref(level));
+pub fn draw_level(painter: &egui::Painter, area: Rect, level: &MeterChannel, axis: MeterAxis) {
+    body::meter(painter, area, 1.0, std::slice::from_ref(level), axis);
 }
 
 /// Draws a scope's capture in `area`, as the node draws it on the canvas.

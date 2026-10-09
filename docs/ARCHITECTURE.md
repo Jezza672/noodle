@@ -197,8 +197,16 @@ The **Project** is the single source of truth. It holds one global graph:
     one shared "any solo" value so it could be automated, can come later if
     it is wanted.
 - The timeline and mixer are **views over the graph**, not separate structures.
-  The mixer shows each track group's output gain, pan and send nodes, and the
-  timeline shows the clips that feed each track.
+  The timeline shows the clips that feed each track. The mixer has two views:
+  "All tracks" shows each track group's gain, mute and solo, which are
+  parameters on its boundary nodes; a mixer node's view shows one strip per
+  wired input and sets the **Mix node's own** per-input parameters.
+  - **Mix inputs.** A Mix node has `in1`…`inN` audio inputs, then `gain1`…
+    `gainN` (dB) and `mute1`…`muteN` parameter inputs, so each channel's
+    fader and mute can be wired or automated like any other parameter. Its
+    per-input meters read after the gain and mute. A track's own gain, mute
+    and solo stay on the track (header and "All tracks" view); the mixer node
+    view never touches them.
 
 Every change goes through a **command**. Applying a command returns its
 inverse, which gives undo/redo for free and gives the UI one place to hook
@@ -424,8 +432,14 @@ transport's job.
 - **One hub per engine:** two engines instantiating the same graph from one
   hub (live playback and an offline export, say) would both look like they
   were playing, so an export should use a registry with its own hub.
+- **Which nodes report:** Meter (its input, per channel), Mix (each input
+  after its gain and mute), and Gain and Voice Mix (their output, per
+  channel). The `LevelProbe` in `noodle-nodes/src/meter.rs` does the
+  measuring for all of them, and `noodle_nodes::METERED` lists the types
+  whose nodes draw a meter body in the editor.
 - **Drawing:** the node editor reads every meter and scope once a frame
   (`noodle-app/src/editor/body.rs`) and draws them in their nodes' bodies,
+  and the mixer view draws the same meter vertically beside each fader,
   repainting continuously while audio plays. Scopes trigger on a rising zero
   crossing so steady waveforms hold still.
 - `noodle_nodes::register_all` creates the hub and returns it. Playhead
