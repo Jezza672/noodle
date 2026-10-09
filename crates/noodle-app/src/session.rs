@@ -167,6 +167,9 @@ fn next_take_path(project: &Path) -> std::io::Result<(PathBuf, String)> {
 struct Audio {
     playback: Playback,
     controller: Controller,
+    /// The devices the project's Output nodes are tied to, which playback
+    /// was started with. Playback restarts when the project asks for others.
+    devices: Vec<String>,
     /// What the user has been told about the devices.
     monitor: Monitor,
 }
@@ -207,7 +210,7 @@ impl Session {
         Ok(Self::with_project(nodes, project, Some(path.to_owned())))
     }
 
-    fn with_project(nodes: Nodes, project: Project, path: Option<PathBuf>) -> Self {
+    pub(crate) fn with_project(nodes: Nodes, project: Project, path: Option<PathBuf>) -> Self {
         let Nodes {
             registry,
             telemetry,
@@ -246,6 +249,14 @@ impl Session {
 
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// How each extra output device fared, when playing: the devices the
+    /// project's Output nodes are tied to, and why any didn't open.
+    pub fn output_devices(&self) -> &[noodle_io::OutputStatus] {
+        self.audio
+            .as_ref()
+            .map_or(&[], |audio| audio.playback.outputs())
     }
 
     /// Where meter and scope nodes report what they measure.
@@ -472,14 +483,16 @@ impl Session {
         if self.audio.is_some() {
             return;
         }
-        let mut started = noodle_io::play(&self.audio_config, MAX_FRAMES);
+        // Output nodes tied to other devices play on those as well.
+        let devices = noodle_engine::output_devices(self.project.graph());
+        let mut started = noodle_io::play_with_outputs(&self.audio_config, &devices, MAX_FRAMES);
         let mut fell_back = None;
         // A saved device that's been unplugged, or a rate it no longer
         // takes, shouldn't stop the app making sound. The setting is kept
         // for when the device is back.
         if let Err(error) = &started
             && let Some(defaults) = fallback(&self.audio_config)
-            && let Ok(playing) = noodle_io::play(&defaults, MAX_FRAMES)
+            && let Ok(playing) = noodle_io::play_with_outputs(&defaults, &devices, MAX_FRAMES)
         {
             fell_back = Some(on_default_output(error));
             started = Ok(playing);
@@ -488,10 +501,13 @@ impl Session {
             Ok((playback, controller)) => {
                 // Playback carries on without input rather than failing.
                 // The status bar keeps saying so; see `input_problem`.
-                self.message = fell_back.or_else(|| playback.input_problem().map(no_input));
+                self.message = fell_back
+                    .or_else(|| playback.input_problem().map(no_input))
+                    .or_else(|| output_problems(&playback));
                 self.audio = Some(Audio {
                     playback,
                     controller,
+                    devices,
                     monitor: Monitor::default(),
                 });
                 self.recompile();
@@ -843,6 +859,21 @@ impl Session {
     }
 
     fn recompile(&mut self) {
+        // Devices are fixed for a stream's lifetime, so an Output node tied
+        // to another one means playing afresh. `play` compiles.
+        let wanted = noodle_engine::output_devices(self.project.graph());
+        if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
+            // A new engine starts running, so keep a pause.
+            let paused = !self.transport_running();
+            self.close_stream();
+            self.play();
+            if paused && let Some(audio) = &self.audio {
+                audio.controller.transport().stop();
+            }
+            if self.audio.is_some() {
+                return;
+            }
+        }
         self.diagnostics = match &mut self.audio {
             Some(audio) => audio
                 .controller
@@ -1029,6 +1060,12 @@ fn judge(errors: impl IntoIterator<Item = (Stream, DeviceError)>) -> Verdict {
                     .input_lost
                     .get_or_insert_with(|| format!("Input lost: {error}"));
             }
+            // Only the Output nodes tied to that device go quiet.
+            (Stream::ExtraOutput, true) => {
+                verdict
+                    .message
+                    .get_or_insert_with(|| format!("Output device lost: {error}"));
+            }
             (Stream::Output, false) if error.kind() == DeviceErrorKind::DeviceChanged => {
                 verdict.output_changed = true;
             }
@@ -1036,6 +1073,19 @@ fn judge(errors: impl IntoIterator<Item = (Stream, DeviceError)>) -> Verdict {
         }
     }
     verdict
+}
+
+/// Which extra output devices didn't open, if any.
+fn output_problems(playback: &Playback) -> Option<String> {
+    let failed: Vec<String> = playback
+        .outputs()
+        .iter()
+        .filter_map(|status| {
+            let error = status.result.as_ref().err()?;
+            Some(format!("{} ({error})", status.device))
+        })
+        .collect();
+    (!failed.is_empty()).then(|| format!("Can't play on {}", failed.join(", ")))
 }
 
 fn no_input(error: &AudioError) -> String {

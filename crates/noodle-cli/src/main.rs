@@ -195,8 +195,20 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     // opens isn't missed.
     let mut watch = Watch::new(path, text);
     let registry = registry();
-    let (mut playback, mut controller) =
-        noodle_io::play(config, MAX_FRAMES).map_err(|error| error.to_string())?;
+    // Output nodes tied to other devices play on those too. The devices are
+    // opened once, so a reload that changes them takes a restart.
+    let mut devices = noodle_engine::output_devices(project.graph());
+    let (mut playback, mut controller) = noodle_io::play_with_outputs(config, &devices, MAX_FRAMES)
+        .map_err(|error| error.to_string())?;
+    for status in playback.outputs() {
+        match &status.result {
+            Ok(opened) => eprintln!(
+                "Also playing on {} ({} channels).",
+                opened.name, opened.channels
+            ),
+            Err(error) => eprintln!("warning: can't play on {}: {error}", status.device),
+        }
+    }
     report(&controller.update_project(&project, &registry));
     let settings = playback.settings();
     eprintln!(
@@ -231,6 +243,8 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
                 }
                 // A backend may follow the cause with more.
                 (Stream::Input, true) => {}
+                // An extra device failing silences only its own outputs.
+                (Stream::ExtraOutput, true) => eprintln!("warning: output device lost: {error}"),
                 (_, false) => eprintln!("warning: {error}"),
             }
         }
@@ -251,6 +265,11 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
             // A bad edit keeps the last good version playing.
             match parse(path, &text) {
                 Ok(project) => {
+                    let wanted = noodle_engine::output_devices(project.graph());
+                    if wanted != devices {
+                        eprintln!("warning: restart to play on the outputs' new devices.");
+                        devices = wanted;
+                    }
                     report(&controller.update_project(&project, &registry));
                     eprintln!("Reloaded {}.", path.display());
                 }

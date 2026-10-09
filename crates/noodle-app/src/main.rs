@@ -8,6 +8,7 @@ mod devices;
 mod editor;
 mod metronome;
 mod mixer;
+mod outputs;
 mod prefs;
 mod properties;
 mod session;

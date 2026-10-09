@@ -18,7 +18,8 @@ pub use devices::{
 };
 pub use input::{Capture, Feed, input_path, recordable_input_path};
 pub use output::{
-    DeviceError, DeviceErrorKind, DeviceWriter, Health, Playback, Stream, is_fatal, play,
+    DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
+    Playback, Stream, is_fatal, play, play_with_outputs,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};

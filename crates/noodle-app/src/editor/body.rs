@@ -12,6 +12,7 @@ use egui::epaint::PathShape;
 use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
+use noodle_engine::OUTPUT_ID;
 use noodle_engine::{Level, MeterReader, ScopeView, Telemetry};
 use noodle_nodes::{METERED, SCOPE_ID};
 
@@ -21,7 +22,7 @@ use crate::theme::editor as colors;
 pub fn height(type_id: &str) -> f32 {
     match type_id {
         id if METERED.contains(&id) => 30.0,
-        SCOPE_ID => 80.0,
+        SCOPE_ID | OUTPUT_ID => 80.0,
         _ => 0.0,
     }
 }
@@ -45,7 +46,7 @@ pub fn paint(
             bodies.input_meters(node),
             MeterAxis::Horizontal,
         ),
-        SCOPE_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
+        SCOPE_ID | OUTPUT_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
         _ => {}
     }
 }
@@ -90,7 +91,8 @@ impl Bodies {
                         channel.update(level, dt);
                     }
                 }
-                SCOPE_ID => {
+                // An Output node's scope shows what it sends to the device.
+                SCOPE_ID | OUTPUT_ID => {
                     let view = self.scopes.entry(id).or_insert_with(scope_view);
                     if !telemetry.read_scope(id, view) {
                         *view = scope_view();
@@ -482,6 +484,7 @@ mod tests {
         };
         let meter = add(METER_ID);
         let scope = add(SCOPE_ID);
+        let output = add(OUTPUT_ID);
 
         let telemetry = Telemetry::new();
         let writer = telemetry.open_meter(meter, 2);
@@ -494,6 +497,9 @@ mod tests {
         );
         let mut scope_writer = telemetry.open_scope(scope, 1, 8);
         scope_writer.write(3, |f, _| f as f32);
+        // The Output node has a scope of its own.
+        let mut output_writer = telemetry.open_scope(output, 2, 8);
+        output_writer.write(2, |f, c| (f + 10 * c) as f32);
 
         let mut bodies = Bodies::default();
         bodies.update(&telemetry, &project, 1.0 / 60.0);
@@ -502,6 +508,8 @@ mod tests {
         assert_eq!(bodies.meters[&meter][1].peak, 0.5);
         assert_eq!(bodies.meters[&meter][1].rms, 0.25);
         assert_eq!(bodies.scopes[&scope].samples(), [0.0, 1.0, 2.0]);
+        assert_eq!(bodies.scopes[&output].samples(), [0.0, 10.0, 1.0, 11.0]);
+        assert_eq!(height(OUTPUT_ID), height(SCOPE_ID));
 
         Command::RemoveNode { id: meter }
             .apply(&mut project)

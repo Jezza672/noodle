@@ -324,6 +324,30 @@ schedule. Mixing at the end of the block would be too late, since their input
 buffers may already have been reused. A mono signal goes to every channel,
 and voices are summed.
 
+**Several output devices.** An Output node's `device` setting names the audio
+device it plays on (a device ID; empty is the main output, the one chosen in
+the audio settings). It's config rather than a parameter because it routes
+the node to a stream and can't be modulated. At most one Output node may use
+each named device. Unassigned Output nodes all play on the main output, as
+they always did.
+
+The engine renders one interleaved buffer whose channels are the devices'
+channels one after another, and `Controller::set_buses` says which range is
+whose: a `Bus` is a device ID and a channel count, the first being the main
+output, and the counts must add up to `Settings::channels`. `plan::build`
+resolves each Output node to a range, and the executor mixes it there. An
+Output node whose device has no bus plays nothing and gets a
+`DeviceUnavailable` diagnostic; a second Output node on a device gets
+`DeviceTaken` (the lowest node ID keeps it). Without buses, as in an offline
+render, every Output node mixes into all channels, whatever its device, so
+`noodle render` is unchanged and a project tied to hardware renders anywhere.
+
+Each Output node also has a scope of its own, fed with what it sends to the
+device (voices summed), through the telemetry hub like the Scope node. The
+builtin `Output` has no hub; `noodle_nodes::register_library` replaces it
+with one that reports. The node editor draws it in the node's body, and the
+scope view can show it.
+
 **Input nodes** work the other way round: the executor writes the block's
 device input into an Input node's output when the node's step comes. Its
 channel count is config (default 2): channel n is device channel n, a mono
@@ -363,6 +387,35 @@ settings are added. A broken file is reported and moved aside to
 saved output can't play (unplugged, or a rate it no longer takes), the app
 plays on the system's default output instead and says so, keeping the saved
 choice for when the device is back.
+
+**Playing on several devices.** `play_with_outputs` takes the IDs of the
+extra output devices the project's Output nodes name (`output_devices`
+collects them). The main device drives the engine: its callback runs the
+processor for the engine's whole channel count, plays the first channels and
+pushes each extra device's channels into an SPSC ring (a `Tap`), and each
+extra device has its own stream whose callback (`ExtraOutput`) plays from
+its ring. Extras run at the main device's sample rate, since there's no
+resampling, so a device that can't take that rate can't open; one that fails
+to open is reported in `Playback::outputs` and left out of the buses, so its
+Output nodes report that they have nowhere to play and everything else
+carries on. The fade-out when playback stops reaches the extras too, since
+the gain is applied before the channels are split.
+
+The devices' clocks drift apart unless they share one, and the ring copes the
+way the input feed does. An extra waits until the ring holds the main
+device's period plus its own block, then plays; if it runs dry it plays
+silence and waits again, and if it falls too far behind it skips ahead. Each
+is an underrun in `Health`. The ring holds half a second, only so that the
+two callbacks can be out of step; playback starts with just the cushion
+it needs, so the extras are about one main period late. Errors on an extra
+stream are `Stream::ExtraOutput`, and a fatal one is only a message,
+because it silences just that device's Output nodes.
+
+Devices are fixed for a stream's lifetime, so when the project's Output nodes
+name a different set of devices, the session restarts playback
+(`Session::recompile`), as it does for a change in the audio settings.
+`noodle play` opens the devices the project names at startup; a reload that
+changes them says to restart.
 
 **Device input** is off unless `AudioConfig::input` picks a device, since
 opening a microphone can prompt for permission. It runs at the output's
@@ -1008,10 +1061,25 @@ place. Dragging a track's header on the arrangement writes it, keeping only the
 groups the arrangement shows. Saving drops IDs of groups that no longer exist,
 so a reused ID can't inherit a deleted track's place.
 
+### Outputs view
+
+View > Outputs lists the project's Output nodes, each with a drop-down of the
+output devices (`noodle-app/src/outputs.rs`). Choosing one is a `SetConfig`
+of the node's `device`, one undo step, and the session restarts playback on
+the devices that result. Choosing "Main output" clears the setting. A device
+another Output node has is greyed and names its user, since there can be only
+one; the main device isn't offered separately; a saved device that isn't
+connected stays chosen and is labelled so. A row also says whether the device
+opened (and with how many channels) or why not. "Add output" adds an Output
+node tied to the first device that has none. Like the audio settings, the
+list of devices is made when the view opens and on Refresh, never per frame.
+The properties panel shows only where an Output node plays, and points here.
+
 ### Scope view
 
-View > Scope, or double-clicking a Scope node, opens a pane with a drop-down
-over the Scope nodes and a larger drawing of the chosen one. It keeps no
+View > Scope, or double-clicking a Scope or Output node, opens a pane with a
+drop-down over the Scope and Output nodes and a larger drawing of the chosen
+one. It keeps no
 state of its own: it reads the capture the editor already reads from the
 telemetry hub (`EditorState::scope_view`).
 

@@ -46,6 +46,7 @@ use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sen
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
+use noodle_engine::OUTPUT_ID;
 use noodle_engine::{Diagnostic, Location, Registry};
 use noodle_nodes::{REROUTE_ID, SCOPE_ID};
 
@@ -795,12 +796,12 @@ fn pointer(
                     None => state.enter(Some(id), None),
                 }
             }
-            // Mixers and scopes have a view of their own.
+            // Mixers, scopes and outputs (which have a scope) have a view of
+            // their own.
             Hit::Node(id)
-                if f.project
-                    .graph()
-                    .node(id)
-                    .is_some_and(|n| matches!(n.type_id.as_str(), spare::MIXER | SCOPE_ID)) =>
+                if f.project.graph().node(id).is_some_and(|n| {
+                    matches!(n.type_id.as_str(), spare::MIXER | SCOPE_ID | OUTPUT_ID)
+                }) =>
             {
                 state.view_request = Some(id);
             }

@@ -595,3 +595,53 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
         h.state_mut().session_mut().stop();
     }
 }
+
+/// An Output node tied to a device the project hasn't opened restarts
+/// playback with it. One that can't open is reported and plays nothing,
+/// without stopping the rest.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_output_tied_to_another_device_restarts_playback_and_reports_when_it_cannot_open() {
+    use noodle_engine::Problem;
+
+    let mut session = Session::new(Nodes::all());
+    session.set_audio_config(null_devices());
+    session.play();
+    assert!(session.is_playing(), "{:?}", session.message());
+    assert!(session.output_devices().is_empty());
+
+    // A pause survives the restart.
+    session.set_transport_running(false);
+    let output = session.new_node_id();
+    session.edit([crate::outputs::add(output, "alsa:missing")]);
+    assert!(session.is_playing(), "playback carries on");
+    assert!(!session.transport_running());
+    let [status] = session.output_devices() else {
+        panic!("the device was asked for: {:?}", session.output_devices());
+    };
+    assert_eq!(status.device, "alsa:missing");
+    assert!(status.result.is_err());
+    assert!(
+        session
+            .diagnostics()
+            .iter()
+            .any(|d| d.problem == Problem::DeviceUnavailable("alsa:missing".into())),
+        "{:?}",
+        session.diagnostics()
+    );
+    assert!(
+        session
+            .message()
+            .is_some_and(|m| m.contains("alsa:missing"))
+    );
+
+    // Back on the main output, nothing extra is opened.
+    session.edit([crate::outputs::assign(output, "")]);
+    assert!(session.is_playing());
+    assert!(session.output_devices().is_empty());
+    assert!(session.diagnostics().is_empty());
+
+    // Undo asks for the device again.
+    session.undo();
+    assert_eq!(session.output_devices().len(), 1);
+}

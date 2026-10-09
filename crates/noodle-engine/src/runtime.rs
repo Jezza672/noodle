@@ -14,6 +14,7 @@ use noodle_core::{Graph, NodeId, Project, TempoMap};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::denormals::Flush;
+pub use crate::plan::Bus;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
@@ -53,6 +54,8 @@ pub enum SettingsError {
     SampleRate(f32),
     MaxFrames,
     Channels,
+    /// The buses' channels don't add up to the engine's.
+    Buses,
 }
 
 impl fmt::Display for SettingsError {
@@ -61,6 +64,7 @@ impl fmt::Display for SettingsError {
             Self::SampleRate(rate) => write!(f, "sample rate must be positive, not {rate}"),
             Self::MaxFrames => f.write_str("block size must be at least one frame"),
             Self::Channels => f.write_str("output needs at least one channel"),
+            Self::Buses => f.write_str("the outputs' channels must add up to the engine's"),
         }
     }
 }
@@ -89,6 +93,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         sent: None,
         next_generation: 0,
         cells: Cells::new(),
+        buses: None,
         control: control.clone(),
         tempo_map: TempoMap::default(),
         tempo_out,
@@ -127,6 +132,9 @@ pub struct Controller {
     sent: Option<PlanInfo>,
     next_generation: u64,
     cells: Cells,
+    /// The devices sharing the output channels. `None` sends every Output
+    /// node to all of them, as in an offline render.
+    buses: Option<Vec<Bus>>,
     control: Arc<TransportControl>,
     tempo_map: TempoMap,
     tempo_out: Producer<Box<TempoTable>>,
@@ -143,6 +151,23 @@ impl Controller {
     /// Play, stop, seek and loop. The handle can go to other threads.
     pub fn transport(&self) -> Arc<TransportControl> {
         self.control.clone()
+    }
+
+    /// Splits the engine's output channels among devices, in order: the
+    /// first bus is the main output, which Output nodes with no device play
+    /// on. Each Output node then plays on the bus whose device it names, and
+    /// on none if no bus does (it is reported by the next
+    /// [`update`](Self::update)). The channel counts must add up to
+    /// [`Settings::channels`]. Without this, every Output node mixes into all
+    /// channels. Call it before the first update; it takes effect with the
+    /// next one.
+    pub fn set_buses(&mut self, buses: Vec<Bus>) -> Result<(), SettingsError> {
+        let total = buses.iter().map(|bus| bus.channels).sum::<usize>();
+        if total != self.settings.channels || buses.is_empty() {
+            return Err(SettingsError::Buses);
+        }
+        self.buses = Some(buses);
+        Ok(())
     }
 
     /// The tempo map the engine is using.
@@ -195,8 +220,8 @@ impl Controller {
             schedule,
             self.sent.as_ref(),
             generation,
-            self.settings.sample_rate,
-            self.settings.max_frames,
+            self.settings,
+            self.buses.as_deref(),
             &mut self.cells,
             &mut diagnostics,
         );
