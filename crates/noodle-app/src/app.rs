@@ -111,6 +111,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn timeline(&self) -> &TimelineState {
+        &self.timeline
+    }
+
+    #[cfg(test)]
     pub fn session(&self) -> &Session {
         &self.session
     }
