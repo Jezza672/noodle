@@ -52,7 +52,7 @@ Audio Settings…). An end-to-end test follows the "done when" line below
 through the app. The review pass is done and its fixes are merged, and CI
 passes on Linux and Windows. Left: the listening check on a Mac.
 
-- eframe app shell with Studio-style dark theme (see `theme.rs`) and panel layout.
+- eframe app shell with Canvas-style dark theme (see `theme.rs`) and panel layout.
 - **Node editor:**
   - Pan and zoom.
   - Shift+A to search for and add a node.
