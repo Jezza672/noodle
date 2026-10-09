@@ -98,8 +98,8 @@ pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> 
 /// The boundary nodes that stay in the flat graph, as the stage nodes that
 /// replace them.
 ///
-/// A stage stays when its gain or mute is off its default, and also once
-/// either has been set at all (even back to its default): adding or removing
+/// A stage stays when its gain or mute is off its default or has a wire into
+/// it, and also once either has been set at all (even back to its default): adding or removing
 /// a node in the audible path makes the engine fade the whole output out and
 /// in, so a control that is moved again has to find its stage in place, and
 /// then moving it is only a parameter change. Soloing works the same way:
@@ -120,7 +120,11 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Node> {
             let by_solo = solo_here && muted_by_solo.contains(&group);
             let keep_for_solo = solo_here && graph.solo_in_use(group);
             let mute = controls.mute || by_solo;
-            if !(node.has_gain_or_mute() || mute || keep_for_solo || keep.contains(&id)) {
+            // A wire into the gain or mute needs the stage's port to land on.
+            let wired = [GAIN, MUTE]
+                .iter()
+                .any(|key| graph.source(&Endpoint::new(id, *key)).is_some());
+            if !(node.has_gain_or_mute() || mute || keep_for_solo || wired || keep.contains(&id)) {
                 return None;
             }
             let mut stage = Node::new(GROUP_STAGE);

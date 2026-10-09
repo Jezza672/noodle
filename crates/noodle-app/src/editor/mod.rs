@@ -751,8 +751,7 @@ fn pointer(
             }
             Hit::Nothing => {
                 if let Some(wire) = wire_at(f, p) {
-                    let input = wire.connection.to.clone();
-                    edits.push(Edit::Apply(Command::Disconnect { input }));
+                    edits.push(Edit::Apply(wire.cut()));
                 }
             }
             _ => {}
@@ -805,7 +804,8 @@ fn start_primary_drag(
                     detached: Some(endpoint),
                 };
             }
-            if port.kind == PortKind::Unknown {
+            // A lane's port only shows the lane; it can't take a new wire.
+            if port.kind == PortKind::Unknown || layout::is_lane_port(graph, &endpoint) {
                 return Gesture::Idle;
             }
             Gesture::Link {
@@ -916,6 +916,7 @@ fn splice_for(f: &Frame_<'_>, node: NodeId, rect: Rect) -> Option<Splice> {
         .scene
         .wires
         .iter()
+        .filter(|wire| wire.lane.is_none())
         .filter_map(|wire| {
             let line = wire::flatten(wire::curve(wire.from, wire.to));
             line.iter()
@@ -1352,7 +1353,9 @@ fn stroke(
         };
         let input = wire.connection.to.clone();
         match action {
-            StrokeAction::Cut => commands.push(Command::Disconnect { input }),
+            StrokeAction::Cut => commands.push(wire.cut()),
+            // A lane has no connection to splice a reroute into.
+            StrokeAction::Reroute if wire.lane.is_some() => {}
             StrokeAction::Reroute => {
                 let id = (inputs.new_node_id)();
                 let corner = at - REROUTE_SIZE / 2.0;

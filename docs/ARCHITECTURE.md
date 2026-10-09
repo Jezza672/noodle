@@ -135,8 +135,19 @@ The **Project** is the single source of truth. It holds one global graph:
     solo are parameter changes. Mute is a smoothed 0 to 1 parameter, so it
     ramps rather than clicks. A control reset should write the default, not
     remove the parameter, or the stage goes and the fade comes back. Boundary
-    nodes have no parameter ports in the editor yet, so wiring into them
-    waits for that.
+    nodes show `gain` and `mute` as parameter ports in the editor (solo has
+    none; it is read from the project), so they can be wired like any other
+    parameter. A wire into either keeps the stage, and flatten joins the
+    wire's source to the stage's port. The wire replaces the value set on
+    the node, and wins over a lane on the same port (the lane gets the usual
+    "overridden" diagnostic). The mixer strip and the track header grey out
+    their fader and mute while a lane or a wire drives them.
+  - **Lanes as wires in the editor.** A lane on a boundary node's gain or
+    mute shows as a wire from a `<Control> lane` output on the group's first
+    track input node to that port. It isn't a stored connection: the editor
+    draws it from the project's lanes, cutting it removes the lane, and it
+    can't be spliced, rerouted or wired from. If a real wire is dropped on
+    the port, that wire is drawn and the lane waits behind it.
   - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
     the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
     group output `out` with `audio` wired to it, and a group input `in`. The
