@@ -48,11 +48,11 @@ pub fn frames(painter: &Painter, f: &Frame_<'_>, state: &EditorState) {
     for &i in &f.frame_order {
         let frame = &f.scene.frames[i];
         let rect = f.t.rect_to_screen(frame.rect);
-        painter.rect_filled(rect, 4.0 * z, colors::FRAME);
+        painter.rect_filled(rect, f32::from(theme::RADIUS) * z, colors::FRAME);
         if state.selected_frames.contains(&frame.id) {
             painter.rect_stroke(
                 rect,
-                4.0 * z,
+                f32::from(theme::RADIUS) * z,
                 Stroke::new(1.5, colors::SELECTED),
                 StrokeKind::Outside,
             );
@@ -112,7 +112,7 @@ pub fn wires(
             colors::WIRE
         };
         let points = wire::curve(wire.from, wire.to).map(|p| f.t.to_screen(p));
-        curve(painter, points, Stroke::new((2.0 * z).max(1.0), color));
+        curve(painter, points, Stroke::new((2.5 * z).max(1.0), color));
         if problem && z >= MIN_TEXT_ZOOM {
             let middle = wire::flatten(wire::curve(wire.from, wire.to))[12];
             warning(painter, f.t.to_screen(middle), z, Align2::CENTER_CENTER);
@@ -169,7 +169,13 @@ fn boxed(
 ) {
     let z = f.t.zoom;
     let rect = f.t.rect_to_screen(node.rect);
-    let radius = 4.0 * z;
+    let radius = f32::from(theme::RADIUS + 2) * z;
+    // A soft drop shadow lifts the node off the canvas.
+    painter.rect_filled(
+        rect.translate(Vec2::new(0.0, 3.0 * z)).expand(1.0 * z),
+        radius,
+        Color32::from_black_alpha(70),
+    );
     painter.rect_filled(rect, radius, colors::NODE);
     let header = f.t.rect_to_screen(node.header());
     let top = CornerRadius {
@@ -259,7 +265,8 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
     let z = f.t.zoom;
     let center = f.t.to_screen(port.socket);
     let radius = (4.5 * z).max(2.5);
-    let outline = Stroke::new(1.0, colors::NODE_OUTLINE);
+    // The ring matches the node body, so a socket reads as a notch in it.
+    let outline = Stroke::new(1.5, colors::NODE);
     if port.spare {
         // Nothing is stored for a spare until a wire goes to it.
         painter.circle(
@@ -292,7 +299,7 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
                 _ => colors::PROBLEM,
             };
             let fill = if port.idle {
-                fill.gamma_multiply(0.35)
+                fill.gamma_multiply(0.6)
             } else {
                 fill
             };

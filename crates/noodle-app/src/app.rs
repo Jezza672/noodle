@@ -329,7 +329,7 @@ impl App {
         }
         let recording = self.session.is_recording();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
-            egui::Color32::from_rgb(230, 70, 70)
+            theme::RECORD
         } else {
             theme::timeline::TEXT
         }))

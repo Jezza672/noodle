@@ -145,7 +145,7 @@ fn strip_ui(ui: &mut Ui, graph: &Graph, strip: &Strip, edits: &mut Vec<Edit>) {
                 ui.horizontal(|ui| {
                     let mute = ui
                         .add_enabled_ui(!strip.mute_automated, |ui| {
-                            toggle(ui, "M", strip.controls.mute, Color32::from_rgb(200, 70, 60))
+                            toggle(ui, "M", strip.controls.mute, crate::theme::MUTE)
                         })
                         .inner;
                     let tip = if strip.mute_automated {
@@ -162,12 +162,7 @@ fn strip_ui(ui: &mut Ui, graph: &Graph, strip: &Strip, edits: &mut Vec<Edit>) {
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
                         edits.push(Edit::Apply(set(node, MUTE, value)));
                     }
-                    let solo = toggle(
-                        ui,
-                        "S",
-                        strip.controls.solo,
-                        Color32::from_rgb(210, 170, 50),
-                    );
+                    let solo = toggle(ui, "S", strip.controls.solo, crate::theme::SOLO);
                     if solo.on_hover_text("Solo: mutes the other tracks").clicked() {
                         edits.extend(solo_edit(graph, strip, !strip.controls.solo));
                     }
