@@ -1,16 +1,33 @@
 use noodle_engine::{
-    Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Setup, Unit,
+    Config, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
+    ParamInfo, PerLane, Setup, Telemetry, Unit,
 };
 
-pub struct Gain;
+use crate::meter::{LevelProbe, voice_sum_out};
+
+/// Scales its input by a gain in dB. It reports its output's level through
+/// [`Telemetry`], for the meter drawn on the node.
+pub struct Gain {
+    telemetry: Telemetry,
+}
+
+impl Gain {
+    pub fn new(telemetry: &Telemetry) -> Self {
+        Self {
+            telemetry: telemetry.clone(),
+        }
+    }
+}
+
+/// The Gain's type ID.
+pub const GAIN_ID: &str = "noodle.util.gain";
 
 const IN: usize = 0;
 const GAIN: usize = 1;
 const OUT: usize = 0;
 
 static INFO: NodeInfo = NodeInfo {
-    id: "noodle.util.gain",
+    id: GAIN_ID,
     version: 1,
     name: "Gain",
     category: "Utilities",
@@ -33,7 +50,48 @@ impl NodeType for Gain {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(PerLane::new(GainKernel, setup)))
+        let channels = setup.output_shapes[OUT].channels;
+        Ok(Instance::realtime(GainNode {
+            gain: PerLane::new(GainKernel, setup),
+            probe: LevelProbe::new(&self.telemetry, setup.node, channels, setup.sample_rate),
+        }))
+    }
+}
+
+struct GainNode {
+    gain: PerLane<GainKernel>,
+    probe: LevelProbe,
+}
+
+impl Node for GainNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let Io {
+            inputs,
+            outputs,
+            event_inputs,
+            event_outputs,
+        } = io;
+        self.gain.process(
+            ctx,
+            Io {
+                inputs,
+                outputs: &mut *outputs,
+                event_inputs,
+                event_outputs: &mut *event_outputs,
+            },
+        );
+        let out = &mut outputs[OUT];
+        for channel in 0..self.probe.slots() {
+            self.probe.measure(channel, ctx.frames, |frame| {
+                let x = voice_sum_out(out, channel, frame);
+                (x * x, x.abs())
+            });
+        }
+    }
+
+    fn reset(&mut self) {
+        self.probe.reset();
+        self.gain.reset();
     }
 }
 
@@ -74,8 +132,14 @@ mod tests {
 
     #[test]
     fn halves_at_minus_six_db() {
-        let mut h =
-            Harness::new(&Gain, &Config::new(), &[(IN, Shape::STEREO)], 48_000.0, 4).unwrap();
+        let mut h = Harness::new(
+            &Gain::new(&Telemetry::new()),
+            &Config::new(),
+            &[(IN, Shape::STEREO)],
+            48_000.0,
+            4,
+        )
+        .unwrap();
         h.input(IN, 4).lane_mut(0, 1).fill(1.0);
         h.set(GAIN, MINUS_6_DB);
         h.run(4).unwrap();
@@ -89,7 +153,14 @@ mod tests {
     #[test]
     fn modulated_gain_matches_constant_gain() {
         let connected = [(IN, Shape::MONO), (GAIN, Shape::MONO)];
-        let mut h = Harness::new(&Gain, &Config::new(), &connected, 48_000.0, 4).unwrap();
+        let mut h = Harness::new(
+            &Gain::new(&Telemetry::new()),
+            &Config::new(),
+            &connected,
+            48_000.0,
+            4,
+        )
+        .unwrap();
         h.input(IN, 4).fill(1.0);
         h.input(GAIN, 4).fill(MINUS_6_DB);
         h.run(4).unwrap();

@@ -40,9 +40,28 @@ pub fn mixer_input_key(index: usize) -> String {
     format!("in{index}")
 }
 
+/// The key of the gain, in dB, of a mixer's `index`th input, counting from 1.
+pub fn mixer_gain_key(index: usize) -> String {
+    format!("gain{index}")
+}
+
+/// The key of the mute, 0 or 1, of a mixer's `index`th input, counting from 1.
+pub fn mixer_mute_key(index: usize) -> String {
+    format!("mute{index}")
+}
+
 /// Which input a mixer port key is (`in3` is 3), if it is one.
 pub fn mixer_input_index(key: &str) -> Option<usize> {
     key.strip_prefix("in")?.parse().ok().filter(|&i| i >= 1)
+}
+
+/// Which input a mixer's gain or mute key belongs to (`gain3` and `mute3`
+/// are 3), if it is one.
+pub fn mixer_param_index(key: &str) -> Option<usize> {
+    let digits = key
+        .strip_prefix("gain")
+        .or_else(|| key.strip_prefix("mute"))?;
+    digits.parse().ok().filter(|&i| i >= 1)
 }
 
 /// How many inputs a mixer's config gives it.
@@ -53,12 +72,13 @@ pub fn mixer_inputs(node: &Node) -> i64 {
     }
 }
 
-/// The highest-numbered input of mixer `id` with a wire on it, or 0.
+/// The highest-numbered input of mixer `id` with a wire on it or on its gain
+/// or mute, or 0.
 pub fn mixer_used(graph: &Graph, id: NodeId) -> usize {
     graph
         .connections()
         .filter(|c| c.to.node == id)
-        .filter_map(|c| mixer_input_index(&c.to.port))
+        .filter_map(|c| mixer_input_index(&c.to.port).or_else(|| mixer_param_index(&c.to.port)))
         .max()
         .unwrap_or(0)
 }
