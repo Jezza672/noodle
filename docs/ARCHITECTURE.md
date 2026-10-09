@@ -954,10 +954,13 @@ node and on the mixer view's strips.
 
 `Project.track_order` is a list of group IDs, set by `Command::SetTrackOrder`
 (one undo step; it has no engine effect). The arrangement, the mixer's
-"All tracks" view and Add Track read it through `Project::sort_tracks`:
+"All tracks" view read it through `Project::sort_tracks` (Add Track always
+puts a new track last):
 groups it names come first in that order, the rest follow by ID, and IDs
 that no longer exist are ignored, so deleting then undoing a track keeps its
-place. Dragging a track's header on the arrangement writes it.
+place. Dragging a track's header on the arrangement writes it, keeping only the
+groups the arrangement shows. Saving drops IDs of groups that no longer exist,
+so a reused ID can't inherit a deleted track's place.
 
 ### Scope view
 

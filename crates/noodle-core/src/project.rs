@@ -336,7 +336,13 @@ impl Project {
             tempo_map: self.tempo_map.clone(),
             clips: self.clips.clone(),
             lanes: self.lanes.clone(),
-            track_order: self.track_order.clone(),
+            // Not IDs that have gone: a later node could be handed the same ID.
+            track_order: self
+                .track_order
+                .iter()
+                .copied()
+                .filter(|id| self.graph.node(*id).is_some())
+                .collect(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -842,21 +848,39 @@ mod tests {
 
     #[test]
     fn a_track_order_undoes_saves_and_sorts() {
-        let (mut project, mut history, ..) = with_timeline();
-        let order = vec![NodeId(9), NodeId(3)];
+        let (mut project, mut history, first, ..) = with_timeline();
+        let mut ids = vec![first];
+        for _ in 0..2 {
+            let id = project.new_node_id();
+            let node = Node::new("noodle.util.gain");
+            apply(&mut project, &mut history, Command::AddNode { id, node });
+            ids.push(id);
+        }
+        let (a, b) = (ids[1], ids[2]);
+        let order = vec![b, a];
         apply(
             &mut project,
             &mut history,
             Command::SetTrackOrder(order.clone()),
         );
-        let mut groups = [NodeId(1), NodeId(3), NodeId(9), NodeId(2)];
+        let mut groups = [first, a, b];
         project.sort_tracks(&mut groups);
         // Named groups first, in the stored order; the rest by ID.
-        assert_eq!(groups, [NodeId(9), NodeId(3), NodeId(1), NodeId(2)]);
+        assert_eq!(groups, [b, a, first]);
         let loaded = Project::from_ron(&project.to_ron()).unwrap();
         assert_eq!(loaded.track_order(), order);
         history.undo(&mut project).unwrap();
         assert!(project.track_order().is_empty());
         assert!(!project.to_ron().contains("track_order"));
+    }
+
+    #[test]
+    fn saving_drops_ids_of_nodes_that_have_gone_from_the_track_order() {
+        let (mut project, mut history, ..) = with_timeline();
+        let live = project.graph().nodes().next().unwrap().0;
+        let order = vec![NodeId(9999), live];
+        apply(&mut project, &mut history, Command::SetTrackOrder(order));
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(loaded.track_order(), [live]);
     }
 }

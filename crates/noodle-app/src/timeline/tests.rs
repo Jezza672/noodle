@@ -1362,8 +1362,29 @@ fn dropping_a_header_where_it_was_changes_nothing() {
         Modifiers::NONE,
         &[
             Pos2::new(14.0, header_y(2)),
-            Pos2::new(14.0, header_y(2) + 5.0),
+            Pos2::new(14.0, header_y(2) + 15.0),
         ],
     );
     assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn dragging_a_header_down_moves_it_below_the_next_track() {
+    let (mut h, _) = rig();
+    add_real_track(&mut h);
+    let shown = |h: &H| super::tracks(h.state().session.project());
+    let before = shown(&h);
+    drag(
+        &mut h,
+        Modifiers::NONE,
+        &[
+            Pos2::new(14.0, header_y(0)),
+            Pos2::new(14.0, header_y(1)),
+            Pos2::new(14.0, header_y(1) + 20.0),
+        ],
+    );
+    let after = shown(&h);
+    assert_eq!(after[0], before[1]);
+    assert_eq!(after[1], before[0]);
+    assert_eq!(after[2], before[2]);
 }

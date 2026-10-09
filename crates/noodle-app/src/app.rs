@@ -140,8 +140,6 @@ impl App {
         &self.editor
     }
 
-    /// Draws the whole window. Separate from [`eframe::App`] so tests can
-    /// drive it without a window.
     /// Opens the view a double-click on a mixer or scope node asked for, on
     /// that node.
     fn open_requested_view(&mut self) {
@@ -203,6 +201,8 @@ impl App {
         editor::draw_scope(ui.painter(), rect, self.editor.scope_view(shown));
     }
 
+    /// Draws the whole window. Separate from [`eframe::App`] so tests can
+    /// drive it without a window.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.session.maintain();
         // Before the panels, so a focused button doesn't also see Space.
