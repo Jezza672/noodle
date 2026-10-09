@@ -23,6 +23,9 @@ pub const RECORD: Color32 = Color32::from_rgb(255, 90, 79);
 pub const RADIUS: u8 = 8;
 /// Corner radius of a node.
 pub const NODE_RADIUS: u8 = 10;
+/// How tall the scope view's drawing is.
+pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
+
 /// The properties panel's starting width.
 pub const PROPERTIES_WIDTH: f32 = 260.0;
 

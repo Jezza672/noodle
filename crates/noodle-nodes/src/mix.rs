@@ -1,11 +1,32 @@
 use noodle_engine::{
-    Config, ConfigInfo, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType,
-    PerLane, Setup,
+    Config, ConfigInfo, Context, Instance, Io, Lane, LaneKernel, Layout, Level, MeterWriter, Node,
+    NodeError, NodeInfo, NodeType, PerLane, Setup, Telemetry,
 };
+
+use crate::meter::voice_sum;
 
 /// Sums its inputs. How many inputs it has is config rather than a parameter,
 /// because it changes the node's ports.
-pub struct Mix;
+///
+/// It also reports each input's peak and RMS level through [`Telemetry`], one
+/// meter channel per input, for the mixer view and the node's own meters.
+pub struct Mix {
+    telemetry: Telemetry,
+}
+
+impl Mix {
+    pub fn new(telemetry: &Telemetry) -> Self {
+        Self {
+            telemetry: telemetry.clone(),
+        }
+    }
+}
+
+/// A mean square below this (-300 dB RMS) is flushed to zero.
+const TINY: f32 = 1e-30;
+
+/// How quickly the RMS level follows the signal, as for a VU meter.
+const RMS_TIME_SECONDS: f32 = 0.3;
 
 const INPUTS: ConfigInfo = ConfigInfo::int("inputs", "Inputs", 2);
 const MAX_INPUTS: i64 = 64;
@@ -43,10 +64,58 @@ impl NodeType for Mix {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        let kernel = MixKernel {
-            inputs: setup.input_shapes.len(),
-        };
-        Ok(Instance::realtime(PerLane::new(kernel, setup)))
+        let inputs = setup.input_shapes.len();
+        Ok(Instance::realtime(MixNode {
+            sum: PerLane::new(MixKernel { inputs }, setup),
+            writer: self.telemetry.open_meter(setup.node, inputs),
+            mean_squares: vec![0.0; inputs].into_boxed_slice(),
+            coefficient: 1.0 - (-1.0 / (RMS_TIME_SECONDS * setup.sample_rate)).exp(),
+        }))
+    }
+}
+
+struct MixNode {
+    sum: PerLane<MixKernel>,
+    writer: MeterWriter,
+    /// The smoothed mean square of each input, all its channels together.
+    mean_squares: Box<[f32]>,
+    coefficient: f32,
+}
+
+impl Node for MixNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        for (port, mean_square) in self.mean_squares.iter_mut().enumerate() {
+            let input = io.inputs[port];
+            let channels = input.shape().channels;
+            let mut peak = 0.0f32;
+            for frame in 0..ctx.frames {
+                // Voices are summed, then the channels' power is averaged.
+                let mut power = 0.0;
+                for channel in 0..channels {
+                    let x = voice_sum(&input, channel, frame);
+                    peak = peak.max(x.abs());
+                    power += x * x;
+                }
+                let power = power / channels.max(1) as f32;
+                *mean_square += self.coefficient * (power - *mean_square);
+            }
+            if !mean_square.is_finite() || *mean_square < TINY {
+                *mean_square = 0.0;
+            }
+            self.writer.write(
+                port,
+                Level {
+                    peak,
+                    rms: mean_square.sqrt(),
+                },
+            );
+        }
+        self.sum.process(ctx, io);
+    }
+
+    fn reset(&mut self) {
+        self.mean_squares.fill(0.0);
+        self.sum.reset();
     }
 }
 
@@ -78,7 +147,14 @@ mod tests {
     fn sums_a_configured_number_of_inputs() {
         let config = Config::new().with("inputs", Value::Int(3));
         let connected = [(0, Shape::MONO), (1, Shape::MONO), (2, Shape::MONO)];
-        let mut h = Harness::new(&Mix, &config, &connected, 48_000.0, 4).unwrap();
+        let mut h = Harness::new(
+            &Mix::new(&Telemetry::new()),
+            &config,
+            &connected,
+            48_000.0,
+            4,
+        )
+        .unwrap();
         for (port, value) in [(0, 1.0), (1, 2.0), (2, 3.0)] {
             h.input(port, 4).fill(value);
         }
@@ -87,13 +163,41 @@ mod tests {
     }
 
     #[test]
+    fn reports_each_inputs_level_apart_from_the_sum() {
+        let telemetry = Telemetry::new();
+        let node = noodle_engine::NodeId(0);
+        let config = Config::new().with("inputs", Value::Int(2));
+        let connected = [(0, Shape::MONO), (1, Shape::MONO)];
+        let mut h = Harness::new(&Mix::new(&telemetry), &config, &connected, 48_000.0, 4).unwrap();
+        h.input(0, 4).fill(0.5);
+        h.input(1, 4).fill(-0.25);
+        h.run(4).unwrap();
+        let levels = telemetry.meter_reader().meter(node).unwrap();
+        assert_eq!(levels.len(), 2, "one channel per input");
+        assert_eq!(levels[0].peak, 0.5);
+        assert_eq!(levels[1].peak, 0.25);
+        assert!(levels[0].rms > levels[1].rms && levels[1].rms > 0.0);
+        assert_eq!(h.output(OUT).lane(0, 0), &[0.25; 4], "the sum is untouched");
+    }
+
+    #[test]
     fn defaults_to_two_inputs() {
-        assert_eq!(Mix.layout(&Config::new()).unwrap().inputs.len(), 2);
+        assert_eq!(
+            Mix::new(&Telemetry::new())
+                .layout(&Config::new())
+                .unwrap()
+                .inputs
+                .len(),
+            2
+        );
     }
 
     #[test]
     fn rejects_zero_inputs() {
         let config = Config::new().with("inputs", Value::Int(0));
-        assert!(matches!(Mix.layout(&config), Err(NodeError::Config(_))));
+        assert!(matches!(
+            Mix::new(&Telemetry::new()).layout(&config),
+            Err(NodeError::Config(_))
+        ));
     }
 }

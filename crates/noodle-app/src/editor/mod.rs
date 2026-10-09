@@ -47,7 +47,7 @@ use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
 use noodle_engine::{Diagnostic, Location, Registry};
-use noodle_nodes::REROUTE_ID;
+use noodle_nodes::{REROUTE_ID, SCOPE_ID};
 
 use crate::session::{Edit, Session};
 use crate::theme;
@@ -103,6 +103,9 @@ pub struct EditorState {
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
+    /// A node whose view was asked for with a double-click, until the app
+    /// takes it.
+    view_request: Option<NodeId>,
 }
 
 /// Nodes, the wires between them and frames, as copied.
@@ -130,8 +133,21 @@ impl Default for EditorState {
             bodies: body::Bodies::default(),
             clipboard: None,
             arrange_requested: false,
+            view_request: None,
         }
     }
+}
+
+pub use body::MeterChannel;
+
+/// Draws one level as a bar in `area`.
+pub fn draw_level(painter: &egui::Painter, area: Rect, level: &MeterChannel) {
+    body::meter(painter, area, 1.0, std::slice::from_ref(level));
+}
+
+/// Draws a scope's capture in `area`, as the node draws it on the canvas.
+pub fn draw_scope(painter: &egui::Painter, area: Rect, view: Option<&noodle_engine::ScopeView>) {
+    body::scope(painter, area, 1.0, view);
 }
 
 impl EditorState {
@@ -139,6 +155,21 @@ impl EditorState {
     /// frame: the selection, or everything if nothing is selected.
     pub fn request_arrange(&mut self) {
         self.arrange_requested = true;
+    }
+
+    /// The node whose view a double-click asked for, once.
+    pub fn take_view_request(&mut self) -> Option<NodeId> {
+        self.view_request.take()
+    }
+
+    /// The level of input `channel` (from 0) of a mixer node.
+    pub fn input_level(&self, node: NodeId, channel: usize) -> Option<MeterChannel> {
+        self.bodies.input_meters(node).get(channel).copied()
+    }
+
+    /// What a scope node last captured, for a view of it elsewhere.
+    pub fn scope_view(&self, node: NodeId) -> Option<&noodle_engine::ScopeView> {
+        self.bodies.scope_view(node)
     }
 
     /// Where a graph point is on screen, as of the last frame.
@@ -764,6 +795,15 @@ fn pointer(
                     Some(port) => start_port_rename(state, f.project, id, port),
                     None => state.enter(Some(id), None),
                 }
+            }
+            // Mixers and scopes have a view of their own.
+            Hit::Node(id)
+                if f.project
+                    .graph()
+                    .node(id)
+                    .is_some_and(|n| matches!(n.type_id.as_str(), spare::MIXER | SCOPE_ID)) =>
+            {
+                state.view_request = Some(id);
             }
             Hit::Nothing => {
                 if let Some(wire) = wire_at(f, p) {

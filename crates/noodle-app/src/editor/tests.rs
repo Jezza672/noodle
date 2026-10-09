@@ -2244,3 +2244,22 @@ fn arranging_a_tidy_graph_changes_nothing() {
     press(&mut h, p, Modifiers::COMMAND, Key::L);
     assert_eq!(h.state().log.len(), edits);
 }
+
+fn view_request_after_double_click(type_id: &str) -> (Option<NodeId>, NodeId) {
+    let mut h = rig();
+    let node = add(&mut h, Node::new(type_id).at(0.0, 0.0));
+    h.run();
+    let at = title(&h, node);
+    double_click(&mut h, at);
+    (h.state_mut().editor.take_view_request(), node)
+}
+
+#[test]
+fn double_clicking_a_mixer_or_scope_asks_for_its_view() {
+    for type_id in ["noodle.util.mix", noodle_nodes::SCOPE_ID] {
+        let (request, node) = view_request_after_double_click(type_id);
+        assert_eq!(request, Some(node), "{type_id}");
+    }
+    // Other nodes have no view.
+    assert_eq!(view_request_after_double_click("noodle.util.gain").0, None);
+}
