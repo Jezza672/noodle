@@ -9,7 +9,7 @@
 
 use egui::{Align, Color32, Layout, RichText, Slider, Ui, Vec2};
 use noodle_core::group::{Controls, GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
-use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value};
+use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value, spare};
 
 use crate::session::Edit;
 use crate::timeline::header;
@@ -38,17 +38,59 @@ pub struct Strip {
     pub mute_automated: bool,
 }
 
-/// The strips for the top-level groups of a graph, in ID order.
+/// Every mixer node in the graph, in ID order: what the mixer can be shown
+/// over.
+pub fn mixers(project: &Project) -> Vec<NodeId> {
+    project
+        .graph()
+        .nodes()
+        .filter(|(_, node)| node.type_id == spare::MIXER)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The strips for a mixer node, one per wired input in input order. An input
+/// fed by a track's group shows that track's controls; anything else has a
+/// strip with nothing to set.
+pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
+    let graph = project.graph();
+    let Some(node) = graph.node(mixer) else {
+        return Vec::new();
+    };
+    let tracks = strips(project);
+    (1..=spare::mixer_inputs(node))
+        .filter_map(|i| {
+            let source = graph.source(&Endpoint::new(mixer, spare::mixer_input_key(i as usize)))?;
+            Some(
+                match tracks.iter().find(|strip| strip.group == source.node) {
+                    Some(strip) => strip.clone(),
+                    None => Strip {
+                        group: source.node,
+                        name: format!("In {i}"),
+                        controls: Controls::default(),
+                        node: None,
+                        muted_by_solo: false,
+                        gain_automated: false,
+                        mute_automated: false,
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
+/// The strips for the top-level groups of a graph, in track order.
 pub fn strips(project: &Project) -> Vec<Strip> {
     let graph = project.graph();
     let muted_by_solo = graph.solo_muted();
-    let mut groups: Vec<_> = graph
+    let mut ids: Vec<NodeId> = graph
         .children(None)
         .filter(|(_, node)| node.type_id == GROUP)
+        .map(|(id, _)| id)
         .collect();
-    groups.sort_by_key(|(id, _)| *id);
-    groups
-        .into_iter()
+    project.sort_tracks(&mut ids);
+    ids.into_iter()
+        .filter_map(|id| Some((id, graph.node(id)?)))
         .map(|(id, node)| Strip {
             group: id,
             name: match node.config.get(NAME) {
@@ -100,19 +142,47 @@ pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
     Some(Edit::Apply(Command::Batch(commands)))
 }
 
-/// Draws the mixer and returns the edits made in it.
-pub fn show(ui: &mut Ui, project: &Project) -> Vec<Edit> {
+/// Draws the mixer and returns the edits made in it. `view` is the mixer
+/// node shown, or `None` for one strip per track; a node that has gone falls
+/// back to that.
+pub fn show(ui: &mut Ui, project: &Project, view: &mut Option<NodeId>) -> Vec<Edit> {
     let graph = project.graph();
-    let strips = strips(project);
+    let mixers = mixers(project);
+    if view.is_some_and(|m| !mixers.contains(&m)) {
+        *view = None;
+    }
+    if !mixers.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("Mixer");
+            let label =
+                |m: Option<NodeId>| m.map_or("All tracks".to_string(), |m| format!("Mix {}", m.0));
+            egui::ComboBox::from_id_salt("mixer view")
+                .selected_text(label(*view))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(view, None, label(None));
+                    for &m in &mixers {
+                        ui.selectable_value(view, Some(m), label(Some(m)));
+                    }
+                });
+        });
+    }
+    let strips = match *view {
+        Some(mixer) => mixer_strips(project, mixer),
+        None => strips(project),
+    };
     if strips.is_empty() {
-        ui.weak("No tracks yet.");
+        ui.weak(if view.is_some() {
+            "Nothing is wired into this mixer."
+        } else {
+            "No tracks yet."
+        });
         return Vec::new();
     }
     let mut edits = Vec::new();
     egui::ScrollArea::horizontal().show(ui, |ui| {
         ui.horizontal_top(|ui| {
-            for strip in &strips {
-                ui.push_id(strip.group, |ui| {
+            for (index, strip) in strips.iter().enumerate() {
+                ui.push_id((strip.group, index), |ui| {
                     strip_ui(ui, graph, strip, &mut edits);
                 });
                 ui.separator();
@@ -260,7 +330,7 @@ mod tests {
     fn harness(session: Session) -> Harness<'static, Session> {
         let mut harness = Harness::new_ui_state(
             |ui, session: &mut Session| {
-                let edits = show(ui, session.project());
+                let edits = show(ui, session.project(), &mut None);
                 session.edit(edits);
             },
             session,
@@ -483,5 +553,65 @@ mod tests {
             [true, true],
             "Bass is muted now, so its fader is greyed too"
         );
+    }
+
+    /// A mixer node (ID 100) with the second track wired into `in1` and the
+    /// first into `in2`, and a stray gain node into `in3`.
+    fn mixed() -> Session {
+        let mut session = two_tracks();
+        let mut edits = vec![
+            Edit::Apply(Command::AddNode {
+                id: NodeId(100),
+                node: Node::new(spare::MIXER)
+                    .with_config(Config::new().with(spare::MIXER_INPUTS, Value::Int(3))),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: NodeId(101),
+                node: Node::new("noodle.util.gain"),
+            }),
+        ];
+        for (from, key, to) in [(4, "p", "in1"), (1, "p", "in2"), (101, "out", "in3")] {
+            edits.push(Edit::Apply(spare::wire(
+                Endpoint::new(NodeId(from), key),
+                Endpoint::new(NodeId(100), to),
+            )));
+        }
+        session.edit(edits);
+        session
+    }
+
+    #[test]
+    fn a_mixer_views_strips_follow_its_inputs() {
+        let session = mixed();
+        let project = session.project();
+        let names: Vec<_> = mixer_strips(project, NodeId(100))
+            .into_iter()
+            .map(|s| (s.name, s.node.is_some()))
+            .collect();
+        // Tracks show their controls; the gain node's strip has none.
+        assert_eq!(
+            names,
+            [
+                ("Bass".to_string(), true),
+                ("Drums".to_string(), true),
+                ("In 3".to_string(), false)
+            ]
+        );
+        assert_eq!(mixers(project), [NodeId(100)]);
+        assert!(mixer_strips(project, NodeId(999)).is_empty());
+    }
+
+    #[test]
+    fn the_drop_down_falls_back_when_the_mixer_is_gone() {
+        let session = two_tracks();
+        let mut harness = Harness::new_ui_state(
+            |ui, view: &mut Option<NodeId>| {
+                show(ui, session.project(), view);
+            },
+            Some(NodeId(100)),
+        );
+        harness.run();
+        assert_eq!(*harness.state(), None);
+        harness.get_by_label("Drums");
     }
 }

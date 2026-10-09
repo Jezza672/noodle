@@ -1323,3 +1323,47 @@ fn the_header_menu_deletes_a_track() {
     h.run();
     assert!(h.state().session.project().graph().node(group).is_none());
 }
+
+fn header_y(index: usize) -> f32 {
+    8.0 + super::colors::RULER_HEIGHT + index as f32 * super::colors::LANE_HEIGHT + 20.0
+}
+
+#[test]
+fn dragging_a_header_up_reorders_the_tracks_in_one_undo_step() {
+    let (mut h, _) = rig();
+    let (group, input, _) = add_real_track(&mut h);
+    let before = h.state().session.project().clone();
+    let shown = |h: &H| super::tracks(h.state().session.project());
+    assert_eq!(shown(&h).last(), Some(&input));
+    // From the third header to the top of the first.
+    drag(
+        &mut h,
+        Modifiers::NONE,
+        &[
+            Pos2::new(14.0, header_y(2)),
+            Pos2::new(14.0, header_y(1)),
+            Pos2::new(14.0, header_y(0) - 14.0),
+        ],
+    );
+    assert_eq!(shown(&h).first(), Some(&input));
+    assert_eq!(h.state().session.project().track_order()[0], group);
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+    assert_eq!(shown(&h).last(), Some(&input));
+}
+
+#[test]
+fn dropping_a_header_where_it_was_changes_nothing() {
+    let (mut h, _) = rig();
+    add_real_track(&mut h);
+    let before = h.state().session.project().clone();
+    drag(
+        &mut h,
+        Modifiers::NONE,
+        &[
+            Pos2::new(14.0, header_y(2)),
+            Pos2::new(14.0, header_y(2) + 5.0),
+        ],
+    );
+    assert_eq!(h.state().session.project(), &before);
+}

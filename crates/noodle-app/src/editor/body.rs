@@ -85,6 +85,10 @@ impl Bodies {
         }
     }
 
+    pub fn scope_view(&self, node: NodeId) -> Option<&ScopeView> {
+        self.scopes.get(&node)
+    }
+
     /// Whether anything is shown that changes while audio plays.
     pub fn is_live(&self) -> bool {
         !self.meters.is_empty() || !self.scopes.is_empty()
@@ -192,7 +196,7 @@ const SCOPE_FRAMES: usize = 1024;
 
 /// One strip per channel, each a min/max trace per pixel column so dense
 /// waveforms stay readable, full scale ±1.
-fn scope(painter: &Painter, area: Rect, zoom: f32, view: Option<&ScopeView>) {
+pub fn scope(painter: &Painter, area: Rect, zoom: f32, view: Option<&ScopeView>) {
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
     let Some(view) = view.filter(|v| v.channels() > 0) else {
         return;

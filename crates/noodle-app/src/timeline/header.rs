@@ -135,6 +135,17 @@ pub struct Changes {
     pub arm: Option<bool>,
     /// The header was clicked: the track is now the selected one.
     pub select: bool,
+    /// The header is being dragged to a new place in the track order.
+    pub drag: Option<HeaderDrag>,
+}
+
+/// A header being dragged by its background.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeaderDrag {
+    /// The pointer's screen y.
+    pub y: f32,
+    /// The button was let go, so the track lands here.
+    pub released: bool,
 }
 
 /// Draws one track's header in `lane` and returns what the user changed.
@@ -157,8 +168,20 @@ pub fn show(
     let edits = &mut changes.edits;
     // Under the header's widgets, so a click on empty header selects the
     // track and a right-click offers to delete it.
-    let background = ui.interact(lane, ui.id().with(("header", input)), egui::Sense::click());
-    changes.select = background.clicked();
+    let background = ui.interact(
+        lane,
+        ui.id().with(("header", input)),
+        egui::Sense::click_and_drag(),
+    );
+    changes.select = background.clicked() || background.drag_started();
+    if background.dragged() || background.drag_stopped() {
+        if let Some(pos) = background.interact_pointer_pos() {
+            changes.drag = Some(HeaderDrag {
+                y: pos.y,
+                released: background.drag_stopped(),
+            });
+        }
+    }
     let group_of_track = graph.node(input).and_then(|n| n.parent);
     background.context_menu(|ui| {
         if ui

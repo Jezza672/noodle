@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use egui::{Key, KeyboardShortcut, Modifiers};
+use noodle_core::NodeId;
 
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
@@ -55,6 +56,11 @@ pub struct App {
     dragging: bool,
     /// Whether the mixer panel is showing.
     mixer_open: bool,
+    /// The mixer node the mixer shows; `None` is one strip per track.
+    mixer_view: Option<NodeId>,
+    scope_open: bool,
+    /// The scope node the scope view shows; `None` is the first one.
+    scope_view: Option<NodeId>,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -74,6 +80,7 @@ enum Action {
     TogglePause,
     AudioSettings,
     ToggleMixer,
+    ToggleScope,
     ImportAudio,
     DeleteSelection,
     Close,
@@ -107,6 +114,9 @@ impl App {
             title: String::new(),
             dragging: false,
             mixer_open: false,
+            mixer_view: None,
+            scope_open: false,
+            scope_view: None,
         }
     }
 
@@ -132,6 +142,67 @@ impl App {
 
     /// Draws the whole window. Separate from [`eframe::App`] so tests can
     /// drive it without a window.
+    /// Opens the view a double-click on a mixer or scope node asked for, on
+    /// that node.
+    fn open_requested_view(&mut self) {
+        let Some(node) = self.editor.take_view_request() else {
+            return;
+        };
+        match self
+            .session
+            .project()
+            .graph()
+            .node(node)
+            .map(|n| n.type_id.as_str())
+        {
+            Some(noodle_core::spare::MIXER) => {
+                self.mixer_open = true;
+                self.mixer_view = Some(node);
+            }
+            Some(_) => {
+                self.scope_open = true;
+                self.scope_view = Some(node);
+            }
+            None => {}
+        }
+    }
+
+    /// The scope view: a drop-down over the project's Scope nodes and a
+    /// larger drawing of the chosen one.
+    fn scope_pane(&mut self, ui: &mut egui::Ui) {
+        let scopes: Vec<NodeId> = self
+            .session
+            .project()
+            .graph()
+            .nodes()
+            .filter(|(_, n)| n.type_id == noodle_nodes::SCOPE_ID)
+            .map(|(id, _)| id)
+            .collect();
+        if self.scope_view.is_some_and(|n| !scopes.contains(&n)) {
+            self.scope_view = None;
+        }
+        let Some(shown) = self.scope_view.or(scopes.first().copied()) else {
+            ui.weak("No Scope nodes yet. Add one in the node editor.");
+            return;
+        };
+        let label = |n: NodeId| format!("Scope {}", n.0);
+        ui.horizontal(|ui| {
+            ui.label("Scope");
+            egui::ComboBox::from_id_salt("scope view")
+                .selected_text(label(shown))
+                .show_ui(ui, |ui| {
+                    for &n in &scopes {
+                        ui.selectable_value(&mut self.scope_view, Some(n), label(n));
+                    }
+                });
+        });
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), theme::SCOPE_VIEW_HEIGHT),
+            egui::Sense::hover(),
+        );
+        editor::draw_scope(ui.painter(), rect, self.editor.scope_view(shown));
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.session.maintain();
         // Before the panels, so a focused button doesn't also see Space.
@@ -151,9 +222,15 @@ impl App {
             egui::Panel::bottom("mixer")
                 .resizable(false)
                 .show(ui, |ui| {
-                    let edits = mixer::show(ui, self.session.project());
+                    let edits = mixer::show(ui, self.session.project(), &mut self.mixer_view);
                     self.session.edit(edits);
                 });
+        }
+
+        if self.scope_open {
+            egui::Panel::bottom("scope")
+                .resizable(false)
+                .show(ui, |ui| self.scope_pane(ui));
         }
 
         let active = self.editor.active;
@@ -196,6 +273,7 @@ impl App {
             .show(ui, |ui| {
                 let edits = editor::show(ui, &mut self.editor, &self.session);
                 self.session.edit(edits);
+                self.open_requested_view();
             });
 
         self.confirm_dialog(ui.ctx(), &mut actions);
@@ -304,6 +382,13 @@ impl App {
             );
         });
         ui.menu_button("View", |ui| {
+            if ui
+                .selectable_label(self.scope_open, "Scope")
+                .on_hover_text("A larger view of a Scope node")
+                .clicked()
+            {
+                actions.push(Action::ToggleScope);
+            }
             if ui
                 .selectable_label(self.mixer_open, "Mixer")
                 .on_hover_text("Gain, mute and solo for each track")
@@ -517,6 +602,7 @@ impl App {
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
+            Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::ImportAudio => {
                 let playhead = self.session.playhead();
                 match self
@@ -719,6 +805,18 @@ mod tests {
         harness.get_by_label("Mixer").click();
         harness.run();
         assert!(harness.query_by_label("Group 1").is_none());
+    }
+
+    #[test]
+    fn the_scope_view_opens_from_the_view_menu() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(harness.query_by_label("Scope").is_none());
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Scope").click();
+        harness.run();
+        harness.get_by_label_contains("No Scope nodes yet");
     }
 
     #[test]
