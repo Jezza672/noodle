@@ -1323,10 +1323,7 @@ fn ctrl_right_drag_from_a_field_cuts() {
     let (_, gain, _) = wired(&mut h);
     let start = field(&h, gain, "gain");
     let rect = scene(&h).node(gain).unwrap().rect;
-    let past = screen(
-        &h,
-        Pos2::new(rect.left() - 100.0, rect.top() + 24.0 + 22.0 + 1.0),
-    );
+    let past = screen(&h, Pos2::new(rect.left() - 100.0, rect.top() + 20.0));
     drag(
         &mut h,
         PointerButton::Secondary,
@@ -1623,4 +1620,97 @@ fn undoing_a_nested_group_lands_in_the_group_around_it() {
     h.state_mut().session.undo();
     h.run();
     assert_eq!(h.state().editor.group, Some(outer));
+}
+
+fn mix_of(h: &mut H, inputs: i64) -> NodeId {
+    let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(inputs));
+    add(
+        h,
+        Node::new("noodle.util.mix")
+            .with_config(config)
+            .at(0.0, 0.0),
+    )
+}
+
+/// The labels of a node's input rows, top to bottom, as screen points.
+fn input_labels(h: &H, node: NodeId) -> Vec<(String, Pos2)> {
+    let scene = scene(h);
+    let geom = scene.node(node).unwrap();
+    let mut rows: Vec<_> = geom
+        .ports
+        .iter()
+        .filter(|p| p.side == Side::Input && !p.in_header)
+        .map(|p| (p.key.clone(), p.row.center() + Vec2::new(-20.0, 0.0)))
+        .collect();
+    rows.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+    rows.into_iter().map(|(k, p)| (k, screen(h, p))).collect()
+}
+
+#[test]
+fn dragging_a_port_label_down_its_column_reorders_it_as_one_undo_step() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let before = h.state().session.project().clone();
+    let rows = input_labels(&h, mix);
+    let keys: Vec<_> = rows.iter().map(|r| r.0.clone()).collect();
+    let (first, last) = (rows[0].1, rows[2].1);
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            first,
+            first + Vec2::new(0.0, 10.0),
+            last + Vec2::new(0.0, 8.0),
+        ],
+    );
+    let after: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    assert_eq!(after, [keys[1].clone(), keys[2].clone(), keys[0].clone()]);
+    // Display only: the node hasn't moved and nothing was recompiled away.
+    assert_eq!(position(&h, mix), Position { x: 0.0, y: 0.0 });
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+    let again: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    assert_eq!(again, keys);
+}
+
+#[test]
+fn dropping_a_port_where_it_was_changes_nothing() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let rows = input_labels(&h, mix);
+    let (a, b) = (rows[1].1, rows[1].1 + Vec2::new(0.0, 3.0));
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[a, a + Vec2::new(0.0, 2.0), b],
+    );
+    assert!(
+        h.state()
+            .log
+            .iter()
+            .all(|e| !matches!(e, Edit::Apply(Command::SetPortOrder { .. }))),
+        "{:?}",
+        h.state().log
+    );
+}
+
+#[test]
+fn dragging_a_port_label_does_not_move_the_node() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let rows = input_labels(&h, mix);
+    let start = rows[0].1;
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(30.0, 10.0),
+            start + Vec2::new(90.0, 5.0),
+        ],
+    );
+    assert_eq!(position(&h, mix), Position { x: 0.0, y: 0.0 });
 }

@@ -883,6 +883,7 @@ impl Effect {
         match command {
             // Changes nothing the engine sees.
             Command::MoveNode { .. }
+            | Command::SetPortOrder { .. }
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}

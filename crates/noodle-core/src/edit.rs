@@ -40,6 +40,11 @@ pub enum Command {
         node: NodeId,
         position: Position,
     },
+    /// Replaces the order the editor lists a node's ports in. Display only.
+    SetPortOrder {
+        node: NodeId,
+        order: Vec<String>,
+    },
     /// Moves a node into a group, or `None` out to the top level. The node
     /// can't be wired to nodes outside its new group.
     SetParent {
@@ -234,6 +239,10 @@ impl Command {
                     node,
                     position: old,
                 }
+            }
+            Command::SetPortOrder { node, order } => {
+                let old = std::mem::replace(&mut graph.node_mut(node)?.port_order, order);
+                Command::SetPortOrder { node, order: old }
             }
             Command::SetParent { node, parent } => {
                 let old = graph.set_parent(node, parent)?;
@@ -569,6 +578,10 @@ mod tests {
             Command::MoveNode {
                 node: mix,
                 position: Position { x: 10.0, y: 20.0 },
+            },
+            Command::SetPortOrder {
+                node: mix,
+                order: vec!["in2".into(), "in".into()],
             },
             Command::SetParam {
                 node: a,

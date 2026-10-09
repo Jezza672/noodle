@@ -58,6 +58,9 @@ pub struct PortGeom {
     pub socket: Pos2,
     /// The port's row of the node, for dropping a wire anywhere on it.
     pub row: Rect,
+    /// Whether the socket sits on the title bar, unlabelled: a node's only
+    /// input or only output has no need of a row.
+    pub in_header: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -157,6 +160,7 @@ impl Scene {
                                     kind,
                                     socket: Pos2::ZERO,
                                     row: Rect::NOTHING,
+                                    in_header: false,
                                 };
                                 for p in &layout.outputs {
                                     ports.push(port(
@@ -214,12 +218,15 @@ impl Scene {
                             kind: PortKind::Unknown,
                             socket: Pos2::ZERO,
                             row: Rect::NOTHING,
+                            in_header: false,
                         });
                     }
                 }
             }
-            // Outputs above inputs, as in Blender, keeping each side's order.
-            ports.sort_by_key(|p| p.side == Side::Input);
+            // The user's order first, then the rest in the node's own.
+            let order = &node.port_order;
+            let rank = |p: &PortGeom| order.iter().position(|key| *key == p.key);
+            ports.sort_by_key(|p| rank(p).unwrap_or(usize::MAX));
 
             let origin = Pos2::new(node.position.x, node.position.y);
             let reroute = node.type_id == REROUTE_ID && error.is_none();
@@ -228,7 +235,12 @@ impl Scene {
                 place_reroute(origin, &mut ports);
                 Rect::from_min_size(origin, REROUTE_SIZE)
             } else {
-                let rect = place_rows(origin, &mut ports);
+                let has_field = |p: &PortGeom| {
+                    p.side == Side::Input
+                        && matches!(p.kind, PortKind::Param(_))
+                        && graph.source(&Endpoint::new(id, p.key.clone())).is_none()
+                };
+                let rect = place_columns(origin, &mut ports, has_field);
                 let height = super::body::height(&node.type_id);
                 if height > 0.0 {
                     let top = rect.bottom() - PADDING;
@@ -325,6 +337,7 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
         kind: PortKind::Audio,
         socket: Pos2::ZERO,
         row: Rect::NOTHING,
+        in_header: false,
     };
     let category = "Group".to_owned();
     match node.type_id.as_str() {
@@ -355,19 +368,69 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
     }
 }
 
-/// Lays out a normal node: a header, then one row per port. Returns the
-/// node's rectangle.
-fn place_rows(origin: Pos2, ports: &mut [PortGeom]) -> Rect {
-    for (i, port) in ports.iter_mut().enumerate() {
-        let top = origin.y + HEADER_HEIGHT + i as f32 * ROW_HEIGHT;
-        port.row = Rect::from_min_size(Pos2::new(origin.x, top), Vec2::new(NODE_WIDTH, ROW_HEIGHT));
+/// Lays out a normal node: a header, then rows with inputs down the left and
+/// outputs down the right. The two sides fill rows independently, except that
+/// an input with a field (`has_field`) takes its whole row. A side with only
+/// one port puts its socket on the header instead. Returns the node's
+/// rectangle.
+fn place_columns(
+    origin: Pos2,
+    ports: &mut [PortGeom],
+    has_field: impl Fn(&PortGeom) -> bool,
+) -> Rect {
+    let count = |side| ports.iter().filter(|p| p.side == side).count();
+    let lone = |side, p: &PortGeom| count(side) == 1 && !has_field(p);
+    // The row each port takes, or None for the header.
+    let mut rows: Vec<Option<usize>> = vec![None; ports.len()];
+    let mut next = 0;
+    // Rows with room for an output beside the input.
+    let mut open = Vec::new();
+    for (i, port) in ports.iter().enumerate() {
+        if port.side == Side::Input && !lone(Side::Input, port) {
+            rows[i] = Some(next);
+            if !has_field(port) {
+                open.push(next);
+            }
+            next += 1;
+        }
+    }
+    let mut open = open.into_iter();
+    for (i, port) in ports.iter().enumerate() {
+        if port.side == Side::Output && !lone(Side::Output, port) {
+            let row = open.next().unwrap_or_else(|| {
+                next += 1;
+                next - 1
+            });
+            rows[i] = Some(row);
+        }
+    }
+    for (port, row) in ports.iter_mut().zip(rows) {
         let x = match port.side {
             Side::Input => origin.x,
             Side::Output => origin.x + NODE_WIDTH,
         };
-        port.socket = Pos2::new(x, top + ROW_HEIGHT / 2.0);
+        let (top, height) = match row {
+            Some(row) => (
+                origin.y + HEADER_HEIGHT + row as f32 * ROW_HEIGHT,
+                ROW_HEIGHT,
+            ),
+            None => (origin.y, HEADER_HEIGHT),
+        };
+        port.in_header = row.is_none();
+        let full = Rect::from_min_size(Pos2::new(origin.x, top), Vec2::new(NODE_WIDTH, height));
+        // A socket on the header only takes its own half of the title bar.
+        port.row = if port.in_header {
+            let half = NODE_WIDTH / 2.0;
+            match port.side {
+                Side::Input => full.with_max_x(origin.x + half),
+                Side::Output => full.with_min_x(origin.x + half),
+            }
+        } else {
+            full
+        };
+        port.socket = Pos2::new(x, top + height / 2.0);
     }
-    let height = HEADER_HEIGHT + ports.len() as f32 * ROW_HEIGHT + PADDING;
+    let height = HEADER_HEIGHT + next as f32 * ROW_HEIGHT + PADDING;
     Rect::from_min_size(origin, Vec2::new(NODE_WIDTH, height))
 }
 
@@ -382,6 +445,7 @@ fn place_reroute(origin: Pos2, ports: &mut [PortGeom]) {
         };
         port.socket = Pos2::new(x, rect.center().y);
         port.row = Rect::from_x_y_ranges(half, rect.y_range());
+        port.in_header = false;
     }
 }
 
@@ -403,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn ports_come_from_the_layout_with_outputs_first() {
+    fn inputs_go_down_the_left_and_a_lone_output_sits_on_the_title_bar() {
         let (mut project, mut history) = (Project::new(), History::new());
         let gain = add(
             &mut project,
@@ -423,22 +487,113 @@ mod tests {
             [
                 (Side::Output, "out"),
                 (Side::Input, "in"),
-                (Side::Input, "gain")
+                (Side::Input, "gain"),
             ]
         );
         assert!(matches!(node.ports[2].kind, PortKind::Param(_)));
         assert_eq!(node.rect.min, Pos2::new(100.0, 50.0));
+        // The output is the only one, so it has no row of its own.
+        assert_eq!(
+            node.rect.height(),
+            HEADER_HEIGHT + 2.0 * ROW_HEIGHT + PADDING
+        );
+        let out = node.port(Side::Output, "out").unwrap();
+        assert!(out.in_header);
+        assert_eq!(out.socket.x, node.rect.right());
+        assert_eq!(out.socket.y, node.rect.top() + HEADER_HEIGHT / 2.0);
+        // Two inputs, so both keep their labels and rows.
+        let input = node.port(Side::Input, "in").unwrap();
+        assert!(!input.in_header);
+        assert_eq!(input.socket.x, node.rect.left());
+        assert!(input.row.contains(input.socket));
+    }
+
+    #[test]
+    fn outputs_share_rows_with_inputs_that_have_no_field() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(3));
+        let mix = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.util.mix").with_config(config),
+        );
+        let scene = Scene::build(&project, &registry(), None);
+        let node = scene.node(mix).unwrap();
+        let rows = node.ports.iter().filter(|p| !p.in_header).count();
+        assert_eq!(rows, 3, "{:?}", node.ports);
+        // Three audio inputs and a lone output: the height is three rows.
         assert_eq!(
             node.rect.height(),
             HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING
         );
-        // Outputs on the right edge, inputs on the left, each in its own row.
-        let out = node.port(Side::Output, "out").unwrap();
-        assert_eq!(out.socket.x, node.rect.right());
-        let input = node.port(Side::Input, "in").unwrap();
-        assert_eq!(input.socket.x, node.rect.left());
-        assert!(input.socket.y > out.socket.y);
-        assert!(input.row.contains(input.socket));
+    }
+
+    #[test]
+    fn several_outputs_fill_the_right_column_beside_the_inputs() {
+        let mut ports = vec![
+            test_port(Side::Input, "a"),
+            test_port(Side::Input, "b"),
+            test_port(Side::Output, "x"),
+            test_port(Side::Output, "y"),
+            test_port(Side::Output, "z"),
+        ];
+        let rect = place_columns(Pos2::ZERO, &mut ports, |_| false);
+        // Three rows, because the outputs outgrow the inputs on their own.
+        assert_eq!(rect.height(), HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING);
+        assert_eq!(ports[0].socket.y, ports[2].socket.y);
+        assert_eq!(ports[1].socket.y, ports[3].socket.y);
+        assert!(ports[4].socket.y > ports[3].socket.y);
+    }
+
+    #[test]
+    fn a_field_takes_its_row_alone() {
+        let mut ports = vec![
+            test_port(Side::Input, "freq"),
+            test_port(Side::Input, "phase"),
+            test_port(Side::Output, "x"),
+            test_port(Side::Output, "y"),
+        ];
+        // The first input has a field, so the first output goes beside the
+        // second input instead.
+        let rect = place_columns(Pos2::ZERO, &mut ports, |p| p.key == "freq");
+        assert_eq!(rect.height(), HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING);
+        assert_eq!(ports[2].socket.y, ports[1].socket.y);
+        assert!(ports[3].socket.y > ports[1].socket.y);
+        assert!(ports[0].row.width() == NODE_WIDTH);
+    }
+
+    #[test]
+    fn a_saved_port_order_overrides_the_nodes_own() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let id = project.new_node_id();
+        let mut node = Node::new("noodle.util.gain");
+        node.port_order = vec!["gain".into()];
+        history
+            .apply(&mut project, Command::AddNode { id, node })
+            .unwrap();
+        let scene = Scene::build(&project, &registry(), None);
+        let keys: Vec<_> = scene
+            .node(id)
+            .unwrap()
+            .ports
+            .iter()
+            .map(|p| p.key.as_str())
+            .collect();
+        // Named ports first, the rest in their own order. The columns are
+        // separate, so only the order within a side shows.
+        assert_eq!(keys, ["gain", "out", "in"]);
+    }
+
+    fn test_port(side: Side, key: &str) -> PortGeom {
+        PortGeom {
+            key: key.into(),
+            name: key.into(),
+            side,
+            kind: PortKind::Audio,
+            socket: Pos2::ZERO,
+            row: Rect::NOTHING,
+            in_header: false,
+        }
     }
 
     #[test]

@@ -59,6 +59,11 @@ pub struct Node {
     /// how signals cross its boundary (see [`group`](crate::group)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<NodeId>,
+    /// The order the editor lists the node's ports in, by port key. Display
+    /// only: ports are still found by key, and the compiler ignores this.
+    /// Ports it doesn't name go last, in their own order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_order: Vec<String>,
 }
 
 impl PartialEq for Node {
@@ -67,6 +72,7 @@ impl PartialEq for Node {
             && self.parent == other.parent
             && self.config == other.config
             && self.position == other.position
+            && self.port_order == other.port_order
             && self.params.len() == other.params.len()
             && self
                 .params
@@ -84,6 +90,7 @@ impl Node {
             config: Config::new(),
             position: Position::default(),
             parent: None,
+            port_order: Vec::new(),
         }
     }
 

@@ -178,8 +178,8 @@ fn boxed(
     if text {
         let clipped = painter.with_clip_rect(header.shrink(2.0 * z));
         clipped.text(
-            header.left_center() + Vec2::new(8.0 * z, 0.0),
-            Align2::LEFT_CENTER,
+            header.center(),
+            Align2::CENTER_CENTER,
             &node.title,
             FontId::proportional(13.0 * z),
             colors::TEXT,
@@ -196,7 +196,7 @@ fn boxed(
 
     let graph = f.project.graph();
     for port in &node.ports {
-        if text {
+        if text && !port.in_header {
             let row = f.t.rect_to_screen(port.row);
             let connected = port.side == Side::Input
                 && graph
@@ -336,6 +336,35 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
                 StrokeAction::Reroute => colors::WIRE_SELECTED,
             };
             painter.extend(Shape::dashed_line(&line, Stroke::new(1.5, color), 6.0, 4.0));
+        }
+        Gesture::Reorder {
+            node,
+            side,
+            key,
+            target,
+        } => {
+            // A line where the port would land.
+            let Some(node) = f.scene.node(*node) else {
+                return;
+            };
+            let rest: Vec<&PortGeom> = node
+                .ports
+                .iter()
+                .filter(|p| p.side == *side && p.key != *key)
+                .collect();
+            let y = match rest.get(*target) {
+                Some(port) => port.row.top(),
+                None => rest
+                    .last()
+                    .map_or(node.rect.top(), |port| port.row.bottom()),
+            };
+            let (x0, x1) = match side {
+                Side::Input => (node.rect.left(), node.rect.center().x),
+                Side::Output => (node.rect.center().x, node.rect.right()),
+            };
+            let a = f.t.to_screen(Pos2::new(x0, y));
+            let b = f.t.to_screen(Pos2::new(x1, y));
+            painter.line_segment([a, b], Stroke::new(2.0, colors::WIRE_SELECTED));
         }
         Gesture::Idle | Gesture::Pan | Gesture::Move { .. } | Gesture::Resize { .. } => {}
     }

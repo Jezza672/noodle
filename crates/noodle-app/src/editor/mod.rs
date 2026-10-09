@@ -247,6 +247,14 @@ enum Gesture {
         original: Frame,
         moved: bool,
     },
+    /// Dragging a port up or down its column. `target` is where it would
+    /// land among the side's other ports.
+    Reorder {
+        node: NodeId,
+        side: Side,
+        key: String,
+        target: usize,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -446,7 +454,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     if response.hovered()
         && matches!(state.gesture, Gesture::Idle)
         && let Some(p) = pointer_pos
-        && let Some(text) = hover_problem(&f, &problems, p)
+        && let Some(text) = hover_text(&f, &problems, p)
     {
         response.on_hover_text_at_pointer(text);
     }
@@ -775,6 +783,19 @@ fn start_primary_drag(
                 }
             }
             state.active = Some(id);
+            // A port's label is its handle: dragging it reorders the column.
+            if let Some(port) = f
+                .scene
+                .node(id)
+                .and_then(|node| label_at(node, f.t.to_graph(start)))
+            {
+                return Gesture::Reorder {
+                    node: id,
+                    side: port.side,
+                    key: port.key.clone(),
+                    target: slot(f, id, port.side, &port.key, f.t.to_graph(start).y),
+                };
+            }
             start_move(state, f, start)
         }
         Hit::FrameHeader(id) => {
@@ -806,6 +827,61 @@ fn start_primary_drag(
             },
         },
     }
+}
+
+/// The port whose label is at the graph point `g`, if it can be reordered:
+/// not on the title bar, not one the node refers to without having, and not
+/// the only one on its side.
+fn label_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
+    let in_row: Vec<_> = node
+        .ports
+        .iter()
+        .filter(|p| !p.in_header && p.kind != PortKind::Unknown && p.row.contains(g))
+        .collect();
+    // Inputs and outputs can share a row, one on each half.
+    let port = match in_row.as_slice() {
+        [] => return None,
+        [only] => *only,
+        _ => {
+            let side = if g.x < node.rect.center().x {
+                Side::Input
+            } else {
+                Side::Output
+            };
+            in_row.into_iter().find(|p| p.side == side)?
+        }
+    };
+    let siblings = node.ports.iter().filter(|p| p.side == port.side).count();
+    (siblings > 1).then_some(port)
+}
+
+/// Where a port dragged to graph height `y` would land among the other ports
+/// on its side: the number of them whose rows are above `y`.
+fn slot(f: &Frame_<'_>, node: NodeId, side: Side, key: &str, y: f32) -> usize {
+    f.scene.node(node).map_or(0, |node| {
+        node.ports
+            .iter()
+            .filter(|p| p.side == side && p.key != key)
+            .filter(|p| p.row.center().y < y)
+            .count()
+    })
+}
+
+/// The keys of `node`'s ports in the order a drag of `key` to `target` would
+/// leave them: that side moved, the other side as it is.
+fn reordered(node: &layout::NodeGeom, side: Side, key: &str, target: usize) -> Vec<String> {
+    let mut mine: Vec<String> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
+    for port in &node.ports {
+        if port.side != side {
+            other.push(port.key.clone());
+        } else if port.key != key {
+            mine.push(port.key.clone());
+        }
+    }
+    mine.insert(target.min(mine.len()), key.to_owned());
+    mine.extend(other);
+    mine
 }
 
 /// The selected nodes and frames, and everything inside the selected frames,
@@ -908,6 +984,12 @@ fn drag(state: &mut EditorState, f: &Frame_<'_>, p: Pos2, edits: &mut Vec<Edit>)
                 points.push(g);
             }
         }
+        Gesture::Reorder {
+            node,
+            side,
+            key,
+            target,
+        } => *target = slot(f, *node, *side, key, g.y),
         Gesture::Idle | Gesture::Pan | Gesture::Link { .. } | Gesture::BoxSelect { .. } => {}
     }
 }
@@ -999,6 +1081,36 @@ fn finish(
             let commands = stroke(f, &points, action, inputs);
             if !commands.is_empty() {
                 edits.push(Edit::Apply(Command::Batch(commands)));
+            }
+        }
+        Gesture::Reorder {
+            node,
+            side,
+            key,
+            target,
+        } => {
+            if let Some(geom) = f.scene.node(node) {
+                let order = reordered(geom, side, &key, target);
+                // Dropping a port where it was is no change.
+                let on_side = |keys: &mut dyn Iterator<Item = &str>| {
+                    keys.map(str::to_owned).collect::<Vec<_>>()
+                };
+                let before = on_side(
+                    &mut geom
+                        .ports
+                        .iter()
+                        .filter(|p| p.side == side)
+                        .map(|p| p.key.as_str()),
+                );
+                let after = on_side(
+                    &mut order
+                        .iter()
+                        .filter(|k| before.contains(k))
+                        .map(String::as_str),
+                );
+                if before != after {
+                    edits.push(Edit::Apply(Command::SetPortOrder { node, order }));
+                }
             }
         }
         Gesture::Idle | Gesture::Pan => {}
@@ -1479,6 +1591,24 @@ fn popups(
             }));
         }
     }
+}
+
+/// The tooltip for whatever's under the pointer: the name of a socket that
+/// has no label of its own, then any problems.
+fn hover_text(f: &Frame_<'_>, problems: &Problems, p: Pos2) -> Option<String> {
+    let name = match hit(f, p) {
+        Hit::Port(endpoint, side) => f
+            .scene
+            .port(&endpoint, side)
+            .filter(|port| port.in_header)
+            .map(|port| port.name.clone()),
+        _ => None,
+    };
+    let texts: Vec<String> = name
+        .into_iter()
+        .chain(hover_problem(f, problems, p))
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
 }
 
 /// The problems with whatever's under the pointer, as tooltip text.
