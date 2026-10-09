@@ -69,19 +69,22 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   milestone. Never commit straight to `main`.
 - **Merging:** squash-merge the PR yourself
   (`gh pr merge --squash --delete-branch`) once CI passes, the tests
-  pass, and Copilot's review has been dealt with (see below).
+  pass, and the Opus review has been dealt with (see below).
 - **CI runs on GitHub-hosted runners** (Linux, macOS and Windows) on every
   push and PR. The repo is public, so minutes are free. There is no
   self-hosted runner: never add one, because fork PRs would run on it.
   - macOS also gets a short `noodle play` listening test on the user's Mac
     (a Remote Control session) for each milestone, and for any change to
     device code. Never produce real audio output there without asking.
-- **Copilot reviews every PR automatically,** about 2–3 minutes after it's
-  opened. Wait for the review before merging.
-  - Decide whether you agree with each comment.
+- **Who does what:** Sonnet agents do the work. Every PR is reviewed by a
+  separate review thread running Opus at medium effort. Don't wait for
+  Copilot's review; it is no longer a merge gate.
+  - Before merging, start the reviewer (an Opus, medium-effort agent that
+    did not write the code) on the PR diff.
+  - Decide whether you agree with each finding.
   - **Fix the ones you agree with in the same PR**, before merging. Don't
     defer review fixes to a later PR.
-  - Leave a PR comment saying what you fixed, and which comments you
+  - Leave a PR comment saying what you fixed, and which findings you
     rejected and why.
 - **Prove that tests can fail.** For a new checker or invariant test,
   deliberately break the code, confirm the test catches it, then restore.
