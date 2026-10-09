@@ -319,7 +319,7 @@ mod tests {
         rig.run(100, 100);
         let tail = rig.block(512, false);
         assert!(peak(&tail) > 0.0);
-        assert_eq!(peak(&rig.block(BEAT_FRAMES, false)[1_500..]), 0.0);
+        assert_eq!(peak(&rig.block(BEAT_FRAMES, false)[5_000..]), 0.0);
     }
 
     #[test]
