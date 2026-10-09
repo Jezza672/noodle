@@ -203,7 +203,17 @@ fn tracks(project: &Project) -> Vec<NodeId> {
         .filter(|(id, node)| node.type_id == TRACK_INPUT || project.clips_on(*id).next().is_some())
         .map(|(id, _)| id)
         .collect();
-    tracks.sort();
+    // Track order is the order of the groups the inputs sit in; an input
+    // with no group (or clips on another node) sorts by its own ID.
+    tracks.sort_by_key(|&id| {
+        let group = project
+            .graph()
+            .node(id)
+            .and_then(|n| n.parent)
+            .unwrap_or(id);
+        let rank = project.track_order().iter().position(|&g| g == group);
+        (rank.unwrap_or(usize::MAX), id)
+    });
     tracks
 }
 
@@ -985,6 +995,27 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
     }
 }
 
+/// Moving `moved` to position `slot` among `tracks` (counted before it was
+/// taken out), as a new track order. `None` when that leaves the order as it
+/// was.
+fn reorder(project: &Project, tracks: &[NodeId], moved: NodeId, slot: usize) -> Option<Edit> {
+    // A track is ordered by its group, or by itself if it has none (see
+    // `tracks`).
+    let key = |input: NodeId| {
+        project
+            .graph()
+            .node(input)
+            .and_then(|n| n.parent)
+            .unwrap_or(input)
+    };
+    let from = tracks.iter().position(|&t| t == moved)?;
+    let before: Vec<NodeId> = tracks.iter().map(|&t| key(t)).collect();
+    let mut order = before.clone();
+    let moved = order.remove(from);
+    order.insert(slot.saturating_sub(usize::from(slot > from)), moved);
+    (order != before).then_some(Edit::Apply(Command::SetTrackOrder(order)))
+}
+
 fn draw_headers(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -1012,6 +1043,15 @@ fn draw_headers(
     let muted_by_solo = graph.solo_muted();
     let clip = ui.clip_rect();
     ui.set_clip_rect(column.intersect(clip));
+    // Each track's block (its lane and its automation rows) on screen, for
+    // working out where a dragged header lands.
+    let blocks: Vec<(f32, f32)> = (0..tracks.len())
+        .map(|i| {
+            let top = content.top() - scroll_y + rows.top(i);
+            (top, top + rows.height(i))
+        })
+        .collect();
+    let mut drop = None;
     for (index, &input) in tracks.iter().enumerate() {
         let top = content.top() - scroll_y + rows.top(index);
         let lane = Rect::from_min_size(
@@ -1054,6 +1094,9 @@ fn draw_headers(
         );
         edits.extend(changes.edits);
         arm.extend(changes.arm.map(|on| (input, on)));
+        if let Some(drag) = changes.drag {
+            drop = Some((input, drag));
+        }
         if changes.select {
             state.selected_track = Some(input);
             state.selected.clear();
@@ -1089,6 +1132,24 @@ fn draw_headers(
     }
     if renaming_group.is_some() && !renaming_seen {
         state.renaming = None;
+    }
+    if let Some((input, drag)) = drop {
+        let slot = blocks
+            .iter()
+            .filter(|(top, bottom)| (top + bottom) / 2.0 < drag.y)
+            .count();
+        let line_y = blocks
+            .get(slot)
+            .map_or_else(|| blocks.last().map_or(content.top(), |b| b.1), |b| b.0);
+        if drag.released {
+            edits.extend(reorder(session.project(), tracks, input, slot));
+        } else {
+            ui.painter_at(column).hline(
+                column.x_range(),
+                line_y,
+                Stroke::new(2.0, colors::SELECTED),
+            );
+        }
     }
     // The button sits in the lane after the last track, so it scrolls with them.
     let top = content.top() - scroll_y + rows.total();
