@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use egui::{Pos2, Rect, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
+use noodle_core::spare;
 use noodle_core::{Connection, Endpoint, FrameId, Graph, Node, NodeId, Project};
 use noodle_engine::{InputKind, ParamInfo, Registry};
 use noodle_nodes::REROUTE_ID;
@@ -24,6 +25,15 @@ pub const FRAME_HANDLE: f32 = 14.0;
 pub enum Side {
     Input,
     Output,
+}
+
+impl Side {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Input => Self::Output,
+            Self::Output => Self::Input,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +71,9 @@ pub struct PortGeom {
     /// Whether the socket sits on the title bar, unlabelled: a node's only
     /// input or only output has no need of a row.
     pub in_header: bool,
+    /// A port that isn't stored yet: the spare on a mixer or a group, which
+    /// becomes real when a wire is dropped on it. Drawn greyed.
+    pub spare: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +174,7 @@ impl Scene {
                                     socket: Pos2::ZERO,
                                     row: Rect::NOTHING,
                                     in_header: false,
+                                    spare: false,
                                 };
                                 for p in &layout.outputs {
                                     ports.push(port(
@@ -219,10 +233,13 @@ impl Scene {
                             socket: Pos2::ZERO,
                             row: Rect::NOTHING,
                             in_header: false,
+                            spare: false,
                         });
                     }
                 }
             }
+            add_spares(graph, id, node, &mut ports);
+
             // The user's order first, then the rest in the node's own.
             let order = &node.port_order;
             let rank = |p: &PortGeom| order.iter().position(|key| *key == p.key);
@@ -319,6 +336,40 @@ impl Scene {
     }
 }
 
+/// Trims a mixer to its wired inputs, and gives mixers and groups a spare
+/// port to wire the next signal to. See [`noodle_core::spare`].
+fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>) {
+    let spare = |side, key: String| PortGeom {
+        name: match spare::mixer_input_index(&key) {
+            Some(i) => format!("In {i}"),
+            None => key.clone(),
+        },
+        key,
+        side,
+        kind: PortKind::Audio,
+        socket: Pos2::ZERO,
+        row: Rect::NOTHING,
+        in_header: false,
+        spare: true,
+    };
+    match node.type_id.as_str() {
+        spare::MIXER if !ports.is_empty() => {
+            let used = spare::mixer_used(graph, id);
+            ports.retain(|p| {
+                p.side != Side::Input || spare::mixer_input_index(&p.key).is_none_or(|i| i <= used)
+            });
+            ports.push(spare(Side::Input, spare::mixer_spare_key(graph, id)));
+        }
+        GROUP => {
+            let input = spare::spare_group_name(graph, id, spare::Side::Input);
+            let output = spare::spare_group_name(graph, id, spare::Side::Output);
+            ports.push(spare(Side::Input, input));
+            ports.push(spare(Side::Output, output));
+        }
+        _ => {}
+    }
+}
+
 /// A group's name, from its `name` config, or just "Group".
 pub fn group_title(graph: &Graph, id: NodeId) -> String {
     match graph.node(id).and_then(|n| n.config.get(group::PORT_NAME)) {
@@ -338,6 +389,7 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
         socket: Pos2::ZERO,
         row: Rect::NOTHING,
         in_header: false,
+        spare: false,
     };
     let category = "Group".to_owned();
     match node.type_id.as_str() {
@@ -508,24 +560,84 @@ mod tests {
         assert!(input.row.contains(input.socket));
     }
 
+    /// A mixer with `wired` of its inputs fed by their own oscillators.
+    fn wired_mixer(
+        project: &mut Project,
+        history: &mut History,
+        config: i64,
+        wired: usize,
+    ) -> NodeId {
+        let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(config));
+        let mix = add(
+            project,
+            history,
+            Node::new("noodle.util.mix").with_config(config),
+        );
+        for i in 1..=wired {
+            let src = add(project, history, Node::new("noodle.osc.sine"));
+            let wire = Command::Connect(Connection {
+                from: Endpoint::new(src, "out"),
+                to: Endpoint::new(mix, format!("in{i}")),
+            });
+            history.apply(project, wire).unwrap();
+        }
+        mix
+    }
+
     #[test]
     fn outputs_share_rows_with_inputs_that_have_no_field() {
         let (mut project, mut history) = (Project::new(), History::new());
-        let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(3));
-        let mix = add(
-            &mut project,
-            &mut history,
-            Node::new("noodle.util.mix").with_config(config),
-        );
+        let mix = wired_mixer(&mut project, &mut history, 3, 3);
         let scene = Scene::build(&project, &registry(), None);
         let node = scene.node(mix).unwrap();
-        let rows = node.ports.iter().filter(|p| !p.in_header).count();
-        assert_eq!(rows, 3, "{:?}", node.ports);
-        // Three audio inputs and a lone output: the height is three rows.
+        // Three wired inputs and the spare, and a lone output on the title
+        // bar: the height is four rows.
+        assert_eq!(node.ports.iter().filter(|p| !p.in_header).count(), 4);
         assert_eq!(
             node.rect.height(),
-            HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING
+            HEADER_HEIGHT + 4.0 * ROW_HEIGHT + PADDING
         );
+    }
+
+    #[test]
+    fn a_mixer_shows_its_wired_inputs_and_one_spare() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        // Five inputs in the config, two wired.
+        let mix = wired_mixer(&mut project, &mut history, 5, 2);
+        let scene = Scene::build(&project, &registry(), None);
+        let inputs: Vec<_> = scene
+            .node(mix)
+            .unwrap()
+            .ports
+            .iter()
+            .filter(|p| p.side == Side::Input)
+            .map(|p| (p.key.as_str(), p.spare))
+            .collect();
+        assert_eq!(inputs, [("in1", false), ("in2", false), ("in3", true)]);
+        // Nothing wired: just the spare.
+        let bare = wired_mixer(&mut project, &mut history, 5, 0);
+        let scene = Scene::build(&project, &registry(), None);
+        let ports = &scene.node(bare).unwrap().ports;
+        let inputs: Vec<_> = ports.iter().filter(|p| p.side == Side::Input).collect();
+        assert_eq!(inputs.len(), 1);
+        assert!(inputs[0].spare);
+        assert_eq!(inputs[0].key, "in1");
+    }
+
+    #[test]
+    fn a_group_has_a_spare_input_and_output() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let scene = Scene::build(&project, &registry(), None);
+        let spares: Vec<_> = scene
+            .node(group)
+            .unwrap()
+            .ports
+            .iter()
+            .filter(|p| p.spare)
+            .map(|p| (p.side, p.key.as_str()))
+            .collect();
+        assert_eq!(spares, [(Side::Input, "in1"), (Side::Output, "out1")]);
     }
 
     #[test]
@@ -593,27 +705,8 @@ mod tests {
             socket: Pos2::ZERO,
             row: Rect::NOTHING,
             in_header: false,
+            spare: false,
         }
-    }
-
-    #[test]
-    fn config_changes_the_ports() {
-        let (mut project, mut history) = (Project::new(), History::new());
-        let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(5));
-        let mix = add(
-            &mut project,
-            &mut history,
-            Node::new("noodle.util.mix").with_config(config),
-        );
-        let scene = Scene::build(&project, &registry(), None);
-        let inputs = scene
-            .node(mix)
-            .unwrap()
-            .ports
-            .iter()
-            .filter(|p| p.side == Side::Input)
-            .count();
-        assert_eq!(inputs, 5);
     }
 
     #[test]

@@ -222,6 +222,8 @@ fn boxed(
                     };
                     let color = if port.kind == PortKind::Unknown {
                         colors::PROBLEM
+                    } else if port.spare {
+                        colors::TEXT_WEAK
                     } else {
                         colors::TEXT
                     };
@@ -255,6 +257,16 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
     let center = f.t.to_screen(port.socket);
     let radius = (4.5 * z).max(2.5);
     let outline = Stroke::new(1.0, colors::NODE_OUTLINE);
+    if port.spare {
+        // Nothing is stored for a spare until a wire goes to it.
+        painter.circle(
+            center,
+            radius,
+            Color32::TRANSPARENT,
+            Stroke::new(1.0, colors::TEXT_WEAK),
+        );
+        return;
+    }
     match port.kind {
         PortKind::Event => {
             let r = radius * 1.2;

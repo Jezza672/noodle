@@ -1622,14 +1622,21 @@ fn undoing_a_nested_group_lands_in_the_group_around_it() {
     assert_eq!(h.state().editor.group, Some(outer));
 }
 
+/// A mixer with `inputs` oscillators wired to its inputs.
 fn mix_of(h: &mut H, inputs: i64) -> NodeId {
     let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(inputs));
-    add(
+    let mix = add(
         h,
         Node::new("noodle.util.mix")
             .with_config(config)
             .at(0.0, 0.0),
-    )
+    );
+    for i in 1..=inputs {
+        let src = add(h, Node::new("noodle.osc.sine").at(-600.0, 150.0 * i as f32));
+        connect(h, src, "out", mix, &format!("in{i}"));
+    }
+    h.run();
+    mix
 }
 
 /// The labels of a node's input rows, top to bottom, as screen points.
@@ -1639,7 +1646,7 @@ fn input_labels(h: &H, node: NodeId) -> Vec<(String, Pos2)> {
     let mut rows: Vec<_> = geom
         .ports
         .iter()
-        .filter(|p| p.side == Side::Input && !p.in_header)
+        .filter(|p| p.side == Side::Input && !p.in_header && !p.spare)
         .map(|p| (p.key.clone(), p.row.center() + Vec2::new(-20.0, 0.0)))
         .collect();
     rows.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
@@ -1857,4 +1864,110 @@ fn paste_with_an_empty_clipboard_does_nothing() {
     let at = empty_space(&h);
     clipboard_event(&mut h, at, Event::Paste(String::new()));
     assert!(h.state().log.is_empty());
+}
+
+fn link(h: &mut H, from: Pos2, to: Pos2) {
+    drag(
+        h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            from,
+            from + Vec2::new(12.0, 6.0),
+            (from + to.to_vec2()) / 2.0,
+            to,
+        ],
+    );
+}
+
+#[test]
+fn wiring_to_a_mixers_spare_input_makes_it_real_in_one_undo_step() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 2);
+    let src = add(&mut h, Node::new("noodle.osc.saw").at(-100.0, 400.0));
+    h.run();
+    let before = h.state().session.project().clone();
+    let spare = socket(&h, mix, Side::Input, "in3");
+    let from = socket(&h, src, Side::Output, "out");
+    link(&mut h, from, spare);
+    assert_eq!(source(&h, mix, "in3"), Some(Endpoint::new(src, "out")));
+    let node = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .node(mix)
+        .unwrap()
+        .clone();
+    assert_eq!(noodle_core::spare::mixer_inputs(&node), 3);
+    // And now there's a new spare after it.
+    assert!(
+        scene(&h)
+            .node(mix)
+            .unwrap()
+            .port(Side::Input, "in4")
+            .unwrap()
+            .spare
+    );
+    assert!(h.state().session.diagnostics().is_empty());
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn wiring_into_a_groups_spare_input_adds_a_port() {
+    use noodle_core::group::{GROUP, GROUP_INPUT};
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    let src = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 300.0));
+    h.run();
+    let before = h.state().session.project().clone();
+    let spare = socket(&h, group, Side::Input, "in1");
+    let from = socket(&h, src, Side::Output, "out");
+    link(&mut h, from, spare);
+    let graph = h.state().session.project().graph();
+    let ports = graph.group_ports(group);
+    assert_eq!(ports.inputs.len(), 1);
+    assert_eq!(
+        graph.node(ports.inputs[0].node).unwrap().type_id,
+        GROUP_INPUT
+    );
+    assert_eq!(source(&h, group, "in1"), Some(Endpoint::new(src, "out")));
+    assert!(
+        scene(&h)
+            .node(group)
+            .unwrap()
+            .port(Side::Input, "in2")
+            .unwrap()
+            .spare
+    );
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn dragging_from_a_groups_spare_output_adds_a_port_too() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(500.0, 0.0));
+    h.run();
+    let from = socket(&h, group, Side::Output, "out1");
+    let to = socket(&h, gain, Side::Input, "in");
+    link(&mut h, from, to);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(group, "out1")));
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.group_ports(group).outputs.len(), 1);
+}
+
+#[test]
+fn a_spare_that_gets_no_wire_stores_nothing() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 2);
+    let before = h.state().session.project().clone();
+    let spare = socket(&h, mix, Side::Input, "in3");
+    // Dropped on empty space.
+    let empty = empty_space(&h);
+    link(&mut h, spare, empty);
+    assert_eq!(h.state().session.project(), &before);
 }

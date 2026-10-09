@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
+use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
 use noodle_engine::{Diagnostic, Location, Registry};
 use noodle_nodes::REROUTE_ID;
@@ -941,7 +942,7 @@ fn label_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
     let in_row: Vec<_> = node
         .ports
         .iter()
-        .filter(|p| !p.in_header && p.kind != PortKind::Unknown && p.row.contains(g))
+        .filter(|p| !p.in_header && !p.spare && p.kind != PortKind::Unknown && p.row.contains(g))
         .collect();
     // Inputs and outputs can share a row, one on each half.
     let port = match in_row.as_slice() {
@@ -956,7 +957,11 @@ fn label_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
             in_row.into_iter().find(|p| p.side == side)?
         }
     };
-    let siblings = node.ports.iter().filter(|p| p.side == port.side).count();
+    let siblings = node
+        .ports
+        .iter()
+        .filter(|p| p.side == port.side && !p.spare)
+        .count();
     (siblings > 1).then_some(port)
 }
 
@@ -1146,6 +1151,7 @@ fn finish(
             detached,
         } => {
             let target = drop_target(f, p, &anchor, side, &kind);
+            let target_end = target.clone().unwrap_or_else(|| anchor.clone());
             let connect = |target: Endpoint| {
                 Command::Connect(match side {
                     Side::Output => Connection {
@@ -1168,6 +1174,19 @@ fn finish(
                 (None, Some(detached)) => Some(Command::Disconnect { input: detached }),
                 (None, None) => None,
             };
+            // A spare port becomes real in the same step as its first wire.
+            let command = command.map(|command| {
+                let mut commands = Vec::new();
+                for (endpoint, side) in [(&anchor, side), (&target_end, side.other())] {
+                    commands.extend(make_real(f, endpoint, side, inputs));
+                }
+                commands.push(command);
+                if commands.len() == 1 {
+                    commands.remove(0)
+                } else {
+                    Command::Batch(commands)
+                }
+            });
             edits.extend(command.map(Edit::Apply));
         }
         Gesture::BoxSelect { start, mode } => {
@@ -1245,6 +1264,39 @@ fn finish(
             }
         }
         Gesture::Idle | Gesture::Pan => {}
+    }
+}
+
+/// What it takes to make the spare port `endpoint` real, if it is one: more
+/// inputs on a mixer, or a boundary node inside a group.
+fn make_real(
+    f: &Frame_<'_>,
+    endpoint: &Endpoint,
+    side: Side,
+    inputs: &mut Inputs<'_>,
+) -> Vec<Command> {
+    let spare_port = f.scene.port(endpoint, side).is_some_and(|p| p.spare);
+    let graph = f.project.graph();
+    let Some(node) = graph.node(endpoint.node).filter(|_| spare_port) else {
+        return Vec::new();
+    };
+    match node.type_id.as_str() {
+        spare::MIXER => spare::prepare_mixer_input(graph, endpoint.node, &endpoint.port),
+        GROUP => {
+            let side = match side {
+                Side::Input => spare::Side::Input,
+                Side::Output => spare::Side::Output,
+            };
+            let id = (inputs.new_node_id)();
+            vec![spare::add_group_port(
+                graph,
+                endpoint.node,
+                side,
+                &endpoint.port,
+                id,
+            )]
+        }
+        _ => Vec::new(),
     }
 }
 
