@@ -74,6 +74,7 @@ enum Action {
     TogglePause,
     AudioSettings,
     ToggleMixer,
+    ImportAudio,
     DeleteSelection,
     Close,
 }
@@ -246,32 +247,56 @@ impl App {
 
     fn menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let ctx = ui.ctx().clone();
-        let mut item = |ui: &mut egui::Ui, text, shortcut: &KeyboardShortcut, enabled, action| {
-            let button = egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut));
-            if ui.add_enabled(enabled, button).clicked() {
-                actions.push(action);
-            }
-        };
+        let mut item =
+            |ui: &mut egui::Ui, text, shortcut: Option<&KeyboardShortcut>, enabled, action| {
+                let mut button = egui::Button::new(text);
+                if let Some(shortcut) = shortcut {
+                    button = button.shortcut_text(ctx.format_shortcut(shortcut));
+                }
+                if ui.add_enabled(enabled, button).clicked() {
+                    actions.push(action);
+                }
+            };
         ui.menu_button("File", |ui| {
-            item(ui, "New", &NEW, true, Action::New);
-            item(ui, "Open…", &OPEN, true, Action::Open);
-            item(ui, "Save", &SAVE, true, Action::Save);
-            item(ui, "Save As…", &SAVE_AS, true, Action::SaveAs);
+            item(ui, "New", Some(&NEW), true, Action::New);
+            item(ui, "Open…", Some(&OPEN), true, Action::Open);
+            item(ui, "Save", Some(&SAVE), true, Action::Save);
+            item(ui, "Save As…", Some(&SAVE_AS), true, Action::SaveAs);
+            ui.separator();
+            item(ui, "Import Audio…", None, true, Action::ImportAudio);
             ui.separator();
             item(
                 ui,
                 "Audio Settings…",
-                &SETTINGS,
+                Some(&SETTINGS),
                 true,
                 Action::AudioSettings,
             );
         });
         ui.menu_button("Edit", |ui| {
-            item(ui, "Undo", &UNDO, self.session.can_undo(), Action::Undo);
-            item(ui, "Redo", &REDO, self.session.can_redo(), Action::Redo);
+            item(
+                ui,
+                "Undo",
+                Some(&UNDO),
+                self.session.can_undo(),
+                Action::Undo,
+            );
+            item(
+                ui,
+                "Redo",
+                Some(&REDO),
+                self.session.can_redo(),
+                Action::Redo,
+            );
             ui.separator();
             let selected = self.editor.has_selection();
-            item(ui, "Delete", &DELETE, selected, Action::DeleteSelection);
+            item(
+                ui,
+                "Delete",
+                Some(&DELETE),
+                selected,
+                Action::DeleteSelection,
+            );
         });
         ui.menu_button("View", |ui| {
             if ui
@@ -487,6 +512,18 @@ impl App {
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
+            Action::ImportAudio => {
+                let playhead = self.session.playhead();
+                match self
+                    .timeline
+                    .import_target(self.session.project(), playhead)
+                {
+                    Some(target) => self.import_audio(target),
+                    None => self
+                        .session
+                        .notify("Add a track before importing audio".to_string()),
+                }
+            }
             Action::DeleteSelection => {
                 if let Some(edit) = self.editor.delete_selection() {
                     self.session.edit([edit]);
@@ -614,6 +651,36 @@ mod tests {
             wanted,
             "kept when it is deselected"
         );
+    }
+
+    #[test]
+    fn importing_from_the_file_menu_needs_a_track() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Import Audio…").click();
+        harness.run();
+        harness.get_by_label("Add a track before importing audio");
+    }
+
+    #[test]
+    fn edit_delete_removes_the_selected_nodes() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        app.editor.selected.insert(id);
+        app.editor.active = Some(id);
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.get_by_label_contains("Delete").click();
+        harness.run();
+        assert!(harness.state().session.project().graph().node(id).is_none());
     }
 
     #[test]
