@@ -209,9 +209,9 @@ marked **now** are small fixes or bugs worth doing before the bigger work.
 **Status:** the node editor polish and the clip and arrangement items are
 done (marked below), and so are the spare ports, renaming, adding tracks
 through the default mixer and deleting tracks, track reordering, the mixer
-view over any mixer node, the scope view and meters on mixer inputs. Still
-to do: group output controls and automation lanes as plain wires (which need
-parameter ports on boundary nodes in the engine), then outputs.
+view over any mixer node, the scope view and meters on mixer inputs, group
+output controls as wires and automation lanes as plain wires. Still to do:
+outputs.
 
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 
@@ -228,7 +228,7 @@ parameter ports on boundary nodes in the engine), then outputs.
   trigger a recompile when it's only drawn.
 - **Done.** Groups can be renamed, and so can their inputs and outputs (7, 8). Track
   renaming already exists (#71), so this extends it to any group and port.
-- A group output's gain and mute can be wired from other nodes (14), like any
+- **Done.** A group output's gain and mute can be wired from other nodes (14), like any
   other parameter, which also means an automation lane can be a plain wire
   (see below).
 
@@ -245,9 +245,10 @@ parameter ports on boundary nodes in the engine), then outputs.
   from the right-click menu (10). Deleting also removes its group.
 - **Done.** A track input's outputs grey out when nothing feeds them, for example the
   `midi` output on a track with no MIDI clips (12).
-- Adding automation to a track connects a generic automation output on the
-  track input node to the track output's parameter input (15), so a lane is
-  an ordinary wire.
+- **Done.** A lane shows as an ordinary wire from an output on the track input
+  node to the track output's parameter input (15). It is drawn from the
+  project's lanes rather than stored as a connection; cutting it removes
+  the lane.
 - **Done.** **Inferred edits never delete anything (16).** When one of these edits has
   to take over an input, it replaces the connection feeding it and leaves
   existing nodes alone. Outputs can fan out, so existing wires from an

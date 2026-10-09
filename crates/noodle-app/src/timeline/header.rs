@@ -38,7 +38,7 @@ fn stored_name(graph: &Graph, group: NodeId) -> Option<String> {
     }
 }
 
-/// Which of a track's controls an automation lane drives. A lane overrides
+/// Which of a track's controls a lane or a wire drives. Either overrides
 /// the parameter it automates, so those controls are greyed out rather than
 /// left doing nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -47,7 +47,7 @@ pub struct Automated {
     pub mute: bool,
 }
 
-pub(crate) const AUTOMATED: &str = "Automated by a lane; edit or remove the lane to change it";
+pub(crate) const AUTOMATED: &str = "Driven by a lane or a wire; edit or remove that to change it";
 
 /// A track's controls: where they are set and what they say now.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -1069,15 +1069,15 @@ fn draw_headers(
                 armed: session.is_armed(input),
                 ..t
             });
-        let automated = controls.map_or_else(header::Automated::default, |t| header::Automated {
-            gain: session
-                .project()
-                .lane_for(&Endpoint::new(t.node, group::GAIN))
-                .is_some(),
-            mute: session
-                .project()
-                .lane_for(&Endpoint::new(t.node, group::MUTE))
-                .is_some(),
+        let automated = controls.map_or_else(header::Automated::default, |t| {
+            let driven = |key| {
+                let input = Endpoint::new(t.node, key);
+                session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
+            };
+            header::Automated {
+                gain: driven(group::GAIN),
+                mute: driven(group::MUTE),
+            }
         });
         let changes = header::show(
             ui,

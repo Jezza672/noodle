@@ -661,29 +661,28 @@ fn drop_target(
         Side::Output => kind.feeds(other),
         Side::Input => other.feeds(kind),
     };
+    let graph = f.project.graph();
     for &i in f.order.iter().rev() {
         let node = &f.scene.nodes[i];
         if node.id == anchor.node {
             continue;
         }
-        let mut candidates = node
-            .ports
-            .iter()
-            .filter(|port| port.side != side && compatible(&port.kind));
+        // A lane's port only shows the lane, so no wire can land on it.
+        let usable = |port: &layout::PortGeom| {
+            port.side != side
+                && compatible(&port.kind)
+                && !layout::is_lane_port(graph, &Endpoint::new(node.id, port.key.clone()))
+        };
+        let mut candidates = node.ports.iter().filter(|port| usable(port));
         // The row under the pointer, then the nearest socket in reach.
         let target = candidates
             .clone()
             .find(|port| port.row.contains(g))
-            .or_else(|| {
-                nearest_socket(f, node, p, |port| {
-                    port.side != side && compatible(&port.kind)
-                })
-            });
+            .or_else(|| nearest_socket(f, node, p, usable));
         if let Some(port) = target {
             return Some(Endpoint::new(node.id, port.key.clone()));
         }
         if node.rect.contains(g) {
-            let graph = f.project.graph();
             let free = |port: &&layout::PortGeom| {
                 port.side == Side::Output
                     || graph
@@ -807,8 +806,7 @@ fn pointer(
             }
             Hit::Nothing => {
                 if let Some(wire) = wire_at(f, p) {
-                    let input = wire.connection.to.clone();
-                    edits.push(Edit::Apply(Command::Disconnect { input }));
+                    edits.push(Edit::Apply(wire.cut()));
                 }
             }
             _ => {}
@@ -861,7 +859,8 @@ fn start_primary_drag(
                     detached: Some(endpoint),
                 };
             }
-            if port.kind == PortKind::Unknown {
+            // A lane's port only shows the lane; it can't take a new wire.
+            if port.kind == PortKind::Unknown || layout::is_lane_port(graph, &endpoint) {
                 return Gesture::Idle;
             }
             Gesture::Link {
@@ -972,6 +971,7 @@ fn splice_for(f: &Frame_<'_>, node: NodeId, rect: Rect) -> Option<Splice> {
         .scene
         .wires
         .iter()
+        .filter(|wire| wire.lane.is_none())
         .filter_map(|wire| {
             let line = wire::flatten(wire::curve(wire.from, wire.to));
             line.iter()
@@ -1408,7 +1408,9 @@ fn stroke(
         };
         let input = wire.connection.to.clone();
         match action {
-            StrokeAction::Cut => commands.push(Command::Disconnect { input }),
+            StrokeAction::Cut => commands.push(wire.cut()),
+            // A lane has no connection to splice a reroute into.
+            StrokeAction::Reroute if wire.lane.is_some() => {}
             StrokeAction::Reroute => {
                 let id = (inputs.new_node_id)();
                 let corner = at - REROUTE_SIZE / 2.0;

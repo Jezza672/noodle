@@ -33,7 +33,7 @@ pub struct Strip {
     pub node: Option<NodeId>,
     /// Silent because another track is soloed.
     pub muted_by_solo: bool,
-    /// An automation lane drives the gain, so the fader would do nothing.
+    /// A lane or wire drives the gain, so the fader would do nothing.
     pub gain_automated: bool,
     /// The same for mute.
     pub mute_automated: bool,
@@ -115,10 +115,13 @@ pub fn strips(project: &Project) -> Vec<Strip> {
         .collect()
 }
 
-/// Whether a lane drives `key` on `node`, which then overrides what the
-/// strip sets.
+/// Whether a lane or a wire drives `key` on `node`, which then overrides what
+/// the strip sets.
 fn driven(project: &Project, node: Option<NodeId>, key: &str) -> bool {
-    node.is_some_and(|node| project.lane_for(&Endpoint::new(node, key)).is_some())
+    node.is_some_and(|node| {
+        let input = Endpoint::new(node, key);
+        project.lane_for(&input).is_some() || project.graph().source(&input).is_some()
+    })
 }
 
 /// A change to a group's gain, as one step of a drag or a lone edit.

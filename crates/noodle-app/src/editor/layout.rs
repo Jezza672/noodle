@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use egui::{Pos2, Rect, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
-use noodle_core::{Connection, Endpoint, FrameId, Graph, Node, NodeId, Project};
-use noodle_engine::{InputKind, ParamInfo, Registry};
+use noodle_core::{Command, Connection, Endpoint, FrameId, Graph, LaneId, Node, NodeId, Project};
+use noodle_engine::{InputKind, ParamInfo, Registry, Unit};
 use noodle_nodes::REROUTE_ID;
 
 pub const NODE_WIDTH: f32 = 160.0;
@@ -106,6 +106,9 @@ impl NodeGeom {
 #[derive(Clone, Debug)]
 pub struct WireGeom {
     pub connection: Connection,
+    /// Set for a wire that stands for an automation lane: it isn't stored as
+    /// a connection, and cutting it removes the lane.
+    pub lane: Option<LaneId>,
     pub from: Pos2,
     pub to: Pos2,
     pub event: bool,
@@ -116,6 +119,63 @@ pub struct FrameGeom {
     pub id: FrameId,
     pub label: String,
     pub rect: Rect,
+}
+
+impl WireGeom {
+    /// The command that removes this wire: a disconnect, or for a lane's
+    /// wire, removing the lane.
+    pub fn cut(&self) -> Command {
+        match self.lane {
+            Some(id) => Command::RemoveLane { id },
+            None => Command::Disconnect {
+                input: self.connection.to.clone(),
+            },
+        }
+    }
+}
+
+/// The key of the port on a track's input node that stands for a lane.
+fn lane_key(lane: LaneId) -> String {
+    format!("lane{}", lane.0)
+}
+
+/// Whether `endpoint` is the port that stands for a lane on a track's input.
+pub fn is_lane_port(graph: &Graph, endpoint: &Endpoint) -> bool {
+    endpoint.port.starts_with("lane")
+        && graph
+            .node(endpoint.node)
+            .is_some_and(|n| n.type_id == group::TRACK_INPUT)
+}
+
+/// The lanes shown as wires from `node`, when it is a track's input: those
+/// driving a boundary node of its group. A lane has no wire of its own in
+/// the project, so the first track input in a group stands for all of them.
+fn lane_wires(project: &Project, node: NodeId) -> Vec<(LaneId, Endpoint)> {
+    let graph = project.graph();
+    let Some(input) = graph.node(node).filter(|n| n.type_id == group::TRACK_INPUT) else {
+        return Vec::new();
+    };
+    let first = graph
+        .children(input.parent)
+        .find(|(_, n)| n.type_id == group::TRACK_INPUT)
+        .map(|(id, _)| id);
+    if first != Some(node) {
+        return Vec::new();
+    }
+    project
+        .lanes()
+        .filter(|(_, lane)| {
+            // Solo has no port, and a real wire in the way hides the lane.
+            matches!(lane.target.port.as_str(), group::GAIN | group::MUTE)
+                && graph.source(&lane.target).is_none()
+                && !lane.points.is_empty()
+                && graph.node(lane.target.node).is_some_and(|n| {
+                    n.parent == input.parent
+                        && matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT)
+                })
+        })
+        .map(|(id, lane)| (id, lane.target.clone()))
+        .collect()
 }
 
 impl FrameGeom {
@@ -259,6 +319,28 @@ impl Scene {
             }
             add_spares(graph, id, node, &mut ports);
             if node.type_id == group::TRACK_INPUT {
+                for (lane, target) in lane_wires(project, id) {
+                    ports.push(PortGeom {
+                        key: lane_key(lane),
+                        name: format!(
+                            "{} {} lane",
+                            match graph.node(target.node).map(|n| n.type_id.as_str()) {
+                                Some(GROUP_INPUT) => "In",
+                                _ => "Out",
+                            },
+                            target.port
+                        ),
+                        side: Side::Output,
+                        kind: PortKind::Audio,
+                        socket: Pos2::ZERO,
+                        row: Rect::NOTHING,
+                        in_header: false,
+                        spare: false,
+                        idle: false,
+                    });
+                }
+            }
+            if node.type_id == group::TRACK_INPUT {
                 // A track's outputs carry what its clips make.
                 let audio = project.clips_on(id).any(|(_, c)| c.as_audio().is_some());
                 for port in &mut ports {
@@ -286,6 +368,9 @@ impl Scene {
                     p.side == Side::Input
                         && matches!(p.kind, PortKind::Param(_))
                         && graph.source(&Endpoint::new(id, p.key.clone())).is_none()
+                        && project
+                            .lane_for(&Endpoint::new(id, p.key.clone()))
+                            .is_none()
                 };
                 let rect = place_columns(origin, &mut ports, has_field);
                 let height = super::body::height(&node.type_id);
@@ -338,6 +423,7 @@ impl Scene {
                 let from = scene.port(&connection.from, Side::Output)?;
                 let to = scene.port(&connection.to, Side::Input)?;
                 Some(WireGeom {
+                    lane: None,
                     event: from.kind == PortKind::Event,
                     from: from.socket,
                     to: to.socket,
@@ -345,6 +431,26 @@ impl Scene {
                 })
             })
             .collect();
+        // Lanes show as wires from their track's input node.
+        for &id in scene.index.keys() {
+            for (lane, target) in lane_wires(project, id) {
+                let from = Endpoint::new(id, lane_key(lane));
+                let (Some(a), Some(b)) = (
+                    scene.port(&from, Side::Output),
+                    scene.port(&target, Side::Input),
+                ) else {
+                    continue;
+                };
+                let (a, b) = (a.socket, b.socket);
+                scene.wires.push(WireGeom {
+                    lane: Some(lane),
+                    event: false,
+                    from: a,
+                    to: b,
+                    connection: Connection { from, to: target },
+                });
+            }
+        }
         scene
     }
 
@@ -426,6 +532,25 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
         idle: false,
     };
     let category = "Group".to_owned();
+    // A boundary node's gain and mute are parameters, so they have ports and
+    // can be wired like any other. Solo is read from the project, so it has
+    // none.
+    let controls = || {
+        [
+            (
+                group::GAIN,
+                "Gain",
+                ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
+            ),
+            (group::MUTE, "Mute", ParamInfo::choice(["Off", "On"])),
+        ]
+        .map(|(key, name, info)| {
+            let mut port = port(Side::Input, name);
+            port.key = key.to_owned();
+            port.kind = PortKind::Param(info);
+            port
+        })
+    };
     match node.type_id.as_str() {
         GROUP => {
             let ports = graph.group_ports(id);
@@ -442,13 +567,17 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
             let name = group::port_name(id, node);
             let mut input = port(Side::Output, &name);
             input.key = group::INPUT_PORT.to_owned();
-            Some(("Group Input".to_owned(), category, vec![input]))
+            let mut ports = vec![input];
+            ports.extend(controls());
+            Some(("Group Input".to_owned(), category, ports))
         }
         GROUP_OUTPUT => {
             let name = group::port_name(id, node);
             let mut output = port(Side::Input, &name);
             output.key = group::OUTPUT_PORT.to_owned();
-            Some(("Group Output".to_owned(), category, vec![output]))
+            let mut ports = vec![output];
+            ports.extend(controls());
+            Some(("Group Output".to_owned(), category, ports))
         }
         _ => None,
     }
@@ -710,6 +839,78 @@ mod tests {
             .unwrap();
         // There are no MIDI clips yet, so midi stays idle.
         assert_eq!(idle(&project), (false, true));
+    }
+
+    #[test]
+    fn boundary_nodes_have_gain_and_mute_ports() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let output = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_OUTPUT).in_group(group),
+        );
+        let scene = Scene::build(&project, &registry(), Some(group));
+        let node = scene.node(output).unwrap();
+        for key in ["gain", "mute"] {
+            let port = node.port(Side::Input, key).unwrap();
+            assert!(matches!(port.kind, PortKind::Param(_)), "{key}");
+        }
+        assert!(node.port(Side::Input, "solo").is_none());
+    }
+
+    #[test]
+    fn a_lane_on_a_boundary_shows_as_a_wire_from_the_track_input() {
+        use noodle_core::group::{GAIN, TRACK_INPUT, create_track};
+        use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
+        let (mut project, mut history) = (Project::new(), History::new());
+        let mut next = 0;
+        let (group, create) = create_track(None, Position::default(), || {
+            next += 1;
+            NodeId(next)
+        });
+        history.apply(&mut project, create).unwrap();
+        let children = |project: &Project, kind: &str| {
+            project
+                .graph()
+                .children(Some(group))
+                .find(|(_, n)| n.type_id == kind)
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        let (input, output) = (
+            children(&project, TRACK_INPUT),
+            children(&project, GROUP_OUTPUT),
+        );
+        let target = Endpoint::new(output, GAIN);
+        let id = project.new_lane_id();
+        let point = AutomationPoint {
+            tick: Tick(0),
+            value: -6.0,
+            curve: Curve::Linear,
+        };
+        let lane = AutomationLane::new(target.clone(), vec![point]);
+        history
+            .apply(&mut project, Command::AddLane { id, lane })
+            .unwrap();
+        let scene = Scene::build(&project, &registry(), Some(group));
+        let wire = scene.wires.iter().find(|w| w.lane == Some(id)).unwrap();
+        assert_eq!(wire.connection.from.node, input);
+        assert_eq!(wire.connection.to, target);
+        assert_eq!(wire.cut(), Command::RemoveLane { id });
+
+        // A real wire into the port takes over; the lane waits behind it.
+        let mix = add(&mut project, &mut history, Node::new("mix").in_group(group));
+        let connection = Connection {
+            from: Endpoint::new(mix, "out"),
+            to: target.clone(),
+        };
+        history
+            .apply(&mut project, Command::Connect(connection))
+            .unwrap();
+        let scene = Scene::build(&project, &registry(), Some(group));
+        assert!(scene.wires.iter().all(|w| w.lane.is_none()));
+        assert!(scene.wires.iter().any(|w| w.connection.to == target));
     }
 
     #[test]

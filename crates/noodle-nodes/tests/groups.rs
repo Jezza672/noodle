@@ -99,6 +99,74 @@ fn a_groups_gain_scales_what_comes_out_of_it() {
     }
 }
 
+/// A constant source inside the output's group, wired into one of the output
+/// node's parameter ports.
+fn wire_constant(project: &mut Project, history: &mut History, output: NodeId, port: &str, v: f32) {
+    use noodle_core::{Command, Endpoint, Node};
+    let group = project.graph().node(output).unwrap().parent.unwrap();
+    let id = project.new_node_id();
+    let mut node = Node::new("noodle.util.mix").in_group(group);
+    node.params.insert("in1".into(), v);
+    history
+        .apply(project, Command::AddNode { id, node })
+        .unwrap();
+    let connection = noodle_core::Connection {
+        from: Endpoint::new(id, "out"),
+        to: Endpoint::new(output, port),
+    };
+    history
+        .apply(project, Command::Connect(connection))
+        .unwrap();
+}
+
+#[test]
+fn a_wire_can_drive_a_groups_gain() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    // The wire replaces the value set on the node.
+    set(&mut project, &mut history, output, "gain", -40.0);
+    wire_constant(&mut project, &mut history, output, "gain", -6.0206);
+    let quieter = render_project(&project);
+    assert_eq!(quieter.len(), flat.len());
+    for (a, b) in quieter.iter().zip(&flat) {
+        assert!((a - b * 0.5).abs() < 1e-3, "{a} vs half of {b}");
+    }
+}
+
+#[test]
+fn a_wire_can_drive_a_groups_mute() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    wire_constant(&mut project, &mut history, output, "mute", 1.0);
+    let mut registry = Registry::with_builtins();
+    let _telemetry = noodle_nodes::register_all(&mut registry);
+    let silent = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
+    assert!(silent.diagnostics.is_empty(), "{:?}", silent.diagnostics);
+    assert!(silent.samples.iter().all(|&x| x == 0.0));
+    wire_constant(&mut project, &mut history, output, "mute", 0.0);
+    assert_eq!(render_project(&project), flat);
+}
+
+#[test]
+fn a_wire_wins_over_a_lane_on_the_same_port() {
+    let (mut project, mut history, flat, output) = grouped_output();
+    add_lane(
+        &mut project,
+        &mut history,
+        noodle_core::Endpoint::new(output, "gain"),
+        -40.0,
+    );
+    wire_constant(&mut project, &mut history, output, "gain", 0.0);
+    let rendered = render_lanes(&project);
+    assert_eq!(rendered.samples, flat);
+    assert!(
+        rendered
+            .diagnostics
+            .iter()
+            .any(|d| d.problem == noodle_engine::Problem::LaneOverridden),
+        "{:?}",
+        rendered.diagnostics
+    );
+}
+
 #[test]
 fn a_muted_group_is_silent_and_unmuting_restores_it() {
     let (mut project, mut history, flat, output) = grouped_output();
