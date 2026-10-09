@@ -6,7 +6,7 @@ use noodle_core::Endpoint;
 
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
 use super::view::Transform;
-use super::{EditorState, Frame_, Gesture, Problems, StrokeAction, body, wire};
+use super::{EditorState, Frame_, Gesture, Problems, Splice, StrokeAction, body, wire};
 use crate::theme::{self, editor as colors};
 
 /// Below this zoom, text is too small to read, so it isn't drawn.
@@ -86,6 +86,7 @@ pub fn wires(
     state: &EditorState,
     problems: &Problems,
     detached: Option<&Endpoint>,
+    splice: Option<&Splice>,
 ) {
     let z = f.t.zoom;
     for wire in &f.scene.wires {
@@ -95,8 +96,11 @@ pub fn wires(
         let problem = problems.wires.contains_key(&wire.connection.to);
         let selected = state.selected.contains(&wire.connection.from.node)
             || state.selected.contains(&wire.connection.to.node);
+        let splicing = splice.is_some_and(|s| s.wire == wire.connection);
         let color = if problem {
             colors::PROBLEM
+        } else if splicing {
+            colors::ACTIVE
         } else if wire.event {
             colors::EVENT_WIRE
         } else if selected {

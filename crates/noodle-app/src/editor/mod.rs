@@ -423,7 +423,8 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         Gesture::Link { detached, .. } => detached.as_ref(),
         _ => None,
     };
-    draw::wires(&painter, &f, state, &problems, detached);
+    let splice = splice_while_dragging(state, &f, ui.input(|i| i.modifiers.alt));
+    draw::wires(&painter, &f, state, &problems, detached, splice.as_ref());
     let front = pointer_pos.and_then(|p| match hit(&f, p) {
         Hit::Port(endpoint, _) => Some(endpoint.node),
         Hit::Node(id) => Some(id),
@@ -693,7 +694,7 @@ fn pointer(
             state.gesture = gesture;
             drag(state, f, p, edits);
             let gesture = std::mem::take(&mut state.gesture);
-            finish(state, f, gesture, p, inputs, edits);
+            finish(state, f, gesture, p, modifiers.alt, inputs, edits);
         }
     }
 
@@ -826,6 +827,98 @@ fn start_primary_drag(
                 BoxMode::Replace
             },
         },
+    }
+}
+
+/// Dropping a node onto a wire: the wire is replaced by one into the node and
+/// one out of it.
+#[derive(Clone, Debug, PartialEq)]
+struct Splice {
+    /// The wire it replaces.
+    wire: Connection,
+    /// The node's ports that take its place.
+    node: NodeId,
+    via_in: String,
+    via_out: String,
+}
+
+impl Splice {
+    fn commands(&self) -> Vec<Command> {
+        vec![
+            Command::Connect(Connection {
+                from: self.wire.from.clone(),
+                to: Endpoint::new(self.node, self.via_in.clone()),
+            }),
+            // Replaces the wire this node is being put into.
+            Command::Connect(Connection {
+                from: Endpoint::new(self.node, self.via_out.clone()),
+                to: self.wire.to.clone(),
+            }),
+        ]
+    }
+}
+
+/// How a node at `rect` would splice into a wire it lies on, if it can: it
+/// has no wires yet, and has an input and an output that suit the wire's
+/// signal, the main signal port before a parameter port.
+fn splice_for(f: &Frame_<'_>, node: NodeId, rect: Rect) -> Option<Splice> {
+    let graph = f.project.graph();
+    if graph
+        .connections()
+        .any(|c| c.from.node == node || c.to.node == node)
+    {
+        return None;
+    }
+    let geom = f.scene.node(node)?;
+    // The wire nearest the node's middle among those that cross it.
+    let centre = rect.center();
+    let wire = f
+        .scene
+        .wires
+        .iter()
+        .filter_map(|wire| {
+            let line = wire::flatten(wire::curve(wire.from, wire.to));
+            line.iter()
+                .any(|&p| rect.contains(p))
+                .then(|| (wire::distance_to_polyline(centre, &line), wire))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))?
+        .1;
+    let from = &f.scene.port(&wire.connection.from, Side::Output)?.kind;
+    let to = &f.scene.port(&wire.connection.to, Side::Input)?.kind;
+    let via_in = geom
+        .ports
+        .iter()
+        .filter(|p| p.side == Side::Input && from.feeds(&p.kind))
+        .min_by_key(|p| matches!(p.kind, PortKind::Param(_)))?;
+    let via_out = geom
+        .ports
+        .iter()
+        .find(|p| p.side == Side::Output && p.kind.feeds(to))?;
+    Some(Splice {
+        wire: wire.connection.clone(),
+        node,
+        via_in: via_in.key.clone(),
+        via_out: via_out.key.clone(),
+    })
+}
+
+/// The splice a node being dragged would make where it is now.
+fn splice_while_dragging(state: &EditorState, f: &Frame_<'_>, alt: bool) -> Option<Splice> {
+    if alt {
+        return None;
+    }
+    match &state.gesture {
+        Gesture::Move {
+            nodes,
+            frames,
+            moved: true,
+            ..
+        } if frames.is_empty() => match nodes.as_slice() {
+            [(id, _)] => splice_for(f, *id, f.scene.node(*id)?.rect),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -999,11 +1092,37 @@ fn finish(
     f: &Frame_<'_>,
     gesture: Gesture,
     p: Pos2,
+    alt: bool,
     inputs: &mut Inputs<'_>,
     edits: &mut Vec<Edit>,
 ) {
     match gesture {
-        Gesture::Move { moved, .. } | Gesture::Resize { moved, .. } => {
+        Gesture::Move {
+            start,
+            nodes,
+            frames,
+            moved,
+        } => {
+            if moved {
+                // Where the node ended up, which the scene hasn't seen yet.
+                let splice = match nodes.as_slice() {
+                    [(id, origin)] if frames.is_empty() && !alt => {
+                        let size = f.scene.node(*id).map(|n| n.rect.size());
+                        size.and_then(|size| {
+                            let at = *origin + (f.t.to_graph(p) - start);
+                            splice_for(f, *id, Rect::from_min_size(at, size))
+                        })
+                    }
+                    _ => None,
+                };
+                // In the move's undo step, so one undo puts both back.
+                if let Some(splice) = splice {
+                    edits.push(Edit::Drag(Command::Batch(splice.commands())));
+                }
+                edits.push(Edit::EndDrag);
+            }
+        }
+        Gesture::Resize { moved, .. } => {
             if moved {
                 edits.push(Edit::EndDrag);
             }

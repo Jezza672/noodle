@@ -1714,3 +1714,72 @@ fn dragging_a_port_label_does_not_move_the_node() {
     );
     assert_eq!(position(&h, mix), Position { x: 0.0, y: 0.0 });
 }
+
+/// Drags `node` by its title so its middle ends up at screen point `to`.
+fn drag_node_to(h: &mut H, node: NodeId, modifiers: Modifiers, to: Pos2) {
+    let grab = title(h, node);
+    let rect = scene(h).node(node).unwrap().rect;
+    let middle = screen(h, rect.center());
+    let end = grab + (to - middle);
+    drag(
+        h,
+        PointerButton::Primary,
+        modifiers,
+        &[
+            grab,
+            grab + Vec2::new(5.0, 5.0),
+            (grab + end.to_vec2()) / 2.0,
+            end,
+        ],
+    );
+}
+
+#[test]
+fn dropping_a_node_on_a_wire_splices_it_in_as_one_undo_step() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(0.0, 300.0));
+    h.run();
+    let before = h.state().session.project().clone();
+    drag_node_to(&mut h, filter, Modifiers::NONE, stroke[1]);
+    assert_eq!(source(&h, filter, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(filter, "out")));
+    assert!(h.state().session.diagnostics().is_empty());
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn alt_drops_a_node_on_a_wire_without_splicing() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, filter, Modifiers::ALT, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, filter, "in"), None);
+}
+
+#[test]
+fn a_node_with_wires_isnt_spliced() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let other = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 300.0));
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(200.0, 300.0));
+    connect(&mut h, other, "out", filter, "in");
+    h.run();
+    drag_node_to(&mut h, filter, Modifiers::NONE, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+}
+
+#[test]
+fn a_node_with_no_matching_ports_isnt_spliced() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    // The output node has inputs but nothing to carry the signal on.
+    let out = add(&mut h, Node::new(OUTPUT_ID).at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, out, Modifiers::NONE, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, out, "in"), None);
+}
