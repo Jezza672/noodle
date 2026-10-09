@@ -148,36 +148,40 @@ on it.
 
 It becomes a DAW.
 
-**Status:** In progress. The engine side of M2 is done and tested; the app
-side is not. The time and automation models are in
+**Status:** Code complete for the "done when", apart from listening on a
+real device. The time and automation models are in
 [ARCHITECTURE.md](ARCHITECTURE.md), and the engine has a transport (play,
 stop, seek, loop, a tempo table), group nodes and tracks, the track input
 with audio clips (decoding, resampling, disk streaming, gapless loops), and
 automation lanes, including lanes on a track's gain and mute (solo can't be
 automated). The app has the transport bar, the arrangement's lanes, ruler,
 playhead and movable, trimmable clips with waveforms and draggable fades,
-track headers with mute, solo and gain, Add track, and an editor for gain
-and mute automation lanes. The session feeds the project's lanes,
+adding audio by drop or import, track headers with mute, solo and gain, Add
+track, an editor for gain and mute automation lanes, a mixer view, and
+recording into the arrangement. The session feeds the project's lanes,
 tempo and clips to the running engine, and the playhead can be set and read
 while stopped. The UI follows the Studio direction: inspector on the left,
 the arrangement on top, and the selected track's node graph below.
 
-The engine-side acceptance test (`noodle-nodes/tests/m2_acceptance.rs`)
-arranges clips on three tracks, runs one through a gain node, automates
-another's output gain and mixes down, offline and live, checking the levels.
-It does not show that a user can do this in the app.
+Two acceptance tests check the "done when". The engine-side one
+(`noodle-nodes/tests/m2_acceptance.rs`) arranges clips on three tracks, runs
+one through a gain node, automates another's output gain and mixes down,
+offline and live, checking the levels. The app-side one
+(`noodle-app/src/acceptance.rs`) does the user's part through the UI: it adds
+tracks, drops clips on them, makes and clicks in a mute lane, opens the
+mixer, then mixes down offline (checking the levels) and plays live on a null
+device (checking that every clip streams).
 
-**Still missing for "done when":**
+**Still open for M2:**
 
-- Check that the clip import (drop and Import audio) and the mixer view,
-  both now in the app, are covered by the app-level "done when" test; the
-  M2 follow-ups below are what's left of them.
-- Recording into the arrangement has merged (#72): arm tracks with R,
-  record, and each armed track gets one clip, as a single undo step. Still
-  open are latency compensation for takes and a check with a real
-  microphone on the Mac.
-- Nothing has been listened to on a real device: the Mac checks and the
-  Windows CI run for the milestone are still to do.
+- Nothing has been listened to on a real device. CI now runs Linux, macOS
+  and Windows on every PR, so the remaining check is a short `noodle play`
+  on the Mac.
+- Recording has no latency compensation for takes yet, and hasn't been tried
+  with a real microphone.
+- The follow-ups below (group ports, track order and delete, mixer
+  nodes, several outputs, clip copying) are the rest of the milestone's
+  planned work.
 
 - **Transport:** play, stop, loop, tempo map and time signature.
 - Group nodes, with Tab to enter and leave them (done; group controls and

@@ -402,3 +402,196 @@ fn a_clip_on_a_track_plays_and_follows_edits() {
     h.state_mut().session_mut().stop();
     assert!(h.state().session().clip_problems().is_empty());
 }
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        Err("not needed".into())
+    }
+}
+
+/// Drops `file` with the pointer at `at`.
+fn drop_file(h: &mut H, at: Pos2, file: &Path) {
+    h.event(Event::PointerMoved(at));
+    h.step();
+    h.input_mut()
+        .dropped_files
+        .push(std::sync::Arc::new(Dropped(file.to_owned())));
+    h.step();
+    h.run();
+}
+
+/// M2's "done when", driven through the whole app as a user would: arrange
+/// clips on tracks, automate a parameter, look at the mixer, and mix down,
+/// offline and live, checking the levels.
+#[test]
+fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
+    use noodle_core::group::{GROUP_OUTPUT, MUTE};
+    use noodle_core::{Curve, Tick};
+
+    const RATE: usize = 48_000;
+    const BEAT: usize = RATE / 2;
+    let dir = tempfile::tempdir().unwrap();
+    crate::prefs::init(dir.path().join("prefs.ron"));
+    // Four beats of a constant each, so the mix reads exactly.
+    let tone = dir.path().join("tone.wav");
+    let quiet = dir.path().join("quiet.wav");
+    noodle_io::write_wav(&tone, &vec![0.5; 4 * BEAT], 1, RATE as u32).unwrap();
+    noodle_io::write_wav(&quiet, &vec![0.25; 4 * BEAT], 1, RATE as u32).unwrap();
+    let path = dir.path().join("song.ron");
+    std::fs::write(&path, Project::new().to_ron()).unwrap();
+    #[allow(unused_mut)]
+    let mut session = open(&path);
+    #[cfg(target_os = "linux")]
+    session.set_audio_config(null_devices());
+    let mut h = harness(App::new(session));
+
+    // Two tracks, with a clip dropped on each lane at the first beat.
+    for _ in 0..2 {
+        h.get_by_label("+ Add track").click();
+        h.run();
+    }
+    let lane_at = |h: &H, name: &str| {
+        let label = h.get_by_label(name).rect();
+        Pos2::new(label.left() - 12.0 + 150.0 + 10.0, label.top() + 20.0)
+    };
+    let first = lane_at(&h, "Track 1");
+    drop_file(&mut h, first, &tone);
+    let second = lane_at(&h, "Track 2");
+    drop_file(&mut h, second, &quiet);
+    let clips: Vec<_> = h
+        .state()
+        .session()
+        .project()
+        .clips()
+        .map(|(_, clip)| (clip.node, clip.start))
+        .collect();
+    assert_eq!(clips.len(), 2, "{clips:?}");
+    assert!(clips.iter().all(|&(_, start)| start == Tick(0)));
+
+    // Track 2 mutes itself from the third beat, through a lane made in the
+    // header menu and clicked into the row.
+    let outputs: Vec<NodeId> = h
+        .state()
+        .session()
+        .project()
+        .graph()
+        .nodes()
+        .filter(|(_, node)| node.type_id == GROUP_OUTPUT)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(outputs.len(), 2);
+    h.get_all_by_label("~").nth(1).unwrap().click();
+    h.run();
+    h.get_by_label("Automate Mute").click();
+    h.run();
+    let (lane, _) = {
+        let project = h.state().session().project();
+        let found = outputs
+            .iter()
+            .find_map(|&out| project.lane_for(&Endpoint::new(out, MUTE)))
+            .expect("the lane was made");
+        (found.0, found.1.clone())
+    };
+    let row = h.state().timeline().automation().row(lane).unwrap();
+    let spot = Pos2::new(row.left() + 2.0 * 60.0, row.top() + 8.0);
+    h.event(Event::PointerMoved(spot));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: spot,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run();
+    let points: Vec<_> = h
+        .state()
+        .session()
+        .project()
+        .lane(lane)
+        .unwrap()
+        .points
+        .iter()
+        .map(|p| (p.tick, p.value, p.curve))
+        .collect();
+    assert_eq!(
+        points,
+        vec![(Tick(0), 0.0, Curve::Hold), (Tick(1920), 1.0, Curve::Hold)]
+    );
+
+    // The mixer shows both tracks.
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label("Mixer").click();
+    h.run();
+    h.get_by_label("Track 1");
+    h.get_by_label("Track 2");
+
+    // Offline, the mix is both clips for two beats, then the first alone.
+    let project = h.state().session().project().clone();
+    let mut registry = noodle_engine::Registry::with_builtins();
+    let settings = noodle_engine::Settings {
+        sample_rate: RATE as f32,
+        max_frames: 512,
+        channels: 2,
+    };
+    let rendered = noodle_nodes::render_project_with_clips(
+        &project,
+        &mut registry,
+        dir.path(),
+        settings,
+        4 * BEAT,
+    )
+    .unwrap();
+    assert!(rendered.render.diagnostics.is_empty());
+    assert!(rendered.problems.is_empty(), "{:?}", rendered.problems);
+    assert_eq!(rendered.underruns, 0);
+    let level = |from: usize, to: usize, want: f32| {
+        // Clear of the clips' ends and the mute's smoothed step.
+        for frame in from + 3_000..to - 3_000 {
+            let got = rendered.render.samples[frame * 2];
+            assert!(
+                (got - want).abs() < 2e-3,
+                "frame {frame} is {got}, wanted {want}"
+            );
+        }
+    };
+    level(0, 2 * BEAT, 0.75);
+    level(2 * BEAT, 4 * BEAT, 0.5);
+
+    // Live, both clips get a stream and nothing is reported.
+    #[cfg(target_os = "linux")]
+    {
+        h.state_mut().session_mut().play();
+        assert!(
+            h.state().session().is_playing(),
+            "{:?}",
+            h.state().session().message()
+        );
+        h.state_mut().session_mut().set_transport_running(false);
+        h.state_mut().session_mut().rewind();
+        let inputs: Vec<NodeId> = project.clips().map(|(_, clip)| clip.node).collect();
+        let mut ready = false;
+        for _ in 0..200 {
+            play_for(&mut h, Duration::from_millis(50));
+            ready = inputs
+                .iter()
+                .all(|&node| h.state().session().clip_status(node).streams == 1);
+            if ready {
+                break;
+            }
+        }
+        assert!(ready, "both clips have a stream");
+        assert!(h.state().session().clip_problems().is_empty());
+        h.state_mut().session_mut().stop();
+    }
+}
