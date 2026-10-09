@@ -123,6 +123,7 @@ pub(crate) fn add_lanes<'a>(
                     .with(SMOOTHING_MS, Value::Float(f64::from(smoothing))),
                 position: Default::default(),
                 parent: None,
+                port_order: Vec::new(),
             },
         ));
         connections.push(Connection {

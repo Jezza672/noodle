@@ -6,7 +6,7 @@ use noodle_core::Endpoint;
 
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
 use super::view::Transform;
-use super::{EditorState, Frame_, Gesture, Problems, StrokeAction, body, wire};
+use super::{EditorState, Frame_, Gesture, Problems, Splice, StrokeAction, body, wire};
 use crate::theme::{self, editor as colors};
 
 /// Below this zoom, text is too small to read, so it isn't drawn.
@@ -57,7 +57,10 @@ pub fn frames(painter: &Painter, f: &Frame_<'_>, state: &EditorState) {
                 StrokeKind::Outside,
             );
         }
-        let renaming = state.rename.as_ref().is_some_and(|r| r.id == frame.id);
+        let renaming = state
+            .rename
+            .as_ref()
+            .is_some_and(|r| r.target == super::RenameTarget::Frame(frame.id));
         if z >= MIN_TEXT_ZOOM && !renaming {
             let header = f.t.rect_to_screen(frame.header());
             painter.with_clip_rect(header).text(
@@ -86,6 +89,7 @@ pub fn wires(
     state: &EditorState,
     problems: &Problems,
     detached: Option<&Endpoint>,
+    splice: Option<&Splice>,
 ) {
     let z = f.t.zoom;
     for wire in &f.scene.wires {
@@ -95,8 +99,11 @@ pub fn wires(
         let problem = problems.wires.contains_key(&wire.connection.to);
         let selected = state.selected.contains(&wire.connection.from.node)
             || state.selected.contains(&wire.connection.to.node);
+        let splicing = splice.is_some_and(|s| s.wire == wire.connection);
         let color = if problem {
             colors::PROBLEM
+        } else if splicing {
+            colors::ACTIVE
         } else if wire.event {
             colors::EVENT_WIRE
         } else if selected {
@@ -178,8 +185,8 @@ fn boxed(
     if text {
         let clipped = painter.with_clip_rect(header.shrink(2.0 * z));
         clipped.text(
-            header.left_center() + Vec2::new(8.0 * z, 0.0),
-            Align2::LEFT_CENTER,
+            header.center(),
+            Align2::CENTER_CENTER,
             &node.title,
             FontId::proportional(13.0 * z),
             colors::TEXT,
@@ -196,7 +203,7 @@ fn boxed(
 
     let graph = f.project.graph();
     for port in &node.ports {
-        if text {
+        if text && !port.in_header {
             let row = f.t.rect_to_screen(port.row);
             let connected = port.side == Side::Input
                 && graph
@@ -218,6 +225,8 @@ fn boxed(
                     };
                     let color = if port.kind == PortKind::Unknown {
                         colors::PROBLEM
+                    } else if port.spare || port.idle {
+                        colors::TEXT_WEAK
                     } else {
                         colors::TEXT
                     };
@@ -251,6 +260,16 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
     let center = f.t.to_screen(port.socket);
     let radius = (4.5 * z).max(2.5);
     let outline = Stroke::new(1.0, colors::NODE_OUTLINE);
+    if port.spare {
+        // Nothing is stored for a spare until a wire goes to it.
+        painter.circle(
+            center,
+            radius,
+            Color32::TRANSPARENT,
+            Stroke::new(1.0, colors::TEXT_WEAK),
+        );
+        return;
+    }
     match port.kind {
         PortKind::Event => {
             let r = radius * 1.2;
@@ -271,6 +290,11 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
                 PortKind::Audio => colors::AUDIO_SOCKET,
                 PortKind::Param(_) => colors::PARAM_SOCKET,
                 _ => colors::PROBLEM,
+            };
+            let fill = if port.idle {
+                fill.gamma_multiply(0.35)
+            } else {
+                fill
             };
             painter.circle(center, radius, fill, outline);
         }
@@ -336,6 +360,35 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
                 StrokeAction::Reroute => colors::WIRE_SELECTED,
             };
             painter.extend(Shape::dashed_line(&line, Stroke::new(1.5, color), 6.0, 4.0));
+        }
+        Gesture::Reorder {
+            node,
+            side,
+            key,
+            target,
+        } => {
+            // A line where the port would land.
+            let Some(node) = f.scene.node(*node) else {
+                return;
+            };
+            let rest: Vec<&PortGeom> = node
+                .ports
+                .iter()
+                .filter(|p| p.side == *side && p.key != *key)
+                .collect();
+            let y = match rest.get(*target) {
+                Some(port) => port.row.top(),
+                None => rest
+                    .last()
+                    .map_or(node.rect.top(), |port| port.row.bottom()),
+            };
+            let (x0, x1) = match side {
+                Side::Input => (node.rect.left(), node.rect.center().x),
+                Side::Output => (node.rect.center().x, node.rect.right()),
+            };
+            let a = f.t.to_screen(Pos2::new(x0, y));
+            let b = f.t.to_screen(Pos2::new(x1, y));
+            painter.line_segment([a, b], Stroke::new(2.0, colors::WIRE_SELECTED));
         }
         Gesture::Idle | Gesture::Pan | Gesture::Move { .. } | Gesture::Resize { .. } => {}
     }

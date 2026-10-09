@@ -1118,3 +1118,208 @@ fn a_rename_is_dropped_when_its_track_is_removed() {
     h.run();
     assert!(h.state().timeline.renaming.is_none());
 }
+
+fn clip_count(h: &H) -> usize {
+    h.state().session.project().clips().count()
+}
+
+#[test]
+fn a_command_drag_copies_the_clip_and_leaves_the_original() {
+    let (mut h, id) = rig();
+    drag_by(
+        &mut h,
+        Modifiers::COMMAND,
+        id,
+        Grab::Body,
+        Vec2::new(130.0, 0.0),
+    );
+    assert_eq!(clip_count(&h), 2);
+    assert_eq!(start(&h, id), Tick(0), "the original stays");
+    let copy = *h
+        .state()
+        .session
+        .project()
+        .clips()
+        .map(|(copy, _)| copy)
+        .find(|&copy| copy != id)
+        .as_ref()
+        .unwrap();
+    assert_eq!(start(&h, copy), Tick(1920));
+    assert_eq!(clip(&h, copy).as_audio().unwrap().source, "a.wav");
+    // The copy is what's selected, and the whole drag is one undo step.
+    assert_eq!(h.state().timeline.selected(), &[copy].into());
+    h.state_mut().session.undo();
+    assert_eq!(clip_count(&h), 1);
+    assert_eq!(start(&h, id), Tick(0));
+}
+
+#[test]
+fn a_plain_drag_still_moves_without_copying() {
+    let (mut h, id) = rig();
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Body,
+        Vec2::new(130.0, 0.0),
+    );
+    assert_eq!(clip_count(&h), 1);
+}
+
+fn key_over(h: &mut H, at: Pos2, modifiers: Modifiers, key: Key) {
+    h.hover_at(at);
+    h.step();
+    h.key_press_modifiers(modifiers, key);
+    h.run();
+}
+
+#[test]
+fn command_arrows_take_the_playhead_to_the_clips_start_and_end() {
+    let (mut h, id) = rig();
+    // Move the clip off the start so the two edges differ.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Body,
+        Vec2::new(130.0, 0.0),
+    );
+    let at = centre(&h, id);
+    key_over(&mut h, at, Modifiers::COMMAND, Key::ArrowLeft);
+    assert_eq!(h.state().seeks.last(), Some(&Tick(1920)));
+    key_over(&mut h, at, Modifiers::COMMAND, Key::ArrowRight);
+    // Two seconds of audio at 120 bpm is four quarter notes (960 per beat).
+    assert_eq!(h.state().seeks.last(), Some(&Tick(1920 + 4 * 960)));
+}
+
+#[test]
+fn command_arrows_do_nothing_without_a_selection() {
+    let (mut h, _) = rig();
+    let at = Pos2::new(500.0, 200.0);
+    key_over(&mut h, at, Modifiers::COMMAND, Key::ArrowRight);
+    assert!(h.state().seeks.is_empty());
+}
+
+#[test]
+fn command_arrows_scroll_the_playhead_into_view() {
+    let (mut h, id) = rig();
+    // Select the clip, then jump to its end far past the right edge.
+    let at = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[at]);
+    h.state_mut().timeline.ppq = 600.0;
+    h.run();
+    let before = h.state().timeline.scroll_x;
+    key_over(&mut h, at, Modifiers::COMMAND, Key::ArrowRight);
+    assert!(h.state().timeline.scroll_x > before);
+}
+
+#[test]
+fn the_background_menu_offers_import_at_the_clicked_lane() {
+    let (mut h, _) = rig();
+    // Right-click empty space in the second track's lane.
+    let lane = Pos2::new(700.0, 150.0);
+    h.event(Event::PointerMoved(lane));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: lane,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run();
+    h.get_all_by_label("Import audio…").last().unwrap().click();
+    h.run();
+    let pick = h.state().picks.last().copied().unwrap();
+    assert_eq!(pick.track, NodeId(2));
+    assert!(pick.at.0 > 0);
+}
+
+/// A real track (a group holding a track input) added below the rig's two
+/// bare track inputs, with a clip on it. Returns (group, track input, clip).
+fn add_real_track(h: &mut H) -> (NodeId, NodeId, ClipId) {
+    let session = &mut h.state_mut().session;
+    let mut next = 100;
+    let (group, create) =
+        noodle_core::group::create_track(None, noodle_core::Position::default(), || {
+            next += 1;
+            NodeId(next)
+        });
+    session.edit([Edit::Apply(create)]);
+    let input = session
+        .project()
+        .graph()
+        .children(Some(group))
+        .find(|(_, n)| n.type_id == TRACK_INPUT)
+        .map(|(id, _)| id)
+        .unwrap();
+    let clip = session.project().next_clip_id();
+    session.edit([Edit::Apply(Command::AddClip {
+        id: clip,
+        clip: Clip::audio(input, Tick(0), "a.wav", 96_000),
+    })]);
+    h.run();
+    (group, input, clip)
+}
+
+/// The left margin of the third track's header, which has no widgets on it
+/// (the panel starts 8 points in).
+fn third_header(_: &H) -> Pos2 {
+    Pos2::new(
+        14.0,
+        8.0 + super::colors::RULER_HEIGHT + 2.0 * super::colors::LANE_HEIGHT + 20.0,
+    )
+}
+
+#[test]
+fn delete_removes_a_selected_track_with_its_clips_in_one_undo_step() {
+    let (mut h, _) = rig();
+    let (group, _, clip) = add_real_track(&mut h);
+    let before = h.state().session.project().clone();
+    let at = third_header(&h);
+    drag(&mut h, Modifiers::NONE, &[at]);
+    assert!(h.state().timeline.selected_track.is_some());
+    key_over(&mut h, at, Modifiers::NONE, Key::Delete);
+    let project = h.state().session.project();
+    assert!(project.graph().node(group).is_none());
+    assert!(project.clip(clip).is_none(), "its clips went with it");
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn delete_with_clips_selected_removes_the_clips_not_the_track() {
+    let (mut h, first) = rig();
+    let (group, _, _) = add_real_track(&mut h);
+    let at = third_header(&h);
+    drag(&mut h, Modifiers::NONE, &[at]);
+    let on_clip = centre(&h, first);
+    drag(&mut h, Modifiers::NONE, &[on_clip]);
+    key_over(&mut h, on_clip, Modifiers::NONE, Key::Delete);
+    assert!(h.state().session.project().clip(first).is_none());
+    assert!(h.state().session.project().graph().node(group).is_some());
+}
+
+#[test]
+fn the_header_menu_deletes_a_track() {
+    let (mut h, _) = rig();
+    let (group, _, _) = add_real_track(&mut h);
+    let at = third_header(&h);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run();
+    h.get_by_label("Delete track").click();
+    h.run();
+    assert!(h.state().session.project().graph().node(group).is_none());
+}

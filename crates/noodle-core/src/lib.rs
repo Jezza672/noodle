@@ -10,6 +10,7 @@ mod frame;
 mod graph;
 pub mod group;
 mod project;
+pub mod spare;
 mod timeline;
 
 pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};

@@ -49,7 +49,11 @@ pub struct TimelineState {
     scroll_x: f32,
     scroll_y: f32,
     selected: BTreeSet<ClipId>,
+    /// The track (its input node) whose header was last clicked.
+    selected_track: Option<NodeId>,
     drag: Option<Drag>,
+    /// Where the arrangement was last right-clicked.
+    menu_at: Option<Pos2>,
     /// The tick the ruler last asked for, while the button is held.
     last_seek: Option<Tick>,
     sources: Sources,
@@ -77,7 +81,9 @@ impl Default for TimelineState {
             scroll_x: 0.0,
             scroll_y: 0.0,
             selected: BTreeSet::new(),
+            selected_track: None,
             drag: None,
+            menu_at: None,
             last_seek: None,
             sources: Sources::default(),
             renaming: None,
@@ -99,6 +105,12 @@ impl TimelineState {
     /// Forgets clips that no longer exist, e.g. after an undo.
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
+        if self
+            .selected_track
+            .is_some_and(|input| project.graph().node(input).is_none())
+        {
+            self.selected_track = None;
+        }
         self.waveforms.retain(|id| project.clip(id).is_some());
         self.automation.retain_existing(project);
         if self
@@ -108,6 +120,22 @@ impl TimelineState {
         {
             self.drag = None;
         }
+    }
+
+    /// Where "Import audio" puts its clips from the File menu or the button:
+    /// on the selected clip's track, else the first, at the playhead.
+    pub fn import_target(&self, project: &Project, playhead: Tick) -> Option<Target> {
+        let track = self
+            .selected
+            .iter()
+            .next()
+            .and_then(|&id| project.clip(id))
+            .map(|clip| clip.node)
+            .or_else(|| tracks(project).first().copied())?;
+        Some(Target {
+            track,
+            at: playhead.max(Tick::ZERO),
+        })
     }
 
     #[cfg(test)]
@@ -368,7 +396,30 @@ pub fn show(
                 }
                 state.selected.insert(id);
                 let mode = mode_at(press.x);
-                let originals = if mode == Mode::Move {
+                let copying = mode == Mode::Move && ui.input(|i| i.modifiers.command);
+                let mut grabbed = id;
+                let originals = if copying {
+                    // The copies are what the drag moves; the originals stay.
+                    // Added in the drag's own undo step.
+                    let mut next = project.next_clip_id();
+                    let mut copies = Vec::new();
+                    for &sel in &state.selected {
+                        let Some(clip) = project.clip(sel) else {
+                            continue;
+                        };
+                        if sel == id {
+                            grabbed = next;
+                        }
+                        edits.push(Edit::Drag(Command::AddClip {
+                            id: next,
+                            clip: clip.clone(),
+                        }));
+                        copies.push((next, clip.clone()));
+                        next.0 += 1;
+                    }
+                    state.selected = copies.iter().map(|(copy, _)| *copy).collect();
+                    copies
+                } else if mode == Mode::Move {
                     state
                         .selected
                         .iter()
@@ -380,7 +431,7 @@ pub fn show(
                 };
                 state.drag = Some(Drag {
                     mode,
-                    grabbed: id,
+                    grabbed,
                     originals,
                     press_x: press.x,
                 });
@@ -494,6 +545,7 @@ pub fn show(
     // Clips and automation points share the Delete key, so picking one
     // drops the other from the selection.
     if state.selected != clips_before && !state.selected.is_empty() {
+        state.selected_track = None;
         state.automation.deselect();
     }
     let point_before = state.automation.selected();
@@ -525,17 +577,65 @@ pub fn show(
     if background.clicked() && !hit_clip {
         state.selected.clear();
     }
-    if hovered
-        && !state.selected.is_empty()
-        && ui.ctx().memory(|m| m.focused()).is_none()
-        && ui.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
+    // A focused button (a clicked header) isn't a text field; typing is.
+    let delete_pressed = hovered
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace));
+    // A selected track goes when no clip or point is selected to take it.
+    if delete_pressed
+        && state.selected.is_empty()
+        && state.automation.selected().is_none()
+        && let Some(group) = state
+            .selected_track
+            .and_then(|input| project.graph().node(input))
+            .and_then(|n| n.parent)
     {
+        edits.push(Edit::Apply(header::delete_track(group)));
+        state.selected_track = None;
+    }
+    if delete_pressed && !state.selected.is_empty() {
         let removals = state
             .selected
             .iter()
             .map(|&id| Command::RemoveClip { id })
             .collect();
         edits.push(Edit::Apply(Command::Batch(removals)));
+    }
+
+    // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
+    // clips, and scroll to keep it in view.
+    let mut jump = None;
+    if hovered && !state.selected.is_empty() && !ui.ctx().egui_wants_keyboard_input() {
+        let key = ui.input_mut(|i| {
+            [Key::ArrowLeft, Key::ArrowRight]
+                .into_iter()
+                .find(|&key| i.consume_key(egui::Modifiers::COMMAND, key))
+        });
+        if let Some(key) = key {
+            let selected = state.selected.iter().filter_map(|&id| project.clip(id));
+            jump = match key {
+                Key::ArrowLeft => selected.map(|clip| clip.start).min(),
+                _ => selected
+                    .filter_map(|clip| {
+                        let audio = clip.as_audio()?;
+                        let rate = state
+                            .sources
+                            .get(ui.ctx(), directory.as_deref(), &audio.source)
+                            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate);
+                        Some(clips::end_tick(map, clip.start, audio.length, rate))
+                    })
+                    .max(),
+            };
+        }
+    }
+    if let Some(tick) = jump {
+        let x = axis.x(tick);
+        let margin = 24.0;
+        if x < content.left() + margin {
+            state.scroll_x = (state.scroll_x - (content.left() + margin - x)).max(0.0);
+        } else if x > content.right() - margin {
+            state.scroll_x += x - (content.right() - margin);
+        }
     }
 
     let (header_edits, arm) = draw_headers(ui, rect, content, &tracks, &rows, session, state);
@@ -560,6 +660,7 @@ pub fn show(
     // Only a new tick is worth seeking to: a held button, or a drag that stays
     // within a beat, would otherwise restart the audio's fade every frame.
     let seek = wanted.filter(|&tick| state.last_seek != Some(tick));
+    let seek = jump.or(seek);
     state.last_seek = wanted;
     if let Some(tick) = playhead {
         let x = axis.x(tick);
@@ -603,25 +704,44 @@ pub fn show(
         vec2(colors::HEADER_WIDTH - 12.0, colors::RULER_HEIGHT - 6.0),
     );
     let mut pick = None;
+    let import = |state: &TimelineState, notice: &mut Option<String>| {
+        let target = state.import_target(project, playhead.unwrap_or(Tick::ZERO));
+        if target.is_none() {
+            *notice = Some("Add a track before importing audio".to_string());
+        }
+        target
+    };
     if ui
         .put(corner, egui::Button::new("Import audio…").small())
         .clicked()
     {
-        let selected = state.selected.iter().next();
-        let track = selected
-            .and_then(|&id| project.clip(id))
-            .map(|clip| clip.node)
-            .or(tracks.first().copied());
-        match track {
-            Some(track) => {
-                pick = Some(Target {
-                    track,
-                    at: playhead.unwrap_or(Tick::ZERO).max(Tick::ZERO),
-                });
-            }
-            None => notice = Some("Add a track before importing audio".to_string()),
-        }
+        pick = import(state, &mut notice);
     }
+    // Right-click on empty lane space offers it there.
+    if background.secondary_clicked() {
+        state.menu_at = background.interact_pointer_pos();
+    }
+    background.context_menu(|ui| {
+        if ui.button("Import audio…").clicked() {
+            ui.close();
+            let on_lane = state.menu_at.filter(|p| content.contains(*p));
+            pick = match on_lane {
+                Some(at) if !tracks.is_empty() => {
+                    let tick = axis.tick(at.x).max(Tick::ZERO);
+                    let tick = if ui.input(|i| i.modifiers.alt) {
+                        tick
+                    } else {
+                        grid::snap(map, tick)
+                    };
+                    Some(Target {
+                        track: tracks[rows.track_at(at.y - content.top() + state.scroll_y)],
+                        at: tick,
+                    })
+                }
+                _ => import(state, &mut notice),
+            };
+        }
+    });
     Output {
         edits,
         seek,
@@ -926,6 +1046,7 @@ fn draw_headers(
                 rect: lane,
                 index,
                 input,
+                selected: state.selected_track == Some(input),
             },
             controls,
             automated,
@@ -933,6 +1054,11 @@ fn draw_headers(
         );
         edits.extend(changes.edits);
         arm.extend(changes.arm.map(|on| (input, on)));
+        if changes.select {
+            state.selected_track = Some(input);
+            state.selected.clear();
+            state.automation.deselect();
+        }
         if let Some(controls) = controls {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),

@@ -19,6 +19,9 @@ const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S)
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+/// Shown in the Edit menu. The canvas handles the key itself, with the
+/// pointer over it, so this is not in [`SHORTCUTS`].
+const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
 /// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
@@ -71,6 +74,8 @@ enum Action {
     TogglePause,
     AudioSettings,
     ToggleMixer,
+    ImportAudio,
+    DeleteSelection,
     Close,
 }
 
@@ -155,6 +160,10 @@ impl App {
         egui::Panel::right("properties")
             .default_size(theme::PROPERTIES_WIDTH)
             .show(ui, |ui| {
+                // A panel is remembered at the size of its contents, so
+                // short contents (nothing selected) would shrink it, and
+                // the next node would open it at its default width.
+                ui.set_min_width(ui.available_width());
                 ui.add_space(4.0);
                 let edits = properties::show(ui, &self.session, active);
                 self.session.edit(edits);
@@ -243,29 +252,56 @@ impl App {
 
     fn menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let ctx = ui.ctx().clone();
-        let mut item = |ui: &mut egui::Ui, text, shortcut: &KeyboardShortcut, enabled, action| {
-            let button = egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut));
-            if ui.add_enabled(enabled, button).clicked() {
-                actions.push(action);
-            }
-        };
+        let mut item =
+            |ui: &mut egui::Ui, text, shortcut: Option<&KeyboardShortcut>, enabled, action| {
+                let mut button = egui::Button::new(text);
+                if let Some(shortcut) = shortcut {
+                    button = button.shortcut_text(ctx.format_shortcut(shortcut));
+                }
+                if ui.add_enabled(enabled, button).clicked() {
+                    actions.push(action);
+                }
+            };
         ui.menu_button("File", |ui| {
-            item(ui, "New", &NEW, true, Action::New);
-            item(ui, "Open…", &OPEN, true, Action::Open);
-            item(ui, "Save", &SAVE, true, Action::Save);
-            item(ui, "Save As…", &SAVE_AS, true, Action::SaveAs);
+            item(ui, "New", Some(&NEW), true, Action::New);
+            item(ui, "Open…", Some(&OPEN), true, Action::Open);
+            item(ui, "Save", Some(&SAVE), true, Action::Save);
+            item(ui, "Save As…", Some(&SAVE_AS), true, Action::SaveAs);
+            ui.separator();
+            item(ui, "Import Audio…", None, true, Action::ImportAudio);
             ui.separator();
             item(
                 ui,
                 "Audio Settings…",
-                &SETTINGS,
+                Some(&SETTINGS),
                 true,
                 Action::AudioSettings,
             );
         });
         ui.menu_button("Edit", |ui| {
-            item(ui, "Undo", &UNDO, self.session.can_undo(), Action::Undo);
-            item(ui, "Redo", &REDO, self.session.can_redo(), Action::Redo);
+            item(
+                ui,
+                "Undo",
+                Some(&UNDO),
+                self.session.can_undo(),
+                Action::Undo,
+            );
+            item(
+                ui,
+                "Redo",
+                Some(&REDO),
+                self.session.can_redo(),
+                Action::Redo,
+            );
+            ui.separator();
+            let selected = self.editor.has_selection();
+            item(
+                ui,
+                "Delete",
+                Some(&DELETE),
+                selected,
+                Action::DeleteSelection,
+            );
         });
         ui.menu_button("View", |ui| {
             if ui
@@ -481,6 +517,23 @@ impl App {
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
+            Action::ImportAudio => {
+                let playhead = self.session.playhead();
+                match self
+                    .timeline
+                    .import_target(self.session.project(), playhead)
+                {
+                    Some(target) => self.import_audio(target),
+                    None => self
+                        .session
+                        .notify("Add a track before importing audio".to_string()),
+                }
+            }
+            Action::DeleteSelection => {
+                if let Some(edit) = self.editor.delete_selection() {
+                    self.session.edit([edit]);
+                }
+            }
             Action::Close => {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -551,6 +604,88 @@ mod tests {
 
     fn empty() -> App {
         App::new(Session::new(crate::session::Nodes::all()))
+    }
+
+    fn properties_width(harness: &Harness<'static, App>) -> f32 {
+        egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new("properties"))
+            .expect("the panel has been shown")
+            .size()
+            .x
+    }
+
+    #[test]
+    fn the_properties_panel_keeps_its_width_when_a_node_is_selected() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        let mut harness = harness(app);
+        harness.run();
+        // The user drags the panel wider than its default.
+        let wanted = properties_width(&harness) + 120.0;
+        let state = egui::containers::panel::PanelState {
+            outer_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(wanted, 100.0)),
+        };
+        harness
+            .ctx
+            .data_mut(|d| d.insert_persisted(egui::Id::new("properties"), state));
+        harness.run();
+        assert_eq!(
+            properties_width(&harness),
+            wanted,
+            "kept with nothing selected"
+        );
+
+        let editor = &mut harness.state_mut().editor;
+        editor.selected.insert(id);
+        editor.active = Some(id);
+        harness.run();
+        assert_eq!(
+            properties_width(&harness),
+            wanted,
+            "kept when a node is selected"
+        );
+
+        harness.state_mut().editor.active = None;
+        harness.state_mut().editor.selected.clear();
+        harness.run();
+        assert_eq!(
+            properties_width(&harness),
+            wanted,
+            "kept when it is deselected"
+        );
+    }
+
+    #[test]
+    fn importing_from_the_file_menu_needs_a_track() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Import Audio…").click();
+        harness.run();
+        harness.get_by_label("Add a track before importing audio");
+    }
+
+    #[test]
+    fn edit_delete_removes_the_selected_nodes() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        app.editor.selected.insert(id);
+        app.editor.active = Some(id);
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.get_by_label_contains("Delete").click();
+        harness.run();
+        assert!(harness.state().session.project().graph().node(id).is_none());
     }
 
     #[test]

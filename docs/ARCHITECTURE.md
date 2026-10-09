@@ -763,6 +763,42 @@ style. It has these views:
     wire can fan out from one, as in Blender. **Frames** are layout only:
     they're saved in the project, edited through commands, and never reach
     the engine. Dragging a frame moves the nodes inside it.
+  - **Node layout.** A node is a title bar (the name centred), then rows
+    with inputs down the left and outputs down the right. The two sides fill
+    rows independently, except that an input with a parameter field takes
+    its whole row. A side with a single port puts its socket on the title
+    bar with no label (its name is a tooltip), so such nodes need no row.
+  - **Spare ports** (`noodle_core::spare`). A mixer shows its wired inputs
+    plus one greyed spare, and a group shows a spare input and output after
+    its real ones. The spare is only drawn: nothing is stored until a wire is
+    dropped on it (or dragged from it), and then the same undo step raises the
+    mixer's `inputs` or adds a boundary node inside the group, named `in1`,
+    `in2`, … or `out1`, … Config beyond the last wired mixer input is
+    hidden, not removed, and a group port is never removed on its own,
+    because the boundary node may be used inside. Every edit made on the
+    user's behalf goes through `spare::wire`, which replaces whatever fed the
+    input, never removes a node, and leaves wires leaving an output alone.
+  - **Names.** F2 on a selected group, group input or group output renames it,
+    and double-clicking a port row of a group node renames that port (a
+    double-click elsewhere on a group enters it). A group's name is its
+    `name` config, which a track shares, and the track input inside shows its
+    group's name as its title. A port's name is its key, so `rename_group_port`
+    moves the wires on it in the same step, and refuses an empty name or one
+    another port on that side has. An empty group name puts the default back.
+  - **Idle outputs.** A track input's `audio` output is greyed while no clip
+    plays on the track, and `midi` is greyed until there are MIDI clips.
+  - **Port order** is display only. `Node::port_order` lists port keys in the
+    order the editor shows them, set by dragging a port's label up or down its
+    column (`Command::SetPortOrder`, one undo step). Ports are still found
+    by key, the compiler ignores the order, and ports it doesn't name go
+    last in the node's own order.
+  - **Wire editing.** Double-click a wire to break it, or drop a node with
+    no wires onto one to splice it in (Alt turns that off). A splice picks
+    the first input and output of the wire's signal type, the main signal
+    port before a parameter port, and is part of the move's undo step.
+    Copy, Cut and Paste (Ctrl/Cmd+C, X, V) keep the nodes, the wires
+    between them and frames in an in-app clipboard, pasted at the pointer
+    into the group being edited as one undo step.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -782,13 +818,18 @@ style. It has these views:
     edge snap to beats; Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
+  - **Copying.** Ctrl/Cmd-dragging a clip adds copies in the drag's own undo
+    step and moves those, leaving the originals. With a clip selected,
+    Ctrl/Cmd+Left and Right take the playhead to the start of the earliest
+    selected clip or the end of the latest, scrolling to keep it in view.
   - **Fades** are dragged by the handles on a clip's top corners (clips too
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
-  - **Adding audio.** Dropping files on a lane, or the Import audio button
-    in the corner (which opens a file dialog and targets the selected clip's
-    track, or the first, at the playhead), creates one clip per file, laid end
+  - **Adding audio.** Dropping files on a lane, or Import audio (the button
+    in the corner and File → Import Audio…, which open a file dialog and
+    target the selected clip's track, or the first, at the playhead; the
+    right-click menu on a lane targets the lane and tick clicked), creates one clip per file, laid end
     to end from the drop position (snapped to beats; Alt turns that off).
     The clip's length is the file's frame count, read when it's added; a file
     that can't be read, or doesn't say how long it is, is left out and the
@@ -818,9 +859,17 @@ style. It has these views:
     goes away, is dropped.
   - **Add track:** the button after the last header runs
     `group::create_track`, one undo step, and the new track shows up with
-    its controls at once. It also wires the track to an Output node, using
-    a top level one whose input is free or adding one (Output nodes are
-    mixed together), so a new track is audible without further wiring.
+    its controls at once. It also wires the track into the **default
+    mixer**, the first top level Mix node, at the spare input after its last
+    wired one (raising its `inputs` in the same step). A project with no
+    mixer gets a Mix node wired to an Output node, using a top level one whose
+    input is free or adding one. So a new track is audible without further
+    wiring, and later tracks add only their own group.
+  - **Deleting a track:** click its header to select it (Delete or Backspace
+    then removes it, when no clip or lane point is selected to take the key)
+    or right-click the header for "Delete track". It is one `RemoveNode` of
+    the track's group, which takes the track input, its clips and its lanes
+    with it, in one undo step.
   - **Automation lanes** (`timeline/automation.rs`): under each track, a
     row for every lane that drives a boundary node of the track's group.
     The track header's `~` menu adds a gain or mute lane, starting as one

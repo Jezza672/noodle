@@ -481,6 +481,49 @@ fn x_deletes_the_selection_and_undo_brings_it_back() {
 }
 
 #[test]
+fn backspace_deletes_the_selection_like_delete() {
+    let mut h = rig();
+    let (sine, _, _) = wired(&mut h);
+    let p = title(&h, sine);
+    click(&mut h, p, Modifiers::NONE);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::Backspace);
+    assert!(h.state().session.project().graph().node(sine).is_none());
+}
+
+fn double_click(h: &mut H, at: Pos2) {
+    h.event(Event::PointerMoved(at));
+    for pressed in [true, false, true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.step();
+    h.run();
+}
+
+#[test]
+fn double_clicking_a_wire_breaks_it_as_one_undo_step() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    double_click(&mut h, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), None);
+    h.state_mut().session.undo();
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+}
+
+#[test]
+fn double_clicking_beside_a_wire_changes_nothing() {
+    let mut h = rig();
+    let (_, gain, stroke) = wired(&mut h);
+    double_click(&mut h, stroke[1] + Vec2::new(0.0, 200.0));
+    assert!(source(&h, gain, "in").is_some());
+}
+
+#[test]
 fn delete_with_nothing_selected_does_nothing() {
     let mut h = rig();
     wired(&mut h);
@@ -1280,10 +1323,7 @@ fn ctrl_right_drag_from_a_field_cuts() {
     let (_, gain, _) = wired(&mut h);
     let start = field(&h, gain, "gain");
     let rect = scene(&h).node(gain).unwrap().rect;
-    let past = screen(
-        &h,
-        Pos2::new(rect.left() - 100.0, rect.top() + 24.0 + 22.0 + 1.0),
-    );
+    let past = screen(&h, Pos2::new(rect.left() - 100.0, rect.top() + 20.0));
     drag(
         &mut h,
         PointerButton::Secondary,
@@ -1580,4 +1620,519 @@ fn undoing_a_nested_group_lands_in_the_group_around_it() {
     h.state_mut().session.undo();
     h.run();
     assert_eq!(h.state().editor.group, Some(outer));
+}
+
+/// A mixer with `inputs` oscillators wired to its inputs.
+fn mix_of(h: &mut H, inputs: i64) -> NodeId {
+    let config = noodle_core::Config::new().with("inputs", noodle_core::Value::Int(inputs));
+    let mix = add(
+        h,
+        Node::new("noodle.util.mix")
+            .with_config(config)
+            .at(0.0, 0.0),
+    );
+    for i in 1..=inputs {
+        let src = add(h, Node::new("noodle.osc.sine").at(-600.0, 150.0 * i as f32));
+        connect(h, src, "out", mix, &format!("in{i}"));
+    }
+    h.run();
+    mix
+}
+
+/// The labels of a node's input rows, top to bottom, as screen points.
+fn input_labels(h: &H, node: NodeId) -> Vec<(String, Pos2)> {
+    let scene = scene(h);
+    let geom = scene.node(node).unwrap();
+    let mut rows: Vec<_> = geom
+        .ports
+        .iter()
+        .filter(|p| p.side == Side::Input && !p.in_header && !p.spare)
+        .map(|p| (p.key.clone(), p.row.center() + Vec2::new(-20.0, 0.0)))
+        .collect();
+    rows.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+    rows.into_iter().map(|(k, p)| (k, screen(h, p))).collect()
+}
+
+#[test]
+fn dragging_a_port_label_down_its_column_reorders_it_as_one_undo_step() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let before = h.state().session.project().clone();
+    let rows = input_labels(&h, mix);
+    let keys: Vec<_> = rows.iter().map(|r| r.0.clone()).collect();
+    let (first, last) = (rows[0].1, rows[2].1);
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            first,
+            first + Vec2::new(0.0, 10.0),
+            last + Vec2::new(0.0, 8.0),
+        ],
+    );
+    let after: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    assert_eq!(after, [keys[1].clone(), keys[2].clone(), keys[0].clone()]);
+    // Display only: the node hasn't moved and nothing was recompiled away.
+    assert_eq!(position(&h, mix), Position { x: 0.0, y: 0.0 });
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+    let again: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    assert_eq!(again, keys);
+}
+
+#[test]
+fn dropping_a_port_where_it_was_changes_nothing() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let rows = input_labels(&h, mix);
+    let (a, b) = (rows[1].1, rows[1].1 + Vec2::new(0.0, 3.0));
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[a, a + Vec2::new(0.0, 2.0), b],
+    );
+    assert!(
+        h.state()
+            .log
+            .iter()
+            .all(|e| !matches!(e, Edit::Apply(Command::SetPortOrder { .. }))),
+        "{:?}",
+        h.state().log
+    );
+}
+
+#[test]
+fn dragging_a_port_label_does_not_move_the_node() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let rows = input_labels(&h, mix);
+    let start = rows[0].1;
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(30.0, 10.0),
+            start + Vec2::new(90.0, 5.0),
+        ],
+    );
+    assert_eq!(position(&h, mix), Position { x: 0.0, y: 0.0 });
+}
+
+/// Drags `node` by its title so its middle ends up at screen point `to`.
+fn drag_node_to(h: &mut H, node: NodeId, modifiers: Modifiers, to: Pos2) {
+    let grab = title(h, node);
+    let rect = scene(h).node(node).unwrap().rect;
+    let middle = screen(h, rect.center());
+    let end = grab + (to - middle);
+    drag(
+        h,
+        PointerButton::Primary,
+        modifiers,
+        &[
+            grab,
+            grab + Vec2::new(5.0, 5.0),
+            (grab + end.to_vec2()) / 2.0,
+            end,
+        ],
+    );
+}
+
+#[test]
+fn dropping_a_node_on_a_wire_splices_it_in_as_one_undo_step() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(0.0, 300.0));
+    h.run();
+    let before = h.state().session.project().clone();
+    drag_node_to(&mut h, filter, Modifiers::NONE, stroke[1]);
+    assert_eq!(source(&h, filter, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(filter, "out")));
+    assert!(h.state().session.diagnostics().is_empty());
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn an_empty_group_isnt_spliced_onto_a_wire() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let group = add(&mut h, Node::new(GROUP).at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, group, Modifiers::NONE, stroke[1]);
+    // Only spare ports to splice through: the wire is left alone.
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, group, "in1"), None);
+}
+
+#[test]
+fn cutting_only_a_group_leaves_it_in_place() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    h.state_mut().editor.select_only([group]);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Cut);
+    assert!(h.state().session.project().graph().node(group).is_some());
+}
+
+#[test]
+fn alt_drops_a_node_on_a_wire_without_splicing() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, filter, Modifiers::ALT, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, filter, "in"), None);
+}
+
+#[test]
+fn a_node_with_wires_isnt_spliced() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let other = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 300.0));
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(200.0, 300.0));
+    connect(&mut h, other, "out", filter, "in");
+    h.run();
+    drag_node_to(&mut h, filter, Modifiers::NONE, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+}
+
+#[test]
+fn a_node_with_no_matching_ports_isnt_spliced() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    // The output node has inputs but nothing to carry the signal on.
+    let out = add(&mut h, Node::new(OUTPUT_ID).at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, out, Modifiers::NONE, stroke[1]);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, out, "in"), None);
+}
+
+/// Sends a copy, cut or paste event with the pointer at `at`, as the window
+/// does for Ctrl/Cmd+C, X and V.
+fn clipboard_event(h: &mut H, at: Pos2, event: Event) {
+    h.hover_at(at);
+    h.step();
+    h.event(event);
+    h.run();
+}
+
+#[test]
+fn copy_and_paste_put_the_nodes_and_the_wires_between_them_at_the_pointer() {
+    let mut h = rig();
+    let (sine, gain, _) = wired(&mut h);
+    let before = h.state().session.project().graph().connections().count();
+    h.state_mut().editor.select_only([sine, gain]);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Copy);
+    // Copying changes nothing.
+    assert_eq!(
+        h.state().session.project().graph().connections().count(),
+        before
+    );
+    let before = h.state().session.project().clone();
+    let target = screen(&h, Pos2::new(100.0, 400.0));
+    clipboard_event(&mut h, target, Event::Paste(String::new()));
+
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.connections().count(), 2);
+    let pasted: Vec<NodeId> = h.state().editor.selected.iter().copied().collect();
+    assert_eq!(pasted.len(), 2);
+    assert!(!pasted.contains(&sine) && !pasted.contains(&gain));
+    // The copy of the gain is fed by the copy of the sine, not the original.
+    let copy_gain = *pasted
+        .iter()
+        .find(|id| graph.node(**id).unwrap().type_id == "noodle.util.gain")
+        .unwrap();
+    let feeder = source(&h, copy_gain, "in").unwrap().node;
+    assert!(pasted.contains(&feeder));
+    // The top-left of the copies is at the pointer.
+    let top_left = pasted
+        .iter()
+        .map(|id| position(&h, *id))
+        .fold((f32::MAX, f32::MAX), |(x, y), p| (x.min(p.x), y.min(p.y)));
+    assert!((top_left.0 - 100.0).abs() < 1.0 && (top_left.1 - 400.0).abs() < 1.0);
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn cut_removes_the_selection_and_paste_brings_it_back() {
+    let mut h = rig();
+    let (sine, gain, _) = wired(&mut h);
+    h.state_mut().editor.select_only([sine]);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Cut);
+    assert!(h.state().session.project().graph().node(sine).is_none());
+    assert!(h.state().session.project().graph().node(gain).is_some());
+    clipboard_event(&mut h, at, Event::Paste(String::new()));
+    let graph = h.state().session.project().graph();
+    let sines = graph
+        .nodes()
+        .filter(|(_, n)| n.type_id == "noodle.osc.sine")
+        .count();
+    assert_eq!(sines, 1);
+}
+
+#[test]
+fn paste_with_an_empty_clipboard_does_nothing() {
+    let mut h = rig();
+    wired(&mut h);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Paste(String::new()));
+    assert!(h.state().log.is_empty());
+}
+
+fn link(h: &mut H, from: Pos2, to: Pos2) {
+    drag(
+        h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            from,
+            from + Vec2::new(12.0, 6.0),
+            (from + to.to_vec2()) / 2.0,
+            to,
+        ],
+    );
+}
+
+#[test]
+fn wiring_to_a_mixers_spare_input_makes_it_real_in_one_undo_step() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 2);
+    let src = add(&mut h, Node::new("noodle.osc.saw").at(-100.0, 400.0));
+    h.run();
+    let before = h.state().session.project().clone();
+    let spare = socket(&h, mix, Side::Input, "in3");
+    let from = socket(&h, src, Side::Output, "out");
+    link(&mut h, from, spare);
+    assert_eq!(source(&h, mix, "in3"), Some(Endpoint::new(src, "out")));
+    let node = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .node(mix)
+        .unwrap()
+        .clone();
+    assert_eq!(noodle_core::spare::mixer_inputs(&node), 3);
+    // And now there's a new spare after it.
+    assert!(
+        scene(&h)
+            .node(mix)
+            .unwrap()
+            .port(Side::Input, "in4")
+            .unwrap()
+            .spare
+    );
+    assert!(h.state().session.diagnostics().is_empty());
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn wiring_into_a_groups_spare_input_adds_a_port() {
+    use noodle_core::group::{GROUP, GROUP_INPUT};
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    let src = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 300.0));
+    h.run();
+    let before = h.state().session.project().clone();
+    let spare = socket(&h, group, Side::Input, "in1");
+    let from = socket(&h, src, Side::Output, "out");
+    link(&mut h, from, spare);
+    let graph = h.state().session.project().graph();
+    let ports = graph.group_ports(group);
+    assert_eq!(ports.inputs.len(), 1);
+    assert_eq!(
+        graph.node(ports.inputs[0].node).unwrap().type_id,
+        GROUP_INPUT
+    );
+    assert_eq!(source(&h, group, "in1"), Some(Endpoint::new(src, "out")));
+    assert!(
+        scene(&h)
+            .node(group)
+            .unwrap()
+            .port(Side::Input, "in2")
+            .unwrap()
+            .spare
+    );
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn dragging_from_a_groups_spare_output_adds_a_port_too() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(500.0, 0.0));
+    h.run();
+    let from = socket(&h, group, Side::Output, "out1");
+    let to = socket(&h, gain, Side::Input, "in");
+    link(&mut h, from, to);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(group, "out1")));
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.group_ports(group).outputs.len(), 1);
+}
+
+#[test]
+fn a_spare_that_gets_no_wire_stores_nothing() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 2);
+    let before = h.state().session.project().clone();
+    let spare = socket(&h, mix, Side::Input, "in3");
+    // Dropped on empty space.
+    let empty = empty_space(&h);
+    link(&mut h, spare, empty);
+    assert_eq!(h.state().session.project(), &before);
+}
+
+/// Types `text` into the rename box and presses Enter.
+fn type_name(h: &mut H, text: &str) {
+    h.run();
+    h.event(Event::Key {
+        key: Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    if text.is_empty() {
+        h.key_press(Key::Backspace);
+    } else {
+        h.event(Event::Text(text.to_owned()));
+    }
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+}
+
+fn group_name(h: &H, group: NodeId) -> Option<String> {
+    match h
+        .state()
+        .session
+        .project()
+        .graph()
+        .node(group)?
+        .config
+        .get("name")
+    {
+        Some(noodle_core::Value::Text(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+#[test]
+fn f2_renames_the_selected_group_and_an_empty_name_puts_the_default_back() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    let p = title(&h, group);
+    click(&mut h, p, Modifiers::NONE);
+    let at = empty_space(&h);
+    press(&mut h, at, Modifiers::NONE, Key::F2);
+    assert!(h.state().editor.rename.is_some());
+    type_name(&mut h, "Drums");
+    assert_eq!(group_name(&h, group).as_deref(), Some("Drums"));
+    assert_eq!(scene(&h).node(group).unwrap().title, "Drums");
+    h.state_mut().session.undo();
+    assert_eq!(group_name(&h, group), None);
+    // Empty puts the default back.
+    h.state_mut().session.redo();
+    press(&mut h, at, Modifiers::NONE, Key::F2);
+    type_name(&mut h, "");
+    assert_eq!(group_name(&h, group), None);
+}
+
+#[test]
+fn double_clicking_a_group_ports_label_renames_it_and_keeps_its_wire() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    let src = add(&mut h, Node::new("noodle.osc.sine").at(-100.0, 300.0));
+    h.run();
+    let from = socket(&h, src, Side::Output, "out");
+    let spare = socket(&h, group, Side::Input, "in1");
+    link(&mut h, from, spare);
+    h.run();
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "in1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    assert!(h.state().editor.rename.is_some(), "the port's box opened");
+    assert_eq!(h.state().editor.group, None, "and the group wasn't entered");
+    type_name(&mut h, "feed");
+    assert_eq!(source(&h, group, "feed"), Some(Endpoint::new(src, "out")));
+    assert_eq!(source(&h, group, "in1"), None);
+    assert!(h.state().session.diagnostics().is_empty());
+}
+
+#[test]
+fn a_port_name_already_taken_is_refused() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    for name in ["x", "y"] {
+        let session = &mut h.state_mut().session;
+        let id = session.new_node_id();
+        let command = noodle_core::spare::add_group_port(
+            session.project().graph(),
+            group,
+            noodle_core::spare::Side::Input,
+            name,
+            id,
+        );
+        session.edit([Edit::Apply(command)]);
+    }
+    h.run();
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "x")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    type_name(&mut h, "y");
+    let ports = h.state().session.project().graph().group_ports(group);
+    assert!(ports.input("x").is_some() && ports.input("y").is_some());
+}
+
+#[test]
+fn the_add_node_list_offers_group_input_and_output_inside_a_group() {
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    let p = title(&h, group);
+    click(&mut h, p, Modifiers::NONE);
+    let at = empty_space(&h);
+    press(&mut h, at, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().editor.group, Some(group));
+    for (query, kind) in [("group input", GROUP_INPUT), ("group output", GROUP_OUTPUT)] {
+        press(&mut h, at, Modifiers::SHIFT, Key::A);
+        h.event(Event::Text(query.into()));
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        let graph = h.state().session.project().graph();
+        assert!(
+            graph.children(Some(group)).any(|(_, n)| n.type_id == kind),
+            "{query} was added inside the group"
+        );
+    }
 }

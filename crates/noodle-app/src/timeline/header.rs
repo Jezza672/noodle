@@ -102,6 +102,12 @@ fn solo_edit(graph: &Graph, input: NodeId, node: NodeId, on: bool) -> Command {
     Command::Batch(boundary.into_iter().map(off).collect())
 }
 
+/// Removes a track: its group, with the track input, the clips it plays and
+/// the lanes on it, as one undo step. Wires from the group go with it.
+pub fn delete_track(group: NodeId) -> Command {
+    Command::RemoveNode { id: group }
+}
+
 fn set(node: NodeId, key: &str, value: Option<f32>) -> Command {
     Command::SetParam {
         node,
@@ -117,6 +123,8 @@ pub struct Lane {
     pub index: usize,
     /// The track input node that plays the track's clips.
     pub input: NodeId,
+    /// The track is selected, so Delete removes it.
+    pub selected: bool,
 }
 
 /// What the user did in a header.
@@ -125,6 +133,8 @@ pub struct Changes {
     pub edits: Vec<Edit>,
     /// The record-arm button was pressed: the arm state it asks for.
     pub arm: Option<bool>,
+    /// The header was clicked: the track is now the selected one.
+    pub select: bool,
 }
 
 /// Draws one track's header in `lane` and returns what the user changed.
@@ -141,10 +151,35 @@ pub fn show(
         rect: lane,
         index,
         input,
+        selected,
     } = lane;
     let mut changes = Changes::default();
     let edits = &mut changes.edits;
+    // Under the header's widgets, so a click on empty header selects the
+    // track and a right-click offers to delete it.
+    let background = ui.interact(lane, ui.id().with(("header", input)), egui::Sense::click());
+    changes.select = background.clicked();
+    let group_of_track = graph.node(input).and_then(|n| n.parent);
+    background.context_menu(|ui| {
+        if ui
+            .add_enabled(group_of_track.is_some(), egui::Button::new("Delete track"))
+            .clicked()
+        {
+            ui.close();
+            if let Some(group) = group_of_track {
+                edits.push(Edit::Apply(delete_track(group)));
+            }
+        }
+    });
     let painter = ui.painter_at(lane);
+    if selected {
+        painter.rect_stroke(
+            lane.shrink(1.0),
+            0.0,
+            Stroke::new(1.5, colors::SELECTED),
+            egui::StrokeKind::Inside,
+        );
+    }
     painter.rect_filled(
         Rect::from_min_size(lane.min, vec2(4.0, lane.height() - 1.0)),
         0.0,

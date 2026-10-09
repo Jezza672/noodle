@@ -15,7 +15,9 @@
 //! | Ctrl+right-drag | Cut the wires crossed |
 //! | Shift+right-drag | Add a reroute on each wire crossed |
 //! | Shift+A | Search for a node to add |
-//! | X, Delete | Delete the selection |
+//! | X, Delete, Backspace | Delete the selection |
+//! | Double-click a wire | Break it |
+//! | Ctrl/Cmd+C, X, V | Copy, cut and paste the selection, at the pointer |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame (top level only) |
@@ -40,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
+use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
 use noodle_engine::{Diagnostic, Location, Registry};
 use noodle_nodes::REROUTE_ID;
@@ -93,6 +96,16 @@ pub struct EditorState {
     rename: Option<Rename>,
     /// What meters and scopes show.
     bodies: body::Bodies,
+    /// What Copy and Cut last took, for Paste.
+    clipboard: Option<Clipboard>,
+}
+
+/// Nodes, the wires between them and frames, as copied.
+#[derive(Clone, Default)]
+struct Clipboard {
+    nodes: Vec<(NodeId, Node)>,
+    wires: Vec<Connection>,
+    frames: Vec<Frame>,
 }
 
 impl Default for EditorState {
@@ -110,6 +123,7 @@ impl Default for EditorState {
             search: None,
             rename: None,
             bodies: body::Bodies::default(),
+            clipboard: None,
         }
     }
 }
@@ -182,6 +196,27 @@ impl EditorState {
         self.selected_frames.clear();
     }
 
+    pub fn has_selection(&self) -> bool {
+        !self.selected.is_empty() || !self.selected_frames.is_empty()
+    }
+
+    /// Deleting the selection as one edit, and forgetting the selection.
+    /// `None` if nothing is selected.
+    pub fn delete_selection(&mut self) -> Option<Edit> {
+        let commands: Vec<Command> = self
+            .selected
+            .iter()
+            .map(|&id| Command::RemoveNode { id })
+            .chain(
+                self.selected_frames
+                    .iter()
+                    .map(|&id| Command::RemoveFrame { id }),
+            )
+            .collect();
+        self.clear_selection();
+        (!commands.is_empty()).then_some(Edit::Apply(Command::Batch(commands)))
+    }
+
     fn clear_selection(&mut self) {
         self.selected.clear();
         self.selected_frames.clear();
@@ -225,6 +260,14 @@ enum Gesture {
         original: Frame,
         moved: bool,
     },
+    /// Dragging a port up or down its column. `target` is where it would
+    /// land among the side's other ports.
+    Reorder {
+        node: NodeId,
+        side: Side,
+        key: String,
+        target: usize,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -240,9 +283,25 @@ enum StrokeAction {
     Reroute,
 }
 
-/// Renaming a frame in place.
+/// What is being renamed in place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenameTarget {
+    Frame(FrameId),
+    /// A group: its name is its `name` config, which a track shares.
+    Group(NodeId),
+    /// A group's port, named by the boundary node inside; `shown_on` is the
+    /// node the box opens over.
+    Port {
+        boundary: NodeId,
+        shown_on: NodeId,
+    },
+    /// A group's input or output node, whose name is its port's.
+    Boundary(NodeId),
+}
+
+/// Renaming in place.
 struct Rename {
-    id: FrameId,
+    target: RenameTarget,
     label: String,
     focused: bool,
 }
@@ -393,7 +452,8 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         Gesture::Link { detached, .. } => detached.as_ref(),
         _ => None,
     };
-    draw::wires(&painter, &f, state, &problems, detached);
+    let splice = splice_while_dragging(state, &f, ui.input(|i| i.modifiers.alt));
+    draw::wires(&painter, &f, state, &problems, detached, splice.as_ref());
     let front = pointer_pos.and_then(|p| match hit(&f, p) {
         Hit::Port(endpoint, _) => Some(endpoint.node),
         Hit::Node(id) => Some(id),
@@ -424,7 +484,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     if response.hovered()
         && matches!(state.gesture, Gesture::Idle)
         && let Some(p) = pointer_pos
-        && let Some(text) = hover_problem(&f, &problems, p)
+        && let Some(text) = hover_text(&f, &problems, p)
     {
         response.on_hover_text_at_pointer(text);
     }
@@ -663,7 +723,7 @@ fn pointer(
             state.gesture = gesture;
             drag(state, f, p, edits);
             let gesture = std::mem::take(&mut state.gesture);
-            finish(state, f, gesture, p, inputs, edits);
+            finish(state, f, gesture, p, modifiers.alt, inputs, edits);
         }
     }
 
@@ -677,10 +737,44 @@ fn pointer(
     {
         match hit(f, p) {
             Hit::FrameHeader(id) => start_rename(state, f.project, id),
-            Hit::Node(id) if is_group(f.project, id) => state.enter(Some(id), None),
+            // A group's port rows rename the port; the rest of the node
+            // opens it.
+            Hit::Node(id) if is_group(f.project, id) => {
+                let port = f
+                    .scene
+                    .node(id)
+                    .and_then(|node| port_row_at(node, f.t.to_graph(p)));
+                match port {
+                    Some(port) => start_port_rename(state, f.project, id, port),
+                    None => state.enter(Some(id), None),
+                }
+            }
+            Hit::Nothing => {
+                if let Some(wire) = wire_at(f, p) {
+                    let input = wire.connection.to.clone();
+                    edits.push(Edit::Apply(Command::Disconnect { input }));
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// The wire under the screen point `p`, the nearest if several are in reach.
+fn wire_at<'a>(f: &'a Frame_<'_>, p: Pos2) -> Option<&'a layout::WireGeom> {
+    f.scene
+        .wires
+        .iter()
+        .map(|wire| {
+            let line: Vec<Pos2> = wire::flatten(wire::curve(wire.from, wire.to))
+                .into_iter()
+                .map(|g| f.t.to_screen(g))
+                .collect();
+            (wire::distance_to_polyline(p, &line), wire)
+        })
+        .filter(|(d, _)| *d <= WIRE_REACH)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, wire)| wire)
 }
 
 fn is_group(project: &Project, id: NodeId) -> bool {
@@ -730,6 +824,19 @@ fn start_primary_drag(
                 }
             }
             state.active = Some(id);
+            // A port's label is its handle: dragging it reorders the column.
+            if let Some(port) = f
+                .scene
+                .node(id)
+                .and_then(|node| label_at(node, f.t.to_graph(start)))
+            {
+                return Gesture::Reorder {
+                    node: id,
+                    side: port.side,
+                    key: port.key.clone(),
+                    target: slot(f, id, port.side, &port.key, f.t.to_graph(start).y),
+                };
+            }
             start_move(state, f, start)
         }
         Hit::FrameHeader(id) => {
@@ -761,6 +868,163 @@ fn start_primary_drag(
             },
         },
     }
+}
+
+/// Dropping a node onto a wire: the wire is replaced by one into the node and
+/// one out of it.
+#[derive(Clone, Debug, PartialEq)]
+struct Splice {
+    /// The wire it replaces.
+    wire: Connection,
+    /// The node's ports that take its place.
+    node: NodeId,
+    via_in: String,
+    via_out: String,
+}
+
+impl Splice {
+    fn commands(&self) -> Vec<Command> {
+        vec![
+            Command::Connect(Connection {
+                from: self.wire.from.clone(),
+                to: Endpoint::new(self.node, self.via_in.clone()),
+            }),
+            // Replaces the wire this node is being put into.
+            Command::Connect(Connection {
+                from: Endpoint::new(self.node, self.via_out.clone()),
+                to: self.wire.to.clone(),
+            }),
+        ]
+    }
+}
+
+/// How a node at `rect` would splice into a wire it lies on, if it can: it
+/// has no wires yet, and has an input and an output that suit the wire's
+/// signal, the main signal port before a parameter port.
+fn splice_for(f: &Frame_<'_>, node: NodeId, rect: Rect) -> Option<Splice> {
+    let graph = f.project.graph();
+    if graph
+        .connections()
+        .any(|c| c.from.node == node || c.to.node == node)
+    {
+        return None;
+    }
+    let geom = f.scene.node(node)?;
+    // The wire nearest the node's middle among those that cross it.
+    let centre = rect.center();
+    let wire = f
+        .scene
+        .wires
+        .iter()
+        .filter_map(|wire| {
+            let line = wire::flatten(wire::curve(wire.from, wire.to));
+            line.iter()
+                .any(|&p| rect.contains(p))
+                .then(|| (wire::distance_to_polyline(centre, &line), wire))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))?
+        .1;
+    let from = &f.scene.port(&wire.connection.from, Side::Output)?.kind;
+    let to = &f.scene.port(&wire.connection.to, Side::Input)?.kind;
+    let via_in = geom
+        .ports
+        .iter()
+        .filter(|p| !p.spare && p.side == Side::Input && from.feeds(&p.kind))
+        .min_by_key(|p| matches!(p.kind, PortKind::Param(_)))?;
+    let via_out = geom
+        .ports
+        .iter()
+        .find(|p| !p.spare && p.side == Side::Output && p.kind.feeds(to))?;
+    Some(Splice {
+        wire: wire.connection.clone(),
+        node,
+        via_in: via_in.key.clone(),
+        via_out: via_out.key.clone(),
+    })
+}
+
+/// The splice a node being dragged would make where it is now.
+fn splice_while_dragging(state: &EditorState, f: &Frame_<'_>, alt: bool) -> Option<Splice> {
+    if alt {
+        return None;
+    }
+    match &state.gesture {
+        Gesture::Move {
+            nodes,
+            frames,
+            moved: true,
+            ..
+        } if frames.is_empty() => match nodes.as_slice() {
+            [(id, _)] => splice_for(f, *id, f.scene.node(*id)?.rect),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The port whose label is at the graph point `g`, if it can be reordered:
+/// not on the title bar, not one the node refers to without having, and not
+/// the only one on its side.
+fn label_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
+    let port = port_row_at(node, g)?;
+    let siblings = node
+        .ports
+        .iter()
+        .filter(|p| p.side == port.side && !p.spare)
+        .count();
+    (siblings > 1).then_some(port)
+}
+
+/// The port whose row is at the graph point `g`, on the title bar excepted.
+/// Spare ports and ones the node doesn't really have don't count.
+fn port_row_at(node: &layout::NodeGeom, g: Pos2) -> Option<&layout::PortGeom> {
+    let in_row: Vec<_> = node
+        .ports
+        .iter()
+        .filter(|p| !p.in_header && !p.spare && p.kind != PortKind::Unknown && p.row.contains(g))
+        .collect();
+    // Inputs and outputs can share a row, one on each half.
+    match in_row.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        _ => {
+            let side = if g.x < node.rect.center().x {
+                Side::Input
+            } else {
+                Side::Output
+            };
+            in_row.into_iter().find(|p| p.side == side)
+        }
+    }
+}
+
+/// Where a port dragged to graph height `y` would land among the other ports
+/// on its side: the number of them whose rows are above `y`.
+fn slot(f: &Frame_<'_>, node: NodeId, side: Side, key: &str, y: f32) -> usize {
+    f.scene.node(node).map_or(0, |node| {
+        node.ports
+            .iter()
+            .filter(|p| p.side == side && p.key != key)
+            .filter(|p| p.row.center().y < y)
+            .count()
+    })
+}
+
+/// The keys of `node`'s ports in the order a drag of `key` to `target` would
+/// leave them: that side moved, the other side as it is.
+fn reordered(node: &layout::NodeGeom, side: Side, key: &str, target: usize) -> Vec<String> {
+    let mut mine: Vec<String> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
+    for port in &node.ports {
+        if port.side != side {
+            other.push(port.key.clone());
+        } else if port.key != key {
+            mine.push(port.key.clone());
+        }
+    }
+    mine.insert(target.min(mine.len()), key.to_owned());
+    mine.extend(other);
+    mine
 }
 
 /// The selected nodes and frames, and everything inside the selected frames,
@@ -863,6 +1127,12 @@ fn drag(state: &mut EditorState, f: &Frame_<'_>, p: Pos2, edits: &mut Vec<Edit>)
                 points.push(g);
             }
         }
+        Gesture::Reorder {
+            node,
+            side,
+            key,
+            target,
+        } => *target = slot(f, *node, *side, key, g.y),
         Gesture::Idle | Gesture::Pan | Gesture::Link { .. } | Gesture::BoxSelect { .. } => {}
     }
 }
@@ -872,11 +1142,37 @@ fn finish(
     f: &Frame_<'_>,
     gesture: Gesture,
     p: Pos2,
+    alt: bool,
     inputs: &mut Inputs<'_>,
     edits: &mut Vec<Edit>,
 ) {
     match gesture {
-        Gesture::Move { moved, .. } | Gesture::Resize { moved, .. } => {
+        Gesture::Move {
+            start,
+            nodes,
+            frames,
+            moved,
+        } => {
+            if moved {
+                // Where the node ended up, which the scene hasn't seen yet.
+                let splice = match nodes.as_slice() {
+                    [(id, origin)] if frames.is_empty() && !alt => {
+                        let size = f.scene.node(*id).map(|n| n.rect.size());
+                        size.and_then(|size| {
+                            let at = *origin + (f.t.to_graph(p) - start);
+                            splice_for(f, *id, Rect::from_min_size(at, size))
+                        })
+                    }
+                    _ => None,
+                };
+                // In the move's undo step, so one undo puts both back.
+                if let Some(splice) = splice {
+                    edits.push(Edit::Drag(Command::Batch(splice.commands())));
+                }
+                edits.push(Edit::EndDrag);
+            }
+        }
+        Gesture::Resize { moved, .. } => {
             if moved {
                 edits.push(Edit::EndDrag);
             }
@@ -888,6 +1184,7 @@ fn finish(
             detached,
         } => {
             let target = drop_target(f, p, &anchor, side, &kind);
+            let target_end = target.clone().unwrap_or_else(|| anchor.clone());
             let connect = |target: Endpoint| {
                 Command::Connect(match side {
                     Side::Output => Connection {
@@ -910,6 +1207,19 @@ fn finish(
                 (None, Some(detached)) => Some(Command::Disconnect { input: detached }),
                 (None, None) => None,
             };
+            // A spare port becomes real in the same step as its first wire.
+            let command = command.map(|command| {
+                let mut commands = Vec::new();
+                for (endpoint, side) in [(&anchor, side), (&target_end, side.other())] {
+                    commands.extend(make_real(f, endpoint, side, inputs));
+                }
+                commands.push(command);
+                if commands.len() == 1 {
+                    commands.remove(0)
+                } else {
+                    Command::Batch(commands)
+                }
+            });
             edits.extend(command.map(Edit::Apply));
         }
         Gesture::BoxSelect { start, mode } => {
@@ -956,7 +1266,70 @@ fn finish(
                 edits.push(Edit::Apply(Command::Batch(commands)));
             }
         }
+        Gesture::Reorder {
+            node,
+            side,
+            key,
+            target,
+        } => {
+            if let Some(geom) = f.scene.node(node) {
+                let order = reordered(geom, side, &key, target);
+                // Dropping a port where it was is no change.
+                let on_side = |keys: &mut dyn Iterator<Item = &str>| {
+                    keys.map(str::to_owned).collect::<Vec<_>>()
+                };
+                let before = on_side(
+                    &mut geom
+                        .ports
+                        .iter()
+                        .filter(|p| p.side == side)
+                        .map(|p| p.key.as_str()),
+                );
+                let after = on_side(
+                    &mut order
+                        .iter()
+                        .filter(|k| before.contains(k))
+                        .map(String::as_str),
+                );
+                if before != after {
+                    edits.push(Edit::Apply(Command::SetPortOrder { node, order }));
+                }
+            }
+        }
         Gesture::Idle | Gesture::Pan => {}
+    }
+}
+
+/// What it takes to make the spare port `endpoint` real, if it is one: more
+/// inputs on a mixer, or a boundary node inside a group.
+fn make_real(
+    f: &Frame_<'_>,
+    endpoint: &Endpoint,
+    side: Side,
+    inputs: &mut Inputs<'_>,
+) -> Vec<Command> {
+    let spare_port = f.scene.port(endpoint, side).is_some_and(|p| p.spare);
+    let graph = f.project.graph();
+    let Some(node) = graph.node(endpoint.node).filter(|_| spare_port) else {
+        return Vec::new();
+    };
+    match node.type_id.as_str() {
+        spare::MIXER => spare::prepare_mixer_input(graph, endpoint.node, &endpoint.port),
+        GROUP => {
+            let side = match side {
+                Side::Input => spare::Side::Input,
+                Side::Output => spare::Side::Output,
+            };
+            let id = (inputs.new_node_id)();
+            vec![spare::add_group_port(
+                graph,
+                endpoint.node,
+                side,
+                &endpoint.port,
+                id,
+            )]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1068,25 +1441,29 @@ fn keyboard(
             state.group.is_some(),
         ));
     }
-    if pressed(Modifiers::NONE, Key::X) || pressed(Modifiers::NONE, Key::Delete) {
-        let commands: Vec<Command> = state
-            .selected
-            .iter()
-            .map(|&id| Command::RemoveNode { id })
-            .chain(
-                state
-                    .selected_frames
-                    .iter()
-                    .map(|&id| Command::RemoveFrame { id }),
-            )
-            .collect();
-        if !commands.is_empty() {
-            edits.push(Edit::Apply(Command::Batch(commands)));
-        }
-        state.clear_selection();
+    // Backspace too: it's the key a Mac calls Delete.
+    // Every key is checked, so each press is consumed.
+    let mut delete = false;
+    for key in [Key::X, Key::Delete, Key::Backspace] {
+        delete |= pressed(Modifiers::NONE, key);
+    }
+    if delete {
+        edits.extend(state.delete_selection());
     }
     if pressed(Modifiers::SHIFT, Key::D) {
         duplicate(state, f, inputs, edits);
+    }
+    // egui turns Ctrl/Cmd+C, X and V into their own events, not key presses.
+    let event = |wanted: fn(&Event) -> bool| ui.input(|i| i.events.iter().any(wanted));
+    let copy = event(|e| matches!(e, Event::Copy)) || pressed(Modifiers::COMMAND, Key::C);
+    let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
+    let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
+    let copied = (copy || cut) && copy_selection(state, f);
+    if cut && copied {
+        edits.extend(state.delete_selection());
+    }
+    if paste {
+        self::paste(state, f.t.to_graph(pointer), inputs, edits);
     }
     if pressed(Modifiers::NONE, Key::A) {
         state.select_only(f.scene.nodes.iter().map(|n| n.id));
@@ -1104,12 +1481,108 @@ fn keyboard(
     if pressed(Modifiers::NONE, Key::Tab) {
         enter_or_leave(state, f.project);
     }
-    if pressed(Modifiers::NONE, Key::F2)
-        && state.selected_frames.len() == 1
-        && let Some(&id) = state.selected_frames.first()
-    {
-        start_rename(state, f.project, id);
+    if pressed(Modifiers::NONE, Key::F2) {
+        if state.selected_frames.len() == 1
+            && let Some(&id) = state.selected_frames.first()
+        {
+            start_rename(state, f.project, id);
+        } else if state.selected.len() == 1
+            && let Some(&id) = state.selected.first()
+        {
+            start_node_rename(state, f.project, id);
+        }
     }
+}
+
+/// Remembers the selection (and what is in selected frames) for Paste.
+fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) -> bool {
+    let graph = f.project.graph();
+    let (nodes, frames) = with_contents(state, &f.scene);
+    let nodes: Vec<(NodeId, Node)> = nodes
+        .into_iter()
+        .filter_map(|id| Some((id, graph.node(id)?.clone())))
+        // A copied group would be empty, and a copied group port would
+        // clash with the original's name.
+        .filter(|(_, node)| !matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT))
+        .collect();
+    let copied: BTreeSet<NodeId> = nodes.iter().map(|(id, _)| *id).collect();
+    let wires = graph
+        .connections()
+        .filter(|c| copied.contains(&c.from.node) && copied.contains(&c.to.node))
+        .collect();
+    let frames = frames
+        .into_iter()
+        .filter_map(|id| f.project.frame(id).cloned())
+        .collect();
+    if nodes.is_empty() && state.selected_frames.is_empty() {
+        return false;
+    }
+    state.clipboard = Some(Clipboard {
+        nodes,
+        wires,
+        frames,
+    });
+    true
+}
+
+/// Puts the clipboard down with its top-left corner at `at`, as one edit.
+/// The pasted nodes are selected afterwards.
+fn paste(state: &mut EditorState, at: Pos2, inputs: &mut Inputs<'_>, edits: &mut Vec<Edit>) {
+    let Some(clip) = state.clipboard.clone() else {
+        return;
+    };
+    let corner = clip
+        .nodes
+        .iter()
+        .map(|(_, n)| Pos2::new(n.position.x, n.position.y))
+        .chain(
+            clip.frames
+                .iter()
+                .map(|fr| Pos2::new(fr.position.x, fr.position.y)),
+        )
+        .reduce(|a, b| Pos2::new(a.x.min(b.x), a.y.min(b.y)));
+    let Some(corner) = corner else { return };
+    let offset = at - corner;
+    let mut commands = Vec::new();
+    let mut copies = BTreeMap::new();
+    for (id, node) in &clip.nodes {
+        let copy = (inputs.new_node_id)();
+        copies.insert(*id, copy);
+        let mut node = node.clone();
+        node.position = position(Pos2::new(node.position.x, node.position.y) + offset);
+        // Into the group being edited, wherever the nodes came from.
+        node.parent = state.group;
+        commands.push(Command::AddNode { id: copy, node });
+    }
+    for wire in &clip.wires {
+        if let (Some(&from), Some(&to)) = (copies.get(&wire.from.node), copies.get(&wire.to.node)) {
+            commands.push(Command::Connect(Connection {
+                from: Endpoint::new(from, wire.from.port.clone()),
+                to: Endpoint::new(to, wire.to.port.clone()),
+            }));
+        }
+    }
+    // Frames belong to the top level.
+    let mut frame_ids = Vec::new();
+    if state.group.is_none() {
+        for frame in &clip.frames {
+            let id = (inputs.new_frame_id)();
+            frame_ids.push(id);
+            commands.push(Command::AddFrame {
+                id,
+                frame: Frame {
+                    position: position(Pos2::new(frame.position.x, frame.position.y) + offset),
+                    ..frame.clone()
+                },
+            });
+        }
+    }
+    if commands.is_empty() {
+        return;
+    }
+    edits.push(Edit::Apply(Command::Batch(commands)));
+    state.select_only(copies.values().copied());
+    state.selected_frames = frame_ids.into_iter().collect();
 }
 
 fn duplicate(
@@ -1337,8 +1810,48 @@ fn frame_selection(
 fn start_rename(state: &mut EditorState, project: &Project, id: FrameId) {
     if let Some(frame) = project.frame(id) {
         state.rename = Some(Rename {
-            id,
+            target: RenameTarget::Frame(id),
             label: frame.label.clone(),
+            focused: false,
+        });
+    }
+}
+
+/// Starts renaming a group, or a group's input or output node.
+fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
+    let graph = project.graph();
+    let Some(node) = graph.node(id) else { return };
+    let (target, label) = match node.type_id.as_str() {
+        GROUP => (RenameTarget::Group(id), layout::group_title(graph, id)),
+        GROUP_INPUT | GROUP_OUTPUT => (RenameTarget::Boundary(id), group::port_name(id, node)),
+        _ => return,
+    };
+    state.rename = Some(Rename {
+        target,
+        label,
+        focused: false,
+    });
+}
+
+/// Starts renaming the port of a group node that `key` names.
+fn start_port_rename(
+    state: &mut EditorState,
+    project: &Project,
+    group: NodeId,
+    port: &layout::PortGeom,
+) {
+    let ports = project.graph().group_ports(group);
+    let found = match port.side {
+        Side::Input => ports.input(&port.key),
+        Side::Output => ports.output(&port.key),
+    };
+    if let Some(found) = found {
+        state.rename = Some(Rename {
+            target: RenameTarget::Port {
+                boundary: found.node,
+                shown_on: group,
+            },
+            label: found.name.clone(),
             focused: false,
         });
     }
@@ -1399,14 +1912,23 @@ fn popups(
     let Some(rename) = &mut state.rename else {
         return;
     };
-    let Some(frame) = f.project.frame(rename.id) else {
+    // Where the box opens, and the width it gets.
+    let anchor = match rename.target {
+        RenameTarget::Frame(id) => f.project.frame(id).map(|frame| {
+            Rect::from_min_size(
+                Pos2::new(frame.position.x, frame.position.y),
+                Vec2::new(frame.width, FRAME_HEADER_HEIGHT),
+            )
+        }),
+        RenameTarget::Group(id)
+        | RenameTarget::Boundary(id)
+        | RenameTarget::Port { shown_on: id, .. } => f.scene.node(id).map(|n| n.header()),
+    };
+    let Some(anchor) = anchor else {
         state.rename = None;
         return;
     };
-    let header = f.t.rect_to_screen(Rect::from_min_size(
-        Pos2::new(frame.position.x, frame.position.y),
-        Vec2::new(frame.width, FRAME_HEADER_HEIGHT),
-    ));
+    let header = f.t.rect_to_screen(anchor);
     let id = egui::Id::new("noodle-editor-rename");
     let mut done = false;
     let mut cancelled = false;
@@ -1432,18 +1954,60 @@ fn popups(
         state.rename = None;
     } else if done {
         let label = std::mem::take(&mut rename.label);
-        let id = rename.id;
+        let target = rename.target;
         state.rename = None;
-        if label != frame.label {
-            edits.push(Edit::Apply(Command::SetFrame {
+        edits.extend(rename_edit(f.project, target, label));
+    }
+}
+
+/// The edit that gives `target` the name `label`, if that changes anything.
+fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option<Edit> {
+    let command = match target {
+        RenameTarget::Frame(id) => {
+            let frame = project.frame(id)?;
+            (label != frame.label).then(|| Command::SetFrame {
                 id,
                 frame: Frame {
                     label,
                     ..frame.clone()
                 },
-            }));
+            })?
         }
-    }
+        RenameTarget::Group(id) => {
+            let graph = project.graph();
+            if label == layout::group_title(graph, id) {
+                return None;
+            }
+            // An empty name puts the default back.
+            Command::SetConfig {
+                node: id,
+                key: group::PORT_NAME.into(),
+                value: (!label.is_empty()).then_some(noodle_core::Value::Text(label)),
+            }
+        }
+        RenameTarget::Boundary(id) | RenameTarget::Port { boundary: id, .. } => {
+            spare::rename_group_port(project, id, &label)?
+        }
+    };
+    Some(Edit::Apply(command))
+}
+
+/// The tooltip for whatever's under the pointer: the name of a socket that
+/// has no label of its own, then any problems.
+fn hover_text(f: &Frame_<'_>, problems: &Problems, p: Pos2) -> Option<String> {
+    let name = match hit(f, p) {
+        Hit::Port(endpoint, side) => f
+            .scene
+            .port(&endpoint, side)
+            .filter(|port| port.in_header)
+            .map(|port| port.name.clone()),
+        _ => None,
+    };
+    let texts: Vec<String> = name
+        .into_iter()
+        .chain(hover_problem(f, problems, p))
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
 }
 
 /// The problems with whatever's under the pointer, as tooltip text.
