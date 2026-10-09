@@ -1236,3 +1236,90 @@ fn the_background_menu_offers_import_at_the_clicked_lane() {
     assert_eq!(pick.track, NodeId(2));
     assert!(pick.at.0 > 0);
 }
+
+/// A real track (a group holding a track input) added below the rig's two
+/// bare track inputs, with a clip on it. Returns (group, track input, clip).
+fn add_real_track(h: &mut H) -> (NodeId, NodeId, ClipId) {
+    let session = &mut h.state_mut().session;
+    let mut next = 100;
+    let (group, create) =
+        noodle_core::group::create_track(None, noodle_core::Position::default(), || {
+            next += 1;
+            NodeId(next)
+        });
+    session.edit([Edit::Apply(create)]);
+    let input = session
+        .project()
+        .graph()
+        .children(Some(group))
+        .find(|(_, n)| n.type_id == TRACK_INPUT)
+        .map(|(id, _)| id)
+        .unwrap();
+    let clip = session.project().next_clip_id();
+    session.edit([Edit::Apply(Command::AddClip {
+        id: clip,
+        clip: Clip::audio(input, Tick(0), "a.wav", 96_000),
+    })]);
+    h.run();
+    (group, input, clip)
+}
+
+/// The left margin of the third track's header, which has no widgets on it
+/// (the panel starts 8 points in).
+fn third_header(_: &H) -> Pos2 {
+    Pos2::new(
+        14.0,
+        8.0 + super::colors::RULER_HEIGHT + 2.0 * super::colors::LANE_HEIGHT + 20.0,
+    )
+}
+
+#[test]
+fn delete_removes_a_selected_track_with_its_clips_in_one_undo_step() {
+    let (mut h, _) = rig();
+    let (group, _, clip) = add_real_track(&mut h);
+    let before = h.state().session.project().clone();
+    let at = third_header(&h);
+    drag(&mut h, Modifiers::NONE, &[at]);
+    assert!(h.state().timeline.selected_track.is_some());
+    key_over(&mut h, at, Modifiers::NONE, Key::Delete);
+    let project = h.state().session.project();
+    assert!(project.graph().node(group).is_none());
+    assert!(project.clip(clip).is_none(), "its clips went with it");
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn delete_with_clips_selected_removes_the_clips_not_the_track() {
+    let (mut h, first) = rig();
+    let (group, _, _) = add_real_track(&mut h);
+    let at = third_header(&h);
+    drag(&mut h, Modifiers::NONE, &[at]);
+    let on_clip = centre(&h, first);
+    drag(&mut h, Modifiers::NONE, &[on_clip]);
+    key_over(&mut h, on_clip, Modifiers::NONE, Key::Delete);
+    assert!(h.state().session.project().clip(first).is_none());
+    assert!(h.state().session.project().graph().node(group).is_some());
+}
+
+#[test]
+fn the_header_menu_deletes_a_track() {
+    let (mut h, _) = rig();
+    let (group, _, _) = add_real_track(&mut h);
+    let at = third_header(&h);
+    h.event(Event::PointerMoved(at));
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run();
+    h.get_by_label("Delete track").click();
+    h.run();
+    assert!(h.state().session.project().graph().node(group).is_none());
+}

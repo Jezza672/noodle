@@ -49,6 +49,8 @@ pub struct TimelineState {
     scroll_x: f32,
     scroll_y: f32,
     selected: BTreeSet<ClipId>,
+    /// The track (its input node) whose header was last clicked.
+    selected_track: Option<NodeId>,
     drag: Option<Drag>,
     /// Where the arrangement was last right-clicked.
     menu_at: Option<Pos2>,
@@ -79,6 +81,7 @@ impl Default for TimelineState {
             scroll_x: 0.0,
             scroll_y: 0.0,
             selected: BTreeSet::new(),
+            selected_track: None,
             drag: None,
             menu_at: None,
             last_seek: None,
@@ -102,6 +105,12 @@ impl TimelineState {
     /// Forgets clips that no longer exist, e.g. after an undo.
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
+        if self
+            .selected_track
+            .is_some_and(|input| project.graph().node(input).is_none())
+        {
+            self.selected_track = None;
+        }
         self.waveforms.retain(|id| project.clip(id).is_some());
         self.automation.retain_existing(project);
         if self
@@ -536,6 +545,7 @@ pub fn show(
     // Clips and automation points share the Delete key, so picking one
     // drops the other from the selection.
     if state.selected != clips_before && !state.selected.is_empty() {
+        state.selected_track = None;
         state.automation.deselect();
     }
     let point_before = state.automation.selected();
@@ -567,11 +577,23 @@ pub fn show(
     if background.clicked() && !hit_clip {
         state.selected.clear();
     }
-    if hovered
-        && !state.selected.is_empty()
-        && ui.ctx().memory(|m| m.focused()).is_none()
-        && ui.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
+    // A focused button (a clicked header) isn't a text field; typing is.
+    let delete_pressed = hovered
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace));
+    // A selected track goes when no clip or point is selected to take it.
+    if delete_pressed
+        && state.selected.is_empty()
+        && state.automation.selected().is_none()
+        && let Some(group) = state
+            .selected_track
+            .and_then(|input| project.graph().node(input))
+            .and_then(|n| n.parent)
     {
+        edits.push(Edit::Apply(header::delete_track(group)));
+        state.selected_track = None;
+    }
+    if delete_pressed && !state.selected.is_empty() {
         let removals = state
             .selected
             .iter()
@@ -1024,6 +1046,7 @@ fn draw_headers(
                 rect: lane,
                 index,
                 input,
+                selected: state.selected_track == Some(input),
             },
             controls,
             automated,
@@ -1031,6 +1054,11 @@ fn draw_headers(
         );
         edits.extend(changes.edits);
         arm.extend(changes.arm.map(|on| (input, on)));
+        if changes.select {
+            state.selected_track = Some(input);
+            state.selected.clear();
+            state.automation.deselect();
+        }
         if let Some(controls) = controls {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
