@@ -543,3 +543,50 @@ fn automation_lanes_never_allocate_on_the_audio_thread() {
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }
+
+#[test]
+fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
+    use noodle_core::{TempoMap, Tick, TimeSignature};
+
+    let mut s = Session::new();
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let metronome = s.add(Node::new("noodle.util.metronome"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", metronome, "on");
+    s.wire(metronome, "out", output, "in");
+    s.update();
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..12 {
+        match round % 4 {
+            0 => transport.seek(Tick(480 * round)),
+            1 => transport.set_loop(Some((Tick(0), Tick(960 * 2)))),
+            2 => {
+                let map =
+                    TempoMap::constant(90.0 + 11.0 * round as f64, TimeSignature::COMMON).unwrap();
+                s.controller.set_tempo_map(&map);
+            }
+            _ => {
+                transport.stop();
+                s.controller.set_param(button, "state", round as f32 % 2.0);
+                transport.play();
+                transport.set_loop(None);
+            }
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the audio thread in round {round}"
+        );
+    }
+    assert!(heard, "the metronome never sounded");
+    assert!(out.iter().all(|x| x.is_finite()));
+}

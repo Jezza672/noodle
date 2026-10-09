@@ -8,7 +8,7 @@ use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::session::{Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
-use crate::{mixer, properties, theme};
+use crate::{metronome, mixer, properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 const REDO: KeyboardShortcut =
@@ -74,6 +74,7 @@ enum Action {
     TogglePause,
     AudioSettings,
     ToggleMixer,
+    ToggleMetronome,
     ImportAudio,
     DeleteSelection,
     Close,
@@ -314,19 +315,62 @@ impl App {
         });
     }
 
+    /// The transport pill: rewind, play, pause, record, the position and the
+    /// metronome, in a rounded capsule like the Canvas design's.
     fn transport(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let label = if self.session.is_playing() {
-            "⏹ Stop"
+        egui::Frame::NONE
+            .fill(theme::TRANSPORT_FILL)
+            .stroke(egui::Stroke::new(1.0, theme::TRANSPORT_OUTLINE))
+            .corner_radius(egui::CornerRadius::same(theme::PILL_RADIUS))
+            .inner_margin(egui::Margin::symmetric(8, 1))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                self.transport_buttons(ui, actions);
+            });
+    }
+
+    fn transport_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let playing = self.session.is_playing();
+        let open = playing;
+        ui.add_enabled_ui(open, |ui| {
+            if ui.button("⏮").on_hover_text("Back to the start").clicked() {
+                actions.push(Action::Rewind);
+            }
+        });
+        let (label, tip) = if playing {
+            ("⏹", "Stop (Space)")
         } else {
-            "▶ Play"
+            (
+                "▶",
+                "Play through the output device chosen in Audio Settings (Space)",
+            )
         };
+        let label = egui::RichText::new(label).color(if playing {
+            theme::ACCENT
+        } else {
+            theme::timeline::TEXT
+        });
         if ui
-            .button(label)
-            .on_hover_text("Play through the output device chosen in Audio Settings (Space)")
+            .add(egui::Button::new(label).selected(playing))
+            .on_hover_text(tip)
             .clicked()
         {
             actions.push(Action::TogglePlayback);
         }
+        ui.add_enabled_ui(open, |ui| {
+            let pause = if self.session.transport_running() {
+                "⏸"
+            } else {
+                "⏵"
+            };
+            if ui
+                .button(pause)
+                .on_hover_text("Pause or resume the timeline")
+                .clicked()
+            {
+                actions.push(Action::TogglePause);
+            }
+        });
         let recording = self.session.is_recording();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
             theme::RECORD
@@ -343,24 +387,7 @@ impl App {
         {
             actions.push(Action::ToggleRecord);
         }
-        let open = self.session.is_playing();
-        ui.add_enabled_ui(open, |ui| {
-            if ui.button("⏮").on_hover_text("Back to the start").clicked() {
-                actions.push(Action::Rewind);
-            }
-            let pause = if self.session.transport_running() {
-                "⏸"
-            } else {
-                "⏵"
-            };
-            if ui
-                .button(pause)
-                .on_hover_text("Pause or resume the timeline")
-                .clicked()
-            {
-                actions.push(Action::TogglePause);
-            }
-        });
+        self.metronome_button(ui, actions);
         let at = self
             .session
             .project()
@@ -368,6 +395,33 @@ impl App {
             .position(self.session.playhead());
         let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
+    }
+
+    /// Lit while the bound button is on. A metronome that is missing shows
+    /// dimmed (pressing adds one), and a broken binding shows as a problem.
+    fn metronome_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let binding = metronome::binding(self.session.project());
+        let (colour, selected, tip) = match &binding {
+            metronome::Binding::Bound { on, .. } => (
+                if *on {
+                    theme::ACCENT
+                } else {
+                    theme::timeline::TEXT
+                },
+                *on,
+                "Metronome".to_owned(),
+            ),
+            metronome::Binding::Missing => (
+                theme::editor::TEXT_WEAK,
+                false,
+                "Add a metronome to the project".to_owned(),
+            ),
+            metronome::Binding::Broken(why) => (theme::editor::PROBLEM, false, why.clone()),
+        };
+        let button = egui::Button::new(egui::RichText::new("𝅘𝅥").color(colour)).selected(selected);
+        if ui.add(button).on_hover_text(tip).clicked() {
+            actions.push(Action::ToggleMetronome);
+        }
     }
 
     fn status_bar(&self, ui: &mut egui::Ui) {
@@ -517,6 +571,15 @@ impl App {
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
+            Action::ToggleMetronome => {
+                let ids = || std::array::from_fn(|_| self.session.new_node_id());
+                match metronome::press(self.session.project(), ids) {
+                    Some(command) => self.session.edit([Edit::Apply(command)]),
+                    None => self
+                        .session
+                        .notify("The metronome isn't driven by a Button node".to_owned()),
+                }
+            }
             Action::ImportAudio => {
                 let playhead = self.session.playhead();
                 match self
@@ -694,7 +757,7 @@ mod tests {
         harness.run();
         harness.get_by_label("No nodes yet. Shift+A adds one.");
         harness.get_by_label("No problems");
-        harness.get_by_label("▶ Play");
+        harness.get_by_label("▶");
     }
 
     #[test]
@@ -1123,5 +1186,23 @@ mod tests {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run();
         assert_eq!(node_count(&harness), 1);
+    }
+
+    #[test]
+    fn the_metronome_button_adds_a_metronome_then_toggles_it() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("𝅘𝅥").click();
+        harness.run();
+        assert!(matches!(
+            metronome::binding(harness.state().session.project()),
+            metronome::Binding::Bound { on: true, .. }
+        ));
+        harness.get_by_label("𝅘𝅥").click();
+        harness.run();
+        assert!(matches!(
+            metronome::binding(harness.state().session.project()),
+            metronome::Binding::Bound { on: false, .. }
+        ));
     }
 }
