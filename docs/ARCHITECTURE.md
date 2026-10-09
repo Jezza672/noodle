@@ -762,6 +762,17 @@ It has these views:
     keyboard. `app.rs` knows the canvas isn't a text field, so the app's
     shortcuts still work. `group_nodes` takes a shared `&Project` and an ID
     allocator, so the editor can call it while the session owns the project.
+  - **Auto-arrange** (`editor/arrange.rs`, Ctrl/Cmd+L or Edit > Arrange
+    Nodes): a pure function from node sizes and wires to positions, applied
+    as one batch of `MoveNode`s, so one undo step. Feedback wires are cut by
+    a depth-first walk, nodes go in columns by longest path from the left
+    (sources with nothing feeding them move up beside what they feed),
+    barycentre sweeps reduce crossings starting from the on-screen order,
+    and rows are relaxed towards their neighbours without overlapping.
+    Separate pieces are stacked. It moves the selection, or everything if
+    nothing is selected, and anchors at the top-left of what it moved.
+    Frames, and nodes inside them, stay put and the layout is shifted clear
+    of them; arranging inside a frame is left for later.
   - **A custom canvas**, not `egui-snarl`, so the interactions can follow
     Blender's exactly: picking a wire up off an input, cutting and rerouting
     with a stroke, frames that carry their nodes. The full list of inputs is

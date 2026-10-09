@@ -2194,6 +2194,114 @@ fn a_wire_cannot_be_dropped_on_a_lanes_port() {
     );
 }
 
+/// A scrambled chain: output, gain, sine, wired sine -> gain -> output.
+fn scrambled(h: &mut H) -> (NodeId, NodeId, NodeId) {
+    let output = add(h, Node::new(OUTPUT_ID).at(0.0, 300.0));
+    let gain = add(h, Node::new("noodle.util.gain").at(500.0, 0.0));
+    let sine = add(h, Node::new("noodle.osc.sine").at(250.0, 450.0));
+    connect(h, sine, "out", gain, "in");
+    connect(h, gain, "out", output, "in");
+    h.run();
+    (sine, gain, output)
+}
+
+#[test]
+fn ctrl_l_arranges_everything_left_to_right_in_one_undo_step() {
+    let mut h = rig();
+    let (sine, gain, output) = scrambled(&mut h);
+    let before: Vec<_> = [sine, gain, output]
+        .iter()
+        .map(|&n| position(&h, n))
+        .collect();
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::COMMAND, Key::L);
+
+    let (s, g, o) = (position(&h, sine), position(&h, gain), position(&h, output));
+    assert!(s.x < g.x && g.x < o.x, "{s:?} {g:?} {o:?}");
+    // Nodes differ in height, so they line up by their middles.
+    let scene = scene(&h);
+    let mid = |n| scene.node(n).unwrap().rect.center().y;
+    assert!((mid(sine) - mid(gain)).abs() < 1.0 && (mid(gain) - mid(output)).abs() < 1.0);
+    // Exactly one batch moved them all.
+    let batches = h
+        .state()
+        .log
+        .iter()
+        .filter(|e| matches!(e, Edit::Apply(Command::Batch(c)) if c.len() == 3))
+        .count();
+    assert_eq!(batches, 1);
+    h.state_mut().session.undo();
+    let after: Vec<_> = [sine, gain, output]
+        .iter()
+        .map(|&n| position(&h, n))
+        .collect();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn arranging_a_selection_leaves_the_rest() {
+    let mut h = rig();
+    let (sine, gain, output) = scrambled(&mut h);
+    let output_before = position(&h, output);
+    let p = title(&h, sine);
+    click(&mut h, p, Modifiers::NONE);
+    let p = title(&h, gain);
+    click(&mut h, p, Modifiers::SHIFT);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::COMMAND, Key::L);
+    assert_eq!(position(&h, output), output_before);
+    assert!(position(&h, sine).x < position(&h, gain).x);
+    let scene = scene(&h);
+    let mid = |n| scene.node(n).unwrap().rect.center().y;
+    assert!((mid(sine) - mid(gain)).abs() < 1.0);
+}
+
+#[test]
+fn arranging_leaves_frames_and_what_is_in_them_alone() {
+    let mut h = rig();
+    let inside = add(&mut h, Node::new("noodle.osc.sine").at(20.0, 40.0));
+    let frame = h.state().session.new_frame_id();
+    h.state_mut().session.edit([Edit::Apply(Command::AddFrame {
+        id: frame,
+        frame: Frame {
+            label: "Synth".into(),
+            position: Position { x: 0.0, y: 0.0 },
+            width: 300.0,
+            height: 300.0,
+        },
+    })]);
+    let (sine, gain, output) = scrambled(&mut h);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::COMMAND, Key::L);
+    assert_eq!(position(&h, inside), Position { x: 20.0, y: 40.0 });
+    let frame_rect = egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0));
+    let scene = scene(&h);
+    for n in [sine, gain, output] {
+        assert!(!scene.node(n).unwrap().rect.intersects(frame_rect));
+    }
+}
+
+#[test]
+fn the_menu_request_arranges_on_the_next_frame() {
+    let mut h = rig();
+    let (sine, gain, output) = scrambled(&mut h);
+    h.state_mut().editor.request_arrange();
+    h.run();
+    assert!(position(&h, sine).x < position(&h, gain).x);
+    assert!(position(&h, gain).x < position(&h, output).x);
+}
+
+#[test]
+fn arranging_a_tidy_graph_changes_nothing() {
+    let mut h = rig();
+    scrambled(&mut h);
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::COMMAND, Key::L);
+    let edits = h.state().log.len();
+    press(&mut h, p, Modifiers::COMMAND, Key::L);
+    assert_eq!(h.state().log.len(), edits);
+}
+
 fn view_request_after_double_click(type_id: &str) -> (Option<NodeId>, NodeId) {
     let mut h = rig();
     let node = add(&mut h, Node::new(type_id).at(0.0, 0.0));
