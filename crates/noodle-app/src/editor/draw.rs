@@ -52,7 +52,7 @@ pub fn frames(painter: &Painter, f: &Frame_<'_>, state: &EditorState) {
         if state.selected_frames.contains(&frame.id) {
             painter.rect_stroke(
                 rect,
-                4.0 * z,
+                f32::from(theme::RADIUS) * z,
                 Stroke::new(1.5, colors::SELECTED),
                 StrokeKind::Outside,
             );
@@ -299,7 +299,7 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
                 _ => colors::PROBLEM,
             };
             let fill = if port.idle {
-                fill.gamma_multiply(0.35)
+                fill.gamma_multiply(0.6)
             } else {
                 fill
             };

@@ -15,7 +15,7 @@ pub const PANEL: Color32 = Color32::from_rgb(28, 28, 31);
 pub const ACCENT: Color32 = Color32::from_rgb(245, 208, 74);
 /// Selected items, and text selection.
 pub const SELECTED: Color32 = Color32::from_rgb(70, 86, 140);
-/// Mute and solo buttons, and the record button while recording.
+/// Mute, solo and record.
 pub const MUTE: Color32 = Color32::from_rgb(255, 122, 107);
 pub const SOLO: Color32 = ACCENT;
 pub const RECORD: Color32 = Color32::from_rgb(255, 90, 79);
@@ -84,7 +84,7 @@ pub mod editor {
     /// The active node's outline: the one the properties panel shows.
     pub const ACTIVE: Color32 = Color32::from_rgb(255, 255, 255);
     pub const PROBLEM: Color32 = Color32::from_rgb(255, 90, 79);
-    pub const WIRE: Color32 = Color32::from_rgb(92, 200, 230);
+    pub const WIRE: Color32 = Color32::from_rgb(120, 140, 160);
     /// Wires to and from selected nodes.
     pub const WIRE_SELECTED: Color32 = Color32::from_rgb(245, 208, 74);
     pub const EVENT_WIRE: Color32 = Color32::from_rgb(240, 160, 64);
@@ -139,7 +139,7 @@ pub mod timeline {
     pub const BAR_LINE: Color32 = Color32::from_rgb(58, 58, 64);
     pub const BEAT_LINE: Color32 = Color32::from_rgb(38, 38, 43);
     pub const TEXT: Color32 = Color32::from_rgb(232, 232, 234);
-    pub const TEXT_WEAK: Color32 = Color32::from_rgb(117, 117, 125);
+    pub const TEXT_WEAK: Color32 = Color32::from_rgb(145, 145, 153);
     pub const PLAYHEAD: Color32 = super::ACCENT;
     pub const SELECTED: Color32 = Color32::WHITE;
     pub const MISSING: Color32 = Color32::from_rgb(255, 90, 79);
