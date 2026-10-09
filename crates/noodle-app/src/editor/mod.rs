@@ -17,6 +17,7 @@
 //! | Shift+A | Search for a node to add |
 //! | X, Delete, Backspace | Delete the selection |
 //! | Double-click a wire | Break it |
+//! | Ctrl/Cmd+C, X, V | Copy, cut and paste the selection, at the pointer |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame (top level only) |
@@ -94,6 +95,16 @@ pub struct EditorState {
     rename: Option<Rename>,
     /// What meters and scopes show.
     bodies: body::Bodies,
+    /// What Copy and Cut last took, for Paste.
+    clipboard: Option<Clipboard>,
+}
+
+/// Nodes, the wires between them and frames, as copied.
+#[derive(Clone, Default)]
+struct Clipboard {
+    nodes: Vec<(NodeId, Node)>,
+    wires: Vec<Connection>,
+    frames: Vec<Frame>,
 }
 
 impl Default for EditorState {
@@ -111,6 +122,7 @@ impl Default for EditorState {
             search: None,
             rename: None,
             bodies: body::Bodies::default(),
+            clipboard: None,
         }
     }
 }
@@ -1354,6 +1366,20 @@ fn keyboard(
     if pressed(Modifiers::SHIFT, Key::D) {
         duplicate(state, f, inputs, edits);
     }
+    // egui turns Ctrl/Cmd+C, X and V into their own events, not key presses.
+    let event = |wanted: fn(&Event) -> bool| ui.input(|i| i.events.iter().any(wanted));
+    let copy = event(|e| matches!(e, Event::Copy)) || pressed(Modifiers::COMMAND, Key::C);
+    let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
+    let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
+    if copy || cut {
+        copy_selection(state, f);
+    }
+    if cut {
+        edits.extend(state.delete_selection());
+    }
+    if paste {
+        self::paste(state, f.t.to_graph(pointer), inputs, edits);
+    }
     if pressed(Modifiers::NONE, Key::A) {
         state.select_only(f.scene.nodes.iter().map(|n| n.id));
         state.selected_frames = f.scene.frames.iter().map(|fr| fr.id).collect();
@@ -1376,6 +1402,96 @@ fn keyboard(
     {
         start_rename(state, f.project, id);
     }
+}
+
+/// Remembers the selection (and what is in selected frames) for Paste.
+fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) {
+    let graph = f.project.graph();
+    let (nodes, frames) = with_contents(state, &f.scene);
+    let nodes: Vec<(NodeId, Node)> = nodes
+        .into_iter()
+        .filter_map(|id| Some((id, graph.node(id)?.clone())))
+        // A copied group would be empty, and a copied group port would
+        // clash with the original's name.
+        .filter(|(_, node)| !matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT))
+        .collect();
+    let copied: BTreeSet<NodeId> = nodes.iter().map(|(id, _)| *id).collect();
+    let wires = graph
+        .connections()
+        .filter(|c| copied.contains(&c.from.node) && copied.contains(&c.to.node))
+        .collect();
+    let frames = frames
+        .into_iter()
+        .filter_map(|id| f.project.frame(id).cloned())
+        .collect();
+    if nodes.is_empty() && state.selected_frames.is_empty() {
+        return;
+    }
+    state.clipboard = Some(Clipboard {
+        nodes,
+        wires,
+        frames,
+    });
+}
+
+/// Puts the clipboard down with its top-left corner at `at`, as one edit.
+/// The pasted nodes are selected afterwards.
+fn paste(state: &mut EditorState, at: Pos2, inputs: &mut Inputs<'_>, edits: &mut Vec<Edit>) {
+    let Some(clip) = state.clipboard.clone() else {
+        return;
+    };
+    let corner = clip
+        .nodes
+        .iter()
+        .map(|(_, n)| Pos2::new(n.position.x, n.position.y))
+        .chain(
+            clip.frames
+                .iter()
+                .map(|fr| Pos2::new(fr.position.x, fr.position.y)),
+        )
+        .reduce(|a, b| Pos2::new(a.x.min(b.x), a.y.min(b.y)));
+    let Some(corner) = corner else { return };
+    let offset = at - corner;
+    let mut commands = Vec::new();
+    let mut copies = BTreeMap::new();
+    for (id, node) in &clip.nodes {
+        let copy = (inputs.new_node_id)();
+        copies.insert(*id, copy);
+        let mut node = node.clone();
+        node.position = position(Pos2::new(node.position.x, node.position.y) + offset);
+        // Into the group being edited, wherever the nodes came from.
+        node.parent = state.group;
+        commands.push(Command::AddNode { id: copy, node });
+    }
+    for wire in &clip.wires {
+        if let (Some(&from), Some(&to)) = (copies.get(&wire.from.node), copies.get(&wire.to.node)) {
+            commands.push(Command::Connect(Connection {
+                from: Endpoint::new(from, wire.from.port.clone()),
+                to: Endpoint::new(to, wire.to.port.clone()),
+            }));
+        }
+    }
+    // Frames belong to the top level.
+    let mut frame_ids = Vec::new();
+    if state.group.is_none() {
+        for frame in &clip.frames {
+            let id = (inputs.new_frame_id)();
+            frame_ids.push(id);
+            commands.push(Command::AddFrame {
+                id,
+                frame: Frame {
+                    position: position(Pos2::new(frame.position.x, frame.position.y) + offset),
+                    ..frame.clone()
+                },
+            });
+        }
+    }
+    if commands.is_empty() {
+        return;
+    }
+    edits.push(Edit::Apply(Command::Batch(commands)));
+    state.select_only(copies.values().copied());
+    state.selected_frames = frame_ids.into_iter().collect();
 }
 
 fn duplicate(

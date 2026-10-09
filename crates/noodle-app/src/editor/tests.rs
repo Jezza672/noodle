@@ -1783,3 +1783,78 @@ fn a_node_with_no_matching_ports_isnt_spliced() {
     assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
     assert_eq!(source(&h, out, "in"), None);
 }
+
+/// Sends a copy, cut or paste event with the pointer at `at`, as the window
+/// does for Ctrl/Cmd+C, X and V.
+fn clipboard_event(h: &mut H, at: Pos2, event: Event) {
+    h.hover_at(at);
+    h.step();
+    h.event(event);
+    h.run();
+}
+
+#[test]
+fn copy_and_paste_put_the_nodes_and_the_wires_between_them_at_the_pointer() {
+    let mut h = rig();
+    let (sine, gain, _) = wired(&mut h);
+    let before = h.state().session.project().graph().connections().count();
+    h.state_mut().editor.select_only([sine, gain]);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Copy);
+    // Copying changes nothing.
+    assert_eq!(
+        h.state().session.project().graph().connections().count(),
+        before
+    );
+    let before = h.state().session.project().clone();
+    let target = screen(&h, Pos2::new(100.0, 400.0));
+    clipboard_event(&mut h, target, Event::Paste(String::new()));
+
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.connections().count(), 2);
+    let pasted: Vec<NodeId> = h.state().editor.selected.iter().copied().collect();
+    assert_eq!(pasted.len(), 2);
+    assert!(!pasted.contains(&sine) && !pasted.contains(&gain));
+    // The copy of the gain is fed by the copy of the sine, not the original.
+    let copy_gain = *pasted
+        .iter()
+        .find(|id| graph.node(**id).unwrap().type_id == "noodle.util.gain")
+        .unwrap();
+    let feeder = source(&h, copy_gain, "in").unwrap().node;
+    assert!(pasted.contains(&feeder));
+    // The top-left of the copies is at the pointer.
+    let top_left = pasted
+        .iter()
+        .map(|id| position(&h, *id))
+        .fold((f32::MAX, f32::MAX), |(x, y), p| (x.min(p.x), y.min(p.y)));
+    assert!((top_left.0 - 100.0).abs() < 1.0 && (top_left.1 - 400.0).abs() < 1.0);
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn cut_removes_the_selection_and_paste_brings_it_back() {
+    let mut h = rig();
+    let (sine, gain, _) = wired(&mut h);
+    h.state_mut().editor.select_only([sine]);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Cut);
+    assert!(h.state().session.project().graph().node(sine).is_none());
+    assert!(h.state().session.project().graph().node(gain).is_some());
+    clipboard_event(&mut h, at, Event::Paste(String::new()));
+    let graph = h.state().session.project().graph();
+    let sines = graph
+        .nodes()
+        .filter(|(_, n)| n.type_id == "noodle.osc.sine")
+        .count();
+    assert_eq!(sines, 1);
+}
+
+#[test]
+fn paste_with_an_empty_clipboard_does_nothing() {
+    let mut h = rig();
+    wired(&mut h);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Paste(String::new()));
+    assert!(h.state().log.is_empty());
+}
