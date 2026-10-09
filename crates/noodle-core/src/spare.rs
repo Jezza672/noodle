@@ -192,6 +192,23 @@ pub fn rename_group_port(project: &Project, boundary: NodeId, name: &str) -> Opt
             }
         }
     }
+    // The port keeps its place in the column under its new name.
+    if let Some(group_node) = graph.node(group)
+        && group_node.port_order.contains(&old)
+    {
+        let order = group_node
+            .port_order
+            .iter()
+            .map(|k| {
+                if *k == old {
+                    name.to_string()
+                } else {
+                    k.clone()
+                }
+            })
+            .collect();
+        commands.push(Command::SetPortOrder { node: group, order });
+    }
     Some(Command::Batch(commands))
 }
 

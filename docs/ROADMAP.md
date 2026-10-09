@@ -222,7 +222,8 @@ nodes in the engine), then the mixer and node views, and outputs.
 - **Done.** A group's inputs and outputs are always one more than the number wired,
   with the spare one greyed out, so you can wire into it without limit (2).
   A mixer's inputs do the same (5). Both use one shared "spare port" rule
-  that adds and removes ports as wires come and go. Ports are config, so a
+  that adds ports as wires arrive (a mixer's extra inputs are only hidden,
+  never removed, and group ports are removed by hand). Ports are config, so a
   change recompiles; the spare port itself carries no signal and must not
   trigger a recompile when it's only drawn.
 - **Done.** Groups can be renamed, and so can their inputs and outputs (7, 8). Track

@@ -1757,6 +1757,30 @@ fn dropping_a_node_on_a_wire_splices_it_in_as_one_undo_step() {
 }
 
 #[test]
+fn an_empty_group_isnt_spliced_onto_a_wire() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let group = add(&mut h, Node::new(GROUP).at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, group, Modifiers::NONE, stroke[1]);
+    // Only spare ports to splice through: the wire is left alone.
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(source(&h, group, "in1"), None);
+}
+
+#[test]
+fn cutting_only_a_group_leaves_it_in_place() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP));
+    h.state_mut().editor.select_only([group]);
+    let at = empty_space(&h);
+    clipboard_event(&mut h, at, Event::Cut);
+    assert!(h.state().session.project().graph().node(group).is_some());
+}
+
+#[test]
 fn alt_drops_a_node_on_a_wire_without_splicing() {
     let mut h = rig();
     let (sine, gain, stroke) = wired(&mut h);

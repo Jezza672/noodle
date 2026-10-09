@@ -929,12 +929,12 @@ fn splice_for(f: &Frame_<'_>, node: NodeId, rect: Rect) -> Option<Splice> {
     let via_in = geom
         .ports
         .iter()
-        .filter(|p| p.side == Side::Input && from.feeds(&p.kind))
+        .filter(|p| !p.spare && p.side == Side::Input && from.feeds(&p.kind))
         .min_by_key(|p| matches!(p.kind, PortKind::Param(_)))?;
     let via_out = geom
         .ports
         .iter()
-        .find(|p| p.side == Side::Output && p.kind.feeds(to))?;
+        .find(|p| !p.spare && p.side == Side::Output && p.kind.feeds(to))?;
     Some(Splice {
         wire: wire.connection.clone(),
         node,
@@ -1458,10 +1458,8 @@ fn keyboard(
     let copy = event(|e| matches!(e, Event::Copy)) || pressed(Modifiers::COMMAND, Key::C);
     let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
     let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
-    if copy || cut {
-        copy_selection(state, f);
-    }
-    if cut {
+    let copied = (copy || cut) && copy_selection(state, f);
+    if cut && copied {
         edits.extend(state.delete_selection());
     }
     if paste {
@@ -1497,7 +1495,7 @@ fn keyboard(
 }
 
 /// Remembers the selection (and what is in selected frames) for Paste.
-fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) {
+fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) -> bool {
     let graph = f.project.graph();
     let (nodes, frames) = with_contents(state, &f.scene);
     let nodes: Vec<(NodeId, Node)> = nodes
@@ -1517,13 +1515,14 @@ fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) {
         .filter_map(|id| f.project.frame(id).cloned())
         .collect();
     if nodes.is_empty() && state.selected_frames.is_empty() {
-        return;
+        return false;
     }
     state.clipboard = Some(Clipboard {
         nodes,
         wires,
         frames,
     });
+    true
 }
 
 /// Puts the clipboard down with its top-left corner at `at`, as one edit.

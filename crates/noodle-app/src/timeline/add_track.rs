@@ -31,7 +31,9 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
     };
     let (group, create) = create_track(None, position, &mut new_id);
     let mut commands = vec![create];
-    let (mixer, key) = match default_mixer(graph) {
+    let (mixer, key) = match default_mixer(graph)
+        .filter(|&m| (spare::mixer_used(graph, m) as i64) < spare::MIXER_MAX_INPUTS)
+    {
         Some(mixer) => {
             let key = spare::mixer_spare_key(graph, mixer);
             commands.extend(spare::prepare_mixer_input(graph, mixer, &key));

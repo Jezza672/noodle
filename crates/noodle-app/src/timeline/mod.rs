@@ -605,7 +605,7 @@ pub fn show(
     // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
     // clips, and scroll to keep it in view.
     let mut jump = None;
-    if hovered && !state.selected.is_empty() && ui.ctx().memory(|m| m.focused()).is_none() {
+    if hovered && !state.selected.is_empty() && !ui.ctx().egui_wants_keyboard_input() {
         let key = ui.input_mut(|i| {
             [Key::ArrowLeft, Key::ArrowRight]
                 .into_iter()

@@ -389,7 +389,9 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
             ports.retain(|p| {
                 p.side != Side::Input || spare::mixer_input_index(&p.key).is_none_or(|i| i <= used)
             });
-            ports.push(spare(Side::Input, spare::mixer_spare_key(graph, id)));
+            if (used as i64) < spare::MIXER_MAX_INPUTS {
+                ports.push(spare(Side::Input, spare::mixer_spare_key(graph, id)));
+            }
         }
         GROUP => {
             let input = spare::spare_group_name(graph, id, spare::Side::Input);
