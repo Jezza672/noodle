@@ -2,7 +2,7 @@
 
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Ports, Setup, Unit,
+    PerLane, Ports, Setup, Skip, Unit,
 };
 
 /// An attack, decay, sustain, release envelope driven by a gate signal.
@@ -175,6 +175,14 @@ impl Rates {
 
 impl LaneKernel for AdsrKernel {
     type State = AdsrState;
+
+    fn skip(&self) -> Skip {
+        Skip::AnySilent(&[GATE])
+    }
+
+    fn is_idle(&self, state: &AdsrState) -> bool {
+        state.stage == Stage::Idle && !state.gate
+    }
 
     fn process_lane(&mut self, state: &mut AdsrState, ctx: &Context, mut lane: Lane<'_, '_>) {
         let rate = ctx.sample_rate;
@@ -378,5 +386,41 @@ mod tests {
         h.input(ATTACK, 64).fill(0.001);
         let out = run(&mut h, 64, 1.0);
         assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn a_finished_envelope_is_skipped_and_a_ringing_one_is_not() {
+        use noodle_engine::testing::Harness;
+        let mut h = Harness::new(
+            &Adsr,
+            &Config::new(),
+            &[(GATE, noodle_engine::Shape::MONO)],
+            48_000.0,
+            480,
+        )
+        .unwrap();
+        h.set(RELEASE, 0.01);
+        h.input(GATE, 480).lane_mut(0, 0).fill(1.0);
+        h.run(480).unwrap();
+        assert!(!h.output(OUT).is_silent(0, 0));
+        assert!(h.output(OUT).lane(0, 0).iter().any(|&x| x > 0.5));
+
+        // Gate low and flagged silent: the release still plays out.
+        let mut gate = h.input(GATE, 480);
+        gate.lane_mut(0, 0).fill(0.0);
+        gate.set_silent(0, 0);
+        h.run(480).unwrap();
+        assert!(!h.output(OUT).is_silent(0, 0), "release is not cut");
+        h.run(480).unwrap();
+        h.run(480).unwrap();
+        // Done, and the envelope says so for the nodes after it.
+        assert!(h.output(OUT).is_silent(0, 0));
+        assert!(h.output(OUT).lane(0, 0).iter().all(|&x| x == 0.0));
+
+        // A note starts again from the skipped state.
+        h.input(GATE, 480).lane_mut(0, 0).fill(1.0);
+        h.run(480).unwrap();
+        assert!(!h.output(OUT).is_silent(0, 0));
+        assert!(h.output(OUT).lane(0, 0).iter().any(|&x| x > 0.5));
     }
 }

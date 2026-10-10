@@ -375,7 +375,16 @@ Metronome node and the metronome button.
 
 It becomes an instrument.
 
-**Status:** batch 3 is done: the `Voices` node (voice allocation and
+**Status:** batch 4 is done: silence skipping and finished-voice skipping
+(per-lane silence flags, `Skip` and `is_idle` on `LaneKernel`, a `tail` on
+`Voices`; see "Silence skipping" in ARCHITECTURE.md), and the rest of the
+synthesis nodes: `Square` and `Triangle` band-limited oscillators, a `Ladder`
+filter and a `Unison Saw` (the SVF, ADSR, LFO and VCA were already there),
+with `examples/subtractive-synth.ron` and its golden render. Not done: a
+fade-then-steal for voice stealing (still hard), and a separate envelope
+report to `Voices` (the `tail` parameter stands in until feedback loops
+exist). Still to do, in order: the delay node and feedback loops; the
+modulation backlog items. Batch 3 is done: the `Voices` node (voice allocation and
 stealing) and polyphonic signals end to end with `Voice Mix`, played from a
 MIDI keyboard and a MIDI clip (`examples/poly-synth.ron` and its golden
 render); the ADSR now recomputes only its moving times, and offsetting wires
@@ -414,7 +423,7 @@ filters, unison and spread); the delay node and feedback loops.
   and velocity. *Done* (batch 3).
 - Polyphonic signals working end to end, and the Voice Mix node. *Done*
   (batch 3).
-- **Silence skipping.**
+- **Silence skipping.** *Done* (batch 4).
   - **Flags:** signals carry a per-lane silence flag, which generalises the
     current per-signal `constant` flag.
   - **The wrapper:** a reusable lane-kernel wrapper skips a lane while all its
@@ -424,10 +433,12 @@ filters, unison and spread); the delay node and feedback loops.
     inputs, so they don't use the wrapper.
   - **Tails:** a lane is only skipped once its output has also gone silent,
     so filter and reverb tails ring out.
-- **Skipping finished voices.** Envelopes report when a voice's release has
-  finished, so the Voices node can mark it inactive and nothing processes it
-  until it's reused. Until then, every voice is processed all the time.
-- **Synthesis nodes:**
+- **Skipping finished voices.** *Done* (batch 4, as a `tail` parameter).
+  `Voices` marks a voice inactive once it has been free for `tail` seconds,
+  and nothing processes it until it's reused. Envelopes reporting their own
+  release would need a wire back to `Voices`, so wait for feedback loops.
+- **Synthesis nodes.** *Done* (batch 4; unison is a `Unison Saw` oscillator
+  node, and there is no separate pan or spread node yet):
   - Band-limited oscillators.
   - ADSR envelope and LFO.
   - SVF and ladder filters.

@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Ports, Setup, Unit,
+    PerLane, Ports, Setup, Skip, Unit,
 };
 
 /// A state-variable filter with low-pass, band-pass and high-pass outputs all
@@ -65,6 +65,14 @@ struct SvfKernel;
 
 impl LaneKernel for SvfKernel {
     type State = SvfState;
+
+    fn skip(&self) -> Skip {
+        Skip::AnySilent(&[IN])
+    }
+
+    fn is_idle(&self, state: &SvfState) -> bool {
+        state.ic1.abs() < IDLE && state.ic2.abs() < IDLE
+    }
 
     fn process_lane(&mut self, state: &mut SvfState, ctx: &Context, lane: Lane<'_, '_>) {
         let Lane {
@@ -151,6 +159,10 @@ impl SvfState {
         }
     }
 }
+
+/// A filter whose memory is below this (about -140 dB) has nothing left to
+/// ring out, and may be skipped while its input is silent.
+const IDLE: f32 = 1e-7;
 
 /// About -600 dB: far below anything audible, and far above the subnormals.
 const TINY: f32 = 1e-30;

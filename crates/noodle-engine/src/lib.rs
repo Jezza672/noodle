@@ -38,7 +38,7 @@ pub use compile::{
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
-pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane};
+pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
 pub use node::{
     ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, Mode, Node, NodeError,
     NodeInfo, NodeType, Port, Setup, Transport,

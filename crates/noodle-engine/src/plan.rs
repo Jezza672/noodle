@@ -80,6 +80,9 @@ pub(crate) struct Plan {
     nodes: Vec<PlanNode>,
     /// Every signal buffer, back to back.
     pool: Box<[f32]>,
+    /// One silence flag per lane of the pool, at the lane's pool offset
+    /// divided by `max_frames`. See [`SignalOut::set_silent`].
+    silent: Box<[bool]>,
     events: Vec<Vec<Event>>,
     values: Vec<ValueInput>,
     /// Wired parameters that offset their value, by index into the plan's
@@ -434,6 +437,7 @@ pub(crate) fn build(
         seamless,
         nodes,
         pool: vec![0.0; pool_len].into_boxed_slice(),
+        silent: vec![false; pool_len / max_frames.max(1)].into_boxed_slice(),
         events: (0..schedule.event_buffers)
             .map(|_| Vec::with_capacity(EVENT_CAPACITY))
             .collect(),
@@ -566,6 +570,7 @@ impl Plan {
         // another's inputs can be the same buffer at different times, which
         // safe borrows can't express.
         let pool = self.pool.as_mut_ptr();
+        let silent = self.silent.as_mut_ptr();
         let events = self.events.as_mut_ptr();
 
         for node in &mut self.nodes {
@@ -591,11 +596,15 @@ impl Plan {
             // this node's views exist while it runs.
             unsafe {
                 inputs.extend(node.inputs.iter().map(|input| match *input {
-                    Input::Buffer(view) => view.read(pool, frames),
+                    Input::Buffer(view) => view.read(pool, silent, frames, self.max_frames),
                     Input::Value(slot) => self.values[slot].signal(frames),
                     Input::Offset(k) => self.offsets[k].signal(frames),
                 }));
-                outputs.extend(node.outputs.iter().map(|view| view.write(pool, frames)));
+                outputs.extend(
+                    node.outputs
+                        .iter()
+                        .map(|view| view.write(pool, silent, frames, self.max_frames)),
+                );
                 event_inputs.extend(node.event_inputs.iter().map(|buffer| match buffer {
                     Some(b) => (*events.add(*b)).as_slice(),
                     None => &[],
@@ -645,7 +654,26 @@ impl Plan {
 impl View {
     /// SAFETY: `pool` must be the plan's pool, and nothing may write this
     /// buffer while the view lives.
-    unsafe fn read<'a>(self, pool: *const f32, frames: usize) -> SignalIn<'a> {
+    unsafe fn read<'a>(
+        self,
+        pool: *const f32,
+        silent: *const bool,
+        frames: usize,
+        max_frames: usize,
+    ) -> SignalIn<'a> {
+        let flags = unsafe {
+            std::slice::from_raw_parts(
+                silent.add(self.offset / max_frames.max(1)),
+                self.shape.lanes(),
+            )
+        };
+        unsafe { self.read_samples(pool, frames) }.with_silent(flags)
+    }
+
+    /// Like [`read`](Self::read), without the silence flags.
+    ///
+    /// SAFETY: as for `read`.
+    unsafe fn read_samples<'a>(self, pool: *const f32, frames: usize) -> SignalIn<'a> {
         let len = self.shape.lanes() * frames;
         let data = unsafe { std::slice::from_raw_parts(pool.add(self.offset), len) };
         SignalIn::new(data, self.shape, frames)
@@ -653,10 +681,19 @@ impl View {
 
     /// SAFETY: `pool` must be the plan's pool, and nothing else may read or
     /// write this buffer while the view lives.
-    unsafe fn write<'a>(self, pool: *mut f32, frames: usize) -> SignalOut<'a> {
-        let len = self.shape.lanes() * frames;
-        let data = unsafe { std::slice::from_raw_parts_mut(pool.add(self.offset), len) };
-        SignalOut::new(data, self.shape, frames)
+    unsafe fn write<'a>(
+        self,
+        pool: *mut f32,
+        silent: *mut bool,
+        frames: usize,
+        max_frames: usize,
+    ) -> SignalOut<'a> {
+        let lanes = self.shape.lanes();
+        let data = unsafe { std::slice::from_raw_parts_mut(pool.add(self.offset), lanes * frames) };
+        let flags = unsafe {
+            std::slice::from_raw_parts_mut(silent.add(self.offset / max_frames.max(1)), lanes)
+        };
+        SignalOut::new(data, self.shape, frames).with_silent(flags)
     }
 }
 
@@ -804,7 +841,7 @@ impl OffsetInput {
     /// source buffer meanwhile.
     unsafe fn compute(&mut self, pool: *const f32, frames: usize, base: &ValueInput) {
         // SAFETY: as promised by the caller.
-        let source = unsafe { self.source.read(pool, frames) };
+        let source = unsafe { self.source.read_samples(pool, frames) };
         let shape = source.shape();
         let info = &self.info;
         let constant = base.constant().map(|value| info.position(value));

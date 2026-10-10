@@ -5,6 +5,7 @@ mod adsr;
 mod button;
 mod clip;
 mod gain;
+mod ladder;
 mod lfo;
 mod meter;
 mod metronome;
@@ -18,6 +19,7 @@ mod reverse;
 mod scope;
 mod stage;
 mod svf;
+mod unison;
 mod vca;
 mod voice_mix;
 mod voices;
@@ -29,6 +31,7 @@ pub use clip::{
     TRACK_INPUT_ID, TrackInput, active_at,
 };
 pub use gain::{GAIN_ID, Gain};
+pub use ladder::Ladder;
 pub use lfo::{LFO_ID, Lfo};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
@@ -36,12 +39,13 @@ pub use midi_in::{MIDI_IN_ID, MidiIn};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
-pub use osc::{Saw, Sine};
+pub use osc::{Saw, Sine, Square, Triangle};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverse::Reverse;
 pub use scope::{SCOPE_ID, Scope};
 pub use stage::GroupStage;
 pub use svf::Svf;
+pub use unison::UnisonSaw;
 pub use vca::{VCA_ID, Vca};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 pub use voices::{VOICES_ID, Voices};
@@ -87,6 +91,9 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     let telemetry = Telemetry::new();
     registry.register(Sine);
     registry.register(Saw);
+    registry.register(Square);
+    registry.register(Triangle);
+    registry.register(UnisonSaw);
     registry.register(WhiteNoise);
     registry.register(Gain::new(&telemetry));
     registry.register(Button);
@@ -95,6 +102,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     // The builtin Output has no scope; this one reports to the hub.
     registry.replace(noodle_engine::Output::new(&telemetry));
     registry.register(Svf);
+    registry.register(Ladder);
     registry.register(Vca);
     registry.register(Adsr);
     registry.register(Lfo);

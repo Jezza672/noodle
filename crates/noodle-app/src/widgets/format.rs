@@ -26,6 +26,7 @@ pub fn format_value(info: &ParamInfo, value: f32) -> String {
         }
         Unit::Decibels => format!("{value:.1} dB"),
         Unit::Semitones => format!("{value:+.2} st"),
+        Unit::Cents => format!("{value:.0} ct"),
         unit => with_unit(&significant(value), unit),
     }
 }
@@ -67,6 +68,7 @@ fn scale_for(unit: Unit, suffix: &str) -> Option<f32> {
         (Unit::Seconds, "s" | "sec") => 1.0,
         (Unit::Seconds, "ms") => 1e-3,
         (Unit::Semitones, "st" | "semi" | "semitones") => 1.0,
+        (Unit::Cents, "ct" | "cents") => 1.0,
         (Unit::Percent, "%") => 1.0,
         _ => return None,
     };
@@ -87,6 +89,7 @@ pub fn unit_symbol(unit: Unit) -> &'static str {
         Unit::Decibels => "dB",
         Unit::Seconds => "s",
         Unit::Semitones => "st",
+        Unit::Cents => "ct",
         Unit::Percent => "%",
     }
 }

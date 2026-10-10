@@ -47,6 +47,8 @@ pub enum Unit {
     Decibels,
     Seconds,
     Semitones,
+    /// Hundredths of a semitone, for detuning.
+    Cents,
     Percent,
 }
 

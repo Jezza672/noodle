@@ -75,10 +75,18 @@ impl Node for VoiceMixNode {
         for channel in 0..out.shape().channels {
             let lane = out.lane_mut(0, channel);
             lane.fill(0.0);
+            let mut silent = true;
             for voice in 0..input.shape().voices {
+                if input.is_silent(voice, channel) {
+                    continue;
+                }
+                silent = false;
                 for (o, x) in lane.iter_mut().zip(input.lane(voice, channel)) {
                     *o += x;
                 }
+            }
+            if silent {
+                out.set_silent(0, channel);
             }
         }
         for channel in 0..self.probe.slots() {
@@ -117,5 +125,33 @@ mod tests {
         assert_eq!(out.shape(), Shape::STEREO);
         assert_eq!(out.lane(0, 0), &[3.0; 4]);
         assert_eq!(out.lane(0, 1), &[3.0; 4]); // 0 + 1 + 2
+    }
+
+    #[test]
+    fn silent_voices_are_skipped_and_all_silent_gives_a_flagged_lane() {
+        let shape = Shape::new(2, 1);
+        let mut h = Harness::new(
+            &VoiceMix::new(&Telemetry::new()),
+            &Config::new(),
+            &[(IN, shape)],
+            48_000.0,
+            4,
+        )
+        .unwrap();
+        let mut input = h.input(IN, 4);
+        input.lane_mut(0, 0).fill(1.0);
+        // Stale data under a flag must not be summed.
+        input.lane_mut(1, 0).fill(9.0);
+        input.set_silent(1, 0);
+        h.run(4).unwrap();
+        assert_eq!(h.output(OUT).lane(0, 0), &[1.0; 4]);
+        assert!(!h.output(OUT).is_silent(0, 0));
+
+        let mut input = h.input(IN, 4);
+        input.silence(0, 0);
+        input.silence(1, 0);
+        h.run(4).unwrap();
+        assert_eq!(h.output(OUT).lane(0, 0), &[0.0; 4]);
+        assert!(h.output(OUT).is_silent(0, 0));
     }
 }

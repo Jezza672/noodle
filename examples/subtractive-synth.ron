@@ -1,0 +1,53 @@
+// A polyphonic subtractive synth played from a MIDI clip. The track's MIDI
+// goes to Voices (four voices). Each voice has a unison saw (five detuned
+// saws spread across the stereo field), a ladder filter whose cutoff a
+// second envelope sweeps, and an amplitude envelope through a VCA. Voice Mix
+// sums the voices. Released voices are skipped, and so is every voice that
+// has not been played yet. The clip rolls an A minor 7th chord.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.poly.voices", config: {"voices": 4}, params: {"tail": 2.0}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.osc.unison_saw", config: {"unison": 5}, params: {"detune": 18.0, "spread": 0.7}, position: (x: 400.0, y: -80.0)),
+            4: (type: "noodle.filter.ladder", params: {"cutoff": 250.0, "resonance": 0.35}, position: (x: 600.0, y: -80.0)),
+            5: (type: "noodle.mod.adsr", params: {"attack": 0.004, "decay": 0.25, "sustain": 0.2, "release": 0.2}, position: (x: 400.0, y: -260.0)),
+            6: (type: "noodle.util.vca", params: {"level": 0.55}, position: (x: 600.0, y: -260.0)),
+            7: (type: "noodle.mod.adsr", params: {"attack": 0.01, "decay": 0.1, "sustain": 0.8, "release": 0.25}, position: (x: 400.0, y: 100.0)),
+            8: (type: "noodle.util.vca", position: (x: 800.0, y: 0.0)),
+            9: (type: "noodle.poly.voice_mix", position: (x: 1000.0, y: 0.0)),
+            10: (type: "noodle.util.gain", params: {"gain": -14.0}, position: (x: 1200.0, y: 0.0)),
+            11: (type: "noodle.io.output", position: (x: 1400.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "midi"), to: (node: 2, port: "in")),
+            (from: (node: 2, port: "pitch"), to: (node: 3, port: "frequency")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 2, port: "gate"), to: (node: 5, port: "gate")),
+            (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
+            (from: (node: 6, port: "out"), to: (node: 4, port: "cutoff")),
+            (from: (node: 2, port: "gate"), to: (node: 7, port: "gate")),
+            (from: (node: 4, port: "out"), to: (node: 8, port: "in")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "level")),
+            (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
+            (from: (node: 9, port: "out"), to: (node: 10, port: "in")),
+            (from: (node: 10, port: "out"), to: (node: 11, port: "in")),
+        ],
+    ),
+    clips: {
+        1: (
+            node: 1,
+            start: 0,
+            content: Midi((
+                length: 3840,
+                notes: [
+                    (start: 0, length: 1800, key: 45, velocity: 0.9),
+                    (start: 30, length: 1800, key: 60, velocity: 0.8),
+                    (start: 60, length: 1800, key: 64, velocity: 0.8),
+                    (start: 90, length: 1800, key: 67, velocity: 0.8),
+                ],
+            )),
+        ),
+    },
+)

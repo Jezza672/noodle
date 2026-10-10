@@ -4,7 +4,7 @@
 
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
-    NodeError, NodeInfo, NodeType, Ports, Setup, Shape,
+    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, Unit,
 };
 
 /// Plays up to `voices` notes at once. Each note gets a voice, and the
@@ -21,6 +21,15 @@ use noodle_engine::{
 /// gate drops for one sample before it rises again, so envelopes restart.
 /// Stealing is hard for now: the pitch changes at once, with no fade-out.
 ///
+/// **Finished voices.** A voice that has been free for longer than `tail`
+/// seconds is inactive: its three outputs are exactly 0 and flagged silent, so
+/// oscillators and everything else fed by the voice skip it until a note takes
+/// it. `tail` should be at least as long as the longest envelope release in
+/// the patch, since a voice stops sounding when it goes inactive. (The
+/// envelope can't tell the Voices node when it is done, because that would
+/// be a feedback wire.) A voice that isn't ringing also flags its `gate`
+/// silent for the blocks in which it stays low.
+///
 /// The voice count is config, not a parameter, since it is the outputs'
 /// shape.
 pub struct Voices;
@@ -31,6 +40,12 @@ pub const VOICES_ID: &str = "noodle.poly.voices";
 struct VoicesPorts {
     #[event_input("in", "Notes")]
     notes: (),
+    #[param(
+        "tail",
+        "Tail",
+        ParamInfo::new(0.0, 30.0, 10.0).unit(Unit::Seconds)
+    )]
+    tail: (),
     #[output("pitch", "Pitch")]
     pitch: (),
     #[output("gate", "Gate")]
@@ -106,6 +121,16 @@ struct Voice {
     /// A pitch expression, in semitones.
     bend: f32,
     held: bool,
+    /// Taken by a note and not yet free for `tail` seconds. An inactive voice
+    /// is silent.
+    active: bool,
+    /// Frames since the note ended.
+    since_off: u64,
+    /// The voice's outputs were silent at the start of this block and no note
+    /// has touched it since, so the flags can say so.
+    quiet: bool,
+    /// The same for the gate alone, which falls the moment a note ends.
+    gate_quiet: bool,
     /// The gate must fall for the next sample, so the note restarts.
     rearm: bool,
     /// When the note started, or (once released) ended, in allocation order.
@@ -170,6 +195,10 @@ impl VoicesNode {
                     velocity,
                     bend: 0.0,
                     held: true,
+                    active: true,
+                    since_off: 0,
+                    quiet: false,
+                    gate_quiet: false,
                     rearm: voice.rearm,
                     stamp,
                 };
@@ -180,6 +209,8 @@ impl VoicesNode {
                     voice.held = false;
                     voice.rearm = false;
                     voice.stamp = stamp;
+                    voice.since_off = 0;
+                    voice.gate_quiet = false;
                 }
             }
             EventKind::Expression {
@@ -204,14 +235,43 @@ impl VoicesNode {
             .get_disjoint_mut([VoicesPorts::PITCH, VoicesPorts::GATE, VoicesPorts::VELOCITY])
             .expect("voices outputs are distinct");
         for (i, voice) in self.voices.iter_mut().enumerate() {
-            pitch.lane_mut(i, 0)[start..end].fill(voice.pitch());
+            pitch.lane_mut(i, 0)[start..end].fill(if voice.active { voice.pitch() } else { 0.0 });
             let gate = &mut gate.lane_mut(i, 0)[start..end];
             gate.fill(if voice.held { 1.0 } else { 0.0 });
             if voice.rearm {
                 gate[0] = 0.0;
                 voice.rearm = false;
             }
-            velocity.lane_mut(i, 0)[start..end].fill(voice.velocity);
+            let velocity_now = if voice.active { voice.velocity } else { 0.0 };
+            velocity.lane_mut(i, 0)[start..end].fill(velocity_now);
+        }
+    }
+
+    /// Before a block's events: what the flags may claim for it.
+    fn begin_block(&mut self) {
+        for voice in &mut self.voices {
+            voice.quiet = !voice.active;
+            voice.gate_quiet = !voice.held && !voice.rearm;
+        }
+    }
+
+    /// After a block's events: flags the lanes that stayed silent, and makes
+    /// the voices that have been free for `tail` inactive.
+    fn end_block(&mut self, io: &mut [noodle_engine::SignalOut<'_>], frames: usize, tail: u64) {
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            if voice.quiet {
+                for output in io.iter_mut() {
+                    output.set_silent(i, 0);
+                }
+            } else if voice.gate_quiet {
+                io[VoicesPorts::GATE].set_silent(i, 0);
+            }
+            if voice.active && !voice.held {
+                voice.since_off = voice.since_off.saturating_add(frames as u64);
+                if voice.since_off >= tail {
+                    voice.active = false;
+                }
+            }
         }
     }
 }
@@ -219,7 +279,14 @@ impl VoicesNode {
 impl Node for VoicesNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let events: &[Event] = io.event_inputs[VoicesPorts::NOTES];
+        let tail = io.inputs[VoicesPorts::TAIL]
+            .lane(0, 0)
+            .first()
+            .copied()
+            .unwrap_or(0.0);
+        let tail = (f64::from(tail.max(0.0)) * f64::from(ctx.sample_rate)) as u64;
         let outputs = io.outputs;
+        self.begin_block();
         let mut cursor = 0;
         for event in events {
             let time = (event.time as usize).min(ctx.frames);
@@ -228,6 +295,7 @@ impl Node for VoicesNode {
             self.apply(event.kind);
         }
         self.fill(outputs, cursor, ctx.frames);
+        self.end_block(outputs, ctx.frames, tail);
     }
 
     fn reset(&mut self) {
@@ -412,5 +480,91 @@ mod tests {
         assert!((pitch(&h, 0, 3) - 440.0).abs() < 1e-3);
         assert!((pitch(&h, 0, 4) - 880.0).abs() < 1e-2);
         assert!((pitch(&h, 1, 15) - 440.0).abs() < 1e-3);
+    }
+
+    fn silent(h: &Harness, port: usize, voice: usize) -> bool {
+        h.output(port).is_silent(voice, 0)
+    }
+
+    #[test]
+    fn unused_voices_are_flagged_silent_and_a_note_wakes_its_voice() {
+        let mut h = voices(3);
+        h.run(16).unwrap();
+        for port in [VoicesPorts::PITCH, VoicesPorts::GATE, VoicesPorts::VELOCITY] {
+            for voice in 0..3 {
+                assert!(silent(&h, port, voice), "port {port} voice {voice}");
+                assert!(h.output(port).lane(voice, 0).iter().all(|&x| x == 0.0));
+            }
+        }
+
+        h.send_events(VoicesPorts::NOTES, &[on(4, 1, 69, 0.5)]);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        // The note starts mid-block: the voice isn't claimed to be silent.
+        for port in [VoicesPorts::PITCH, VoicesPorts::GATE, VoicesPorts::VELOCITY] {
+            assert!(!silent(&h, port, 0), "port {port}");
+        }
+        assert!((pitch(&h, 0, 8) - 440.0).abs() < 1e-3);
+        // The others still are.
+        assert!(silent(&h, VoicesPorts::PITCH, 1));
+        assert!(silent(&h, VoicesPorts::GATE, 2));
+    }
+
+    #[test]
+    fn a_released_voice_keeps_its_pitch_until_the_tail_has_passed() {
+        let mut h = voices(2);
+        // 0.01 s at 48 kHz is 480 frames: 30 blocks of 16.
+        h.set(VoicesPorts::TAIL, 0.01);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 0.5), off(8, 1)]);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+
+        // Gate fell mid-block, so it isn't flagged then; next block it is.
+        assert!(!silent(&h, VoicesPorts::GATE, 0));
+        h.run(16).unwrap();
+        assert!(silent(&h, VoicesPorts::GATE, 0), "low all block");
+        assert!(!silent(&h, VoicesPorts::PITCH, 0), "still ringing");
+        assert!((pitch(&h, 0, 3) - 440.0).abs() < 1e-3);
+
+        for _ in 0..40 {
+            h.run(16).unwrap();
+        }
+        assert!(silent(&h, VoicesPorts::PITCH, 0), "tail over");
+        assert_eq!(pitch(&h, 0, 3), 0.0);
+        assert!(silent(&h, VoicesPorts::VELOCITY, 0));
+    }
+
+    #[test]
+    fn a_voice_held_for_longer_than_the_tail_is_never_inactive() {
+        let mut h = voices(1);
+        h.set(VoicesPorts::TAIL, 0.0);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 60, 0.5)]);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        for _ in 0..20 {
+            h.run(16).unwrap();
+            assert!(!silent(&h, VoicesPorts::PITCH, 0));
+            assert!(pitch(&h, 0, 0) > 200.0);
+        }
+    }
+
+    #[test]
+    fn an_inactive_voice_that_is_retaken_in_the_same_block_as_a_steal_stays_correct() {
+        let mut h = voices(1);
+        h.set(VoicesPorts::TAIL, 0.0);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 60, 0.5), off(4, 1)]);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        h.run(16).unwrap();
+        assert!(silent(&h, VoicesPorts::PITCH, 0));
+        h.send_events(
+            VoicesPorts::NOTES,
+            &[on(0, 2, 72, 0.9), off(8, 2), on(12, 3, 48, 0.4)],
+        );
+        h.run(16).unwrap();
+        assert!(!silent(&h, VoicesPorts::PITCH, 0));
+        assert!(!silent(&h, VoicesPorts::GATE, 0));
+        assert!((pitch(&h, 0, 2) - 523.25).abs() < 0.1);
+        assert!((pitch(&h, 0, 14) - 130.81).abs() < 0.1);
     }
 }

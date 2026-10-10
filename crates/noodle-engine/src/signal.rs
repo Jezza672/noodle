@@ -84,6 +84,8 @@ pub struct SignalIn<'a> {
     shape: Shape,
     frames: usize,
     constant: Option<f32>,
+    /// One flag per lane, or empty if the source doesn't report any.
+    silent: &'a [bool],
 }
 
 impl<'a> SignalIn<'a> {
@@ -94,7 +96,15 @@ impl<'a> SignalIn<'a> {
             shape,
             frames,
             constant: None,
+            silent: &[],
         }
+    }
+
+    /// Attaches the producer's silence flags, one per lane (see
+    /// [`SignalIn::is_silent`]).
+    pub fn with_silent(self, silent: &'a [bool]) -> Self {
+        debug_assert!(silent.is_empty() || silent.len() == self.shape.lanes());
+        Self { silent, ..self }
     }
 
     /// Marks every sample as equal to `value`. The data must already hold it.
@@ -123,10 +133,27 @@ impl<'a> SignalIn<'a> {
     /// The samples of one lane, broadcasting: if this signal has a single
     /// voice (or channel), it serves every voice (or channel) index.
     pub fn lane(&self, voice: usize, channel: usize) -> &'a [f32] {
+        let start = self.lane_index(voice, channel) * self.frames;
+        &self.data[start..start + self.frames]
+    }
+
+    /// Whether every sample of the lane in this block is exactly 0.0, as far
+    /// as is known without looking: a producer flagged it silent, or the whole
+    /// signal is the constant 0. `false` means "not known to be", not "loud".
+    /// Broadcasts like [`lane`](Self::lane).
+    pub fn is_silent(&self, voice: usize, channel: usize) -> bool {
+        self.constant == Some(0.0)
+            || self
+                .silent
+                .get(self.lane_index(voice, channel))
+                .copied()
+                .unwrap_or(false)
+    }
+
+    fn lane_index(&self, voice: usize, channel: usize) -> usize {
         let voice = if self.shape.voices == 1 { 0 } else { voice };
         let channel = if self.shape.channels == 1 { 0 } else { channel };
-        let start = (voice * self.shape.channels + channel) * self.frames;
-        &self.data[start..start + self.frames]
+        voice * self.shape.channels + channel
     }
 }
 
@@ -137,6 +164,8 @@ pub struct SignalOut<'a> {
     data: &'a mut [f32],
     shape: Shape,
     frames: usize,
+    /// One flag per lane, or empty if nothing downstream can read them.
+    silent: &'a mut [bool],
 }
 
 impl<'a> SignalOut<'a> {
@@ -146,7 +175,33 @@ impl<'a> SignalOut<'a> {
             data,
             shape,
             frames,
+            silent: &mut [],
         }
+    }
+
+    /// Attaches the flags consumers read with [`SignalIn::is_silent`], one per
+    /// lane. They are cleared here: a lane is not known to be silent until
+    /// the node says so with [`set_silent`](Self::set_silent).
+    pub fn with_silent(self, silent: &'a mut [bool]) -> Self {
+        debug_assert!(silent.is_empty() || silent.len() == self.shape.lanes());
+        silent.fill(false);
+        Self { silent, ..self }
+    }
+
+    /// Tells consumers that the lane's samples are all exactly 0.0 this block.
+    /// The node must have written them (or [`silence`](Self::silence)d the
+    /// lane). It lets downstream nodes skip the lane, and is ignored where
+    /// nothing reads it.
+    pub fn set_silent(&mut self, voice: usize, channel: usize) {
+        if let Some(flag) = self.silent.get_mut(voice * self.shape.channels + channel) {
+            *flag = true;
+        }
+    }
+
+    /// Writes zeros to the lane and flags it silent.
+    pub fn silence(&mut self, voice: usize, channel: usize) {
+        self.lane_mut(voice, channel).fill(0.0);
+        self.set_silent(voice, channel);
     }
 
     pub fn shape(&self) -> Shape {
@@ -171,6 +226,7 @@ impl<'a> SignalOut<'a> {
 #[derive(Clone, Debug)]
 pub struct SignalBuffer {
     data: Vec<f32>,
+    silent: Vec<bool>,
     shape: Shape,
     max_frames: usize,
 }
@@ -179,6 +235,7 @@ impl SignalBuffer {
     pub fn new(shape: Shape, max_frames: usize) -> Self {
         Self {
             data: vec![0.0; shape.lanes() * max_frames],
+            silent: vec![false; shape.lanes()],
             shape,
             max_frames,
         }
@@ -200,11 +257,12 @@ impl SignalBuffer {
             self.shape,
             frames,
         )
+        .with_silent(&self.silent)
     }
 
     pub fn as_out(&mut self, frames: usize) -> SignalOut<'_> {
         let len = self.shape.lanes() * frames;
-        SignalOut::new(&mut self.data[..len], self.shape, frames)
+        SignalOut::new(&mut self.data[..len], self.shape, frames).with_silent(&mut self.silent)
     }
 }
 
@@ -219,6 +277,35 @@ mod tests {
         assert_eq!(poly.broadcast(Shape::STEREO), Ok(Shape::new(8, 2)));
         assert!(poly.broadcast(Shape::new(4, 1)).is_err());
         assert_eq!(Shape::broadcast_all([]), Ok(Shape::MONO));
+    }
+
+    #[test]
+    fn silence_flags_broadcast_like_lanes_and_clear_on_write() {
+        let mut buffer = SignalBuffer::new(Shape::new(3, 1), 4);
+        let mut out = buffer.as_out(4);
+        out.set_silent(1, 0);
+        out.silence(2, 0);
+        out.lane_mut(2, 0).fill(1.0);
+        let signal = buffer.as_in(4);
+        assert!(!signal.is_silent(0, 0));
+        assert!(signal.is_silent(1, 0) && signal.is_silent(2, 0));
+
+        // A mono source's flag serves every voice that reads it.
+        let mut mono = SignalBuffer::new(Shape::MONO, 4);
+        mono.as_out(4).set_silent(0, 0);
+        assert!(mono.as_in(4).is_silent(5, 0));
+
+        // Taking the buffer to write forgets the old flags.
+        let _ = buffer.as_out(4);
+        assert!(!buffer.as_in(4).is_silent(1, 0));
+    }
+
+    #[test]
+    fn a_constant_zero_is_silent_and_other_constants_are_not() {
+        let buffer = SignalBuffer::new(Shape::MONO, 4);
+        assert!(!buffer.as_in(4).is_silent(0, 0));
+        assert!(buffer.as_in(4).with_constant(0.0).is_silent(0, 0));
+        assert!(!buffer.as_in(4).with_constant(0.5).is_silent(0, 0));
     }
 
     #[test]
