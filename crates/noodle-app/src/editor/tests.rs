@@ -1196,15 +1196,64 @@ fn a_parameter_is_dragged_on_its_node_as_one_undo_step() {
 }
 
 #[test]
-fn a_wired_parameter_has_no_field() {
+fn a_wired_parameter_that_offsets_keeps_its_field() {
     let mut h = rig();
-    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
     let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
     h.run();
-    assert_eq!(h.query_all_by_label("Gain").count(), 1);
-    connect(&mut h, sine, "out", gain, "gain");
+    connect(&mut h, lfo, "out", gain, "gain");
     h.run();
-    assert_eq!(h.query_all_by_label("Gain").count(), 0);
+    assert_eq!(h.query_all_by_label("Gain").count(), 1);
+    // The field sets the base value that the wire moves.
+    let start = field(&h, gain, "gain");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(10.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    assert!(param(&h, gain, "gain").is_some_and(|v| v > 0.0));
+}
+
+#[test]
+fn a_wired_parameter_that_replaces_is_a_meter_that_cannot_be_dragged() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
+    let vca = add(&mut h, Node::new("noodle.util.vca").at(300.0, 0.0));
+    h.run();
+    connect(&mut h, lfo, "out", vca, "level");
+    h.run();
+    assert_eq!(h.query_all_by_label("Level").count(), 1);
+    let start = field(&h, vca, "level");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            start,
+            start + Vec2::new(10.0, 0.0),
+            start + Vec2::new(40.0, 0.0),
+        ],
+    );
+    assert_eq!(param(&h, vca, "level"), None);
+}
+
+#[test]
+fn a_wired_choice_has_no_field() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
+    h.run();
+    // A drop-down on a node shows its choice, here the default.
+    let combos = |h: &H| h.query_all_by_role(egui::accesskit::Role::ComboBox).count();
+    assert_eq!(combos(&h), 1);
+    connect(&mut h, lfo, "out", lfo, "shape");
+    h.run();
+    // That wire makes a cycle, but the drop-down is gone either way.
+    assert_eq!(combos(&h), 0);
 }
 
 #[test]

@@ -41,6 +41,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 |---|---|
 | `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. |
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
+| `noodle-macros` | `#[derive(Ports)]`: a node's `Layout` and port-index constants from one declaration. Re-exported as `noodle_engine::Ports`. |
 | `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `offline_clips.rs`, `m2_acceptance.rs`. `render_project_with_clips` renders a project with audio clips offline. |
 | `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`). MIDI and streaming later. |
 | `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
@@ -56,8 +57,10 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   `Project::new_node_id`.
 - **Config or parameter.** A setting is config only if it changes a node's
   ports or shapes. Everything else is a parameter, so it can be modulated.
-- **Port indices.** Nodes refer to ports by position
-  (`const CUTOFF: usize = 1`). A derive macro is planned for M3.
+- **Port indices.** Nodes refer to ports by position. Declare ports with
+  `#[derive(Ports)]` so the layout and the index constants (`SvfPorts::CUTOFF`)
+  come from one place; only nodes whose ports depend on config build a
+  `Layout` by hand.
 - **Output nodes are mixed at their step in the schedule**, not at the end of
   the block, because buffers are reused after their last reader.
 - **Docs move with code.** If a change alters something ARCHITECTURE.md or

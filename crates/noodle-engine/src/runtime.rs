@@ -220,10 +220,12 @@ impl Controller {
             schedule,
             self.sent.as_ref(),
             generation,
-            self.settings,
-            self.buses.as_deref(),
+            plan::Env {
+                settings: self.settings,
+                buses: self.buses.as_deref(),
+                telemetry: registry.telemetry(),
+            },
             &mut self.cells,
-            registry.telemetry(),
             &mut diagnostics,
         );
         self.pending = Some((plan, info));

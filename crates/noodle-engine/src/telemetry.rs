@@ -91,6 +91,43 @@ impl Channels {
     }
 }
 
+fn read_tap(
+    channels: &mut Channels,
+    reader_id: u64,
+    node: NodeId,
+    key: &str,
+) -> Option<ParamReading> {
+    let Channels {
+        taps,
+        readers,
+        held_taps,
+        ..
+    } = channels;
+    let list = taps.get(&(node, key.to_owned()))?;
+    for cells in list {
+        cells.wanted.store(true, Ordering::Relaxed);
+    }
+    let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+    if !cells.written.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let (low, high) = cells.take_range();
+    for &reader in readers.iter() {
+        let held = held_taps
+            .entry((node, key.to_owned(), reader))
+            .or_insert((f32::INFINITY, f32::NEG_INFINITY));
+        held.0 = held.0.min(low);
+        held.1 = held.1.max(high);
+    }
+    let last = f32::from_bits(cells.last.load(Ordering::Relaxed));
+    let mine = held_taps.get_mut(&(node, key.to_owned(), reader_id))?;
+    let (min, max) = std::mem::replace(mine, (f32::INFINITY, f32::NEG_INFINITY));
+    // No new blocks since the last read: the value held still.
+    let (min, max) = if min <= max { (min, max) } else { (last, last) };
+    Some(ParamReading { last, min, max })
+}
+
 /// The channel to read from `list` (oldest first): the newest one written to,
 /// or else the newest.
 fn live<T>(list: &[T], written: impl Fn(&T) -> bool) -> Option<&T> {
@@ -245,35 +282,20 @@ impl MeterReader {
     /// read of a tap switches it on, so the first reading comes back empty.
     pub fn param(&self, node: NodeId, key: &str) -> Option<ParamReading> {
         let mut guard = self.hub.lock();
-        let Channels {
-            taps,
-            readers,
-            held_taps,
-            ..
-        } = &mut *guard;
-        let list = taps.get(&(node, key.to_owned()))?;
-        for cells in list {
-            cells.wanted.store(true, Ordering::Relaxed);
-        }
-        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
-        if !cells.written.load(Ordering::Relaxed) {
-            return None;
-        }
+        read_tap(&mut guard, self.id, node, key)
+    }
 
-        let (low, high) = cells.take_range();
-        for &reader in readers.iter() {
-            let held = held_taps
-                .entry((node, key.to_owned(), reader))
-                .or_insert((f32::INFINITY, f32::NEG_INFINITY));
-            held.0 = held.0.min(low);
-            held.1 = held.1.max(high);
+    /// [`param`](Self::param) for every tap there is, under one lock. This
+    /// switches on every tap in the hub, which a view of a whole project
+    /// wants: the taps are only on wired parameters.
+    pub fn params(&self, mut each: impl FnMut(NodeId, &str, ParamReading)) {
+        let mut guard = self.hub.lock();
+        let keys: Vec<(NodeId, String)> = guard.taps.keys().cloned().collect();
+        for (node, key) in keys {
+            if let Some(reading) = read_tap(&mut guard, self.id, node, &key) {
+                each(node, &key, reading);
+            }
         }
-        let last = f32::from_bits(cells.last.load(Ordering::Relaxed));
-        let mine = held_taps.get_mut(&(node, key.to_owned(), self.id))?;
-        let (min, max) = std::mem::replace(mine, (f32::INFINITY, f32::NEG_INFINITY));
-        // No new blocks since the last read: the value held still.
-        let (min, max) = if min <= max { (min, max) } else { (last, last) };
-        Some(ParamReading { last, min, max })
     }
 
     /// Whether this reader reads from `telemetry`, rather than another hub.

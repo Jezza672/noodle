@@ -17,8 +17,9 @@
 //! Mix's number of inputs), and changing one rebuilds the node.
 //!
 //! Ports are referred to by position, so a node's port-index constants must
-//! match the order its layout declares them in. A derive macro will replace
-//! the constants; see M3 in `docs/ROADMAP.md`.
+//! match the order its layout declares them in. `#[derive(Ports)]` generates
+//! both from one declaration; nodes whose ports depend on their config build
+//! a [`Layout`] by hand instead.
 
 use std::borrow::Cow;
 use std::fmt;

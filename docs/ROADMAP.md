@@ -104,6 +104,15 @@ hit-testing and wire code, so they go in one PR, alongside the M2 app work.
 
 ### Backlog: modulation display (M3)
 
+**Done** (M3 batch 1), apart from the properties panel, which still greys a
+wired parameter out. How it was settled is in "Modulating a parameter" and
+"Parameter widgets" in ARCHITECTURE.md. The decision differs from the
+proposal below in one way: offsetting in slider space is a per-parameter
+setting (`ParamInfo::offset()`), not the rule for every wire, because many
+ports take an exact value (pitch, gates, automation lanes, a Mix input), so
+the vibrato example and its golden render are unchanged. The text below is
+the original proposal.
+
 Both of these are about control signals, so they belong with M3's LFO and
 envelope nodes, which are the first sources people will wire into parameters.
 The log-versus-linear decision comes first, because the meter's scale depends
@@ -364,7 +373,17 @@ Metronome node and the metronome button.
 
 It becomes an instrument.
 
-- **Port derive macro, before writing the synthesis nodes.**
+**Status:** batch 1 is done: the port derive macro (`noodle-macros`), events
+as a signal type with the `Key` and `Mono Note` nodes, the ADSR, LFO and VCA
+nodes, and the modulation display (offset-in-slider-space parameters, and a
+live meter with min and max ticks on wired parameters), with a monophonic
+synth example (`examples/synth-pluck.ron`) and its golden render. Still to
+do, in order: MIDI input, MIDI clips and a piano roll; the Voices node and
+polyphony end to end; silence skipping and finished-voice skipping; the
+rest of the synthesis nodes (band-limited oscillators, SVF and ladder
+filters, unison and spread); the delay node and feedback loops.
+
+- **Port derive macro, before writing the synthesis nodes.** *Done.*
   - **The problem:** nodes refer to ports by position
     (`const CUTOFF: usize = 1`), and if those constants drift out of step with
     the layout, the node silently reads the wrong input.
@@ -374,7 +393,9 @@ It becomes an instrument.
     and M3 roughly triples the number of nodes.
   - Nodes whose ports depend on config, such as Mix and plugin nodes, keep
     using the `Layout` builder.
-- Events signal type.
+- Events signal type. *Done* (the engine already carried them; batch 1 added
+  the `Key` and `Mono Note` nodes, test-harness support and an end-to-end
+  patch).
 - MIDI input (midir), MIDI clips and a piano roll.
 - Voices node: voice allocation and stealing, producing polyphonic pitch, gate
   and velocity.

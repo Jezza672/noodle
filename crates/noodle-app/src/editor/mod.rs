@@ -509,7 +509,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     });
     let mut fields = params::Fields::new(ui, canvas, front);
     draw::nodes(&painter, &f, state, &problems, |node| {
-        fields.show(&f, node, &mut edits);
+        fields.show(&f, &state.bodies, node, &mut edits);
     });
     fields.finish(&mut edits);
     if let Some(p) = pointer_pos {

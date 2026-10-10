@@ -6,17 +6,18 @@
 //! drawing the rest of the node. Anything a body shows from the engine is read
 //! once a frame into [`Bodies`], by [`Bodies::update`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use egui::epaint::PathShape;
 use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::OUTPUT_ID;
-use noodle_engine::{Level, MeterReader, ScopeView, Telemetry};
+use noodle_engine::{Level, MeterReader, ParamReading, ScopeView, Telemetry};
 use noodle_nodes::{METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
+use crate::widgets::Live;
 
 /// Extra space below a node's ports, in graph units. Zero for most nodes.
 pub fn height(type_id: &str) -> f32 {
@@ -58,6 +59,52 @@ pub struct Bodies {
     reader: Option<MeterReader>,
     meters: HashMap<NodeId, Vec<MeterChannel>>,
     scopes: HashMap<NodeId, ScopeView>,
+    /// What each wired parameter has been doing, by (node, port key).
+    params: HashMap<(NodeId, String), ParamWindow>,
+    /// Seconds since the first update, for the windows.
+    clock: f32,
+}
+
+/// How far back a wired parameter's range marks look, in seconds.
+pub const PARAM_WINDOW_SECONDS: f32 = 3.0;
+
+/// A wired parameter's recent past: the range of each frame's reading, kept
+/// for [`PARAM_WINDOW_SECONDS`].
+#[derive(Default)]
+struct ParamWindow {
+    last: f32,
+    /// (time, lowest, highest), oldest first.
+    history: VecDeque<(f32, f32, f32)>,
+}
+
+impl ParamWindow {
+    fn push(&mut self, now: f32, reading: ParamReading) {
+        self.last = reading.last;
+        self.history.push_back((now, reading.min, reading.max));
+        self.trim(now);
+    }
+
+    fn trim(&mut self, now: f32) {
+        while self
+            .history
+            .front()
+            .is_some_and(|&(time, ..)| now - time > PARAM_WINDOW_SECONDS)
+        {
+            self.history.pop_front();
+        }
+    }
+
+    fn live(&self) -> Option<Live> {
+        let (min, max) = self.history.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(lo, hi), &(_, a, b)| (lo.min(a), hi.max(b)),
+        );
+        (min <= max).then_some(Live {
+            value: self.last,
+            min,
+            max,
+        })
+    }
 }
 
 impl Bodies {
@@ -72,6 +119,27 @@ impl Bodies {
         let reader = &*self.reader.get_or_insert_with(|| telemetry.meter_reader());
         self.meters.retain(|&id, _| graph.node(id).is_some());
         self.scopes.retain(|&id, _| graph.node(id).is_some());
+
+        // Every wired parameter, whether or not it is drawn: reading a tap is
+        // what switches it on, and an unwired port has none.
+        self.clock += dt;
+        let now = self.clock;
+        let params = &mut self.params;
+        reader.params(|node, key, reading| {
+            params
+                .entry((node, key.to_owned()))
+                .or_default()
+                .push(now, reading);
+        });
+        params.retain(|(node, key), _| {
+            graph
+                .source(&noodle_core::Endpoint::new(*node, key.as_str()))
+                .is_some()
+        });
+        for window in self.params.values_mut() {
+            window.trim(now);
+        }
+
         for (id, node) in graph.nodes() {
             match node.type_id.as_str() {
                 kind if METERED.contains(&kind) => {
@@ -119,9 +187,15 @@ impl Bodies {
         self.scopes.get(&node)
     }
 
+    /// What the wired parameter `key` of `node` has been doing lately, if it
+    /// has reported.
+    pub fn param_live(&self, node: NodeId, key: &str) -> Option<Live> {
+        self.params.get(&(node, key.to_owned()))?.live()
+    }
+
     /// Whether anything is shown that changes while audio plays.
     pub fn is_live(&self) -> bool {
-        !self.meters.is_empty() || !self.scopes.is_empty()
+        !self.meters.is_empty() || !self.scopes.is_empty() || !self.params.is_empty()
     }
 }
 
@@ -467,6 +541,74 @@ mod tests {
             min_max_columns(&[0.5, -0.5], 4, 2),
             [(0.5, 0.5), (0.5, 0.5), (-0.5, -0.5), (-0.5, -0.5)]
         );
+    }
+
+    fn reading(min: f32, max: f32, last: f32) -> ParamReading {
+        ParamReading { last, min, max }
+    }
+
+    #[test]
+    fn a_window_marks_the_range_of_the_last_few_seconds() {
+        let mut window = ParamWindow::default();
+        assert_eq!(window.live(), None);
+        window.push(0.0, reading(0.2, 0.8, 0.5));
+        window.push(1.0, reading(0.4, 0.6, 0.5));
+        let live = window.live().unwrap();
+        assert_eq!((live.min, live.max, live.value), (0.2, 0.8, 0.5));
+
+        // Once the wide swing is more than 3 s old, it drops out.
+        window.push(3.5, reading(0.45, 0.55, 0.5));
+        let live = window.live().unwrap();
+        assert_eq!((live.min, live.max), (0.4, 0.6));
+        window.push(4.5, reading(0.5, 0.5, 0.5));
+        let live = window.live().unwrap();
+        assert_eq!((live.min, live.max), (0.45, 0.55));
+    }
+
+    #[test]
+    fn update_follows_a_wired_parameters_range() {
+        let mut project = Project::new();
+        let mut add = |type_id: &str| {
+            let id = project.new_node_id();
+            Command::AddNode {
+                id,
+                node: Node::new(type_id),
+            }
+            .apply(&mut project)
+            .unwrap();
+            id
+        };
+        let lfo = add("noodle.mod.lfo");
+        let gain = add("noodle.util.gain");
+        Command::Connect(noodle_core::Connection {
+            from: noodle_core::Endpoint::new(lfo, "out"),
+            to: noodle_core::Endpoint::new(gain, "gain"),
+        })
+        .apply(&mut project)
+        .unwrap();
+
+        let telemetry = Telemetry::new();
+        let tap = telemetry.open_tap(gain, "gain");
+        let mut bodies = Bodies::default();
+        // The first update switches the tap on; nothing has been written.
+        bodies.update(&telemetry, &project, 0.016);
+        assert!(tap.wanted());
+        assert_eq!(bodies.param_live(gain, "gain"), None);
+
+        tap.write(-12.0, 6.0, 0.0);
+        bodies.update(&telemetry, &project, 0.016);
+        let live = bodies.param_live(gain, "gain").unwrap();
+        assert_eq!((live.min, live.max, live.value), (-12.0, 6.0, 0.0));
+        assert!(bodies.is_live());
+
+        // Cutting the wire forgets it.
+        Command::Disconnect {
+            input: noodle_core::Endpoint::new(gain, "gain"),
+        }
+        .apply(&mut project)
+        .unwrap();
+        bodies.update(&telemetry, &project, 0.016);
+        assert_eq!(bodies.param_live(gain, "gain"), None);
     }
 
     #[test]

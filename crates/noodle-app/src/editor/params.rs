@@ -5,6 +5,7 @@ use egui::{Id, Ui, Vec2};
 use noodle_core::{Endpoint, NodeId};
 
 use super::Frame_;
+use super::body::Bodies;
 use super::draw::MIN_TEXT_ZOOM;
 use super::layout::{NodeGeom, PortKind, Side};
 use crate::session::Edit;
@@ -55,7 +56,13 @@ impl Fields {
     }
 
     /// Shows `node`'s fields. Call it straight after painting the node.
-    pub fn show(&mut self, f: &Frame_<'_>, node: &NodeGeom, edits: &mut Vec<Edit>) {
+    pub fn show(
+        &mut self,
+        f: &Frame_<'_>,
+        bodies: &Bodies,
+        node: &NodeGeom,
+        edits: &mut Vec<Edit>,
+    ) {
         let z = f.t.zoom;
         if node.reroute || z < MIN_TEXT_ZOOM {
             return;
@@ -78,21 +85,45 @@ impl Fields {
                     continue;
                 };
                 let input = Endpoint::new(node.id, port.key.clone());
-                if port.side != Side::Input
-                    || graph.source(&input).is_some()
-                    || f.project.lane_for(&input).is_some()
-                {
+                if port.side != Side::Input || f.project.lane_for(&input).is_some() {
                     continue;
                 }
-                let value = values.get(&port.key).copied().unwrap_or(info.default);
+                let wired = graph.source(&input).is_some();
+                let is_slider = !matches!(info.kind, noodle_engine::ParamKind::Stepped { .. });
+                // A wire that replaces the value leaves nothing to edit. The
+                // field becomes a meter of the live value; choices show
+                // nothing, as they always have.
+                let replaced = wired && !info.is_offset();
+                if replaced && !is_slider {
+                    continue;
+                }
+                let mut value = values.get(&port.key).copied().unwrap_or(info.default);
+                let live = if wired {
+                    bodies.param_live(node.id, &port.key)
+                } else {
+                    None
+                };
+                if let (true, Some(live)) = (replaced, live) {
+                    value = live.value;
+                }
                 let rect =
                     f.t.rect_to_screen(port.row)
                         .shrink2(Vec2::new(10.0 * z, 2.0 * z));
-                let out = ParamField::new(&port.name, info, value)
+                let field = ParamField::new(&port.name, info, value)
                     .id_salt((node.id, &port.key))
                     .compact(true)
                     .zoom(z)
-                    .show_at(ui, rect);
+                    .live(live, replaced);
+                let out = if replaced {
+                    // Drawn like a disabled field, with the live value on it.
+                    ui.scope(|ui| {
+                        ui.disable();
+                        field.show_at(ui, rect)
+                    })
+                    .inner
+                } else {
+                    field.show_at(ui, rect)
+                };
                 *dragging |= out.gesture == Gesture::Dragging;
                 *released |= out.gesture == Gesture::Released;
                 // A drag the canvas took over (see `pointer`) stops for the

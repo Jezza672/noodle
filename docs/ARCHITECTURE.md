@@ -41,6 +41,8 @@ crates/
                  No DSP and no UI. Node types are referred to by string ID.
   noodle-engine   Graph compiler, RenderPlan, real-time executor, offline renderer,
                  the Node trait and the node registry.
+  noodle-macros   Derive macros for the node API (`#[derive(Ports)]`). Used through
+                 `noodle_engine::Ports`.
   noodle-nodes    Built-in nodes (DSP), registered with the engine's registry.
   noodle-io       Device I/O (cpal, midir), file decoding, disk streaming.
                  Calls into the engine from device callbacks.
@@ -227,6 +229,21 @@ There are two kinds of signal, plus a possible third later:
   block, note ID, payload) covering notes, note expressions and MIDI. A
   *Voices* node turns events into polyphonic pitch, gate and velocity signals,
   doing voice allocation and stealing.
+  - **In the graph:** event ports are their own kind (`Layout::event_input`
+    and `event_output`, drawn as diamonds in a different colour). An event
+    wire only joins event ports, the compiler gives each event output a
+    buffer with room for 1024 events a block (more are dropped, and a node
+    that pushes a note-on it can't fit must not count the note as started),
+    and an unconnected event input is an empty list. Events don't broadcast
+    over voices; they carry their own note IDs.
+  - **Nodes so far:** `Key` (`noodle.event.key`) makes notes from a gate
+    parameter and a key number, so a Button or any signal can play a note.
+    `Mono Note` (`noodle.event.mono`) plays the latest held note as `pitch`
+    (Hz), `gate` and `velocity` signals, falling back to an earlier held note
+    on release and holding its pitch after the last so an envelope's release
+    stays in tune. The track input's `midi` output is also an events port.
+  - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
+    node's event ports.
 - **Spectral:** may be added later, for FFT-frame processing.
 
 Most nodes treat each (voice, channel) **lane** independently, so their
@@ -239,6 +256,64 @@ Every input, including an unconnected parameter, arrives as a signal buffer.
 An unconnected parameter that isn't mid-change is flagged as **constant** for
 the block, so nodes can move work such as computing filter coefficients out of
 the per-sample loop.
+
+### Writing a node's ports
+
+A node's ports are declared once, with `#[derive(Ports)]`
+(`noodle-macros`), which generates both the `Layout` and an index constant
+per port, so the two can't drift apart:
+
+```rust
+#[derive(Ports)]
+struct GainPorts {
+    #[input("in", "In")]
+    input: (),
+    #[param("gain", "Gain", ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels))]
+    gain: (),
+    #[output("out", "Out")]
+    out: (),
+}
+// GainPorts::layout(), GainPorts::INPUT == 0, GainPorts::GAIN == 1, GainPorts::OUT == 0
+```
+
+Audio and parameter inputs share one index space, in field order, and
+outputs, event inputs and event outputs each have their own. The fields only
+name ports (their type is `()`); `#[ports(offline)]` and
+`#[ports(nondeterministic)]` on the struct set the layout's mode. A node
+whose ports depend on its config (Mix, the plugin nodes) builds its `Layout`
+by hand. Gain, the Svf, the oscillators, the group stage and the new
+modulation and event nodes use the derive. The Metronome, Button and Mix
+still use the builder, because other code names their port keys as constants.
+
+### Modulating a parameter
+
+A parameter that has a wire into it takes the wire's signal in one of two
+ways, set by its `ParamInfo::modulation`:
+
+- **Replace** (the default): the signal is the value. Right for ports that
+  carry an exact value: a pitch, a gate, a button's state, an automation
+  lane, a group's gain or mute.
+- **Offset** (`ParamInfo::offset()`): the signal moves the value along the
+  slider's travel. With `position` and `value_at` mapping a value to and
+  from 0 to 1 along the parameter's taper, `value = value_at(position(base)
+  + signal)`, clamped to the range. The base is the parameter's own value,
+  the one set on the slider and automated, so the slider stays meaningful
+  with a wire in. A signal of 1 sweeps the whole range, and on a log taper
+  equal signals move equal ratios whatever the base: three decades of
+  cutoff, so a signal of 1/3 is one decade, 0.1 is a third of a decade.
+  Signals stay linear everywhere; only the parameter's taper shapes this.
+
+Which parameters offset is a per-node choice: the filter's cutoff and
+resonance, a Gain's gain and the LFO's rate and depth do, and the ones that
+take an exact value (an oscillator's frequency, a VCA's level, anything a
+lane or a button drives) replace. Stepped parameters never offset. The
+compiler tags such an input `InputSource::Modulated(buffer, base)`, and the
+plan computes the effective value into a scratch buffer of the wire's shape
+before the node runs (once per block, per sample only where the signal
+moves), so nodes never know, and read the parameter as they always did.
+This differs from the earlier proposal, in which every continuous wire
+offset: that would have broken signal-carrying ports (a Mix input that is a
+parameter, an automation lane's absolute values) and the vibrato example.
 
 ## Compilation and the render plan (`noodle-engine`)
 
@@ -472,6 +547,16 @@ transport's job.
   their own `MeterReader`. A read takes the peak, resetting it, and folds it
   into a held peak for every reader, so each view (the editor every frame, a
   mixer now and then) sees the highest peak since its own last read.
+- **Parameter taps** report the effective value of every wired parameter
+  (after any offset): the engine opens a tap under (node, port key) for each
+  wired parameter when it builds a plan, from the hub in
+  `Registry::telemetry()`. A tap is off until something reads it: the audio
+  thread checks an atomic `wanted` flag set by the first read, and only then
+  scans the block's samples for their minimum and maximum (fetch_min and
+  fetch_max on order-preserving integer keys, like the meter's peak) and
+  stores the last. Each `MeterReader` sees the range since its own last read
+  (`param`, or `params` for all taps under one lock). The editor reads every
+  tap once a frame and keeps the last 3 seconds of ranges per port.
 - **Scopes** are `rtrb` SPSC ring buffers of interleaved frames, holding about
   a second. When the ring is full, new frames are dropped whole, so channels
   stay aligned. The hub keeps the most recent second it has read in a
@@ -495,7 +580,7 @@ transport's job.
   and the mixer view draws the same meter vertically beside each fader,
   repainting continuously while audio plays. Scopes trigger on a rising zero
   crossing so steady waveforms hold still.
-- `noodle_nodes::register_all` creates the hub and returns it. Playhead
+- The hub belongs to the `Registry`; `noodle_nodes::register_all` hands out that one. Playhead
   position and cache-render progress will use the same hub.
 
 Blocks have a fixed maximum size, and a longer device buffer is rendered as
@@ -990,8 +1075,8 @@ It has these views:
   - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
-  and compile problems. A parameter with a wire into it is greyed out,
-  since the wire replaces its value.
+  and compile problems. A parameter with a wire into it is greyed out.
+  (Unlike the node, it doesn't show the live value yet.)
 
 The UI only changes the Project by issuing commands, and only reads engine state
 through the telemetry API.
@@ -1017,6 +1102,17 @@ through the telemetry API.
   and `ParamOutput::edits` turns them into session edits. A drag sends
   `Edit::Drag` each frame and `Edit::EndDrag` on release, so it's one undo
   step, and each step goes straight to the parameter cells.
+- **Wired parameters** show what the wire is doing, on the node:
+  - **A wire that offsets** leaves the field editable, since it sets the base
+    the wire moves. The fill stays at the base, two ticks mark the lowest
+    and highest effective value over the last 3 seconds (with a bar between
+    them), and a dot marks the value now, all on the parameter's own taper so
+    they line up with the slider. How far the ticks reach is the depth of the
+    modulation against the range.
+  - **A wire that replaces** turns the field into a disabled meter: the fill
+    and the number follow the live value, with the same ticks.
+  - Stepped (choice) parameters show nothing while wired.
+  - The numbers come from the parameter taps in the telemetry section.
 - **Config fields** (`ConfigField`) only commit when a drag or typing
   finishes, because changing config recompiles the node.
 
@@ -1106,8 +1202,7 @@ telemetry hub (`EditorState::scope_view`).
 - The node API is drafted in `crates/noodle-engine/src/node.rs` and `lane.rs`,
   with example nodes in `noodle-nodes`. Its planned follow-ups are in the
   roadmap:
-  - **M3:** the port derive macro, silence skipping, and skipping finished
-    voices.
+  - **M3:** silence skipping, and skipping finished voices.
   - **M4:** streaming offline renders.
 - The project file format. RON or JSON for readable diffs, with audio stored
   alongside.

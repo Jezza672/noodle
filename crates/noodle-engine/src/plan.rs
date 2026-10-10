@@ -140,6 +140,15 @@ struct Scratch {
     event_outputs: Vec<EventsOut<'static>>,
 }
 
+/// What a plan is built for: the engine's settings, the output devices it
+/// mixes to, and the hub its taps report to.
+#[derive(Clone, Copy)]
+pub(crate) struct Env<'a> {
+    pub(crate) settings: Settings,
+    pub(crate) buses: Option<&'a [Bus]>,
+    pub(crate) telemetry: &'a Telemetry,
+}
+
 /// Builds a plan from a schedule, instantiating every node that can't carry
 /// over from `previous`. Nodes that fail to instantiate are kept, as silence,
 /// so the buffers downstream of them stay valid.
@@ -147,12 +156,15 @@ pub(crate) fn build(
     schedule: Schedule,
     previous: Option<&PlanInfo>,
     generation: u64,
-    settings: Settings,
-    buses: Option<&[Bus]>,
+    env: Env<'_>,
     cells: &mut Cells,
-    telemetry: &Telemetry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (Box<Plan>, PlanInfo) {
+    let Env {
+        settings,
+        buses,
+        telemetry,
+    } = env;
     let Settings {
         sample_rate,
         max_frames,

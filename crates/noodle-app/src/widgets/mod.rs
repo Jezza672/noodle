@@ -16,4 +16,4 @@ pub mod taper;
 mod tests;
 
 pub use config::ConfigField;
-pub use param::ParamField;
+pub use param::{Live, ParamField};

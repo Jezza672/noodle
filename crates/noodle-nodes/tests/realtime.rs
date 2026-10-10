@@ -627,6 +627,71 @@ fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
 }
 
 #[test]
+fn events_envelopes_and_modulated_parameters_never_allocate() {
+    // button -> key -> mono note -> saw -> filter (cutoff offset by an LFO)
+    // -> vca (level from an ADSR) -> output, with the taps on every wired
+    // parameter switched on by a reader.
+    let mut s = Session::new();
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let mono = s.add(Node::new("noodle.event.mono"));
+    let saw = s.add(Node::new("noodle.osc.saw"));
+    let lfo = s.add(
+        Node::new("noodle.mod.lfo")
+            .with_param("rate", 8.0)
+            .with_param("depth", 0.1),
+    );
+    let svf = s.add(Node::new("noodle.filter.svf"));
+    let adsr = s.add(
+        Node::new("noodle.mod.adsr")
+            .with_param("attack", 0.002)
+            .with_param("release", 0.01),
+    );
+    let vca = s.add(Node::new("noodle.util.vca"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", mono, "in");
+    s.wire(mono, "pitch", saw, "frequency");
+    s.wire(saw, "out", svf, "in");
+    s.wire(lfo, "out", svf, "cutoff");
+    s.wire(mono, "gate", adsr, "gate");
+    s.wire(svf, "low", vca, "in");
+    s.wire(adsr, "out", vca, "level");
+    s.wire(vca, "out", output, "in");
+    s.update();
+
+    let reader = s.telemetry.meter_reader();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        // Notes on and off, and a key change while held, from the button and
+        // the key's own parameters.
+        s.controller
+            .set_param(button, "state", if round % 4 == 3 { 0.0 } else { 1.0 });
+        s.controller.set_param(key, "note", 48.0 + round as f32);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        // The first read switches the tap on, so later rounds measure.
+        let _ = reader.param(svf, "cutoff");
+        let _ = reader.param(vca, "level");
+    }
+    s.processor.process(&mut out);
+    let cutoff = reader.param(svf, "cutoff").expect("the cutoff is tapped");
+    assert!(
+        cutoff.max > cutoff.min,
+        "the LFO should move the cutoff: {cutoff:?}"
+    );
+    assert!(heard, "the patch never sounded");
+    assert!(out.iter().all(|x| x.is_finite()));
+}
+
+#[test]
 fn outputs_on_two_devices_never_allocate_and_each_has_a_scope() {
     let settings = Settings {
         channels: 4,
