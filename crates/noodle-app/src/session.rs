@@ -445,11 +445,14 @@ impl Session {
                 self.feed_clips();
             }
             // A parameter or clip upstream of a frozen node makes its render
-            // stale. Look again once the editing pauses.
+            // stale. Its key changes, so compiling again takes the stale audio
+            // off at once and plays that part live. The new render waits for
+            // the editing to pause.
             if (effect.clips || !effect.params.is_empty())
                 && Freezing::in_use(&self.project, &self.registry)
             {
                 self.freezing.touch();
+                self.recompile_with(false);
             }
         }
         self.update_dirty();
@@ -957,7 +960,7 @@ impl Session {
     /// Looks at the cache of renders for the project and starts the ones it
     /// lacks. Returns what plays in place of the cached nodes, if anything is
     /// frozen or offline.
-    fn refresh_freezing(&mut self) -> Option<noodle_nodes::FreezePlan> {
+    fn refresh_freezing(&mut self, start: bool) -> Option<noodle_nodes::FreezePlan> {
         // Frozen audio is keyed by the rate it was rendered at, so use the
         // stream's, or a common one before a stream is open.
         let settings = self
@@ -969,9 +972,20 @@ impl Session {
         // Only measured when something needs it: it looks at every audio file.
         let frames = if Freezing::in_use(&self.project, &self.registry) {
             let table = TempoTable::new(self.project.tempo_map(), rate);
+            // The last clip, automation point or tempo change, so nothing
+            // that is set up on the timeline is cut off.
+            let marks = self
+                .project
+                .lanes()
+                .flat_map(|(_, lane)| lane.points.iter().map(|p| p.tick))
+                .chain(self.project.tempo_map().tempos().iter().map(|t| t.tick))
+                .map(|tick| table.sample_at_tick(tick))
+                .max()
+                .unwrap_or(0);
             let end = self
                 .clips
-                .project_frames(&self.project, &table, rate as u32, &base);
+                .project_frames(&self.project, &table, rate as u32, &base)
+                .max(marks);
             (end as usize + (FREEZE_TAIL * rate) as usize).max((FREEZE_MINIMUM * rate) as usize)
         } else {
             0
@@ -982,6 +996,7 @@ impl Session {
             settings,
             base: &base,
             frames,
+            start,
         };
         match self.freezing.refresh(&look) {
             Ok(plan) => plan,
@@ -1011,6 +1026,12 @@ impl Session {
     }
 
     fn recompile(&mut self) {
+        self.recompile_with(true);
+    }
+
+    /// Compiles the project. `start` is whether renders that are missing may
+    /// be started now.
+    fn recompile_with(&mut self, start: bool) {
         // Devices are fixed for a stream's lifetime, so an Output node tied
         // to another one means playing afresh. `play` compiles.
         let wanted = noodle_engine::output_devices(self.project.graph());
@@ -1026,7 +1047,7 @@ impl Session {
                 return;
             }
         }
-        let plan = self.refresh_freezing();
+        let plan = self.refresh_freezing(start);
         self.diagnostics = match (&mut self.audio, &plan) {
             (Some(audio), Some(plan)) => audio.controller.update_project_replacing(
                 &self.project,
@@ -1416,9 +1437,12 @@ mod tests {
             key: "frequency".into(),
             value: Some(220.0),
         })]);
-        until(&mut session, "the stale render is noticed", |s| {
-            s.freeze_badges().get(&group).map(|b| &b.state) != Some(&BadgeState::Ready)
-        });
+        // The stale audio is off the moment the edit lands, with no wait for
+        // the editing to pause, and no render has started yet.
+        assert_eq!(
+            session.freeze_badges().get(&group).map(|b| &b.state),
+            Some(&BadgeState::Waiting)
+        );
         until(&mut session, "it renders again", |s| {
             s.freeze_badges().get(&group).map(|b| &b.state) == Some(&BadgeState::Ready)
         });

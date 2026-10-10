@@ -561,6 +561,20 @@ key(output) = hash(key(node), output index)
   gain and fades, and for audio the *content hash* of the file
   (`noodle_io::FileHasher`, remembered while size and modification time hold),
   so a file replaced under the same name gives a new key.
+- Every key also holds the crate version and `DSP_GENERATION`
+  (`noodle-engine/src/cache.rs`), so a build whose sound changed never replays
+  renders from the shared per-user cache. Bump the constant with any
+  regenerated golden render.
+- The render length is in every key, so lengthening the project (a clip
+  dragged further right) renders every frozen target again, even those it
+  doesn't feed. The length reaches the last clip, automation point or tempo
+  change, plus a 4 s tail, and at least 30 s. Past it a frozen node is
+  silent, so a tail longer than that, or a drone that should play on, is cut.
+- Clip files are hashed whole, on the thread that compiles, the first time
+  they're seen, then only when their size or modification time change. Nothing
+  watches the files: one replaced on disk is noticed at the next compile.
+- An offline node can't take a modulated (offset) parameter or events yet; it
+  is reported as not cacheable.
 - Renders are stored on disk by key. An edit produces a new key, so stale
   data can never be served, and undoing an edit brings the old render back
   straight away. Bump a node type's `version` whenever its DSP changes.
@@ -585,7 +599,12 @@ Nothing in `process` allocates (`tests/realtime.rs` checks, with seeks and a
 wrapping loop).
 
 Until a render exists a frozen target keeps playing live, and an offline node
-plays silence (a `CachedPlayer::silent`).
+plays silence (a `CachedPlayer::silent`). An edit that changes a target's key
+takes its render off at once (the app compiles again straight away), so stale
+audio is never heard during a drag; only starting the new render waits for the
+editing to pause. When a render finishes during playback the player is swapped
+in with the playhead somewhere past its start, so the first block can be
+silent while the worker reads the chunk there.
 
 **Rendering the cache.** `freeze` / `spawn_freeze` (`noodle-nodes`) renders
 every `Missing` target, upstream first, on a background thread. A target is

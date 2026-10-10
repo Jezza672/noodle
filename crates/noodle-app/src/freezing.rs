@@ -80,6 +80,9 @@ pub struct Look<'a> {
     pub base: &'a Path,
     /// How long a render is, in frames.
     pub frames: usize,
+    /// Whether a missing render may be started now. An edit in the middle of
+    /// a drag only needs the stale audio taken off, not a render per frame.
+    pub start: bool,
 }
 
 impl Freezing {
@@ -160,7 +163,9 @@ impl Freezing {
     /// what should play in place of the cached nodes. `None` if the project
     /// uses no freezing, in which case nothing runs.
     pub fn refresh(&mut self, look: &Look<'_>) -> Result<Option<FreezePlan>, String> {
-        self.dirty_since = None;
+        if look.start {
+            self.dirty_since = None;
+        }
         if !Self::in_use(look.project, look.registry) {
             self.running = None;
             self.badges.clear();
@@ -196,7 +201,7 @@ impl Freezing {
         {
             self.failed = None;
         }
-        if missing && self.running.is_none() && self.failed.is_none() {
+        if look.start && missing && self.running.is_none() && self.failed.is_none() {
             let request = RenderRequest {
                 project: look.project.clone(),
                 base: look.base.to_owned(),

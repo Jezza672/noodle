@@ -236,6 +236,11 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
     analysis
 }
 
+/// Part of every key, so renders made by another build of the DSP are never
+/// replayed from the shared per-user cache. Bump `DSP_GENERATION` in the same
+/// change as any regenerated golden render; the crate version covers releases.
+const DSP_GENERATION: u32 = 1;
+
 /// The key of a node, from everything it depends on. `wired` lists the
 /// outputs wired into signal inputs in input order, and `events` those wired
 /// into event inputs.
@@ -247,8 +252,24 @@ fn node_key(
     events: &[Option<(NodeId, usize)>],
 ) -> Result<CacheKey, Uncacheable> {
     let info = node.node_type.info();
+    // An offline node reads its inputs as whole signals, so it can't yet
+    // take a modulated parameter or events. Say so, rather than render it
+    // wrongly.
+    if node.layout.mode == crate::Mode::Offline
+        && (node
+            .inputs
+            .iter()
+            .any(|source| matches!(source, InputSource::Modulated(..)))
+            || events.iter().any(Option::is_some))
+    {
+        return Err(Uncacheable::Because(
+            "an offline node can't take a modulated parameter or events yet".into(),
+        ));
+    }
     let mut b = KeyBuilder::new("node");
-    b.u64(node.id.0)
+    b.str(env!("CARGO_PKG_VERSION"))
+        .u64(u64::from(DSP_GENERATION))
+        .u64(node.id.0)
         .str(info.id)
         .u64(u64::from(info.version))
         .config(&node.config)

@@ -356,6 +356,9 @@ type Library = crate::Library;
 struct Entry {
     writer: Mutex<Option<CacheWriter>>,
     error: Mutex<Option<io::Error>>,
+    lanes: usize,
+    /// Frames written so far.
+    frames: Mutex<usize>,
 }
 
 impl Entry {
@@ -371,17 +374,27 @@ impl Entry {
         Ok(Arc::new(Self {
             writer: Mutex::new(Some(writer)),
             error: Mutex::new(None),
+            lanes,
+            frames: Mutex::new(0),
         }))
     }
 
     fn write(&self, samples: &[f32]) {
         let mut writer = self.writer.lock().expect("entry lock");
-        if let Some(w) = writer.as_mut()
-            && let Err(error) = w.write(samples)
-        {
-            *self.error.lock().expect("entry lock") = Some(error);
-            *writer = None;
+        if let Some(w) = writer.as_mut() {
+            match w.write(samples) {
+                Ok(()) => *self.frames.lock().expect("entry lock") += samples.len() / self.lanes,
+                Err(error) => {
+                    *self.error.lock().expect("entry lock") = Some(error);
+                    *writer = None;
+                }
+            }
         }
+    }
+
+    /// Frames written so far.
+    fn frames(&self) -> usize {
+        *self.frames.lock().expect("entry lock")
     }
 
     /// Stores the entry, unless writing failed along the way.
@@ -436,7 +449,7 @@ fn render_frozen(
         });
         entries.push(entry);
     }
-    render_taps::<io::Error>(
+    let diagnostics = render_taps::<io::Error>(
         &request.project,
         registry,
         settings,
@@ -447,6 +460,18 @@ fn render_frozen(
     )?;
     if !library.clips.errors().is_empty() || library.clips.underruns() > 0 {
         return Err(FreezeError::Incomplete(target.kind));
+    }
+    // A tap that never ran would store a short entry, which the app would
+    // then render again forever.
+    if entries.iter().any(|entry| entry.frames() != request.frames) {
+        return Err(FreezeError::Render(match diagnostics.first() {
+            Some(d) => format!(
+                "node {} produced no audio: {}",
+                target.kind.node(),
+                d.problem
+            ),
+            None => format!("node {} produced no audio", target.kind.node()),
+        }));
     }
     for entry in entries {
         entry.commit()?;
@@ -511,8 +536,9 @@ fn render_offline(
     }
     // The renders that feed the node take most of the time.
     progress.set_window(start, span * 0.6);
+    let mut diagnostics = Vec::new();
     if !taps.is_empty() {
-        render_taps::<io::Error>(
+        diagnostics = render_taps::<io::Error>(
             &request.project,
             registry,
             settings,
@@ -524,6 +550,21 @@ fn render_offline(
     }
     if !library.clips.errors().is_empty() || library.clips.underruns() > 0 {
         return Err(FreezeError::Incomplete(target.kind));
+    }
+    // A tap that never ran leaves a short capture, which the node would
+    // index past.
+    let short = captured.iter().flatten().any(|(_, lanes)| {
+        lanes
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .any(|lane| lane.len() != frames)
+    });
+    if short {
+        return Err(FreezeError::Render(match diagnostics.first() {
+            Some(d) => format!("node {node} got no audio on an input: {}", d.problem),
+            None => format!("node {node} got no audio on an input"),
+        }));
     }
 
     let inputs: Vec<OfflineInput> = info

@@ -75,6 +75,14 @@ fn registry() -> Registry {
         Layout::offline().input("in", "In").output("out", "Out"),
     );
     add(
+        "offline_param",
+        1,
+        Layout::offline()
+            .input("in", "In")
+            .param("amount", "Amount", ParamInfo::new(0.0, 1.0, 0.5).offset())
+            .output("out", "Out"),
+    );
+    add(
         "delayish",
         1,
         Layout::realtime().input("in", "In").output("out", "Out"),
@@ -365,4 +373,16 @@ fn each_output_of_a_node_has_its_own_key() {
     let node = KeyBuilder::new("node").u64(1).finish();
     assert_ne!(output_key(&node, 0), output_key(&node, 1));
     assert_eq!(output_key(&node, 1), output_key(&node, 1));
+}
+
+#[test]
+fn an_offline_node_with_a_modulated_parameter_is_refused() {
+    let mut rig = Rig::new();
+    let source = rig.add(1, "source");
+    let offline = rig.add(2, "offline_param");
+    rig.wire(source, offline, "in");
+    assert!(rig.key(offline).is_ok());
+    let modulator = rig.add(3, "source");
+    rig.wire(modulator, offline, "amount");
+    assert!(matches!(rig.key(offline), Err(Uncacheable::Because(_))));
 }
