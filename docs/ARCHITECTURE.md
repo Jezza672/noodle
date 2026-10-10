@@ -303,14 +303,16 @@ ways, set by its `ParamInfo::modulation`:
   cutoff, so a signal of 1/3 is one decade, 0.1 is a third of a decade.
   Signals stay linear everywhere; only the parameter's taper shapes this.
 
-Which parameters offset is a per-node choice: the filter's cutoff and
+An automation lane never offsets: it compiles as a plain wire, so a lane
+on an offsetting parameter sets its value as before. Which parameters offset
+is a per-node choice: the filter's cutoff and
 resonance, a Gain's gain and the LFO's rate and depth do, and the ones that
 take an exact value (an oscillator's frequency, a VCA's level, anything a
 lane or a button drives) replace. Stepped parameters never offset. The
 compiler tags such an input `InputSource::Modulated(buffer, base)`, and the
 plan computes the effective value into a scratch buffer of the wire's shape
-before the node runs (once per block, per sample only where the signal
-moves), so nodes never know, and read the parameter as they always did.
+before the node runs (a `powf` per sample per lane on a log taper, with no
+constant fast path yet), so nodes never know, and read the parameter as they always did.
 This differs from the earlier proposal, in which every continuous wire
 offset: that would have broken signal-carrying ports (a Mix input that is a
 parameter, an automation lane's absolute values) and the vibrato example.

@@ -224,3 +224,33 @@ fn nothing_runs_without_a_reader() {
     p.wire(svf, "low", out, "in");
     run(&p, 4);
 }
+
+#[test]
+fn an_automation_lane_sets_an_offsetting_parameter_instead_of_offsetting_it() {
+    use noodle_core::{AutomationLane, AutomationPoint, Tick};
+    let mut p = Patch::new();
+    // A constant 1 through a Gain whose gain parameter (which offsets for
+    // wires) is automated to -6.02 dB: the lane's value is the gain itself.
+    let one = p.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let gain = p.add(Node::new("noodle.util.gain"));
+    let out = p.add(Node::new(OUTPUT_ID));
+    p.wire(one, "out", gain, "in");
+    p.wire(gain, "out", out, "in");
+    let lane = AutomationLane::new(
+        Endpoint::new(gain, "gain"),
+        vec![AutomationPoint {
+            tick: Tick(0),
+            value: -6.0206,
+            curve: Default::default(),
+        }],
+    );
+    let id = p.project.new_lane_id();
+    Command::AddLane { id, lane }.apply(&mut p.project).unwrap();
+    let render = render_project(&p.project, &p.registry, SETTINGS, 1_000).unwrap();
+    assert!(render.diagnostics.is_empty(), "{:?}", render.diagnostics);
+    assert!(
+        (render.samples[999] - 0.5).abs() < 1e-3,
+        "{}",
+        render.samples[999]
+    );
+}

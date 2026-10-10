@@ -571,6 +571,13 @@ fn allocate(
         }
     }
 
+    // An automation lane's value is the parameter's value, so a lane never
+    // offsets, whatever the parameter does with other wires.
+    let from_lane: Vec<bool> = candidates
+        .iter()
+        .map(|c| c.node_type.info().id == crate::AUTOMATION_ID)
+        .collect();
+
     let mut buffer_lanes = Vec::new();
     let mut free_buffers = Vec::new();
     let mut event_buffers = 0;

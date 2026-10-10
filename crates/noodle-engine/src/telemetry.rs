@@ -107,8 +107,8 @@ fn read_tap(
     for cells in list {
         cells.wanted.store(true, Ordering::Relaxed);
     }
-    let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
-    if !cells.written.load(Ordering::Relaxed) {
+    let cells = live(list, |cells| cells.written.load(Ordering::Acquire))?;
+    if !cells.written.load(Ordering::Acquire) {
         return None;
     }
 
@@ -446,10 +446,12 @@ impl TapWriter {
         if min.is_nan() || max.is_nan() || last.is_nan() {
             return;
         }
-        self.0.written.store(true, Ordering::Relaxed);
         self.0.min.fetch_min(order_key(min), Ordering::Relaxed);
         self.0.max.fetch_max(order_key(max), Ordering::Relaxed);
         self.0.last.store(last.to_bits(), Ordering::Relaxed);
+        // Last, and with Release, so a reader that sees `written` also sees
+        // a range and a last value.
+        self.0.written.store(true, Ordering::Release);
     }
 }
 
