@@ -560,6 +560,30 @@ finishes, the subgraph plays live, or plays silence if it contains an offline
 node. Once it's ready, the next compiled plan replaces the subgraph with a
 cached-audio player.
 
+**What exists so far.**
+
+- `render_project_streaming` (`noodle-engine`) renders in chunks into a sink,
+  with progress and cancel, so memory stays flat. `render_project` is still
+  the in-memory version; both give the same samples.
+- `Job` (`noodle-engine`) runs work on a thread with `fraction()`,
+  `cancel()` and a non-blocking `poll()`. Dropping it cancels. Nothing in
+  it touches the audio thread.
+- `spawn_render` and `spawn_render_to_cache` (`noodle-nodes`,
+  `background.rs`) are the offline renderer as a background service. The
+  render has its own engine and a blocking track-input registry, so it
+  never disturbs live playback and renders the same samples every time.
+  A render with a missing or unreadable clip is *incomplete* and is never
+  cached, since the cache would keep serving it after the file came back.
+- `CacheKey` and `KeyBuilder` (`noodle-core`) are the Merkle hashing
+  (blake3). Fields are type-tagged and length-prefixed. Deciding *what*
+  goes into a node's key is the compiler's job and comes with the
+  cacheability analysis.
+- `CacheStore` (`noodle-io`, `cache.rs`) keeps one file per key: a 32-byte
+  header and raw `f32`, so `read_frames(start, ..)` is a seek. That is the
+  random access Reverse needs. Entries are written to a `.partial` file and
+  renamed on commit, a truncated or corrupt entry is deleted and counts as
+  a miss, and `evict_to` drops least-recently-used entries.
+
 **Export** is the offline renderer run on the whole project over a chosen
 range, writing to a file.
 
@@ -884,6 +908,7 @@ telemetry hub (`EditorState::scope_view`).
     lane that holds one value (a gate, a velocity, a sustaining envelope) once
     rather than per sample, and flags the result constant when every lane
     agrees; a moving lane still costs a conversion per sample.
-  - **M4:** streaming offline renders.
+  - **M4:** streaming offline renders (done for whole-project renders; the
+    offline *node* API still hands nodes the whole range).
 - The project file format. RON or JSON for readable diffs, with audio stored
   alongside.

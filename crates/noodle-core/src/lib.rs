@@ -3,6 +3,7 @@
 //! are referred to by ID and resolved by the engine's registry.
 
 mod automation;
+mod cache_key;
 mod clip;
 mod config;
 mod edit;
@@ -14,6 +15,7 @@ pub mod spare;
 mod timeline;
 
 pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};
+pub use cache_key::{CacheKey, KeyBuilder};
 pub use clip::{AudioClip, Clip, ClipContent, ClipId, MidiClip, MidiNote};
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
