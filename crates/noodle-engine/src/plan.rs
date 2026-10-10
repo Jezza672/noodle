@@ -785,6 +785,8 @@ struct OffsetInput {
     info: ParamInfo,
     /// The effective value, in the shape of the wire's signal.
     scratch: Box<[f32]>,
+    /// The value of every sample in the block, if there is one.
+    constant: Option<f32>,
 }
 
 impl OffsetInput {
@@ -794,6 +796,7 @@ impl OffsetInput {
             source,
             info,
             scratch: vec![0.0; source.shape.lanes() * max_frames].into_boxed_slice(),
+            constant: None,
         }
     }
 
@@ -806,11 +809,29 @@ impl OffsetInput {
         let info = &self.info;
         let constant = base.constant().map(|value| info.position(value));
         let base = base.samples(frames);
+        // The one value of every sample of every lane, while there is one.
+        let mut uniform: Option<Option<f32>> = None;
         for voice in 0..shape.voices {
             for channel in 0..shape.channels {
                 let start = (voice * shape.channels + channel) * frames;
                 let out = &mut self.scratch[start..start + frames];
                 let signal = source.lane(voice, channel);
+                // A held signal (a gate, a velocity, a sustaining envelope)
+                // costs one conversion rather than one per sample.
+                let held = constant
+                    .zip(signal.first())
+                    .filter(|&(_, &first)| first.is_finite() && signal.iter().all(|&x| x == first));
+                if let Some((position, &x)) = held {
+                    let value = info.value_at(position + x);
+                    out.fill(value);
+                    uniform = Some(match uniform {
+                        None => Some(value),
+                        Some(Some(u)) if u == value => Some(u),
+                        Some(_) => None,
+                    });
+                    continue;
+                }
+                uniform = Some(None);
                 for (i, (out, &x)) in out.iter_mut().zip(signal).enumerate() {
                     // A non-finite signal must not poison the node's state.
                     let x = if x.is_finite() { x } else { 0.0 };
@@ -819,11 +840,16 @@ impl OffsetInput {
                 }
             }
         }
+        self.constant = uniform.flatten();
     }
 
     fn signal(&self, frames: usize) -> SignalIn<'_> {
         let shape = self.source.shape;
-        SignalIn::new(&self.scratch[..shape.lanes() * frames], shape, frames)
+        let signal = SignalIn::new(&self.scratch[..shape.lanes() * frames], shape, frames);
+        match self.constant {
+            Some(value) => signal.with_constant(value),
+            None => signal,
+        }
     }
 }
 
