@@ -62,7 +62,8 @@ fn rig(notes: &[MidiNote]) -> H {
     h
 }
 
-fn notes_of(h: &H) -> Vec<MidiNote> {
+/// The clip's notes as stored, with their ids.
+fn stored_notes(h: &H) -> Vec<MidiNote> {
     let rig = h.state();
     rig.session
         .project()
@@ -72,6 +73,15 @@ fn notes_of(h: &H) -> Vec<MidiNote> {
         .unwrap()
         .notes
         .clone()
+}
+
+/// The clip's notes with the ids zeroed, to compare with `note`.
+fn notes_of(h: &H) -> Vec<MidiNote> {
+    let mut notes = stored_notes(h);
+    for note in &mut notes {
+        note.id = 0;
+    }
+    notes
 }
 
 fn geometry(h: &H) -> Geometry {
@@ -329,4 +339,39 @@ fn key_names() {
     assert_eq!(key_name(0), "C-1");
     assert_eq!(key_name(127), "G9");
     assert!(is_black(61) && !is_black(60));
+}
+
+#[test]
+fn the_selection_follows_its_notes_through_undo_and_redo() {
+    let mut h = rig(&[note(0, 240, 60), note(480, 240, 64), note(960, 240, 67)]);
+    let ids: Vec<u32> = stored_notes(&h).iter().map(|n| n.id).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(
+        ids.iter()
+            .all(|id| ids.iter().filter(|i| *i == id).count() == 1)
+    );
+    // Select the last note, then delete the first: the last is now at
+    // index 1, and undoing puts the first back, at index 0.
+    let first = at(&h, 100, 60);
+    let last = at(&h, 1060, 67);
+    click(&mut h, first);
+    h.key_press(Key::Delete);
+    h.run();
+    click(&mut h, last);
+    assert_eq!(h.state().roll.selected(), &BTreeSet::from([ids[2]]));
+    h.state_mut().session.undo();
+    h.run();
+    assert_eq!(stored_notes(&h).len(), 3);
+    assert_eq!(
+        h.state().roll.selected(),
+        &BTreeSet::from([ids[2]]),
+        "still the same note, though its index changed"
+    );
+    // A note that undo removes drops out of the selection.
+    let first = at(&h, 100, 60);
+    click(&mut h, first);
+    assert_eq!(h.state().roll.selected(), &BTreeSet::from([ids[0]]));
+    h.state_mut().session.undo();
+    h.run();
+    assert!(h.state().roll.selected().is_empty());
 }
