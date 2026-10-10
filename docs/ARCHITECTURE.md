@@ -314,8 +314,9 @@ key of the signal input it reads *last*: `Delay`'s `in`, and `Voices`' `busy`.
   input (a `time` wire, say) or through nodes that are not loop-breakers
   gets the usual `Loop` diagnostic on the wire that closes it.
 - **Cost of a loop.** The output half runs before this block's input exists.
-  `Delay` therefore reads at least `frames + 1` samples back while in a loop
-  (about 10 ms at 512 frames); shorter times are held to that. A `Delay` that
+  `Delay` therefore reads at least `max_frames` samples back while in a loop
+  (the engine's largest block, a constant, so the delay doesn't change with
+  the size of the block in hand; about 10 ms at 512 frames); shorter times are held to that. A `Delay` that
   is not on a loop has no minimum.
 - **Shapes.** The output half is shaped before the loop input is known. The
   compiler assumes a mono loop input, finishes, and if the real input

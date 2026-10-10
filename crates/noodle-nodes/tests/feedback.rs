@@ -130,7 +130,7 @@ fn an_echo_repeats_at_the_delay_time_and_decays() {
 #[test]
 fn inside_a_loop_the_delay_is_at_least_one_block() {
     // 100 samples asked for; the block is 256 frames, so the loop can only
-    // do 257 (one block and a sample).
+    // do 256 (one block).
     let rendered = render(
         &echo(100.0 / 48_000.0).graph(),
         &registry(),
@@ -141,7 +141,7 @@ fn inside_a_loop_the_delay_is_at_least_one_block() {
     assert!(rendered.diagnostics.is_empty());
     let s = &rendered.samples;
     assert!((s[0] - 1.0).abs() < 1e-3);
-    assert!((s[257] - 0.5).abs() < 1e-3, "{}", s[257]);
+    assert!((s[256] - 0.5).abs() < 1e-3, "{}", s[256]);
     assert!(s[100].abs() < 1e-3);
 }
 

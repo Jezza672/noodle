@@ -4,7 +4,8 @@
 
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
-    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, SignalIn, SignalOut, Unit,
+    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, ShapeError, SignalIn, SignalOut,
+    Unit,
 };
 
 /// Plays up to `voices` notes at once. Each note gets a voice, and the
@@ -128,12 +129,16 @@ impl NodeType for Voices {
         &self,
         config: &Config,
         layout: &Layout,
-        _inputs: &[Shape],
+        inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
-        Ok(vec![
-            Shape::new(Self::count(config)?, 1);
-            layout.outputs.len()
-        ])
+        let shape = Shape::new(Self::count(config)?, 1);
+        // `busy` is read a lane per voice, so it must be one signal for all
+        // voices or one per voice.
+        let busy = inputs[VoicesPorts::BUSY];
+        if busy.voices != 1 && busy.voices != shape.voices {
+            return Err(ShapeError(shape, busy).into());
+        }
+        Ok(vec![shape; layout.outputs.len()])
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
@@ -304,7 +309,16 @@ impl VoicesNode {
                     gate_quiet: false,
                     rearm: voice.rearm,
                     stamp,
-                    fade: Fade::Steady,
+                    // A voice still fading keeps its level, so reusing it
+                    // doesn't snap the gain.
+                    fade: match voice.fade {
+                        fade @ Fade::In { .. } => fade,
+                        Fade::Out { pos, len, .. } => Fade::In {
+                            pos: len - pos.min(len),
+                            len,
+                        },
+                        Fade::Steady => Fade::Steady,
+                    },
                 };
             }
             EventKind::NoteOff { note, .. } => {
@@ -928,5 +942,49 @@ mod tests {
             h.run(16).unwrap();
             assert!(!silent(&h, VoicesPorts::PITCH, 0));
         }
+    }
+
+    #[test]
+    fn a_busy_signal_with_the_wrong_number_of_voices_is_refused() {
+        let mut config = Config::new();
+        config.set("voices", noodle_core::Value::Int(4));
+        for voices in [2, 8] {
+            let wrong = Harness::new(
+                &Voices,
+                &config,
+                &[(VoicesPorts::BUSY, Shape::new(voices, 1))],
+                48_000.0,
+                16,
+            );
+            assert!(wrong.is_err(), "{voices} voices");
+        }
+        for voices in [1, 4] {
+            Harness::new(
+                &Voices,
+                &config,
+                &[(VoicesPorts::BUSY, Shape::new(voices, 1))],
+                48_000.0,
+                16,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn reusing_a_voice_mid_fade_in_keeps_the_gain_continuous() {
+        let mut h = voices_with(1, &[]);
+        h.set(VoicesPorts::STEAL_FADE, 16.0 / 48_000.0);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 1.0)]);
+        h.run(16).unwrap();
+        // A steal; the new note ends at once, so the voice is free while it
+        // fades in over the next block.
+        h.send_events(VoicesPorts::NOTES, &[on(0, 2, 81, 1.0), off(1, 2)]);
+        h.run(16).unwrap();
+        // A new note takes the voice halfway through the fade-in.
+        h.send_events(VoicesPorts::NOTES, &[on(8, 3, 60, 1.0)]);
+        h.run(16).unwrap();
+        let f = fade(&h, 0);
+        assert!(f[7] < 0.6, "{f:?}");
+        assert!(f.windows(2).all(|w| (w[1] - w[0]).abs() < 0.07), "{f:?}");
     }
 }

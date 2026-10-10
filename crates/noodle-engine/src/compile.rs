@@ -637,6 +637,9 @@ fn infer_shapes(
                             ),
                         };
                         found.push(Diagnostic::node(c.id, Problem::Node(problem)));
+                        // Nodes downstream took their shapes from the
+                        // outputs; they stay as inferred, and this node
+                        // simply doesn't run.
                         candidates[i].output_shapes = None;
                     }
                 } else {

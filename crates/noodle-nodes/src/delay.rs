@@ -17,8 +17,8 @@ use noodle_engine::{
 /// one does, the compiler runs Delay in two steps, one that writes the output
 /// from what the line already holds and one, later in the block, that reads
 /// the input. The output can then be at most as new as the block before, so
-/// *inside a loop* the delay is at least one block plus a sample (about 10 ms
-/// at the default block size), and shorter times are held to that. Outside a
+/// *inside a loop* the delay is at least one block, the engine's largest (about
+/// 10 ms at 512 frames), and shorter times are held to that. Outside a
 /// loop there is no minimum.
 ///
 /// **Silence.** A lane whose input stays silent for as long as the line is
@@ -77,6 +77,7 @@ impl NodeType for Delay {
         Ok(Instance::realtime(DelayNode {
             shape,
             sample_rate: setup.sample_rate,
+            max_frames: setup.max_frames,
             lines: (0..shape.lanes())
                 .map(|_| vec![0.0; len].into_boxed_slice())
                 .collect(),
@@ -90,6 +91,9 @@ impl NodeType for Delay {
 struct DelayNode {
     shape: Shape,
     sample_rate: f32,
+    /// The most frames in a block, which is as short as a delay may be inside
+    /// a loop, whatever the size of the block in hand.
+    max_frames: usize,
     /// One ring buffer per lane, each `mask + 1` long.
     lines: Vec<Box<[f32]>>,
     mask: usize,
@@ -193,8 +197,10 @@ impl Node for DelayNode {
 
     fn process_output(&mut self, ctx: &Context, io: Io<'_, '_>) {
         // Everything the output reads was written by earlier blocks, so the
-        // shortest delay is the block plus a sample for interpolation.
-        let min = (ctx.frames + 1) as f32;
+        // shortest delay is a whole block. It is the largest block rather than
+        // this one's size, so the delay doesn't change as blocks do.
+        let _ = ctx;
+        let min = self.max_frames as f32;
         self.read_block(&io.inputs[TIME], &mut io.outputs[0], self.written, min);
     }
 
