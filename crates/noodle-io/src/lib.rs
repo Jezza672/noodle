@@ -19,8 +19,8 @@ pub use devices::{
 };
 pub use input::{Capture, Feed, input_path, recordable_input_path};
 pub use midi::{
-    MidiBus, MidiConnection, MidiError, MidiMessage, MidiReceiver, connect_midi, midi_inputs,
-    parse_message,
+    MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver, connect_midi,
+    midi_inputs, parse_message, same_port,
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,

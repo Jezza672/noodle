@@ -79,20 +79,31 @@ impl Nodes {
 }
 
 /// How often to look for the chosen MIDI port coming or going.
-const MIDI_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+pub const MIDI_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+type ListMidi = Box<dyn FnMut() -> Result<Vec<String>, noodle_io::MidiError>>;
+type OpenMidi =
+    fn(&str, &noodle_io::MidiBus) -> Result<noodle_io::MidiConnection, noodle_io::MidiError>;
 
 /// What `watch_midi` needs from the system, replaceable in tests.
 struct MidiWatch {
     checked: Option<Instant>,
-    list: fn() -> Result<Vec<String>, noodle_io::MidiError>,
-    open: fn(&str, &noodle_io::MidiBus) -> Result<noodle_io::MidiConnection, noodle_io::MidiError>,
+    list: ListMidi,
+    open: OpenMidi,
 }
 
 impl Default for MidiWatch {
     fn default() -> Self {
+        // One client for all the looks, made the first time.
+        let mut lister: Option<noodle_io::MidiLister> = None;
         Self {
             checked: None,
-            list: noodle_io::midi_inputs,
+            list: Box::new(move || {
+                if lister.is_none() {
+                    lister = Some(noodle_io::MidiLister::new()?);
+                }
+                lister.as_ref().expect("just made").names()
+            }),
             open: noodle_io::connect_midi,
         }
     }
@@ -339,7 +350,7 @@ impl Session {
     /// Opens the chosen MIDI input port, closing the one before. A port that
     /// won't open leaves none open and says why.
     fn connect_midi(&mut self) {
-        self.midi_connection = None;
+        self.close_midi();
         let Some(name) = self.audio_config.midi_input.clone() else {
             return;
         };
@@ -349,10 +360,27 @@ impl Session {
         }
     }
 
+    /// Whether a MIDI port is chosen, so the window should look at the
+    /// ports now and then even when nothing else makes it redraw.
+    pub fn watching_midi(&self) -> bool {
+        self.audio_config.midi_input.is_some()
+    }
+
+    /// Lets go of the MIDI port, releasing the notes it held down (they
+    /// would never see their note-offs).
+    fn close_midi(&mut self) {
+        if self.midi_connection.take().is_some() {
+            self.midi.all_notes_off();
+        }
+    }
+
     /// The chosen MIDI port can be unplugged and plugged back in, and the
     /// drivers don't say when, so look at the list of ports about once a
     /// second: let go of the port when it is gone, and open it again when it
-    /// returns (or when it was missing from the start).
+    /// returns (or when it was missing from the start). Ports are matched by
+    /// name without ALSA's numbers, which change when a device comes back.
+    /// An unplug and replug between two looks that leaves the port's name
+    /// as it was isn't seen.
     fn watch_midi(&mut self, now: Instant) {
         let Some(name) = self.audio_config.midi_input.clone() else {
             return;
@@ -368,21 +396,22 @@ impl Session {
         let Ok(ports) = (self.midi_watch.list)() else {
             return;
         };
-        let present = ports.contains(&name);
-        match (self.midi_connection.is_some(), present) {
-            (true, false) => {
-                self.midi_connection = None;
-                self.message = Some(format!("MIDI input {name:?} was unplugged"));
-            }
-            (false, true) => {
-                // Quietly: a port that is listed but won't open would
-                // otherwise say so every second.
-                if let Ok(connection) = (self.midi_watch.open)(&name, &self.midi) {
-                    self.midi_connection = Some(connection);
-                    self.message = Some(format!("MIDI input {name:?} is connected again"));
-                }
-            }
-            _ => {}
+        if self
+            .midi_connection
+            .as_ref()
+            .is_some_and(|c| !ports.iter().any(|p| p == c.name()))
+        {
+            self.close_midi();
+            self.message = Some(format!("MIDI input {name:?} was unplugged"));
+        }
+        if self.midi_connection.is_none()
+            && ports.iter().any(|p| noodle_io::same_port(p, &name))
+            // Quietly when it fails: a port that is listed but won't open
+            // would otherwise say so every second.
+            && let Ok(connection) = (self.midi_watch.open)(&name, &self.midi)
+        {
+            self.midi_connection = Some(connection);
+            self.message = Some(format!("MIDI input {name:?} is connected again"));
         }
     }
 
@@ -1496,13 +1525,22 @@ mod tests {
         name: &str,
         _bus: &noodle_io::MidiBus,
     ) -> Result<noodle_io::MidiConnection, noodle_io::MidiError> {
-        Ok(noodle_io::MidiConnection::detached(name))
+        // Like the real one, named as the port is now listed.
+        let listed = PORTS.with(|p| {
+            p.borrow()
+                .iter()
+                .find(|p| noodle_io::same_port(p, name))
+                .cloned()
+        });
+        Ok(noodle_io::MidiConnection::detached(
+            &listed.unwrap_or_else(|| name.to_string()),
+        ))
     }
 
     #[test]
     fn an_unplugged_midi_port_is_let_go_and_reopened_when_it_returns() {
         let mut session = Session::new(Nodes::all());
-        session.midi_watch.list = fake_ports;
+        session.midi_watch.list = Box::new(fake_ports);
         session.midi_watch.open = fake_open;
         PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into()]);
         session.audio_config.midi_input = Some("Keys".into());
@@ -1530,6 +1568,32 @@ mod tests {
         PORTS.with(|p| p.borrow_mut().clear());
         session.watch_midi(now + Duration::from_millis(100));
         assert_eq!(session.midi_input(), Some("Keys"));
+    }
+
+    #[test]
+    fn a_port_that_comes_back_with_other_numbers_is_reopened_and_held_notes_released() {
+        let mut session = Session::new(Nodes::all());
+        session.midi_watch.list = Box::new(fake_ports);
+        session.midi_watch.open = fake_open;
+        PORTS.with(|p| *p.borrow_mut() = vec!["Keys MIDI 1 24:0".into()]);
+        session.audio_config.midi_input = Some("Keys MIDI 1 24:0".into());
+        let mut receiver = session.midi.subscribe();
+        let mut now = Instant::now();
+        let mut step = |session: &mut Session| {
+            now += Duration::from_secs(2);
+            session.watch_midi(now);
+        };
+        step(&mut session);
+        assert_eq!(session.midi_input(), Some("Keys MIDI 1 24:0"));
+        // Unplugged and plugged in again between two looks, as number 28.
+        PORTS.with(|p| *p.borrow_mut() = vec!["Keys MIDI 1 28:0".into()]);
+        step(&mut session);
+        assert_eq!(session.midi_input(), Some("Keys MIDI 1 28:0"));
+        // The notes it held were let go.
+        assert_eq!(receiver.pop(), Some([0xB0, 123, 0]));
+        // And it stays open on later looks.
+        step(&mut session);
+        assert_eq!(session.midi_input(), Some("Keys MIDI 1 28:0"));
     }
 
     #[test]

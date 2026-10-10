@@ -85,6 +85,14 @@ impl MidiBus {
         }
     }
 
+    /// Releases every note on every channel (controller 123), for when the
+    /// port that held them down goes away.
+    pub fn all_notes_off(&self) {
+        for channel in 0..16 {
+            self.send([0xB0 | channel, 123, 0]);
+        }
+    }
+
     /// How many receivers are listening.
     pub fn receivers(&self) -> usize {
         let mut subscribers = self.subscribers.lock().expect("subscribers lock");
@@ -103,14 +111,52 @@ impl MidiReceiver {
     }
 }
 
+/// Whether two port names are for the same port. ALSA ends a port's name
+/// with its client and port numbers (`Keys MIDI 1 24:0`), and a device that
+/// is plugged back in can come back with other numbers, so those are left
+/// out of the comparison.
+pub fn same_port(a: &str, b: &str) -> bool {
+    fn stem(name: &str) -> &str {
+        match name.rsplit_once(' ') {
+            Some((stem, tail))
+                if tail
+                    .split_once(':')
+                    .is_some_and(|(c, p)| is_number(c) && is_number(p)) =>
+            {
+                stem
+            }
+            _ => name,
+        }
+    }
+    fn is_number(s: &str) -> bool {
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+    }
+    a == b || stem(a) == stem(b)
+}
+
 /// The names of the MIDI input ports, as the system lists them.
 pub fn midi_inputs() -> Result<Vec<String>, MidiError> {
-    let input = new_input()?;
-    Ok(input
-        .ports()
-        .iter()
-        .filter_map(|port| input.port_name(port).ok())
-        .collect())
+    MidiLister::new()?.names()
+}
+
+/// Lists the MIDI input ports, keeping one client open between calls.
+/// Making a client each time is slow, and on macOS closing the last one a
+/// process has can make the MIDI server quit.
+pub struct MidiLister(MidiInput);
+
+impl MidiLister {
+    pub fn new() -> Result<Self, MidiError> {
+        new_input().map(Self)
+    }
+
+    pub fn names(&self) -> Result<Vec<String>, MidiError> {
+        Ok(self
+            .0
+            .ports()
+            .iter()
+            .filter_map(|port| self.0.port_name(port).ok())
+            .collect())
+    }
 }
 
 /// An open MIDI input port. Messages go to the bus until it is dropped.
@@ -144,7 +190,15 @@ pub fn connect_midi(name: &str, bus: &MidiBus) -> Result<MidiConnection, MidiErr
         .ports()
         .into_iter()
         .find(|port| input.port_name(port).is_ok_and(|n| n == name))
+        .or_else(|| {
+            input
+                .ports()
+                .into_iter()
+                .find(|port| input.port_name(port).is_ok_and(|n| same_port(&n, name)))
+        })
         .ok_or_else(|| MidiError(format!("no MIDI input called {name:?}")))?;
+    // The port's own name, which is what a later look at the list matches.
+    let actual = input.port_name(&port).unwrap_or_else(|_| name.to_string());
     let bus = bus.clone();
     let connection = input
         .connect(
@@ -159,7 +213,7 @@ pub fn connect_midi(name: &str, bus: &MidiBus) -> Result<MidiConnection, MidiErr
         )
         .map_err(|e| MidiError(format!("can't open {name:?}: {e}")))?;
     Ok(MidiConnection {
-        name: name.to_string(),
+        name: actual,
         _connection: Some(connection),
     })
 }
@@ -190,6 +244,15 @@ mod tests {
         assert_eq!(parse_message(&[]), None);
         // Data bytes are seven bits.
         assert_eq!(parse_message(&[0x90, 0xFF, 0x80]), Some([0x90, 0x7F, 0]));
+    }
+
+    #[test]
+    fn alsa_numbers_are_left_out_of_port_names() {
+        assert!(same_port("Keys MIDI 1 24:0", "Keys MIDI 1 28:0"));
+        assert!(same_port("Keys", "Keys"));
+        assert!(!same_port("Keys MIDI 1 24:0", "Pads MIDI 1 24:0"));
+        assert!(!same_port("Keys 1", "Keys 2"));
+        assert!(!same_port("Keys 24:0", "Pads 24:0"));
     }
 
     #[test]

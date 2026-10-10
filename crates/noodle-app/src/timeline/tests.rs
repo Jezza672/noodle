@@ -855,11 +855,12 @@ fn several_dropped_files_are_laid_end_to_end() {
     let mut added = clips_on(&h, 2);
     added.sort_by_key(|clip| clip.start);
     assert_eq!(added.len(), 2);
-    // The first lands on the grid line at the start; one second is two
-    // beats, so the second starts two beats after it.
-    let (first, second) = (added[0].start, added[1].start);
-    assert!((0..=60).contains(&first.0), "{first:?}");
-    assert_eq!(second, Tick(first.0 + 1920));
+    // The first snaps to the grid line at the start; one second is two
+    // beats, so the second starts at beat two.
+    assert_eq!(
+        added.iter().map(|c| c.start).collect::<Vec<_>>(),
+        [Tick(0), Tick(1920)]
+    );
     h.state_mut().session.undo();
     assert!(clips_on(&h, 2).is_empty());
 }

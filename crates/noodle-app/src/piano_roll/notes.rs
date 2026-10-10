@@ -100,7 +100,10 @@ pub fn added(
     }
     let length = length.min(clip_length - start).max(1);
     let mut notes = notes.to_vec();
-    let id = notes.iter().map(|n| n.id).max().map_or(0, |m| m + 1);
+    let id = match notes.iter().map(|n| n.id).max() {
+        None => 0,
+        Some(max) => max.checked_add(1)?,
+    };
     notes.push(MidiNote {
         id,
         start: Tick(start),

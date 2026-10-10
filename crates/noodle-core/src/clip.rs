@@ -92,7 +92,19 @@ impl MidiClip {
     /// unique in the clip. Notes with unique ids keep theirs.
     pub fn assign_note_ids(&mut self) {
         let mut seen = std::collections::BTreeSet::new();
-        let mut next = self.notes.iter().map(|n| n.id).max().map_or(0, |m| m + 1);
+        let Some(mut next) = self
+            .notes
+            .iter()
+            .map(|n| n.id)
+            .max()
+            .map_or(Some(0), |m| m.checked_add(1))
+        else {
+            // No id above the largest to hand out: number them all afresh.
+            for (i, note) in self.notes.iter_mut().enumerate() {
+                note.id = i as u32;
+            }
+            return;
+        };
         for note in &mut self.notes {
             if !seen.insert(note.id) {
                 note.id = next;

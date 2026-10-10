@@ -981,4 +981,15 @@ mod tests {
             ron::from_str("(start: 0, length: 240, key: 60, velocity: 0.5)").unwrap();
         assert_eq!(note.id, 0);
     }
+
+    #[test]
+    fn a_note_id_at_the_top_of_the_range_does_not_overflow() {
+        use crate::MidiNote;
+        let mut midi = crate::MidiClip::new(Tick(960));
+        midi.notes = vec![MidiNote::new(Tick(0), Tick(10), 60); 2];
+        midi.notes[0].id = u32::MAX;
+        midi.notes[1].id = u32::MAX;
+        midi.assign_note_ids();
+        assert_ne!(midi.notes[0].id, midi.notes[1].id);
+    }
 }
