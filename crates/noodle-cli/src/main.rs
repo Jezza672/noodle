@@ -46,6 +46,11 @@ enum Command {
         #[command(flatten)]
         device: DeviceArgs,
     },
+    /// List the CLAP plugins found on this machine. A plugin's node type is
+    /// `clap.<plugin id>`; its ports are the plugin's audio and note ports
+    /// and parameters. New or changed plugin files are scanned (in a child
+    /// process) and the results cached.
+    Plugins,
     /// List the audio hosts, and the devices on one, with their IDs for
     /// `play`.
     Devices {
@@ -93,6 +98,9 @@ impl DeviceArgs {
 }
 
 fn main() -> ExitCode {
+    // `noodle` is also the plugin scanner: plugins are scanned in a child
+    // process, which is this program started with a hidden argument.
+    noodle_plugins::run_scan_child_if_requested();
     match run(Cli::parse().command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -135,7 +143,7 @@ fn run(command: Command) -> Result<(), String> {
                 base: base.to_owned(),
                 settings,
                 frames,
-                extend_registry: None,
+                extend_registry: Some(noodle_plugins::discover().catalog.extender()),
             };
             let mut wav = noodle_io::WavStreamWriter::create(&output, channels, sample_rate)
                 .map_err(|error| format!("can't write {}: {error}", output.display()))?;
@@ -172,6 +180,10 @@ fn run(command: Command) -> Result<(), String> {
                 );
             }
             report(&rendered.diagnostics);
+            Ok(())
+        }
+        Command::Plugins => {
+            list_plugins();
             Ok(())
         }
         Command::Play { project, device } => play(&project, &device.config()),
@@ -338,6 +350,32 @@ impl Watch {
     }
 }
 
+fn list_plugins() {
+    let found = noodle_plugins::discover();
+    if found.files.is_empty() {
+        println!("no CLAP plugins found in the standard folders");
+    }
+    for file in &found.files {
+        if let Some(error) = &file.error {
+            println!("{}: failed: {error}", file.path.display());
+            continue;
+        }
+        for plugin in &file.plugins {
+            println!(
+                "clap.{}  {} ({}): {} audio in, {} audio out, {} note in, {} params  [{}]",
+                plugin.id,
+                plugin.name,
+                plugin.vendor,
+                plugin.audio_inputs.len(),
+                plugin.audio_outputs.len(),
+                plugin.note_inputs,
+                plugin.params.len(),
+                file.path.display()
+            );
+        }
+    }
+}
+
 fn load(path: &Path) -> Result<Project, String> {
     parse(path, &read(path)?)
 }
@@ -354,6 +392,7 @@ fn registry() -> Registry {
     let mut registry = Registry::with_builtins();
     // Nothing displays meters or scopes yet, so their hub isn't needed.
     let _telemetry = noodle_nodes::register_all(&mut registry);
+    noodle_plugins::discover().catalog.register(&mut registry);
     registry
 }
 

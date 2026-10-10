@@ -86,6 +86,8 @@ pub struct Look<'a> {
     /// Whether a missing render may be started now. An edit in the middle of
     /// a drag only needs the stale audio taken off, not a render per frame.
     pub start: bool,
+    /// Adds the plugin node types to a render's registry.
+    pub extend_registry: Option<noodle_plugins::ExtendRegistry>,
 }
 
 impl Freezing {
@@ -250,7 +252,7 @@ impl Freezing {
                 base: look.base.to_owned(),
                 settings: look.settings,
                 frames: look.frames,
-                extend_registry: None,
+                extend_registry: look.extend_registry.clone(),
             };
             self.running = Some(Running {
                 job: spawn_freeze(freezer, request),

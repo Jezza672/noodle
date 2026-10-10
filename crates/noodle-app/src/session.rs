@@ -66,6 +66,11 @@ pub struct Nodes {
     pub clips: ClipFeeds,
     /// Where the MIDI In nodes get their messages.
     pub midi: noodle_io::MidiBus,
+    /// The plugins whose node types are in `registry`. Renders (freeze,
+    /// export) add the same ones to their own registries.
+    pub plugins: noodle_plugins::Catalog,
+    /// Where a background plugin scan reports, if one is running.
+    pub plugin_scan: Option<std::sync::mpsc::Receiver<noodle_plugins::Discovery>>,
 }
 
 impl Nodes {
@@ -82,7 +87,33 @@ impl Nodes {
             telemetry,
             clips,
             midi,
+            plugins: noodle_plugins::Catalog::default(),
+            plugin_scan: None,
         }
+    }
+
+    /// [`all`](Self::all), plus the plugins found last time (read from the
+    /// cache, so this is quick), and a scan of the machine in the
+    /// background for new ones. The session adds what it finds.
+    pub fn all_with_plugins() -> Self {
+        let mut nodes = Self::all();
+        let cached = noodle_plugins::ScanCache::default_path()
+            .map(|path| noodle_plugins::ScanCache::load(&path))
+            .unwrap_or_default();
+        nodes.set_plugins(noodle_plugins::Catalog::new(&cached.files));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("noodle-plugin-scan".into())
+            .spawn(move || {
+                let _ = sender.send(noodle_plugins::discover());
+            });
+        nodes.plugin_scan = spawned.ok().map(|_| receiver);
+        nodes
+    }
+
+    fn set_plugins(&mut self, catalog: noodle_plugins::Catalog) {
+        catalog.register(&mut self.registry);
+        self.plugins = catalog;
     }
 }
 
@@ -121,6 +152,10 @@ pub struct Session {
     project: Project,
     history: History,
     registry: Registry,
+    /// The plugin node types in `registry`.
+    plugins: noodle_plugins::Catalog,
+    /// Where a background plugin scan reports, until it has.
+    plugin_scan: Option<std::sync::mpsc::Receiver<noodle_plugins::Discovery>>,
     telemetry: Telemetry,
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
@@ -285,12 +320,16 @@ impl Session {
             telemetry,
             clips,
             midi,
+            plugins,
+            plugin_scan,
         } = nodes;
         let mut session = Self {
             saved: Project::new(),
             project: Project::new(),
             history: History::new(),
             registry,
+            plugins,
+            plugin_scan,
             telemetry,
             clips,
             midi,
@@ -409,6 +448,46 @@ impl Session {
     /// name without ALSA's numbers, which change when a device comes back.
     /// An unplug and replug between two looks that leaves the port's name
     /// as it was isn't seen.
+    /// Takes the result of the background plugin scan, once it's done: new
+    /// plugins become node types, and the graph is compiled again so nodes
+    /// that were unknown until now come to life.
+    fn poll_plugin_scan(&mut self) {
+        let Some(receiver) = &self.plugin_scan else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(found) => {
+                self.plugin_scan = None;
+                let known = self.plugins.len();
+                let failed = found.files.iter().filter(|f| f.error.is_some()).count();
+                if found.catalog.len() != known || found.scanned > 0 {
+                    found.catalog.register(&mut self.registry);
+                    self.plugins = found.catalog;
+                    self.recompile();
+                }
+                if found.scanned > 0 {
+                    self.message = Some(format!(
+                        "Scanned {} plugin file(s): {} plugin(s) available{}",
+                        found.scanned,
+                        self.plugins.len(),
+                        if failed > 0 {
+                            format!(", {failed} file(s) failed")
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.plugin_scan = None,
+        }
+    }
+
+    /// The hook that gives a render's registry the plugin node types.
+    pub(crate) fn extend_registry(&self) -> Option<noodle_plugins::ExtendRegistry> {
+        (!self.plugins.is_empty()).then(|| self.plugins.extender())
+    }
+
     fn watch_midi(&mut self, now: Instant) {
         let Some(name) = self.audio_config.midi_input.clone() else {
             return;
@@ -848,6 +927,7 @@ impl Session {
         self.watch_midi(Instant::now());
         self.watch_files(Instant::now());
         self.poll_export();
+        self.poll_plugin_scan();
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -1141,6 +1221,7 @@ impl Session {
             base: &base,
             frames,
             start,
+            extend_registry: self.extend_registry(),
         };
         match self.freezing.refresh(&look) {
             Ok(plan) => plan,
@@ -2043,6 +2124,60 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
         let mode = std::fs::metadata(&target).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o640);
+    }
+
+    fn fake_plugin_file(id: &str) -> noodle_plugins::PluginFile {
+        noodle_plugins::PluginFile {
+            path: "/no/such/plugin.clap".into(),
+            len: 0,
+            modified: 0,
+            plugins: vec![noodle_plugins::Descriptor {
+                id: id.into(),
+                name: "Fake".into(),
+                vendor: "Nobody".into(),
+                instrument: false,
+                audio_inputs: vec![noodle_plugins::AudioPort {
+                    name: "main".into(),
+                    channels: 2,
+                }],
+                audio_outputs: vec![noodle_plugins::AudioPort {
+                    name: "main".into(),
+                    channels: 2,
+                }],
+                note_inputs: 0,
+                note_outputs: 0,
+                params: Vec::new(),
+            }],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn plugins_found_by_the_background_scan_become_node_types_and_reach_renders() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut nodes = Nodes::all();
+        nodes.plugin_scan = Some(receiver);
+        let mut session = Session::new(nodes);
+        assert!(session.registry().get("clap.fake.one").is_none());
+        assert!(session.extend_registry().is_none(), "no plugins, no hook");
+
+        let files = vec![fake_plugin_file("fake.one")];
+        sender
+            .send(noodle_plugins::Discovery {
+                catalog: noodle_plugins::Catalog::new(&files),
+                files,
+                scanned: 1,
+            })
+            .unwrap();
+        session.maintain();
+
+        let ty = session.registry().get("clap.fake.one").expect("registered");
+        assert_eq!(ty.info().category, "Plugins");
+        assert!(session.message().unwrap().contains("1 plugin(s) available"));
+        // A render's own registry gets them through the hook.
+        let mut render_registry = Registry::new();
+        session.extend_registry().expect("a hook")(&mut render_registry);
+        assert!(render_registry.get("clap.fake.one").is_some());
     }
 
     #[test]
