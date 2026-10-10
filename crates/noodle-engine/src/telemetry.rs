@@ -52,6 +52,8 @@ pub struct Telemetry {
 struct Channels {
     meters: HashMap<NodeId, Vec<Arc<MeterCells>>>,
     scopes: HashMap<NodeId, Vec<ScopeReader>>,
+    /// Wired parameters' values, by node and port key.
+    params: HashMap<(NodeId, String), Vec<Arc<ParamCells>>>,
     /// The IDs of the live [`MeterReader`]s.
     readers: HashSet<u64>,
     next_reader: u64,
@@ -69,6 +71,10 @@ impl Channels {
         });
         self.scopes.retain(|_, list| {
             list.retain(|reader| !reader.consumer.is_abandoned());
+            !list.is_empty()
+        });
+        self.params.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
             !list.is_empty()
         });
         let meters = &self.meters;
@@ -143,6 +149,43 @@ impl Telemetry {
             hub: self.clone(),
             id,
         }
+    }
+
+    /// Opens a channel reporting the signal wired into parameter `key` of
+    /// `node`. Call this when building a plan, not on the audio thread.
+    pub fn open_param(&self, node: NodeId, key: &str) -> ParamWriter {
+        let cells = Arc::new(ParamCells::default());
+        self.lock()
+            .params
+            .entry((node, key.to_owned()))
+            .or_default()
+            .push(cells.clone());
+        ParamWriter(cells)
+    }
+
+    /// The live value of the signal wired into parameter `key` of `node`, with
+    /// the lowest and highest value since the previous read, or `None` if
+    /// nothing has reported. There is one reading per parameter, so a second
+    /// reader would take the first one's range.
+    pub fn read_param(&self, node: NodeId, key: &str) -> Option<ParamReading> {
+        let channels = self.lock();
+        let list = channels.params.get(&(node, key.to_owned()))?;
+        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+        if !cells.written.load(Ordering::Relaxed) {
+            return None;
+        }
+        let value = f32::from_bits(cells.value.load(Ordering::Relaxed));
+        let min = f32::from_bits(cells.min.swap(f32::INFINITY.to_bits(), Ordering::Relaxed));
+        let max = f32::from_bits(
+            cells
+                .max
+                .swap(f32::NEG_INFINITY.to_bits(), Ordering::Relaxed),
+        );
+        Some(ParamReading {
+            value,
+            min: min.min(value),
+            max: max.max(value),
+        })
     }
 
     /// Copies `node`'s most recent scope frames into `view`, reusing its
@@ -224,6 +267,70 @@ impl Drop for MeterReader {
         let mut channels = self.hub.lock();
         channels.readers.remove(&self.id);
         channels.held.retain(|&(_, reader), _| reader != self.id);
+    }
+}
+
+/// A wired parameter's signal, as last reported.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamReading {
+    /// The value at the end of the latest block.
+    pub value: f32,
+    /// The lowest value since the previous read.
+    pub min: f32,
+    /// The highest value since the previous read.
+    pub max: f32,
+}
+
+struct ParamCells {
+    value: AtomicU32,
+    min: AtomicU32,
+    max: AtomicU32,
+    /// Set once the writer has reported, which shows its plan is running.
+    written: AtomicBool,
+}
+
+impl Default for ParamCells {
+    fn default() -> Self {
+        Self {
+            value: AtomicU32::new(0),
+            min: AtomicU32::new(f32::INFINITY.to_bits()),
+            max: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
+            written: AtomicBool::new(false),
+        }
+    }
+}
+
+/// The audio thread's end of a parameter channel.
+pub struct ParamWriter(Arc<ParamCells>);
+
+impl ParamWriter {
+    /// Reports one block of the signal. Non-finite samples are ignored, and
+    /// so is an empty block.
+    pub fn write(&self, block: &[f32]) {
+        let mut finite = block.iter().copied().filter(|x| x.is_finite());
+        let Some(first) = finite.next() else { return };
+        let (mut last, mut min, mut max) = (first, first, first);
+        for x in finite {
+            last = x;
+            min = min.min(x);
+            max = max.max(x);
+        }
+        self.0.value.store(last.to_bits(), Ordering::Relaxed);
+        // Floats compare differently from their bits when negative, so
+        // these take the extreme with a compare-and-swap.
+        let _ = self
+            .0
+            .min
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                (min < f32::from_bits(cur)).then(|| min.to_bits())
+            });
+        let _ = self
+            .0
+            .max
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                (max > f32::from_bits(cur)).then(|| max.to_bits())
+            });
+        self.0.written.store(true, Ordering::Relaxed);
     }
 }
 
@@ -389,6 +496,36 @@ mod tests {
     use super::*;
 
     const NODE: NodeId = NodeId(7);
+
+    #[test]
+    fn a_param_reports_its_value_and_the_range_since_the_last_read() {
+        let telemetry = Telemetry::new();
+        assert_eq!(telemetry.read_param(NODE, "cutoff"), None);
+        let writer = telemetry.open_param(NODE, "cutoff");
+        assert_eq!(telemetry.read_param(NODE, "cutoff"), None);
+        writer.write(&[0.5, -2.0, f32::NAN, 3.0, 1.0]);
+        let reading = telemetry.read_param(NODE, "cutoff").unwrap();
+        assert_eq!(
+            reading,
+            ParamReading {
+                value: 1.0,
+                min: -2.0,
+                max: 3.0
+            }
+        );
+        // The range starts again after a read.
+        writer.write(&[0.25]);
+        assert_eq!(
+            telemetry.read_param(NODE, "cutoff").unwrap(),
+            ParamReading {
+                value: 0.25,
+                min: 0.25,
+                max: 0.25
+            }
+        );
+        drop(writer);
+        assert_eq!(telemetry.read_param(NODE, "cutoff"), None);
+    }
 
     #[test]
     fn meter_peaks_hold_until_read() {

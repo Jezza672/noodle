@@ -15,7 +15,8 @@ use noodle_core::NodeId;
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
 use crate::{
     Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
-    ParamKind, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
+    ParamKind, ParamWriter, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
+    Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -104,6 +105,8 @@ struct PlanNode {
     bus: Option<(usize, usize)>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
+    /// Reports the signals wired into parameters, by input index.
+    probes: Vec<(usize, ParamWriter)>,
     scratch: Scratch,
 }
 
@@ -134,12 +137,14 @@ struct Scratch {
 /// Builds a plan from a schedule, instantiating every node that can't carry
 /// over from `previous`. Nodes that fail to instantiate are kept, as silence,
 /// so the buffers downstream of them stay valid.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build(
     schedule: Schedule,
     previous: Option<&PlanInfo>,
     generation: u64,
     settings: Settings,
     buses: Option<&[Bus]>,
+    telemetry: Option<&Telemetry>,
     cells: &mut Cells,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (Box<Plan>, PlanInfo) {
@@ -332,6 +337,23 @@ pub(crate) fn build(
             event_outputs: Vec::with_capacity(event_outputs.len()),
         };
 
+        let probes: Vec<(usize, ParamWriter)> = telemetry
+            .into_iter()
+            .flat_map(|telemetry| {
+                scheduled
+                    .layout
+                    .inputs
+                    .iter()
+                    .zip(&scheduled.inputs)
+                    .enumerate()
+                    .filter(|(_, (port, source))| {
+                        matches!(port.kind, InputKind::Param(_))
+                            && matches!(source, InputSource::Buffer(_))
+                    })
+                    .map(move |(index, (port, _))| (index, telemetry.open_param(id, &port.key)))
+            })
+            .collect();
+
         let is_output = scheduled.node_type.info().id == OUTPUT_ID;
         let mut bus = None;
         if is_output {
@@ -364,6 +386,7 @@ pub(crate) fn build(
             is_output,
             bus,
             is_input: scheduled.node_type.info().id == INPUT_ID,
+            probes,
             scratch,
         });
     }
@@ -545,6 +568,13 @@ impl Plan {
                         .iter()
                         .map(|&b| EventsOut::new(&mut *events.add(b))),
                 );
+            }
+
+            for (index, probe) in &node.probes {
+                let signal = &inputs[*index];
+                if signal.shape().lanes() > 0 {
+                    probe.write(signal.lane(0, 0));
+                }
             }
 
             let io = Io {

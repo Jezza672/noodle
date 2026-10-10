@@ -197,16 +197,16 @@ The **Project** is the single source of truth. It holds one global graph:
     one shared "any solo" value so it could be automated, can come later if
     it is wanted.
 - The timeline and mixer are **views over the graph**, not separate structures.
-  The timeline shows the clips that feed each track. The mixer has two views:
-  "All tracks" shows each track group's gain, mute and solo, which are
-  parameters on its boundary nodes; a mixer node's view shows one strip per
-  wired input and sets the **Mix node's own** per-input parameters.
+  The timeline shows the clips that feed each track. The mixer shows one
+  mixer node (the first, unless another is chosen or double-clicked): one
+  strip per wired input, with a meter and a fader, and it sets the **Mix
+  node's own** per-input parameters. With no mixer node it says so.
   - **Mix inputs.** A Mix node has `in1`…`inN` audio inputs, then `gain1`…
     `gainN` (dB) and `mute1`…`muteN` parameter inputs, so each channel's
     fader and mute can be wired or automated like any other parameter. Its
     per-input meters read after the gain and mute. A track's own gain, mute
-    and solo stay on the track (header and "All tracks" view); the mixer node
-    view never touches them.
+    and solo stay on the track (its header); the mixer view never touches
+    them.
 
 Every change goes through a **command**. Applying a command returns its
 inverse, which gives undo/redo for free and gives the UI one place to hook
@@ -452,6 +452,15 @@ any input dropped because the disk stalled. The file is at the input's
 channel count and the engine's rate, and starts at the moment of the call:
 aligning it with the timeline, and with the input's latency, is the
 transport's job.
+
+**Wired parameters report their signal.** `Controller::set_telemetry` has
+plans build a probe for every parameter input with a wire on it. After the
+block is ready, before the node runs, the probe writes the last value and
+the min and max of lane 0 into atomics (no allocation, no locks).
+`Telemetry::read_param(node, key)` returns the live value and the range since
+the previous read; the properties panel shows it beside each wired
+parameter, with the range the parameter accepts. There is one reading per
+parameter, so only one reader should take it.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
@@ -900,7 +909,9 @@ It has these views:
     port before a parameter port, and is part of the move's undo step.
     Copy, Cut and Paste (Ctrl/Cmd+C, X, V) keep the nodes, the wires
     between them and frames in an in-app clipboard, pasted at the pointer
-    into the group being edited as one undo step.
+    into the group being edited as one undo step. The window turns Ctrl/Cmd+V
+    into a paste only while the system clipboard holds text, so a copy also
+    puts a short line of text there.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -1053,7 +1064,7 @@ node and on the mixer view's strips.
 
 `Project.track_order` is a list of group IDs, set by `Command::SetTrackOrder`
 (one undo step; it has no engine effect). The arrangement, the mixer's
-"All tracks" view read it through `Project::sort_tracks` (Add Track always
+mixer's strip names read it through `Project::sort_tracks` (Add Track always
 puts a new track last):
 groups it names come first in that order, the rest follow by ID, and IDs
 that no longer exist are ignored, so deleting then undoing a track keeps its

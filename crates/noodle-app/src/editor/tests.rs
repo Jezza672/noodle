@@ -1844,7 +1844,7 @@ fn copy_and_paste_put_the_nodes_and_the_wires_between_them_at_the_pointer() {
     );
     let before = h.state().session.project().clone();
     let target = screen(&h, Pos2::new(100.0, 400.0));
-    clipboard_event(&mut h, target, Event::Paste(String::new()));
+    clipboard_event(&mut h, target, Event::Paste("Noodle: 2 nodes".into()));
 
     let graph = h.state().session.project().graph();
     assert_eq!(graph.connections().count(), 2);
@@ -1877,7 +1877,7 @@ fn cut_removes_the_selection_and_paste_brings_it_back() {
     clipboard_event(&mut h, at, Event::Cut);
     assert!(h.state().session.project().graph().node(sine).is_none());
     assert!(h.state().session.project().graph().node(gain).is_some());
-    clipboard_event(&mut h, at, Event::Paste(String::new()));
+    clipboard_event(&mut h, at, Event::Paste("Noodle: 2 nodes".into()));
     let graph = h.state().session.project().graph();
     let sines = graph
         .nodes()
@@ -1891,7 +1891,7 @@ fn paste_with_an_empty_clipboard_does_nothing() {
     let mut h = rig();
     wired(&mut h);
     let at = empty_space(&h);
-    clipboard_event(&mut h, at, Event::Paste(String::new()));
+    clipboard_event(&mut h, at, Event::Paste("Noodle: 2 nodes".into()));
     assert!(h.state().log.is_empty());
 }
 

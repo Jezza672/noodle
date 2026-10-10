@@ -1487,3 +1487,28 @@ fn buses_must_add_up_to_the_engines_channels() {
     assert_eq!(controller.set_buses(vec![]), Err(SettingsError::Buses));
     assert!(controller.set_buses(vec![bus(1), bus(1)]).is_ok());
 }
+
+#[test]
+fn a_wired_parameter_reports_its_live_value_and_range() {
+    let telemetry = Telemetry::new();
+    let mut rig = Rig::new(SETTINGS);
+    rig.controller.set_telemetry(&telemetry);
+    let counter = rig.add("counter");
+    let offset = rig.add("offset");
+    let output = rig.add(OUTPUT_ID);
+    rig.connect(counter, "out", offset, "offset");
+    rig.wire(offset, output, "in");
+    assert!(rig.update().is_empty());
+    assert_eq!(telemetry.read_param(offset, "offset"), None);
+
+    // The counter delivers 0 to 3 in the first block, then 4 to 7.
+    rig.render(4);
+    let reading = telemetry.read_param(offset, "offset").unwrap();
+    assert_eq!((reading.value, reading.min, reading.max), (3.0, 0.0, 3.0));
+    rig.render(4);
+    let reading = telemetry.read_param(offset, "offset").unwrap();
+    assert_eq!((reading.value, reading.min, reading.max), (7.0, 4.0, 7.0));
+    // Unwired parameters and ports report nothing.
+    assert_eq!(telemetry.read_param(offset, "in"), None);
+    assert_eq!(telemetry.read_param(counter, "out"), None);
+}

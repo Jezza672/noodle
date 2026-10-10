@@ -47,6 +47,8 @@ pub use registry::Registry;
 pub use render::{Render, RenderError, render, render_project};
 pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
-pub use telemetry::{Level, MeterReader, MeterWriter, ScopeView, ScopeWriter, Telemetry};
+pub use telemetry::{
+    Level, MeterReader, MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,
+};
 pub use tempo::TempoTable;
 pub use transport::TransportControl;

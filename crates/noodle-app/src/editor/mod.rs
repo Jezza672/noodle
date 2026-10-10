@@ -1518,6 +1518,17 @@ fn keyboard(
     let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
     let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
     let copied = (copy || cut) && copy_selection(state, f);
+    if copied {
+        // The window only turns Ctrl/Cmd+V into a paste while the system
+        // clipboard holds text, so leave some for it to find. The nodes
+        // themselves wait in `state.clipboard`.
+        let (nodes, frames) = state
+            .clipboard
+            .as_ref()
+            .map_or((0, 0), |c| (c.nodes.len(), c.frames.len()));
+        ui.ctx()
+            .copy_text(format!("Noodle: {nodes} nodes, {frames} frames"));
+    }
     if cut && copied {
         edits.extend(state.delete_selection());
     }

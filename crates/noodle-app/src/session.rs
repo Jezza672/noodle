@@ -264,6 +264,12 @@ impl Session {
         &self.telemetry
     }
 
+    /// The live value of the signal wired into parameter `key` of `node`, and
+    /// its range since this was last asked, if audio is running with it.
+    pub fn param_reading(&self, node: NodeId, key: &str) -> Option<noodle_engine::ParamReading> {
+        self.telemetry.read_param(node, key)
+    }
+
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio_config
     }
@@ -498,7 +504,8 @@ impl Session {
             started = Ok(playing);
         }
         match started {
-            Ok((playback, controller)) => {
+            Ok((playback, mut controller)) => {
+                controller.set_telemetry(&self.telemetry);
                 // Playback carries on without input rather than failing.
                 // The status bar keeps saying so; see `input_problem`.
                 self.message = fell_back
