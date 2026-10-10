@@ -108,6 +108,26 @@ fn adsr_shape(values: Values<'_>) -> AdsrShape {
     }
 }
 
+/// "100 Hz", "2.5 kHz".
+fn hz_text(hz: f32) -> String {
+    if hz >= 1_000.0 {
+        format!("{} kHz", (hz / 10.0).round() / 100.0)
+    } else {
+        format!("{} Hz", hz.round())
+    }
+}
+
+/// "0", "250 ms", "1.5 s".
+fn seconds_text(seconds: f32) -> String {
+    if seconds == 0.0 {
+        "0".to_owned()
+    } else if seconds < 1.0 {
+        format!("{} ms", (seconds * 1_000.0).round())
+    } else {
+        format!("{} s", (seconds * 100.0).round() / 100.0)
+    }
+}
+
 /// How far along a log axis `hz` is.
 fn hz_to_x(hz: f32) -> f32 {
     ((hz / HZ_RANGE.0).ln() / (HZ_RANGE.1 / HZ_RANGE.0).ln()).clamp(0.0, 1.0)
@@ -349,26 +369,48 @@ fn plot_contents(
                     .collect()
             };
             if full {
-                for hz in [100.0, 1_000.0, 10_000.0] {
+                let faint = Stroke::new(1.0, colors::GRID);
+                for hz in [
+                    30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 200.0, 300.0, 400.0, 600.0, 700.0,
+                    800.0, 900.0, 2_000.0, 3_000.0, 4_000.0, 6_000.0, 7_000.0, 8_000.0, 9_000.0,
+                ] {
+                    vline(hz_to_x(hz), faint);
+                }
+                for hz in [100.0, 500.0, 1_000.0, 5_000.0, 10_000.0] {
                     let x = hz_to_x(hz);
                     vline(x, grid);
-                    let text = if hz >= 1_000.0 {
-                        format!("{} kHz", hz / 1_000.0)
-                    } else {
-                        format!("{hz} Hz")
-                    };
                     label(
                         to_screen(rect, (x, 0.0)) + vec2(2.0, -1.0),
                         Align2::LEFT_BOTTOM,
-                        &text,
+                        &hz_text(hz),
                     );
                 }
-                let unity = gain_to_y(1.0);
-                hline(unity, grid);
-                label(
-                    to_screen(rect, (0.0, unity)) + vec2(2.0, -1.0),
-                    Align2::LEFT_BOTTOM,
-                    "0 dB",
+                for db in [-24.0f32, 0.0, 24.0] {
+                    let y = (db - DB_RANGE.0) / (DB_RANGE.1 - DB_RANGE.0);
+                    hline(y, grid);
+                    label(
+                        to_screen(rect, (0.0, y)) + vec2(2.0, -1.0),
+                        Align2::LEFT_BOTTOM,
+                        &format!("{db:+} dB").replace("+0", "0"),
+                    );
+                }
+                // Where the cutoff is.
+                let x = hz_to_x(cutoff);
+                painter.line_segment(
+                    [to_screen(rect, (x, 0.0)), to_screen(rect, (x, 1.0))],
+                    Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.5)),
+                );
+                let right = x < 0.7;
+                painter.text(
+                    to_screen(rect, (x, 1.0)) + vec2(if right { 3.0 } else { -3.0 }, 2.0),
+                    if right {
+                        Align2::LEFT_TOP
+                    } else {
+                        Align2::RIGHT_TOP
+                    },
+                    hz_text(cutoff),
+                    FontId::proportional(10.0),
+                    theme::ACCENT,
                 );
             }
             if kind == Kind::Svf {
@@ -416,10 +458,33 @@ fn plot_contents(
             let (shape, phase) = (values("shape"), values("phase"));
             let y = |wave: f32| ((offset + depth * wave).clamp(-1.0, 1.0) + 1.0) / 2.0;
             if full {
-                hline(0.5, grid);
-                hline(0.0, grid);
-                hline(1.0, grid);
-                vline(0.5, grid);
+                for (value, text) in [(1.0f32, "+1"), (0.0, "0"), (-1.0, "-1")] {
+                    let y = (value + 1.0) / 2.0;
+                    hline(y, grid);
+                    let align = if y >= 1.0 {
+                        Align2::LEFT_TOP
+                    } else {
+                        Align2::LEFT_BOTTOM
+                    };
+                    let nudge = if y >= 1.0 { 2.0 } else { -1.0 };
+                    label(to_screen(rect, (0.0, y)) + vec2(2.0, nudge), align, text);
+                }
+                // One tick a cycle, labelled in seconds from the rate.
+                let rate = values("rate").max(1e-3);
+                for cycle in 0..=2 {
+                    let x = cycle as f32 / CYCLES;
+                    if cycle > 0 {
+                        vline(x, grid);
+                    }
+                    let text = seconds_text(cycle as f32 / rate);
+                    // Clear of the "-1" at the left edge.
+                    let (align, nudge) = match cycle {
+                        0 => (Align2::LEFT_BOTTOM, 14.0),
+                        2 => (Align2::RIGHT_BOTTOM, -2.0),
+                        _ => (Align2::CENTER_BOTTOM, 0.0),
+                    };
+                    label(to_screen(rect, (x, 0.0)) + vec2(nudge, -1.0), align, &text);
+                }
             }
             let points: Vec<P> = if lfo_wave(shape, 0.0).is_some() {
                 (0..=240)
@@ -748,5 +813,15 @@ mod tests {
         assert_eq!(Kind::of("noodle.filter.ladder"), Some(Kind::Ladder));
         assert_eq!(Kind::of("noodle.mod.lfo"), Some(Kind::Lfo));
         assert_eq!(Kind::of("noodle.util.gain"), None);
+    }
+
+    #[test]
+    fn axis_labels_read_naturally() {
+        assert_eq!(hz_text(100.0), "100 Hz");
+        assert_eq!(hz_text(1_000.0), "1 kHz");
+        assert_eq!(hz_text(2_500.0), "2.5 kHz");
+        assert_eq!(seconds_text(0.0), "0");
+        assert_eq!(seconds_text(0.25), "250 ms");
+        assert_eq!(seconds_text(2.0), "2 s");
     }
 }
