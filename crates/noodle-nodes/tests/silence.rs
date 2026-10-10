@@ -295,11 +295,21 @@ fn subtractive() -> (Processor, MidiBus, impl Sized) {
         ("noodle.util.vca", vec![]),
         (VOICE_MIX_ID, vec![]),
         (OUTPUT_ID, vec![]),
+        // The filter envelope, halved and shaped by a typed expression.
+        ("noodle.util.math", vec![]),
     ] {
         let id = NodeId(ids.len() as u64 + 1);
         let mut node = Node::new(type_id);
         for (key, value) in params {
             node = node.with_param(key, value);
+        }
+        if type_id == "noodle.util.math" {
+            let mut config = Config::new();
+            config.set(
+                "expr",
+                Value::Text("clamp(a * 0.5 + sin(b) * 0, 0, 1)".into()),
+            );
+            node = node.with_config(config);
         }
         if type_id == VOICES_ID {
             let mut config = Config::new();
@@ -314,7 +324,8 @@ fn subtractive() -> (Processor, MidiBus, impl Sized) {
         (1, "pitch", 2, "frequency"),
         (2, "out", 3, "in"),
         (1, "gate", 4, "gate"),
-        (4, "out", 3, "cutoff"),
+        (4, "out", 9, "a"),
+        (9, "out", 3, "cutoff"),
         (1, "gate", 5, "gate"),
         (3, "out", 6, "in"),
         (5, "out", 6, "level"),

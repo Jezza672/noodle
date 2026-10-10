@@ -7,6 +7,7 @@ mod clip;
 mod gain;
 mod ladder;
 mod lfo;
+mod math;
 mod meter;
 mod metronome;
 mod midi_in;
@@ -33,6 +34,7 @@ pub use clip::{
 pub use gain::{GAIN_ID, Gain};
 pub use ladder::Ladder;
 pub use lfo::{LFO_ID, Lfo};
+pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MidiIn};
@@ -104,6 +106,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Svf);
     registry.register(Ladder);
     registry.register(Vca);
+    registry.register(Math);
     registry.register(Adsr);
     registry.register(Lfo);
     registry.register(Key);

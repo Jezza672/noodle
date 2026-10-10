@@ -379,8 +379,10 @@ It becomes an instrument.
 (per-lane silence flags, `Skip` and `is_idle` on `LaneKernel`, a `tail` on
 `Voices`; see "Silence skipping" in ARCHITECTURE.md), and the rest of the
 synthesis nodes: `Square` and `Triangle` band-limited oscillators, a `Ladder`
-filter and a `Unison Saw` (the SVF, ADSR, LFO and VCA were already there),
-with `examples/subtractive-synth.ron` and its golden render. Not done: a
+filter, a `Unison Saw` oscillator and a `Math` node (arithmetic on four inputs
+from a typed expression), with `examples/subtractive-synth.ron` (the synth
+is a group of those primitives with its controls as group inputs) and its
+golden render. Not done: a
 fade-then-steal for voice stealing (still hard), and a separate envelope
 report to `Voices` (the `tail` parameter stands in until feedback loops
 exist). Still to do, in order: the delay node and feedback loops; the
@@ -449,6 +451,10 @@ filters, unison and spread); the delay node and feedback loops.
   - **The change:** a node type can declare that its output doesn't depend on
     its input within the same block, as with a delay of at least one block.
     The compiler then allows loops that pass through such a node.
+
+**Design rule (Jeremy):** a synth is never a monolithic node. It is a group
+built from primitive nodes, with its controls as the group's inputs, editable
+after it is made. Add primitives (oscillators, filters, math), not synths.
 
 **Done when:** you can build a polyphonic subtractive synth from nodes and
 play it from a MIDI keyboard and from a MIDI clip.

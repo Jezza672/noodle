@@ -260,6 +260,18 @@ There are two kinds of signal, plus a possible third later:
     node's event ports.
 - **Spectral:** may be added later, for FFT-frame processing.
 
+### Synths are groups
+
+There are no synth nodes. A synth is a group (`noodle.group`) of primitive
+nodes (oscillators, filters, envelopes, VCAs, `Math`), with its controls as the
+group's inputs, so it stays editable once created: open it and change it.
+An input left unwired leaves the node behind it at the value set inside.
+`examples/subtractive-synth.ron` is one. `Math` (`noodle.util.math`) takes an
+`expr` config such as `a * b + c` over inputs `a` to `d`; it is compiled to a
+postfix program when the node is built and run on a fixed stack per sample.
+`Unison Saw` is an oscillator (a stack of detuned saws is one sound source, as
+a saw is), not a synth.
+
 ### Silence skipping
 
 Every lane (one voice of one channel) of a signal carries a *silent* flag:
