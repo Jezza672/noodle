@@ -441,7 +441,11 @@ before the start, keys and velocities in range).
   resizes it, Delete removes, the arrow keys transpose and nudge, and a bar in
   the velocity lane sets velocity. Notes snap to a grid step (a beat down to
   1/16 of a beat), Alt turns snapping off. Each gesture is one undo step,
-  worked out from the notes as they were when it began.
+  worked out from the notes as they were when it began. Notes carry an `id`
+  that is unique in their clip (the project assigns one to any note that
+  repeats an earlier id when a clip enters it, which also fixes files from
+  before ids), and the selection is a set of ids, so it follows its notes
+  through undo and redo.
 
 ### Recording into the arrangement
 

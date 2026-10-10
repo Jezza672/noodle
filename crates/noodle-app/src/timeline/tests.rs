@@ -846,15 +846,20 @@ fn several_dropped_files_are_laid_end_to_end() {
     let (mut h, id) = rig();
     let one = wav(&h, "b.wav", 48_000);
     let two = wav(&h, "c.wav", 24_000);
-    let at = lane_two(&h, id, 0.0);
+    // A little in from the lane's left edge, not on it: the drop only counts
+    // when the pointer is inside the timeline, and a point on the very edge
+    // fell either side of it depending on how the platform rounded the
+    // layout (the Windows flake).
+    let at = lane_two(&h, id, 0.05);
     drop_files(&mut h, at, &[one, two]);
     let mut added = clips_on(&h, 2);
     added.sort_by_key(|clip| clip.start);
-    // One second is two beats, so the second clip starts at beat two.
-    assert_eq!(
-        added.iter().map(|c| c.start).collect::<Vec<_>>(),
-        [Tick(0), Tick(1920)]
-    );
+    assert_eq!(added.len(), 2);
+    // The first lands on the grid line at the start; one second is two
+    // beats, so the second starts two beats after it.
+    let (first, second) = (added[0].start, added[1].start);
+    assert!((0..=60).contains(&first.0), "{first:?}");
+    assert_eq!(second, Tick(first.0 + 1920));
     h.state_mut().session.undo();
     assert!(clips_on(&h, 2).is_empty());
 }

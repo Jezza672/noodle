@@ -23,10 +23,16 @@ use noodle_engine::{
 ///
 /// **Silence.** A lane whose input stays silent for as long as the line is
 /// long is flagged silent, and costs almost nothing, so a polyphonic echo
-/// doesn't spend time on voices that finished.
+/// doesn't spend time on voices that finished. Input below -120 dB counts as
+/// silent, so the exponentially decaying tail of a feedback echo ends too.
 pub struct Delay;
 
 pub const DELAY_ID: &str = "noodle.util.delay";
+
+/// Below this (about -120 dB) a lane counts as silent, so the tail of a
+/// decaying echo, which only ever approaches zero, still ends. It is written
+/// to the line as zeros.
+const INAUDIBLE: f32 = 1e-6;
 
 /// The longest delay, in seconds. The line is allocated for it up front.
 pub const MAX_TIME: f32 = 2.0;
@@ -148,7 +154,12 @@ impl DelayNode {
         let start = self.written;
         for lane in 0..self.shape.lanes() {
             let (voice, channel) = self.lane_of(lane);
-            if input.is_silent(voice, channel) {
+            if input.is_silent(voice, channel)
+                || input
+                    .lane(voice, channel)
+                    .iter()
+                    .all(|x| x.abs() < INAUDIBLE)
+            {
                 // The line is all zeros once it has been written that many
                 // zeros, so there is nothing more to write.
                 if self.quiet[lane] <= self.mask {
@@ -303,6 +314,23 @@ mod tests {
         impulse(&mut h, 64, 0);
         h.run(64).unwrap();
         assert!(!h.output(OUT).is_silent(0, 0));
+    }
+
+    #[test]
+    fn a_decaying_tail_is_flagged_silent_once_it_falls_below_the_threshold() {
+        let mut h = harness(64);
+        h.set(TIME, 0.001);
+        // Above the threshold the lane is live, however faint.
+        h.input(IN, 64).fill(2e-6);
+        h.run(64).unwrap();
+        assert!(!h.output(OUT).is_silent(0, 0));
+        // Below it, once the line holds nothing but those zeros, it is flagged.
+        for _ in 0..131_072 / 64 + 2 {
+            h.input(IN, 64).fill(5e-7);
+            h.run(64).unwrap();
+        }
+        assert!(h.output(OUT).is_silent(0, 0));
+        assert_eq!(h.output(OUT).lane(0, 0), &[0.0; 64]);
     }
 
     #[test]

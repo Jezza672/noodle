@@ -25,8 +25,11 @@ fn run(rig: &mut Rig, from: u64, to: u64, playing: bool) -> Vec<(u64, bool, u32)
     out
 }
 
+/// The node waits for each schedule instead of playing silence until it
+/// arrives, so these tests don't depend on how quickly the hub's thread runs
+/// (a sleep was not enough on loaded macOS runners).
 fn rig(name: &str) -> Rig {
-    let rig = Rig::new(name);
+    let rig = Rig::blocking(name);
     rig.settle();
     rig
 }

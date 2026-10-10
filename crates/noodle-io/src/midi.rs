@@ -116,11 +116,20 @@ pub fn midi_inputs() -> Result<Vec<String>, MidiError> {
 /// An open MIDI input port. Messages go to the bus until it is dropped.
 pub struct MidiConnection {
     name: String,
-    // Never read: dropping it closes the port.
-    _connection: MidiInputConnection<()>,
+    // Never read: dropping it closes the port. None for a detached one.
+    _connection: Option<MidiInputConnection<()>>,
 }
 
 impl MidiConnection {
+    /// A connection to no port, which sends nothing. For tests of code that
+    /// opens and drops ports, in places without MIDI hardware.
+    pub fn detached(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            _connection: None,
+        }
+    }
+
     /// The port's name.
     pub fn name(&self) -> &str {
         &self.name
@@ -151,7 +160,7 @@ pub fn connect_midi(name: &str, bus: &MidiBus) -> Result<MidiConnection, MidiErr
         .map_err(|e| MidiError(format!("can't open {name:?}: {e}")))?;
     Ok(MidiConnection {
         name: name.to_string(),
-        _connection: connection,
+        _connection: Some(connection),
     })
 }
 

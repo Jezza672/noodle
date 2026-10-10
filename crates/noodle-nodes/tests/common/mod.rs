@@ -30,6 +30,9 @@ pub struct Rig {
     pub problems: Vec<ClipProblem>,
     /// The loop in samples, handed to the node with every block.
     pub looping: Option<(u64, u64)>,
+    /// The node waits for the hub (see [`ClipFeeds::blocking`]), so there is
+    /// nothing to wait out.
+    blocking: bool,
     out: SignalBuffer,
     midi: Vec<noodle_engine::Event>,
 }
@@ -37,6 +40,15 @@ pub struct Rig {
 impl Rig {
     pub fn new(name: &str) -> Self {
         Self::with_feeds(name, ClipFeeds::default())
+    }
+
+    /// A rig whose node waits for the hub's schedule and the disk instead of
+    /// playing silence when they are late, so what it plays doesn't depend
+    /// on how busy the machine is.
+    pub fn blocking(name: &str) -> Self {
+        let mut rig = Self::with_feeds(name, ClipFeeds::blocking());
+        rig.blocking = true;
+        rig
     }
 
     pub fn with_feeds(name: &str, feeds: ClipFeeds) -> Self {
@@ -79,6 +91,7 @@ impl Rig {
             dir,
             problems: Vec::new(),
             looping: None,
+            blocking: false,
             out: SignalBuffer::new(Shape::STEREO, BLOCK),
             midi: Vec::with_capacity(16),
         }
@@ -164,7 +177,12 @@ impl Rig {
     /// Waits for the hub to hand the node the schedule from the last update.
     /// The hub is a background thread, so a loaded CI machine (macOS runners
     /// in particular) can take much longer than a quiet one.
+    ///
+    /// A blocking rig (see [`Rig::blocking`]) needs no wait.
     pub fn settle(&self) {
+        if self.blocking {
+            return;
+        }
         std::thread::sleep(Duration::from_millis(400));
     }
 

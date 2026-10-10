@@ -206,7 +206,8 @@ impl Project {
         Ok(())
     }
 
-    pub(crate) fn insert_clip(&mut self, id: ClipId, clip: Clip) -> Result<(), EditError> {
+    pub(crate) fn insert_clip(&mut self, id: ClipId, mut clip: Clip) -> Result<(), EditError> {
+        clip.assign_note_ids();
         if self.clips.contains_key(&id) {
             return Err(EditError::ClipExists(id));
         }
@@ -220,7 +221,8 @@ impl Project {
         self.clips.remove(&id).ok_or(EditError::NoSuchClip(id))
     }
 
-    pub(crate) fn replace_clip(&mut self, id: ClipId, clip: Clip) -> Result<Clip, EditError> {
+    pub(crate) fn replace_clip(&mut self, id: ClipId, mut clip: Clip) -> Result<Clip, EditError> {
+        clip.assign_note_ids();
         if !self.clips.contains_key(&id) {
             return Err(EditError::NoSuchClip(id));
         }
@@ -357,12 +359,16 @@ impl Project {
         let next_frame_id = file.frames.keys().last().map_or(1, |id| id.0 + 1);
         let next_clip_id = file.clips.keys().last().map_or(1, |id| id.0 + 1);
         let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
+        let mut clips = file.clips;
+        for clip in clips.values_mut() {
+            clip.assign_note_ids();
+        }
         let project = Self {
             graph: file.graph,
             frames: file.frames,
             next_frame_id,
             tempo_map: file.tempo_map,
-            clips: file.clips,
+            clips,
             next_clip_id,
             lanes: file.lanes,
             next_lane_id,
@@ -738,7 +744,10 @@ mod tests {
         assert!(project.clip(id).unwrap().as_audio().is_none());
         assert_eq!(project.clip(id).unwrap().as_midi().unwrap().notes.len(), 2);
         let loaded = Project::from_ron(&project.to_ron()).unwrap();
-        assert_eq!(loaded.clip(id), Some(&good));
+        // The project gave the second note an id of its own.
+        assert_eq!(loaded.clip(id), project.clip(id));
+        let notes = &project.clip(id).unwrap().as_midi().unwrap().notes;
+        assert_ne!(notes[0].id, notes[1].id);
     }
 
     #[test]
@@ -924,5 +933,52 @@ mod tests {
         apply(&mut project, &mut history, Command::SetTrackOrder(order));
         let loaded = Project::from_ron(&project.to_ron()).unwrap();
         assert_eq!(loaded.track_order(), [live]);
+    }
+
+    #[test]
+    fn midi_notes_get_unique_ids_when_a_clip_enters_the_project() {
+        use crate::MidiNote;
+        let (mut project, mut history, player, _, _) = with_timeline();
+        let mut clip = Clip::midi(player, Tick(0), Tick(3840));
+        let ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        // All zeros, as notes from a file saved before ids existed are.
+        midi.notes = (0..3)
+            .map(|i| MidiNote::new(Tick(i * 240), Tick(240), 60))
+            .collect();
+        midi.notes[2].id = 1;
+        let id = project.new_clip_id();
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddClip {
+                id,
+                clip: clip.clone(),
+            },
+        );
+        let ids = |project: &Project| -> Vec<u32> {
+            project
+                .clip(id)
+                .and_then(Clip::as_midi)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| n.id)
+                .collect()
+        };
+        let mut unique = ids(&project);
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 3, "{:?}", ids(&project));
+        // A note whose id was already unique keeps it.
+        assert_eq!(ids(&project)[2], 1);
+        // Ids survive a save and a load, and an edit that leaves them alone.
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(ids(&loaded), ids(&project));
+        // A file from before notes had ids has none to read.
+        let note: MidiNote =
+            ron::from_str("(start: 0, length: 240, key: 60, velocity: 0.5)").unwrap();
+        assert_eq!(note.id, 0);
     }
 }

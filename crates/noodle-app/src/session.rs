@@ -78,6 +78,26 @@ impl Nodes {
     }
 }
 
+/// How often to look for the chosen MIDI port coming or going.
+const MIDI_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// What `watch_midi` needs from the system, replaceable in tests.
+struct MidiWatch {
+    checked: Option<Instant>,
+    list: fn() -> Result<Vec<String>, noodle_io::MidiError>,
+    open: fn(&str, &noodle_io::MidiBus) -> Result<noodle_io::MidiConnection, noodle_io::MidiError>,
+}
+
+impl Default for MidiWatch {
+    fn default() -> Self {
+        Self {
+            checked: None,
+            list: noodle_io::midi_inputs,
+            open: noodle_io::connect_midi,
+        }
+    }
+}
+
 pub struct Session {
     project: Project,
     history: History,
@@ -88,6 +108,8 @@ pub struct Session {
     midi: noodle_io::MidiBus,
     /// The open MIDI input port, if one is chosen and opened.
     midi_connection: Option<noodle_io::MidiConnection>,
+    /// Watches for the chosen MIDI port being unplugged and plugged back in.
+    midi_watch: MidiWatch,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
     /// Where the playhead is while no stream is open, so it can be set and
@@ -237,6 +259,7 @@ impl Session {
             clips,
             midi,
             midi_connection: None,
+            midi_watch: MidiWatch::default(),
             clip_problems: Vec::new(),
             parked: Tick(0),
             path: None,
@@ -323,6 +346,43 @@ impl Session {
         match noodle_io::connect_midi(&name, &self.midi) {
             Ok(connection) => self.midi_connection = Some(connection),
             Err(error) => self.message = Some(format!("MIDI input: {error}")),
+        }
+    }
+
+    /// The chosen MIDI port can be unplugged and plugged back in, and the
+    /// drivers don't say when, so look at the list of ports about once a
+    /// second: let go of the port when it is gone, and open it again when it
+    /// returns (or when it was missing from the start).
+    fn watch_midi(&mut self, now: Instant) {
+        let Some(name) = self.audio_config.midi_input.clone() else {
+            return;
+        };
+        if self
+            .midi_watch
+            .checked
+            .is_some_and(|at| now.duration_since(at) < MIDI_WATCH_INTERVAL)
+        {
+            return;
+        }
+        self.midi_watch.checked = Some(now);
+        let Ok(ports) = (self.midi_watch.list)() else {
+            return;
+        };
+        let present = ports.contains(&name);
+        match (self.midi_connection.is_some(), present) {
+            (true, false) => {
+                self.midi_connection = None;
+                self.message = Some(format!("MIDI input {name:?} was unplugged"));
+            }
+            (false, true) => {
+                // Quietly: a port that is listed but won't open would
+                // otherwise say so every second.
+                if let Ok(connection) = (self.midi_watch.open)(&name, &self.midi) {
+                    self.midi_connection = Some(connection);
+                    self.message = Some(format!("MIDI input {name:?} is connected again"));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -675,6 +735,7 @@ impl Session {
     /// Housekeeping to do every frame: frees plans the audio thread is done
     /// with, and checks the device's health.
     pub fn maintain(&mut self) {
+        self.watch_midi(Instant::now());
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -1421,6 +1482,54 @@ mod tests {
         // Turning it off again needs no port and says nothing new.
         session.set_audio_config(AudioConfig::default());
         assert_eq!(session.midi_input(), None);
+    }
+
+    thread_local! {
+        static PORTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn fake_ports() -> Result<Vec<String>, noodle_io::MidiError> {
+        Ok(PORTS.with(|p| p.borrow().clone()))
+    }
+
+    fn fake_open(
+        name: &str,
+        _bus: &noodle_io::MidiBus,
+    ) -> Result<noodle_io::MidiConnection, noodle_io::MidiError> {
+        Ok(noodle_io::MidiConnection::detached(name))
+    }
+
+    #[test]
+    fn an_unplugged_midi_port_is_let_go_and_reopened_when_it_returns() {
+        let mut session = Session::new(Nodes::all());
+        session.midi_watch.list = fake_ports;
+        session.midi_watch.open = fake_open;
+        PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into()]);
+        session.audio_config.midi_input = Some("Keys".into());
+        let mut now = Instant::now();
+        let mut step = |session: &mut Session| {
+            now += Duration::from_secs(2);
+            session.watch_midi(now);
+        };
+        // Chosen but not open (it was missing when chosen): opens once listed.
+        step(&mut session);
+        assert_eq!(session.midi_input(), Some("Keys"));
+        // Unplugged.
+        PORTS.with(|p| p.borrow_mut().clear());
+        step(&mut session);
+        assert_eq!(session.midi_input(), None);
+        assert!(session.message().is_some_and(|m| m.contains("unplugged")));
+        // Still gone: nothing changes.
+        step(&mut session);
+        assert_eq!(session.midi_input(), None);
+        // Plugged back in.
+        PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into()]);
+        step(&mut session);
+        assert_eq!(session.midi_input(), Some("Keys"));
+        // Looks at most once a second.
+        PORTS.with(|p| p.borrow_mut().clear());
+        session.watch_midi(now + Duration::from_millis(100));
+        assert_eq!(session.midi_input(), Some("Keys"));
     }
 
     #[test]

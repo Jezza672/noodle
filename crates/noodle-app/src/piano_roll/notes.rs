@@ -21,18 +21,16 @@ pub fn snap(tick: i64, step: i64) -> i64 {
 /// it keeps its shape.
 pub fn moved(
     original: &[MidiNote],
-    selected: &BTreeSet<usize>,
+    selected: &BTreeSet<u32>,
     d_tick: i64,
     d_key: i32,
     clip_length: i64,
 ) -> Vec<MidiNote> {
     // A note that starts past the clip's end can't be moved or placed.
-    let inside = |i: &usize| original.get(*i).is_some_and(|n| n.start.0 < clip_length);
     let chosen = || {
-        selected
+        original
             .iter()
-            .filter(|i| inside(i))
-            .filter_map(|&i| original.get(i))
+            .filter(|n| selected.contains(&n.id) && n.start.0 < clip_length)
     };
     let earliest = chosen().map(|n| n.start.0).min().unwrap_or(0);
     let latest = chosen().map(|n| n.start.0).max().unwrap_or(0);
@@ -42,9 +40,8 @@ pub fn moved(
     let d_key = d_key.clamp(-low, 127 - high);
     original
         .iter()
-        .enumerate()
-        .map(|(i, note)| {
-            if !selected.contains(&i) || note.start.0 >= clip_length {
+        .map(|note| {
+            if !selected.contains(&note.id) || note.start.0 >= clip_length {
                 return *note;
             }
             MidiNote {
@@ -61,7 +58,7 @@ pub fn moved(
 /// to the end of the clip.
 pub fn resized(
     original: &[MidiNote],
-    selected: &BTreeSet<usize>,
+    selected: &BTreeSet<u32>,
     grabbed: usize,
     end: i64,
     min: i64,
@@ -73,9 +70,8 @@ pub fn resized(
     let delta = end - grabbed.end().0;
     original
         .iter()
-        .enumerate()
-        .map(|(i, note)| {
-            if !selected.contains(&i) || note.start.0 >= clip_length {
+        .map(|note| {
+            if !selected.contains(&note.id) || note.start.0 >= clip_length {
                 return *note;
             }
             let length = (note.length.0 + delta)
@@ -98,29 +94,29 @@ pub fn added(
     key: u8,
     velocity: f32,
     clip_length: i64,
-) -> Option<(Vec<MidiNote>, usize)> {
+) -> Option<(Vec<MidiNote>, u32)> {
     if !(0..clip_length).contains(&start) || key > 127 {
         return None;
     }
     let length = length.min(clip_length - start).max(1);
     let mut notes = notes.to_vec();
+    let id = notes.iter().map(|n| n.id).max().map_or(0, |m| m + 1);
     notes.push(MidiNote {
+        id,
         start: Tick(start),
         length: Tick(length),
         key,
         velocity: velocity.clamp(0.0, 1.0),
     });
-    let index = notes.len() - 1;
-    Some((notes, index))
+    Some((notes, id))
 }
 
 /// `notes` without the selected ones.
-pub fn removed(notes: &[MidiNote], selected: &BTreeSet<usize>) -> Vec<MidiNote> {
+pub fn removed(notes: &[MidiNote], selected: &BTreeSet<u32>) -> Vec<MidiNote> {
     notes
         .iter()
-        .enumerate()
-        .filter(|(i, _)| !selected.contains(i))
-        .map(|(_, note)| *note)
+        .filter(|note| !selected.contains(&note.id))
+        .copied()
         .collect()
 }
 
@@ -141,7 +137,15 @@ mod tests {
         MidiNote::new(Tick(start), Tick(length), key)
     }
 
-    fn all(n: usize) -> BTreeSet<usize> {
+    /// `notes` with ids 0, 1, 2...
+    fn ided<const N: usize>(mut notes: [MidiNote; N]) -> [MidiNote; N] {
+        for (i, note) in notes.iter_mut().enumerate() {
+            note.id = i as u32;
+        }
+        notes
+    }
+
+    fn all(n: u32) -> BTreeSet<u32> {
         (0..n).collect()
     }
 
@@ -157,11 +161,17 @@ mod tests {
 
     #[test]
     fn moving_keeps_the_group_inside_the_clip_and_the_keyboard() {
-        let notes = [note(240, 240, 60), note(960, 480, 72), note(500, 100, 40)];
+        let notes = ided([note(240, 240, 60), note(960, 480, 72), note(500, 100, 40)]);
         let two = BTreeSet::from([0, 1]);
         let moved_ = moved(&notes, &two, 480, 2, 3840);
         assert_eq!(moved_[0], note(720, 240, 62));
-        assert_eq!(moved_[1], note(1440, 480, 74));
+        assert_eq!(
+            moved_[1],
+            MidiNote {
+                id: 1,
+                ..note(1440, 480, 74)
+            }
+        );
         assert_eq!(moved_[2], notes[2], "unselected notes stay");
         // Stops at the clip's start, keeping the spacing.
         let moved_ = moved(&notes, &two, -5000, 0, 3840);
@@ -181,7 +191,7 @@ mod tests {
 
     #[test]
     fn resizing_changes_every_selected_note_by_the_same_amount() {
-        let notes = [note(0, 240, 60), note(480, 480, 62), note(960, 240, 64)];
+        let notes = ided([note(0, 240, 60), note(480, 480, 62), note(960, 240, 64)]);
         let first_two = BTreeSet::from([0, 1]);
         // Dragging the first note's end from 240 to 480 adds 240 to both.
         let out = resized(&notes, &first_two, 0, 480, 60, 3840);
@@ -200,7 +210,7 @@ mod tests {
     #[test]
     fn notes_past_the_clips_end_are_left_alone() {
         // Left over from before the clip was trimmed.
-        let notes = [note(100, 100, 60), note(5000, 240, 64)];
+        let notes = ided([note(100, 100, 60), note(5000, 240, 64)]);
         let both = all(2);
         let moved_ = moved(&notes, &both, 300, 1, 3840);
         assert_eq!(moved_[0], note(400, 100, 61));
@@ -214,9 +224,9 @@ mod tests {
 
     #[test]
     fn adding_and_removing_notes() {
-        let notes = [note(0, 240, 60)];
+        let notes = ided([note(0, 240, 60)]);
         let (out, index) = added(&notes, 3700, 480, 64, 0.5, 3840).unwrap();
-        assert_eq!(index, 1);
+        assert_eq!(index, 1, "the next id after the notes'");
         assert_eq!(out[1].length.0, 140, "cut at the clip's end");
         assert_eq!(out[1].velocity, 0.5);
         assert!(added(&notes, 3840, 480, 64, 0.5, 3840).is_none());
@@ -228,7 +238,7 @@ mod tests {
 
     #[test]
     fn velocity_is_clamped() {
-        let notes = [note(0, 240, 60)];
+        let notes = ided([note(0, 240, 60)]);
         assert_eq!(with_velocity(&notes, 0, 1.7)[0].velocity, 1.0);
         assert_eq!(with_velocity(&notes, 0, -1.0)[0].velocity, 0.0);
         assert_eq!(with_velocity(&notes, 3, 0.1), notes);
