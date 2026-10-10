@@ -156,6 +156,49 @@ fn a_seek_resumes_at_the_new_place() {
 }
 
 #[test]
+fn a_file_replaced_on_disk_plays_its_new_contents() {
+    let mut rig = Rig::new("replaced");
+    rig.wav("a.wav", 1, 60_000, |_, _| 0.25);
+    let id = rig.add_clip(0, "a.wav", 0, 50_000);
+    rig.wait_ready(0, 1);
+    let (left, _) = rig.play(0, 2_000);
+    assert_close(&left[500..], |_| 0.25, "before");
+
+    // Another program writes the file again; the clip hasn't changed.
+    // Written beside it and renamed over it, as an exporter does, so the
+    // stream open on the old file keeps reading the old data.
+    rig.wav("new.wav", 1, 60_000, |_, _| 0.75);
+    let path = rig.dir.join("a.wav");
+    std::fs::rename(rig.dir.join("new.wav"), &path).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(10))
+        .unwrap();
+    // Scheduling again (the app does, when it sees the change) reads the
+    // new file instead of carrying on with the old stream.
+    rig.edit_clip(id, |_| {});
+    // Playing on, without seeking: the stream already open on the old file
+    // has to be given up for one on the new.
+    let started = std::time::Instant::now();
+    let mut position = 2_000;
+    loop {
+        let (left, _) = rig.run(position, BLOCK, true);
+        position += BLOCK as u64;
+        if left.last() == Some(&0.75) {
+            break;
+        }
+        assert!(
+            started.elapsed().as_secs() < 5,
+            "still playing the old file: {:?}",
+            left.last()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
 fn an_edit_far_from_the_playhead_is_not_heard() {
     let mut rig = Rig::new("far-edit");
     rig.wav("ramp.wav", 1, 60_000, |_, i| 0.1 + i as f32 / 200_000.0);

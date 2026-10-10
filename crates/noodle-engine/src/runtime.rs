@@ -280,6 +280,7 @@ impl Controller {
             self.buses.as_deref(),
             self.telemetry.as_ref(),
             &mut self.cells,
+            self.control.position(),
             &mut diagnostics,
         );
         self.pending = Some((plan, info));

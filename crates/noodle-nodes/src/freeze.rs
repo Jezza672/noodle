@@ -14,17 +14,18 @@
 //!   renders upstream of it already standing in, so freezing two things in a
 //!   chain costs each only its own work.
 
+use std::cell::RefCell;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use noodle_core::{CacheKey, Endpoint, NodeId, Project};
 use noodle_engine::{
-    Analysis, CacheEnv, Cancelled, Diagnostic, InputOrigin, Job, OfflineError, OfflineInput,
-    Problem, Progress, Registry, Replacements, Settings, StreamError, Tap, Target, TargetKind,
-    TempoTable, Uncacheable, analyze, render_offline_node, render_taps,
+    Analysis, CacheEnv, Cancelled, Diagnostic, InputKind, InputOrigin, Job, OfflineError,
+    OfflineInput, Problem, Progress, Registry, Replacements, Settings, StreamError, Tap, Target,
+    TargetKind, TempoTable, Uncacheable, analyze, apply_offset, render_offline_node, render_taps,
 };
-use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher};
+use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Peek};
 
 use crate::cached::CachedPlayer;
 use crate::{RenderRequest, register_library_blocking};
@@ -102,6 +103,66 @@ impl Freezer {
                 file_key: &file_key,
             },
         )
+    }
+
+    /// [`analyze`](Self::analyze) for a thread that mustn't wait on the disk:
+    /// it never reads a clip file. A file whose hash isn't known yet (new, or
+    /// changed since) is left out of the keys, and comes back in the second
+    /// part. Until [`hash_files`](Self::hash_files) has run on them, the
+    /// analysis says nothing reliable about anything that plays those files:
+    /// don't render from it.
+    pub fn analyze_known(
+        &self,
+        project: &Project,
+        registry: &Registry,
+        settings: Settings,
+        frames: usize,
+        base: &Path,
+    ) -> (Analysis, Vec<PathBuf>) {
+        let unknown = RefCell::new(Vec::new());
+        let file_key = |source: &str| {
+            let path = base.join(source);
+            match self.hasher.peek(&path) {
+                Peek::Known(key) => Some(key),
+                Peek::Unknown => {
+                    let mut unknown = unknown.borrow_mut();
+                    if !unknown.contains(&path) {
+                        unknown.push(path);
+                    }
+                    None
+                }
+                Peek::Unreadable => None,
+            }
+        };
+        let analysis = analyze(
+            project,
+            registry,
+            &CacheEnv {
+                project,
+                sample_rate: settings.sample_rate,
+                frames: frames as u64,
+                file_key: &file_key,
+            },
+        );
+        (analysis, unknown.into_inner())
+    }
+
+    /// Reads and hashes `files`, so [`analyze_known`](Self::analyze_known)
+    /// knows them. Slow for big files: run it on a thread of its own.
+    pub fn hash_files(&self, files: &[PathBuf], progress: &Progress) -> Result<(), Cancelled> {
+        progress.report(0.0)?;
+        for (i, path) in files.iter().enumerate() {
+            // A file that can't be read is remembered as such.
+            let _ = self.hasher.hash(path);
+            progress.report((i + 1) as f32 / files.len() as f32)?;
+        }
+        Ok(())
+    }
+
+    /// [`hash_files`](Self::hash_files) on a background thread.
+    pub fn spawn_hash_files(&self, files: Vec<PathBuf>) -> Job<Result<(), Cancelled>> {
+        let freezer = self.clone();
+        Job::spawn(move |progress| freezer.hash_files(&files, progress))
     }
 
     fn wanted(settings: Settings, frames: usize, lanes: usize) -> CacheInfo {
@@ -283,6 +344,17 @@ pub fn freeze(
     request: &RenderRequest,
     progress: &Progress,
 ) -> Result<FreezeReport, FreezeError> {
+    freeze_within(freezer, request, progress, (0.0, 1.0))
+}
+
+/// [`freeze`] reporting only into the part of `progress` from `outer.0` to
+/// `outer.0 + outer.1`, for a job that does more afterwards (an export).
+pub(crate) fn freeze_within(
+    freezer: &Freezer,
+    request: &RenderRequest,
+    progress: &Progress,
+    outer: (f32, f32),
+) -> Result<FreezeReport, FreezeError> {
     let settings = request.settings;
     let frames = request.frames;
     let mut registry = Registry::with_builtins();
@@ -312,9 +384,10 @@ pub fn freeze(
         }
     }
     let count = todo.len().max(1) as f32;
+    progress.set_window(outer.0, outer.1);
     progress.report(0.0)?;
     for (i, target) in todo.into_iter().enumerate() {
-        let window = (i as f32 / count, 1.0 / count);
+        let window = (outer.0 + outer.1 * i as f32 / count, outer.1 / count);
         progress.set_window(window.0, window.1);
         // Rebuilt for each target: the one before it is in the cache now.
         let plan = freezer.plan(&analysis, settings, frames, true);
@@ -344,7 +417,7 @@ pub fn freeze(
         }
         report.rendered.push(target.kind);
     }
-    progress.set_window(0.0, 1.0);
+    progress.set_window(outer.0, outer.1);
     progress.report(1.0)?;
     Ok(report)
 }
@@ -504,6 +577,9 @@ fn render_offline(
         .get(&info.type_id)
         .ok_or_else(|| FreezeError::Render(format!("unknown node type `{}`", info.type_id)))?;
 
+    let layout = node_type
+        .layout(&project_node.config)
+        .map_err(|e| FreezeError::Render(e.to_string()))?;
     // What feeds each input: rendered over the whole range, or a constant.
     // The renders up to here take the first part of the target's stretch and
     // the node itself the rest.
@@ -513,7 +589,7 @@ fn render_offline(
     for origin in &info.inputs {
         match *origin {
             InputOrigin::Value(_) => captured.push(None),
-            InputOrigin::Wire(source, port) => {
+            InputOrigin::Wire(source, port) | InputOrigin::Modulated(source, port, _) => {
                 let source_info = &analysis.nodes[&source];
                 let shape = source_info.output_shapes[port];
                 let lanes: Lanes = Arc::new(Mutex::new(vec![Vec::new(); shape.lanes()]));
@@ -571,15 +647,23 @@ fn render_offline(
         .inputs
         .iter()
         .zip(captured)
-        .map(|(origin, captured)| match (origin, captured) {
+        .zip(&layout.inputs)
+        .map(|((origin, captured), port)| match (origin, captured) {
             (InputOrigin::Value(v), _) => OfflineInput::Constant(*v),
-            (_, Some((shape, lanes))) => OfflineInput::Signal {
-                shape,
-                data: std::mem::take(&mut *lanes.lock().expect("capture lock"))
+            (_, Some((shape, lanes))) => {
+                let mut data: Vec<f32> = std::mem::take(&mut *lanes.lock().expect("capture lock"))
                     .into_iter()
                     .flatten()
-                    .collect(),
-            },
+                    .collect();
+                // A wire into an offsetting parameter moves its value, as it
+                // does live.
+                if let (InputOrigin::Modulated(_, _, base), InputKind::Param(param)) =
+                    (origin, &port.kind)
+                {
+                    apply_offset(param, *base, &mut data);
+                }
+                OfflineInput::Signal { shape, data }
+            }
             (_, None) => OfflineInput::Constant(0.0),
         })
         .collect();

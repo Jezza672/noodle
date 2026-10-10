@@ -8,6 +8,7 @@ use noodle_engine::OUTPUT_ID;
 
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
+use crate::export_dialog::ExportDialog;
 use crate::outputs::OutputsView;
 use crate::piano_roll::{self, PianoRoll};
 use crate::session::{Edit, Saved, Session};
@@ -51,6 +52,7 @@ pub struct App {
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
     devices: DevicePicker,
+    export: ExportDialog,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
     confirming: Option<Action>,
@@ -96,6 +98,9 @@ enum Action {
     ToggleScope,
     ToggleOutputs,
     ImportAudio,
+    ExportAudio,
+    /// Asks where the export the dialog chose is to be written.
+    StartExport,
     DeleteSelection,
     ArrangeNodes,
     Close,
@@ -125,6 +130,7 @@ impl App {
             piano_roll: PianoRoll::default(),
             audition_track: None,
             devices: DevicePicker::default(),
+            export: ExportDialog::default(),
             confirming: None,
             after_save: None,
             closing: false,
@@ -349,6 +355,10 @@ impl App {
             });
 
         self.confirm_dialog(ui.ctx(), &mut actions);
+        self.export.show(ui.ctx(), &mut self.session);
+        if self.export.has_choice() {
+            actions.push(Action::StartExport);
+        }
         if let Some(config) = self.devices.show(ui.ctx()) {
             self.session.set_audio_config(config);
             crate::prefs::remember_audio(self.session.audio_config());
@@ -384,7 +394,7 @@ impl App {
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.
-        let dialog = self.devices.is_open() || self.confirming.is_some();
+        let dialog = self.devices.is_open() || self.export.is_open() || self.confirming.is_some();
         ctx.input_mut(|input| {
             let mut actions = Vec::new();
             let shortcuts = if dialog { &[][..] } else { &SHORTCUTS[..] };
@@ -419,6 +429,7 @@ impl App {
             item(ui, "Save As…", Some(&SAVE_AS), true, Action::SaveAs);
             ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
+            item(ui, "Export Audio…", None, true, Action::ExportAudio);
             ui.separator();
             item(
                 ui,
@@ -774,6 +785,12 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
+            Action::ExportAudio => self.export.open(&self.session),
+            Action::StartExport => {
+                if let Some(choice) = self.export.take_choice() {
+                    self.start_export(choice);
+                }
+            }
             Action::ArrangeNodes => {
                 self.editor.request_arrange();
                 ctx.request_repaint();
@@ -807,6 +824,35 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Asks where to write the export and starts it.
+    fn start_export(&mut self, choice: crate::session::ExportChoice) {
+        let name = format!("{}.{}", self.session.name(), choice.format.extension());
+        let mut dialog = rfd::FileDialog::new().set_file_name(name);
+        if let Some(dir) = self.session.directory() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog
+            .add_filter(choice.format.label(), &[choice.format.extension()])
+            .save_file()
+        else {
+            self.export.declined();
+            return;
+        };
+        // Some platforms' dialogs don't add the extension.
+        let path = if path.extension().is_none() {
+            path.with_extension(choice.format.extension())
+        } else {
+            path
+        };
+        match self.session.start_export(path, choice) {
+            Ok(()) => self.export.started(),
+            Err(why) => {
+                self.export.declined();
+                self.session.notify(why);
+            }
+        }
+    }
+
     /// Asks which audio files to add, and adds them as clips at `target`.
     fn import_audio(&mut self, target: timeline::Target) {
         let picked = rfd::FileDialog::new()
@@ -1003,6 +1049,40 @@ mod tests {
                 .query_by_label("Nothing is wired into this mixer.")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn export_audio_opens_a_dialog_from_the_file_menu() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(harness.query_by_label("Export Audio").is_none());
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Export Audio…").click();
+        harness.run();
+        harness.get_by_label("Export Audio");
+        harness.get_by_label("Format");
+        // Nothing to export in an empty project, and it says so.
+        harness.get_by_label("There is nothing to export yet");
+        harness.get_by_label("Close").click();
+        harness.run();
+        assert!(harness.query_by_label("Export Audio").is_none());
+    }
+
+    #[test]
+    fn the_export_dialog_takes_a_range_and_refuses_a_backwards_one() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Export Audio…").click();
+        harness.run();
+        harness.get_by_label("Range").click();
+        harness.run();
+        harness.get_by_label("From");
+        harness.get_by_label("To");
+        // An empty project's range runs from 0 to 0: nothing to write.
+        harness.get_by_label("The range ends before it starts");
     }
 
     #[test]

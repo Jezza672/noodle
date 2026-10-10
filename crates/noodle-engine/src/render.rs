@@ -116,6 +116,33 @@ pub fn render_project_streaming<E>(
     frames: usize,
     chunk_frames: usize,
     progress: &Progress,
+    sink: impl FnMut(&[f32]) -> Result<(), E>,
+) -> Result<Vec<Diagnostic>, StreamError<E>> {
+    render_project_streaming_replacing(
+        project,
+        registry,
+        settings,
+        frames,
+        chunk_frames,
+        progress,
+        &Replacements::new(),
+        sink,
+    )
+}
+
+/// [`render_project_streaming`] with some outputs played from `replacements`
+/// (cached renders of frozen and offline nodes), as live playback does after
+/// [`Controller::update_project_replacing`]. This is how an export hears what
+/// playback hears.
+#[allow(clippy::too_many_arguments)]
+pub fn render_project_streaming_replacing<E>(
+    project: &Project,
+    registry: &Registry,
+    settings: Settings,
+    frames: usize,
+    chunk_frames: usize,
+    progress: &Progress,
+    replacements: &Replacements,
     mut sink: impl FnMut(&[f32]) -> Result<(), E>,
 ) -> Result<Vec<Diagnostic>, StreamError<E>> {
     let (mut controller, mut processor) =
@@ -129,7 +156,7 @@ pub fn render_project_streaming<E>(
     chunk.try_reserve_exact(len).map_err(|_| too_long())?;
     chunk.resize(len, 0.0);
 
-    let diagnostics = controller.update_project(project, registry);
+    let diagnostics = controller.update_project_replacing(project, registry, replacements);
     let mut done = 0;
     progress.report(0.0)?;
     while done < frames {

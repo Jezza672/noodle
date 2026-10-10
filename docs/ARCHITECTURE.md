@@ -574,11 +574,33 @@ key(output) = hash(key(node), output index)
   doesn't feed. The length reaches the last clip, automation point or tempo
   change, plus a 4 s tail, and at least 30 s. Past it a frozen node is
   silent, so a tail longer than that, or a drone that should play on, is cut.
-- Clip files are hashed whole, on the thread that compiles, the first time
-  they're seen, then only when their size or modification time change. Nothing
-  watches the files: one replaced on disk is noticed at the next compile.
-- An offline node can't take a modulated (offset) parameter or events yet; it
-  is reported as not cacheable.
+- Clip files are hashed whole, but never on the UI thread. The UI keys the
+  project with `Freezer::analyze_known`, which only looks at a file's size and
+  modification time (`FileHasher::peek`) and lists the files it has no hash
+  for. `Freezing` hashes those on a thread of its own (`spawn_hash_files`);
+  until it finishes, no render starts, offline nodes are silent, frozen nodes
+  play live, and their badges say *waiting*. The session compiles again when
+  the hashes are in. The renders themselves (`freeze`, `export`) hash on their
+  own threads with the blocking `analyze`. A file that can't be read is
+  remembered as such until its size or time change, so it isn't retried every
+  compile.
+- **Watching clip files.** Once a second the session looks at the size and
+  modification time of every audio file a clip plays (`filewatch.rs`; a
+  `stat` each, no platform watcher). A changed file schedules the clips
+  again, which opens new streams (a clip's source includes the file's
+  modification time, so streams on the old file are dropped), and compiles
+  again, which keys frozen and offline nodes afresh and renders them. Waveforms
+  watch their files separately (`timeline::sources`). A file rewritten in
+  place with its modification time put back is not seen, the same trade-off
+  the hasher makes.
+- An offline node can take a modulated parameter: the render taps the wire
+  like any other input, and a wire into an offsetting parameter is turned into
+  the parameter's value by `apply_offset`, exactly as the real-time plan does
+  (`value = from_travel(to_travel(base) + signal)`). The node then reads that
+  parameter as a signal over the whole range, like any input (`io.inputs[P]
+  .lane(0, 0)` is the value at each frame), so a ratio or a target level can
+  move along the range. It can't take events yet; that is reported as not
+  cacheable.
 - Renders are stored on disk by key. An edit produces a new key, so stale
   data can never be served, and undoing an edit brings the old render back
   straight away. Bump a node type's `version` whenever its DSP changes.
@@ -607,8 +629,11 @@ plays silence (a `CachedPlayer::silent`). An edit that changes a target's key
 takes its render off at once (the app compiles again straight away), so stale
 audio is never heard during a drag; only starting the new render waits for the
 editing to pause. When a render finishes during playback the player is swapped
-in with the playhead somewhere past its start, so the first block can be
-silent while the worker reads the chunk there.
+in with the playhead somewhere past its start. `Setup::position` carries the
+transport's position as of the compile, and the player starts its worker at
+the chunk holding it and reads the next few chunks before the plan is sent
+(instantiation is off the audio thread), so the first block after the swap
+plays instead of waiting for the worker.
 
 **Rendering the cache.** `freeze` / `spawn_freeze` (`noodle-nodes`) renders
 every `Missing` target, upstream first, on a background thread. A target is
@@ -648,8 +673,48 @@ meanwhile, and shows a progress bar on the node.
   renamed on commit, a truncated or corrupt entry is deleted and counts as
   a miss, and `evict_to` drops least-recently-used entries.
 
-**Export** is the offline renderer run on the whole project over a chosen
-range, writing to a file.
+**Offline nodes.** `Reverse`, `Normalize` and `Time Stretch` (`noodle.offline.*`)
+get the whole range as one signal per input and write the whole range of each
+output, so every output is as long as the range.
+
+- *Normalize* measures the peak (or the RMS) over every lane at once, so
+  stereo balance is kept, and scales to `level` (dB; a wire makes the gain
+  per sample). Silence passes through.
+- *Time Stretch* is waveform-similarity overlap-add (WSOLA): grains of `grain`
+  seconds are taken from the input at the speed `ratio` asks (2 is half speed,
+  a wire moves it along the range), each shifted within a quarter window to
+  line up with the one before, summed with a Hann window and divided by the
+  window sum. All channels of a voice share the grain positions, so the image
+  holds. The output is as long as the range: slowed down, the input's end
+  falls off it; sped up, it ends in silence.
+
+**Export** (`noodle-nodes/src/export.rs`, `spawn_export`) writes the project
+to WAV (32-bit float, 24 or 16) or FLAC (24 or 16; `noodle_io::ExportWriter`,
+which writes a `.partial` file and renames it, so a failed or cancelled export
+leaves nothing). It hears what playback hears: the missing renders of offline
+and frozen nodes are made first (the same `freeze`, into the same cache, with
+the same length that playback keys them by, so they are the same renders),
+then `render_project_streaming_replacing` renders the project from the start
+with those renders standing in, blocking players for exact output. A range
+(`start..end` in frames) only chooses which part of that render is written;
+the render always runs from the start, so delays and envelopes are in the
+state they would be in on the way there. Offline renders cover the playback
+length (the timeline and a tail, at least 30 s); a range that ends later gets
+renders of its own, as long as the range (a different key), so it never goes
+silent partway through.
+Offline nodes that couldn't be rendered are silent in the file and listed in
+the report. Progress is the renders of nodes first (half the bar), then the
+file. The app's File > Export Audio… dialog (`export_dialog.rs`) asks for a
+format and the whole project (to the last clip, plus 4 s of tail) or a range in
+seconds, then for a file, and runs it on the session (`session/export.rs`) with
+a progress bar and cancel. Exports are stereo, at the stream's sample rate.
+Integer formats cut off samples past full scale. FLAC blocks are chosen so the
+last one is never shorter than FLAC's 16-frame minimum, and its header says
+every block but the last is the stream's block size, as some decoders
+(Symphonia) insist. FLAC frames go to disk as they are encoded, after a
+placeholder header that `finish` overwrites with the totals, so memory doesn't
+grow with the length. Without a modification time (some filesystems), a file's
+size alone says whether its hash is still good.
 
 Plugins are treated as deterministic by default. Each plugin node can opt
 out, for plugins that use randomness.

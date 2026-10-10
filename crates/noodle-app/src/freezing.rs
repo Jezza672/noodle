@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use noodle_core::{NodeId, Project};
-use noodle_engine::{Job, JobPanicked, Mode, Registry, Settings, TargetKind};
+use noodle_engine::{Cancelled, Job, JobPanicked, Mode, Registry, Settings, TargetKind};
 use noodle_nodes::{
     FreezeError, FreezePlan, FreezeReport, Freezer, RenderRequest, TargetState, spawn_freeze,
 };
@@ -65,6 +65,9 @@ pub struct Freezing {
     cache_dir: Option<PathBuf>,
     freezer: Option<Freezer>,
     running: Option<Running>,
+    /// Hashing the audio files the keys depend on, off the UI thread. The
+    /// keys of anything that plays them wait for it.
+    hashing: Option<Job<Result<(), Cancelled>>>,
     badges: BTreeMap<NodeId, Badge>,
     /// The project a render failed for, and why. It isn't retried until the
     /// project changes.
@@ -91,6 +94,7 @@ impl Freezing {
             cache_dir: None,
             freezer: None,
             running: None,
+            hashing: None,
             badges: BTreeMap::new(),
             failed: None,
             dirty_since: None,
@@ -111,6 +115,11 @@ impl Freezing {
     /// How far the render under way has got, if one is running.
     pub fn progress(&self) -> Option<f32> {
         self.running.as_ref().map(|r| r.job.fraction())
+    }
+
+    /// Whether audio files are being read for their keys.
+    pub fn is_hashing(&self) -> bool {
+        self.hashing.is_some()
     }
 
     /// A parameter or clip changed without a recompile: look again soon.
@@ -147,6 +156,12 @@ impl Freezing {
             })
     }
 
+    /// The cache of renders, opened if it wasn't yet. An export renders
+    /// into it, so it shares playback's renders.
+    pub fn open_freezer(&mut self) -> Result<Freezer, String> {
+        self.freezer().cloned()
+    }
+
     fn freezer(&mut self) -> Result<&Freezer, String> {
         if self.freezer.is_none() {
             let dir = self.cache_dir.clone().unwrap_or_else(default_cache_dir);
@@ -168,19 +183,47 @@ impl Freezing {
         }
         if !Self::in_use(look.project, look.registry) {
             self.running = None;
+            self.hashing = None;
             self.badges.clear();
             self.failed = None;
             return Ok(None);
         }
         let freezer = self.freezer()?.clone();
-        let analysis = freezer.analyze(
+        // Never reads an audio file here: a big one would stall the UI.
+        let (analysis, unknown) = freezer.analyze_known(
             look.project,
             look.registry,
             look.settings,
             look.frames,
             look.base,
         );
-        let plan = freezer.plan(&analysis, look.settings, look.frames, false);
+        let mut plan = freezer.plan(&analysis, look.settings, look.frames, false);
+        if !unknown.is_empty() {
+            // Files are being read for their keys. Until that's done nothing
+            // that plays them can be keyed, so no render starts (it would be
+            // for the wrong key), offline nodes are silent and the rest
+            // plays live. The session compiles again when it finishes.
+            if self.hashing.is_none() {
+                self.hashing = Some(freezer.spawn_hash_files(unknown));
+            }
+            plan.diagnostics.clear();
+            self.badges = plan
+                .states
+                .iter()
+                .map(|(kind, state)| {
+                    let state = match state {
+                        TargetState::Ready => BadgeState::Ready,
+                        _ => BadgeState::Waiting,
+                    };
+                    let badge = Badge {
+                        frozen: matches!(kind, TargetKind::Frozen(_)),
+                        state,
+                    };
+                    (kind.node(), badge)
+                })
+                .collect();
+            return Ok(Some(plan));
+        }
         let missing = plan
             .states
             .iter()
@@ -242,6 +285,12 @@ impl Freezing {
 
     /// Looks at the render under way. Call it every frame.
     pub fn poll(&mut self) -> Polled {
+        if let Some(hashing) = &mut self.hashing
+            && hashing.poll().is_some()
+        {
+            self.hashing = None;
+            return Polled::Finished;
+        }
         let Some(running) = &mut self.running else {
             return Polled::Nothing;
         };

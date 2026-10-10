@@ -44,8 +44,8 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. |
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
 | `noodle-macros` | `#[derive(Ports)]`: a node's `Layout` and port-index constants from one declaration. Re-exported as `noodle_engine::Ports`. |
-| `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `track_input_midi.rs`, `midi_input.rs`, `offline_clips.rs`, `m2_acceptance.rs`. `render_project_with_clips` renders a project with audio clips offline. |
-| `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
+| `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `track_input_midi.rs`, `midi_input.rs`, `offline_clips.rs`, `export.rs`, `m2_acceptance.rs`. `render_project_with_clips` renders a project with audio clips offline. |
+| `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`), WAV and FLAC export writing (`export.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
 | `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
 | `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`. |
 

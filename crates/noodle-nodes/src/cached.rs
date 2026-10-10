@@ -31,6 +31,10 @@ pub const CACHED_ID: &str = "noodle.internal.cached";
 const CHUNK: usize = 4096;
 /// Chunks the worker keeps ahead: about 1.4 s at 48 kHz.
 const CHUNKS: usize = 16;
+/// Chunks read on the spot when a player is built, from the playhead on, so
+/// a render swapped in mid-playback has its first blocks ready: about 0.34 s
+/// at 48 kHz, longer than the worker needs to catch up.
+const PRELOAD: u64 = 4;
 const IDLE: Duration = Duration::from_millis(2);
 
 static INFO: NodeInfo = NodeInfo {
@@ -112,7 +116,7 @@ impl NodeType for CachedPlayer {
         Ok(vec![self.shape])
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let Some(key) = self.key else {
             return Ok(Instance::realtime(Silent));
         };
@@ -131,7 +135,7 @@ impl NodeType for CachedPlayer {
                 lanes,
             })
         } else {
-            Player::Streaming(Streaming::start(audio, lanes))
+            Player::Streaming(Streaming::start(audio, lanes, setup.position))
         }))
     }
 }
@@ -231,7 +235,11 @@ struct Streaming {
 }
 
 impl Streaming {
-    fn start(audio: CachedAudio, lanes: usize) -> Self {
+    /// Starts the worker at the chunk holding `position`, and has the next
+    /// few chunks read before returning (this runs off the audio thread), so
+    /// playback that is already under way doesn't open with a silent block.
+    fn start(audio: CachedAudio, lanes: usize, position: u64) -> Self {
+        let first = position / CHUNK as u64;
         let (mut spent_tx, spent_rx) = RingBuffer::new(CHUNKS + 1);
         let (full_tx, full_rx) = RingBuffer::new(CHUNKS + 1);
         // One more than the worker can have in flight, for the chunk the
@@ -245,19 +253,21 @@ impl Streaming {
         }
         let shared = Arc::new(Shared {
             generation: AtomicU64::new(0),
-            target: AtomicU64::new(0),
+            target: AtomicU64::new(first),
             stop: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
         });
-        let worker = Worker {
+        let mut worker = Worker {
             audio,
             lanes,
             shared: Arc::clone(&shared),
             spent: spent_rx,
             full: full_tx,
             scratch: vec![0.0; CHUNK * lanes],
+            next: first,
         };
+        worker.preload(PRELOAD);
         thread::Builder::new()
             .name("noodle-cached".into())
             .spawn(move || worker.run())
@@ -268,7 +278,7 @@ impl Streaming {
             full: full_rx,
             spent: spent_tx,
             generation: 0,
-            expected: 0,
+            expected: first,
             current: None,
             loop_range: (0, 0),
         }
@@ -383,12 +393,28 @@ struct Worker {
     spent: Consumer<Chunk>,
     full: Producer<Chunk>,
     scratch: Vec<f32>,
+    /// The chunk to make next.
+    next: u64,
 }
 
 impl Worker {
+    /// Makes the next `count` chunks now, on the calling thread.
+    fn preload(&mut self, count: u64) {
+        for _ in 0..count {
+            let Ok(mut chunk) = self.spent.pop() else {
+                return;
+            };
+            self.fill(&mut chunk, self.next);
+            chunk.generation = 0;
+            chunk.index = self.next;
+            self.next += 1;
+            let _ = self.full.push(chunk);
+        }
+    }
+
     fn run(mut self) {
         let mut generation = 0;
-        let mut next = 0;
+        let mut next = self.next;
         while !self.shared.stop.load(Ordering::Relaxed) {
             let latest = self.shared.generation.load(Ordering::Acquire);
             if latest != generation {
@@ -426,6 +452,62 @@ impl Worker {
                 } else {
                     0.0
                 };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noodle_core::KeyBuilder;
+    use noodle_engine::testing::Harness;
+
+    const RATE: f32 = 48_000.0;
+
+    /// A render of 100 000 frames of a ramp, in a store of its own.
+    fn ramp() -> (tempfile::TempDir, CacheStore, CacheKey) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CacheStore::open(dir.path()).unwrap();
+        let key = KeyBuilder::new("cached-test").u64(1).finish();
+        let mut writer = store.writer(&key, 1, RATE as u32).unwrap();
+        let samples: Vec<f32> = (0..100_000).map(|i| (i + 1) as f32).collect();
+        writer.write(&samples).unwrap();
+        writer.commit().unwrap();
+        (dir, store, key)
+    }
+
+    #[test]
+    fn a_player_built_mid_playback_has_its_first_block_ready() {
+        let (_dir, store, key) = ramp();
+        let player = CachedPlayer::new(store, key, Shape::MONO);
+        // Built with the playhead at 60 000 and run at once, as when a
+        // render finishes during playback: no waiting for the worker.
+        let mut h = Harness::starting_at(&player, &Config::new(), &[], RATE, 64, 60_000).unwrap();
+        h.run(64).unwrap();
+        let out = h.output(0).lane(0, 0).to_vec();
+        let expected: Vec<f32> = (60_000..60_064).map(|i| (i + 1) as f32).collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn a_player_still_follows_the_playhead_after_the_preload() {
+        let (_dir, store, key) = ramp();
+        let player = CachedPlayer::new(store, key, Shape::MONO);
+        let mut h = Harness::starting_at(&player, &Config::new(), &[], RATE, 4096, 40_000).unwrap();
+        // Well past the preloaded chunks: the worker catches up.
+        let mut heard = Vec::new();
+        for _ in 0..4 {
+            h.run(4096).unwrap();
+            heard.extend_from_slice(h.output(0).lane(0, 0));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The first block is ready at once; later ones may be silent while
+        // the worker catches up, but never wrong.
+        assert_eq!(heard[0], 40_001.0);
+        for (i, &x) in heard.iter().enumerate() {
+            if x != 0.0 {
+                assert_eq!(x, (40_000 + i + 1) as f32, "at {i}");
             }
         }
     }

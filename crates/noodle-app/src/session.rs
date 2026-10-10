@@ -12,6 +12,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod export;
+pub use export::ExportChoice;
+
+use crate::filewatch::FileWatch;
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{Clip, Command, EditError, FrameId, History, NodeId, Project, Tick};
 use noodle_engine::{
@@ -125,6 +129,8 @@ pub struct Session {
     midi_connection: Option<noodle_io::MidiConnection>,
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
     midi_watch: MidiWatch,
+    /// Watches the audio files clips play for being replaced on disk.
+    file_watch: FileWatch,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
     /// The renders behind frozen nodes and offline nodes.
@@ -158,6 +164,8 @@ pub struct Session {
     /// Something the user should know, such as a failed save, shown until the
     /// next one replaces it.
     message: Option<String>,
+    /// The export under way, if there is one.
+    exporting: Option<export::Run>,
 }
 
 /// The settings frozen audio is rendered with when no stream is open.
@@ -288,6 +296,8 @@ impl Session {
             midi,
             midi_connection: None,
             midi_watch: MidiWatch::default(),
+            file_watch: FileWatch::default(),
+            exporting: None,
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             parked: Tick(0),
@@ -430,6 +440,37 @@ impl Session {
         {
             self.midi_connection = Some(connection);
             self.message = Some(format!("MIDI input {name:?} is connected again"));
+        }
+    }
+
+    /// Looks about once a second at whether an audio file a clip plays has
+    /// been replaced on disk (re-exported from another program, say). If so,
+    /// the clips are scheduled again so their streams read the new file, and
+    /// anything frozen or offline that depends on it is keyed afresh, which
+    /// renders it again.
+    fn watch_files(&mut self, now: Instant) {
+        let base = self.base().to_owned();
+        let files = self
+            .project
+            .clips()
+            .filter_map(|(_, clip)| match &clip.content {
+                noodle_core::ClipContent::Audio(audio) => Some(base.join(&audio.source)),
+                noodle_core::ClipContent::Midi(_) => None,
+            });
+        let mut changed = self.file_watch.changed(now, files);
+        if changed.is_empty() {
+            return;
+        }
+        changed.sort();
+        changed.dedup();
+        let names: Vec<String> = changed
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        self.message = Some(format!("{} changed on disk", names.join(", ")));
+        self.feed_clips();
+        if Freezing::in_use(&self.project, &self.registry) {
+            self.recompile();
         }
     }
 
@@ -805,6 +846,8 @@ impl Session {
             }
         }
         self.watch_midi(Instant::now());
+        self.watch_files(Instant::now());
+        self.poll_export();
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -1047,6 +1090,32 @@ impl Session {
             .unwrap_or(Path::new("."))
     }
 
+    /// Where the timeline ends, in frames at `rate`: the last clip,
+    /// automation point or tempo change, so nothing that is set up on it is
+    /// cut off. Looks at every audio file.
+    fn timeline_end(&self, rate: f32) -> u64 {
+        let table = TempoTable::new(self.project.tempo_map(), rate);
+        let marks = self
+            .project
+            .lanes()
+            .flat_map(|(_, lane)| lane.points.iter().map(|p| p.tick))
+            .chain(self.project.tempo_map().tempos().iter().map(|t| t.tick))
+            .map(|tick| table.sample_at_tick(tick))
+            .max()
+            .unwrap_or(0);
+        self.clips
+            .project_frames(&self.project, &table, rate as u32, self.base())
+            .max(marks)
+    }
+
+    /// How long the renders of frozen and offline nodes run: the timeline
+    /// and a tail, and at least `FREEZE_MINIMUM`. Playback and export use
+    /// the same length, so they use the same renders.
+    fn freeze_frames(&self, rate: f32) -> usize {
+        (self.timeline_end(rate) as usize + (FREEZE_TAIL * rate) as usize)
+            .max((FREEZE_MINIMUM * rate) as usize)
+    }
+
     /// Looks at the cache of renders for the project and starts the ones it
     /// lacks. Returns what plays in place of the cached nodes, if anything is
     /// frozen or offline.
@@ -1061,22 +1130,7 @@ impl Session {
         let base = self.base().to_owned();
         // Only measured when something needs it: it looks at every audio file.
         let frames = if Freezing::in_use(&self.project, &self.registry) {
-            let table = TempoTable::new(self.project.tempo_map(), rate);
-            // The last clip, automation point or tempo change, so nothing
-            // that is set up on the timeline is cut off.
-            let marks = self
-                .project
-                .lanes()
-                .flat_map(|(_, lane)| lane.points.iter().map(|p| p.tick))
-                .chain(self.project.tempo_map().tempos().iter().map(|t| t.tick))
-                .map(|tick| table.sample_at_tick(tick))
-                .max()
-                .unwrap_or(0);
-            let end = self
-                .clips
-                .project_frames(&self.project, &table, rate as u32, &base)
-                .max(marks);
-            (end as usize + (FREEZE_TAIL * rate) as usize).max((FREEZE_MINIMUM * rate) as usize)
+            self.freeze_frames(rate)
         } else {
             0
         };
@@ -1100,7 +1154,9 @@ impl Session {
     /// Whether the cache of renders wants another look soon, so the app
     /// should keep running even if nothing else moves.
     pub fn freeze_pending(&self) -> bool {
-        self.freezing.progress().is_some() || self.freezing.is_waiting()
+        self.freezing.progress().is_some()
+            || self.freezing.is_waiting()
+            || self.freezing.is_hashing()
     }
 
     /// What to show on frozen and offline nodes.
@@ -1605,6 +1661,204 @@ mod tests {
                 .iter()
                 .any(|d| matches!(d.problem, noodle_engine::Problem::NotCacheable(_)))
         );
+    }
+
+    #[test]
+    fn audio_files_are_hashed_off_the_ui_thread_and_a_replaced_file_renders_again() {
+        use crate::freezing::BadgeState;
+        use noodle_core::Clip;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let tone = |frames: usize, step: f32| -> Vec<f32> {
+            (0..frames * 2)
+                .map(|i| (i as f32 * step).sin() * 0.5)
+                .collect()
+        };
+        noodle_io::write_wav(&dir.path().join("a.wav"), &tone(24_000, 0.01), 2, 48_000).unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(cache.path().to_owned());
+        assert!(session.save_as(&dir.path().join("p.noodle")));
+        let track = session.new_node_id();
+        let reverse = session.new_node_id();
+        let out = session.new_node_id();
+        let clip = session.project().next_clip_id();
+        let wire = |from: NodeId, from_port: &str, to: NodeId| {
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(from, from_port),
+                to: Endpoint::new(to, "in"),
+            }))
+        };
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: track,
+                node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: reverse,
+                node: Node::new("noodle.offline.reverse"),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: out,
+                node: Node::new(OUTPUT_ID),
+            }),
+            wire(track, "audio", reverse),
+            wire(reverse, "out", out),
+            Edit::Apply(Command::AddClip {
+                id: clip,
+                clip: Clip::audio(track, Tick(0), "a.wav", 24_000),
+            }),
+        ]);
+        // The file hasn't been read for its key yet: that happens on a
+        // thread of its own, so nothing renders or fails in the meantime.
+        assert_eq!(
+            session.freeze_badges().get(&reverse).map(|b| &b.state),
+            Some(&BadgeState::Waiting)
+        );
+        assert!(session.freeze_pending());
+        let renders = || std::fs::read_dir(cache.path()).unwrap().count();
+        until(&mut session, "the offline node renders", |s| {
+            s.freeze_badges().get(&reverse).map(|b| &b.state) == Some(&BadgeState::Ready)
+        });
+        let first = renders();
+        assert!(first > 0);
+
+        // The file is re-exported with other contents: the keys change, and
+        // the render is made again.
+        noodle_io::write_wav(&dir.path().join("a.wav"), &tone(30_000, 0.02), 2, 48_000).unwrap();
+        until(&mut session, "the change is seen and rendered again", |s| {
+            renders() > first
+                && s.freeze_badges().get(&reverse).map(|b| &b.state) == Some(&BadgeState::Ready)
+        });
+        assert!(
+            session
+                .message()
+                .is_some_and(|m| m.contains("a.wav changed on disk")),
+            "{:?}",
+            session.message()
+        );
+    }
+
+    /// A sine into an Output, optionally through `middle`.
+    fn sine_chain(session: &mut Session, middle: Option<&str>) {
+        let osc = session.new_node_id();
+        let out = session.new_node_id();
+        let wire = |from: NodeId, to: NodeId| {
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(from, "out"),
+                to: Endpoint::new(to, "in"),
+            }))
+        };
+        let mut edits = vec![
+            Edit::Apply(Command::AddNode {
+                id: osc,
+                node: Node::new("noodle.osc.sine"),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: out,
+                node: Node::new(OUTPUT_ID),
+            }),
+        ];
+        match middle {
+            Some(kind) => {
+                let mid = session.new_node_id();
+                edits.push(Edit::Apply(Command::AddNode {
+                    id: mid,
+                    node: Node::new(kind),
+                }));
+                edits.push(wire(osc, mid));
+                edits.push(wire(mid, out));
+            }
+            None => edits.push(wire(osc, out)),
+        }
+        session.edit(edits);
+    }
+
+    #[test]
+    fn a_range_is_exported_in_the_background_and_the_session_says_so() {
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        // Nothing on the timeline: the whole project is nothing.
+        sine_chain(&mut session, None);
+        let whole = ExportChoice {
+            format: ExportFormat::Wav16,
+            range: None,
+        };
+        assert!(
+            session
+                .start_export(dir.path().join("x.wav"), whole)
+                .is_err()
+        );
+        let empty = ExportChoice {
+            format: ExportFormat::Wav16,
+            range: Some((2.0, 2.0)),
+        };
+        assert!(
+            session
+                .start_export(dir.path().join("x.wav"), empty)
+                .is_err()
+        );
+
+        let path = dir.path().join("half.wav");
+        let choice = ExportChoice {
+            format: ExportFormat::Wav16,
+            range: Some((0.0, 0.5)),
+        };
+        session.start_export(path.clone(), choice).unwrap();
+        assert!(
+            session
+                .start_export(dir.path().join("two.wav"), choice)
+                .is_err(),
+            "one at a time"
+        );
+        assert!(session.export_progress().is_some());
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        assert_eq!(session.message(), Some("Exported 0.5 s to half.wav"));
+        let audio = noodle_io::decode_file(&path).unwrap();
+        assert_eq!(audio.channels, 2);
+        assert_eq!(audio.samples.len(), 24_000 * 2);
+        assert!(audio.samples.iter().any(|&x| x.abs() > 0.05));
+    }
+
+    #[test]
+    fn an_export_includes_offline_nodes_and_can_be_cancelled() {
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, Some("noodle.offline.reverse"));
+        let choice = ExportChoice {
+            format: ExportFormat::Flac16,
+            // Inside the 30 s the offline node is rendered over.
+            range: Some((1.0, 2.0)),
+        };
+        let path = dir.path().join("reversed.flac");
+        session.start_export(path.clone(), choice).unwrap();
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        assert_eq!(session.message(), Some("Exported 1.0 s to reversed.flac"));
+        let audio = noodle_io::decode_file(&path).unwrap();
+        assert!(audio.samples.iter().any(|&x| x.abs() > 0.05), "silent");
+
+        // Cancelled, it leaves no file.
+        let path = dir.path().join("cancelled.flac");
+        session.start_export(path.clone(), choice).unwrap();
+        session.cancel_export();
+        until(&mut session, "the export stops", |s| {
+            s.export_progress().is_none()
+        });
+        assert!(!path.exists());
+        assert!(matches!(
+            session.message(),
+            Some("Export cancelled") | Some("Exported 1.0 s to cancelled.flac")
+        ));
     }
 
     #[test]
