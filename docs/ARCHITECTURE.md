@@ -699,7 +699,9 @@ with those renders standing in, blocking players for exact output. A range
 (`start..end` in frames) only chooses which part of that render is written;
 the render always runs from the start, so delays and envelopes are in the
 state they would be in on the way there. Offline renders cover the playback
-length (the timeline and a tail, at least 30 s); past it they are silent.
+length (the timeline and a tail, at least 30 s); a range that ends later gets
+renders of its own, as long as the range (a different key), so it never goes
+silent partway through.
 Offline nodes that couldn't be rendered are silent in the file and listed in
 the report. Progress is the renders of nodes first (half the bar), then the
 file. The app's File > Export Audio… dialog (`export_dialog.rs`) asks for a
@@ -709,7 +711,10 @@ a progress bar and cancel. Exports are stereo, at the stream's sample rate.
 Integer formats cut off samples past full scale. FLAC blocks are chosen so the
 last one is never shorter than FLAC's 16-frame minimum, and its header says
 every block but the last is the stream's block size, as some decoders
-(Symphonia) insist.
+(Symphonia) insist. FLAC frames go to disk as they are encoded, after a
+placeholder header that `finish` overwrites with the totals, so memory doesn't
+grow with the length. Without a modification time (some filesystems), a file's
+size alone says whether its hash is still good.
 
 Plugins are treated as deterministic by default. Each plugin node can opt
 out, for plugins that use randomness.

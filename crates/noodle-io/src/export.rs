@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use flacenc::component::BitRepr;
@@ -138,6 +138,8 @@ enum Inner {
 }
 
 struct FlacState {
+    /// Holds the STREAMINFO only: frames go straight to `out`, so memory
+    /// doesn't grow with the length of the export.
     stream: flacenc::component::Stream,
     config: flacenc::error::Verified<Encoder>,
     framebuf: FrameBuf,
@@ -154,6 +156,8 @@ struct FlacState {
     /// Frames written by the caller.
     real_frames: u64,
     frame: usize,
+    /// Smallest and largest encoded frame so far, in bytes.
+    frame_bytes: Option<(usize, usize)>,
     out: BufWriter<File>,
 }
 
@@ -209,6 +213,10 @@ impl ExportWriter {
                     .stream_info_mut()
                     .set_block_sizes(block, block)
                     .map_err(|e| ExportError::Unsupported(e.to_string()))?;
+                let mut out = BufWriter::new(File::create(&partial)?);
+                // A placeholder header, the same length as the final one,
+                // overwritten in `finish` once the totals are known.
+                out.write_all(&flac_header(&stream)?)?;
                 Inner::Flac(Box::new(FlacState {
                     stream,
                     config,
@@ -222,7 +230,8 @@ impl ExportWriter {
                     padded: false,
                     real_frames: 0,
                     frame: 0,
-                    out: BufWriter::new(File::create(&partial)?),
+                    frame_bytes: None,
+                    out,
                 }))
             }
         };
@@ -276,34 +285,40 @@ impl ExportWriter {
                     }
                     state.encode_block()?;
                 }
-                // The encoder records the last, shorter block as the
+                // The encoder would record the last, shorter block as the
                 // smallest, which makes decoders such as Symphonia take the
                 // stream for a variable-block one. The format counts every
                 // block but the last.
-                state
-                    .stream
-                    .stream_info_mut()
-                    .set_block_sizes(size, size)
+                let info = state.stream.stream_info_mut();
+                info.set_block_sizes(size, size)
+                    .map_err(|e| ExportError::Unsupported(e.to_string()))?;
+                let (min, max) = state.frame_bytes.unwrap_or((0, 0));
+                info.set_frame_sizes(min, max)
                     .map_err(|e| ExportError::Unsupported(e.to_string()))?;
                 // A checksum of the padding would not match the length.
                 if !state.padded {
                     let digest = state.context.md5_digest();
-                    state.stream.stream_info_mut().set_md5_digest(&digest);
+                    info.set_md5_digest(&digest);
                 }
-                let total = state.real_frames as usize;
-                state.stream.stream_info_mut().set_total_samples(total);
-                let mut sink = flacenc::bitsink::ByteSink::new();
-                state
-                    .stream
-                    .write(&mut sink)
-                    .map_err(|e| ExportError::Unsupported(e.to_string()))?;
-                state.out.write_all(sink.as_slice())?;
+                info.set_total_samples(state.real_frames as usize);
+                let header = flac_header(&state.stream)?;
+                state.out.seek(SeekFrom::Start(0))?;
+                state.out.write_all(&header)?;
                 state.out.flush()?;
             }
         }
         std::fs::rename(&self.partial, &self.path)?;
         Ok(())
     }
+}
+
+/// The bytes before the first frame: `fLaC` and the STREAMINFO block.
+fn flac_header(stream: &flacenc::component::Stream) -> Result<Vec<u8>, ExportError> {
+    let mut sink = flacenc::bitsink::ByteSink::new();
+    stream
+        .write(&mut sink)
+        .map_err(|e| ExportError::Unsupported(e.to_string()))?;
+    Ok(sink.as_slice().to_vec())
 }
 
 impl FlacState {
@@ -319,7 +334,15 @@ impl FlacState {
             self.stream.stream_info(),
         )
         .map_err(|e| fail(&e))?;
-        self.stream.add_frame(frame);
+        let mut sink = flacenc::bitsink::ByteSink::new();
+        frame.write(&mut sink).map_err(|e| fail(&e))?;
+        let bytes = sink.as_slice();
+        self.out.write_all(bytes)?;
+        let len = bytes.len();
+        self.frame_bytes = Some(match self.frame_bytes {
+            Some((min, max)) => (min.min(len), max.max(len)),
+            None => (len, len),
+        });
         self.frame += 1;
         self.pending.clear();
         Ok(())
@@ -365,7 +388,12 @@ mod tests {
             writer.write(piece).unwrap();
         }
         writer.finish().unwrap();
-        assert!(!dir.path().join("out.partial").exists());
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".partial"))
+            .count();
+        assert_eq!(leftovers, 0);
         decode_file(&path).unwrap()
     }
 
@@ -424,11 +452,16 @@ mod tests {
     #[test]
     fn lengths_that_leave_a_tiny_last_block_still_decode() {
         // 4097 frames would leave a 1-frame block; 100 is one short block;
-        // 5 frames is shorter than FLAC's shortest block.
-        for frames in [4097, 8193, 100, 16, 4096 * 3 + 15] {
+        // 5 frames is shorter than FLAC's shortest block, and so is 1.
+        for frames in [4097, 8193, 100, 16, 4096 * 3 + 15, 5, 1] {
             let samples = tone(frames, 2);
             let audio = export(ExportFormat::Flac16, &samples, 2);
-            assert_eq!(audio.samples.len(), samples.len(), "{frames} frames");
+            if frames < MIN_BLOCK {
+                // Padded with silence up to the shortest block.
+                assert!(audio.samples.len() >= samples.len(), "{frames} frames");
+            } else {
+                assert_eq!(audio.samples.len(), samples.len(), "{frames} frames");
+            }
         }
         // Without the length ahead of time a short tail is padded, and the
         // file says how long the audio really is.
@@ -440,6 +473,33 @@ mod tests {
         writer.finish().unwrap();
         let audio = decode_file(&path).unwrap();
         assert!(audio.samples.len() >= 4097);
+        // A stream shorter than the shortest block is padded to it.
+        let path = dir.path().join("tiny.flac");
+        let mut writer =
+            ExportWriter::create(&path, ExportFormat::Flac16, 1, 44_100, None).unwrap();
+        writer.write(&tone(5, 1)).unwrap();
+        writer.finish().unwrap();
+        let audio = decode_file(&path).unwrap();
+        assert!(audio.samples.len() >= 5);
+    }
+
+    #[test]
+    fn a_long_flac_stream_goes_to_disk_as_it_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.flac");
+        let mut writer =
+            ExportWriter::create(&path, ExportFormat::Flac16, 1, 44_100, None).unwrap();
+        for _ in 0..20 {
+            writer.write(&tone(BLOCK * 4, 1)).unwrap();
+        }
+        // Before `finish`, the encoded frames are already written, not held.
+        let state = match writer.inner.as_ref().unwrap() {
+            Inner::Flac(state) => state,
+            Inner::Wav { .. } => unreachable!(),
+        };
+        assert_eq!(state.stream.frame_count(), 0);
+        assert!(state.frame >= 80);
+        writer.finish().unwrap();
     }
 
     #[test]

@@ -195,6 +195,23 @@ fn offline_nodes_are_rendered_and_heard() {
 }
 
 #[test]
+fn a_range_past_the_playback_length_still_hears_offline_nodes() {
+    const EXTRA: usize = 20_000;
+    let mut rig = setup("long-range");
+    rig.chain(&["noodle.offline.reverse"]);
+    // `request` keys renders by `FRAMES`; the file runs `EXTRA` frames longer.
+    let end = (FRAMES + EXTRA) as u64;
+    let request = rig.request("long", ExportFormat::WavFloat, (0, end));
+    export(&request, &Progress::new()).unwrap();
+    let exported = read_wav(&request.path).unwrap().samples;
+    assert_eq!(exported.len(), (FRAMES + EXTRA) * 2);
+    // The reverse covers the whole file, so the clip, now at its end, lands
+    // at the end. Rendered only to `FRAMES` it would leave this all silent.
+    assert_eq!(peak(&exported[..EXTRA * 2]), 0.0);
+    assert!(peak(&exported[EXTRA * 2..]) > 0.2);
+}
+
+#[test]
 fn normalize_brings_the_peak_to_the_level() {
     let mut rig = setup("normalize");
     let ids = rig.chain(&["noodle.offline.normalize"]);

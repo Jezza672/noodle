@@ -27,7 +27,9 @@ use crate::{
 pub struct ExportRequest {
     /// The project, its settings and its clip folder. `render.frames` is the
     /// length that renders of offline and frozen nodes are keyed by: the
-    /// same length live playback uses, so they are the same renders.
+    /// same length live playback uses, so they are the same renders. A
+    /// range that ends later gets renders of its own, long enough to cover
+    /// it, rather than silence past the end of playback's.
     pub render: RenderRequest,
     /// The first frame written, counted from the start of the timeline.
     pub start: u64,
@@ -114,38 +116,40 @@ pub fn export(
     let settings = request.render.settings;
     let end = usize::try_from(request.end)
         .map_err(|_| ExportJobError::Render("the range is too long to render".into()))?;
+    // Renders of offline and frozen nodes must reach the end of the file, or
+    // they would play zeros from where they stop.
+    let mut render = request.render.clone();
+    render.frames = render.frames.max(end);
+    let render = &render;
     // The renders of offline and frozen nodes take the first half of the
     // bar, the file the rest.
     if let Some(freezer) = &request.freezer {
-        freeze_within(freezer, &request.render, progress, (0.0, 0.5)).map_err(
-            |error| match error {
-                FreezeError::Cancelled => ExportJobError::Cancelled,
-                other => ExportJobError::Freeze(other),
-            },
-        )?;
+        freeze_within(freezer, render, progress, (0.0, 0.5)).map_err(|error| match error {
+            FreezeError::Cancelled => ExportJobError::Cancelled,
+            other => ExportJobError::Freeze(other),
+        })?;
     }
 
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
-    if let Some(extend) = &request.render.extend_registry {
+    if let Some(extend) = &render.extend_registry {
         extend(&mut registry);
     }
     let rate = settings.sample_rate.round() as u32;
-    let table = TempoTable::new(request.render.project.tempo_map(), settings.sample_rate);
-    let problems =
-        library
-            .clips
-            .update(&request.render.project, &table, rate, &request.render.base);
+    let table = TempoTable::new(render.project.tempo_map(), settings.sample_rate);
+    let problems = library
+        .clips
+        .update(&render.project, &table, rate, &render.base);
     let (replacements, mut notes) = match &request.freezer {
         Some(freezer) => {
             let analysis = freezer.analyze(
-                &request.render.project,
+                &render.project,
                 &registry,
                 settings,
-                request.render.frames,
-                &request.render.base,
+                render.frames,
+                &render.base,
             );
-            let plan = freezer.plan(&analysis, settings, request.render.frames, true);
+            let plan = freezer.plan(&analysis, settings, render.frames, true);
             (plan.replacements, plan.diagnostics)
         }
         None => (noodle_engine::Replacements::new(), Vec::new()),

@@ -71,7 +71,7 @@ impl OfflineNode for NormalizeNode {
         progress: &Progress,
     ) -> Result<(), Cancelled> {
         let input = io.inputs[IN];
-        let level = io.inputs[LEVEL].lane(0, 0);
+        let level = io.inputs[LEVEL];
         let rms = io.inputs[MODE]
             .lane(0, 0)
             .first()
@@ -102,6 +102,8 @@ impl OfflineNode for NormalizeNode {
             let (voice, channel) = (lane / shape.channels, lane % shape.channels);
             let samples = out.lane_mut(voice, channel);
             let source = input.lane(voice, channel);
+            // A voice or channel of its own on a poly or stereo modulator.
+            let level = level.lane(voice, channel);
             if measured < SILENT {
                 samples.copy_from_slice(source);
             } else {
@@ -178,6 +180,27 @@ mod tests {
         h.input(IN, FRAMES).lane_mut(0, 0).fill(0.0);
         h.run(FRAMES).unwrap();
         assert!(h.output(OUT).lane(0, 0).iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn each_channel_of_a_level_input_sets_its_own_channel() {
+        let mut h = Harness::new(
+            &Normalize,
+            &Config::new(),
+            &[(IN, Shape::STEREO), (LEVEL, Shape::STEREO)],
+            48_000.0,
+            FRAMES,
+        )
+        .unwrap();
+        let mut input = h.input(IN, FRAMES);
+        input.lane_mut(0, 0).fill(0.5);
+        input.lane_mut(0, 1).fill(0.5);
+        let mut level = h.input(LEVEL, FRAMES);
+        level.lane_mut(0, 0).fill(0.0);
+        level.lane_mut(0, 1).fill(-6.0);
+        h.run(FRAMES).unwrap();
+        assert!((h.output(OUT).lane(0, 0)[0] - 1.0).abs() < 1e-6);
+        assert!((h.output(OUT).lane(0, 1)[0] - 10f32.powf(-6.0 / 20.0)).abs() < 1e-6);
     }
 
     #[test]

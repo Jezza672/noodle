@@ -481,7 +481,7 @@ mod tests {
     fn a_player_built_mid_playback_has_its_first_block_ready() {
         let (_dir, store, key) = ramp();
         let player = CachedPlayer::new(store, key, Shape::MONO);
-        // Built with the playhead at 10 000 and run at once, as when a
+        // Built with the playhead at 60 000 and run at once, as when a
         // render finishes during playback: no waiting for the worker.
         let mut h = Harness::starting_at(&player, &Config::new(), &[], RATE, 64, 60_000).unwrap();
         h.run(64).unwrap();

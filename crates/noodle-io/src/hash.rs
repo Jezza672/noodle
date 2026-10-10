@@ -28,7 +28,9 @@ pub enum Peek {
 /// modification time stay the same, so keying a project doesn't read every
 /// clip file again after each edit. A file replaced by one of the same size
 /// within the clock's resolution of the old modification time would be
-/// missed, which is the usual trade-off of a stat-based check.
+/// missed, which is the usual trade-off of a stat-based check. On a
+/// filesystem with no modification times the size alone has to do; hashing
+/// the file again after every look would never settle.
 #[derive(Debug, Default)]
 pub struct FileHasher {
     seen: Mutex<HashMap<PathBuf, Seen>>,
@@ -42,6 +44,14 @@ impl FileHasher {
         Self::default()
     }
 
+    /// The hash taken when the file last had this size and time.
+    fn remembered(&self, path: &Path, stamp: (u64, Option<SystemTime>)) -> Option<CacheKey> {
+        match self.seen.lock().expect("hasher lock").get(path) {
+            Some(&(len, modified, key)) if (len, modified) == stamp => Some(key),
+            _ => None,
+        }
+    }
+
     /// What is known of the file without reading it: only its size and
     /// modification time are looked at, so this is cheap enough for a UI
     /// thread. Hash the files that come back `Unknown` somewhere else (see
@@ -51,10 +61,7 @@ impl FileHasher {
             return Peek::Unreadable;
         };
         let stamp = (meta.len(), meta.modified().ok());
-        if let Some(&(len, modified, key)) = self.seen.lock().expect("hasher lock").get(path)
-            && (len, modified) == stamp
-            && modified.is_some()
-        {
+        if let Some(key) = self.remembered(path, stamp) {
             return Peek::Known(key);
         }
         if self.failed.lock().expect("hasher lock").get(path) == Some(&stamp) {
@@ -68,10 +75,7 @@ impl FileHasher {
     pub fn hash(&self, path: &Path) -> io::Result<CacheKey> {
         let meta = std::fs::metadata(path)?;
         let stamp = (meta.len(), meta.modified().ok());
-        if let Some(&(len, modified, key)) = self.seen.lock().expect("hasher lock").get(path)
-            && (len, modified) == stamp
-            && modified.is_some()
-        {
+        if let Some(key) = self.remembered(path, stamp) {
             return Ok(key);
         }
         let hashed = File::open(path).and_then(CacheKey::of_reader);
@@ -115,6 +119,21 @@ mod tests {
             .unwrap();
         assert_ne!(first, hasher.hash(&a).unwrap());
         assert!(hasher.hash(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn without_modification_times_the_size_decides() {
+        let hasher = FileHasher::new();
+        let path = Path::new("a");
+        let key = CacheKey::of_reader(&b"hello"[..]).unwrap();
+        hasher
+            .seen
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), (5, None, key));
+        // Neither the old stat nor the new one has a time: same size, same file.
+        assert_eq!(hasher.remembered(path, (5, None)), Some(key));
+        assert_eq!(hasher.remembered(path, (6, None)), None);
     }
 
     #[test]
