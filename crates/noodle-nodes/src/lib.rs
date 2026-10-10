@@ -53,7 +53,7 @@ pub use freeze::{
     spawn_freeze,
 };
 pub use gain::{GAIN_ID, Gain};
-pub use ladder::{LADDER_ID, Ladder, ladder_response};
+pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lfo::{LFO_ID, Lfo, lfo_wave};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};

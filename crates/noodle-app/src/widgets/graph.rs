@@ -32,7 +32,9 @@ const GRAB_DISTANCE: f32 = 12.0;
 const DOT: f32 = 5.0;
 /// The height of the full-size graph.
 const FULL_HEIGHT: f32 = 120.0;
-/// Which sample rate a filter's response is drawn at.
+/// Which sample rate a filter's response is drawn at. The filters warp
+/// frequency by the real rate, so at 44.1 kHz the curve differs a little
+/// from this one above about 10 kHz.
 const SAMPLE_RATE: f32 = 48_000.0;
 
 /// The lowest and highest frequency a filter graph shows, in Hz.
@@ -42,7 +44,10 @@ const DB_RANGE: (f32, f32) = (-48.0, 36.0);
 /// The resonance past which the ladder, treated as linear, has no finite
 /// peak: it rings by itself from here, and the graph shows the peak off the
 /// top.
-const LADDER_RINGS: f32 = 4.0 / 4.3;
+const LADDER_RINGS: f32 = noodle_nodes::LADDER_SELF_OSCILLATES;
+/// How far the plot is inset from the graph's edge, so the points at its
+/// edges (a full-height attack, a zero release) are drawn whole.
+const INSET: egui::Vec2 = vec2(2.0, 8.0);
 
 /// The kinds of node that have a graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +111,12 @@ fn adsr_shape(values: Values<'_>) -> AdsrShape {
         sustain: values("sustain"),
         release: values("release"),
     }
+}
+
+/// Where the LFO's output `offset + depth × wave` sits on its plot, which
+/// runs from -2 to 2 because both can be as large as 1.
+fn lfo_y(offset: f32, depth: f32, wave: f32) -> f32 {
+    ((offset + depth * wave).clamp(-2.0, 2.0) + 2.0) / 4.0
 }
 
 /// "100 Hz", "2.5 kHz".
@@ -186,7 +197,8 @@ fn resonance_for(kind: Kind, cutoff: f32, db: f32) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 struct Handle {
     at: P,
-    /// The parameters it sets, which must all be free to change.
+    /// The parameters it sets: the first moves with x, the second with y. It
+    /// moves along whichever of them are free to change.
     keys: &'static [&'static str],
     /// What to call it.
     name: &'static str,
@@ -243,6 +255,7 @@ fn dragged(
     layout: AdsrLayout,
     values: Values<'_>,
     range: &dyn Fn(&str) -> (f32, f32),
+    editable: &dyn Fn(&str) -> bool,
 ) -> Vec<(&'static str, f32)> {
     let clamped = |key: &'static str, value: f32| {
         let (low, high) = range(key);
@@ -262,14 +275,19 @@ fn dragged(
             vec![clamped("release", at.0 * layout.span - before)]
         }
         (Kind::Svf | Kind::Ladder, 0) => {
-            let (_, cutoff) = clamped("cutoff", x_to_hz(at.0));
+            // A wired cutoff stays where it is, and the height is judged there.
+            let cutoff = if editable("cutoff") {
+                clamped("cutoff", x_to_hz(at.0)).1
+            } else {
+                values("cutoff")
+            };
             let resonance = resonance_for(kind, cutoff, y_to_db(at.1.clamp(0.0, 1.0)));
             vec![("cutoff", cutoff), clamped("resonance", resonance)]
         }
         _ => Vec::new(),
     };
     out.into_iter()
-        .filter(|&(key, value)| value != values(key))
+        .filter(|&(key, value)| editable(key) && value != values(key))
         .collect()
 }
 
@@ -456,7 +474,8 @@ fn plot_contents(
             const CYCLES: f32 = 2.0;
             let (depth, offset) = (values("depth"), values("offset"));
             let (shape, phase) = (values("shape"), values("phase"));
-            let y = |wave: f32| ((offset + depth * wave).clamp(-1.0, 1.0) + 1.0) / 2.0;
+            // The output is `offset + depth × wave`, which reaches 2 either way.
+            let y = |wave: f32| lfo_y(offset, depth, wave);
             if full {
                 for (value, text) in [(1.0f32, "+1"), (0.0, "0"), (-1.0, "-1")] {
                     let y = (value + 1.0) / 2.0;
@@ -559,7 +578,7 @@ impl<'a> GraphEditor<'a> {
     pub fn show(self, ui: &mut Ui) -> Vec<Edit> {
         let size = vec2(ui.available_width().max(60.0), FULL_HEIGHT);
         let (outer, _) = ui.allocate_exact_size(size, Sense::hover());
-        let rect = outer.shrink(2.0);
+        let rect = outer.shrink2(INSET);
         let id = Id::new((self.node, "graph"));
         let response = ui.interact(outer, id, Sense::click_and_drag());
         let label = self.kind.label();
@@ -579,7 +598,7 @@ impl<'a> GraphEditor<'a> {
             layout = drag.layout;
         }
         let points = handles(self.kind, self.values, layout);
-        let free = |h: &Handle| h.keys.iter().all(|key| (self.editable)(key));
+        let free = |h: &Handle| h.keys.iter().any(|key| (self.editable)(key));
         let nearest = |at: Pos2| {
             points
                 .iter()
@@ -609,6 +628,7 @@ impl<'a> GraphEditor<'a> {
                 drag.layout,
                 self.values,
                 self.range,
+                self.editable,
             ) {
                 edits.push(Edit::Drag(Command::SetParam {
                     node: self.node,
@@ -693,7 +713,7 @@ mod tests {
         assert_eq!(points.len(), 3);
         // Dragging a point to where it already is changes nothing.
         for (i, h) in points.iter().enumerate() {
-            let same = dragged(Kind::Adsr, i, h.at, layout, &defaults, &anywhere);
+            let same = dragged(Kind::Adsr, i, h.at, layout, &defaults, &anywhere, &|_| true);
             assert!(
                 same.iter()
                     .all(|&(key, value)| (value - defaults(key)).abs() < 1e-4),
@@ -708,6 +728,7 @@ mod tests {
             layout,
             &defaults,
             &anywhere,
+            &|_| true,
         );
         assert_eq!(out.len(), 1);
         assert!((out[0].1 - 0.3).abs() < 1e-5);
@@ -719,6 +740,7 @@ mod tests {
             layout,
             &defaults,
             &anywhere,
+            &|_| true,
         );
         assert!(out.contains(&("sustain", 0.25)));
         assert!(
@@ -734,6 +756,7 @@ mod tests {
             layout,
             &defaults,
             &anywhere,
+            &|_| true,
         );
         assert!(
             out.iter()
@@ -745,10 +768,26 @@ mod tests {
     fn a_drag_stays_within_the_parameters_range() {
         let layout = adsr_layout(&defaults);
         // Far to the right and below: past the longest time, below zero.
-        let out = dragged(Kind::Adsr, 1, (50.0, -2.0), layout, &defaults, &anywhere);
+        let out = dragged(
+            Kind::Adsr,
+            1,
+            (50.0, -2.0),
+            layout,
+            &defaults,
+            &anywhere,
+            &|_| true,
+        );
         assert!(out.contains(&("decay", 10.0)));
         assert!(out.contains(&("sustain", 0.0)));
-        let out = dragged(Kind::Adsr, 0, (-5.0, 1.0), layout, &defaults, &anywhere);
+        let out = dragged(
+            Kind::Adsr,
+            0,
+            (-5.0, 1.0),
+            layout,
+            &defaults,
+            &anywhere,
+            &|_| true,
+        );
         assert_eq!(out, vec![("attack", 0.001)]);
     }
 
@@ -765,7 +804,7 @@ mod tests {
             let layout = adsr_layout(&resonant);
             let point = handles(kind, &resonant, layout)[0].clone();
             // Dragging to where the point is leaves the settings as they were.
-            let same = dragged(kind, 0, point.at, layout, &resonant, &anywhere);
+            let same = dragged(kind, 0, point.at, layout, &resonant, &anywhere, &|_| true);
             for (key, value) in same {
                 let before = resonant(key);
                 assert!(
@@ -781,12 +820,21 @@ mod tests {
                 layout,
                 &resonant,
                 &anywhere,
+                &|_| true,
             );
             let get = |key: &str| up.iter().find(|(k, _)| *k == key).map(|&(_, v)| v);
             assert!(get("cutoff").unwrap() > 1_000.0);
             assert!(get("resonance").unwrap() > 0.6);
             // Dragging to the floor is no resonance.
-            let down = dragged(kind, 0, (point.at.0, 0.0), layout, &resonant, &anywhere);
+            let down = dragged(
+                kind,
+                0,
+                (point.at.0, 0.0),
+                layout,
+                &resonant,
+                &anywhere,
+                &|_| true,
+            );
             assert!(down.contains(&("resonance", 0.0)));
         }
     }
@@ -823,5 +871,14 @@ mod tests {
         assert_eq!(seconds_text(0.0), "0");
         assert_eq!(seconds_text(0.25), "250 ms");
         assert_eq!(seconds_text(2.0), "2 s");
+    }
+
+    #[test]
+    fn an_lfo_above_one_is_not_drawn_clipped() {
+        // Offset 0.5 and depth 1: the top of a sine is 1.5, not 1.
+        assert!((lfo_y(0.5, 1.0, 1.0) - 0.875).abs() < 1e-6);
+        assert!((lfo_y(0.0, 1.0, 0.0) - 0.5).abs() < 1e-6);
+        assert!(lfo_y(0.5, 1.0, 1.0) > lfo_y(0.0, 1.0, 1.0));
+        assert_eq!(lfo_y(1.0, 1.0, 1.0), 1.0);
     }
 }

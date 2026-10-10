@@ -1064,8 +1064,8 @@ In the panel the ADSR and the filters have points to drag, which set the
 parameters they stand for (`Edit::Drag`s, one undo step per drag): the
 attack point's time, the decay point's time and sustain level, the release
 point's time, and the filter's cutoff (along a log frequency axis) and
-resonance (the height of the peak at the cutoff). A point whose parameter has
-a wire is greyed and can't be grabbed. The envelope's time axis fits the
+resonance (the height of the peak at the cutoff). A point moves only along the axes whose
+parameters have no wire, and is greyed when neither is free. The envelope's time axis fits the
 envelope when idle and holds still during a drag, so a point follows the
 pointer; dragging past the right edge asks for longer times, and the graph
 rescales when you let go. To add a graph for a node type, add a `Kind` and

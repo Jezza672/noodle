@@ -371,7 +371,7 @@ mod tests {
     /// The ADSR's graph and the screen position of its plot at `(x, y)`.
     fn graph_at(harness: &Harness<'_, State>) -> impl Fn(f32, f32) -> egui::Pos2 + use<> {
         let outer = harness.get_by_label("Envelope graph").rect();
-        let plot = outer.shrink(2.0);
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
         move |x, y| {
             egui::pos2(
                 plot.left() + x * plot.width(),
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wired_parameter_cannot_be_dragged_on_the_graph() {
+    fn a_wired_parameter_is_not_changed_by_dragging_the_graph() {
         let mut harness = harness([Node::new("noodle.mod.adsr"), Node::new("noodle.mod.lfo")]);
         harness
             .state_mut()
@@ -440,9 +440,10 @@ mod tests {
         harness.run();
         let span = (0.01 + 0.2 + 0.1275 + 0.3) * 1.2;
         let at = graph_at(&harness);
-        // Sustain has a wire, so the decay-and-sustain point is stuck.
+        // Sustain has a wire, so the decay-and-sustain point moves in time
+        // only, and sustain is untouched.
         drag(&mut harness, at(0.21 / span, 0.7), at(0.51 / span, 0.3));
-        assert_eq!(param(&harness, "decay"), None);
+        assert!((param(&harness, "decay").unwrap() - 0.5).abs() < 0.03);
         assert_eq!(param(&harness, "sustain"), None);
     }
 
@@ -464,7 +465,7 @@ mod tests {
         harness.set_size(vec2(300.0, 700.0));
         harness.run();
         let outer = harness.get_by_label("Frequency response graph").rect();
-        let plot = outer.shrink(2.0);
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
         let at = |x: f32, y: f32| {
             egui::pos2(
                 plot.left() + x * plot.width(),

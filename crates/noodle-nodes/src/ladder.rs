@@ -139,6 +139,10 @@ pub fn ladder_response(cutoff: f32, resonance: f32, hz: f32, sample_rate: f32) -
     (re * re + im * im).sqrt() / (dr * dr + di * di).sqrt().max(1e-9)
 }
 
+/// The resonance (0 to 1) at which the ladder, treated as linear, rings by
+/// itself at the cutoff: past it a drawn response has no finite peak.
+pub const LADDER_SELF_OSCILLATES: f32 = 4.0 / FEEDBACK;
+
 /// A cheap tanh: exact slope at 0, and ±1 past ±3.
 fn saturate(x: f32) -> f32 {
     let x = x.clamp(-3.0, 3.0);
