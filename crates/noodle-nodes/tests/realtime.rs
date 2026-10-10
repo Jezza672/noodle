@@ -835,3 +835,51 @@ fn outputs_on_two_devices_never_allocate_and_each_has_a_scope() {
         );
     }
 }
+
+#[test]
+fn a_feedback_loop_through_a_delay_never_allocates_even_while_the_loop_is_made_and_broken() {
+    // saw -> mix -> delay -> gain -> back into the mix, and out. The loop is
+    // closed and opened again while rendering, which swaps plans between
+    // split and whole.
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let delay = s.add(Node::new("noodle.util.delay").with_param("time", 0.02));
+    let gain = s.add(Node::new("noodle.util.gain").with_param("gain", -6.0));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", mix, "in1");
+    s.wire(mix, "out", delay, "in");
+    s.wire(delay, "out", gain, "in");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..10 {
+        let closed = round % 2 == 1;
+        if closed {
+            s.wire(gain, "out", mix, "in2");
+        } else if round > 0 {
+            s.edit(Command::Disconnect {
+                input: Endpoint::new(mix, "in2"),
+            });
+        }
+        s.update();
+        s.controller
+            .set_param(delay, "time", 0.01 + 0.005 * round as f32);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(
+            out.iter().all(|x| x.is_finite() && x.abs() < 10.0),
+            "round {round}"
+        );
+        assert!(
+            out.iter().any(|&x| x.abs() > 1e-3),
+            "silent in round {round}"
+        );
+    }
+}

@@ -11,6 +11,7 @@ struct TestType {
     info: NodeInfo,
     layout: Layout,
     outputs: Outputs,
+    loop_input: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -33,6 +34,10 @@ impl NodeType for TestType {
             Some(_) => Err(NodeError::config("broken on purpose")),
             None => Ok(self.layout.clone()),
         }
+    }
+
+    fn loop_input(&self, _config: &Config) -> Option<&'static str> {
+        self.loop_input
     }
 
     fn output_shapes(
@@ -72,6 +77,7 @@ fn registry() -> Registry {
             },
             layout,
             outputs,
+            loop_input: None,
         });
     };
     let out = || Layout::realtime().output("out", "Out");
@@ -127,6 +133,23 @@ fn registry() -> Registry {
             .event_output("b", "B"),
         Outputs::Broadcast,
     );
+    // Like a Delay: `in` is read after the output is written.
+    registry.register(TestType {
+        info: NodeInfo {
+            id: "delayish",
+            version: 1,
+            name: "delayish",
+            category: "Test",
+        },
+        layout: Layout::realtime()
+            .input("in", "In")
+            .param("time", "Time", ParamInfo::new(0.0, 1.0, 0.5))
+            .event_input("notes", "Notes")
+            .output("out", "Out")
+            .event_output("echo", "Echo"),
+        outputs: Outputs::Broadcast,
+        loop_input: Some("in"),
+    });
     registry
 }
 
@@ -171,6 +194,19 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
             );
         }
     };
+    // Every node runs once, whole, or twice, output half then input half.
+    let mut seen: HashMap<NodeId, Phase> = HashMap::new();
+    for node in &schedule.nodes {
+        let before = seen.insert(node.id, node.phase);
+        match (before, node.phase) {
+            (None, Phase::Whole | Phase::Output) | (Some(Phase::Output), Phase::Input) => {}
+            other => panic!("{}: steps out of order: {other:?}", node.id),
+        }
+    }
+    assert!(
+        seen.values().all(|&p| p != Phase::Output),
+        "an output half without its input half"
+    );
     let mut holds: HashMap<BufferId, Endpoint> = HashMap::new();
     let mut event_holds: HashMap<EventBufferId, Endpoint> = HashMap::new();
 
@@ -183,7 +219,19 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
                     assert_eq!(holds.get(b), Some(wired), "{input} read a stale buffer");
                 }
                 InputSource::Value(_) => assert_explained(&input),
+                InputSource::Absent => {
+                    assert_ne!(
+                        node.phase,
+                        Phase::Whole,
+                        "{input} is absent in a whole node"
+                    );
+                }
             }
+        }
+        if node.phase == Phase::Input {
+            assert!(node.event_inputs.iter().all(Option::is_none));
+            assert!(node.event_outputs.is_empty());
+            continue;
         }
         for (port, source) in node.layout.event_inputs.iter().zip(&node.event_inputs) {
             let input = Endpoint::new(node.id, port.key.as_ref());
@@ -352,6 +400,83 @@ fn drops_a_wire_that_closes_a_loop() {
 }
 
 #[test]
+fn a_loop_through_a_loop_breaker_runs_it_in_two_halves() {
+    let mut p = Project::new();
+    let src = add(&mut p, Node::new("source"));
+    let mix = add(&mut p, Node::new("sum"));
+    let delay = add(&mut p, Node::new("delayish"));
+    wire(&mut p, src, "out", mix, "a");
+    wire(&mut p, mix, "out", delay, "in");
+    wire(&mut p, delay, "out", mix, "b");
+    let (schedule, diagnostics) = compile_checked(&p);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let steps: Vec<_> = schedule.nodes.iter().map(|n| (n.id, n.phase)).collect();
+    // The output half writes first, the input half reads last.
+    assert_eq!(
+        steps,
+        [
+            (src, Phase::Whole),
+            (delay, Phase::Output),
+            (mix, Phase::Whole),
+            (delay, Phase::Input),
+        ]
+    );
+    let output = &schedule.nodes[1];
+    assert_eq!(output.inputs[0], InputSource::Absent);
+    assert_eq!(output.outputs.len(), 1);
+    let input = &schedule.nodes[3];
+    assert!(matches!(input.inputs[0], InputSource::Buffer(_)));
+    assert_eq!(input.inputs[1], InputSource::Absent);
+    assert!(input.outputs.is_empty());
+}
+
+#[test]
+fn a_loop_breaker_that_is_not_on_a_loop_runs_whole() {
+    let mut p = Project::new();
+    let src = add(&mut p, Node::new("source"));
+    let delay = add(&mut p, Node::new("delayish"));
+    wire(&mut p, src, "out", delay, "in");
+    let (schedule, diagnostics) = compile_checked(&p);
+    assert!(diagnostics.is_empty());
+    assert_eq!(find(&schedule, delay).phase, Phase::Whole);
+}
+
+#[test]
+fn a_loop_into_a_breakers_other_input_is_still_dropped() {
+    let mut p = Project::new();
+    let delay = add(&mut p, Node::new("delayish"));
+    let thru = add(&mut p, Node::new("thru"));
+    wire(&mut p, delay, "out", thru, "in");
+    wire(&mut p, thru, "out", delay, "time");
+    let (_, diagnostics) = compile_checked(&p);
+    assert_eq!(
+        diagnostics,
+        [Diagnostic::wire(
+            &Endpoint::new(delay, "time"),
+            Problem::Loop
+        )]
+    );
+}
+
+#[test]
+fn shapes_settle_round_a_loop() {
+    let mut p = Project::new();
+    let poly = add(&mut p, Node::new("poly4"));
+    let mix = add(&mut p, Node::new("sum"));
+    let delay = add(&mut p, Node::new("delayish"));
+    wire(&mut p, poly, "out", mix, "a");
+    wire(&mut p, mix, "out", delay, "in");
+    wire(&mut p, delay, "out", mix, "b");
+    let (schedule, diagnostics) = compile_checked(&p);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    // The delay's output was assumed mono at first; the loop made it 4 voices.
+    for step in &schedule.nodes {
+        assert_eq!(step.output_shapes, [Shape::new(4, 1)], "{}", step.id);
+    }
+    assert_eq!(find(&schedule, delay).input_shapes[0], Shape::new(4, 1));
+}
+
+#[test]
 fn reports_unknown_types_ports_and_params() {
     let mut p = Project::new();
     let ghost = add(&mut p, Node::new("ghost"));
@@ -489,6 +614,7 @@ fn random_graphs_compile_to_valid_schedules() {
         "note_source",
         "note_thru",
         "notes",
+        "delayish",
     ];
     // Each fixture's outputs and inputs, as (port key, is an event port).
     type Ports = Vec<(String, bool)>;

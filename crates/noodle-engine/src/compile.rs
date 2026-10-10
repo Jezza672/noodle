@@ -6,8 +6,14 @@
 //!
 //! - **Nodes that can't run** (unknown type, bad config, shapes that don't
 //!   fit) are left out, and anything wired to them behaves as if unconnected.
-//! - **Wires that can't work** (unknown port, audio to events, closing a loop)
-//!   are ignored.
+//! - **Wires that can't work** (unknown port, audio to events, closing a loop
+//!   that no node breaks) are ignored.
+//!
+//! **Feedback loops.** A wire may close a loop if the loop passes through a
+//! node that names a [`NodeType::loop_input`], such as Delay: the node runs in
+//! two steps, one that writes its outputs and one, later, that reads the loop
+//! input (see [`Phase`]). That turns the loop into a chain with the node's two
+//! halves at its ends. A node that isn't on a loop runs whole, as usual.
 //!
 //! Each problem is reported as a [`Diagnostic`], so the UI can show it on the
 //! node or wire where it happened.
@@ -38,8 +44,22 @@ pub struct Schedule {
     pub event_buffers: usize,
 }
 
+/// Which part of a node a schedule step runs. Only a node on a feedback loop
+/// (see [`NodeType::loop_input`]) is split in two; everything else runs whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The node's whole job: reads its inputs, writes its outputs.
+    Whole,
+    /// Writes the outputs, reading every input but the loop input (which is
+    /// [`InputSource::Absent`]).
+    Output,
+    /// Reads the loop input and nothing else. There are no outputs.
+    Input,
+}
+
 pub struct ScheduledNode {
     pub id: NodeId,
+    pub phase: Phase,
     pub node_type: Arc<dyn NodeType>,
     pub config: Config,
     pub layout: Layout,
@@ -57,6 +77,9 @@ pub struct ScheduledNode {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputSource {
+    /// Not read in this step: the other half of a split node reads it, and
+    /// this half sees an empty silent placeholder.
+    Absent,
     /// Connected: reads another node's output.
     Buffer(BufferId),
     /// Unconnected: holds the value set in the project, or the port's default.
@@ -93,7 +116,9 @@ pub enum Problem {
     UnknownPort(Endpoint),
     /// A wire between an audio port and an event port.
     KindMismatch,
-    /// The wire closes a loop. Loops will need to pass through a Delay node.
+    /// The wire closes a loop, and the loop doesn't pass through a node that
+    /// can break it (a Delay), or it feeds a parameter of that node rather
+    /// than the input the node reads last.
     Loop,
     /// The signal on this wire can't be broadcast with the node's other inputs.
     Shape(ShapeError),
@@ -127,8 +152,8 @@ impl fmt::Display for Problem {
             }
             Self::KindMismatch => f.write_str("can't connect an audio port to an event port"),
             Self::Loop => f.write_str(
-                "this wire closes a loop, and loops aren't supported yet \
-                 (they'll need to go through a Delay node)",
+                "this wire closes a loop, which has to pass through a Delay \
+                 (into its signal input) or another node that breaks loops",
             ),
             Self::Shape(error) => error.fmt(f),
             Self::NotAParam(key) => {
@@ -195,6 +220,18 @@ struct Candidate<'a> {
     input_shapes: Vec<Shape>,
     /// `None` until shape inference, and stays `None` if the node can't run.
     output_shapes: Option<Vec<Shape>>,
+    /// The position of the input the node reads after writing its outputs,
+    /// if it can break loops.
+    loop_input: Option<usize>,
+    /// Runs in two steps, because a feedback loop passes through it.
+    split: bool,
+}
+
+/// A step of the schedule: a node, or half of one.
+#[derive(Clone, Copy)]
+struct Step {
+    node: usize,
+    phase: Phase,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -211,6 +248,9 @@ struct Wire {
     to_port: usize,
     kind: Kind,
     input: Endpoint,
+    /// Where the wire starts and ends in the graph of steps (see `vertex`).
+    from_v: usize,
+    to_v: usize,
 }
 
 /// Compiles a project's graph. Groups are flattened first, so the schedule
@@ -231,9 +271,11 @@ pub fn compile_with_lanes(
     let graph = crate::flatten::flatten_keeping(graph, &keep);
     let graph = &*crate::automation::add_lanes(&graph, lanes, registry, &mut diagnostics);
     let mut candidates = resolve_nodes(graph, registry, &mut diagnostics);
-    let wires = resolve_wires(graph, &candidates, &mut diagnostics);
-    let wires = drop_loops(candidates.len(), wires, &mut diagnostics);
-    let order = sort(candidates.len(), &wires);
+    let mut wires = resolve_wires(graph, &candidates, &mut diagnostics);
+    split_loop_nodes(&mut candidates, &wires);
+    assign_vertices(&candidates, &mut wires);
+    let wires = drop_loops(2 * candidates.len(), wires, &mut diagnostics);
+    let order = sort(&candidates, &wires);
 
     // Which wire feeds each input, if any.
     let mut signal_source = vec![Vec::new(); candidates.len()];
@@ -290,8 +332,13 @@ fn resolve_nodes<'a>(
                 diagnostics.push(Diagnostic::node(id, Problem::UnknownParam(key.clone())));
             }
         }
+        let loop_input = node_type
+            .loop_input(&node.config)
+            .and_then(|key| layout.inputs.iter().position(|p| p.key == key));
         candidates.push(Candidate {
             id,
+            loop_input,
+            split: false,
             node_type: Arc::clone(node_type),
             config: &node.config,
             params: &node.params,
@@ -332,6 +379,8 @@ fn resolve_wires(
             (Some((a, _)), Some((b, _))) if a != b => Problem::KindMismatch,
             (Some((kind, from_port)), Some((_, to_port))) => {
                 wires.push(Wire {
+                    from_v: 0,
+                    to_v: 0,
                     from,
                     from_port,
                     to,
@@ -366,7 +415,8 @@ fn input_port(layout: &Layout, key: &str) -> Option<(Kind, usize)> {
 /// Drops every wire that closes a loop, found as the back edges of a
 /// depth-first search. The search visits nodes and wires in ID order, so the
 /// same graph always loses the same wires.
-fn drop_loops(nodes: usize, wires: Vec<Wire>, diagnostics: &mut Vec<Diagnostic>) -> Vec<Wire> {
+fn drop_loops(vertices: usize, wires: Vec<Wire>, diagnostics: &mut Vec<Diagnostic>) -> Vec<Wire> {
+    let nodes = vertices;
     #[derive(Clone, Copy, PartialEq)]
     enum State {
         Unvisited,
@@ -376,7 +426,7 @@ fn drop_loops(nodes: usize, wires: Vec<Wire>, diagnostics: &mut Vec<Diagnostic>)
 
     let mut outgoing = vec![Vec::new(); nodes];
     for (w, wire) in wires.iter().enumerate() {
-        outgoing[wire.from].push(w);
+        outgoing[wire.from_v].push(w);
     }
     let mut state = vec![State::Unvisited; nodes];
     let mut closes_loop = vec![false; wires.len()];
@@ -397,7 +447,7 @@ fn drop_loops(nodes: usize, wires: Vec<Wire>, diagnostics: &mut Vec<Diagnostic>)
                 continue;
             };
             top.1 += 1;
-            let target = wires[w].to;
+            let target = wires[w].to_v;
             match state[target] {
                 State::Unvisited => {
                     state[target] = State::OnPath;
@@ -423,92 +473,214 @@ fn drop_loops(nodes: usize, wires: Vec<Wire>, diagnostics: &mut Vec<Diagnostic>)
         .collect()
 }
 
-/// Orders the nodes so each comes after everything it reads from, breaking
-/// ties by ID so the order is stable.
-fn sort(nodes: usize, wires: &[Wire]) -> Vec<usize> {
-    let mut outgoing = vec![Vec::new(); nodes];
-    let mut waiting_on = vec![0; nodes];
+/// Marks the loop-breaking nodes that a feedback loop actually passes
+/// through, by the wire into their loop input.
+fn split_loop_nodes(candidates: &mut [Candidate<'_>], wires: &[Wire]) {
+    let mut outgoing = vec![Vec::new(); candidates.len()];
     for wire in wires {
         outgoing[wire.from].push(wire.to);
-        waiting_on[wire.to] += 1;
     }
-    let mut ready: BinaryHeap<Reverse<usize>> = (0..nodes)
-        .filter(|&i| waiting_on[i] == 0)
-        .map(Reverse)
+    for i in 0..candidates.len() {
+        let Some(port) = candidates[i].loop_input else {
+            continue;
+        };
+        // Everything downstream of the node, itself included.
+        let mut reached = vec![false; candidates.len()];
+        let mut stack = vec![i];
+        reached[i] = true;
+        while let Some(node) = stack.pop() {
+            for &next in &outgoing[node] {
+                if !reached[next] {
+                    reached[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        candidates[i].split = wires
+            .iter()
+            .any(|w| w.to == i && w.kind == Kind::Signal && w.to_port == port && reached[w.from]);
+    }
+}
+
+/// The step graph: node `i` is vertex `i`, and a split node's output half is
+/// vertex `n + i` (the vertex `i` then being its input half). Wires start at
+/// the output half and end at the input half only if they feed the loop
+/// input; every other wire into a split node feeds its output half.
+fn assign_vertices(candidates: &[Candidate<'_>], wires: &mut [Wire]) {
+    let n = candidates.len();
+    for wire in wires {
+        wire.from_v = if candidates[wire.from].split {
+            n + wire.from
+        } else {
+            wire.from
+        };
+        let to = &candidates[wire.to];
+        let feeds_loop = wire.kind == Kind::Signal && to.loop_input == Some(wire.to_port);
+        wire.to_v = if to.split && !feeds_loop {
+            n + wire.to
+        } else {
+            wire.to
+        };
+    }
+}
+
+/// Orders the steps so each comes after everything it reads from, breaking
+/// ties by node so the order is stable. A split node's output half comes
+/// before its input half.
+fn sort(candidates: &[Candidate<'_>], wires: &[Wire]) -> Vec<Step> {
+    let n = candidates.len();
+    let exists = |v: usize| v < n || candidates[v - n].split;
+    let mut outgoing = vec![Vec::new(); 2 * n];
+    let mut waiting_on = vec![0; 2 * n];
+    let mut edge = |from: usize, to: usize| {
+        outgoing[from].push(to);
+        waiting_on[to] += 1;
+    };
+    for wire in wires {
+        edge(wire.from_v, wire.to_v);
+    }
+    for (i, c) in candidates.iter().enumerate() {
+        if c.split {
+            edge(n + i, i);
+        }
+    }
+    let key = |v: usize| Reverse((v % n, v));
+    let mut ready: BinaryHeap<Reverse<(usize, usize)>> = (0..2 * n)
+        .filter(|&v| exists(v) && waiting_on[v] == 0)
+        .map(key)
         .collect();
-    let mut order = Vec::with_capacity(nodes);
-    while let Some(Reverse(i)) = ready.pop() {
-        order.push(i);
-        for &next in &outgoing[i] {
+    let mut order = Vec::with_capacity(n);
+    while let Some(Reverse((_, v))) = ready.pop() {
+        order.push(Step {
+            node: v % n,
+            phase: match (v >= n, candidates[v % n].split) {
+                (true, _) => Phase::Output,
+                (false, true) => Phase::Input,
+                (false, false) => Phase::Whole,
+            },
+        });
+        for &next in &outgoing[v] {
             waiting_on[next] -= 1;
             if waiting_on[next] == 0 {
-                ready.push(Reverse(next));
+                ready.push(key(next));
             }
         }
     }
-    debug_assert_eq!(order.len(), nodes, "loops should have been dropped");
+    debug_assert_eq!(
+        order.len(),
+        (0..2 * n).filter(|&v| exists(v)).count(),
+        "loops should have been dropped"
+    );
     order
 }
 
+/// How many times shape inference may start over for loops (see below).
+const SHAPE_PASSES: usize = 4;
+
 fn infer_shapes(
     candidates: &mut [Candidate<'_>],
-    order: &[usize],
+    order: &[Step],
     wires: &[Wire],
     signal_source: &[Vec<Option<usize>>],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for &i in order {
-        // An input fed by a node that can't run acts as unconnected, so it's
-        // mono like any other unconnected input.
-        let input_shapes: Vec<Shape> = signal_source[i]
-            .iter()
-            .map(|source| {
-                source
-                    .and_then(|w| {
-                        let wire = &wires[w];
-                        let shapes = candidates[wire.from].output_shapes.as_ref()?;
-                        Some(shapes[wire.from_port])
-                    })
-                    .unwrap_or(Shape::MONO)
-            })
-            .collect();
-
-        let c = &candidates[i];
-        let result = c
-            .node_type
-            .output_shapes(c.config, &c.layout, &input_shapes);
-        let output_shapes = match result {
-            Ok(shapes) if shapes.len() == c.layout.outputs.len() => Some(shapes),
-            Ok(shapes) => {
-                let message = format!(
-                    "node type bug: {} output shapes for {} outputs",
-                    shapes.len(),
-                    c.layout.outputs.len()
-                );
-                diagnostics.push(Diagnostic::node(
-                    c.id,
-                    Problem::Node(NodeError::config(message)),
-                ));
-                None
+    // A split node's outputs are inferred before its loop input exists, so
+    // they assume the input is whatever shape the last pass found it to be,
+    // mono to begin with. If the input turns out different, start over with
+    // that shape. Most loops settle at once; a few passes settle the rest.
+    let mut assumed = vec![Shape::MONO; candidates.len()];
+    for pass in 1..=SHAPE_PASSES {
+        let mut found = Vec::new();
+        let mut restart = false;
+        for c in candidates.iter_mut() {
+            c.output_shapes = None;
+        }
+        for step in order {
+            let i = step.node;
+            // An input fed by a node that can't run acts as unconnected, so
+            // it's mono like any other unconnected input.
+            let mut input_shapes: Vec<Shape> = signal_source[i]
+                .iter()
+                .map(|source| {
+                    source
+                        .and_then(|w| {
+                            let wire = &wires[w];
+                            let shapes = candidates[wire.from].output_shapes.as_ref()?;
+                            Some(shapes[wire.from_port])
+                        })
+                        .unwrap_or(Shape::MONO)
+                })
+                .collect();
+            let c = &candidates[i];
+            if step.phase == Phase::Output {
+                input_shapes[c.loop_input.expect("split nodes have a loop input")] = assumed[i];
             }
-            Err(NodeError::Shape(error)) => {
-                diagnostics.push(blame_shape(
-                    c.id,
-                    error,
-                    &input_shapes,
-                    &signal_source[i],
-                    wires,
-                ));
-                None
+            if step.phase == Phase::Input && c.output_shapes.is_none() {
+                continue;
             }
-            Err(error) => {
-                diagnostics.push(Diagnostic::node(c.id, Problem::Node(error)));
-                None
+            let result = c
+                .node_type
+                .output_shapes(c.config, &c.layout, &input_shapes);
+            if step.phase == Phase::Input {
+                // The loop input is known now. Did the outputs assume right?
+                let port = c.loop_input.expect("split nodes have a loop input");
+                if result.as_ref().ok() != c.output_shapes.as_ref() {
+                    let real = input_shapes[port];
+                    if pass < SHAPE_PASSES && real != assumed[i] {
+                        assumed[i] = real;
+                        restart = true;
+                    } else {
+                        let problem = match result {
+                            Err(error) => error,
+                            Ok(_) => NodeError::config(
+                                "the shapes round this feedback loop don't settle",
+                            ),
+                        };
+                        found.push(Diagnostic::node(c.id, Problem::Node(problem)));
+                        candidates[i].output_shapes = None;
+                    }
+                } else {
+                    candidates[i].input_shapes = input_shapes;
+                }
+                continue;
             }
-        };
-        let c = &mut candidates[i];
-        c.input_shapes = input_shapes;
-        c.output_shapes = output_shapes;
+            let output_shapes = match result {
+                Ok(shapes) if shapes.len() == c.layout.outputs.len() => Some(shapes),
+                Ok(shapes) => {
+                    let message = format!(
+                        "node type bug: {} output shapes for {} outputs",
+                        shapes.len(),
+                        c.layout.outputs.len()
+                    );
+                    found.push(Diagnostic::node(
+                        c.id,
+                        Problem::Node(NodeError::config(message)),
+                    ));
+                    None
+                }
+                Err(NodeError::Shape(error)) => {
+                    found.push(blame_shape(
+                        c.id,
+                        error,
+                        &input_shapes,
+                        &signal_source[i],
+                        wires,
+                    ));
+                    None
+                }
+                Err(error) => {
+                    found.push(Diagnostic::node(c.id, Problem::Node(error)));
+                    None
+                }
+            };
+            let c = &mut candidates[i];
+            c.input_shapes = input_shapes;
+            c.output_shapes = output_shapes;
+        }
+        if !restart {
+            diagnostics.extend(found);
+            return;
+        }
     }
 }
 
@@ -542,28 +714,34 @@ fn blame_shape(
 /// freed, so they never share a buffer with them.
 fn allocate(
     candidates: Vec<Candidate<'_>>,
-    order: &[usize],
+    order: &[Step],
     wires: &[Wire],
     signal_source: &[Vec<Option<usize>>],
     event_source: &[Vec<Option<usize>>],
 ) -> Schedule {
-    let runs: Vec<usize> = order
+    let n = candidates.len();
+    let runs: Vec<Step> = order
         .iter()
         .copied()
-        .filter(|&i| candidates[i].output_shapes.is_some())
+        .filter(|step| candidates[step.node].output_shapes.is_some())
         .collect();
-    let mut step = vec![None; candidates.len()];
-    for (s, &i) in runs.iter().enumerate() {
-        step[i] = Some(s);
+    // Steps by vertex (see `assign_vertices`).
+    let mut step = vec![None; 2 * n];
+    for (s, run) in runs.iter().enumerate() {
+        step[if run.phase == Phase::Output {
+            n + run.node
+        } else {
+            run.node
+        }] = Some(s);
     }
     // A wire only carries signal if both its ends run.
-    let live = |w: &usize| step[wires[*w].from].is_some() && step[wires[*w].to].is_some();
+    let live = |w: &usize| step[wires[*w].from_v].is_some() && step[wires[*w].to_v].is_some();
 
     // The last step that reads each output, keyed by (node, port).
     let mut last_read: HashMap<(Kind, usize, usize), usize> = HashMap::new();
     for (w, wire) in wires.iter().enumerate() {
         if live(&w) {
-            let reader = step[wire.to].unwrap();
+            let reader = step[wire.to_v].unwrap();
             let entry = last_read
                 .entry((wire.kind, wire.from, wire.from_port))
                 .or_insert(reader);
@@ -586,8 +764,31 @@ fn allocate(
     let mut nodes = Vec::with_capacity(runs.len());
     let mut candidates: Vec<Option<Candidate<'_>>> = candidates.into_iter().map(Some).collect();
 
-    for (s, &i) in runs.iter().enumerate() {
-        let c = candidates[i].take().unwrap();
+    for (s, run) in runs.iter().enumerate() {
+        let (i, phase) = (run.node, run.phase);
+        // The output half leaves the candidate for the input half.
+        let c = if phase == Phase::Output {
+            let c = candidates[i].as_ref().unwrap();
+            Candidate {
+                id: c.id,
+                node_type: Arc::clone(&c.node_type),
+                config: c.config,
+                params: c.params,
+                layout: c.layout.clone(),
+                input_shapes: c.input_shapes.clone(),
+                output_shapes: c.output_shapes.clone(),
+                loop_input: c.loop_input,
+                split: c.split,
+            }
+        } else {
+            candidates[i].take().unwrap()
+        };
+        // Whether this step reads the input at `port`.
+        let reads = |port: usize| match phase {
+            Phase::Whole => true,
+            Phase::Output => Some(port) != c.loop_input,
+            Phase::Input => Some(port) == c.loop_input,
+        };
         let source_buffer = |w: usize| {
             let wire = &wires[w];
             written[&(wire.kind, wire.from, wire.from_port)]
@@ -598,7 +799,11 @@ fn allocate(
             .inputs
             .iter()
             .zip(&signal_source[i])
-            .map(|(port, source)| {
+            .enumerate()
+            .map(|(index, (port, source))| {
+                if !reads(index) {
+                    return InputSource::Absent;
+                }
                 let value = c
                     .params
                     .get(port.key.as_ref())
@@ -620,14 +825,23 @@ fn allocate(
                 }
             })
             .collect();
+        // Events belong to the whole node or its output half.
+        let events = if phase == Phase::Input { 0 } else { usize::MAX };
         let event_inputs = event_source[i]
             .iter()
-            .map(|source| source.filter(live).map(|w| EventBufferId(source_buffer(w))))
+            .map(|source| {
+                source
+                    .filter(live)
+                    .filter(|_| events > 0)
+                    .map(|w| EventBufferId(source_buffer(w)))
+            })
             .collect();
 
         let output_shapes = c.output_shapes.clone().unwrap();
+        let written_here = if phase == Phase::Input { 0 } else { usize::MAX };
         let outputs: Vec<BufferId> = output_shapes
             .iter()
+            .take(written_here)
             .enumerate()
             .map(|(port, shape)| {
                 let b = take_buffer(&mut buffer_lanes, &mut free_buffers, shape.lanes());
@@ -635,7 +849,7 @@ fn allocate(
                 BufferId(b)
             })
             .collect();
-        let event_outputs: Vec<EventBufferId> = (0..c.layout.event_outputs.len())
+        let event_outputs: Vec<EventBufferId> = (0..c.layout.event_outputs.len().min(events))
             .map(|port| {
                 let b = free_events.pop().unwrap_or_else(|| {
                     event_buffers += 1;
@@ -650,7 +864,10 @@ fn allocate(
         // nothing reads at all.
         let finished: BTreeSet<(Kind, usize, usize)> = signal_source[i]
             .iter()
-            .chain(&event_source[i])
+            .enumerate()
+            .filter(|(port, _)| reads(*port))
+            .map(|(_, source)| source)
+            .chain(event_source[i].iter().take(events))
             .flatten()
             .filter(|w| live(w))
             .map(|&w| (wires[w].kind, wires[w].from, wires[w].from_port))
@@ -669,6 +886,7 @@ fn allocate(
 
         nodes.push(ScheduledNode {
             id: c.id,
+            phase,
             node_type: c.node_type,
             config: c.config.clone(),
             layout: c.layout,

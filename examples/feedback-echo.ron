@@ -1,0 +1,41 @@
+// A feedback echo. A Key plays A3 while a Button is on, and Mono Note turns it
+// into pitch and gate; a saw runs through a low-pass filter and a VCA whose
+// ADSR is a short pluck (it decays to nothing, so each repeat stands out).
+// The pluck goes into a Mix, then through a Delay, and the delayed signal
+// comes back to the Mix through a Gain of -6 dB: a feedback loop. Each echo is
+// half as loud as the one before it. Inside a loop the Delay's time can't be
+// shorter than one audio block.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.key", params: {"note": 57.0, "velocity": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.event.mono", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.osc.saw", position: (x: 600.0, y: -80.0)),
+            5: (type: "noodle.filter.svf", params: {"cutoff": 1200.0, "resonance": 0.2}, position: (x: 800.0, y: -80.0)),
+            6: (type: "noodle.mod.adsr", params: {"attack": 0.002, "decay": 0.03, "sustain": 0.0, "release": 0.05}, position: (x: 600.0, y: 100.0)),
+            7: (type: "noodle.util.vca", position: (x: 1000.0, y: 0.0)),
+            8: (type: "noodle.util.mix", position: (x: 1200.0, y: 0.0)),
+            9: (type: "noodle.util.delay", params: {"time": 0.08}, position: (x: 1400.0, y: 100.0)),
+            10: (type: "noodle.util.gain", params: {"gain": -6.0}, position: (x: 1200.0, y: 200.0)),
+            11: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 1400.0, y: 0.0)),
+            12: (type: "noodle.io.output", position: (x: 1600.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "gate")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "pitch"), to: (node: 4, port: "frequency")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 3, port: "gate"), to: (node: 6, port: "gate")),
+            (from: (node: 5, port: "low"), to: (node: 7, port: "in")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "level")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in1")),
+            (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
+            (from: (node: 9, port: "out"), to: (node: 10, port: "in")),
+            (from: (node: 10, port: "out"), to: (node: 8, port: "in2")),
+            (from: (node: 8, port: "out"), to: (node: 11, port: "in")),
+            (from: (node: 11, port: "out"), to: (node: 12, port: "in")),
+        ],
+    ),
+)

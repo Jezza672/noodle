@@ -255,12 +255,18 @@ There are two kinds of signal, plus a possible third later:
     the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per
     note. A new note takes the free voice that has been free longest, so
     releases ring out; with none free it steals the voice whose note started
-    first, dropping that gate for a sample so envelopes retrigger. Stealing is
-    hard: the pitch changes at once, which can click on a bright patch. A
+    first. A steal fades: the voice keeps its old note while the `fade`
+    output (a fourth output, a gain to multiply in after the envelope) ramps
+    down over `steal_fade` seconds (a parameter, default 5 ms), then switches
+    to the new note with the gate dropping for a sample so envelopes
+    retrigger, as `fade` ramps back up. The new note therefore starts
+    `steal_fade` late. At 0 the steal is hard: the pitch changes at once,
+    which can click on a bright patch. A
     note-on for a key already held retakes its voice. Pitch
     expressions bend only their own note's voice, and a pitch holds after
-    release until the voice has been free for `tail` seconds (a parameter,
-    default 10), when it goes inactive: see "Silence skipping" below.
+    release until the voice goes inactive, either when its envelope reports
+    it is done (the `busy` input, a feedback loop) or after `tail` seconds (a
+    parameter, default 10): see "Silence skipping" below.
     `Voice Mix` (`noodle.poly.voice_mix`) sums voices.
     `MIDI In` (`noodle.event.midi_in`) plays the app's MIDI input port: see
     "MIDI input" below.
@@ -281,6 +287,44 @@ another oscillator. `Math` (`noodle.util.math`) takes an
 `expr` config such as `a * b + c` over inputs `a` to `d`; it is compiled to a
 postfix program when the node is built and run on a fixed stack per sample.
 `Pan` (`noodle.util.pan`) is the equal-power stereo placement it uses.
+`Delay` (`noodle.util.delay`) delays its input by `time` (seconds, up to 2,
+interpolated linearly, offset-style modulation so an LFO can sweep it) and
+outputs only the delayed signal; an echo is a Mix, the Delay and a Gain wired
+round in a loop (`examples/feedback-echo.ron`). Every lane has its own line,
+and a lane silent for a whole line's length is flagged silent.
+
+### Feedback loops
+
+A wire can close a loop only through a node that does not need its input to
+write its output. A node type declares that with `NodeType::loop_input`, the
+key of the signal input it reads *last*: `Delay`'s `in`, and `Voices`' `busy`.
+
+- **Two steps.** A loop-breaking node that lies on a loop runs as two steps in
+  the schedule (`Phase::Output`, then `Phase::Input`): the output half writes
+  every output from state it already has (and reads every other input, and
+  the event inputs), and the input half, later in the block, reads the loop
+  input and updates state. The node implements `Node::process_output` and
+  `Node::process_input` for this, and `Node::process` for when it is not on a
+  loop (it must be equivalent to the two in a row). In the compiler the
+  node becomes two vertices of the dependency graph, the output half
+  ahead of everything downstream and the input half behind everything
+  upstream, so the loop becomes a chain. Both halves belong to one plan slot
+  and one instance; the input half holds no instance of its own.
+- **What stays refused.** A loop that reaches the node through any other
+  input (a `time` wire, say) or through nodes that are not loop-breakers
+  gets the usual `Loop` diagnostic on the wire that closes it.
+- **Cost of a loop.** The output half runs before this block's input exists.
+  `Delay` therefore reads at least `frames + 1` samples back while in a loop
+  (about 10 ms at 512 frames); shorter times are held to that. A `Delay` that
+  is not on a loop has no minimum.
+- **Shapes.** The output half is shaped before the loop input is known. The
+  compiler assumes a mono loop input, finishes, and if the real input
+  differs, starts shape inference again with that assumption, up to four
+  passes; a loop that never settles reports a node diagnostic and the node
+  does not run.
+- **Buffers.** Nothing special: the output half's buffers are allocated at
+  its step like any other output, and the input half reads its input buffer
+  at its own, later step, so the usual lifetime rules hold.
 
 ### Silence skipping
 
@@ -307,13 +351,18 @@ pool, so nothing allocates.
   a constant, but no parameter range reaches 0.
 - **Where it starts.** `Voices` flags a voice's `gate` silent for any block
   in which it stays low, and flags all three of its outputs silent (writing 0
-  for the pitch) for a voice that has been free for `tail` seconds or never
+  for the pitch) for a voice that has finished (see below) or never been
   used. Then the envelope goes idle and flags its output, the VCA and the filter
-  skip the lane, and `Voice Mix` adds only voices that sound. The tail is a
-  parameter and not the envelope's own release report because that would need
-  a wire from the envelope back to `Voices`, a feedback loop; it should be at
-  least the longest release in the patch, which a voice stops sounding at when
-  it goes inactive.
+  skip the lane, and `Voice Mix` adds only voices that sound.
+- **When a voice is finished.** Either the envelope says so or the `tail`
+  does. Wire the ADSR's `active` output (1 while the gate is high or the
+  release is still going, polyphonic like the envelope) into `Voices`'s `busy`
+  input: a voice that has been busy since its note began goes inactive the
+  block its envelope finishes, however long the release was. That wire is a
+  feedback loop (the envelope follows the voice), allowed by the loop rules
+  below. Without a `busy` wire a voice waits `tail` seconds, which should be
+  at least the longest release in the patch; and `tail` also caps a `busy` that
+  never falls. A voice stops sounding when it goes inactive.
 - **A skipped oscillator doesn't run its phase.** A note on a voice that was
   inactive therefore starts the oscillator at phase 0 rather than wherever it
   free-ran to.

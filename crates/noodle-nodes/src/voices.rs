@@ -4,7 +4,7 @@
 
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
-    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, Unit,
+    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, SignalIn, SignalOut, Unit,
 };
 
 /// Plays up to `voices` notes at once. Each note gets a voice, and the
@@ -14,21 +14,35 @@ use noodle_engine::{
 ///   after the note ends, so an envelope's release stays in tune.
 /// - `gate`, high while the voice's note is held.
 /// - `velocity` of the voice's last note.
+/// - `fade`, a gain that is 1 while a voice plays and dips to 0 and back
+///   around a steal (see below). Multiply it into the voice, after the
+///   envelope (a VCA with `fade` as its level).
 ///
 /// **Allocation.** A new note takes a free voice, preferring the one that
 /// has been free longest, so releases ring out as long as possible. With
-/// none free, it steals the voice whose note started first. A stolen voice's
-/// gate drops for one sample before it rises again, so envelopes restart.
-/// Stealing is hard for now: the pitch changes at once, with no fade-out.
+/// none free, it steals the voice whose note started first.
+///
+/// **Stealing.** With `steal_fade` above 0, a stolen voice keeps playing its
+/// old note while `fade` ramps down over that time, then switches to the new
+/// note with the gate dropping for one sample (so the envelope restarts) as
+/// `fade` ramps back up. The new note therefore starts `steal_fade` late.
+/// With 0 the steal is hard: the pitch changes at once, which can click.
 ///
 /// **Finished voices.** A voice that has been free for longer than `tail`
-/// seconds is inactive: its three outputs are exactly 0 and flagged silent, so
+/// seconds is inactive: its outputs are exactly 0 and flagged silent, so
 /// oscillators and everything else fed by the voice skip it until a note takes
-/// it. `tail` should be at least as long as the longest envelope release in
-/// the patch, since a voice stops sounding when it goes inactive. (The
-/// envelope can't tell the Voices node when it is done, because that would
-/// be a feedback wire.) A voice that isn't ringing also flags its `gate`
-/// silent for the blocks in which it stays low.
+/// it. A voice stops sounding when it goes inactive, so there are two ways to
+/// say when it is done:
+///
+/// - Wire the envelope's `active` output into `busy`. A voice that has been
+///   busy since its note began goes inactive the block its envelope finishes,
+///   however long the release was. This is a feedback loop (the envelope
+///   follows the voice), which `busy` allows: Voices writes its outputs first
+///   and reads `busy` afterwards, in the same block.
+/// - Without `busy`, set `tail` to at least the longest release in the patch.
+///
+/// `tail` also caps `busy`: a voice is retired after `tail` whatever `busy`
+/// says, in case something holds it high.
 ///
 /// The voice count is config, not a parameter, since it is the outputs'
 /// shape.
@@ -46,12 +60,22 @@ struct VoicesPorts {
         ParamInfo::new(MIN_TAIL, 30.0, 10.0).unit(Unit::Seconds)
     )]
     tail: (),
+    #[param(
+        "steal_fade",
+        "Steal fade",
+        ParamInfo::new(0.0, 0.05, 0.005).unit(Unit::Seconds)
+    )]
+    steal_fade: (),
+    #[input("busy", "Busy")]
+    busy: (),
     #[output("pitch", "Pitch")]
     pitch: (),
     #[output("gate", "Gate")]
     gate: (),
     #[output("velocity", "Velocity")]
     velocity: (),
+    #[output("fade", "Fade")]
+    fade: (),
 }
 
 /// The shortest tail. A voice that goes inactive the moment its note ends would
@@ -65,7 +89,7 @@ static CONFIG: [ConfigInfo; 1] = [VOICE_COUNT];
 
 static INFO: NodeInfo = NodeInfo {
     id: VOICES_ID,
-    version: 1,
+    version: 2,
     name: "Voices",
     category: "Polyphony",
 };
@@ -96,6 +120,10 @@ impl NodeType for Voices {
         Ok(VoicesPorts::layout())
     }
 
+    fn loop_input(&self, _config: &Config) -> Option<&'static str> {
+        Some("busy")
+    }
+
     fn output_shapes(
         &self,
         config: &Config,
@@ -112,13 +140,46 @@ impl NodeType for Voices {
         Ok(Instance::realtime(VoicesNode {
             voices: vec![Voice::default(); Self::count(setup.config)?],
             clock: 0,
+            tail: 0,
         }))
+    }
+}
+
+/// A note waiting for a stolen voice to fade out.
+#[derive(Clone, Copy, Default)]
+struct Pending {
+    key: u8,
+    velocity: f32,
+    bend: f32,
+    /// Its note ended before the voice switched to it.
+    released: bool,
+}
+
+/// Where a voice is in a steal.
+#[derive(Clone, Copy, Default)]
+enum Fade {
+    #[default]
+    Steady,
+    /// Playing the old note, `fade` ramping down: `pos` of `len` samples done.
+    Out { pos: u32, len: u32, next: Pending },
+    /// Playing the new note, `fade` ramping up.
+    In { pos: u32, len: u32 },
+}
+
+impl Fade {
+    /// The gain now.
+    fn level(&self) -> f32 {
+        match *self {
+            Self::Steady => 1.0,
+            Self::Out { pos, len, .. } => (len - pos.min(len)) as f32 / len as f32,
+            Self::In { pos, len } => pos as f32 / len as f32,
+        }
     }
 }
 
 #[derive(Clone, Copy, Default)]
 struct Voice {
-    /// The note it plays or last played.
+    /// The note it plays or last played (once stolen, the note it will play).
     id: u32,
     key: u8,
     velocity: f32,
@@ -130,6 +191,8 @@ struct Voice {
     active: bool,
     /// Frames since the note ended.
     since_off: u64,
+    /// The envelope has said it is busy since this note began (see `busy`).
+    reported: bool,
     /// The voice's outputs were silent at the start of this block and no note
     /// has touched it since, so the flags can say so.
     quiet: bool,
@@ -140,6 +203,7 @@ struct Voice {
     /// When the note started, or (once released) ended, in allocation order.
     /// Never-used voices have 0 and so are taken first.
     stamp: u64,
+    fade: Fade,
 }
 
 impl Voice {
@@ -147,11 +211,23 @@ impl Voice {
         let semitones = f32::from(self.key) + self.bend - 69.0;
         440.0 * (semitones / 12.0).exp2()
     }
+
+    /// Switches a faded-out voice to the note it was waiting for.
+    fn switch(&mut self, next: Pending) {
+        self.key = next.key;
+        self.velocity = next.velocity;
+        self.bend = next.bend;
+        self.held = !next.released;
+        self.since_off = 0;
+        self.reported = false;
+    }
 }
 
 struct VoicesNode {
     voices: Vec<Voice>,
     clock: u64,
+    /// The tail of the block in progress, in frames.
+    tail: u64,
 }
 
 impl VoicesNode {
@@ -175,7 +251,8 @@ impl VoicesNode {
             .expect("there is at least one voice")
     }
 
-    fn apply(&mut self, kind: EventKind) {
+    /// `fade_len` is the steal fade in frames; 0 steals hard.
+    fn apply(&mut self, kind: EventKind, fade_len: u32) {
         match kind {
             EventKind::NoteOn {
                 note,
@@ -192,6 +269,27 @@ impl VoicesNode {
                     .unwrap_or_else(|| self.allocate());
                 let stamp = self.tick();
                 let voice = &mut self.voices[i];
+                if voice.held && voice.id != note.0 && fade_len > 0 {
+                    // A steal: fade the old note out first. A voice that is
+                    // itself mid-fade carries on from the level it has.
+                    let next = Pending {
+                        key,
+                        velocity,
+                        bend: 0.0,
+                        released: false,
+                    };
+                    let (pos, len) = match voice.fade {
+                        Fade::Steady => (0, fade_len),
+                        Fade::Out { pos, len, .. } => (pos, len),
+                        Fade::In { pos, len } => (len - pos.min(len), len),
+                    };
+                    voice.fade = Fade::Out { pos, len, next };
+                    voice.id = note.0;
+                    voice.stamp = stamp;
+                    voice.quiet = false;
+                    voice.gate_quiet = false;
+                    return;
+                }
                 voice.rearm = voice.held;
                 *voice = Voice {
                     id: note.0,
@@ -201,15 +299,23 @@ impl VoicesNode {
                     held: true,
                     active: true,
                     since_off: 0,
+                    reported: false,
                     quiet: false,
                     gate_quiet: false,
                     rearm: voice.rearm,
                     stamp,
+                    fade: Fade::Steady,
                 };
             }
             EventKind::NoteOff { note, .. } => {
                 let stamp = self.tick();
                 if let Some(voice) = self.voices.iter_mut().find(|v| v.held && v.id == note.0) {
+                    if let Fade::Out { next, .. } = &mut voice.fade {
+                        // The note ends before it began: the voice will
+                        // switch to it and let go at once.
+                        next.released = true;
+                        return;
+                    }
                     voice.held = false;
                     voice.rearm = false;
                     voice.stamp = stamp;
@@ -223,7 +329,10 @@ impl VoicesNode {
                 value,
             } => {
                 for voice in self.voices.iter_mut().filter(|v| v.held && v.id == note.0) {
-                    voice.bend = value;
+                    match &mut voice.fade {
+                        Fade::Out { next, .. } => next.bend = value,
+                        _ => voice.bend = value,
+                    }
                 }
             }
             _ => {}
@@ -231,14 +340,28 @@ impl VoicesNode {
     }
 
     /// Writes the voices' current state to frames `start..end`.
-    fn fill(&mut self, io: &mut [noodle_engine::SignalOut<'_>], start: usize, end: usize) {
+    fn fill(&mut self, io: &mut [SignalOut<'_>], start: usize, end: usize) {
         if start >= end {
             return;
         }
-        let [pitch, gate, velocity] = io
-            .get_disjoint_mut([VoicesPorts::PITCH, VoicesPorts::GATE, VoicesPorts::VELOCITY])
+        let [pitch, gate, velocity, fade] = io
+            .get_disjoint_mut([
+                VoicesPorts::PITCH,
+                VoicesPorts::GATE,
+                VoicesPorts::VELOCITY,
+                VoicesPorts::FADE,
+            ])
             .expect("voices outputs are distinct");
         for (i, voice) in self.voices.iter_mut().enumerate() {
+            if !matches!(voice.fade, Fade::Steady) {
+                voice.fill_fading(
+                    &mut pitch.lane_mut(i, 0)[start..end],
+                    &mut gate.lane_mut(i, 0)[start..end],
+                    &mut velocity.lane_mut(i, 0)[start..end],
+                    &mut fade.lane_mut(i, 0)[start..end],
+                );
+                continue;
+            }
             pitch.lane_mut(i, 0)[start..end].fill(if voice.active { voice.pitch() } else { 0.0 });
             let gate = &mut gate.lane_mut(i, 0)[start..end];
             gate.fill(if voice.held { 1.0 } else { 0.0 });
@@ -248,6 +371,7 @@ impl VoicesNode {
             }
             let velocity_now = if voice.active { voice.velocity } else { 0.0 };
             velocity.lane_mut(i, 0)[start..end].fill(velocity_now);
+            fade.lane_mut(i, 0)[start..end].fill(if voice.active { 1.0 } else { 0.0 });
         }
     }
 
@@ -259,10 +383,9 @@ impl VoicesNode {
         }
     }
 
-    /// After a block's events: flags the lanes that stayed silent, and makes
-    /// the voices that have been free for `tail` inactive.
-    fn end_block(&mut self, io: &mut [noodle_engine::SignalOut<'_>], frames: usize, tail: u64) {
-        for (i, voice) in self.voices.iter_mut().enumerate() {
+    /// After a block's events: flags the lanes that stayed silent.
+    fn flag_silence(&mut self, io: &mut [SignalOut<'_>]) {
+        for (i, voice) in self.voices.iter().enumerate() {
             if voice.quiet {
                 for output in io.iter_mut() {
                     output.set_silent(i, 0);
@@ -270,36 +393,108 @@ impl VoicesNode {
             } else if voice.gate_quiet {
                 io[VoicesPorts::GATE].set_silent(i, 0);
             }
-            if voice.active && !voice.held {
-                voice.since_off = voice.since_off.saturating_add(frames as u64);
-                if voice.since_off >= tail {
-                    voice.active = false;
-                }
-            }
         }
     }
-}
 
-impl Node for VoicesNode {
-    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+    /// Writes the outputs for the block. Everything but `busy` is read here.
+    fn output_half(&mut self, ctx: &Context, io: &Io<'_, '_>, outputs: &mut [SignalOut<'_>]) {
+        let first = |port: usize| io.inputs[port].lane(0, 0).first().copied().unwrap_or(0.0);
+        let rate = f64::from(ctx.sample_rate);
+        self.tail = (f64::from(first(VoicesPorts::TAIL).max(MIN_TAIL)) * rate) as u64;
+        let fade_len = (f64::from(first(VoicesPorts::STEAL_FADE).max(0.0)) * rate).round() as u32;
+
         let events: &[Event] = io.event_inputs[VoicesPorts::NOTES];
-        let tail = io.inputs[VoicesPorts::TAIL]
-            .lane(0, 0)
-            .first()
-            .copied()
-            .unwrap_or(0.0);
-        let tail = (f64::from(tail.max(MIN_TAIL)) * f64::from(ctx.sample_rate)) as u64;
-        let outputs = io.outputs;
         self.begin_block();
         let mut cursor = 0;
         for event in events {
             let time = (event.time as usize).min(ctx.frames);
             self.fill(outputs, cursor, time);
             cursor = cursor.max(time);
-            self.apply(event.kind);
+            self.apply(event.kind, fade_len);
         }
         self.fill(outputs, cursor, ctx.frames);
-        self.end_block(outputs, ctx.frames, tail);
+        self.flag_silence(outputs);
+    }
+
+    /// After the envelopes have run: makes voices inactive once they are done.
+    fn input_half(&mut self, ctx: &Context, busy: &SignalIn<'_>) {
+        let frames = ctx.frames as u64;
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            if !voice.active {
+                continue;
+            }
+            let busy_now = busy.lane(i, 0).iter().any(|&b| b >= 0.5);
+            voice.reported |= busy_now;
+            if voice.held || !matches!(voice.fade, Fade::Steady) {
+                continue;
+            }
+            voice.since_off = voice.since_off.saturating_add(frames);
+            if voice.since_off >= self.tail || (voice.reported && !busy_now) {
+                voice.active = false;
+            }
+        }
+    }
+}
+
+impl Voice {
+    /// Writes a voice that is fading, a sample at a time.
+    fn fill_fading(
+        &mut self,
+        pitch: &mut [f32],
+        gate: &mut [f32],
+        velocity: &mut [f32],
+        fade: &mut [f32],
+    ) {
+        let samples = pitch.iter_mut().zip(gate).zip(velocity).zip(fade);
+        for (((pitch, gate), velocity), fade) in samples {
+            let mut low = std::mem::take(&mut self.rearm);
+            if let Fade::Out { pos, len, next } = self.fade
+                && pos >= len
+            {
+                self.switch(next);
+                self.fade = Fade::In { pos: 0, len };
+                // The envelope restarts, as for a hard steal.
+                low = true;
+            }
+            *pitch = if self.active { self.pitch() } else { 0.0 };
+            *gate = if self.held && !low { 1.0 } else { 0.0 };
+            *velocity = if self.active { self.velocity } else { 0.0 };
+            *fade = self.fade.level();
+            self.fade = match self.fade {
+                Fade::Out { pos, len, next } => Fade::Out {
+                    pos: pos + 1,
+                    len,
+                    next,
+                },
+                Fade::In { pos, len } if pos + 1 < len => Fade::In { pos: pos + 1, len },
+                Fade::In { .. } | Fade::Steady => Fade::Steady,
+            };
+        }
+    }
+}
+
+impl Node for VoicesNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let outputs = io.outputs;
+        let io = Io {
+            outputs: &mut [],
+            ..io
+        };
+        self.output_half(ctx, &io, outputs);
+        self.input_half(ctx, &io.inputs[VoicesPorts::BUSY]);
+    }
+
+    fn process_output(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let outputs = io.outputs;
+        let io = Io {
+            outputs: &mut [],
+            ..io
+        };
+        self.output_half(ctx, &io, outputs);
+    }
+
+    fn process_input(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        self.input_half(ctx, &io.inputs[VoicesPorts::BUSY]);
     }
 
     fn reset(&mut self) {
@@ -336,9 +531,16 @@ mod tests {
     }
 
     fn voices(count: i64) -> Harness {
+        let mut h = voices_with(count, &[]);
+        // Most tests are about the notes, not the fade.
+        h.set(VoicesPorts::STEAL_FADE, 0.0);
+        h
+    }
+
+    fn voices_with(count: i64, connected: &[(usize, Shape)]) -> Harness {
         let mut config = Config::new();
         config.set("voices", noodle_core::Value::Int(count));
-        Harness::new(&Voices, &config, &[], 48_000.0, 16).unwrap()
+        Harness::new(&Voices, &config, connected, 48_000.0, 16).unwrap()
     }
 
     fn gate(h: &Harness, voice: usize) -> Vec<f32> {
@@ -572,5 +774,159 @@ mod tests {
         assert!(!silent(&h, VoicesPorts::GATE, 0));
         assert!((pitch(&h, 0, 2) - 523.25).abs() < 0.1);
         assert!((pitch(&h, 0, 14) - 130.81).abs() < 0.1);
+    }
+
+    fn fade(h: &Harness, voice: usize) -> Vec<f32> {
+        h.output(VoicesPorts::FADE).lane(voice, 0).to_vec()
+    }
+
+    #[test]
+    fn a_steal_fades_the_old_note_out_then_switches_and_fades_in() {
+        // Four frames of fade at 48 kHz.
+        let mut h = voices_with(1, &[]);
+        h.set(VoicesPorts::STEAL_FADE, 4.0 / 48_000.0);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 1.0), on(4, 2, 81, 1.0)]);
+        h.run(16).unwrap();
+        let (g, f) = (gate(&h, 0), fade(&h, 0));
+        // The old note plays on at its pitch while the gain ramps down...
+        for (k, &gate) in g.iter().enumerate().take(8).skip(4) {
+            assert!((pitch(&h, 0, k) - 440.0).abs() < 1e-3, "frame {k}");
+            assert_eq!(gate, 1.0, "frame {k}");
+        }
+        assert_eq!(&f[..4], &[1.0; 4]);
+        assert_eq!(&f[4..8], &[1.0, 0.75, 0.5, 0.25]);
+        // ...then the new one takes over with the gate low for a sample and
+        // the gain climbing back.
+        assert_eq!(g[8], 0.0);
+        assert!(g[9..].iter().all(|&g| g == 1.0));
+        assert!((pitch(&h, 0, 8) - 880.0).abs() < 1e-2);
+        assert_eq!(&f[8..12], &[0.0, 0.25, 0.5, 0.75]);
+        assert!(f[12..].iter().all(|&f| f == 1.0));
+    }
+
+    #[test]
+    fn a_fading_steal_spans_blocks_and_the_new_note_can_end_before_it_starts() {
+        let mut h = voices_with(1, &[]);
+        h.set(VoicesPorts::STEAL_FADE, 8.0 / 48_000.0);
+        h.send_events(
+            VoicesPorts::NOTES,
+            &[on(0, 1, 69, 1.0), on(12, 2, 81, 1.0), off(14, 2)],
+        );
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        h.run(16).unwrap();
+        // The switch happens at frame 4 of the second block; the note is
+        // already over, so the gate never rises, but the pitch has changed.
+        let g = gate(&h, 0);
+        assert!(g[..4].iter().all(|&g| g == 1.0), "{g:?}");
+        assert!(g[4..].iter().all(|&g| g == 0.0), "{g:?}");
+        assert!((pitch(&h, 0, 15) - 880.0).abs() < 1e-2);
+        assert!(!silent(&h, VoicesPorts::PITCH, 0));
+    }
+
+    #[test]
+    fn the_old_notes_off_during_a_steal_fade_is_ignored() {
+        let mut h = voices_with(1, &[]);
+        h.set(VoicesPorts::STEAL_FADE, 8.0 / 48_000.0);
+        h.send_events(
+            VoicesPorts::NOTES,
+            &[on(0, 1, 69, 1.0), on(2, 2, 81, 1.0), off(4, 1)],
+        );
+        h.run(16).unwrap();
+        let g = gate(&h, 0);
+        assert!(g[2..10].iter().all(|&g| g == 1.0), "{g:?}");
+        assert_eq!(g[10], 0.0);
+        assert!(g[11..].iter().all(|&g| g == 1.0));
+    }
+
+    fn busy_rig(tail: f32) -> Harness {
+        let mut h = voices_with(2, &[(VoicesPorts::BUSY, Shape::new(2, 1))]);
+        h.set(VoicesPorts::STEAL_FADE, 0.0);
+        h.set(VoicesPorts::TAIL, tail);
+        h
+    }
+
+    fn feed_busy(h: &mut Harness, voice0: f32, voice1: f32) {
+        let mut busy = h.input(VoicesPorts::BUSY, 16);
+        busy.lane_mut(0, 0).fill(voice0);
+        busy.lane_mut(1, 0).fill(voice1);
+    }
+
+    #[test]
+    fn a_voice_goes_inactive_when_its_envelope_finishes_not_at_the_tail() {
+        let mut h = busy_rig(30.0);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 0.5), off(8, 1)]);
+        feed_busy(&mut h, 1.0, 0.0);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        // The envelope is releasing: the voice keeps its pitch.
+        for _ in 0..50 {
+            feed_busy(&mut h, 1.0, 0.0);
+            h.run(16).unwrap();
+            assert!(!silent(&h, VoicesPorts::PITCH, 0));
+        }
+        // It finishes; the voice goes inactive after that block...
+        feed_busy(&mut h, 0.0, 0.0);
+        h.run(16).unwrap();
+        assert!(
+            !silent(&h, VoicesPorts::PITCH, 0),
+            "still the block it ended"
+        );
+        feed_busy(&mut h, 0.0, 0.0);
+        h.run(16).unwrap();
+        // ...long before the 30 second tail.
+        assert!(silent(&h, VoicesPorts::PITCH, 0));
+        assert_eq!(pitch(&h, 0, 3), 0.0);
+    }
+
+    #[test]
+    fn a_voice_whose_envelope_never_reported_waits_for_the_tail() {
+        let mut h = busy_rig(0.05);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 0.5), off(8, 1)]);
+        feed_busy(&mut h, 0.0, 0.0);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        for _ in 0..100 {
+            feed_busy(&mut h, 0.0, 0.0);
+            h.run(16).unwrap();
+        }
+        assert!(!silent(&h, VoicesPorts::PITCH, 0), "tail is 150 blocks");
+        for _ in 0..60 {
+            feed_busy(&mut h, 0.0, 0.0);
+            h.run(16).unwrap();
+        }
+        assert!(silent(&h, VoicesPorts::PITCH, 0));
+    }
+
+    #[test]
+    fn the_tail_caps_a_busy_that_never_falls() {
+        let mut h = busy_rig(0.05);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 0.5), off(8, 1)]);
+        for _ in 0..170 {
+            feed_busy(&mut h, 1.0, 0.0);
+            h.run(16).unwrap();
+            h.send_events(VoicesPorts::NOTES, &[]);
+        }
+        assert!(silent(&h, VoicesPorts::PITCH, 0));
+    }
+
+    #[test]
+    fn a_note_while_the_envelope_is_still_busy_retakes_the_voice_cleanly() {
+        let mut h = voices_with(1, &[(VoicesPorts::BUSY, Shape::MONO)]);
+        h.set(VoicesPorts::STEAL_FADE, 0.0);
+        h.set(VoicesPorts::TAIL, 30.0);
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 0.5), off(2, 1)]);
+        h.input(VoicesPorts::BUSY, 16).fill(1.0);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[on(0, 2, 72, 0.5)]);
+        h.input(VoicesPorts::BUSY, 16).fill(1.0);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        // Busy falls, but the new note is held, so the voice stays.
+        for _ in 0..5 {
+            h.input(VoicesPorts::BUSY, 16).fill(0.0);
+            h.run(16).unwrap();
+            assert!(!silent(&h, VoicesPorts::PITCH, 0));
+        }
     }
 }

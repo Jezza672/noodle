@@ -5,6 +5,7 @@ mod adsr;
 mod button;
 mod clip;
 mod curve;
+mod delay;
 mod gain;
 mod ladder;
 mod lfo;
@@ -34,6 +35,7 @@ pub use clip::{
     TRACK_INPUT_ID, TrackInput, active_at,
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
+pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
 pub use gain::{GAIN_ID, Gain};
 pub use ladder::Ladder;
 pub use lfo::{LFO_ID, Lfo};
@@ -111,6 +113,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Ladder);
     registry.register(Vca);
     registry.register(Math);
+    registry.register(Delay);
     registry.register(Remap);
     registry.register(Adsr);
     registry.register(Lfo);

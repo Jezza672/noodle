@@ -256,6 +256,97 @@ fn a_skipped_voice_starts_cleanly_when_a_note_takes_it() {
     }
 }
 
+/// MIDI In → Voices (4, a 10 s tail) → Counter on the pitch → sine → VCA
+/// (enveloped by an ADSR with a 10 ms release) → Voice Mix → Output. With
+/// `busy`, the ADSR's `active` output goes back to the Voices node's `busy`
+/// input. The counter sees a lane only while the voice is active.
+fn pitch_counted_synth(busy: bool) -> (Processor, MidiBus, Arc<AtomicUsize>, impl Sized) {
+    let mut registry = Registry::with_builtins();
+    let library = register_library(&mut registry);
+    let counted = Arc::new(AtomicUsize::new(0));
+    registry.register(Counter(Arc::clone(&counted)));
+    let mut project = Project::new();
+    let mut ids = Vec::new();
+    for type_id in [
+        MIDI_IN_ID,
+        VOICES_ID,
+        "test.counter",
+        "noodle.osc.sine",
+        "noodle.mod.adsr",
+        "noodle.util.vca",
+        VOICE_MIX_ID,
+        OUTPUT_ID,
+    ] {
+        let id = NodeId(ids.len() as u64 + 1);
+        let mut node = Node::new(type_id);
+        if type_id == VOICES_ID {
+            let mut config = Config::new();
+            config.set("voices", Value::Int(4));
+            node = node.with_config(config).with_param("tail", 10.0);
+        }
+        if type_id == "noodle.mod.adsr" {
+            node = node
+                .with_param("attack", 0.001)
+                .with_param("sustain", 1.0)
+                .with_param("release", 0.01);
+        }
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+        ids.push(id);
+    }
+    let mut wires = vec![
+        (0, "out", 1, "in"),
+        (1, "pitch", 2, "in"),
+        (2, "out", 3, "frequency"),
+        (1, "gate", 4, "gate"),
+        (3, "out", 5, "in"),
+        (4, "out", 5, "level"),
+        (5, "out", 6, "in"),
+        (6, "out", 7, "in"),
+    ];
+    if busy {
+        wires.push((4, "active", 1, "busy"));
+    }
+    for (from, port, to, to_port) in wires {
+        Command::Connect(Connection {
+            from: Endpoint::new(ids[from], port),
+            to: Endpoint::new(ids[to], to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let (mut controller, processor) = engine(SETTINGS).unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    (processor, library.midi, counted, controller)
+}
+
+#[test]
+fn an_envelope_that_reports_busy_retires_its_voice_when_the_release_ends() {
+    // 10 ms of release is two blocks of 256 frames at 48 kHz.
+    let after_release = |busy: bool| {
+        let (mut processor, midi, counted, _controller) = pitch_counted_synth(busy);
+        midi.send([0x90, 60, 100]);
+        let _ = block(&mut processor);
+        let (held, _) = lanes_in_block(&mut processor, &counted);
+        assert_eq!(held, 1, "busy {busy}");
+        midi.send([0x80, 60, 0]);
+        for _ in 0..8 {
+            let _ = block(&mut processor);
+        }
+        lanes_in_block(&mut processor, &counted).0
+    };
+    assert_eq!(
+        after_release(true),
+        0,
+        "retired as soon as the release ended"
+    );
+    assert_eq!(
+        after_release(false),
+        1,
+        "without busy it waits for the tail"
+    );
+}
+
 #[test]
 fn skipping_never_allocates_on_the_audio_thread() {
     let (mut processor, midi, _counted, _controller) = synth(0.01);

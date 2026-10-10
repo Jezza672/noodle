@@ -375,7 +375,16 @@ Metronome node and the metronome button.
 
 It becomes an instrument.
 
-**Status:** batch 4 is done: silence skipping and finished-voice skipping
+**Status:** batch 5 is done: the `Delay` node and feedback loops (the
+compiler runs a loop-breaking node in two steps, see "Feedback loops" in
+ARCHITECTURE.md), `Voices` taking a `busy` input from the ADSR's new `active`
+output so a voice is retired when its envelope ends, and a fade before a voice
+steal (`steal_fade`, with a `fade` gain output). `examples/feedback-echo.ron`
+is new, and `examples/poly-synth.ron` and `examples/subtractive-synth.ron` use
+the new wires. The modulation backlog (log versus linear taper, the live meter
+with min and max ticks) had already landed in batch 1. M3's code is complete;
+what is owed is a real-hardware MIDI check and a listening test on the Mac.
+Batch 4 is done: silence skipping and finished-voice skipping
 (per-lane silence flags, `Skip` and `is_idle` on `LaneKernel`, a `tail` on
 `Voices`; see "Silence skipping" in ARCHITECTURE.md), and the rest of the
 synthesis nodes: `Square` and `Triangle` band-limited oscillators, a `Ladder`
@@ -383,16 +392,11 @@ filter, a `Pan` and a `Math` node (arithmetic on four inputs from a typed
 expression), with `examples/subtractive-synth.ron` (the synth
 is a group of those primitives, unison included as a nested group, with its
 controls as group inputs) and its
-golden render. Not done: a
-fade-then-steal for voice stealing (still hard), and a separate envelope
-report to `Voices` (the `tail` parameter stands in until feedback loops
-exist). Still to do, in order: the delay node and feedback loops; the
-modulation backlog items. Batch 3 is done: the `Voices` node (voice allocation and
+golden render. Batch 3 is done: the `Voices` node (voice allocation and
 stealing) and polyphonic signals end to end with `Voice Mix`, played from a
 MIDI keyboard and a MIDI clip (`examples/poly-synth.ron` and its golden
 render); the ADSR now recomputes only its moving times, and offsetting wires
-convert held lanes once. Stealing is hard (no fade-out before the pitch
-changes), so a click is possible; a short fade-then-steal is a later option.
+convert held lanes once. (Stealing was hard until batch 5, which fades.)
 Batch 2 is done: MIDI input (a port chosen in the audio settings
 dialog, the `MIDI In` node), MIDI clips on tracks, and a piano roll (see "MIDI
 input" and "MIDI clips" in ARCHITECTURE.md), with `examples/midi-clip.ron` and
@@ -437,21 +441,25 @@ filters, unison and spread); the delay node and feedback loops.
     inputs, so they don't use the wrapper.
   - **Tails:** a lane is only skipped once its output has also gone silent,
     so filter and reverb tails ring out.
-- **Skipping finished voices.** *Done* (batch 4, as a `tail` parameter).
-  `Voices` marks a voice inactive once it has been free for `tail` seconds,
-  and nothing processes it until it's reused. Envelopes reporting their own
-  release would need a wire back to `Voices`, so wait for feedback loops.
+- **Skipping finished voices.** *Done* (batch 4, as a `tail` parameter; batch
+  5 added the envelope report). `Voices` marks a voice inactive once it has
+  been free for `tail` seconds, or as soon as its envelope's `active` output,
+  wired into `Voices`' `busy` input, falls; nothing processes an inactive
+  voice until it's reused.
+- **Fade before a steal.** *Done* (batch 5).
 - **Synthesis nodes.** *Done* (batch 4; unison is a group of saws, `Math` detune and `Pan`):
   - Band-limited oscillators.
   - ADSR envelope and LFO.
   - SVF and ladder filters.
   - VCA, unison and spread.
-- **Delay node and feedback loops.**
-  - **Now:** the compiler drops any wire that closes a loop, and shows a
+- **Delay node and feedback loops.** *Done* (batch 5).
+  - **Before:** the compiler dropped any wire that closed a loop, and showed a
     diagnostic on it.
-  - **The change:** a node type can declare that its output doesn't depend on
-    its input within the same block, as with a delay of at least one block.
-    The compiler then allows loops that pass through such a node.
+  - **The change:** a node type declares the input it reads last
+    (`NodeType::loop_input`). The compiler then allows loops that pass through
+    such a node, running it in two steps when it is on a loop. Loops through
+    anything else are still dropped. `Delay` is the first such node, and
+    `Voices` (its `busy` input) the second.
 
 **Design rule (Jeremy):** a synth is never a monolithic node. It is a group
 built from primitive nodes, with its controls as the group's inputs, editable
