@@ -1,6 +1,7 @@
 //! Audio and MIDI device I/O, audio file decoding and disk streaming. Drives
 //! the engine from device callbacks; the engine itself never touches devices.
 
+mod cache;
 mod decode;
 mod devices;
 mod input;
@@ -12,6 +13,7 @@ mod resample;
 mod stream;
 mod wav;
 
+pub use cache::{CacheInfo, CacheStore, CacheWriter, CachedAudio};
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
 pub use devices::{
     AudioConfig, AudioError, COMMON_SAMPLE_RATES, Capabilities, Chosen, DeviceInfo, DeviceList,
@@ -30,4 +32,4 @@ pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};
 pub use resample::{ResampleError, resample};
 pub use stream::{ClipStream, StreamSpec, StreamWorker, clip_frames, open_stream};
-pub use wav::{Audio, WavError, read_wav, write_wav};
+pub use wav::{Audio, WavError, WavStreamWriter, read_wav, write_wav};

@@ -32,6 +32,38 @@ pub fn write_wav(
     writer.finalize()
 }
 
+/// Writes 32-bit float WAV a chunk at a time, for renders too long to hold in
+/// memory. The file is only valid once [`finish`](Self::finish) has run.
+pub struct WavStreamWriter {
+    writer: hound::WavWriter<std::io::BufWriter<std::fs::File>>,
+}
+
+impl WavStreamWriter {
+    pub fn create(path: &Path, channels: usize, sample_rate: u32) -> Result<Self, WavError> {
+        let spec = hound::WavSpec {
+            channels: u16::try_from(channels).map_err(|_| WavError::Unsupported)?,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        Ok(Self {
+            writer: hound::WavWriter::create(path, spec)?,
+        })
+    }
+
+    /// Appends interleaved samples.
+    pub fn write(&mut self, samples: &[f32]) -> Result<(), WavError> {
+        for &sample in samples {
+            self.writer.write_sample(sample)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<(), WavError> {
+        self.writer.finalize()
+    }
+}
+
 /// Reads integer or float WAV, scaling integer samples to between -1 and 1.
 pub fn read_wav(path: &Path) -> Result<Audio, WavError> {
     let mut reader = hound::WavReader::open(path)?;
@@ -68,6 +100,19 @@ mod tests {
         let path = temp("round-trip.wav");
         let samples = [0.0, 0.5, -0.25, 1.0, -1.0, 0.123_456_79];
         write_wav(&path, &samples, 2, 44_100).unwrap();
+        let audio = read_wav(&path).unwrap();
+        assert_eq!(audio.samples, samples);
+        assert_eq!((audio.channels, audio.sample_rate), (2, 44_100));
+    }
+
+    #[test]
+    fn streamed_wav_matches_a_one_shot_write() {
+        let samples = [0.0, 0.5, -0.25, 1.0, -1.0, 0.125];
+        let path = temp("streamed.wav");
+        let mut w = WavStreamWriter::create(&path, 2, 44_100).unwrap();
+        w.write(&samples[..2]).unwrap();
+        w.write(&samples[2..]).unwrap();
+        w.finish().unwrap();
         let audio = read_wav(&path).unwrap();
         assert_eq!(audio.samples, samples);
         assert_eq!((audio.channels, audio.sample_rate), (2, 44_100));

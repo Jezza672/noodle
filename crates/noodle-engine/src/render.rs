@@ -4,7 +4,9 @@ use std::fmt;
 
 use noodle_core::{Graph, Project};
 
-use crate::{Controller, Diagnostic, Registry, Settings, SettingsError, engine};
+use crate::{
+    Cancelled, Controller, Diagnostic, Progress, Registry, Settings, SettingsError, engine,
+};
 
 pub struct Render {
     /// Interleaved, with `settings.channels` channels.
@@ -68,6 +70,75 @@ pub fn render_project(
     render_with(settings, frames, |controller| {
         controller.update_project(project, registry)
     })
+}
+
+/// Why a streaming render stopped early.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StreamError<E> {
+    Render(RenderError),
+    /// The [`Progress`] was cancelled.
+    Cancelled,
+    /// The sink refused a chunk.
+    Sink(E),
+}
+
+impl<E: fmt::Display> fmt::Display for StreamError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Render(error) => error.fmt(f),
+            Self::Cancelled => f.write_str("the render was cancelled"),
+            Self::Sink(error) => error.fmt(f),
+        }
+    }
+}
+
+impl<E: fmt::Debug + fmt::Display> std::error::Error for StreamError<E> {}
+
+impl<E> From<Cancelled> for StreamError<E> {
+    fn from(_: Cancelled) -> Self {
+        Self::Cancelled
+    }
+}
+
+/// [`render_project`] that hands the audio to `sink` in chunks of at most
+/// `chunk_frames` frames (interleaved) instead of collecting it, so memory
+/// stays flat however long the render is. The samples are the same as
+/// [`render_project`]'s. `progress` is updated after every chunk, and a
+/// cancel stops the render before the next one.
+///
+/// Returns the compile problems, as [`Render::diagnostics`] does.
+pub fn render_project_streaming<E>(
+    project: &Project,
+    registry: &Registry,
+    settings: Settings,
+    frames: usize,
+    chunk_frames: usize,
+    progress: &Progress,
+    mut sink: impl FnMut(&[f32]) -> Result<(), E>,
+) -> Result<Vec<Diagnostic>, StreamError<E>> {
+    let (mut controller, mut processor) =
+        engine(settings).map_err(|error| StreamError::Render(error.into()))?;
+    let too_long = || StreamError::Render(RenderError::TooLong { frames });
+    let chunk_frames = chunk_frames.clamp(1, frames.max(1));
+    let len = chunk_frames
+        .checked_mul(settings.channels)
+        .ok_or_else(too_long)?;
+    let mut chunk = Vec::new();
+    chunk.try_reserve_exact(len).map_err(|_| too_long())?;
+    chunk.resize(len, 0.0);
+
+    let diagnostics = controller.update_project(project, registry);
+    let mut done = 0;
+    progress.report(0.0)?;
+    while done < frames {
+        let n = chunk_frames.min(frames - done);
+        let samples = &mut chunk[..n * settings.channels];
+        processor.process(samples);
+        sink(samples).map_err(StreamError::Sink)?;
+        done += n;
+        progress.report(done as f32 / frames as f32)?;
+    }
+    Ok(diagnostics)
 }
 
 fn render_with(
@@ -148,5 +219,65 @@ mod tests {
             render_frames(settings, 10).err(),
             Some(RenderError::Settings(SettingsError::Channels))
         );
+    }
+
+    #[test]
+    fn streaming_delivers_every_frame_in_bounded_chunks() {
+        let project = Project::default();
+        let progress = Progress::new();
+        let mut sizes = Vec::new();
+        render_project_streaming(
+            &project,
+            &Registry::with_builtins(),
+            STEREO,
+            250,
+            100,
+            &progress,
+            |chunk| -> Result<(), ()> {
+                sizes.push(chunk.len());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(sizes, [200, 200, 100]);
+        assert_eq!(progress.fraction(), 1.0);
+    }
+
+    #[test]
+    fn streaming_stops_when_cancelled() {
+        let project = Project::default();
+        let progress = Progress::new();
+        let mut chunks = 0;
+        let result = render_project_streaming(
+            &project,
+            &Registry::with_builtins(),
+            STEREO,
+            1000,
+            10,
+            &progress,
+            |_| -> Result<(), ()> {
+                chunks += 1;
+                if chunks == 3 {
+                    progress.cancel();
+                }
+                Ok(())
+            },
+        );
+        assert_eq!(result.err(), Some(StreamError::Cancelled));
+        assert_eq!(chunks, 3);
+    }
+
+    #[test]
+    fn a_failing_sink_stops_the_render() {
+        let result = render_project_streaming(
+            &Project::default(),
+            &Registry::with_builtins(),
+            STEREO,
+            100,
+            10,
+            &Progress::new(),
+            |_| Err("disk full"),
+        );
+        assert_eq!(result.err(), Some(StreamError::Sink("disk full")));
     }
 }

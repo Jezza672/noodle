@@ -470,6 +470,12 @@ play it from a MIDI keyboard and from a MIDI clip.
 
 ## M4: Caching
 
+**Status:** batch 1 is done: streaming offline renders, the offline renderer
+as a background job with progress and cancel, and the on-disk cache store.
+Batches 2 on: cacheability analysis and Merkle key derivation, freezing,
+offline nodes (which need random access into the store) and the export
+dialog.
+
 - The offline renderer as a background service, with progress reporting to the UI.
 - **Streaming offline renders.** Offline nodes currently get the whole range in
   memory, about 230 MB for 10 minutes of stereo. Render in chunks instead,

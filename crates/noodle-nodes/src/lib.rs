@@ -2,6 +2,7 @@
 //! (meters and scopes) that report to the UI.
 
 mod adsr;
+mod background;
 mod button;
 mod clip;
 mod curve;
@@ -29,6 +30,10 @@ mod voice_mix;
 mod voices;
 
 pub use adsr::{ADSR_ID, Adsr};
+pub use background::{
+    CHUNK_FRAMES, CacheRender, RenderReport, RenderRequest, render_streaming, spawn_render,
+    spawn_render_to_cache,
+};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,

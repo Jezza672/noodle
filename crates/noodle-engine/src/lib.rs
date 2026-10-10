@@ -13,6 +13,7 @@ mod compile;
 mod denormals;
 mod event;
 mod flatten;
+mod job;
 mod lane;
 mod node;
 mod offline;
@@ -38,6 +39,7 @@ pub use compile::{
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
+pub use job::{Job, JobPanicked};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
 pub use node::{
     ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, Mode, Node, NodeError,
@@ -48,7 +50,9 @@ pub use noodle_macros::Ports;
 pub use offline::{Cancelled, OfflineNode, Progress};
 pub use param::{Modulation, ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
-pub use render::{Render, RenderError, render, render_project};
+pub use render::{
+    Render, RenderError, StreamError, render, render_project, render_project_streaming,
+};
 pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{

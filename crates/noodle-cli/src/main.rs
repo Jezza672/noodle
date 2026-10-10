@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use noodle_core::Project;
-use noodle_engine::{Diagnostic, Registry, Settings};
+use noodle_engine::{Diagnostic, Job, Registry, Settings, StreamError};
 use noodle_io::{AudioConfig, InputChoice, Stream};
-use noodle_nodes::render_project_with_clips;
+use noodle_nodes::{RenderRequest, render_streaming};
 
 #[derive(Parser)]
 #[command(
@@ -130,10 +130,34 @@ fn run(command: Command) -> Result<(), String> {
             let frames = frames as usize;
             // Clip files are looked up next to the project file.
             let base = project_path.parent().unwrap_or(Path::new(""));
-            let mut registry = Registry::with_builtins();
-            let rendered =
-                render_project_with_clips(&project, &mut registry, base, settings, frames)
-                    .map_err(|error| error.to_string())?;
+            let request = RenderRequest {
+                project,
+                base: base.to_owned(),
+                settings,
+                frames,
+            };
+            let mut wav = noodle_io::WavStreamWriter::create(&output, channels, sample_rate)
+                .map_err(|error| format!("can't write {}: {error}", output.display()))?;
+            // Rendered in chunks on a background thread, so a long render
+            // needn't fit in memory and can report how far it has got.
+            let mut job = Job::spawn(move |progress| {
+                let report = render_streaming(&request, progress, |chunk| wav.write(chunk))?;
+                wav.finish().map_err(StreamError::Sink)?;
+                Ok::<_, StreamError<noodle_io::WavError>>(report)
+            });
+            let mut shown = 0;
+            let rendered = loop {
+                if let Some(done) = job.poll() {
+                    break done.map_err(|error| error.to_string())?;
+                }
+                let percent = (job.fraction() * 100.0) as u32;
+                if percent >= shown + 10 {
+                    shown = percent / 10 * 10;
+                    eprintln!("rendering: {shown}%");
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            .map_err(|error| format!("can't render to {}: {error}", output.display()))?;
             for problem in &rendered.problems {
                 eprintln!("warning: clip {}: {}", problem.clip.0, problem.message);
             }
@@ -146,10 +170,8 @@ fn run(command: Command) -> Result<(), String> {
                     rendered.underruns
                 );
             }
-            report(&rendered.render.diagnostics);
-            let rendered = rendered.render;
-            noodle_io::write_wav(&output, &rendered.samples, channels, sample_rate)
-                .map_err(|error| format!("can't write {}: {error}", output.display()))
+            report(&rendered.diagnostics);
+            Ok(())
         }
         Command::Play { project, device } => play(&project, &device.config()),
         Command::Devices { host } => list_devices(host.as_deref()),
