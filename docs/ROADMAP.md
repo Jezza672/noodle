@@ -503,12 +503,20 @@ export produces output identical to live playback.
 
 ## M5: Plugins
 
+**Status:** batch 1 is done: CLAP hosting through clack (`noodle-plugins`).
+Scanning in a child process with a cache, plugin nodes whose ports are the
+plugin's audio ports, note ports and parameters, saved state in the project,
+and plugin nodes registered through the render hook so freeze and export see
+them. Not started: editor windows, the plugin browser (plugins are in the
+add-node menu under "Plugins" for now) and VST3.
+
 - **CLAP hosting through clack:**
-  - Scanning in a child process.
-  - Plugin nodes.
-  - Parameters as ports.
+  - Scanning in a child process (done).
+  - Plugin nodes (done).
+  - Parameters as ports (done).
   - Editor windows.
-  - Plugin state saved in the project.
+  - Plugin state saved in the project (done; capturing state needs the
+    editor).
 - Plugin browser.
 - VST3 hosting.
 

@@ -46,6 +46,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-macros` | `#[derive(Ports)]`: a node's `Layout` and port-index constants from one declaration. Re-exported as `noodle_engine::Ports`. |
 | `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `track_input_midi.rs`, `midi_input.rs`, `offline_clips.rs`, `export.rs`, `m2_acceptance.rs`. `render_project_with_clips` renders a project with audio clips offline. |
 | `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`), WAV and FLAC export writing (`export.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
+| `noodle-plugins` | CLAP hosting through clack: scanning in a child process (`scan.rs`), plugin nodes (`node.rs`, `host.rs`), the `Catalog` that registers them. `examples/test_plugin.rs` is a small CLAP plugin the tests load. |
 | `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
 | `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`. |
 
@@ -107,3 +108,17 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
    picker. The roadmap's M1 status line says what has landed.
 2. **When the user is back:** run the batched macOS checks on their Mac
    (tests on the latest main, and a `noodle play` listening test).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `Jezza672/noodle`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

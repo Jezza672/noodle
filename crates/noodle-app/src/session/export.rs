@@ -82,7 +82,7 @@ impl Session {
                 base: self.base().to_owned(),
                 settings,
                 frames: self.freeze_frames(rate),
-                extend_registry: None,
+                extend_registry: self.extend_registry(),
             },
             start,
             end,

@@ -455,8 +455,21 @@ fn each_bad_file_is_named_separately() {
     rig.wav("b.wav", 1, 20_000, |_, _| 0.5);
     rig.add_clip(0, "a.wav", 0, 5_000);
     rig.add_clip(0, "b.wav", 6_000, 5_000);
-    std::fs::write(rig.dir.join("a.wav"), b"not audio").unwrap();
-    std::fs::write(rig.dir.join("b.wav"), b"not audio").unwrap();
+    // The feeds remember what they read of a file by its modification time.
+    // Where the clock is coarse (Windows, some macOS filesystems) the
+    // spoiled file would keep the good file's time and look unchanged, so
+    // give each a time that is plainly later.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    for name in ["a.wav", "b.wav"] {
+        let path = rig.dir.join(name);
+        std::fs::write(&path, b"not audio").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
     let started = std::time::Instant::now();
     loop {
         rig.run(0, BLOCK, false);
