@@ -324,8 +324,9 @@ impl CachedAudio {
             .seek(SeekFrom::Start(HEADER_BYTES + start * channels as u64 * 4))?;
         let mut bytes = vec![0u8; frames * channels * 4];
         self.file.read_exact(&mut bytes)?;
-        for (sample, raw) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-            *sample = f32::from_le_bytes(raw.try_into().unwrap());
+        let (raw, _) = bytes.as_chunks::<4>();
+        for (sample, raw) in out.iter_mut().zip(raw) {
+            *sample = f32::from_le_bytes(*raw);
         }
         Ok(frames)
     }
