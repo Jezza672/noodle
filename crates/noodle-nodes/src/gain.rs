@@ -29,7 +29,9 @@ struct GainPorts {
     #[param(
         "gain",
         "Gain",
-        ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels)
+        ParamInfo::new(-60.0, 24.0, 0.0)
+            .unit(Unit::Decibels)
+            .offset()
     )]
     gain: (),
     #[output("out", "Out")]

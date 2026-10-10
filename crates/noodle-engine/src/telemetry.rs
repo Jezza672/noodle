@@ -14,6 +14,9 @@
 //!   and stores the latest RMS. The hub takes the peak (resetting it) and
 //!   folds it into a held peak for every [`MeterReader`], so each reader sees
 //!   the highest peak since its own last read, however many there are.
+//! - **Parameter taps** report what a wired parameter's value was: the last
+//!   value and the lowest and highest since the last read, in the same way as
+//!   a meter's peak (a tap is only filled in once something reads it).
 //! - **Scopes** are SPSC ring buffers of interleaved frames. When the UI falls
 //!   behind and the ring is full, the newest frames are dropped.
 //!
@@ -52,12 +55,17 @@ pub struct Telemetry {
 struct Channels {
     meters: HashMap<NodeId, Vec<Arc<MeterCells>>>,
     scopes: HashMap<NodeId, Vec<ScopeReader>>,
+    /// Taps on wired parameters, by (node, port key).
+    taps: HashMap<(NodeId, String), Vec<Arc<TapCells>>>,
     /// The IDs of the live [`MeterReader`]s.
     readers: HashSet<u64>,
     next_reader: u64,
     /// Each reader's highest peak per channel since it last read a meter,
     /// by (meter, reader).
     held: HashMap<(NodeId, u64), Vec<f32>>,
+    /// Each reader's lowest and highest parameter value since it last read a
+    /// tap, by (node, port key, reader).
+    held_taps: HashMap<(NodeId, String, u64), (f32, f32)>,
 }
 
 impl Channels {
@@ -71,8 +79,15 @@ impl Channels {
             list.retain(|reader| !reader.consumer.is_abandoned());
             !list.is_empty()
         });
+        self.taps.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
         let meters = &self.meters;
         self.held.retain(|(node, _), _| meters.contains_key(node));
+        let taps = &self.taps;
+        self.held_taps
+            .retain(|(node, key, _), _| taps.contains_key(&(*node, key.clone())));
     }
 }
 
@@ -110,6 +125,18 @@ impl Telemetry {
             .or_default()
             .push(cells.clone());
         MeterWriter(cells)
+    }
+
+    /// Opens a tap on the parameter `key` of `node`, for a wired parameter's
+    /// live value. Call this when instantiating, not on the audio thread.
+    pub fn open_tap(&self, node: NodeId, key: &str) -> TapWriter {
+        let cells = Arc::new(TapCells::default());
+        self.lock()
+            .taps
+            .entry((node, key.to_owned()))
+            .or_default()
+            .push(cells.clone());
+        TapWriter(cells)
     }
 
     /// Opens a scope channel for `node` that buffers up to `capacity` frames of
@@ -213,6 +240,42 @@ impl MeterReader {
         )
     }
 
+    /// What the wired parameter `key` of `node` did since this reader last
+    /// read it, or `None` if it has no tap or hasn't reported yet. The first
+    /// read of a tap switches it on, so the first reading comes back empty.
+    pub fn param(&self, node: NodeId, key: &str) -> Option<ParamReading> {
+        let mut guard = self.hub.lock();
+        let Channels {
+            taps,
+            readers,
+            held_taps,
+            ..
+        } = &mut *guard;
+        let list = taps.get(&(node, key.to_owned()))?;
+        for cells in list {
+            cells.wanted.store(true, Ordering::Relaxed);
+        }
+        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+        if !cells.written.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let (low, high) = cells.take_range();
+        for &reader in readers.iter() {
+            let held = held_taps
+                .entry((node, key.to_owned(), reader))
+                .or_insert((f32::INFINITY, f32::NEG_INFINITY));
+            held.0 = held.0.min(low);
+            held.1 = held.1.max(high);
+        }
+        let last = f32::from_bits(cells.last.load(Ordering::Relaxed));
+        let mine = held_taps.get_mut(&(node, key.to_owned(), self.id))?;
+        let (min, max) = std::mem::replace(mine, (f32::INFINITY, f32::NEG_INFINITY));
+        // No new blocks since the last read: the value held still.
+        let (min, max) = if min <= max { (min, max) } else { (last, last) };
+        Some(ParamReading { last, min, max })
+    }
+
     /// Whether this reader reads from `telemetry`, rather than another hub.
     pub fn reads(&self, telemetry: &Telemetry) -> bool {
         Arc::ptr_eq(&self.hub.inner, &telemetry.inner)
@@ -224,6 +287,9 @@ impl Drop for MeterReader {
         let mut channels = self.hub.lock();
         channels.readers.remove(&self.id);
         channels.held.retain(|&(_, reader), _| reader != self.id);
+        channels
+            .held_taps
+            .retain(|(_, _, reader), _| *reader != self.id);
     }
 }
 
@@ -277,6 +343,91 @@ impl MeterWriter {
         cells
             .rms
             .store(non_negative(level.rms).to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// A wired parameter's value as seen by one reader.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamReading {
+    /// The value at the end of the latest block.
+    pub last: f32,
+    /// The lowest and highest values in any block since the previous read.
+    pub min: f32,
+    pub max: f32,
+}
+
+struct TapCells {
+    /// The range since it was last taken, as [`order_key`]s so that integer
+    /// order is float order and `fetch_min` / `fetch_max` work on them.
+    min: AtomicU32,
+    max: AtomicU32,
+    last: AtomicU32,
+    written: AtomicBool,
+    /// Set by the first read. Until then the audio thread skips the tap.
+    wanted: AtomicBool,
+}
+
+impl Default for TapCells {
+    fn default() -> Self {
+        Self {
+            min: AtomicU32::new(order_key(f32::INFINITY)),
+            max: AtomicU32::new(order_key(f32::NEG_INFINITY)),
+            last: AtomicU32::new(0),
+            written: AtomicBool::new(false),
+            wanted: AtomicBool::new(false),
+        }
+    }
+}
+
+impl TapCells {
+    /// The lowest and highest value since the last call, or (+inf, -inf) if
+    /// there were none.
+    fn take_range(&self) -> (f32, f32) {
+        let min = self.min.swap(order_key(f32::INFINITY), Ordering::Relaxed);
+        let max = self
+            .max
+            .swap(order_key(f32::NEG_INFINITY), Ordering::Relaxed);
+        (from_order_key(min), from_order_key(max))
+    }
+}
+
+/// Maps a float to an integer that sorts the same way (for non-NaN values).
+fn order_key(x: f32) -> u32 {
+    let bits = x.to_bits();
+    if bits & 0x8000_0000 != 0 {
+        !bits
+    } else {
+        bits | 0x8000_0000
+    }
+}
+
+fn from_order_key(key: u32) -> f32 {
+    f32::from_bits(if key & 0x8000_0000 != 0 {
+        key & 0x7fff_ffff
+    } else {
+        !key
+    })
+}
+
+/// The audio thread's end of a parameter tap.
+pub struct TapWriter(Arc<TapCells>);
+
+impl TapWriter {
+    /// Whether anything reads this tap. Skip the work of measuring when not.
+    pub fn wanted(&self) -> bool {
+        self.0.wanted.load(Ordering::Relaxed)
+    }
+
+    /// Reports one block: the lowest and highest values, and the last. A NaN
+    /// range is ignored.
+    pub fn write(&self, min: f32, max: f32, last: f32) {
+        if min.is_nan() || max.is_nan() || last.is_nan() {
+            return;
+        }
+        self.0.written.store(true, Ordering::Relaxed);
+        self.0.min.fetch_min(order_key(min), Ordering::Relaxed);
+        self.0.max.fetch_max(order_key(max), Ordering::Relaxed);
+        self.0.last.store(last.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -606,5 +757,80 @@ mod tests {
         let channels = telemetry.lock();
         assert!(channels.meters.is_empty() && channels.scopes.is_empty());
         assert!(channels.held.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tap_tests {
+    use super::*;
+
+    #[test]
+    fn order_keys_sort_like_floats() {
+        let values = [
+            f32::NEG_INFINITY,
+            -1e9,
+            -1.0,
+            -1e-9,
+            0.0,
+            1e-9,
+            0.5,
+            1.0,
+            1e9,
+            f32::INFINITY,
+        ];
+        for pair in values.windows(2) {
+            assert!(order_key(pair[0]) < order_key(pair[1]), "{pair:?}");
+        }
+        for v in values {
+            assert_eq!(from_order_key(order_key(v)), v);
+        }
+    }
+
+    #[test]
+    fn a_tap_reports_the_range_since_each_readers_last_read() {
+        let hub = Telemetry::new();
+        let node = NodeId(1);
+        let writer = hub.open_tap(node, "cutoff");
+        let (a, b) = (hub.meter_reader(), hub.meter_reader());
+
+        assert!(!writer.wanted());
+        // The first read switches the tap on; nothing has been written yet.
+        assert_eq!(a.param(node, "cutoff"), None);
+        assert!(writer.wanted());
+
+        writer.write(-0.5, 0.25, 0.1);
+        writer.write(-0.25, 0.75, 0.6);
+        let expected = ParamReading {
+            last: 0.6,
+            min: -0.5,
+            max: 0.75,
+        };
+        assert_eq!(a.param(node, "cutoff"), Some(expected));
+        // `b` hadn't read before, so it holds the same range: reading by one
+        // reader doesn't take it from another.
+        assert_eq!(b.param(node, "cutoff"), Some(expected));
+
+        // With nothing new, a reader sees the value hold still.
+        assert_eq!(
+            a.param(node, "cutoff"),
+            Some(ParamReading {
+                last: 0.6,
+                min: 0.6,
+                max: 0.6
+            })
+        );
+        assert_eq!(a.param(node, "other"), None);
+    }
+
+    #[test]
+    fn a_tap_closes_with_its_writer() {
+        let hub = Telemetry::new();
+        let reader = hub.meter_reader();
+        let writer = hub.open_tap(NodeId(2), "gain");
+        assert_eq!(reader.param(NodeId(2), "gain"), None);
+        writer.write(0.0, 1.0, 1.0);
+        assert!(reader.param(NodeId(2), "gain").is_some());
+        drop(writer);
+        assert_eq!(reader.param(NodeId(2), "gain"), None);
     }
 }

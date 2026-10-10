@@ -1,33 +1,17 @@
 //! Mapping between a parameter's value and a widget's travel, from 0 at the
 //! left to 1 at the right.
 
-use noodle_engine::{ParamInfo, ParamKind, Taper};
+use noodle_engine::{ParamInfo, ParamKind};
 
 /// Where `value` sits along the widget's travel, clamped to `0..=1`.
 pub fn to_normalized(info: &ParamInfo, value: f32) -> f32 {
-    let value = clamp(info, value);
-    let t = if uses_log(info) {
-        (value / info.min).ln() / (info.max / info.min).ln()
-    } else {
-        (value - info.min) / (info.max - info.min)
-    };
-    if t.is_finite() {
-        t.clamp(0.0, 1.0)
-    } else {
-        0.0
-    }
+    info.position(clamp(info, value))
 }
 
 /// The value at position `t` along the widget's travel. Stepped parameters
 /// round to the nearest step.
 pub fn from_normalized(info: &ParamInfo, t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    let value = if uses_log(info) {
-        info.min * (info.max / info.min).powf(t)
-    } else {
-        info.min + t * (info.max - info.min)
-    };
-    clamp(info, value)
+    clamp(info, info.value_at(t))
 }
 
 /// Keeps `value` inside the parameter's range, and rounds it if the
@@ -51,12 +35,6 @@ pub fn clamp(info: &ParamInfo, value: f32) -> f32 {
 
 pub fn is_stepped(info: &ParamInfo) -> bool {
     matches!(info.kind, ParamKind::Stepped { .. })
-}
-
-/// A log taper needs a positive range; anything else falls back to linear
-/// rather than producing NaNs.
-fn uses_log(info: &ParamInfo) -> bool {
-    info.taper == Taper::Log && info.min > 0.0 && info.max > info.min
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ pub struct Harness {
     instance: Instance,
     inputs: Vec<HarnessInput>,
     outputs: Vec<SignalBuffer>,
-    event_input_count: usize,
+    event_inputs: Vec<Vec<Event>>,
     event_outputs: Vec<Vec<Event>>,
     sample_rate: f32,
     position: u64,
@@ -100,7 +100,7 @@ impl Harness {
                 .iter()
                 .map(|&shape| SignalBuffer::new(shape, max_frames))
                 .collect(),
-            event_input_count: layout.event_inputs.len(),
+            event_inputs: layout.event_inputs.iter().map(|_| Vec::new()).collect(),
             event_outputs: layout
                 .event_outputs
                 .iter()
@@ -131,6 +131,13 @@ impl Harness {
         input.buffer.as_out(frames)
     }
 
+    /// Sets the events an event input receives. They stay for every following
+    /// `run` until replaced, so clear them (`&[]`) after the block they belong
+    /// to. Times are frame offsets within the block.
+    pub fn send_events(&mut self, port: usize, events: &[Event]) {
+        self.event_inputs[port] = events.to_vec();
+    }
+
     /// Processes one block. For an offline node, renders `frames` frames as
     /// the whole range.
     pub fn run(&mut self, frames: usize) -> Result<(), Cancelled> {
@@ -150,8 +157,7 @@ impl Harness {
             .iter_mut()
             .map(|buffer| buffer.as_out(frames))
             .collect();
-        let no_events: &[Event] = &[];
-        let event_inputs = vec![no_events; self.event_input_count];
+        let event_inputs: Vec<&[Event]> = self.event_inputs.iter().map(Vec::as_slice).collect();
         let mut event_outputs: Vec<EventsOut<'_>> =
             self.event_outputs.iter_mut().map(EventsOut::new).collect();
 
@@ -178,6 +184,11 @@ impl Harness {
         self.position += frames as u64;
         self.frames = frames;
         Ok(())
+    }
+
+    /// The events an event output wrote in the last run.
+    pub fn events(&self, port: usize) -> &[Event] {
+        &self.event_outputs[port]
     }
 
     /// An output from the last run.

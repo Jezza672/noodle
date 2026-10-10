@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::NodeType;
+use crate::{NodeType, Telemetry};
 
 /// Every node type the engine knows about, by ID.
 #[derive(Default)]
 pub struct Registry {
     types: BTreeMap<&'static str, Arc<dyn NodeType>>,
+    telemetry: Telemetry,
 }
 
 impl Registry {
@@ -26,6 +27,14 @@ impl Registry {
     /// [`with_builtins`](Self::with_builtins) and a fuller one elsewhere.
     pub fn replace(&mut self, node_type: impl NodeType) {
         self.types.insert(node_type.info().id, Arc::new(node_type));
+    }
+
+    /// The hub that nodes and plans built with this registry report to, for
+    /// the UI to read. Nodes that report (meters, scopes) are given it when
+    /// they're registered, and the engine opens a tap on every wired
+    /// parameter in it.
+    pub fn telemetry(&self) -> &Telemetry {
+        &self.telemetry
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<dyn NodeType>> {

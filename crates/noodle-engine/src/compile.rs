@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use noodle_core::{Config, Endpoint, Graph, NodeId};
 
-use crate::{Lanes, Layout, Mode, NodeError, NodeType, Registry, Shape, ShapeError};
+use crate::{InputKind, Lanes, Layout, Mode, NodeError, NodeType, Registry, Shape, ShapeError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BufferId(pub usize);
@@ -61,6 +61,10 @@ pub enum InputSource {
     Buffer(BufferId),
     /// Unconnected: holds the value set in the project, or the port's default.
     Value(f32),
+    /// Connected to an offsetting parameter ([`Modulation::Offset`]): reads
+    /// another node's output, which moves the parameter from the value set in
+    /// the project (or the port's default) along its travel.
+    Modulated(BufferId, f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -587,14 +591,24 @@ fn allocate(
             .inputs
             .iter()
             .zip(&signal_source[i])
-            .map(|(port, source)| match source.filter(live) {
-                Some(w) => InputSource::Buffer(BufferId(source_buffer(w))),
-                None => InputSource::Value(
-                    c.params
-                        .get(port.key.as_ref())
-                        .copied()
-                        .unwrap_or_else(|| port.default_value()),
-                ),
+            .map(|(port, source)| {
+                let value = c
+                    .params
+                    .get(port.key.as_ref())
+                    .copied()
+                    .unwrap_or_else(|| port.default_value());
+                match source.filter(live) {
+                    Some(w) => {
+                        let buffer = BufferId(source_buffer(w));
+                        match &port.kind {
+                            InputKind::Param(info) if info.is_offset() => {
+                                InputSource::Modulated(buffer, value)
+                            }
+                            _ => InputSource::Buffer(buffer),
+                        }
+                    }
+                    None => InputSource::Value(value),
+                }
             })
             .collect();
         let event_inputs = event_source[i]

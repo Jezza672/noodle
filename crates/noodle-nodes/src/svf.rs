@@ -19,9 +19,10 @@ struct SvfPorts {
         ParamInfo::new(20.0, 20_000.0, 1_000.0)
             .log()
             .unit(Unit::Hertz)
+            .offset()
     )]
     cutoff: (),
-    #[param("resonance", "Resonance", ParamInfo::new(0.0, 1.0, 0.0))]
+    #[param("resonance", "Resonance", ParamInfo::new(0.0, 1.0, 0.0).offset())]
     resonance: (),
     #[output("low", "Low")]
     low: (),

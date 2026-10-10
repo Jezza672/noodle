@@ -223,6 +223,7 @@ impl Controller {
             self.settings,
             self.buses.as_deref(),
             &mut self.cells,
+            registry.telemetry(),
             &mut diagnostics,
         );
         self.pending = Some((plan, info));
