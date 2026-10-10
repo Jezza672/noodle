@@ -107,3 +107,17 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
    picker. The roadmap's M1 status line says what has landed.
 2. **When the user is back:** run the batched macOS checks on their Mac
    (tests on the latest main, and a `noodle play` listening test).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `Jezza672/noodle`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
