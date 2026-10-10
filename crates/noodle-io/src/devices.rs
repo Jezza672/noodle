@@ -44,6 +44,11 @@ pub struct AudioConfig {
     pub sample_rate: Option<u32>,
     /// Frames per device callback. `None` lets the device decide.
     pub buffer_size: Option<u32>,
+    /// The MIDI input port to play from, by name (see
+    /// [`midi_inputs`](crate::midi_inputs)). `None` opens none. It lives
+    /// here because it is chosen in the same dialog and saved with the rest;
+    /// changing it doesn't restart the audio.
+    pub midi_input: Option<String>,
 }
 
 /// Which device, if any, records into Input nodes. Off by default, since

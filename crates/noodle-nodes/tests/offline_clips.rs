@@ -64,7 +64,9 @@ fn project(clips: &[(usize, u64, u64)], file: &str) -> Project {
         assert_eq!(start % 25, 0);
         let id = project.new_clip_id();
         let mut clip = Clip::audio(track, Tick(start as i64 / 25), file, length);
-        let ClipContent::Audio(audio) = &mut clip.content;
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.offset = offset;
         history
             .apply(&mut project, Command::AddClip { id, clip })

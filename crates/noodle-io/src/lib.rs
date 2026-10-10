@@ -4,6 +4,7 @@
 mod decode;
 mod devices;
 mod input;
+mod midi;
 mod output;
 mod peaks;
 mod record;
@@ -17,6 +18,10 @@ pub use devices::{
     Direction, HostInfo, InputChoice, capabilities, choose_config, devices, hosts,
 };
 pub use input::{Capture, Feed, input_path, recordable_input_path};
+pub use midi::{
+    MidiBus, MidiConnection, MidiError, MidiMessage, MidiReceiver, connect_midi, midi_inputs,
+    parse_message,
+};
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
     Playback, Stream, is_fatal, play, play_with_outputs,

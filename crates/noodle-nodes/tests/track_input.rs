@@ -55,7 +55,9 @@ fn gain_and_fades_shape_the_clip() {
     rig.wav("one.wav", 1, 30_000, |_, _| 1.0);
     let id = rig.add_clip(0, "one.wav", 0, 8_000);
     rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.gain = 0.5;
         audio.fade_in = 1_000;
         audio.fade_out = 2_000;
@@ -176,7 +178,9 @@ fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
     rig.wait_ready(0, 1);
     rig.play(0, 2_000);
     rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.gain = 0.5;
     });
     rig.settle();
@@ -204,7 +208,9 @@ fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
     let mut position = 2_000;
     for (fade_in, fade_out) in [(300, 0), (600, 1_000), (900, 3_000), (1_200, 6_000)] {
         rig.edit_clip(id, |clip| {
-            let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+            let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+                unreachable!("not an audio clip")
+            };
             audio.fade_in = fade_in;
             audio.fade_out = fade_out;
         });
@@ -215,7 +221,9 @@ fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
     }
     // A fade that reaches the playhead is heard, with a dip.
     rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.fade_in = 0;
         audio.fade_out = 49_000;
     });

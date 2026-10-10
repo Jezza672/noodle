@@ -702,6 +702,46 @@ mod tests {
     }
 
     #[test]
+    fn midi_clips_are_checked_and_survive_a_save() {
+        use crate::{MidiClip, MidiNote};
+        let (mut project, _, player, _, _) = with_timeline();
+        let id = project.new_clip_id();
+        let mut good = Clip::midi(player, Tick(960), Tick(3840));
+        let ClipContent::Midi(midi) = &mut good.content else {
+            unreachable!("not a MIDI clip")
+        };
+        midi.notes.push(MidiNote::new(Tick(0), Tick(480), 60));
+        midi.notes.push(MidiNote::new(Tick(960), Tick(960), 64));
+        let add = |project: &mut Project, id, clip| Command::AddClip { id, clip }.apply(project);
+        let bad = |change: &dyn Fn(&mut MidiClip)| {
+            let mut clip = good.clone();
+            let ClipContent::Midi(midi) = &mut clip.content else {
+                unreachable!()
+            };
+            change(midi);
+            clip
+        };
+        for clip in [
+            bad(&|m| m.length = Tick(0)),
+            bad(&|m| m.notes[0].length = Tick(0)),
+            bad(&|m| m.notes[0].start = Tick(-1)),
+            bad(&|m| m.notes[0].key = 128),
+            bad(&|m| m.notes[0].velocity = 1.5),
+            bad(&|m| m.notes[0].velocity = f32::NAN),
+        ] {
+            assert!(matches!(
+                add(&mut project, id, clip),
+                Err(EditError::InvalidClip(..))
+            ));
+        }
+        add(&mut project, id, good.clone()).unwrap();
+        assert!(project.clip(id).unwrap().as_audio().is_none());
+        assert_eq!(project.clip(id).unwrap().as_midi().unwrap().notes.len(), 2);
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(loaded.clip(id), Some(&good));
+    }
+
+    #[test]
     fn clips_are_checked_when_added_or_changed() {
         let (mut project, _, player, clip, _) = with_timeline();
         let add = |project: &mut Project, id, clip| Command::AddClip { id, clip }.apply(project);
@@ -719,7 +759,9 @@ mod tests {
         );
         let tweak = |change: &dyn Fn(&mut AudioClip)| {
             let mut clip = good.clone();
-            let ClipContent::Audio(audio) = &mut clip.content;
+            let ClipContent::Audio(audio) = &mut clip.content else {
+                unreachable!("not an audio clip")
+            };
             change(audio);
             clip
         };

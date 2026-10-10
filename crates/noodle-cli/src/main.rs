@@ -87,6 +87,7 @@ impl DeviceArgs {
             },
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
+            midi_input: None,
         }
     }
 }

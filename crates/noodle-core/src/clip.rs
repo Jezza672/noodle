@@ -28,10 +28,79 @@ pub struct Clip {
     pub content: ClipContent,
 }
 
-/// What a clip plays. MIDI clips join this with M3.
+/// What a clip plays.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClipContent {
     Audio(AudioClip),
+    Midi(MidiClip),
+}
+
+/// Notes on the timeline. Everything is in ticks, so a MIDI clip follows the
+/// tempo (unlike audio, which keeps its own length in samples).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MidiClip {
+    /// How long the clip is. Notes past its end are cut off there.
+    pub length: Tick,
+    /// Not in any particular order; the engine sorts what it plays.
+    pub notes: Vec<MidiNote>,
+}
+
+/// One note in a MIDI clip.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MidiNote {
+    /// Where the note starts, from the start of the clip.
+    pub start: Tick,
+    pub length: Tick,
+    /// The MIDI key number, 0 to 127.
+    pub key: u8,
+    /// 0 to 1.
+    pub velocity: f32,
+}
+
+impl MidiNote {
+    pub fn new(start: Tick, length: Tick, key: u8) -> Self {
+        Self {
+            start,
+            length,
+            key,
+            velocity: 0.8,
+        }
+    }
+
+    /// The first tick after the note.
+    pub fn end(&self) -> Tick {
+        Tick(self.start.0 + self.length.0)
+    }
+}
+
+impl MidiClip {
+    pub fn new(length: Tick) -> Self {
+        Self {
+            length,
+            notes: Vec::new(),
+        }
+    }
+
+    fn problem(&self) -> Option<&'static str> {
+        if self.length <= Tick::ZERO {
+            return Some("it is empty");
+        }
+        for note in &self.notes {
+            if note.start < Tick::ZERO {
+                return Some("a note starts before the clip");
+            }
+            if note.length <= Tick::ZERO {
+                return Some("a note is empty");
+            }
+            if note.key > 127 {
+                return Some("a note's key is out of range");
+            }
+            if !(0.0..=1.0).contains(&note.velocity) {
+                return Some("a note's velocity is not between 0 and 1");
+            }
+        }
+        None
+    }
 }
 
 /// Part of an audio file. What plays, and for how long, is counted in the
@@ -77,10 +146,28 @@ impl Clip {
         }
     }
 
+    /// An empty MIDI clip of `length` ticks.
+    pub fn midi(node: NodeId, start: Tick, length: Tick) -> Self {
+        Self {
+            node,
+            start,
+            content: ClipContent::Midi(MidiClip::new(length)),
+        }
+    }
+
     /// The audio, if this is an audio clip.
     pub fn as_audio(&self) -> Option<&AudioClip> {
         match &self.content {
             ClipContent::Audio(audio) => Some(audio),
+            ClipContent::Midi(_) => None,
+        }
+    }
+
+    /// The notes, if this is a MIDI clip.
+    pub fn as_midi(&self) -> Option<&MidiClip> {
+        match &self.content {
+            ClipContent::Midi(midi) => Some(midi),
+            ClipContent::Audio(_) => None,
         }
     }
 
@@ -91,6 +178,7 @@ impl Clip {
         }
         match &self.content {
             ClipContent::Audio(audio) => audio.problem(),
+            ClipContent::Midi(midi) => midi.problem(),
         }
     }
 }

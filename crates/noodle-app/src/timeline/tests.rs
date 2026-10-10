@@ -20,6 +20,8 @@ struct Rig {
     notices: Vec<String>,
     /// Where it asked to import audio from a file.
     picks: Vec<super::Target>,
+    /// The MIDI clips it asked to open in the piano roll.
+    opened: Vec<ClipId>,
     /// Keeps the audio files alive.
     _dir: tempfile::TempDir,
 }
@@ -52,6 +54,7 @@ fn rig() -> (H, ClipId) {
         seeks: Vec::new(),
         notices: Vec::new(),
         picks: Vec::new(),
+        opened: Vec::new(),
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -64,6 +67,7 @@ fn rig() -> (H, ClipId) {
                 rig.seeks.extend(out.seek);
                 rig.notices.extend(out.notice);
                 rig.picks.extend(out.pick);
+                rig.opened.extend(out.open_midi);
                 for (track, on) in out.arm {
                     rig.session.arm(track, on);
                 }
@@ -1387,4 +1391,159 @@ fn dragging_a_header_down_moves_it_below_the_next_track() {
     assert_eq!(after[0], before[1]);
     assert_eq!(after[1], before[0]);
     assert_eq!(after[2], before[2]);
+}
+
+/// Adds a one bar MIDI clip with two notes at beat 2 on the second track.
+fn add_midi(h: &mut H) -> ClipId {
+    let session = &mut h.state_mut().session;
+    let id = session.project().next_clip_id();
+    let mut clip = Clip::midi(NodeId(2), Tick(960), Tick(3840));
+    let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
+        unreachable!()
+    };
+    midi.notes = vec![
+        noodle_core::MidiNote::new(Tick(0), Tick(480), 60),
+        noodle_core::MidiNote::new(Tick(960), Tick(960), 64),
+    ];
+    session.edit([Edit::Apply(Command::AddClip { id, clip })]);
+    h.run();
+    id
+}
+
+#[test]
+fn a_midi_clip_is_drawn_and_moves_like_any_clip() {
+    let (mut h, _) = rig();
+    let id = add_midi(&mut h);
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"MIDI (2 notes)".to_string())
+    );
+    // A bar at 60 points per quarter note.
+    assert!((rect(&h, id).width() - 240.0).abs() < 1.0);
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Body,
+        Vec2::new(60.0, 0.0),
+    );
+    assert_eq!(start(&h, id), Tick(1920));
+    // Dragging up a lane moves it to the track above.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Body,
+        Vec2::new(0.0, -64.0),
+    );
+    assert_eq!(clip(&h, id).node, NodeId(1));
+}
+
+#[test]
+fn trimming_a_midi_clip_keeps_its_notes_in_place_on_the_timeline() {
+    let (mut h, _) = rig();
+    let id = add_midi(&mut h);
+    // The right edge from beat 5 to beat 4: the clip is 3 beats long.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::End,
+        Vec2::new(-60.0, 0.0),
+    );
+    assert_eq!(clip(&h, id).as_midi().unwrap().length, Tick(2880));
+    // The left edge a beat in: the clip starts a beat later and the notes
+    // before it are cut off or shortened.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::Start,
+        Vec2::new(60.0, 0.0),
+    );
+    let c = clip(&h, id);
+    assert_eq!(c.start, Tick(1920));
+    let midi = c.as_midi().unwrap();
+    assert_eq!(midi.length, Tick(1920));
+    assert_eq!(
+        midi.notes.len(),
+        1,
+        "the first note ended before the new start"
+    );
+    assert_eq!(midi.notes[0].start, Tick(0));
+    assert_eq!(midi.notes[0].key, 64);
+}
+
+#[test]
+fn double_clicking_a_midi_clip_opens_it_and_audio_clips_do_not() {
+    let (mut h, audio) = rig();
+    let id = add_midi(&mut h);
+    let pos = centre(&h, id);
+    for _ in 0..2 {
+        h.event(Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+    }
+    h.run();
+    assert_eq!(h.state().opened, [id]);
+    let pos = centre(&h, audio);
+    for _ in 0..2 {
+        h.event(Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+    }
+    h.run();
+    assert_eq!(h.state().opened, [id]);
+}
+
+#[test]
+fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
+    let (mut h, _) = rig();
+    let before = h.state().session.project().clips().count();
+    // Empty space on the second lane, a little after beat 3.
+    let pos = Pos2::new(150.0 + 130.0, 22.0 + 64.0 + 30.0);
+    h.event(Event::PointerMoved(pos));
+    h.step();
+    h.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Secondary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Secondary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    h.get_by_label("New MIDI clip").click();
+    h.run();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), before + 1);
+    let (id, made) = project
+        .clips()
+        .find(|(_, c)| c.as_midi().is_some())
+        .expect("a MIDI clip");
+    assert_eq!(made.node, NodeId(2));
+    // Snapped to the beat nearest the click.
+    assert_eq!(made.start, Tick(1920));
+    assert_eq!(made.as_midi().unwrap().length, Tick(3840));
+    assert_eq!(h.state().opened, [id]);
+    assert!(h.state().timeline.selected().contains(&id));
 }

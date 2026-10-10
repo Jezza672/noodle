@@ -9,6 +9,7 @@ mod editor;
 mod metronome;
 mod mixer;
 mod outputs;
+mod piano_roll;
 mod prefs;
 mod properties;
 mod session;

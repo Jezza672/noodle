@@ -17,7 +17,7 @@ use noodle_core::ClipId;
 use noodle_io::{ClipStream, StreamSpec, StreamWorker, open_stream};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use super::schedule::{ClipStatus, FileError, Schedule, ScheduledClip};
+use super::schedule::{ClipStatus, FileError, Notes, Schedule, ScheduledClip};
 
 /// Streams a node can hold at once: the clip playing and the ones about to.
 pub(super) const MAX_STREAMS: usize = 6;
@@ -43,7 +43,7 @@ const STREAM_CHUNKS: usize = 8;
 
 /// What the UI side, the hub and the node share.
 pub(super) struct Shared {
-    latest: Mutex<(u64, Arc<Schedule>)>,
+    latest: Mutex<(u64, Arc<Schedule>, Arc<Notes>)>,
     /// Offline rendering: the node waits for the hub and the disk instead of
     /// playing silence, so the output doesn't depend on timing.
     pub blocking: bool,
@@ -58,19 +58,33 @@ pub(super) struct Shared {
     pub loop_end: AtomicU64,
     pub bound: AtomicUsize,
     pub underruns: AtomicU64,
+    /// The keys held down from the piano roll's keyboard, one bit each.
+    pub audition: [AtomicU64; 2],
 }
 
 impl Shared {
     pub fn new(blocking: bool) -> Self {
         Self {
             blocking,
-            latest: Mutex::new((0, Arc::new(Vec::new()))),
+            latest: Mutex::new((0, Arc::new(Vec::new()), Arc::new(Vec::new()))),
             failed: Mutex::new(Vec::new()),
             position: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
             bound: AtomicUsize::new(0),
             underruns: AtomicU64::new(0),
+            audition: [AtomicU64::new(0), AtomicU64::new(0)],
+        }
+    }
+
+    pub fn set_audition(&self, key: u8, on: bool) {
+        let key = key.min(127);
+        let bit = 1u64 << (key % 64);
+        let word = &self.audition[usize::from(key / 64)];
+        if on {
+            word.fetch_or(bit, Ordering::Relaxed);
+        } else {
+            word.fetch_and(!bit, Ordering::Relaxed);
         }
     }
 
@@ -79,10 +93,10 @@ impl Shared {
         self.latest.lock().expect("schedule lock").0
     }
 
-    pub fn set(&self, schedule: Schedule) {
+    pub fn set(&self, schedule: Schedule, notes: Notes) {
         let mut latest = self.latest.lock().expect("schedule lock");
-        if *latest.1 != schedule {
-            *latest = (latest.0 + 1, Arc::new(schedule));
+        if *latest.1 != schedule || *latest.2 != notes {
+            *latest = (latest.0 + 1, Arc::new(schedule), Arc::new(notes));
         }
     }
 
@@ -95,7 +109,10 @@ impl Shared {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.latest.lock().expect("schedule lock").1.is_empty()
+        {
+            let latest = self.latest.lock().expect("schedule lock");
+            latest.1.is_empty() && latest.2.is_empty()
+        }
     }
 
     /// The files that couldn't be opened, one entry each.
@@ -142,14 +159,17 @@ pub(super) struct Prepared {
 }
 
 pub(super) enum ToNode {
-    /// A schedule and its version.
-    Schedule(u64, Box<Schedule>),
+    /// A schedule, the MIDI notes to play with it, and their version.
+    Schedule(u64, Box<Schedule>, Box<Notes>),
     Stream(Box<Prepared>),
 }
 
 pub(super) enum Retired {
     // Only kept to be dropped on the hub's thread.
     Schedule(#[allow(dead_code)] Box<Schedule>),
+    /// The notes that came with a schedule. Sent back separately and not
+    /// counted, so the return queue has room for two per schedule.
+    Notes(#[allow(dead_code)] Box<Notes>),
     Stream(Box<Prepared>),
     /// The node has started playing from a stream that was opened ahead for
     /// the loop's start (its serial), so it is an ordinary stream now. Not
@@ -172,7 +192,7 @@ pub(super) struct Links {
 
 pub(super) fn spawn(shared: Arc<Shared>, rate: u32) -> Links {
     let (to_node, from_hub) = RingBuffer::new(QUEUE);
-    let (to_hub, from_node) = RingBuffer::new(QUEUE);
+    let (to_hub, from_node) = RingBuffer::new(QUEUE * 2);
     thread::Builder::new()
         .name("noodle-clips".into())
         .spawn(move || run(&shared, rate, to_node, from_node))
@@ -206,17 +226,22 @@ fn run(
                     continue;
                 }
                 Retired::Stream(prepared) => live.retain(|l| l.serial != prepared.serial),
+                Retired::Notes(_) => continue,
                 Retired::Schedule(_) => {}
             }
             outstanding -= 1;
             drop(item);
         }
-        let (version, schedule) = {
+        let (version, schedule, notes) = {
             let latest = shared.latest.lock().expect("schedule lock");
-            (latest.0, latest.1.clone())
+            (latest.0, latest.1.clone(), latest.2.clone())
         };
         if sent != Some(version) && outstanding < MAX_OUTSTANDING {
-            let message = ToNode::Schedule(version, Box::new(schedule.to_vec()));
+            let message = ToNode::Schedule(
+                version,
+                Box::new(schedule.to_vec()),
+                Box::new(notes.to_vec()),
+            );
             if to_node.push(message).is_ok() {
                 sent = Some(version);
                 outstanding += 1;

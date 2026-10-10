@@ -1,0 +1,43 @@
+// A MIDI clip on a track plays a monophonic synth: the track's MIDI output
+// goes to Mono Note, a saw runs through a low-pass filter, and an ADSR shapes
+// each note through a VCA. The clip holds two short notes, A3 and C4, an
+// eighth of a beat each, then rests. The clip is part of the project, not of
+// the graph.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.mono", position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.osc.saw", position: (x: 400.0, y: -80.0)),
+            4: (type: "noodle.filter.svf", params: {"cutoff": 1800.0, "resonance": 0.2}, position: (x: 600.0, y: -80.0)),
+            5: (type: "noodle.mod.adsr", params: {"attack": 0.005, "decay": 0.06, "sustain": 0.5, "release": 0.04}, position: (x: 400.0, y: 100.0)),
+            6: (type: "noodle.util.vca", position: (x: 800.0, y: 0.0)),
+            7: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 1000.0, y: 0.0)),
+            8: (type: "noodle.io.output", position: (x: 1200.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "midi"), to: (node: 2, port: "in")),
+            (from: (node: 2, port: "pitch"), to: (node: 3, port: "frequency")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 2, port: "gate"), to: (node: 5, port: "gate")),
+            (from: (node: 4, port: "low"), to: (node: 6, port: "in")),
+            (from: (node: 5, port: "out"), to: (node: 6, port: "level")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in")),
+        ],
+    ),
+    clips: {
+        1: (
+            node: 1,
+            start: 0,
+            content: Midi((
+                length: 3840,
+                notes: [
+                    (start: 0, length: 120, key: 57, velocity: 0.9),
+                    (start: 240, length: 120, key: 60, velocity: 0.9),
+                ],
+            )),
+        ),
+    },
+)

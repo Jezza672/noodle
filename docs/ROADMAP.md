@@ -375,14 +375,16 @@ Metronome node and the metronome button.
 
 It becomes an instrument.
 
-**Status:** batch 1 is done: the port derive macro (`noodle-macros`), events
+**Status:** batch 2 is done: MIDI input (a port chosen in the audio settings
+dialog, the `MIDI In` node), MIDI clips on tracks, and a piano roll (see "MIDI
+input" and "MIDI clips" in ARCHITECTURE.md), with `examples/midi-clip.ron` and
+its golden render. Batch 1 is done: the port derive macro (`noodle-macros`), events
 as a signal type with the `Key` and `Mono Note` nodes, the ADSR, LFO and VCA
 nodes, a general-purpose Remap node (input range to output range along a
 Bézier curve drawn in the properties panel, `examples/remap-sweep.ron`), and the modulation display (offset-in-slider-space parameters, and a
 live meter with min and max ticks on wired parameters), with a monophonic
 synth example (`examples/synth-pluck.ron`) and its golden render. Still to
-do, in order: MIDI input, MIDI clips and a piano roll; the Voices node and
-polyphony end to end; silence skipping and finished-voice skipping; the
+do, in order: the Voices node and polyphony end to end; silence skipping and finished-voice skipping; the
 rest of the synthesis nodes (band-limited oscillators, SVF and ladder
 filters, unison and spread); the delay node and feedback loops.
 
@@ -399,7 +401,10 @@ filters, unison and spread); the delay node and feedback loops.
 - Events signal type. *Done* (the engine already carried them; batch 1 added
   the `Key` and `Mono Note` nodes, test-harness support and an end-to-end
   patch).
-- MIDI input (midir), MIDI clips and a piano roll.
+- MIDI input (midir), MIDI clips and a piano roll. *Done* (batch 2).
+  - **Still to do:** timestamp live MIDI inside the block, record MIDI into a
+    clip, quantise and copy/paste in the piano roll, more than one MIDI
+    port at a time, and reopening a port that was unplugged and comes back.
 - Voices node: voice allocation and stealing, producing polyphonic pitch, gate
   and velocity.
 - Polyphonic signals working end to end, and the Voice Mix node.

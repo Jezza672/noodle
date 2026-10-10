@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use noodle_core::Project;
-use noodle_engine::{Registry, Settings, render_project};
+use noodle_engine::{Registry, Settings};
 use noodle_io::{read_wav, write_wav};
+use noodle_nodes::render_project_with_clips;
 
 const SETTINGS: Settings = Settings {
     sample_rate: 48_000.0,
@@ -30,8 +31,6 @@ fn examples_match_their_golden_renders() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let golden = root.join("tests/golden");
     let update = env::var_os("UPDATE_GOLDEN").is_some();
-    let mut registry = Registry::with_builtins();
-    let _telemetry = noodle_nodes::register_all(&mut registry);
 
     let mut projects: Vec<PathBuf> = fs::read_dir(root.join("../../examples"))
         .unwrap()
@@ -46,7 +45,18 @@ fn examples_match_their_golden_renders() {
         let name = path.file_stem().unwrap().to_string_lossy();
         let text = fs::read_to_string(path).unwrap();
         let project = Project::from_ron(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let rendered = render_project(&project, &registry, SETTINGS, FRAMES).unwrap();
+        // With clips, so a project can play a MIDI clip (or audio next to it).
+        let mut registry = Registry::with_builtins();
+        let clips = render_project_with_clips(
+            &project,
+            &mut registry,
+            &root.join("../../examples"),
+            SETTINGS,
+            FRAMES,
+        )
+        .unwrap();
+        assert!(clips.problems.is_empty(), "{name}: {:?}", clips.problems);
+        let rendered = clips.render;
         assert!(
             rendered.diagnostics.is_empty(),
             "{name}: {:?}",
