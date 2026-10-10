@@ -1,17 +1,39 @@
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Setup, Unit,
+    PerLane, Ports, Setup, Unit,
 };
 
 /// What a group's boundary node becomes when its gain or mute is in use. The
 /// compiler swaps it in (see `flatten`); users don't add it themselves.
 pub struct GroupStage;
 
-const IN: usize = 0;
-const GAIN: usize = 1;
-const MUTE: usize = 2;
-const SOLO_MUTE: usize = 3;
-const OUT: usize = 0;
+#[derive(Ports)]
+struct StagePorts {
+    #[input("in", "In")]
+    input: (),
+    #[param(
+        "gain",
+        "Gain",
+        ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels)
+    )]
+    gain: (),
+    // Smoothed like any continuous parameter, so muting ramps down instead of
+    // clicking.
+    #[param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))]
+    mute: (),
+    // Another track's solo. Separate from mute so a lane driving the mute
+    // still can't make a soloed-out track audible.
+    #[param("solo_mute", "Solo mute", ParamInfo::new(0.0, 1.0, 0.0))]
+    solo_mute: (),
+    #[output("out", "Out")]
+    out: (),
+}
+
+const IN: usize = StagePorts::INPUT;
+const GAIN: usize = StagePorts::GAIN;
+const MUTE: usize = StagePorts::MUTE;
+const SOLO_MUTE: usize = StagePorts::SOLO_MUTE;
+const OUT: usize = StagePorts::OUT;
 
 static INFO: NodeInfo = NodeInfo {
     id: "noodle.group.stage",
@@ -26,20 +48,7 @@ impl NodeType for GroupStage {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime()
-            .input("in", "In")
-            .param(
-                "gain",
-                "Gain",
-                ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
-            )
-            // Smoothed like any continuous parameter, so muting ramps down
-            // instead of clicking.
-            .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
-            // Another track's solo. Separate from mute so a lane driving the
-            // mute still can't make a soloed-out track audible.
-            .param("solo_mute", "Solo mute", ParamInfo::new(0.0, 1.0, 0.0))
-            .output("out", "Out"))
+        Ok(StagePorts::layout())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

@@ -274,7 +274,10 @@ impl App {
                 // the next node would open it at its default width.
                 ui.set_min_width(ui.available_width());
                 ui.add_space(4.0);
-                let edits = properties::show(ui, &self.session, active);
+                let editor = &self.editor;
+                let edits = properties::show(ui, &self.session, active, &|node, key| {
+                    editor.param_live(node, key)
+                });
                 self.session.edit(edits);
             });
 

@@ -168,6 +168,11 @@ impl EditorState {
         self.bodies.input_meters(node).get(channel).copied()
     }
 
+    /// What a wired parameter has been doing lately (see `Bodies::update`).
+    pub fn param_live(&self, node: NodeId, key: &str) -> Option<crate::widgets::Live> {
+        self.bodies.param_live(node, key)
+    }
+
     /// What a scope node last captured, for a view of it elsewhere.
     pub fn scope_view(&self, node: NodeId) -> Option<&noodle_engine::ScopeView> {
         self.bodies.scope_view(node)
@@ -509,7 +514,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     });
     let mut fields = params::Fields::new(ui, canvas, front);
     draw::nodes(&painter, &f, state, &problems, |node| {
-        fields.show(&f, node, &mut edits);
+        fields.show(&f, &state.bodies, node, &mut edits);
     });
     fields.finish(&mut edits);
     if let Some(p) = pointer_pos {

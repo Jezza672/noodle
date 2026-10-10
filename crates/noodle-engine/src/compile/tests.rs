@@ -178,7 +178,7 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
         for (port, source) in node.layout.inputs.iter().zip(&node.inputs) {
             let input = Endpoint::new(node.id, port.key.as_ref());
             match source {
-                InputSource::Buffer(b) => {
+                InputSource::Buffer(b) | InputSource::Modulated(b, _) => {
                     let wired = graph.source(&input).expect("buffer input must be wired");
                     assert_eq!(holds.get(b), Some(wired), "{input} read a stale buffer");
                 }

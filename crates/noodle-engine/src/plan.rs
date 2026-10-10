@@ -15,8 +15,8 @@ use noodle_core::NodeId;
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
 use crate::{
     Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
-    ParamKind, ParamWriter, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
-    Telemetry,
+    ParamInfo, ParamKind, ParamWriter, Problem, Schedule, Settings, Setup, Shape, SignalIn,
+    SignalOut, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -82,6 +82,9 @@ pub(crate) struct Plan {
     pool: Box<[f32]>,
     events: Vec<Vec<Event>>,
     values: Vec<ValueInput>,
+    /// Wired parameters that offset their value, by index into the plan's
+    /// offsets.
+    offsets: Vec<OffsetInput>,
     /// (slot in the previous plan, slot in this one) for node instances that
     /// carry over.
     migrations: Vec<(usize, usize)>,
@@ -122,6 +125,9 @@ enum Input {
     Buffer(View),
     /// An unconnected input, by index into the plan's values.
     Value(usize),
+    /// A wired parameter that offsets its value, by index into the plan's
+    /// offsets.
+    Offset(usize),
 }
 
 /// Vectors with room for one node's views, so building its [`Io`] each block
@@ -196,6 +202,7 @@ pub(crate) fn build(
     };
     let mut nodes = Vec::with_capacity(schedule.nodes.len());
     let mut values = Vec::new();
+    let mut offsets_in = Vec::new();
     let mut migrations = Vec::new();
     let mut value_migrations = Vec::new();
     let mut live_cells: Cells = HashMap::new();
@@ -256,43 +263,60 @@ pub(crate) fn build(
             .zip(&scheduled.inputs)
             .zip(&scheduled.input_shapes)
         {
-            inputs.push(match *source {
-                InputSource::Buffer(b) => Input::Buffer(view(b, *shape)),
-                InputSource::Value(value) => {
-                    // A hand-edited file can hold inf or NaN, which would
-                    // leave nodes stuck. Use the port's default instead.
-                    let value = match &port.kind {
-                        _ if value.is_finite() => value,
-                        InputKind::Param(param) => param.default,
-                        InputKind::Audio => 0.0,
-                    };
-                    let key = port.key.to_string();
-                    let cell = cells
-                        .get(&id)
-                        .and_then(|node| node.get(&key))
-                        .cloned()
-                        .unwrap_or_else(|| Arc::new(ParamCell::new(value)));
-                    // The project is the source of truth, so a value set there
-                    // (by undo, say) wins over whatever the cell held.
-                    cell.set(value);
-                    let smoothing = match &port.kind {
-                        InputKind::Param(param) => match param.kind {
-                            ParamKind::Continuous { smoothing_ms } => {
-                                (smoothing_ms * sample_rate / 1000.0).round() as usize
-                            }
-                            ParamKind::Stepped { .. } => 0,
-                        },
-                        InputKind::Audio => 0,
-                    };
-                    let value_slot = values.len();
-                    if let Some(&old) = previous.and_then(|p| p.values.get(&(id, key.clone()))) {
-                        value_migrations.push((old, value_slot));
-                    }
-                    values.push(ValueInput::new(Arc::clone(&cell), max_frames, smoothing));
-                    live_cells.entry(id).or_default().insert(key.clone(), cell);
-                    info.values.insert((id, key), value_slot);
-                    Input::Value(value_slot)
+            // The value a parameter holds when nothing drives it, or the base
+            // that a wire offsets.
+            let base = match *source {
+                InputSource::Value(value) | InputSource::Modulated(_, value) => Some(value),
+                InputSource::Buffer(_) => None,
+            };
+            let value_slot = base.map(|value| {
+                // A hand-edited file can hold inf or NaN, which would
+                // leave nodes stuck. Use the port's default instead.
+                let value = match &port.kind {
+                    _ if value.is_finite() => value,
+                    InputKind::Param(param) => param.default,
+                    InputKind::Audio => 0.0,
+                };
+                let key = port.key.to_string();
+                let cell = cells
+                    .get(&id)
+                    .and_then(|node| node.get(&key))
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(ParamCell::new(value)));
+                // The project is the source of truth, so a value set there
+                // (by undo, say) wins over whatever the cell held.
+                cell.set(value);
+                let smoothing = match &port.kind {
+                    InputKind::Param(param) => match param.kind {
+                        ParamKind::Continuous { smoothing_ms } => {
+                            (smoothing_ms * sample_rate / 1000.0).round() as usize
+                        }
+                        ParamKind::Stepped { .. } => 0,
+                    },
+                    InputKind::Audio => 0,
+                };
+                let value_slot = values.len();
+                if let Some(&old) = previous.and_then(|p| p.values.get(&(id, key.clone()))) {
+                    value_migrations.push((old, value_slot));
                 }
+                values.push(ValueInput::new(Arc::clone(&cell), max_frames, smoothing));
+                live_cells.entry(id).or_default().insert(key.clone(), cell);
+                info.values.insert((id, key), value_slot);
+                value_slot
+            });
+            inputs.push(match (*source, value_slot, &port.kind) {
+                (InputSource::Buffer(b), ..) => Input::Buffer(view(b, *shape)),
+                (InputSource::Modulated(b, _), Some(value), InputKind::Param(param)) => {
+                    offsets_in.push(OffsetInput::new(
+                        value,
+                        view(b, *shape),
+                        param.clone(),
+                        max_frames,
+                    ));
+                    Input::Offset(offsets_in.len() - 1)
+                }
+                (_, Some(value), _) => Input::Value(value),
+                (_, None, _) => unreachable!("every unconnected input has a value slot"),
             });
         }
 
@@ -300,7 +324,9 @@ pub(crate) fn build(
             .inputs
             .iter()
             .map(|source| match source {
-                InputSource::Buffer(b) => signal_writers.get(b).copied(),
+                InputSource::Buffer(b) | InputSource::Modulated(b, _) => {
+                    signal_writers.get(b).copied()
+                }
                 InputSource::Value(_) => None,
             })
             .chain(
@@ -348,7 +374,7 @@ pub(crate) fn build(
                     .enumerate()
                     .filter(|(_, (port, source))| {
                         matches!(port.kind, InputKind::Param(_))
-                            && matches!(source, InputSource::Buffer(_))
+                            && matches!(source, InputSource::Buffer(_) | InputSource::Modulated(..))
                     })
                     .map(move |(index, (port, _))| (index, telemetry.open_param(id, &port.key)))
             })
@@ -412,6 +438,7 @@ pub(crate) fn build(
             .map(|_| Vec::with_capacity(EVENT_CAPACITY))
             .collect(),
         values,
+        offsets: offsets_in,
         migrations,
         value_migrations,
         max_frames,
@@ -549,6 +576,15 @@ impl Plan {
             let mut event_outputs: Vec<EventsOut<'_>> =
                 recycle(mem::take(&mut node.scratch.event_outputs));
 
+            for input in &node.inputs {
+                if let Input::Offset(k) = *input {
+                    let offset = &mut self.offsets[k];
+                    // SAFETY: `pool` is the plan's pool, and nothing writes
+                    // the source buffer while the offset is computed.
+                    unsafe { offset.compute(pool, frames, &self.values[offset.value]) };
+                }
+            }
+
             // SAFETY: every view is in bounds of the pool or event buffers,
             // which outlive this block. The compiler guarantees that a node's
             // outputs share no buffer with its inputs or each other, and only
@@ -557,6 +593,7 @@ impl Plan {
                 inputs.extend(node.inputs.iter().map(|input| match *input {
                     Input::Buffer(view) => view.read(pool, frames),
                     Input::Value(slot) => self.values[slot].signal(frames),
+                    Input::Offset(k) => self.offsets[k].signal(frames),
                 }));
                 outputs.extend(node.outputs.iter().map(|view| view.write(pool, frames)));
                 event_inputs.extend(node.event_inputs.iter().map(|buffer| match buffer {
@@ -737,6 +774,59 @@ impl Routing<'_> {
     }
 }
 
+/// A wired parameter that moves its value along its travel: the parameter's
+/// own value is the base, and the wire's signal is added to the base's
+/// position (see [`Modulation::Offset`](crate::Modulation::Offset)).
+struct OffsetInput {
+    /// The base value's slot in the plan's values.
+    value: usize,
+    /// The wire's signal.
+    source: View,
+    info: ParamInfo,
+    /// The effective value, in the shape of the wire's signal.
+    scratch: Box<[f32]>,
+}
+
+impl OffsetInput {
+    fn new(value: usize, source: View, info: ParamInfo, max_frames: usize) -> Self {
+        Self {
+            value,
+            source,
+            info,
+            scratch: vec![0.0; source.shape.lanes() * max_frames].into_boxed_slice(),
+        }
+    }
+
+    /// SAFETY: `pool` must be the plan's pool, and nothing may write the
+    /// source buffer meanwhile.
+    unsafe fn compute(&mut self, pool: *const f32, frames: usize, base: &ValueInput) {
+        // SAFETY: as promised by the caller.
+        let source = unsafe { self.source.read(pool, frames) };
+        let shape = source.shape();
+        let info = &self.info;
+        let constant = base.constant().map(|value| info.position(value));
+        let base = base.samples(frames);
+        for voice in 0..shape.voices {
+            for channel in 0..shape.channels {
+                let start = (voice * shape.channels + channel) * frames;
+                let out = &mut self.scratch[start..start + frames];
+                let signal = source.lane(voice, channel);
+                for (i, (out, &x)) in out.iter_mut().zip(signal).enumerate() {
+                    // A non-finite signal must not poison the node's state.
+                    let x = if x.is_finite() { x } else { 0.0 };
+                    let position = constant.unwrap_or_else(|| info.position(base[i]));
+                    *out = info.value_at(position + x);
+                }
+            }
+        }
+    }
+
+    fn signal(&self, frames: usize) -> SignalIn<'_> {
+        let shape = self.source.shape;
+        SignalIn::new(&self.scratch[..shape.lanes() * frames], shape, frames)
+    }
+}
+
 /// An unconnected input: a buffer holding its value, smoothed on change.
 struct ValueInput {
     cell: Arc<ParamCell>,
@@ -801,6 +891,15 @@ impl ValueInput {
         }
         self.buffer[ramp..frames].fill(self.current);
         self.settled = false;
+    }
+
+    /// The value, if it's the same for the whole block.
+    fn constant(&self) -> Option<f32> {
+        self.settled.then_some(self.current)
+    }
+
+    fn samples(&self, frames: usize) -> &[f32] {
+        &self.buffer[..frames]
     }
 
     fn signal(&self, frames: usize) -> SignalIn<'_> {

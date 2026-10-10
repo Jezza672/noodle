@@ -264,12 +264,6 @@ impl Session {
         &self.telemetry
     }
 
-    /// The live value of the signal wired into parameter `key` of `node`, and
-    /// its range since this was last asked, if audio is running with it.
-    pub fn param_reading(&self, node: NodeId, key: &str) -> Option<noodle_engine::ParamReading> {
-        self.telemetry.read_param(node, key)
-    }
-
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio_config
     }

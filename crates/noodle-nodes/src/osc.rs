@@ -4,7 +4,7 @@ use std::f32::consts::TAU;
 
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Setup, Unit,
+    PerLane, Ports, Setup, Unit,
 };
 
 /// A sine oscillator. Its frequency input runs at audio rate, so the same node
@@ -15,8 +15,22 @@ pub struct Sine;
 /// [`Sine`], its frequency runs at audio rate.
 pub struct Saw;
 
-const FREQUENCY: usize = 0;
-const OUT: usize = 0;
+#[derive(Ports)]
+struct OscPorts {
+    #[param(
+        "frequency",
+        "Frequency",
+        ParamInfo::new(0.01, 20_000.0, 440.0)
+            .log()
+            .unit(Unit::Hertz)
+    )]
+    frequency: (),
+    #[output("out", "Out")]
+    out: (),
+}
+
+const FREQUENCY: usize = OscPorts::FREQUENCY;
+const OUT: usize = OscPorts::OUT;
 
 static SINE: NodeInfo = NodeInfo {
     id: "noodle.osc.sine",
@@ -32,25 +46,13 @@ static SAW: NodeInfo = NodeInfo {
     category: "Generators",
 };
 
-fn oscillator_layout() -> Layout {
-    Layout::realtime()
-        .param(
-            "frequency",
-            "Frequency",
-            ParamInfo::new(0.01, 20_000.0, 440.0)
-                .log()
-                .unit(Unit::Hertz),
-        )
-        .output("out", "Out")
-}
-
 impl NodeType for Sine {
     fn info(&self) -> &NodeInfo {
         &SINE
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(oscillator_layout())
+        Ok(OscPorts::layout())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
@@ -81,7 +83,7 @@ impl NodeType for Saw {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(oscillator_layout())
+        Ok(OscPorts::layout())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

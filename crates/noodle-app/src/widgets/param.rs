@@ -84,6 +84,18 @@ impl ParamOutput {
     }
 }
 
+/// What a wired parameter is doing, for the field to show instead of (or on
+/// top of) its own value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Live {
+    /// The effective value now.
+    pub value: f32,
+    /// The lowest and highest effective values over the last few seconds, so
+    /// the depth of the modulation shows against the parameter's range.
+    pub min: f32,
+    pub max: f32,
+}
+
 /// A field for one parameter. Build it each frame, then [`show`](Self::show) it.
 #[must_use = "call `show` to draw the field"]
 pub struct ParamField<'a> {
@@ -95,6 +107,10 @@ pub struct ParamField<'a> {
     width: Option<f32>,
     height: Option<f32>,
     zoom: f32,
+    live: Option<Live>,
+    /// Whether the wire replaces the value (the fill follows the live value)
+    /// rather than offsetting it (the fill stays at the base).
+    replaced: bool,
 }
 
 impl<'a> ParamField<'a> {
@@ -110,7 +126,20 @@ impl<'a> ParamField<'a> {
             width: None,
             height: None,
             zoom: 1.0,
+            live: None,
+            replaced: false,
         }
+    }
+
+    /// Marks the parameter as wired. The field draws the signal's range as
+    /// two ticks (the lowest and highest values lately) and a marker at the
+    /// value now. If the wire `replaced` the value, the fill and the number
+    /// follow the live value, which `value` is then expected to be; otherwise
+    /// they show the base value that the wire moves.
+    pub fn live(mut self, live: Option<Live>, replaced: bool) -> Self {
+        self.live = live;
+        self.replaced = replaced;
+        self
     }
 
     /// Distinguishes fields that share a label, e.g. the parameter's key.
@@ -374,6 +403,9 @@ impl<'a> ParamField<'a> {
             }
             painter.rect_filled(fill, radius, color);
         }
+        if let Some(live) = self.live {
+            self.paint_live(ui, &painter, rect, live);
+        }
         let stroke = if response.has_focus() {
             ui.visuals().selection.stroke
         } else {
@@ -392,6 +424,32 @@ impl<'a> ParamField<'a> {
             let right = rect.right_center() - vec2(pad, 0.0);
             painter.text(left, Align2::LEFT_CENTER, self.label, font.clone(), color);
             painter.text(right, Align2::RIGHT_CENTER, value, font, color);
+        }
+    }
+
+    /// The marks of a wired parameter: a tick at the lowest and highest
+    /// values lately, and a marker at the value now.
+    fn paint_live(&self, ui: &Ui, painter: &egui::Painter, rect: Rect, live: Live) {
+        let x = |value: f32| rect.left() + taper::to_normalized(self.info, value) * rect.width();
+        let color = ui.visuals().strong_text_color();
+        let tick = egui::Stroke::new(1.5 * self.zoom.max(0.5), color);
+        for value in [live.min, live.max] {
+            let x = x(value);
+            painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], tick);
+        }
+        // A bar between the ticks shows the swing at a glance.
+        let (low, high) = (x(live.min), x(live.max));
+        if high - low > 1.0 {
+            let y = rect.bottom() - 2.0 * self.zoom.max(0.5);
+            painter.line_segment([pos2(low, y), pos2(high, y)], tick);
+        }
+        if !self.replaced {
+            // The fill is the base here, so the live value gets its own mark.
+            painter.circle_filled(
+                pos2(x(live.value), rect.center().y),
+                2.5 * self.zoom.max(0.5),
+                color,
+            );
         }
     }
 

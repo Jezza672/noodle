@@ -2,20 +2,43 @@ use std::f32::consts::PI;
 
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Setup, Unit,
+    PerLane, Ports, Setup, Unit,
 };
 
 /// A state-variable filter with low-pass, band-pass and high-pass outputs all
 /// at once. Wire up whichever ones you need.
 pub struct Svf;
 
-const IN: usize = 0;
-const CUTOFF: usize = 1;
-const RESONANCE: usize = 2;
+#[derive(Ports)]
+struct SvfPorts {
+    #[input("in", "In")]
+    input: (),
+    #[param(
+        "cutoff",
+        "Cutoff",
+        ParamInfo::new(20.0, 20_000.0, 1_000.0)
+            .log()
+            .unit(Unit::Hertz)
+            .offset()
+    )]
+    cutoff: (),
+    #[param("resonance", "Resonance", ParamInfo::new(0.0, 1.0, 0.0).offset())]
+    resonance: (),
+    #[output("low", "Low")]
+    low: (),
+    #[output("band", "Band")]
+    band: (),
+    #[output("high", "High")]
+    high: (),
+}
 
-const LOW: usize = 0;
-const BAND: usize = 1;
-const HIGH: usize = 2;
+const IN: usize = SvfPorts::INPUT;
+const CUTOFF: usize = SvfPorts::CUTOFF;
+const RESONANCE: usize = SvfPorts::RESONANCE;
+
+const LOW: usize = SvfPorts::LOW;
+const BAND: usize = SvfPorts::BAND;
+const HIGH: usize = SvfPorts::HIGH;
 
 static INFO: NodeInfo = NodeInfo {
     id: "noodle.filter.svf",
@@ -30,19 +53,7 @@ impl NodeType for Svf {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime()
-            .input("in", "In")
-            .param(
-                "cutoff",
-                "Cutoff",
-                ParamInfo::new(20.0, 20_000.0, 1_000.0)
-                    .log()
-                    .unit(Unit::Hertz),
-            )
-            .param("resonance", "Resonance", ParamInfo::new(0.0, 1.0, 0.0))
-            .output("low", "Low")
-            .output("band", "Band")
-            .output("high", "High"))
+        Ok(SvfPorts::layout())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
