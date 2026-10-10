@@ -1,6 +1,6 @@
 use noodle_engine::{
     Config, ConfigInfo, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo,
-    NodeType, ParamInfo, PerLane, Setup, SignalIn, Telemetry, Unit,
+    NodeType, ParamInfo, PerLane, Setup, SignalIn, Skip, Telemetry, Unit,
 };
 
 use crate::meter::{LevelProbe, voice_sum};
@@ -146,6 +146,10 @@ struct MixKernel {
 
 impl LaneKernel for MixKernel {
     type State = ();
+
+    fn skip(&self) -> Skip {
+        Skip::AllSilentBelow(self.inputs)
+    }
 
     fn process_lane(&mut self, _: &mut (), _: &Context, mut lane: Lane<'_, '_>) {
         let n = self.inputs;
@@ -308,5 +312,29 @@ mod tests {
             Mix::new(&Telemetry::new()).layout(&config),
             Err(NodeError::Config(_))
         ));
+    }
+
+    #[test]
+    fn a_lane_is_silent_only_when_every_input_is() {
+        let config = Config::new().with("inputs", Value::Int(2));
+        let poly = Shape::new(2, 1);
+        let mut h = Harness::new(
+            &Mix::new(&Telemetry::new()),
+            &config,
+            &[(0, poly), (1, poly)],
+            48_000.0,
+            4,
+        )
+        .unwrap();
+        let mut a = h.input(0, 4);
+        a.lane_mut(0, 0).fill(1.0);
+        a.silence(1, 0);
+        let mut b = h.input(1, 4);
+        b.silence(0, 0);
+        b.silence(1, 0);
+        h.run(4).unwrap();
+        assert_eq!(h.output(0).lane(0, 0), &[1.0; 4]);
+        assert!(!h.output(0).is_silent(0, 0));
+        assert!(h.output(0).is_silent(1, 0));
     }
 }

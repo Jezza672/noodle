@@ -1,6 +1,6 @@
 use noodle_engine::{
     Config, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, PerLane, Ports, Setup, Telemetry, Unit,
+    ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
 };
 
 use crate::meter::{LevelProbe, voice_sum_out};
@@ -108,6 +108,10 @@ struct GainKernel;
 
 impl LaneKernel for GainKernel {
     type State = ();
+
+    fn skip(&self) -> Skip {
+        Skip::AnySilent(&[IN])
+    }
 
     fn process_lane(&mut self, _: &mut (), _: &Context, mut lane: Lane<'_, '_>) {
         let input = lane.inputs.get(IN);

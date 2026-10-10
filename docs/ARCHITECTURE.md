@@ -259,13 +259,65 @@ There are two kinds of signal, plus a possible third later:
     hard: the pitch changes at once, which can click on a bright patch. A
     note-on for a key already held retakes its voice. Pitch
     expressions bend only their own note's voice, and a pitch holds after
-    release. Every voice is processed all the time until finished voices can
-    be skipped (M3). `Voice Mix` (`noodle.poly.voice_mix`) sums voices.
+    release until the voice has been free for `tail` seconds (a parameter,
+    default 10), when it goes inactive: see "Silence skipping" below.
+    `Voice Mix` (`noodle.poly.voice_mix`) sums voices.
     `MIDI In` (`noodle.event.midi_in`) plays the app's MIDI input port: see
     "MIDI input" below.
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
     node's event ports.
 - **Spectral:** may be added later, for FFT-frame processing.
+
+### Synths are groups
+
+There are no synth nodes. A synth is a group (`noodle.group`) of primitive
+nodes (oscillators, filters, envelopes, VCAs, `Math`), with its controls as the
+group's inputs, so it stays editable once created: open it and change it.
+An input left unwired leaves the node behind it at the value set inside.
+`examples/subtractive-synth.ron` is one, and its unison is a nested group
+(five `Saw`s, each detuned by a `Math` node and placed by a `Pan`, into a
+`Mix`), so a unison of squares or of anything else is the same group with
+another oscillator. `Math` (`noodle.util.math`) takes an
+`expr` config such as `a * b + c` over inputs `a` to `d`; it is compiled to a
+postfix program when the node is built and run on a fixed stack per sample.
+`Pan` (`noodle.util.pan`) is the equal-power stereo placement it uses.
+
+### Silence skipping
+
+Every lane (one voice of one channel) of a signal carries a *silent* flag:
+"this block is exactly zero". Nodes that know it set it (`SignalOut::set_silent`,
+or `silence`, which also writes the zeros) and nodes downstream read it
+(`SignalIn::is_silent`). A lane is also silent when its whole signal is the
+constant 0, such as an unconnected audio input. The flags are cleared when a
+node's outputs are handed to it each block, so a node that says nothing is
+never claimed silent; they live in a plan-wide array parallel to the buffer
+pool, so nothing allocates.
+
+- **The wrapper does it.** A `LaneKernel` opts in with `skip()`:
+  `Skip::AnySilent(ports)` for a multiplier or a generator driven by a
+  pitch, `Skip::AllSilent(ports)` for a mixer. `PerLane` then skips a lane
+  whose inputs are silent *and* whose `is_idle(state)` is true, writing zeros
+  to every output and flagging them silent, so the saving cascades. Without
+  `is_idle` a filter's tail would be cut off: a lane that is still ringing runs
+  until its state has decayed (SVF and ladder below about -140 dB, an ADSR
+  that has finished its release). Generators that make sound from silent
+  inputs (noise, anything with a reverb tail) leave `skip()` at `Never`.
+  The oscillators skip a lane whose *frequency* is silent, since a voice with
+  no pitch is not sounding; this differs from a true 0 Hz, which would hold
+  a constant, but no parameter range reaches 0.
+- **Where it starts.** `Voices` flags a voice's `gate` silent for any block
+  in which it stays low, and flags all three of its outputs silent (writing 0
+  for the pitch) for a voice that has been free for `tail` seconds or never
+  used. Then the envelope goes idle and flags its output, the VCA and the filter
+  skip the lane, and `Voice Mix` adds only voices that sound. The tail is a
+  parameter and not the envelope's own release report because that would need
+  a wire from the envelope back to `Voices`, a feedback loop; it should be at
+  least the longest release in the patch, which a voice stops sounding at when
+  it goes inactive.
+- **A skipped oscillator doesn't run its phase.** A note on a voice that was
+  inactive therefore starts the oscillator at phase 0 rather than wherever it
+  free-ran to.
+- **Real-time rules** hold: a skip is a branch and a memset.
 
 ### MIDI input
 
