@@ -116,12 +116,23 @@ fn editing_the_notes_while_they_play_ends_only_what_changed() {
         };
         midi.notes.remove(0);
     });
-    std::thread::sleep(Duration::from_millis(60));
-    let events = run(&mut rig, BEAT, 2 * BEAT, true);
-    assert_eq!(events.iter().filter(|e| !e.1).count(), 1, "{events:?}");
-    assert!(events.iter().all(|e| !e.1));
-    // The surviving note still ends at its place.
-    let rest = run(&mut rig, 2 * BEAT, 8 * BEAT + BLOCK as u64, true);
+    // Play on until the hub has handed the node the new notes, which ends the
+    // removed one. How long that takes depends on the machine.
+    let mut at = BEAT;
+    let mut events = Vec::new();
+    let started_waiting = std::time::Instant::now();
+    while events.is_empty() {
+        assert!(
+            started_waiting.elapsed() < Duration::from_secs(10),
+            "no note-off"
+        );
+        events = run(&mut rig, at, at + BLOCK as u64, true);
+        at += BLOCK as u64;
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(!events[0].1);
+    let rest = run(&mut rig, at, 8 * BEAT + BLOCK as u64, true);
     assert_eq!(rest.len(), 1, "{rest:?}");
     assert_eq!(rest[0].0, 8 * BEAT);
 }
