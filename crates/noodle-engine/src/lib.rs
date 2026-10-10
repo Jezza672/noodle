@@ -4,6 +4,9 @@
 //!
 //! The node API, for writing nodes, starts at [`NodeType`].
 
+// Lets `#[derive(Ports)]`, which names `::noodle_engine`, work in this crate.
+extern crate self as noodle_engine;
+
 mod automation;
 mod builtin;
 mod compile;
@@ -41,6 +44,7 @@ pub use node::{
     NodeInfo, NodeType, Port, Setup, Transport,
 };
 pub use noodle_core::{Config, NodeId, Value};
+pub use noodle_macros::Ports;
 pub use offline::{Cancelled, OfflineNode, Progress};
 pub use param::{ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;

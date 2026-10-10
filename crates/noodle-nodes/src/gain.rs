@@ -1,6 +1,6 @@
 use noodle_engine::{
     Config, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, PerLane, Setup, Telemetry, Unit,
+    ParamInfo, PerLane, Ports, Setup, Telemetry, Unit,
 };
 
 use crate::meter::{LevelProbe, voice_sum_out};
@@ -22,9 +22,23 @@ impl Gain {
 /// The Gain's type ID.
 pub const GAIN_ID: &str = "noodle.util.gain";
 
-const IN: usize = 0;
-const GAIN: usize = 1;
-const OUT: usize = 0;
+#[derive(Ports)]
+struct GainPorts {
+    #[input("in", "In")]
+    input: (),
+    #[param(
+        "gain",
+        "Gain",
+        ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels)
+    )]
+    gain: (),
+    #[output("out", "Out")]
+    out: (),
+}
+
+const IN: usize = GainPorts::INPUT;
+const GAIN: usize = GainPorts::GAIN;
+const OUT: usize = GainPorts::OUT;
 
 static INFO: NodeInfo = NodeInfo {
     id: GAIN_ID,
@@ -39,14 +53,7 @@ impl NodeType for Gain {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime()
-            .input("in", "In")
-            .param(
-                "gain",
-                "Gain",
-                ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
-            )
-            .output("out", "Out"))
+        Ok(GainPorts::layout())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

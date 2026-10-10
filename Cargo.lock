@@ -2160,6 +2160,7 @@ name = "noodle-engine"
 version = "0.1.0"
 dependencies = [
  "noodle-core",
+ "noodle-macros",
  "rtrb",
 ]
 
@@ -2175,6 +2176,15 @@ dependencies = [
  "rubato",
  "serde",
  "symphonia",
+]
+
+[[package]]
+name = "noodle-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

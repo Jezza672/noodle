@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 noodle-core.workspace = true
+noodle-macros.workspace = true
 rtrb = "0.4.0"
