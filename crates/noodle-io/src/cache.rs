@@ -102,28 +102,37 @@ impl CacheStore {
 
     /// Whether a complete, valid entry exists for `key`.
     pub fn contains(&self, key: &CacheKey) -> bool {
-        self.get(key).is_some()
+        self.open_entry(key, false).is_some()
     }
 
     /// Opens the entry for `key`. A damaged entry (truncated, or with a bad
     /// header) is deleted and reported as missing, so the caller just
     /// renders it again. Marks the entry as recently used.
     pub fn get(&self, key: &CacheKey) -> Option<CachedAudio> {
+        self.open_entry(key, true)
+    }
+
+    fn open_entry(&self, key: &CacheKey, touch: bool) -> Option<CachedAudio> {
         let path = self.path(key);
-        let audio = CachedAudio::open(&path);
-        match &audio {
-            Ok(_) => {
-                // Best effort: only used to pick what to evict.
-                if let Ok(file) = File::options().write(true).open(&path) {
-                    let _ = file.set_modified(SystemTime::now());
+        match CachedAudio::open(&path) {
+            Ok(audio) => {
+                if touch {
+                    // Best effort: only used to pick what to evict.
+                    if let Ok(file) = File::options().write(true).open(&path) {
+                        let _ = file.set_modified(SystemTime::now());
+                    }
                 }
+                Some(audio)
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => {
+            // Only an entry that is really damaged is deleted. Any other
+            // error (permissions, too many open files) says nothing about
+            // the entry, so it is just a miss.
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                 let _ = fs::remove_file(&path);
+                None
             }
+            Err(_) => None,
         }
-        audio.ok()
     }
 
     /// Starts writing the entry for `key`. Nothing is visible until
@@ -156,6 +165,7 @@ impl CacheStore {
         file.write_all(&info.header())?;
         Ok(CacheWriter {
             file: Some(file),
+            committed: false,
             partial,
             target: self.path(key),
             info,
@@ -228,10 +238,11 @@ struct StoreFile {
     modified: SystemTime,
 }
 
-/// Writes one entry. Dropping it without calling [`commit`](Self::commit)
-/// deletes the partial file.
+/// Writes one entry. Dropping it without a successful
+/// [`commit`](Self::commit) deletes the partial file.
 pub struct CacheWriter {
     file: Option<BufWriter<File>>,
+    committed: bool,
     partial: PathBuf,
     target: PathBuf,
     info: CacheInfo,
@@ -272,13 +283,16 @@ impl CacheWriter {
         file.sync_all()?;
         drop(file);
         fs::rename(&self.partial, &self.target)?;
+        self.committed = true;
         Ok(self.info)
     }
 }
 
 impl Drop for CacheWriter {
     fn drop(&mut self) {
-        if self.file.take().is_some() {
+        // Also after a commit that failed part way, e.g. on a full disk.
+        if !self.committed {
+            self.file = None;
             let _ = fs::remove_file(&self.partial);
         }
     }
@@ -296,8 +310,13 @@ impl CachedAudio {
         let mut file = File::open(path)?;
         let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidData, why.to_owned());
         let mut header = [0; HEADER_BYTES as usize];
-        file.read_exact(&mut header)
-            .map_err(|_| bad("truncated header"))?;
+        file.read_exact(&mut header).map_err(|e| {
+            if e.kind() == io::ErrorKind::UnexpectedEof {
+                bad("truncated header")
+            } else {
+                e
+            }
+        })?;
         let info = CacheInfo::parse(&header).ok_or_else(|| bad("bad header"))?;
         let expected = info.data_bytes().and_then(|d| d.checked_add(HEADER_BYTES));
         if expected != Some(file.metadata()?.len()) {
@@ -392,6 +411,35 @@ mod tests {
         assert!(!store.contains(&key(1)));
         drop(w);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn contains_does_not_count_as_a_use() {
+        let (dir, store) = store();
+        put(&store, &key(1), &[0.0; 4]);
+        let path = dir.path().join(format!("{}.nrc", key(1).to_hex()));
+        let old = SystemTime::now() - Duration::from_secs(1000);
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(store.contains(&key(1)));
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), old);
+        assert!(store.get(&key(1)).is_some());
+        assert!(fs::metadata(&path).unwrap().modified().unwrap() > old);
+    }
+
+    #[test]
+    fn an_unreadable_entry_is_kept() {
+        // A directory where the entry should be: opening it is an I/O error
+        // that isn't damage, so it must not be deleted.
+        let (dir, store) = store();
+        let path = dir.path().join(format!("{}.nrc", key(1).to_hex()));
+        fs::create_dir(&path).unwrap();
+        assert!(store.get(&key(1)).is_none());
+        assert!(path.exists());
     }
 
     #[test]

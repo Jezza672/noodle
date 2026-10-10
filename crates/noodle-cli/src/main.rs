@@ -135,6 +135,7 @@ fn run(command: Command) -> Result<(), String> {
                 base: base.to_owned(),
                 settings,
                 frames,
+                extend_registry: None,
             };
             let mut wav = noodle_io::WavStreamWriter::create(&output, channels, sample_rate)
                 .map_err(|error| format!("can't write {}: {error}", output.display()))?;

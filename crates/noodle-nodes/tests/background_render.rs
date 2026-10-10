@@ -77,6 +77,7 @@ fn request(project: Project, base: &Path) -> RenderRequest {
         base: base.to_owned(),
         settings: SETTINGS,
         frames: FRAMES,
+        extend_registry: None,
     }
 }
 
@@ -172,11 +173,40 @@ fn a_cancelled_render_leaves_nothing_behind() {
     // Long enough that the cancel lands mid-render.
     req.frames = 10_000_000;
     let job = spawn_render_to_cache(req, store.clone(), key(1));
+    let deadline = Instant::now() + Duration::from_secs(60);
     while job.fraction() == 0.0 {
+        assert!(Instant::now() < deadline, "render never started");
         std::thread::sleep(Duration::from_millis(1));
     }
     job.cancel();
     assert!(matches!(finish(job), Err(StreamError::Cancelled)));
     assert!(!store.contains(&key(1)));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+#[test]
+fn a_hit_of_the_wrong_shape_is_rendered_again() {
+    let base = folder("shape");
+    let (store, _dir) = cache("shape");
+    let project = clip_project("tone.wav");
+    let mut short = request(project.clone(), &base);
+    short.frames = 1000;
+    finish(spawn_render_to_cache(short, store.clone(), key(1))).unwrap();
+    // Same key, longer request: the stored entry is the wrong length.
+    let job = spawn_render_to_cache(request(project, &base), store.clone(), key(1));
+    assert!(matches!(finish(job).unwrap(), CacheRender::Stored(..)));
+    assert_eq!(store.get(&key(1)).unwrap().info().frames, FRAMES as u64);
+}
+
+#[test]
+fn extra_node_types_can_be_registered_for_the_render() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let base = folder("extend");
+    let called = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&called);
+    let mut req = request(clip_project("tone.wav"), &base);
+    req.extend_registry = Some(Arc::new(move |_| seen.store(true, Ordering::Relaxed)));
+    finish(spawn_render(req, |_| Ok::<_, ()>(()))).unwrap();
+    assert!(called.load(Ordering::Relaxed));
 }

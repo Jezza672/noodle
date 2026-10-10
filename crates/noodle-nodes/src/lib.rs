@@ -31,8 +31,8 @@ mod voices;
 
 pub use adsr::{ADSR_ID, Adsr};
 pub use background::{
-    CHUNK_FRAMES, CacheRender, RenderReport, RenderRequest, render_streaming, spawn_render,
-    spawn_render_to_cache,
+    CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, render_streaming,
+    spawn_render, spawn_render_to_cache,
 };
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use clip::{

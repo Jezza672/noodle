@@ -70,7 +70,10 @@ impl KeyBuilder {
     }
 
     pub fn str(&mut self, text: &str) -> &mut Self {
-        self.bytes(text.as_bytes())
+        self.hasher.update(b"s");
+        self.hasher.update(&(text.len() as u64).to_le_bytes());
+        self.hasher.update(text.as_bytes());
+        self
     }
 
     pub fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
@@ -87,7 +90,9 @@ impl KeyBuilder {
     }
 
     pub fn i64(&mut self, value: i64) -> &mut Self {
-        self.u64(value as u64)
+        self.hasher.update(b"i");
+        self.hasher.update(&value.to_le_bytes());
+        self
     }
 
     /// Hashes the bit pattern, so `0.0` and `-0.0` differ and a NaN is
@@ -105,7 +110,9 @@ impl KeyBuilder {
     }
 
     pub fn bool(&mut self, value: bool) -> &mut Self {
-        self.u64(u64::from(value))
+        self.hasher.update(b"o");
+        self.hasher.update(&[u8::from(value)]);
+        self
     }
 
     /// Mixes in another key, e.g. an upstream node's.
@@ -159,6 +166,45 @@ mod tests {
             })
         );
         assert_ne!(base, KeyBuilder::new("other").str("gain").f32(0.5).finish());
+    }
+
+    #[test]
+    fn every_field_type_has_its_own_tag() {
+        let keys = [
+            key(|b| {
+                b.u64(1);
+            }),
+            key(|b| {
+                b.i64(1);
+            }),
+            key(|b| {
+                b.bool(true);
+            }),
+            key(|b| {
+                b.f32(1.0);
+            }),
+            key(|b| {
+                b.f64(1.0);
+            }),
+            key(|b| {
+                b.str("a");
+            }),
+            key(|b| {
+                b.bytes(b"a");
+            }),
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        let signed = key(|b| {
+            b.i64(-1);
+        });
+        let unsigned = key(|b| {
+            b.u64(u64::MAX);
+        });
+        assert_ne!(signed, unsigned);
     }
 
     #[test]

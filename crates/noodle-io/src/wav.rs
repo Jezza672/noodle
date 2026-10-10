@@ -1,6 +1,6 @@
 //! Reading and writing WAV files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use hound::Error as WavError;
 
@@ -33,34 +33,59 @@ pub fn write_wav(
 }
 
 /// Writes 32-bit float WAV a chunk at a time, for renders too long to hold in
-/// memory. The file is only valid once [`finish`](Self::finish) has run.
+/// memory. The audio goes to a sibling `.partial` file that replaces `path`
+/// only when [`finish`](Self::finish) succeeds, so a render that fails or is
+/// dropped never destroys an existing file.
 pub struct WavStreamWriter {
-    writer: hound::WavWriter<std::io::BufWriter<std::fs::File>>,
+    writer: Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>,
+    partial: PathBuf,
+    path: PathBuf,
 }
 
 impl WavStreamWriter {
     pub fn create(path: &Path, channels: usize, sample_rate: u32) -> Result<Self, WavError> {
+        // A WAV needs at least one channel; hound would divide by zero.
+        if channels == 0 {
+            return Err(WavError::Unsupported);
+        }
         let spec = hound::WavSpec {
             channels: u16::try_from(channels).map_err(|_| WavError::Unsupported)?,
             sample_rate,
             bits_per_sample: 32,
             sample_format: hound::SampleFormat::Float,
         };
+        let mut partial = path.as_os_str().to_owned();
+        partial.push(".partial");
+        let partial = PathBuf::from(partial);
         Ok(Self {
-            writer: hound::WavWriter::create(path, spec)?,
+            writer: Some(hound::WavWriter::create(&partial, spec)?),
+            partial,
+            path: path.to_owned(),
         })
     }
 
     /// Appends interleaved samples.
     pub fn write(&mut self, samples: &[f32]) -> Result<(), WavError> {
+        let writer = self.writer.as_mut().expect("writer used after finish");
         for &sample in samples {
-            self.writer.write_sample(sample)?;
+            writer.write_sample(sample)?;
         }
         Ok(())
     }
 
-    pub fn finish(self) -> Result<(), WavError> {
-        self.writer.finalize()
+    pub fn finish(mut self) -> Result<(), WavError> {
+        self.writer.take().expect("finished twice").finalize()?;
+        std::fs::rename(&self.partial, &self.path)?;
+        Ok(())
+    }
+}
+
+impl Drop for WavStreamWriter {
+    fn drop(&mut self) {
+        // Not finished: close the file and leave nothing behind.
+        if self.writer.take().is_some() {
+            let _ = std::fs::remove_file(&self.partial);
+        }
     }
 }
 
@@ -116,6 +141,22 @@ mod tests {
         let audio = read_wav(&path).unwrap();
         assert_eq!(audio.samples, samples);
         assert_eq!((audio.channels, audio.sample_rate), (2, 44_100));
+    }
+
+    #[test]
+    fn an_abandoned_stream_leaves_an_existing_file_alone() {
+        let path = temp("abandoned.wav");
+        write_wav(&path, &[0.25, 0.5], 2, 48_000).unwrap();
+        let mut w = WavStreamWriter::create(&path, 2, 48_000).unwrap();
+        w.write(&[1.0; 8]).unwrap();
+        drop(w);
+        assert_eq!(read_wav(&path).unwrap().samples, [0.25, 0.5]);
+        assert!(!path.with_extension("wav.partial").exists());
+    }
+
+    #[test]
+    fn zero_channels_is_an_error_not_a_panic() {
+        assert!(WavStreamWriter::create(&temp("zero.wav"), 0, 48_000).is_err());
     }
 
     #[test]

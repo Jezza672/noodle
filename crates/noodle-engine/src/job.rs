@@ -82,7 +82,9 @@ impl<T> Job<T> {
         done
     }
 
-    /// Waits for the result.
+    /// Waits for the result. Don't call it after [`poll`](Self::poll) has
+    /// already returned the result: that is gone, and this reports
+    /// [`JobPanicked`].
     pub fn wait(mut self) -> Result<T, JobPanicked> {
         if let Some(done) = self.finished.take() {
             return done;

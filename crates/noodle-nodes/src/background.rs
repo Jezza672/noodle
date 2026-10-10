@@ -7,6 +7,7 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use noodle_core::{CacheKey, Project};
 use noodle_engine::{
@@ -20,6 +21,9 @@ use crate::{ClipProblem, FileError, register_library_blocking};
 /// Frames handed to the sink at a time: about 340 ms at 48 kHz.
 pub const CHUNK_FRAMES: usize = 16_384;
 
+/// Adds node types to a render's registry; see [`RenderRequest::extend_registry`].
+pub type ExtendRegistry = Arc<dyn Fn(&mut Registry) + Send + Sync>;
+
 /// What to render, from the start of the timeline.
 #[derive(Clone)]
 pub struct RenderRequest {
@@ -28,6 +32,10 @@ pub struct RenderRequest {
     pub base: PathBuf,
     pub settings: Settings,
     pub frames: usize,
+    /// Called on the render's registry after the built-in nodes and the
+    /// library are registered, to add node types the app has (plugins, in
+    /// M5). The registry is the render's own, on the render's thread.
+    pub extend_registry: Option<ExtendRegistry>,
 }
 
 /// What a finished render reports besides the audio.
@@ -62,6 +70,9 @@ pub fn render_streaming<E>(
 ) -> Result<RenderReport, StreamError<E>> {
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
+    if let Some(extend) = &request.extend_registry {
+        extend(&mut registry);
+    }
     let settings = request.settings;
     let rate = settings.sample_rate.round() as u32;
     let table = TempoTable::new(request.project.tempo_map(), settings.sample_rate);
@@ -110,21 +121,30 @@ pub enum CacheRender {
 /// the store already has it. The entry only appears once the render has
 /// finished completely; a cancelled or failed render leaves nothing behind.
 ///
-/// The caller computes `key` (it must cover everything the render depends
-/// on, including the settings).
+/// The caller computes `key`. It must cover everything the render depends
+/// on: the project, the settings, and the *contents* of every clip file it
+/// reads (a re-exported file at the same path must give a new key). A hit
+/// whose channels, rate or length don't match the request is ignored.
 pub fn spawn_render_to_cache(
     request: RenderRequest,
     store: CacheStore,
     key: CacheKey,
 ) -> Job<Result<CacheRender, StreamError<io::Error>>> {
     Job::spawn(move |progress| {
-        if let Some(hit) = store.get(&key) {
+        let settings = request.settings;
+        let wanted = CacheInfo {
+            channels: settings.channels,
+            sample_rate: settings.sample_rate.round() as u32,
+            frames: request.frames as u64,
+        };
+        // A hit of the wrong shape means the key missed something the render
+        // depends on; render again rather than serve it.
+        if let Some(hit) = store.get(&key).filter(|hit| hit.info() == wanted) {
             progress.report(1.0)?;
             return Ok(CacheRender::Hit(hit.info()));
         }
-        let settings = request.settings;
         let mut writer = store
-            .writer(&key, settings.channels, settings.sample_rate.round() as u32)
+            .writer(&key, wanted.channels, wanted.sample_rate)
             .map_err(StreamError::Sink)?;
         let report = render_streaming(&request, progress, |chunk| writer.write(chunk))?;
         if !report.is_complete() {
