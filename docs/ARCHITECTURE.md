@@ -813,7 +813,22 @@ playback. The app scans in the background at startup (the cache is read first,
 so plugins found last time are available at once) and compiles again when the
 scan reports.
 
-**Limits.** A plugin that crashes while playing takes the process with it
+**Config exceptions.** The `state` and `nondeterministic` settings change
+neither ports nor shapes, which the config-versus-parameter rule says makes
+them parameters. They stay config because neither is a number a wire could
+sensibly drive: state is an opaque blob and `nondeterministic` is a flag.
+
+**Threads.** `instantiate` loads a plugin on its own thread (waiting up to 30
+s, then failing the node), and `start_processing` runs on the first block, on
+the audio thread. Each instance having its own "main thread" is a known
+shortcut: plugins that tie global state to one thread (JUCE-based ones) and
+editor windows (macOS wants the GUI on the process's main thread) need one
+shared plugin thread, to be settled with the editor work. The same work must
+make capturing state also write the plugin's parameter values back to the
+node's port values, because the ports win on the first block.
+
+**Limits.** The transport's bar fields assume quarter-note beats and a
+meter that has not changed. A plugin that crashes while playing takes the process with it
 (until out-of-process hosting in M6); no editor windows yet; plugin latency is
 ignored; only the first note port is wired; CLAP extensions beyond audio
 ports, note ports, parameters and state (e.g. tail, voice info, remote

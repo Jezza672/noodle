@@ -441,13 +441,6 @@ impl Session {
         }
     }
 
-    /// The chosen MIDI port can be unplugged and plugged back in, and the
-    /// drivers don't say when, so look at the list of ports about once a
-    /// second: let go of the port when it is gone, and open it again when it
-    /// returns (or when it was missing from the start). Ports are matched by
-    /// name without ALSA's numbers, which change when a device comes back.
-    /// An unplug and replug between two looks that leaves the port's name
-    /// as it was isn't seen.
     /// Takes the result of the background plugin scan, once it's done: new
     /// plugins become node types, and the graph is compiled again so nodes
     /// that were unknown until now come to life.
@@ -488,6 +481,13 @@ impl Session {
         (!self.plugins.is_empty()).then(|| self.plugins.extender())
     }
 
+    /// The chosen MIDI port can be unplugged and plugged back in, and the
+    /// drivers don't say when, so look at the list of ports about once a
+    /// second: let go of the port when it is gone, and open it again when it
+    /// returns (or when it was missing from the start). Ports are matched by
+    /// name without ALSA's numbers, which change when a device comes back.
+    /// An unplug and replug between two looks that leaves the port's name
+    /// as it was isn't seen.
     fn watch_midi(&mut self, now: Instant) {
         let Some(name) = self.audio_config.midi_input.clone() else {
             return;

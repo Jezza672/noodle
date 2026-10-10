@@ -65,16 +65,41 @@ impl PluginFile {
     }
 }
 
-/// A file's size and modification time in whole seconds.
+/// A plugin's size and modification time in whole seconds. For a macOS
+/// bundle (a folder), the total size and the newest modification time of
+/// everything inside: replacing the binary in place doesn't touch the
+/// folder's own time.
 pub fn file_stamp(path: &std::path::Path) -> Option<(u64, u64)> {
+    fn stamp(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        Some((meta.len(), modified))
+    }
+    fn walk(dir: &std::path::Path, depth: usize, total: &mut (u64, u64)) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if let Some((len, modified)) = stamp(&meta) {
+                total.0 += len;
+                total.1 = total.1.max(modified);
+            }
+            if meta.is_dir() && depth < 6 {
+                walk(&entry.path(), depth + 1, total);
+            }
+        }
+    }
     let meta = std::fs::metadata(path).ok()?;
-    let modified = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    Some((meta.len(), modified))
+    let mut total = stamp(&meta)?;
+    if meta.is_dir() {
+        walk(path, 0, &mut total);
+    }
+    Some(total)
 }
 
 impl Descriptor {

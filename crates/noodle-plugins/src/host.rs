@@ -11,6 +11,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
 use clack_extensions::note_ports::PluginNotePorts;
@@ -49,6 +50,10 @@ impl std::fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
+/// How long loading a plugin (create, restore state, activate) may take
+/// before the node gives up, so one that hangs can't freeze the app for good.
+pub const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Most parameters a plugin may have as ports. More would make the node
 /// unusable, and a plugin that has them is exposing internals.
 pub const MAX_PARAMS: usize = 1024;
@@ -86,12 +91,21 @@ pub fn describe_file(path: &Path) -> Result<Vec<Descriptor>, HostError> {
         .ok_or_else(|| HostError("not a CLAP plugin: no plugin factory".into()))?;
     let info = host_info()?;
     let mut found = Vec::new();
+    let mut failure = None;
     for descriptor in factory.plugin_descriptors() {
         let Some(id) = descriptor.id() else { continue };
-        let mut instance = PluginInstance::<Host>::new(|_| HostShared, |_| (), &entry, id, &info)
-            .map_err(|error| {
-            HostError(format!("can't create {}: {error}", id.to_string_lossy()))
-        })?;
+        // One plugin that won't start doesn't hide the file's others.
+        let mut instance =
+            match PluginInstance::<Host>::new(|_| HostShared, |_| (), &entry, id, &info) {
+                Ok(instance) => instance,
+                Err(error) => {
+                    failure = Some(HostError(format!(
+                        "can't create {}: {error}",
+                        id.to_string_lossy()
+                    )));
+                    continue;
+                }
+            };
         let mut described = describe_instance(&mut instance);
         described.id = id.to_string_lossy().into_owned();
         described.name = text(descriptor.name());
@@ -104,7 +118,10 @@ pub fn describe_file(path: &Path) -> Result<Vec<Descriptor>, HostError> {
             .any(|feature| feature.to_bytes() == b"instrument");
         found.push(described);
     }
-    Ok(found)
+    match failure {
+        Some(error) if found.is_empty() => Err(error),
+        _ => Ok(found),
+    }
 }
 
 fn describe_instance(instance: &mut PluginInstance<Host>) -> Descriptor {
@@ -232,7 +249,11 @@ pub(crate) fn start(
                     return;
                 }
             };
-            let _ = ready_tx.send(Ok(processor));
+            if let Err(mpsc::SendError(Ok(processor))) = ready_tx.send(Ok(processor)) {
+                // The node gave up waiting (see `LOAD_TIMEOUT`).
+                instance.deactivate(processor);
+                return;
+            }
             // Until the node gives the processor back (or is leaked, and the
             // sender with it).
             if let Ok(processor) = incoming.recv() {
@@ -241,8 +262,15 @@ pub(crate) fn start(
         })
         .map_err(|e| HostError(e.to_string()))?;
     let processor = ready_rx
-        .recv()
-        .map_err(|_| HostError("the plugin's thread ended while loading".into()))??;
+        .recv_timeout(LOAD_TIMEOUT)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                HostError(format!("the plugin didn't load within {LOAD_TIMEOUT:?}"))
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                HostError("the plugin's thread ended while loading".into())
+            }
+        })??;
     Ok(Running {
         processor,
         control: Control { close },

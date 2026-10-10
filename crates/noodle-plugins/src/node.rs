@@ -42,8 +42,16 @@ use crate::host::{self, Control, Host};
 pub const PARAM_STEP: usize = 32;
 
 /// The most events (notes and parameter changes) handed to a plugin per
-/// block. The rest are dropped, so the audio thread never allocates.
+/// block. The rest are dropped, so the audio thread never allocates. (The
+/// events a plugin writes go to a buffer of the same size; one that writes
+/// more in a block makes that buffer grow, which a plugin that busy would
+/// need to be told not to do.)
 const MAX_EVENTS: usize = 4096;
+
+/// Room kept for note events: parameter changes stop this far short of
+/// [`MAX_EVENTS`], so a flood of modulation can't push out a note-off and
+/// leave a note stuck.
+const NOTE_RESERVE: usize = 512;
 
 /// Notes remembered so a note-off can say which key it is for.
 const MAX_NOTES: usize = 256;
@@ -224,13 +232,9 @@ impl NodeType for ClapNodeType {
             setup.max_frames,
         )
         .map_err(|error| NodeError::config(error.to_string()))?;
-        let started = running
-            .processor
-            .start_processing()
-            .map_err(|error| NodeError::config(error.to_string()))?;
         Ok(Instance::realtime(ClapNode::new(
             &self.descriptor,
-            started,
+            running.processor.into(),
             running.control,
             setup.max_frames,
         )))
@@ -303,7 +307,9 @@ struct NoteKey {
 }
 
 struct ClapNode {
-    processor: Option<StartedPluginAudioProcessor<Host>>,
+    /// Started on the first block, which runs on the audio thread (CLAP's
+    /// `start_processing` belongs there).
+    processor: Option<PluginAudioProcessor<Host>>,
     control: Option<Control>,
     max_frames: usize,
     audio_in: Vec<PortBuffers>,
@@ -320,7 +326,7 @@ struct ClapNode {
 impl ClapNode {
     fn new(
         descriptor: &Descriptor,
-        processor: StartedPluginAudioProcessor<Host>,
+        processor: PluginAudioProcessor<Host>,
         control: Control,
         max_frames: usize,
     ) -> Self {
@@ -381,7 +387,11 @@ impl ClapNode {
         self.build_events(io, start, n);
         let transport = transport_event(ctx, start);
 
-        let Some(processor) = self.processor.as_mut() else {
+        let Some(Ok(processor)) = self
+            .processor
+            .as_mut()
+            .map(PluginAudioProcessor::ensure_processing_started)
+        else {
             return self.silence(io, start, n);
         };
         let input_events = InputEvents::from_buffer(&self.in_events);
@@ -446,7 +456,6 @@ impl ClapNode {
         self.in_events.clear();
         self.sample_params(io, start, 0);
         let mut next_step = PARAM_STEP;
-        let mut count = self.params.len();
         // Only the first note port is read; plugins with several are rare.
         let events = io.event_inputs.first().copied().unwrap_or(&[]);
         for event in events {
@@ -459,10 +468,9 @@ impl ClapNode {
                 self.sample_params(io, start, next_step);
                 next_step += PARAM_STEP;
             }
-            if count >= MAX_EVENTS {
+            if self.in_events.len() as usize >= MAX_EVENTS {
                 break;
             }
-            count += 1;
             self.push_note(event, at as u32);
         }
         while next_step < n {
@@ -492,7 +500,7 @@ impl ClapNode {
             if value == slot.last || !value.is_finite() {
                 continue;
             }
-            if self.in_events.len() as usize >= MAX_EVENTS {
+            if self.in_events.len() as usize >= MAX_EVENTS - NOTE_RESERVE {
                 return;
             }
             slot.last = value;
@@ -659,7 +667,10 @@ impl Node for ClapNode {
 impl Drop for ClapNode {
     fn drop(&mut self) {
         if let (Some(processor), Some(control)) = (self.processor.take(), self.control.take()) {
-            control.close(processor.stop_processing());
+            // Stopping belongs on the audio thread too, but a node is dropped
+            // on the controller's thread; the plugin is deactivated right
+            // after, which is what matters.
+            control.close(processor.into_stopped());
         }
     }
 }
