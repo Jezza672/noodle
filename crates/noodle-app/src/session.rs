@@ -56,17 +56,24 @@ pub struct Nodes {
     pub telemetry: Telemetry,
     /// Where the track input nodes get their clips.
     pub clips: ClipFeeds,
+    /// Where the MIDI In nodes get their messages.
+    pub midi: noodle_io::MidiBus,
 }
 
 impl Nodes {
     /// Every node type the app offers.
     pub fn all() -> Self {
         let mut registry = Registry::with_builtins();
-        let Library { telemetry, clips } = noodle_nodes::register_library(&mut registry);
+        let Library {
+            telemetry,
+            clips,
+            midi,
+        } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
             telemetry,
             clips,
+            midi,
         }
     }
 }
@@ -77,6 +84,10 @@ pub struct Session {
     registry: Registry,
     telemetry: Telemetry,
     clips: ClipFeeds,
+    /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
+    midi: noodle_io::MidiBus,
+    /// The open MIDI input port, if one is chosen and opened.
+    midi_connection: Option<noodle_io::MidiConnection>,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
     /// Where the playhead is while no stream is open, so it can be set and
@@ -215,6 +226,7 @@ impl Session {
             registry,
             telemetry,
             clips,
+            midi,
         } = nodes;
         let mut session = Self {
             saved: Project::new(),
@@ -223,6 +235,8 @@ impl Session {
             registry,
             telemetry,
             clips,
+            midi,
+            midi_connection: None,
             clip_problems: Vec::new(),
             parked: Tick(0),
             path: None,
@@ -270,10 +284,46 @@ impl Session {
 
     /// Chooses the device to play on. If playing, playback restarts there.
     pub fn set_audio_config(&mut self, config: AudioConfig) {
+        let without_midi = |c: &AudioConfig| AudioConfig {
+            midi_input: None,
+            ..c.clone()
+        };
+        let audio_changed = without_midi(&self.audio_config) != without_midi(&config);
+        let midi_changed = self.audio_config.midi_input != config.midi_input;
         self.audio_config = config;
-        if self.audio.is_some() {
+        if midi_changed {
+            self.connect_midi();
+        }
+        if audio_changed && self.audio.is_some() {
             self.close_stream();
             self.play();
+        }
+    }
+
+    /// Plays `key` through the MIDI In nodes as if it came from the input
+    /// port: for trying notes from the piano roll's keyboard.
+    pub fn audition(&self, key: u8, on: bool) {
+        let status = if on { 0x90 } else { 0x80 };
+        self.midi
+            .send([status, key.min(127), if on { 100 } else { 0 }]);
+    }
+
+    /// The MIDI input port that is open, if any.
+    #[cfg(test)]
+    pub fn midi_input(&self) -> Option<&str> {
+        self.midi_connection.as_ref().map(|c| c.name())
+    }
+
+    /// Opens the chosen MIDI input port, closing the one before. A port that
+    /// won't open leaves none open and says why.
+    fn connect_midi(&mut self) {
+        self.midi_connection = None;
+        let Some(name) = self.audio_config.midi_input.clone() else {
+            return;
+        };
+        match noodle_io::connect_midi(&name, &self.midi) {
+            Ok(connection) => self.midi_connection = Some(connection),
+            Err(error) => self.message = Some(format!("MIDI input: {error}")),
         }
     }
 
@@ -1352,6 +1402,24 @@ mod tests {
     }
 
     #[test]
+    fn a_midi_port_that_will_not_open_is_reported_and_leaves_none_open() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(AudioConfig {
+            midi_input: Some("No Such Port".into()),
+            ..AudioConfig::default()
+        });
+        assert_eq!(session.midi_input(), None);
+        assert!(
+            session
+                .message()
+                .is_some_and(|m| m.starts_with("MIDI input:"))
+        );
+        // Turning it off again needs no port and says nothing new.
+        session.set_audio_config(AudioConfig::default());
+        assert_eq!(session.midi_input(), None);
+    }
+
+    #[test]
     fn falling_back_keeps_the_input_and_drops_the_output_choices() {
         let chosen = AudioConfig {
             host: Some("jack".into()),
@@ -1359,6 +1427,7 @@ mod tests {
             input: noodle_io::InputChoice::Default,
             sample_rate: Some(96_000),
             buffer_size: Some(64),
+            midi_input: Some("Keys".into()),
         };
         assert_eq!(
             fallback(&chosen),

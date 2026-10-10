@@ -156,8 +156,9 @@ The **Project** is the single source of truth. It holds one global graph:
     output starts with gain 0 dB and mute 0 already set, so the track's stage
     exists from creation (solo and mute act at the output, so the input needs
     none) and the first fader or mute touch is a parameter change, not a
-    graph change with a fade. The track input's `midi` output is left unwired and the group has no MIDI port yet; the MIDI work
-    adds both. The arrangement view calls it.
+    graph change with a fade. The track input's `midi` output is left unwired,
+    and the group has no MIDI port: a track plays a synth by wiring `midi` to
+    one inside the group. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
     `group_nodes` folds a selection into a group as one undo step.
 - **Tracks** are group nodes of a particular shape (a steering decision from
@@ -168,8 +169,8 @@ The **Project** is the single source of truth. It holds one global graph:
   - **The track input node** (`noodle.track.input`) sits inside the group. It
     has two outputs, `audio` and `midi`, and the transport plays the track's
     clips out of them at the right times: audio clips out of `audio`, MIDI
-    clips out of `midi`. (The `midi` output is an events signal, which arrives
-    with M3; until then it exists and stays empty.)
+    clips out of `midi`. (The `midi` output is an events signal; it stays
+    empty on a track with no MIDI clips.)
   - **Creating a track** creates the group, its track input node and the
     group's output node in one step, with the input's `audio` output wired
     into the group's output by default. Undo removes all of it.
@@ -241,9 +242,41 @@ There are two kinds of signal, plus a possible third later:
     (Hz), `gate` and `velocity` signals, falling back to an earlier held note
     on release and holding its pitch after the last so an envelope's release
     stays in tune. The track input's `midi` output is also an events port.
+    `MIDI In` (`noodle.event.midi_in`) plays the app's MIDI input port: see
+    "MIDI input" below.
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
     node's event ports.
 - **Spectral:** may be added later, for FFT-frame processing.
+
+### MIDI input
+
+A MIDI port is chosen in the audio settings dialog (`AudioConfig::midi_input`,
+a port name, saved with the other device preferences). The choice belongs to
+the app, not the project, like the audio device, and changing it doesn't
+restart the audio.
+
+- **From the port to the graph.** `noodle-io/src/midi.rs` opens the port with
+  `midir`. The driver calls back on its own thread, which keeps only whole
+  channel messages (system exclusive and real-time bytes are dropped) and
+  pushes each as three bytes into a ring buffer per `MidiBus` subscriber.
+  Each `MIDI In` node subscribes when it is built and pops its own buffer on
+  the audio thread, so neither side locks, waits or allocates; a node that
+  falls 1024 messages behind misses the newest. Dropping the node
+  unsubscribes it.
+- **What `MIDI In` outputs.** Note-ons and note-offs become note events (a
+  note-on with velocity 0 is a note-off, velocity is 0 to 1), with a note ID
+  made from the channel and key and its top bit set, which keeps it apart
+  from the IDs of notes in clips. Controllers, pitch bend, pressure and
+  program changes pass on as raw `Midi` events. All notes off and all sound
+  off end the notes it still holds. Its `channel` parameter (0 for all)
+  filters.
+- **Timing.** A message that arrives during a block is played at the start of
+  the next, so live playing is up to one block (about 11 ms in the app) late
+  and shares that jitter. Timestamping events within the block is a later
+  improvement.
+- **Auditioning.** The piano roll's keyboard sends its keys down the same bus
+  (`Session::audition`), so clicking a key plays the track's synth when the
+  patch has a `MIDI In` node.
 
 Most nodes treat each (voice, channel) **lane** independently, so their
 authors write a per-lane kernel with per-lane state, and the framework loops
@@ -750,8 +783,7 @@ handling beyond forgetting the last beat on a position jump.
 Clips are part of the project, not of the graph, like frames. A clip says
 which track input node plays it (`node`), where it starts, and what it
 contains. A clip's content is audio (which part of which file) or, from M3,
-MIDI, and one track holds both kinds. M2 builds the audio side; MIDI clips
-themselves arrive with M3, and the data model leaves room for them. The track itself is a group node, so
+MIDI, and one track holds both kinds. The track itself is a group node, so
 the arrangement view reads the track input node's clips.
 Compiling turns the clips into the schedule the node follows, sorted by
 start; the node only reads that. Clip commands are undoable like any other.
@@ -760,7 +792,8 @@ start; the node only reads that. Clip commands are undoable like any other.
   slowing the tempo can make audio clips on one track overlap. A track plays
   one audio clip at a time: the one that started last (the higher ID on a
   tie), and the earlier clip is cut where the later one begins. This holds per
-  kind: an audio clip and a MIDI clip on the same track play together. There is no automatic
+  kind: an audio clip and a MIDI clip on the same track play together, and
+  the notes of MIDI clips that overlap all sound. There is no automatic
   crossfade; a clip's own fades apply. The arrangement view doesn't stop you
   placing clips on top of each other: overlaps are legal, and the later start
   wins.
@@ -769,6 +802,42 @@ start; the node only reads that. Clip commands are undoable like any other.
   node moves in or out of a group, so those clips and lanes stay valid. A lane
   whose port no longer exists (a config change removed it) is not a load
   error but a diagnostic when compiling.
+
+### MIDI clips
+
+A MIDI clip (`ClipContent::Midi`) is a length and a list of notes, all in
+ticks: a note has a start from the clip's start, a length, a key (0 to 127)
+and a velocity (0 to 1). Unlike an audio clip's, its length follows the tempo,
+because it is music and not a recording. A clip's notes can be in any order;
+the commands that add and change clips check them (no empty notes, none
+before the start, keys and velocities in range).
+
+- **Playing them.** `ClipFeeds::update` turns each note into samples with the
+  tempo table (the note's end is cut at the clip's end, and a note that starts
+  past the end is dropped) and sends the sorted list to the track input along
+  with its audio schedule, so one version number covers both and an offline
+  render waits for both. The track input's `midi` output gets a note-on at the
+  sample a note starts and a note-off where it ends. A note is known by its
+  clip, start and key, so editing other notes while it sounds doesn't cut it;
+  if the note itself is moved, resized or removed, the old one ends at once.
+  At most 128 notes sound at once on a track.
+- **Stopping and jumping.** When the transport stops, or a block doesn't
+  continue from the one before (a seek or the loop's wrap), every sounding
+  note gets a note-off at the start of that block, so nothing hangs. Playing
+  from the middle of a note doesn't start it.
+- **In the arrangement.** A MIDI clip is drawn as a block with its notes
+  shown small. It moves and trims like an audio clip, with two differences:
+  it has no fades, and trimming the left edge keeps the notes where they
+  sound (the ones before the new start are cut off or shortened) instead of
+  shifting them with the edge. The lane's right-click menu has *New MIDI
+  clip*, a bar long at the beat nearest the click.
+- **The piano roll** opens below the arrangement when a MIDI clip is
+  double-clicked. Dragging on empty space draws a note, dragging a note moves
+  it (in time and pitch, a whole selection together), dragging its right end
+  resizes it, Delete removes, the arrow keys transpose and nudge, and a bar in
+  the velocity lane sets velocity. Notes snap to a grid step (a beat down to
+  1/16 of a beat), Alt turns snapping off. Each gesture is one undo step,
+  worked out from the notes as they were when it began.
 
 ### Recording into the arrangement
 

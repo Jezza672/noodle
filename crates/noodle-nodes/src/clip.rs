@@ -1,7 +1,7 @@
 //! The track input node: plays a track's audio clips along the transport.
 //!
-//! It has two outputs, `audio` (stereo) and `midi` (events, which stay empty
-//! until MIDI clips arrive with M3). The clips come from the project, not from
+//! It has two outputs, `audio` (stereo) and `midi` (the notes of the track's
+//! MIDI clips, as events). The clips come from the project, not from
 //! the graph: [`ClipFeeds::update`] turns them into a schedule of sample
 //! positions and hands it to the node without rebuilding it, so a clip edit
 //! doesn't cut a clip that is playing off. A hub thread (see `hub.rs`) opens
@@ -24,20 +24,25 @@ use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
 use noodle_engine::{
-    Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Setup, Shape,
+    Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
+    NoteId, Setup, Shape,
 };
 use noodle_io::ClipStream;
 use rtrb::{Consumer, Producer, PushError};
 
 use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
 pub use schedule::{
-    ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip, active_at,
+    ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
+    ScheduledNote, active_at,
 };
 use schedule::{Segments, same_sound};
 
 pub const TRACK_INPUT_ID: &str = "noodle.track.input";
 
 const AUDIO: usize = 0;
+const MIDI: usize = 0;
+/// The most MIDI notes one track sounds at once; more are dropped.
+const MAX_SOUNDING: usize = 128;
 const FADE_SECONDS: f32 = 0.005;
 /// Offline, how often the node looks again while it waits for the hub or the
 /// disk, and how long it waits before giving up on them.
@@ -124,7 +129,23 @@ struct TrackInputNode {
     /// rest of the render instead of stalling every block they are in.
     abandoned: Vec<(ClipId, u64)>,
     /// A schedule that arrived while the current one was in use.
-    deferred: Option<(u64, Box<Schedule>)>,
+    deferred: Option<(u64, Box<Schedule>, Box<Notes>)>,
+    /// The MIDI notes to play. They take over at once: a note that isn't in
+    /// the new set is ended, and nothing else is disturbed.
+    notes: Option<Box<Notes>>,
+    sounding: Vec<Sounding>,
+    /// Where the last block that played ended, to notice a jump.
+    played_to: Option<u64>,
+    /// New notes arrived since the sounding ones were last checked.
+    recheck: bool,
+}
+
+/// A MIDI note that has started and not yet ended.
+#[derive(Clone, Copy)]
+struct Sounding {
+    id: u32,
+    start: u64,
+    end: u64,
 }
 
 impl TrackInputNode {
@@ -147,6 +168,10 @@ impl TrackInputNode {
             looping: None,
             abandoned: Vec::new(),
             deferred: None,
+            notes: None,
+            sounding: Vec::with_capacity(MAX_SOUNDING),
+            played_to: None,
+            recheck: false,
         }
     }
 
@@ -170,14 +195,14 @@ impl TrackInputNode {
     /// Takes what the hub has sent. A new schedule that changes what is heard
     /// over this block waits for the dip; any other takes over at once.
     fn receive(&mut self, position: u64, frames: usize) {
-        if let Some((version, next)) = self.deferred.take() {
-            self.take_schedule(version, next, position, frames);
+        if let Some((version, next, notes)) = self.deferred.take() {
+            self.take_schedule(version, next, notes, position, frames);
         }
         while let Ok(message) = self.from_hub.pop() {
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
-                ToNode::Schedule(version, next) => {
-                    self.take_schedule(version, next, position, frames)
+                ToNode::Schedule(version, next, notes) => {
+                    self.take_schedule(version, next, notes, position, frames)
                 }
             }
         }
@@ -190,9 +215,12 @@ impl TrackInputNode {
         while let Ok(message) = self.from_hub.pop() {
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
-                ToNode::Schedule(version, next) => {
-                    if let Some((_, older)) = self.deferred.replace((version, next)) {
+                ToNode::Schedule(version, next, notes) => {
+                    if let Some((_, older, older_notes)) =
+                        self.deferred.replace((version, next, notes))
+                    {
                         self.retire(Retired::Schedule(older));
+                        self.retire(Retired::Notes(older_notes));
                     }
                 }
             }
@@ -206,8 +234,19 @@ impl TrackInputNode {
         }
     }
 
-    fn take_schedule(&mut self, version: u64, next: Box<Schedule>, position: u64, frames: usize) {
+    fn take_schedule(
+        &mut self,
+        version: u64,
+        next: Box<Schedule>,
+        notes: Box<Notes>,
+        position: u64,
+        frames: usize,
+    ) {
         self.version = version;
+        if let Some(old) = self.notes.replace(notes) {
+            self.retire(Retired::Notes(old));
+        }
+        self.recheck = true;
         let (from, to) = (position, position + frames as u64);
         let audible = self.level > 0.0
             && self
@@ -482,6 +521,115 @@ impl TrackInputNode {
     }
 }
 
+impl TrackInputNode {
+    /// Writes the MIDI events for the block of `n` frames at `position`:
+    /// note-ons for notes that start in it, note-offs for those that end in
+    /// it, and, when the transport has stopped or jumped, an off for every
+    /// note still sounding, so nothing hangs.
+    fn play_notes(
+        &mut self,
+        position: u64,
+        n: usize,
+        playing: bool,
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) {
+        let block_end = position + n as u64;
+        let continuing = self.played_to == Some(position);
+        self.played_to = playing.then_some(block_end);
+        let off = |id: u32, time: u64| Event {
+            time: time as u32,
+            kind: EventKind::NoteOff {
+                note: NoteId(id),
+                velocity: 0.0,
+            },
+        };
+        // A note that can't be ended because the buffer is full stays
+        // sounding and is tried again next block.
+        if !playing || !continuing {
+            self.sounding.retain(|s| out.push(off(s.id, 0)).is_err());
+        }
+        let notes = self.notes.take();
+        if self.recheck {
+            self.recheck = false;
+            let current = notes.as_deref().map_or(&[][..], Vec::as_slice);
+            self.sounding.retain_mut(|s| {
+                let lo = current.partition_point(|note| note.start < s.start);
+                let found = current[lo..]
+                    .iter()
+                    .take_while(|note| note.start == s.start)
+                    .find(|note| note.id == s.id);
+                match found {
+                    Some(note) => {
+                        s.end = note.end;
+                        true
+                    }
+                    None => out.push(off(s.id, 0)).is_err(),
+                }
+            });
+        }
+        if playing {
+            let current = notes.as_deref().map_or(&[][..], Vec::as_slice);
+            let mut next = current.partition_point(|note| note.start < position);
+            loop {
+                let on = current.get(next).filter(|note| note.start < block_end);
+                let ending = self
+                    .sounding
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.end < block_end)
+                    .min_by_key(|(_, s)| s.end);
+                // Ends come first at a tie, so a note can be struck again.
+                match (on, ending) {
+                    (Some(note), Some((_, s))) if note.start < s.end => {
+                        self.start_note(note, position, out);
+                        next += 1;
+                    }
+                    (_, Some((i, s))) => {
+                        let time = s.end.max(position) - position;
+                        if out.push(off(s.id, time)).is_err() {
+                            break;
+                        }
+                        self.sounding.swap_remove(i);
+                    }
+                    (Some(note), None) => {
+                        self.start_note(note, position, out);
+                        next += 1;
+                    }
+                    (None, None) => break,
+                }
+            }
+        }
+        self.notes = notes;
+    }
+
+    fn start_note(
+        &mut self,
+        note: &ScheduledNote,
+        position: u64,
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) {
+        if self.sounding.len() == MAX_SOUNDING {
+            return;
+        }
+        let on = Event {
+            time: (note.start - position) as u32,
+            kind: EventKind::NoteOn {
+                note: NoteId(note.id),
+                channel: 0,
+                key: note.key,
+                velocity: note.velocity,
+            },
+        };
+        if out.push(on).is_ok() {
+            self.sounding.push(Sounding {
+                id: note.id,
+                start: note.start,
+                end: note.end,
+            });
+        }
+    }
+}
+
 /// Reads from `stream` into `out` (whole frames). Offline, it waits until the
 /// disk has caught up, or the clip ends or the stream fails, so it returns
 /// fewer frames than asked for only at the end of the clip.
@@ -528,6 +676,12 @@ impl Node for TrackInputNode {
         self.schedule = current;
         self.left[..n].fill(0.0);
         self.right[..n].fill(0.0);
+        self.play_notes(
+            transport.position,
+            n,
+            transport.playing,
+            &mut io.event_outputs[MIDI],
+        );
 
         // While stopped the playhead holds still, but a fade-out still plays
         // on from it, so the streams end up a little past it. Once silent,
@@ -565,6 +719,9 @@ impl Node for TrackInputNode {
     }
 
     fn reset(&mut self) {
+        // Whatever sounds is ended by the next block, which finds that it
+        // doesn't continue from the last.
+        self.played_to = None;
         // The engine has faded out and is about to jump: start from silence at
         // the new place, with whatever schedule is waiting.
         self.level = 0.0;

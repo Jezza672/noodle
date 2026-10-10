@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 cpal = "0.18.2"
 hound = "3.5.1"
+midir = "0.11.1"
 noodle-engine.workspace = true
 rtrb = "0.4.0"
 rubato = "5.0.1"

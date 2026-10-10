@@ -343,10 +343,11 @@ impl Scene {
             if node.type_id == group::TRACK_INPUT {
                 // A track's outputs carry what its clips make.
                 let audio = project.clips_on(id).any(|(_, c)| c.as_audio().is_some());
+                let midi = project.clips_on(id).any(|(_, c)| c.as_midi().is_some());
                 for port in &mut ports {
                     port.idle = match port.key.as_str() {
                         group::AUDIO => !audio,
-                        group::MIDI => true,
+                        group::MIDI => !midi,
                         _ => false,
                     };
                 }

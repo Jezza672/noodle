@@ -9,6 +9,7 @@ use noodle_engine::OUTPUT_ID;
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::outputs::OutputsView;
+use crate::piano_roll::{self, PianoRoll};
 use crate::session::{Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
 use crate::{metronome, mixer, properties, theme};
@@ -46,6 +47,7 @@ pub struct App {
     session: Session,
     editor: EditorState,
     timeline: TimelineState,
+    piano_roll: PianoRoll,
     devices: DevicePicker,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -118,6 +120,7 @@ impl App {
             session,
             editor: EditorState::default(),
             timeline: TimelineState::default(),
+            piano_roll: PianoRoll::default(),
             devices: DevicePicker::default(),
             confirming: None,
             after_save: None,
@@ -298,10 +301,28 @@ impl App {
                 if let Some(target) = out.pick {
                     self.import_audio(target);
                 }
+                if let Some(clip) = out.open_midi {
+                    self.piano_roll.open(clip);
+                }
                 for (track, on) in out.arm {
                     self.session.arm(track, on);
                 }
             });
+
+        if self.piano_roll.clip().is_some() {
+            egui::Panel::top("piano roll")
+                .resizable(true)
+                .default_size(piano_roll::DEFAULT_HEIGHT)
+                .frame(egui::Frame::NONE.fill(theme::PANEL))
+                .show(ui, |ui| {
+                    let playhead = Some(self.session.playhead());
+                    let out = piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
+                    self.session.edit(out.edits);
+                    for (key, on) in out.audition {
+                        self.session.audition(key, on);
+                    }
+                });
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::CANVAS))

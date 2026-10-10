@@ -23,13 +23,17 @@ pub struct DevicePicker {
     hosts: Vec<HostInfo>,
     /// The devices on the draft's host, or why they couldn't be listed.
     devices: Result<DeviceList, String>,
+    /// The MIDI input ports, or why they couldn't be listed.
+    midi_ports: Result<Vec<String>, String>,
     list_hosts: fn() -> Vec<HostInfo>,
     list_devices: fn(Option<&str>) -> Result<DeviceList, AudioError>,
+    list_midi: fn() -> Result<Vec<String>, noodle_io::MidiError>,
 }
 
 impl Default for DevicePicker {
     fn default() -> Self {
         Self::with_lister(noodle_io::hosts, noodle_io::devices)
+            .with_midi_lister(noodle_io::midi_inputs)
     }
 }
 
@@ -46,9 +50,20 @@ impl DevicePicker {
             original: AudioConfig::default(),
             hosts: Vec::new(),
             devices: Ok(DeviceList::default()),
+            midi_ports: Ok(Vec::new()),
             list_hosts,
             list_devices,
+            list_midi: || Ok(Vec::new()),
         }
+    }
+
+    /// Lists MIDI ports with the given function instead of listing none.
+    pub(crate) fn with_midi_lister(
+        mut self,
+        list_midi: fn() -> Result<Vec<String>, noodle_io::MidiError>,
+    ) -> Self {
+        self.list_midi = list_midi;
+        self
     }
 
     /// Opens the dialog on `current`, listing the devices afresh.
@@ -171,6 +186,24 @@ impl DevicePicker {
         .on_hover_text("Records into Input nodes, at the output's sample rate");
         ui.end_row();
 
+        let mut midi = self.draft.midi_input.clone();
+        let ports = self.midi_ports.as_ref().map_or(&[][..], |p| &p[..]);
+        let midi_label = match (&midi, &self.midi_ports) {
+            (None, Err(_)) => "Unavailable".to_string(),
+            (None, _) => "Off".to_string(),
+            (Some(name), _) if ports.contains(name) => name.clone(),
+            (Some(name), _) => format!("{name} (not found)"),
+        };
+        combo(ui, "MIDI input", midi_label, |ui| {
+            ui.selectable_value(&mut midi, None, "Off");
+            for name in ports {
+                ui.selectable_value(&mut midi, Some(name.clone()), name);
+            }
+        })
+        .on_hover_text("Plays into MIDI In nodes. Takes effect without restarting the audio");
+        ui.end_row();
+        self.draft.midi_input = midi;
+
         let (output_caps, input_caps) = selected(&self.devices, &self.draft);
 
         let mut rate = self.draft.sample_rate;
@@ -242,6 +275,7 @@ impl DevicePicker {
     }
 
     fn refresh(&mut self) {
+        self.midi_ports = (self.list_midi)().map_err(|error| error.to_string());
         self.hosts = (self.list_hosts)();
         self.refresh_devices();
     }
@@ -455,7 +489,8 @@ mod tests {
     }
 
     fn harness(current: AudioConfig) -> Harness<'static, State> {
-        let mut picker = DevicePicker::with_lister(fake_hosts, fake_devices);
+        let mut picker = DevicePicker::with_lister(fake_hosts, fake_devices)
+            .with_midi_lister(|| Ok(vec!["Keystation 49".into(), "Pad Controller".into()]));
         picker.open(&current);
         let state = State {
             picker,
@@ -513,6 +548,31 @@ mod tests {
                 ..AudioConfig::default()
             })
         );
+    }
+
+    #[test]
+    fn a_midi_input_can_be_chosen_and_a_missing_one_is_named() {
+        let mut harness = harness(AudioConfig::default());
+        assert_eq!(shown(&harness, "MIDI input"), "Off");
+        choose(&mut harness, "MIDI input", "Pad Controller");
+        harness.get_by_label("Apply").click();
+        harness.run();
+        assert_eq!(
+            harness
+                .state()
+                .applied
+                .as_ref()
+                .unwrap()
+                .midi_input
+                .as_deref(),
+            Some("Pad Controller")
+        );
+
+        let harness = self::harness(AudioConfig {
+            midi_input: Some("Unplugged".into()),
+            ..AudioConfig::default()
+        });
+        assert_eq!(shown(&harness, "MIDI input"), "Unplugged (not found)");
     }
 
     #[test]

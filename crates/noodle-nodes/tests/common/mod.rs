@@ -96,13 +96,59 @@ impl Rig {
     pub fn add_clip(&mut self, start_beats: i64, file: &str, offset: u64, length: u64) -> ClipId {
         let id = self.project.new_clip_id();
         let mut clip = Clip::audio(self.id, Tick(start_beats * 960), file, length);
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.offset = offset;
         self.history
             .apply(&mut self.project, Command::AddClip { id, clip })
             .unwrap();
         self.update();
         id
+    }
+
+    /// Adds a MIDI clip of `beats` beats at `start_beats`, with notes given
+    /// as (start tick, length in ticks, key) from the clip's start.
+    pub fn add_midi_clip(
+        &mut self,
+        start_beats: i64,
+        beats: i64,
+        notes: &[(i64, i64, u8)],
+    ) -> ClipId {
+        let id = self.project.new_clip_id();
+        let mut clip = Clip::midi(self.id, Tick(start_beats * 960), Tick(beats * 960));
+        let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!("not a MIDI clip")
+        };
+        midi.notes = notes
+            .iter()
+            .map(|&(start, length, key)| noodle_core::MidiNote::new(Tick(start), Tick(length), key))
+            .collect();
+        self.history
+            .apply(&mut self.project, Command::AddClip { id, clip })
+            .unwrap();
+        self.update();
+        id
+    }
+
+    /// The events the last block produced.
+    pub fn events(&self) -> Vec<noodle_engine::Event> {
+        self.midi.clone()
+    }
+
+    /// Runs one block and returns its events with their time moved to the
+    /// timeline (in samples).
+    pub fn run_events(
+        &mut self,
+        position: u64,
+        frames: usize,
+        playing: bool,
+    ) -> Vec<(u64, noodle_engine::EventKind)> {
+        self.run_quiet(position, frames, playing);
+        self.midi
+            .iter()
+            .map(|e| (position + u64::from(e.time), e.kind))
+            .collect()
     }
 
     /// Changes a clip and feeds the result to the node.

@@ -80,6 +80,57 @@ impl ScheduledClip {
 /// A track's clips, sorted by start (then ID).
 pub type Schedule = Vec<ScheduledClip>;
 
+/// One note of a MIDI clip, placed on the timeline in samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScheduledNote {
+    /// Tells the note apart from the others while it sounds. Stable across
+    /// schedules while the note keeps its clip, start and key, so an edit
+    /// elsewhere doesn't cut a note that is sounding.
+    pub id: u32,
+    /// The sample the note starts on.
+    pub start: u64,
+    /// The first sample after it, never before `start + 1` and never past
+    /// the end of its clip.
+    pub end: u64,
+    pub key: u8,
+    pub velocity: f32,
+}
+
+/// A track's MIDI notes, sorted by start (then ID). Notes of overlapping
+/// clips all play.
+pub type Notes = Vec<ScheduledNote>;
+
+/// Turns the notes of a MIDI clip into scheduled notes.
+fn schedule_notes(
+    table: &TempoTable,
+    id: ClipId,
+    clip: &noodle_core::Clip,
+    midi: &noodle_core::MidiClip,
+    out: &mut Notes,
+) {
+    let at = |ticks: i64| table.sample_at_tick(noodle_core::Tick(clip.start.0 + ticks));
+    let clip_end = at(midi.length.0);
+    for note in &midi.notes {
+        let start = at(note.start.0);
+        if start >= clip_end {
+            continue;
+        }
+        let end = at(note.end().0).min(clip_end).max(start + 1);
+        // A note is known by its clip, place and key, so removing or moving
+        // other notes leaves it alone. Two notes can only share an identity
+        // by being the same note twice.
+        let mut hasher = DefaultHasher::new();
+        (id, note.start, note.key).hash(&mut hasher);
+        out.push(ScheduledNote {
+            id: hasher.finish() as u32 & 0x7FFF_FFFF,
+            start,
+            end,
+            key: note.key,
+            velocity: note.velocity,
+        });
+    }
+}
+
 /// The clip that plays at sample `t`: the one that started last, if it hasn't
 /// ended. An earlier clip it overlaps is cut where it begins and doesn't
 /// resume.
@@ -277,7 +328,7 @@ impl ClipFeeds {
         self.shared(node).status()
     }
 
-    /// Schedules every audio clip in `project` on the track input node it
+    /// Schedules every clip in `project` on the track input node it
     /// names, at the positions the tempo map gives. Files are looked up
     /// relative to `base`, normally the folder of the project file. Nodes
     /// that no longer have clips are emptied. Returns the clips that couldn't
@@ -291,8 +342,21 @@ impl ClipFeeds {
     ) -> Vec<ClipProblem> {
         let mut problems = Vec::new();
         let mut by_node: HashMap<NodeId, Schedule> = HashMap::new();
+        let mut notes_by_node: HashMap<NodeId, Notes> = HashMap::new();
         for (id, clip) in project.clips() {
-            let ClipContent::Audio(audio) = &clip.content;
+            let audio = match &clip.content {
+                ClipContent::Audio(audio) => audio,
+                ClipContent::Midi(midi) => {
+                    schedule_notes(
+                        table,
+                        id,
+                        clip,
+                        midi,
+                        notes_by_node.entry(clip.node).or_default(),
+                    );
+                    continue;
+                }
+            };
             let path = base.join(&audio.source);
             let info = match self.file_info(&path) {
                 Ok(info) => info,
@@ -330,14 +394,16 @@ impl ClipFeeds {
                 ));
         }
         let mut hubs = self.inner.hubs.lock().expect("feeds lock");
-        for node in by_node.keys() {
+        for node in by_node.keys().chain(notes_by_node.keys()) {
             hubs.entry(*node)
                 .or_insert_with(|| Arc::new(Shared::new(self.inner.blocking)));
         }
         for (node, shared) in hubs.iter() {
             let mut schedule = by_node.remove(node).unwrap_or_default();
             schedule.sort_by_key(|c| (c.start, c.id));
-            shared.set(schedule);
+            let mut notes = notes_by_node.remove(node).unwrap_or_default();
+            notes.sort_by_key(|n| (n.start, n.id));
+            shared.set(schedule, notes);
         }
         // Forget nodes that are gone: nothing holds their entry but this map
         // once the node (and with it the hub thread) has been dropped.

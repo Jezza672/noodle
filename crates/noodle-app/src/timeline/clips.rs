@@ -4,7 +4,7 @@
 //! A clip starts at a tick but is as long as its audio, so its end depends on
 //! the tempo map. Trims turn the tick the user dragged to back into frames.
 
-use noodle_core::{AudioClip, Clip, TempoMap, Tick};
+use noodle_core::{AudioClip, Clip, ClipContent, MidiClip, TempoMap, Tick};
 
 /// What a clip needs to know about its file to be laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +21,18 @@ pub fn end_tick(map: &TempoMap, start: Tick, length: u64, rate: u32) -> Tick {
     Tick(map.tick_at_sample(end, rate).round() as i64)
 }
 
+/// The shortest a MIDI clip can be trimmed to: an eighth of a beat.
+pub const MIN_MIDI_LENGTH: i64 = 120;
+
+/// The tick a clip ends on, laying audio out at `rate` when the clip's file
+/// is not known any better. MIDI clips are as long as they say.
+pub fn clip_end(map: &TempoMap, clip: &Clip, rate: u32) -> Tick {
+    match &clip.content {
+        ClipContent::Audio(audio) => end_tick(map, clip.start, audio.length, rate),
+        ClipContent::Midi(midi) => Tick(clip.start.0 + midi.length.0),
+    }
+}
+
 /// The clip with its start at `start`.
 pub fn moved(clip: &Clip, start: Tick) -> Clip {
     Clip {
@@ -33,6 +45,9 @@ pub fn moved(clip: &Clip, start: Tick) -> Clip {
 /// audio before it is cut off (or brought back, down to the file's start).
 /// `None` if that would leave nothing.
 pub fn trim_start(map: &TempoMap, clip: &Clip, edge: Tick, rate: u32) -> Option<Clip> {
+    if let Some(midi) = clip.as_midi() {
+        return Some(trim_midi_start(clip, midi, edge));
+    }
     let audio = clip.as_audio()?;
     let rate_f = f64::from(rate);
     let start_sample = map.sample_at(clip.start, rate_f) as i64;
@@ -71,6 +86,16 @@ pub fn trim_end(
     rate: u32,
     file_frames: Option<u64>,
 ) -> Option<Clip> {
+    if let Some(midi) = clip.as_midi() {
+        let length = (edge.0 - clip.start.0).max(MIN_MIDI_LENGTH);
+        return Some(Clip {
+            content: ClipContent::Midi(MidiClip {
+                length: Tick(length),
+                ..midi.clone()
+            }),
+            ..clip.clone()
+        });
+    }
     let audio = clip.as_audio()?;
     let rate_f = f64::from(rate);
     let start_sample = map.sample_at(clip.start, rate_f);
@@ -86,6 +111,36 @@ pub fn trim_end(
         content: noodle_core::ClipContent::Audio(audio),
         ..clip.clone()
     })
+}
+
+/// A MIDI clip with its left edge dragged to `edge`. The notes keep their
+/// place on the timeline: the ones before the new start are cut off or, when
+/// the clip is extended to the left, start later in the clip.
+fn trim_midi_start(clip: &Clip, midi: &MidiClip, edge: Tick) -> Clip {
+    let end = clip.start.0 + midi.length.0;
+    let start = edge.0.clamp(0, end - MIN_MIDI_LENGTH);
+    let delta = start - clip.start.0;
+    let notes = midi
+        .notes
+        .iter()
+        .filter_map(|note| {
+            let from = note.start.0 - delta;
+            let to = from + note.length.0;
+            (to > 0).then(|| noodle_core::MidiNote {
+                start: Tick(from.max(0)),
+                length: Tick(to - from.max(0)),
+                ..*note
+            })
+        })
+        .collect();
+    Clip {
+        start: Tick(start),
+        content: ClipContent::Midi(MidiClip {
+            length: Tick(end - start),
+            notes,
+        }),
+        ..clip.clone()
+    }
 }
 
 /// The clip with its fade in ending at `at`, the longest it can be without
@@ -139,7 +194,9 @@ mod tests {
 
     fn clip(start: i64, offset: u64, length: u64) -> Clip {
         let mut clip = Clip::audio(NodeId(1), Tick(start), "a.wav", length);
-        let ClipContent::Audio(audio) = &mut clip.content;
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.offset = offset;
         clip
     }
@@ -222,7 +279,9 @@ mod tests {
     #[test]
     fn fades_shrink_with_the_clip() {
         let mut c = clip(0, 0, 48_000);
-        let ClipContent::Audio(a) = &mut c.content;
+        let ClipContent::Audio(a) = &mut c.content else {
+            unreachable!("not an audio clip")
+        };
         a.fade_in = 10_000;
         a.fade_out = 30_000;
         let t = trim_end(&map(), &c, Tick(960), RATE, None).unwrap();
@@ -238,5 +297,67 @@ mod tests {
         let m = moved(&c, Tick(7));
         assert_eq!(m.start, Tick(7));
         assert_eq!(m.content, c.content);
+    }
+
+    fn midi_clip(start: i64, length: i64, notes: &[(i64, i64, u8)]) -> Clip {
+        let mut clip = Clip::midi(NodeId(1), Tick(start), Tick(length));
+        let ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.notes = notes
+            .iter()
+            .map(|&(s, l, k)| noodle_core::MidiNote::new(Tick(s), Tick(l), k))
+            .collect();
+        clip
+    }
+
+    #[test]
+    fn a_midi_clip_ends_where_its_length_says_whatever_the_tempo() {
+        let clip = midi_clip(960, 3840, &[]);
+        assert_eq!(clip_end(&map(), &clip, RATE), Tick(4800));
+    }
+
+    #[test]
+    fn trimming_the_end_of_a_midi_clip_sets_its_length() {
+        let clip = midi_clip(960, 3840, &[(0, 480, 60)]);
+        let out = trim_end(&map(), &clip, Tick(2880), RATE, None).unwrap();
+        assert_eq!(out.as_midi().unwrap().length, Tick(1920));
+        assert_eq!(out.as_midi().unwrap().notes.len(), 1);
+        let tiny = trim_end(&map(), &clip, Tick(0), RATE, None).unwrap();
+        assert_eq!(tiny.as_midi().unwrap().length, Tick(MIN_MIDI_LENGTH));
+    }
+
+    #[test]
+    fn trimming_the_start_of_a_midi_clip_keeps_notes_where_they_sound() {
+        // Notes at clip ticks 0..480, 480..960 and 1440..1680.
+        let clip = midi_clip(960, 3840, &[(0, 480, 60), (480, 480, 62), (1440, 240, 64)]);
+        // Cutting 600 ticks off: the first note is gone, the second is
+        // shortened to its last 360, the third moves up.
+        let out = trim_start(&map(), &clip, Tick(1560), RATE).unwrap();
+        let midi = out.as_midi().unwrap();
+        assert_eq!(out.start, Tick(1560));
+        assert_eq!(midi.length, Tick(3240));
+        let notes: Vec<_> = midi
+            .notes
+            .iter()
+            .map(|n| (n.start.0, n.length.0, n.key))
+            .collect();
+        assert_eq!(notes, [(0, 360, 62), (840, 240, 64)]);
+        // Extending to the left shifts the notes right, and stops at the
+        // beginning of the timeline.
+        let out = trim_start(&map(), &clip, Tick(-500), RATE).unwrap();
+        assert_eq!(out.start, Tick(0));
+        assert_eq!(out.as_midi().unwrap().length, Tick(4800));
+        assert_eq!(out.as_midi().unwrap().notes[0].start, Tick(960));
+        // It can't be cut down to nothing.
+        let out = trim_start(&map(), &clip, Tick(99_999), RATE).unwrap();
+        assert_eq!(out.as_midi().unwrap().length, Tick(MIN_MIDI_LENGTH));
+    }
+
+    #[test]
+    fn midi_clips_have_no_fades() {
+        let clip = midi_clip(0, 3840, &[]);
+        assert!(set_fade_in(&map(), &clip, Tick(480), RATE).is_none());
+        assert!(set_fade_out(&map(), &clip, Tick(480), RATE).is_none());
     }
 }

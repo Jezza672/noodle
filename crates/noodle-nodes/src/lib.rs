@@ -8,6 +8,7 @@ mod gain;
 mod lfo;
 mod meter;
 mod metronome;
+mod midi_in;
 mod mix;
 mod noise;
 mod notes;
@@ -30,6 +31,7 @@ pub use gain::{GAIN_ID, Gain};
 pub use lfo::{LFO_ID, Lfo};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
+pub use midi_in::{MIDI_IN_ID, MidiIn};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
@@ -60,6 +62,9 @@ pub struct Library {
     /// Where track input nodes get their clips; call
     /// [`ClipFeeds::update`] when clips or the tempo map change.
     pub clips: ClipFeeds,
+    /// Where MIDI In nodes get their messages from; connect a port to it
+    /// with [`noodle_io::connect_midi`].
+    pub midi: noodle_io::MidiBus,
 }
 
 /// Registers every built-in node type.
@@ -100,7 +105,13 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
     registry.register(TrackInput::new(&clips));
-    Library { telemetry, clips }
+    let midi = noodle_io::MidiBus::new();
+    registry.register(MidiIn::new(&midi));
+    Library {
+        telemetry,
+        clips,
+        midi,
+    }
 }
 
 /// Like [`register_library`], for callers with no use for track clips.
