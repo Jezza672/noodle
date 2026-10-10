@@ -241,18 +241,15 @@ impl VoicesNode {
         self.clock
     }
 
-    /// The voice a new note takes.
+    /// The voice a new note takes: an inactive one first, then the
+    /// longest-released one still ringing, then (stealing) the oldest held.
+    /// Within each group the oldest goes first.
     fn allocate(&self) -> usize {
-        let by_stamp = |held: bool| {
-            self.voices
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| v.held == held)
-                .min_by_key(|(_, v)| v.stamp)
-                .map(|(i, _)| i)
-        };
-        by_stamp(false)
-            .or_else(|| by_stamp(true))
+        self.voices
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, v)| (v.active, v.held, v.stamp))
+            .map(|(i, _)| i)
             .expect("there is at least one voice")
     }
 
@@ -942,6 +939,31 @@ mod tests {
             h.run(16).unwrap();
             assert!(!silent(&h, VoicesPorts::PITCH, 0));
         }
+    }
+
+    #[test]
+    fn a_new_note_prefers_an_inactive_voice_to_one_still_ringing() {
+        let mut h = busy_rig(30.0);
+        // Voice 0 is released first (so the older), voice 1 after.
+        h.send_events(VoicesPorts::NOTES, &[on(0, 1, 60, 0.5), on(0, 2, 62, 0.5)]);
+        feed_busy(&mut h, 1.0, 1.0);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[off(0, 1), off(1, 2)]);
+        feed_busy(&mut h, 1.0, 1.0);
+        h.run(16).unwrap();
+        h.send_events(VoicesPorts::NOTES, &[]);
+        // Voice 1's envelope finishes; voice 0's is still releasing.
+        for _ in 0..2 {
+            feed_busy(&mut h, 1.0, 0.0);
+            h.run(16).unwrap();
+        }
+        assert!(silent(&h, VoicesPorts::PITCH, 1));
+        assert!(!silent(&h, VoicesPorts::PITCH, 0));
+        h.send_events(VoicesPorts::NOTES, &[on(0, 3, 72, 0.5)]);
+        feed_busy(&mut h, 1.0, 0.0);
+        h.run(16).unwrap();
+        assert_eq!(pitch(&h, 1, 0), 523.2511);
+        assert!(pitch(&h, 0, 0) < 270.0, "voice 0 keeps its note");
     }
 
     #[test]

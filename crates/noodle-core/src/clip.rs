@@ -48,6 +48,12 @@ pub struct MidiClip {
 /// One note in a MIDI clip.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MidiNote {
+    /// Names the note within its clip, and stays with it as it is edited, so
+    /// a view can keep it selected through undo. The project makes ids
+    /// unique when a clip enters it (see [`MidiClip::assign_note_ids`]); files
+    /// saved before notes had ids load with all zeros and are fixed that way.
+    #[serde(default)]
+    pub id: u32,
     /// Where the note starts, from the start of the clip.
     pub start: Tick,
     pub length: Tick,
@@ -60,6 +66,7 @@ pub struct MidiNote {
 impl MidiNote {
     pub fn new(start: Tick, length: Tick, key: u8) -> Self {
         Self {
+            id: 0,
             start,
             length,
             key,
@@ -78,6 +85,32 @@ impl MidiClip {
         Self {
             length,
             notes: Vec::new(),
+        }
+    }
+
+    /// Gives each note whose id repeats an earlier one's a new id, so ids are
+    /// unique in the clip. Notes with unique ids keep theirs.
+    pub fn assign_note_ids(&mut self) {
+        let mut seen = std::collections::BTreeSet::new();
+        let Some(mut next) = self
+            .notes
+            .iter()
+            .map(|n| n.id)
+            .max()
+            .map_or(Some(0), |m| m.checked_add(1))
+        else {
+            // No id above the largest to hand out: number them all afresh.
+            for (i, note) in self.notes.iter_mut().enumerate() {
+                note.id = i as u32;
+            }
+            return;
+        };
+        for note in &mut self.notes {
+            if !seen.insert(note.id) {
+                note.id = next;
+                next += 1;
+                seen.insert(note.id);
+            }
         }
     }
 
@@ -152,6 +185,13 @@ impl Clip {
             node,
             start,
             content: ClipContent::Midi(MidiClip::new(length)),
+        }
+    }
+
+    /// Makes the ids of a MIDI clip's notes unique; audio clips are left be.
+    pub(crate) fn assign_note_ids(&mut self) {
+        if let ClipContent::Midi(midi) = &mut self.content {
+            midi.assign_note_ids();
         }
     }
 

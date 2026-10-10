@@ -229,6 +229,10 @@ impl App {
     /// drive it without a window.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.session.maintain();
+        if self.session.watching_midi() {
+            ui.ctx()
+                .request_repaint_after(crate::session::MIDI_WATCH_INTERVAL);
+        }
         // Before the panels, so a focused button doesn't also see Space.
         let mut actions = self.shortcuts(ui.ctx());
 

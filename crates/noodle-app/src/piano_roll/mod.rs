@@ -55,7 +55,7 @@ struct Drag {
     gesture: Gesture,
     /// The notes when the gesture began.
     original: Vec<MidiNote>,
-    selected: BTreeSet<usize>,
+    selected: BTreeSet<u32>,
     grabbed: usize,
     press: Pos2,
 }
@@ -80,7 +80,7 @@ pub struct PianoRoll {
     /// Fit the clip to the width, and centre on its notes, on the next frame.
     focus: bool,
     step: i64,
-    selected: BTreeSet<usize>,
+    selected: BTreeSet<u32>,
     drag: Option<Drag>,
     /// The key being auditioned from the keyboard.
     sounding: Option<u8>,
@@ -172,7 +172,8 @@ impl PianoRoll {
         match project.clip(id).and_then(Clip::as_midi) {
             None => self.close(),
             Some(midi) => {
-                self.selected.retain(|&i| i < midi.notes.len());
+                self.selected
+                    .retain(|id| midi.notes.iter().any(|n| n.id == *id));
                 if self
                     .drag
                     .as_ref()
@@ -185,7 +186,7 @@ impl PianoRoll {
     }
 
     #[cfg(test)]
-    pub fn selected(&self) -> &BTreeSet<usize> {
+    pub fn selected(&self) -> &BTreeSet<u32> {
         &self.selected
     }
 
@@ -424,10 +425,11 @@ pub fn show(
         let original = midi.notes.clone();
         match axes.note_at(&original, press) {
             Some(i) => {
-                if !state.selected.contains(&i) && !shift {
-                    state.selected = BTreeSet::from([i]);
+                let note_id = original[i].id;
+                if !state.selected.contains(&note_id) && !shift {
+                    state.selected = BTreeSet::from([note_id]);
                 }
-                state.selected.insert(i);
+                state.selected.insert(note_id);
                 let r = axes.note_rect(&original[i]);
                 let resize = r.width() >= MIN_RESIZABLE && r.right() - press.x < EDGE;
                 if resize {
@@ -475,11 +477,12 @@ pub fn show(
     {
         match axes.note_at(&midi.notes, pos) {
             Some(i) if shift => {
-                if !state.selected.remove(&i) {
-                    state.selected.insert(i);
+                let note_id = midi.notes[i].id;
+                if !state.selected.remove(&note_id) {
+                    state.selected.insert(note_id);
                 }
             }
-            Some(i) => state.selected = BTreeSet::from([i]),
+            Some(i) => state.selected = BTreeSet::from([midi.notes[i].id]),
             None => state.selected.clear(),
         }
     }
@@ -769,16 +772,16 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axes: Axes, clip: &Clip, map: &noodle_c
     }
 }
 
-fn draw_notes(ui: &egui::Ui, axes: Axes, midi: &MidiClip, selected: &BTreeSet<usize>) {
+fn draw_notes(ui: &egui::Ui, axes: Axes, midi: &MidiClip, selected: &BTreeSet<u32>) {
     let painter = ui.painter_at(axes.grid);
-    for (i, note) in midi.notes.iter().enumerate() {
+    for note in &midi.notes {
         let rect = axes.note_rect(note);
         if !rect.intersects(axes.grid) {
             continue;
         }
         let fill = theme::ACCENT.gamma_multiply(0.45 + 0.55 * note.velocity);
         painter.rect_filled(rect, 2.0, fill);
-        let stroke = if selected.contains(&i) {
+        let stroke = if selected.contains(&note.id) {
             Stroke::new(1.5, colors::SELECTED)
         } else {
             Stroke::new(1.0, Color32::BLACK.gamma_multiply(0.5))
@@ -814,12 +817,12 @@ fn draw_velocity(
             Pos2::new(x + 5.0, rect.bottom() - 4.0),
         )
     };
-    for (i, note) in midi.notes.iter().enumerate() {
+    for note in &midi.notes {
         let r = bar_rect(note);
         if !r.intersects(rect) {
             continue;
         }
-        let colour = if state.selected.contains(&i) {
+        let colour = if state.selected.contains(&note.id) {
             colors::SELECTED
         } else {
             theme::ACCENT
@@ -846,11 +849,12 @@ fn draw_velocity(
             .filter(|(_, d)| *d <= 6.0)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((i, _)) = nearest {
-            state.selected = BTreeSet::from([i]);
+            let note_id = midi.notes[i].id;
+            state.selected = BTreeSet::from([note_id]);
             state.drag = Some(Drag {
                 gesture: Gesture::Velocity,
                 original: midi.notes.clone(),
-                selected: BTreeSet::from([i]),
+                selected: BTreeSet::from([note_id]),
                 grabbed: i,
                 press,
             });
