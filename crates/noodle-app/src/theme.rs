@@ -17,7 +17,6 @@ pub const ACCENT: Color32 = Color32::from_rgb(200, 241, 105);
 pub const SELECTED: Color32 = Color32::from_rgb(60, 90, 168);
 /// Mute, solo and record.
 pub const MUTE: Color32 = Color32::from_rgb(255, 122, 107);
-pub const SOLO: Color32 = ACCENT;
 pub const RECORD: Color32 = Color32::from_rgb(255, 90, 79);
 /// Corner radius for panels, buttons and nodes.
 pub const RADIUS: u8 = 8;

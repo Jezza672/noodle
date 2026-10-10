@@ -170,11 +170,13 @@ impl Telemetry {
     pub fn read_param(&self, node: NodeId, key: &str) -> Option<ParamReading> {
         let channels = self.lock();
         let list = channels.params.get(&(node, key.to_owned()))?;
-        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
-        if !cells.written.load(Ordering::Relaxed) {
+        let cells = live(list, |cells| cells.written.load(Ordering::Acquire))?;
+        if !cells.written.load(Ordering::Acquire) {
             return None;
         }
         let value = f32::from_bits(cells.value.load(Ordering::Relaxed));
+        // The two swaps are separate, so a block landing between them has
+        // its range split across this read and the next. Nothing is lost.
         let min = f32::from_bits(cells.min.swap(f32::INFINITY.to_bits(), Ordering::Relaxed));
         let max = f32::from_bits(
             cells
@@ -321,16 +323,17 @@ impl ParamWriter {
         let _ = self
             .0
             .min
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 (min < f32::from_bits(cur)).then(|| min.to_bits())
             });
         let _ = self
             .0
             .max
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 (max > f32::from_bits(cur)).then(|| max.to_bits())
             });
-        self.0.written.store(true, Ordering::Relaxed);
+        // Release, so a reader that sees this also sees the value.
+        self.0.written.store(true, Ordering::Release);
     }
 }
 

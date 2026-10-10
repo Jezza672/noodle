@@ -80,7 +80,9 @@ impl Session {
     fn new() -> Self {
         let mut registry = Registry::with_builtins();
         let telemetry = noodle_nodes::register_all(&mut registry);
-        let (controller, processor) = engine(SETTINGS).unwrap();
+        let (mut controller, processor) = engine(SETTINGS).unwrap();
+        // So wired parameters are probed, as in the app.
+        controller.set_telemetry(&telemetry);
         Self {
             project: Project::new(),
             registry,

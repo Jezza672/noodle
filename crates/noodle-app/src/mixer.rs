@@ -11,8 +11,8 @@
 //! feeding them: a track's own gain, mute and solo stay on the track.
 
 use egui::{Align, Color32, Layout, RichText, Slider, Ui, Vec2};
-use noodle_core::group::{Controls, GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
-use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value, spare};
+use noodle_core::group::{Controls, GAIN, GROUP, MUTE};
+use noodle_core::{Command, Endpoint, NodeId, Project, Value, spare};
 
 use crate::editor::{MeterAxis, MeterChannel};
 use crate::session::Edit;
@@ -35,8 +35,6 @@ pub struct Strip {
     /// The boundary node the controls are set on. `None` for a group with
     /// no input or output node, which has nothing to set.
     pub node: Option<NodeId>,
-    /// Silent because another track is soloed.
-    pub muted_by_solo: bool,
     /// A lane or wire drives the gain, so the fader would do nothing.
     pub gain_automated: bool,
     /// The same for mute.
@@ -87,7 +85,6 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
                     solo: false,
                 },
                 node: Some(mixer),
-                muted_by_solo: false,
                 gain_automated: driven(project, Some(mixer), &gain_key),
                 mute_automated: driven(project, Some(mixer), &mute_key),
                 channel: Some(i - 1),
@@ -101,7 +98,6 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
 /// The strips for the top-level groups of a graph, in track order.
 pub fn strips(project: &Project) -> Vec<Strip> {
     let graph = project.graph();
-    let muted_by_solo = graph.solo_muted();
     let mut ids: Vec<NodeId> = graph
         .children(None)
         .filter(|(_, node)| node.type_id == GROUP)
@@ -118,7 +114,6 @@ pub fn strips(project: &Project) -> Vec<Strip> {
             },
             controls: graph.group_controls(id),
             node: graph.control_node(id),
-            muted_by_solo: muted_by_solo.contains(&id),
             gain_automated: driven(project, graph.control_node(id), GAIN),
             mute_automated: driven(project, graph.control_node(id), MUTE),
             channel: None,
@@ -146,27 +141,6 @@ fn set(node: NodeId, key: &str, value: Option<f32>) -> Command {
     }
 }
 
-/// Turns solo on or off for a group. Off clears it on every boundary node,
-/// since any of them can hold it.
-///
-/// Controls are reset by writing their default, never by removing the
-/// parameter: a set control keeps its stage in the compiled graph, and
-/// removing it would take the stage out and fade the whole output.
-pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
-    let node = strip.node?;
-    if on {
-        return Some(Edit::Apply(set(node, SOLO, Some(1.0))));
-    }
-    let commands: Vec<_> = graph
-        .children(Some(strip.group))
-        .filter(|(_, n)| {
-            matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) && n.controls().solo
-        })
-        .map(|(id, _)| set(id, SOLO, Some(0.0)))
-        .collect();
-    Some(Edit::Apply(Command::Batch(commands)))
-}
-
 /// Draws the mixer and returns the edits made in it. `view` is the mixer
 /// node shown. The mixer only ever looks at one mixer node, so a view that is
 /// unset, or whose node has gone, falls back to the first one.
@@ -179,7 +153,9 @@ pub fn show(
     let graph = project.graph();
     let mixers = mixers(project);
     if view.is_none_or(|m| !mixers.contains(&m)) {
-        *view = mixers.first().copied();
+        // The mixer Add Track feeds, else any.
+        *view =
+            crate::timeline::add_track::default_mixer(graph).or_else(|| mixers.first().copied());
     }
     let Some(mixer) = *view else {
         ui.weak("There is no mixer yet. Add a Mix node, or add a track.");
@@ -208,7 +184,7 @@ pub fn show(
             for (index, strip) in strips.iter().enumerate() {
                 ui.push_id((strip.group, index), |ui| {
                     let level = strip.channel.and_then(|channel| levels(mixer, channel));
-                    strip_ui(ui, graph, strip, level, &mut edits);
+                    strip_ui(ui, strip, level, &mut edits);
                 });
                 ui.separator();
             }
@@ -217,13 +193,7 @@ pub fn show(
     edits
 }
 
-fn strip_ui(
-    ui: &mut Ui,
-    graph: &Graph,
-    strip: &Strip,
-    level: Option<MeterChannel>,
-    edits: &mut Vec<Edit>,
-) {
+fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut Vec<Edit>) {
     ui.allocate_ui_with_layout(
         Vec2::new(STRIP_WIDTH, 0.0),
         Layout::top_down(Align::Center),
@@ -232,7 +202,7 @@ fn strip_ui(
             ui.label(RichText::new(&strip.name).strong());
             // A silent strip's fader is greyed, but its buttons stay live so
             // it can be unmuted or unsoloed.
-            let silent = strip.controls.mute || strip.muted_by_solo;
+            let silent = strip.controls.mute;
             // A lane overrides the parameter it drives, so those controls
             // are greyed out with the reason, as on the track header.
             ui.horizontal_top(|ui| {
@@ -278,18 +248,8 @@ fn strip_ui(
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
                         edits.push(Edit::Apply(set(node, &strip.mute_key, value)));
                     }
-                    // Solo belongs to the track, not to a mixer's input.
-                    if strip.channel.is_none() {
-                        let solo = toggle(ui, "S", strip.controls.solo, crate::theme::SOLO);
-                        if solo.on_hover_text("Solo: mutes the other tracks").clicked() {
-                            edits.extend(solo_edit(graph, strip, !strip.controls.solo));
-                        }
-                    }
                 });
             });
-            if strip.muted_by_solo && !strip.controls.mute {
-                ui.weak("muted by solo");
-            }
         },
     );
 }
@@ -345,7 +305,7 @@ mod tests {
     use egui::vec2;
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
-    use noodle_core::group::{GROUP, PORT_NAME};
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, PORT_NAME};
     use noodle_core::{Config, Node};
 
     use super::*;
@@ -437,8 +397,6 @@ mod tests {
         })]);
         let strips = strips(session.project());
         assert_eq!((strips[0].name.as_str(), strips[0].node), ("Group 7", None));
-        // Nothing to set, so nothing is offered.
-        assert_eq!(solo_edit(session.project().graph(), &strips[0], true), None);
     }
 
     #[test]
@@ -478,36 +436,6 @@ mod tests {
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
         assert_eq!(param(&harness, 100, "mute1"), Some(0.0));
-    }
-
-    #[test]
-    fn solo_mutes_the_other_track_and_unsolo_clears_it_wherever_it_was_set() {
-        let mut session = two_tracks();
-        let drums = strips(session.project())[0].clone();
-        session.edit(solo_edit(session.project().graph(), &drums, true));
-        assert_eq!(
-            session
-                .project()
-                .graph()
-                .node(NodeId(3))
-                .unwrap()
-                .params
-                .get(SOLO),
-            Some(&1.0)
-        );
-        assert_eq!(session.project().graph().solo_muted(), [NodeId(4)].into());
-        let strips = strips(session.project());
-        assert!(strips[1].muted_by_solo && !strips[0].muted_by_solo);
-
-        // Solo on the input node, as a hand-edited file might have it.
-        session.edit([Edit::Apply(Command::SetParam {
-            node: NodeId(2),
-            key: SOLO.into(),
-            value: Some(1.0),
-        })]);
-        let drums = self::strips(session.project())[0].clone();
-        session.edit(solo_edit(session.project().graph(), &drums, false));
-        assert!(session.project().graph().solo_muted().is_empty());
     }
 
     #[test]
