@@ -22,6 +22,7 @@ mod stage;
 mod svf;
 mod vca;
 mod voice_mix;
+mod voices;
 
 pub use adsr::{ADSR_ID, Adsr};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
@@ -47,6 +48,7 @@ pub use stage::GroupStage;
 pub use svf::Svf;
 pub use vca::{VCA_ID, Vca};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
+pub use voices::{VOICES_ID, Voices};
 
 use std::path::Path;
 
@@ -103,6 +105,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Lfo);
     registry.register(Key);
     registry.register(MonoNote);
+    registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);
     registry.register(Reroute);

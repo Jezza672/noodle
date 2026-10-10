@@ -186,6 +186,11 @@ impl MonoNode {
                 velocity,
                 ..
             } => {
+                // A note-on for an id that is already held replaces it.
+                if let Some(i) = self.held[..self.len].iter().position(|h| h.id == note.0) {
+                    self.held.copy_within(i + 1..self.len, i);
+                    self.len -= 1;
+                }
                 if self.len == HELD {
                     self.held.copy_within(1.., 0);
                     self.len -= 1;
@@ -346,6 +351,15 @@ mod tests {
         assert!((pitch[3] - 440.0).abs() < 1e-3);
         // `apply` runs for the bend event itself, so it takes effect at its time.
         assert!((pitch[4] - 880.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn a_repeated_note_on_does_not_leave_the_gate_stuck() {
+        let mut h = mono();
+        h.send_events(MonoPorts::NOTES, &[on(0, 7, 60), on(2, 7, 64), off(4, 7)]);
+        h.run(16).unwrap();
+        let gate = h.output(MonoPorts::GATE).lane(0, 0).to_vec();
+        assert!(gate[4..].iter().all(|&g| g == 0.0));
     }
 
     #[test]
