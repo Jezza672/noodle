@@ -19,6 +19,7 @@
 //! | Double-click a wire | Break it |
 //! | Ctrl/Cmd+C, X, V | Copy, cut and paste the selection, at the pointer |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
+//! | Shift+F | Freeze the selected nodes and groups, or unfreeze them if they all are |
 //! | Ctrl/Cmd+L | Auto-arrange the selected nodes, or all of them |
 //! | A, Alt+A | Select all, select none |
 //! | Ctrl+J | Put the selected nodes in a new frame (top level only) |
@@ -50,6 +51,7 @@ use noodle_engine::OUTPUT_ID;
 use noodle_engine::{Diagnostic, Location, Registry};
 use noodle_nodes::{REROUTE_ID, SCOPE_ID};
 
+use crate::freezing::Badge;
 use crate::session::{Edit, Session};
 use crate::theme;
 use layout::{FRAME_HEADER_HEIGHT, PortKind, REROUTE_SIZE, Scene, Side};
@@ -107,6 +109,8 @@ pub struct EditorState {
     /// A node whose view was asked for with a double-click, until the app
     /// takes it.
     view_request: Option<NodeId>,
+    /// Which nodes are frozen or offline, and how their renders are doing.
+    freeze: BTreeMap<NodeId, Badge>,
 }
 
 /// Nodes, the wires between them and frames, as copied.
@@ -135,6 +139,7 @@ impl Default for EditorState {
             clipboard: None,
             arrange_requested: false,
             view_request: None,
+            freeze: BTreeMap::new(),
         }
     }
 }
@@ -368,6 +373,11 @@ enum Hit {
 /// Draws the editor and returns the edits the user made.
 pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Vec<Edit> {
     let dt = ui.input(|i| i.stable_dt);
+    state.freeze.clone_from(session.freeze_badges());
+    if session.freeze_pending() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
     state
         .bodies
         .update(session.telemetry(), session.project(), dt);
@@ -1556,6 +1566,9 @@ fn keyboard(
     if pressed(Modifiers::COMMAND, Key::G) {
         group_selection(state, f, inputs, edits);
     }
+    if pressed(Modifiers::SHIFT, Key::F) {
+        toggle_freeze(state, f, inputs, edits);
+    }
     if pressed(Modifiers::NONE, Key::Tab) {
         enter_or_leave(state, f.project);
     }
@@ -1848,6 +1861,47 @@ fn group_selection(
     if let Ok((id, command)) = group::group_nodes(f.project, &selected, &mut *inputs.new_node_id) {
         edits.push(Edit::Apply(command));
         state.select_only([id]);
+    }
+}
+
+/// Shift+F: freezes the selected nodes and groups that have audio to
+/// freeze, or unfreezes them if they are all frozen already. One undo step.
+fn toggle_freeze(state: &EditorState, f: &Frame_<'_>, inputs: &Inputs<'_>, edits: &mut Vec<Edit>) {
+    let graph = f.project.graph();
+    let can_freeze = |id: NodeId| {
+        let Some(node) = graph.node(id) else {
+            return false;
+        };
+        match node.type_id.as_str() {
+            GROUP => !graph.group_ports(id).outputs.is_empty(),
+            GROUP_INPUT | GROUP_OUTPUT | REROUTE_ID => false,
+            type_id => inputs
+                .registry
+                .get(type_id)
+                .and_then(|t| t.layout(&node.config).ok())
+                .is_some_and(|layout| !layout.outputs.is_empty()),
+        }
+    };
+    let targets: Vec<NodeId> = state
+        .selected
+        .iter()
+        .copied()
+        .filter(|&n| can_freeze(n))
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let freeze = !targets.iter().all(|&n| f.project.is_frozen(n));
+    let commands: Vec<Command> = targets
+        .into_iter()
+        .filter(|&node| f.project.is_frozen(node) != freeze)
+        .map(|node| Command::SetFrozen {
+            node,
+            frozen: freeze,
+        })
+        .collect();
+    if !commands.is_empty() {
+        edits.push(Edit::Apply(Command::Batch(commands)));
     }
 }
 

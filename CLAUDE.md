@@ -28,7 +28,9 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   tolerance, to `crates/noodle-nodes/tests/golden/<name>.wav`. If a change
   is *meant* to alter the sound, regenerate them with
   `UPDATE_GOLDEN=1 cargo test -p noodle-nodes --test golden`, sanity-check
-  the levels and pitch, and say so in the PR so the user can listen.
+  the levels and pitch, and say so in the PR so the user can listen. Also
+  bump `DSP_GENERATION` in `noodle-engine/src/cache.rs`, so renders cached
+  by the old sound are not replayed.
 - **Linux dependency:** cpal needs `libasound2-dev`. CI installs it; in a
   cloud session, run `apt-get install -y libasound2-dev` first.
 - **No audio device in the cloud.** `noodle play` fails cleanly there. To run

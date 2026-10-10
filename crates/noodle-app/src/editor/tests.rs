@@ -975,11 +975,18 @@ fn problems_show_on_the_wire_they_belong_to() {
 #[test]
 fn problems_show_on_the_node_they_belong_to() {
     let mut h = rig();
-    // Its ports are fine, but the compiler can't run it yet.
-    let node = add(&mut h, Node::new("noodle.offline.reverse").at(0.0, 0.0));
+    let node = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
     let unknown = add(&mut h, Node::new("no.such.type").at(0.0, 200.0));
     h.run();
-    for (node, text) in [(node, "cached renders"), (unknown, "unknown node type")] {
+    // A node with nothing wrong shows no problem.
+    let p = title(&h, node);
+    h.hover_at(p);
+    for _ in 0..60 {
+        h.step();
+    }
+    h.run();
+    assert!(h.query_by_label_contains("unknown node type").is_none());
+    for (node, text) in [(unknown, "unknown node type")] {
         let p = title(&h, node);
         h.hover_at(p);
         for _ in 0..60 {
@@ -1492,6 +1499,42 @@ fn ctrl_g_groups_the_selection_and_tab_goes_in_and_out() {
     assert!(h.state().editor.selected.contains(&group));
     press(&mut h, p, Modifiers::NONE, Key::Tab);
     assert_eq!(h.state().editor.group, Some(group));
+}
+
+#[test]
+fn shift_f_freezes_the_selected_group_and_shows_it_on_the_node() {
+    let mut h = rig();
+    // Keep the renders out of the user's own cache.
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().session.use_cache_dir(dir.path().to_owned());
+    let (_, gain, _) = wired(&mut h);
+    // A group with nothing leaving it has no audio to freeze.
+    let out = add(&mut h, Node::new(OUTPUT_ID).at(800.0, 0.0));
+    connect(&mut h, gain, "out", out, "in");
+    let group = group_selection(&mut h, &[gain]);
+    h.run();
+
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::SHIFT, Key::F);
+    h.run();
+    assert!(h.state().session.project().is_frozen(group));
+    assert!(
+        h.state()
+            .editor
+            .freeze
+            .get(&group)
+            .is_some_and(|b| b.frozen)
+    );
+
+    // Again: unfreezes.
+    press(&mut h, p, Modifiers::SHIFT, Key::F);
+    h.run();
+    assert!(!h.state().session.project().is_frozen(group));
+    assert!(h.state().editor.freeze.is_empty());
+
+    // One undo step each.
+    h.state_mut().session.undo();
+    assert!(h.state().session.project().is_frozen(group));
 }
 
 #[test]

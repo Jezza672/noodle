@@ -4,9 +4,11 @@
 mod adsr;
 mod background;
 mod button;
+mod cached;
 mod clip;
 mod curve;
 mod delay;
+mod freeze;
 mod gain;
 mod ladder;
 mod lfo;
@@ -35,12 +37,17 @@ pub use background::{
     spawn_render, spawn_render_to_cache,
 };
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
+pub use cached::{CACHED_ID, CachedPlayer};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
     TRACK_INPUT_ID, TrackInput, active_at,
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
+pub use freeze::{
+    FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
+    spawn_freeze,
+};
 pub use gain::{GAIN_ID, Gain};
 pub use ladder::Ladder;
 pub use lfo::{LFO_ID, Lfo};

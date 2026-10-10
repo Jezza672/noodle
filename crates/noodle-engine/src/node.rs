@@ -75,6 +75,20 @@ pub trait NodeType: Send + Sync + 'static {
         None
     }
 
+    /// Mixes into `key` whatever this node's output depends on besides its
+    /// config, its inputs and the tempo map, which are keyed already. A track
+    /// input adds the clips it plays, with the contents of their files. An
+    /// error says the output can't be cached, e.g. a file that can't be read.
+    fn cache_inputs(
+        &self,
+        _node: NodeId,
+        _config: &Config,
+        _env: &crate::CacheEnv<'_>,
+        _key: &mut noodle_core::KeyBuilder,
+    ) -> Result<(), crate::Uncacheable> {
+        Ok(())
+    }
+
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.

@@ -539,32 +539,93 @@ other than a device.
 
 **What counts as cacheable.** A node's output is cacheable if it's a pure
 function of the timeline: everything upstream is deterministic and nothing
-depends on live input or a device. The compiler marks this per node. An
-offline node with a non-cacheable input is a compile error.
+depends on live input or a device. A node type says it isn't with
+`Layout::nondeterministic()` (the audio input, MIDI In). A node on a feedback
+loop isn't cacheable either, and neither is anything that follows a node that
+isn't. An offline node with a non-cacheable input gets a `NotCacheable`
+diagnostic, and plays silence.
 
-**Cache keys.** Keys are computed Merkle-style. The hash includes the
-timeline: the tempo map, the clips a track input plays, and the points of any lane
-driving the node, so freezes go stale when they change. An audio source in the key is its
-content hash, like any source file, so replacing a file under the same name
-invalidates it.
+**Cache keys.** Keys are computed Merkle-style, by `noodle_engine::analyze`.
+It compiles the project as the live engine does, with groups flattened and
+automation lanes turned into nodes, and walks the schedule upstream first:
 
 ```
-key(node) = hash(type_id, type_version, params, sample_rate, range, key(inputs)…)
+key(node) = hash(node id, type_id, type_version, config, sample_rate, range,
+                 tempo map, each input: constant | key(source output), shapes,
+                 NodeType::cache_inputs(…))
+key(output) = hash(key(node), output index)
 ```
 
-Source files are keyed by their content hash. Renders are stored on disk by
-key. An edit produces a new key, so stale data can never be served, and
-undoing an edit brings the old render back straight away. The node's
-`type_version` gets bumped whenever its DSP changes, which invalidates old
-caches.
+- The node's ID is in the key because its random seed comes from it, so two
+  identical noise nodes render differently.
+- The lane that drives a parameter is a node in the compiled graph, so its
+  points are in the key of everything it reaches.
+- The timeline lives outside the graph, so a node type contributes it through
+  `cache_inputs`. A track input hashes each clip it plays: its position, its
+  gain and fades, and for audio the *content hash* of the file
+  (`noodle_io::FileHasher`, remembered while size and modification time hold),
+  so a file replaced under the same name gives a new key.
+- Every key also holds the crate version and `DSP_GENERATION`
+  (`noodle-engine/src/cache.rs`), so a build whose sound changed never replays
+  renders from the shared per-user cache. Bump the constant with any
+  regenerated golden render.
+- The render length is in every key, so lengthening the project (a clip
+  dragged further right) renders every frozen target again, even those it
+  doesn't feed. The length reaches the last clip, automation point or tempo
+  change, plus a 4 s tail, and at least 30 s. Past it a frozen node is
+  silent, so a tail longer than that, or a drone that should play on, is cut.
+- Clip files are hashed whole, on the thread that compiles, the first time
+  they're seen, then only when their size or modification time change. Nothing
+  watches the files: one replaced on disk is noticed at the next compile.
+- An offline node can't take a modulated (offset) parameter or events yet; it
+  is reported as not cacheable.
+- Renders are stored on disk by key. An edit produces a new key, so stale
+  data can never be served, and undoing an edit brings the old render back
+  straight away. Bump a node type's `version` whenever its DSP changes.
 
-**Freeze.** Freezing a node or group marks it frozen. A render starts in the
-background and the node shows a progress bar, as in Blender. Until the render
-finishes, the subgraph plays live, or plays silence if it contains an offline
-node. Once it's ready, the next compiled plan replaces the subgraph with a
-cached-audio player.
+**Targets.** What gets rendered is a *target*: an offline node, or a node or
+group the project marks frozen (`Project::frozen`, set with
+`Command::SetFrozen`, so it undoes and is saved). A target is a set of outputs
+in the flattened graph; for a group they are the nodes whose outputs feed the
+group's output ports. `Freezer::plan` says whether each has its render in the
+store (`Ready`), lacks it (`Missing`), or can't be rendered (`Blocked`).
 
-**What exists so far.**
+**Playing from the cache.** The compiler takes `Replacements`: for an output,
+a source node to play in its place. `replace.rs` rewires the readers of that
+output to the source and drops every node that only fed it, so a frozen
+subgraph costs nothing, track inputs and lanes included. `CachedPlayer`
+(`noodle-nodes`) is the source. Live it streams chunks from the store through
+a worker thread, in the manner of clip streams: the audio side takes full
+chunks and returns spent ones through two lock-free queues, a jump asks the
+worker to restart, and a loop wraps without a gap because the worker follows
+the transport's loop range. In an offline render it reads the file itself.
+Nothing in `process` allocates (`tests/realtime.rs` checks, with seeks and a
+wrapping loop).
+
+Until a render exists a frozen target keeps playing live, and an offline node
+plays silence (a `CachedPlayer::silent`). An edit that changes a target's key
+takes its render off at once (the app compiles again straight away), so stale
+audio is never heard during a drag; only starting the new render waits for the
+editing to pause. When a render finishes during playback the player is swapped
+in with the playhead somewhere past its start, so the first block can be
+silent while the worker reads the chunk there.
+
+**Rendering the cache.** `freeze` / `spawn_freeze` (`noodle-nodes`) renders
+every `Missing` target, upstream first, on a background thread. A target is
+rendered by `render_taps` (`noodle-engine`): the graph is cut down to what
+feeds the target's outputs, a *tap* sink is wired to each output, and the
+ordinary engine runs, handing each block to the tap, which writes the cache.
+Renders earlier in the chain stand in as blocking players, so two frozen or
+offline nodes in a row cost each only its own work. An offline node is
+rendered by tapping its inputs over the whole range, running the node
+(`render_offline_node`, which builds it as the compiler would, with the same
+seed) and storing its outputs. A render that couldn't read a clip file is
+never stored. The app keeps renders in step with the project
+(`noodle-app/src/freezing.rs`): it looks at the cache on each compile, starts
+one background render for what is missing, cancels it if the project changes
+meanwhile, and shows a progress bar on the node.
+
+**Batch 1, the pieces underneath.**
 
 - `render_project_streaming` (`noodle-engine`) renders in chunks into a sink,
   with progress and cancel, so memory stays flat. `render_project` is still
@@ -580,8 +641,7 @@ cached-audio player.
   cached, since the cache would keep serving it after the file came back.
 - `CacheKey` and `KeyBuilder` (`noodle-core`) are the Merkle hashing
   (blake3). Fields are type-tagged and length-prefixed. Deciding *what*
-  goes into a node's key is the compiler's job and comes with the
-  cacheability analysis.
+  goes into a node's key is `analyze`'s job, above.
 - `CacheStore` (`noodle-io`, `cache.rs`) keeps one file per key: a 32-byte
   header and raw `f32`, so `read_frames(start, ..)` is a seek. That is the
   random access Reverse needs. Entries are written to a `.partial` file and
@@ -913,6 +973,7 @@ telemetry hub (`EditorState::scope_view`).
     rather than per sample, and flags the result constant when every lane
     agrees; a moving lane still costs a conversion per sample.
   - **M4:** streaming offline renders (done for whole-project renders; the
-    offline *node* API still hands nodes the whole range).
+    offline *node* API still hands nodes the whole range, in memory, so a very
+    long project can't go through an offline node).
 - The project file format. RON or JSON for readable diffs, with audio stored
   alongside.

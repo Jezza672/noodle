@@ -9,6 +9,7 @@ extern crate self as noodle_engine;
 
 mod automation;
 mod builtin;
+mod cache;
 mod compile;
 mod denormals;
 mod event;
@@ -21,6 +22,7 @@ mod param;
 mod plan;
 mod registry;
 mod render;
+mod replace;
 mod runtime;
 mod signal;
 mod telemetry;
@@ -33,9 +35,13 @@ pub use builtin::{
     INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_DEVICE, OUTPUT_DEVICE_KEY,
     OUTPUT_ID, Output, output_devices,
 };
+pub use cache::{
+    Analysis, CacheEnv, InputOrigin, NodeAnalysis, Target, TargetKind, Uncacheable, analyze,
+    output_key,
+};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
-    ScheduledNode, compile, compile_with_lanes,
+    ScheduledNode, compile, compile_replacing, compile_with_lanes,
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
@@ -47,12 +53,17 @@ pub use node::{
 };
 pub use noodle_core::{Config, NodeId, Value};
 pub use noodle_macros::Ports;
-pub use offline::{Cancelled, OfflineNode, Progress};
+pub use offline::{
+    Cancelled, OfflineError, OfflineInput, OfflineNode, OfflineOutput, Progress,
+    render_offline_node,
+};
 pub use param::{Modulation, ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
 pub use render::{
-    Render, RenderError, StreamError, render, render_project, render_project_streaming,
+    Render, RenderError, StreamError, Tap, TapSink, render, render_project,
+    render_project_streaming, render_taps,
 };
+pub use replace::{Replacement, Replacements, TapSpec};
 pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{

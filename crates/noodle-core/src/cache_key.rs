@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use crate::{Config, TempoMap, Value};
+
 /// A 256-bit content hash.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CacheKey([u8; 32]);
@@ -20,6 +22,14 @@ impl CacheKey {
 
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// The hash of everything `reader` yields: how a file's contents become a
+    /// key.
+    pub fn of_reader(reader: impl std::io::Read) -> std::io::Result<Self> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(reader)?;
+        Ok(Self(*hasher.finalize().as_bytes()))
     }
 
     /// 64 lowercase hex digits; the file name a store uses.
@@ -112,6 +122,36 @@ impl KeyBuilder {
     pub fn bool(&mut self, value: bool) -> &mut Self {
         self.hasher.update(b"o");
         self.hasher.update(&[u8::from(value)]);
+        self
+    }
+
+    /// A node's config: every setting by key, with its type.
+    pub fn config(&mut self, config: &Config) -> &mut Self {
+        self.u64(config.iter().count() as u64);
+        for (key, value) in config.iter() {
+            self.str(key);
+            match value {
+                Value::Bool(v) => self.bool(*v),
+                Value::Int(v) => self.i64(*v),
+                Value::Float(v) => self.f64(*v),
+                Value::Text(v) => self.str(v),
+            };
+        }
+        self
+    }
+
+    /// Every tempo and time signature change.
+    pub fn tempo_map(&mut self, map: &TempoMap) -> &mut Self {
+        self.u64(map.tempos().len() as u64);
+        for tempo in map.tempos() {
+            self.i64(tempo.tick.0).f64(tempo.bpm);
+        }
+        self.u64(map.signatures().len() as u64);
+        for change in map.signatures() {
+            self.u64(u64::from(change.bar))
+                .u64(u64::from(change.signature.numerator))
+                .u64(u64::from(change.signature.denominator));
+        }
         self
     }
 

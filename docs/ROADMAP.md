@@ -471,11 +471,16 @@ play it from a MIDI keyboard and from a MIDI clip.
 
 ## M4: Caching
 
-**Status:** batch 1 is done: streaming offline renders, the offline renderer
-as a background job with progress and cancel, and the on-disk cache store.
-Batches 2 on: cacheability analysis and Merkle key derivation, freezing,
-offline nodes (which need random access into the store) and the export
-dialog.
+**Status:** batches 1 and 2 are done. Batch 1: streaming offline renders, the
+offline renderer as a background job with progress and cancel, and the
+on-disk cache store. Batch 2: Merkle key derivation and cacheability analysis
+from the compiled graph, offline nodes running from the cache (Reverse; the
+compiler no longer refuses them), and freeze for nodes and groups, with a
+progress bar on the node and a cached-audio player in the plan. Still to do:
+the normalize and time-stretch nodes, and the export dialog. Known limits:
+an offline node still gets its whole range in memory, a frozen node plays for
+a fixed length (the clips' end plus a tail, at least 30 s), and a cached
+render is keyed by the sample rate it was made at.
 
 - The offline renderer as a background service, with progress reporting to the UI.
 - **Streaming offline renders.** Offline nodes currently get the whole range in

@@ -13,12 +13,13 @@ use std::sync::Arc;
 use noodle_core::{Graph, NodeId, Project, TempoMap};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
+use crate::compile::{Options, compile_with};
 use crate::denormals::Flush;
 pub use crate::plan::Bus;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
-use crate::{Context, Diagnostic, Lanes, Registry, Telemetry, Transport, compile_with_lanes};
+use crate::{Context, Diagnostic, Lanes, Registry, Replacements, TapSpec, Telemetry, Transport};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
 /// making a new engine.
@@ -213,8 +214,60 @@ impl Controller {
         lanes: &Lanes<'_>,
         registry: &Registry,
     ) -> Vec<Diagnostic> {
+        self.update_with(graph, lanes, registry, &Options::default())
+    }
+
+    /// [`update_project`](Self::update_project) with some outputs played
+    /// from `replacements`: cached audio for frozen nodes and offline nodes
+    /// (see [`analyze`](crate::analyze)).
+    pub fn update_project_replacing(
+        &mut self,
+        project: &Project,
+        registry: &Registry,
+        replacements: &Replacements,
+    ) -> Vec<Diagnostic> {
+        if self.tempo_map != *project.tempo_map() {
+            self.set_tempo_map(project.tempo_map());
+        }
+        let lanes: Vec<_> = project.lanes().collect();
+        let options = Options {
+            replacements: Some(replacements),
+            ..Options::default()
+        };
+        self.update_with(project.graph(), &lanes, registry, &options)
+    }
+
+    /// [`update_project`](Self::update_project) cut down to what feeds
+    /// `taps`, which watch outputs. This is how the renders that fill the
+    /// cache see a node's output.
+    pub(crate) fn update_project_tapping(
+        &mut self,
+        project: &Project,
+        registry: &Registry,
+        replacements: &Replacements,
+        taps: &[TapSpec],
+    ) -> Vec<Diagnostic> {
+        if self.tempo_map != *project.tempo_map() {
+            self.set_tempo_map(project.tempo_map());
+        }
+        let lanes: Vec<_> = project.lanes().collect();
+        let options = Options {
+            replacements: Some(replacements),
+            taps,
+            ..Options::default()
+        };
+        self.update_with(project.graph(), &lanes, registry, &options)
+    }
+
+    fn update_with(
+        &mut self,
+        graph: &Graph,
+        lanes: &Lanes<'_>,
+        registry: &Registry,
+        options: &Options<'_>,
+    ) -> Vec<Diagnostic> {
         self.free_returned();
-        let (schedule, mut diagnostics) = compile_with_lanes(graph, lanes, registry);
+        let (schedule, mut diagnostics) = compile_with(graph, lanes, registry, options);
         let generation = self.next_generation;
         self.next_generation += 1;
         // Built against the last plan *sent*: an unsent pending plan never
