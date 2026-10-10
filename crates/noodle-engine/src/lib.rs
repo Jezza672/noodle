@@ -33,8 +33,8 @@ pub use builtin::{
     OUTPUT_ID, Output, output_devices,
 };
 pub use compile::{
-    BufferId, Diagnostic, EventBufferId, InputSource, Location, Problem, Schedule, ScheduledNode,
-    compile, compile_with_lanes,
+    BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
+    ScheduledNode, compile, compile_with_lanes,
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;

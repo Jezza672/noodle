@@ -3,7 +3,10 @@
 // velocity lane. Every voice has its own saw, filter and ADSR through a VCA;
 // one LFO sweeps all the filters. Voice Mix sums the voices back to one
 // signal. The clip is a C major chord, rolled in, then a fourth note while
-// all three voices are held, so the first note is stolen.
+// all three voices are held, so the first note is stolen: the voice's fade
+// output dips through a second VCA so the steal doesn't click. Each envelope
+// reports when it has finished to the Voices node's busy input (a feedback
+// loop), so a voice is retired the moment its release ends.
 (
     format: 1,
     graph: (
@@ -18,6 +21,7 @@
             8: (type: "noodle.poly.voice_mix", position: (x: 1000.0, y: 0.0)),
             9: (type: "noodle.util.gain", params: {"gain": -14.0}, position: (x: 1200.0, y: 0.0)),
             10: (type: "noodle.io.output", position: (x: 1400.0, y: 0.0)),
+            11: (type: "noodle.util.vca", position: (x: 900.0, y: 0.0)),
         },
         connections: [
             (from: (node: 1, port: "midi"), to: (node: 2, port: "in")),
@@ -27,7 +31,10 @@
             (from: (node: 2, port: "gate"), to: (node: 6, port: "gate")),
             (from: (node: 4, port: "low"), to: (node: 7, port: "in")),
             (from: (node: 6, port: "out"), to: (node: 7, port: "level")),
-            (from: (node: 7, port: "out"), to: (node: 8, port: "in")),
+            (from: (node: 7, port: "out"), to: (node: 11, port: "in")),
+            (from: (node: 2, port: "fade"), to: (node: 11, port: "level")),
+            (from: (node: 6, port: "active"), to: (node: 2, port: "busy")),
+            (from: (node: 11, port: "out"), to: (node: 8, port: "in")),
             (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
             (from: (node: 9, port: "out"), to: (node: 10, port: "in")),
         ],

@@ -17,6 +17,11 @@ use noodle_engine::{
 /// A new gate while the envelope is still releasing climbs from where it is,
 /// so retriggering never jumps. Every lane has its own envelope, so a
 /// polyphonic gate gives a polyphonic envelope.
+///
+/// `active` is 1 while the envelope is doing anything (the gate is high or
+/// the release is still going) and 0 once it has finished. Wire it into a
+/// [`Voices`](crate::Voices) node's `busy` input, and a voice is retired the
+/// moment its release ends instead of after a fixed tail.
 pub struct Adsr;
 
 pub const ADSR_ID: &str = "noodle.mod.adsr";
@@ -47,6 +52,8 @@ struct AdsrPorts {
     release: (),
     #[output("out", "Out")]
     out: (),
+    #[output("active", "Active")]
+    active: (),
 }
 
 const GATE: usize = AdsrPorts::GATE;
@@ -55,6 +62,7 @@ const DECAY: usize = AdsrPorts::DECAY;
 const SUSTAIN: usize = AdsrPorts::SUSTAIN;
 const RELEASE: usize = AdsrPorts::RELEASE;
 const OUT: usize = AdsrPorts::OUT;
+const ACTIVE: usize = AdsrPorts::ACTIVE;
 
 static INFO: NodeInfo = NodeInfo {
     id: ADSR_ID,
@@ -106,6 +114,15 @@ struct AdsrState {
 }
 
 impl AdsrState {
+    /// Whether the envelope is still doing anything.
+    fn active(&self) -> f32 {
+        if self.stage == Stage::Idle && !self.gate {
+            0.0
+        } else {
+            1.0
+        }
+    }
+
     fn tick(&mut self, gate: f32, rates: Rates) -> f32 {
         let gate = gate >= 0.5;
         if gate && !self.gate {
@@ -187,7 +204,7 @@ impl LaneKernel for AdsrKernel {
     fn process_lane(&mut self, state: &mut AdsrState, ctx: &Context, mut lane: Lane<'_, '_>) {
         let rate = ctx.sample_rate;
         let gate = lane.inputs.get(GATE);
-        let out = lane.outputs.get_mut(OUT);
+        let [out, active] = lane.outputs.get_disjoint_mut([OUT, ACTIVE]);
 
         // The times cost an exp() each, so work out the ones that hold still
         // once per block and only the moving ones (a slider being smoothed,
@@ -200,8 +217,9 @@ impl LaneKernel for AdsrKernel {
         );
         if let (Some(a), Some(d), Some(s), Some(r)) = constants {
             let rates = Rates::new(a, d, s, r, rate);
-            for (o, &g) in out.iter_mut().zip(gate) {
+            for ((o, act), &g) in out.iter_mut().zip(active.iter_mut()).zip(gate) {
                 *o = state.tick(g, rates);
+                *act = state.active();
             }
         } else {
             let (a, d) = (lane.inputs.get(ATTACK), lane.inputs.get(DECAY));
@@ -212,7 +230,7 @@ impl LaneKernel for AdsrKernel {
                 constants.2.map(|s| s.clamp(0.0, 1.0)),
                 constants.3.map(|r| Rates::coefficient(r, rate)),
             );
-            for (i, (o, &g)) in out.iter_mut().zip(gate).enumerate() {
+            for (i, ((o, act), &g)) in out.iter_mut().zip(active.iter_mut()).zip(gate).enumerate() {
                 let rates = Rates {
                     attack: fixed.0.unwrap_or_else(|| Rates::attack_step(a[i], rate)),
                     decay: fixed.1.unwrap_or_else(|| Rates::coefficient(d[i], rate)),
@@ -220,6 +238,7 @@ impl LaneKernel for AdsrKernel {
                     release: fixed.3.unwrap_or_else(|| Rates::coefficient(r[i], rate)),
                 };
                 *o = state.tick(g, rates);
+                *act = state.active();
             }
         }
 

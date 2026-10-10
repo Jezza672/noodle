@@ -60,6 +60,21 @@ pub trait NodeType: Send + Sync + 'static {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError>;
 
+    /// The key of a signal input that the node reads only *after* it has
+    /// written its outputs, so a block's outputs don't depend on that
+    /// block's value of this input. This is what lets a wire go from the
+    /// node's outputs round to that input: a feedback loop.
+    ///
+    /// A node that returns a key here must implement
+    /// [`Node::process_output`] and [`Node::process_input`]. The compiler
+    /// splits it into those two steps only when it lies on a loop; otherwise
+    /// it runs whole, through [`Node::process`], which must do the same as
+    /// the two in a row. Every *other* input, and the event ports, belong to
+    /// `process_output`, so wires into them can't close a loop.
+    fn loop_input(&self, _config: &Config) -> Option<&'static str> {
+        None
+    }
+
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.
@@ -314,6 +329,20 @@ impl Instance {
 /// in `docs/ARCHITECTURE.md`: no allocation, locks, I/O or unbounded loops.
 pub trait Node: Send + 'static {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>);
+
+    /// First half of [`process`](Self::process) for a node that names a
+    /// [`NodeType::loop_input`], when the node is on a feedback loop. Writes
+    /// every output. Every input but the loop input is real; the loop input
+    /// is an empty placeholder, since nothing has produced it yet.
+    fn process_output(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        for output in io.outputs {
+            output.fill(0.0);
+        }
+    }
+
+    /// Second half, run once the loop input has been produced. Only the loop
+    /// input is real, and there are no outputs.
+    fn process_input(&mut self, _ctx: &Context, _io: Io<'_, '_>) {}
 
     /// Clears internal state such as filter memory, e.g. when the transport
     /// jumps.

@@ -6,13 +6,16 @@
 // a Math node), and an amplitude envelope through a VCA. Its controls (pitch,
 // gate, cutoff, resonance, detune, spread) are the group's inputs. Voice Mix
 // sums the voices. Released voices are skipped, and so is every voice that
-// has not been played yet. The clip rolls an A minor 7th chord.
+// has not been played yet: the amplitude envelope reports through the group's
+// `active` output to the Voices node's `busy` input, so a voice is retired the
+// moment its release ends. The group's `fade` input (Voices' steal fade) goes
+// through a last VCA. The clip rolls an A minor 7th chord.
 (
     format: 1,
     graph: (
         nodes: {
             1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
-            2: (type: "noodle.poly.voices", config: {"voices": 4}, params: {"tail": 2.0}, position: (x: 200.0, y: 0.0)),
+            2: (type: "noodle.poly.voices", config: {"voices": 4}, position: (x: 200.0, y: 0.0)),
             3: (type: "noodle.group", config: {"name": "Subtractive Voice"}, position: (x: 450.0, y: 0.0)),
             4: (type: "noodle.poly.voice_mix", position: (x: 700.0, y: 0.0)),
             5: (type: "noodle.util.gain", params: {"gain": -16.0}, position: (x: 900.0, y: 0.0)),
@@ -29,7 +32,10 @@
             19: (type: "noodle.util.math", config: {"expr": "a * b + c"}, params: {"b": 0.55}, parent: Some(3), position: (x: -150.0, y: 200.0)),
             20: (type: "noodle.mod.adsr", params: {"attack": 0.01, "decay": 0.1, "sustain": 0.8, "release": 0.25}, parent: Some(3), position: (x: -300.0, y: 400.0)),
             21: (type: "noodle.util.vca", parent: Some(3), position: (x: 250.0, y: 0.0)),
-            22: (type: "noodle.group.output", config: {"name": "out"}, parent: Some(3), position: (x: 500.0, y: 0.0)),
+            22: (type: "noodle.group.output", config: {"name": "out"}, parent: Some(3), position: (x: 700.0, y: 0.0)),
+            16: (type: "noodle.group.input", config: {"name": "fade"}, parent: Some(3), position: (x: -600.0, y: 500.0)),
+            23: (type: "noodle.util.vca", parent: Some(3), position: (x: 500.0, y: 0.0)),
+            24: (type: "noodle.group.output", config: {"name": "active"}, parent: Some(3), position: (x: 700.0, y: 400.0)),
             40: (type: "noodle.group.input", config: {"name": "freq"}, parent: Some(30), position: (x: -600.0, y: -200.0)),
             41: (type: "noodle.group.input", config: {"name": "detune"}, parent: Some(30), position: (x: -600.0, y: 0.0)),
             42: (type: "noodle.group.input", config: {"name": "spread"}, parent: Some(30), position: (x: -600.0, y: 200.0)),
@@ -111,7 +117,12 @@
             (from: (node: 13, port: "out"), to: (node: 17, port: "resonance")),
             (from: (node: 17, port: "out"), to: (node: 21, port: "in")),
             (from: (node: 20, port: "out"), to: (node: 21, port: "level")),
-            (from: (node: 21, port: "out"), to: (node: 22, port: "in")),
+            (from: (node: 21, port: "out"), to: (node: 23, port: "in")),
+            (from: (node: 16, port: "out"), to: (node: 23, port: "level")),
+            (from: (node: 23, port: "out"), to: (node: 22, port: "in")),
+            (from: (node: 20, port: "active"), to: (node: 24, port: "in")),
+            (from: (node: 2, port: "fade"), to: (node: 3, port: "fade")),
+            (from: (node: 3, port: "active"), to: (node: 2, port: "busy")),
         ],
     ),
     clips: {

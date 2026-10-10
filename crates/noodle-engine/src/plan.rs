@@ -15,7 +15,7 @@ use noodle_core::NodeId;
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
 use crate::{
     Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
-    ParamInfo, ParamKind, ParamWriter, Problem, Schedule, Settings, Setup, Shape, SignalIn,
+    ParamInfo, ParamKind, ParamWriter, Phase, Problem, Schedule, Settings, Setup, Shape, SignalIn,
     SignalOut, Telemetry,
 };
 
@@ -84,6 +84,9 @@ pub(crate) struct Plan {
     /// divided by `max_frames`. See [`SignalOut::set_silent`].
     silent: Box<[bool]>,
     events: Vec<Vec<Event>>,
+    /// `max_frames` zeros, for the placeholder a split node's other half
+    /// sees where its loop input (or everything else) is.
+    zeros: Box<[f32]>,
     values: Vec<ValueInput>,
     /// Wired parameters that offset their value, by index into the plan's
     /// offsets.
@@ -98,7 +101,14 @@ pub(crate) struct Plan {
 
 struct PlanNode {
     /// `None` until a carried-over instance arrives from the previous plan.
+    /// Always `None` for the input half of a split node, which runs its
+    /// `owner`'s instance.
     instance: Option<Box<dyn Node>>,
+    /// Which half of the node this step runs.
+    phase: Phase,
+    /// For the input half of a split node: the slot of its output half, which
+    /// comes earlier and holds the instance.
+    owner: Option<usize>,
     inputs: Vec<Input>,
     outputs: Vec<View>,
     event_inputs: Vec<Option<usize>>,
@@ -131,6 +141,8 @@ enum Input {
     /// A wired parameter that offsets its value, by index into the plan's
     /// offsets.
     Offset(usize),
+    /// Not read in this step: a silent mono placeholder.
+    Absent,
 }
 
 /// Vectors with room for one node's views, so building its [`Io`] each block
@@ -213,11 +225,17 @@ pub(crate) fn build(
     // known even though buffers are reused.
     let mut signal_writers = HashMap::new();
     let mut event_writers = HashMap::new();
-    let mut wiring = Vec::with_capacity(schedule.nodes.len());
+    let mut wiring: Vec<(NodeId, Sources)> = Vec::with_capacity(schedule.nodes.len());
     let mut carried_ids = HashSet::new();
+    // The slot of each split node's output half, for its input half to find.
+    let mut output_halves: HashMap<NodeId, usize> = HashMap::new();
 
     for (slot, scheduled) in schedule.nodes.into_iter().enumerate() {
         let id = scheduled.id;
+        let input_half = scheduled.phase == Phase::Input;
+        if scheduled.phase == Phase::Output {
+            output_halves.insert(id, slot);
+        }
         let key = NodeKey {
             type_id: scheduled.node_type.info().id,
             config: scheduled.config.clone(),
@@ -227,11 +245,12 @@ pub(crate) fn build(
 
         let carried = previous
             .and_then(|p| p.nodes.get(&id))
-            .filter(|(old_key, _)| *old_key == key);
+            .filter(|(old_key, _)| *old_key == key && !input_half);
         // A node that fails to instantiate plays silence, and isn't recorded
         // as able to carry over, so the next update retries it and reports
         // the problem again.
         let (instance, carries_over) = match carried {
+            None if input_half => (None, false),
             Some(&(_, old_slot)) => {
                 migrations.push((old_slot, slot));
                 carried_ids.insert(id);
@@ -277,7 +296,7 @@ pub(crate) fn build(
             // that a wire offsets.
             let base = match *source {
                 InputSource::Value(value) | InputSource::Modulated(_, value) => Some(value),
-                InputSource::Buffer(_) => None,
+                InputSource::Buffer(_) | InputSource::Absent => None,
             };
             let value_slot = base.map(|value| {
                 // A hand-edited file can hold inf or NaN, which would
@@ -315,6 +334,7 @@ pub(crate) fn build(
                 value_slot
             });
             inputs.push(match (*source, value_slot, &port.kind) {
+                (InputSource::Absent, ..) => Input::Absent,
                 (InputSource::Buffer(b), ..) => Input::Buffer(view(b, *shape)),
                 (InputSource::Modulated(b, _), Some(value), InputKind::Param(param)) => {
                     offsets_in.push(OffsetInput::new(
@@ -337,7 +357,7 @@ pub(crate) fn build(
                 InputSource::Buffer(b) | InputSource::Modulated(b, _) => {
                     signal_writers.get(b).copied()
                 }
-                InputSource::Value(_) => None,
+                InputSource::Value(_) | InputSource::Absent => None,
             })
             .chain(
                 scheduled
@@ -346,7 +366,17 @@ pub(crate) fn build(
                     .map(|e| e.and_then(|e| event_writers.get(&e).copied())),
             )
             .collect();
-        wiring.push((id, sources));
+        let owner = input_half.then(|| output_halves[&id]);
+        if let Some(owner) = owner {
+            // The node's sources are those of both halves together.
+            let merged: &mut Sources = &mut wiring[owner].1;
+            for (slot, source) in merged.iter_mut().zip(sources) {
+                *slot = slot.or(source);
+            }
+            wiring.push((id, Vec::new()));
+        } else {
+            wiring.push((id, sources));
+        }
         for (port, &b) in scheduled.outputs.iter().enumerate() {
             signal_writers.insert(b, (id, port));
         }
@@ -415,6 +445,8 @@ pub(crate) fn build(
         }
         nodes.push(PlanNode {
             instance,
+            phase: scheduled.phase,
+            owner,
             inputs,
             outputs,
             event_inputs,
@@ -445,6 +477,7 @@ pub(crate) fn build(
         nodes,
         pool: vec![0.0; pool_len].into_boxed_slice(),
         silent: vec![false; pool_len / max_frames.max(1)].into_boxed_slice(),
+        zeros: vec![0.0; max_frames].into_boxed_slice(),
         events: (0..schedule.event_buffers)
             .map(|_| Vec::with_capacity(EVENT_CAPACITY))
             .collect(),
@@ -463,6 +496,7 @@ fn audible_wiring(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Wiring {
     let slots: HashMap<NodeId, usize> = wiring
         .iter()
         .enumerate()
+        .filter(|(slot, _)| nodes[*slot].owner.is_none())
         .map(|(slot, (id, _))| (*id, slot))
         .collect();
     let mut audible = HashMap::new();
@@ -523,6 +557,9 @@ impl Node for Silence {
     }
 }
 
+/// The silence flag of a placeholder input.
+static ABSENT_SILENT: [bool; 1] = [true];
+
 impl Plan {
     /// Whether this plan can be installed without fading the output. See
     /// [`Processor`](crate::Processor).
@@ -580,7 +617,11 @@ impl Plan {
         let silent = self.silent.as_mut_ptr();
         let events = self.events.as_mut_ptr();
 
-        for node in &mut self.nodes {
+        for index in 0..self.nodes.len() {
+            // A split node's input half runs the instance of its output half,
+            // which is earlier.
+            let (earlier, rest) = self.nodes.split_at_mut(index);
+            let node = &mut rest[0];
             let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
             let mut outputs: Vec<SignalOut<'_>> = recycle(mem::take(&mut node.scratch.outputs));
             let mut event_inputs: Vec<&[Event]> =
@@ -602,10 +643,14 @@ impl Plan {
             // outputs share no buffer with its inputs or each other, and only
             // this node's views exist while it runs.
             unsafe {
-                inputs.extend(node.inputs.iter().map(|input| match *input {
-                    Input::Buffer(view) => view.read(pool, silent, frames, self.max_frames),
-                    Input::Value(slot) => self.values[slot].signal(frames),
-                    Input::Offset(k) => self.offsets[k].signal(frames),
+                inputs.extend(node.inputs.iter().map(|input| {
+                    match *input {
+                        Input::Buffer(view) => view.read(pool, silent, frames, self.max_frames),
+                        Input::Value(slot) => self.values[slot].signal(frames),
+                        Input::Offset(k) => self.offsets[k].signal(frames),
+                        Input::Absent => SignalIn::new(&self.zeros[..frames], Shape::MONO, frames)
+                            .with_silent(&ABSENT_SILENT),
+                    }
                 }));
                 outputs.extend(
                     node.outputs
@@ -636,10 +681,17 @@ impl Plan {
                 event_inputs: &event_inputs,
                 event_outputs: &mut event_outputs,
             };
-            match &mut node.instance {
-                Some(instance) => instance.process(ctx, io),
+            let instance = match node.owner {
+                Some(owner) => &mut earlier[owner].instance,
+                None => &mut node.instance,
+            };
+            match (instance, node.phase) {
+                (Some(instance), Phase::Whole) => instance.process(ctx, io),
+                (Some(instance), Phase::Output) => instance.process_output(ctx, io),
+                (Some(instance), Phase::Input) => instance.process_input(ctx, io),
                 // Only possible if plans arrived out of order.
-                None => Silence.process(ctx, io),
+                (None, Phase::Input) => {}
+                (None, _) => Silence.process(ctx, io),
             }
             if node.is_input {
                 read_input(input, &mut outputs[0]);
