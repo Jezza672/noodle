@@ -375,7 +375,13 @@ Metronome node and the metronome button.
 
 It becomes an instrument.
 
-**Status:** batch 3 is done: the `Voices` node (voice allocation and stealing) and polyphonic signals end to end with `Voice Mix`, played from a MIDI keyboard and a MIDI clip (`examples/poly-synth.ron` and its golden render); the ADSR now recomputes only its moving times, and offsetting wires convert held lanes once. Batch 2 is done: MIDI input (a port chosen in the audio settings
+**Status:** batch 3 is done: the `Voices` node (voice allocation and
+stealing) and polyphonic signals end to end with `Voice Mix`, played from a
+MIDI keyboard and a MIDI clip (`examples/poly-synth.ron` and its golden
+render); the ADSR now recomputes only its moving times, and offsetting wires
+convert held lanes once. Stealing is hard (no fade-out before the pitch
+changes), so a click is possible; a short fade-then-steal is a later option.
+Batch 2 is done: MIDI input (a port chosen in the audio settings
 dialog, the `MIDI In` node), MIDI clips on tracks, and a piano roll (see "MIDI
 input" and "MIDI clips" in ARCHITECTURE.md), with `examples/midi-clip.ron` and
 its golden render. Batch 1 is done: the port derive macro (`noodle-macros`), events

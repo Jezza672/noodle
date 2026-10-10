@@ -247,7 +247,9 @@ There are two kinds of signal, plus a possible third later:
     the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per
     note. A new note takes the free voice that has been free longest, so
     releases ring out; with none free it steals the voice whose note started
-    first, dropping that gate for a sample so envelopes retrigger. Pitch
+    first, dropping that gate for a sample so envelopes retrigger. Stealing is
+    hard: the pitch changes at once, which can click on a bright patch. A
+    note-on for a key already held retakes its voice. Pitch
     expressions bend only their own note's voice, and a pitch holds after
     release. Every voice is processed all the time until finished voices can
     be skipped (M3). `Voice Mix` (`noodle.poly.voice_mix`) sums voices.

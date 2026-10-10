@@ -19,6 +19,7 @@ use noodle_engine::{
 /// has been free longest, so releases ring out as long as possible. With
 /// none free, it steals the voice whose note started first. A stolen voice's
 /// gate drops for one sample before it rises again, so envelopes restart.
+/// Stealing is hard for now: the pitch changes at once, with no fade-out.
 ///
 /// The voice count is config, not a parameter, since it is the outputs'
 /// shape.
@@ -39,7 +40,7 @@ struct VoicesPorts {
 }
 
 const VOICE_COUNT: ConfigInfo = ConfigInfo::int("voices", "Voices", 8);
-const MAX_VOICES: i64 = 64;
+const MAX_VOICES: usize = 64;
 
 static CONFIG: [ConfigInfo; 1] = [VOICE_COUNT];
 
@@ -54,7 +55,7 @@ impl Voices {
     fn count(config: &Config) -> Result<usize, NodeError> {
         let voices = VOICE_COUNT.get_int(config);
         match usize::try_from(voices) {
-            Ok(n @ 1..=64) => Ok(n),
+            Ok(n @ 1..=MAX_VOICES) => Ok(n),
             _ => Err(NodeError::config(format!(
                 "Voices needs between 1 and {MAX_VOICES} voices, not {voices}"
             ))),
@@ -153,7 +154,13 @@ impl VoicesNode {
                 velocity,
                 ..
             } => {
-                let i = self.allocate();
+                // A key that is already down (a retrigger, or two sources on
+                // one port) retakes its own voice rather than taking a second.
+                let i = self
+                    .voices
+                    .iter()
+                    .position(|v| v.held && v.id == note.0)
+                    .unwrap_or_else(|| self.allocate());
                 let stamp = self.tick();
                 let voice = &mut self.voices[i];
                 voice.rearm = voice.held;
@@ -365,6 +372,25 @@ mod tests {
         h.send_events(VoicesPorts::NOTES, &[]);
         h.run(16).unwrap();
         assert!(gate(&h, 0).iter().all(|&g| g == 1.0));
+    }
+
+    #[test]
+    fn a_repeated_note_on_retakes_its_voice_instead_of_sticking() {
+        let mut h = voices(4);
+        h.send_events(
+            VoicesPorts::NOTES,
+            &[on(0, 7, 60, 0.5), on(2, 7, 64, 0.9), off(8, 7)],
+        );
+        h.run(16).unwrap();
+        for voice in 0..4 {
+            assert_eq!(*gate(&h, voice).last().unwrap(), 0.0, "voice {voice}");
+        }
+        // The second note-on restarted voice 0 with its own key and velocity.
+        let g0 = gate(&h, 0);
+        assert_eq!((g0[1], g0[2], g0[3]), (1.0, 0.0, 1.0));
+        assert!((pitch(&h, 0, 3) - 261.63 * 1.2599).abs() < 0.1);
+        assert_eq!(h.output(VoicesPorts::VELOCITY).lane(0, 0)[3], 0.9);
+        assert!(gate(&h, 1).iter().all(|&g| g == 0.0));
     }
 
     #[test]
