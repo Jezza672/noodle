@@ -162,8 +162,10 @@ impl Rig {
     }
 
     /// Waits for the hub to hand the node the schedule from the last update.
+    /// The hub is a background thread, so a loaded CI machine (macOS runners
+    /// in particular) can take much longer than a quiet one.
     pub fn settle(&self) {
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(Duration::from_millis(400));
     }
 
     pub fn update(&mut self) {

@@ -242,6 +242,17 @@ There are two kinds of signal, plus a possible third later:
     (Hz), `gate` and `velocity` signals, falling back to an earlier held note
     on release and holding its pitch after the last so an envelope's release
     stays in tune. The track input's `midi` output is also an events port.
+    `Voices` (`noodle.poly.voices`) plays many notes at once: its `voices`
+    config (1 to 64, default 8; config because it is the outputs' shape) sets
+    the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per
+    note. A new note takes the free voice that has been free longest, so
+    releases ring out; with none free it steals the voice whose note started
+    first, dropping that gate for a sample so envelopes retrigger. Stealing is
+    hard: the pitch changes at once, which can click on a bright patch. A
+    note-on for a key already held retakes its voice. Pitch
+    expressions bend only their own note's voice, and a pitch holds after
+    release. Every voice is processed all the time until finished voices can
+    be skipped (M3). `Voice Mix` (`noodle.poly.voice_mix`) sums voices.
     `MIDI In` (`noodle.event.midi_in`) plays the app's MIDI input port: see
     "MIDI input" below.
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
@@ -753,7 +764,11 @@ telemetry hub (`EditorState::scope_view`).
 - The node API is drafted in `crates/noodle-engine/src/node.rs` and `lane.rs`,
   with example nodes in `noodle-nodes`. Its planned follow-ups are in the
   roadmap:
-  - **M3:** silence skipping, and skipping finished voices.
+  - **M3:** silence skipping, and skipping finished voices. A parameter
+    that offsets along its travel (`OffsetInput` in `plan.rs`) converts a
+    lane that holds one value (a gate, a velocity, a sustaining envelope) once
+    rather than per sample, and flags the result constant when every lane
+    agrees; a moving lane still costs a conversion per sample.
   - **M4:** streaming offline renders.
 - The project file format. RON or JSON for readable diffs, with audio stored
   alongside.

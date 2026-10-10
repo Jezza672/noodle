@@ -157,11 +157,15 @@ struct Rates {
 impl Rates {
     fn new(attack: f32, decay: f32, sustain: f32, release: f32, sample_rate: f32) -> Self {
         Self {
-            attack: 1.0 / (attack.max(1e-4) * sample_rate),
+            attack: Self::attack_step(attack, sample_rate),
             decay: Self::coefficient(decay, sample_rate),
             release: Self::coefficient(release, sample_rate),
             sustain: sustain.clamp(0.0, 1.0),
         }
+    }
+
+    fn attack_step(seconds: f32, sample_rate: f32) -> f32 {
+        1.0 / (seconds.max(1e-4) * sample_rate)
     }
 
     fn coefficient(seconds: f32, sample_rate: f32) -> f32 {
@@ -177,8 +181,9 @@ impl LaneKernel for AdsrKernel {
         let gate = lane.inputs.get(GATE);
         let out = lane.outputs.get_mut(OUT);
 
-        // The times cost an exp() each, so compute them once per block unless
-        // they're modulated.
+        // The times cost an exp() each, so work out the ones that hold still
+        // once per block and only the moving ones (a slider being smoothed,
+        // a wire) per sample.
         let constants = (
             lane.inputs.constant(ATTACK),
             lane.inputs.constant(DECAY),
@@ -193,8 +198,20 @@ impl LaneKernel for AdsrKernel {
         } else {
             let (a, d) = (lane.inputs.get(ATTACK), lane.inputs.get(DECAY));
             let (s, r) = (lane.inputs.get(SUSTAIN), lane.inputs.get(RELEASE));
+            let fixed = (
+                constants.0.map(|a| Rates::attack_step(a, rate)),
+                constants.1.map(|d| Rates::coefficient(d, rate)),
+                constants.2.map(|s| s.clamp(0.0, 1.0)),
+                constants.3.map(|r| Rates::coefficient(r, rate)),
+            );
             for (i, (o, &g)) in out.iter_mut().zip(gate).enumerate() {
-                *o = state.tick(g, Rates::new(a[i], d[i], s[i], r[i], rate));
+                let rates = Rates {
+                    attack: fixed.0.unwrap_or_else(|| Rates::attack_step(a[i], rate)),
+                    decay: fixed.1.unwrap_or_else(|| Rates::coefficient(d[i], rate)),
+                    sustain: fixed.2.unwrap_or_else(|| s[i].clamp(0.0, 1.0)),
+                    release: fixed.3.unwrap_or_else(|| Rates::coefficient(r[i], rate)),
+                };
+                *o = state.tick(g, rates);
             }
         }
 
@@ -319,6 +336,31 @@ mod tests {
             out
         };
         assert_eq!(go(false), go(true));
+    }
+
+    #[test]
+    fn every_time_can_be_the_only_one_modulated() {
+        let frames = 1_000;
+        let times = [0.005, 0.02, 0.4, 0.02];
+        let go = |modulated: Option<usize>| {
+            let mut connected = vec![(GATE, Shape::MONO)];
+            connected.extend(modulated.map(|port| (port, Shape::MONO)));
+            let mut h = Harness::new(&Adsr, &Config::new(), &connected, RATE, frames).unwrap();
+            for (i, port) in [ATTACK, DECAY, SUSTAIN, RELEASE].into_iter().enumerate() {
+                if modulated == Some(port) {
+                    h.input(port, frames).fill(times[i]);
+                } else {
+                    h.set(port, times[i]);
+                }
+            }
+            let mut out = run(&mut h, frames, 1.0);
+            out.extend(run(&mut h, frames, 0.0));
+            out
+        };
+        let expected = go(None);
+        for port in [ATTACK, DECAY, SUSTAIN, RELEASE] {
+            assert_eq!(go(Some(port)), expected, "port {port}");
+        }
     }
 
     #[test]
