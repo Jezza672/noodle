@@ -236,9 +236,9 @@ fn only_the_sounding_voices_are_processed_and_a_release_rings_out_first() {
 
 #[test]
 fn a_skipped_voice_starts_cleanly_when_a_note_takes_it() {
-    // A tail of 0 makes released voices inactive at once, so the oscillator is
-    // skipped too, not just the envelope's tail.
-    let (mut processor, midi, counted, _controller) = synth(0.0);
+    // The shortest tail makes released voices inactive soon, so the oscillator
+    // is skipped too, not just the envelope's tail.
+    let (mut processor, midi, counted, _controller) = synth(0.05);
     for round in 0..3 {
         midi.send([0x90, 69, 100]);
         let _ = block(&mut processor);
@@ -246,7 +246,8 @@ fn a_skipped_voice_starts_cleanly_when_a_note_takes_it() {
         assert_eq!(lanes, 1, "round {round}");
         assert!(out.iter().any(|&s| s.abs() > 0.1), "round {round}");
         midi.send([0x80, 69, 0]);
-        for _ in 0..8 {
+        // The shortest tail is 50 ms: 2400 frames, 10 blocks.
+        for _ in 0..14 {
             let _ = block(&mut processor);
         }
         let (lanes, out) = lanes_in_block(&mut processor, &counted);
@@ -272,7 +273,7 @@ fn skipping_never_allocates_on_the_audio_thread() {
     assert_eq!(violations, 0, "the audio thread allocated or freed memory");
 }
 
-/// MIDI In → Voices (4) → unison saw → ladder (swept by an ADSR) → VCA (amp
+/// MIDI In → Voices (4) → saw → ladder (swept by an ADSR) → VCA (amp
 /// ADSR) → Voice Mix → Output: the subtractive synth, played from a keyboard.
 fn subtractive() -> (Processor, MidiBus, impl Sized) {
     let mut registry = Registry::with_builtins();
@@ -282,7 +283,7 @@ fn subtractive() -> (Processor, MidiBus, impl Sized) {
     for (type_id, params) in [
         (MIDI_IN_ID, vec![]),
         (VOICES_ID, vec![("tail", 0.05)]),
-        ("noodle.osc.unison_saw", vec![]),
+        ("noodle.osc.saw", vec![]),
         ("noodle.filter.ladder", vec![("resonance", 0.6)]),
         (
             "noodle.mod.adsr",
@@ -350,7 +351,7 @@ fn subtractive() -> (Processor, MidiBus, impl Sized) {
 }
 
 #[test]
-fn the_subtractive_synth_sounds_in_stereo_and_never_allocates() {
+fn the_subtractive_synth_sounds_and_never_allocates() {
     let (mut processor, midi, _controller) = subtractive();
     let mut out = vec![0.0; SETTINGS.max_frames * 2];
     let mut violations = 0;
@@ -374,4 +375,64 @@ fn the_subtractive_synth_sounds_in_stereo_and_never_allocates() {
         processor.process(&mut out);
     }
     assert!(out.iter().all(|&s| s == 0.0));
+}
+
+/// Silence flags cross a group's boundaries and its stage: a counter inside a
+/// group (whose output has a gain set, so it keeps a stage) only processes the
+/// voices that sound.
+#[test]
+fn skipping_works_through_a_group_and_its_stage() {
+    let mut registry = Registry::with_builtins();
+    let library = register_library(&mut registry);
+    let counted = Arc::new(AtomicUsize::new(0));
+    registry.register(Counter(Arc::clone(&counted)));
+    let project = Project::from_ron(
+        r#"(
+        format: 1,
+        graph: (
+            nodes: {
+                1: (type: "noodle.event.midi_in"),
+                2: (type: "noodle.poly.voices", config: {"voices": 4}, params: {"tail": 0.05}),
+                3: (type: "noodle.osc.sine"),
+                4: (type: "noodle.group"),
+                5: (type: "noodle.group.input", config: {"name": "in"}, parent: Some(4)),
+                6: (type: "test.counter", parent: Some(4)),
+                7: (type: "noodle.group.output", config: {"name": "out"}, params: {"gain": 0.0, "mute": 0.0}, parent: Some(4)),
+                8: (type: "noodle.poly.voice_mix"),
+                9: (type: "noodle.io.output"),
+            },
+            connections: [
+                (from: (node: 1, port: "out"), to: (node: 2, port: "in")),
+                (from: (node: 2, port: "pitch"), to: (node: 3, port: "frequency")),
+                (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+                (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
+                (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+                (from: (node: 4, port: "out"), to: (node: 8, port: "in")),
+                (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
+            ],
+        ),
+    )"#,
+    )
+    .unwrap();
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let midi = library.midi;
+
+    for _ in 0..4 {
+        assert_eq!(lanes_in_block(&mut processor, &counted).0, 0, "idle");
+    }
+    midi.send([0x90, 60, 100]);
+    midi.send([0x90, 64, 100]);
+    let _ = block(&mut processor);
+    let (lanes, out) = lanes_in_block(&mut processor, &counted);
+    assert_eq!(lanes, 2, "two notes, two voices through the group");
+    assert!(out.iter().any(|&s| s.abs() > 0.1), "and they sound");
+
+    midi.send([0x80, 60, 0]);
+    midi.send([0x80, 64, 0]);
+    for _ in 0..14 {
+        let _ = block(&mut processor);
+    }
+    assert_eq!(lanes_in_block(&mut processor, &counted).0, 0, "released");
 }

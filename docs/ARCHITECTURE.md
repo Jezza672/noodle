@@ -266,11 +266,13 @@ There are no synth nodes. A synth is a group (`noodle.group`) of primitive
 nodes (oscillators, filters, envelopes, VCAs, `Math`), with its controls as the
 group's inputs, so it stays editable once created: open it and change it.
 An input left unwired leaves the node behind it at the value set inside.
-`examples/subtractive-synth.ron` is one. `Math` (`noodle.util.math`) takes an
+`examples/subtractive-synth.ron` is one, and its unison is a nested group
+(five `Saw`s, each detuned by a `Math` node and placed by a `Pan`, into a
+`Mix`), so a unison of squares or of anything else is the same group with
+another oscillator. `Math` (`noodle.util.math`) takes an
 `expr` config such as `a * b + c` over inputs `a` to `d`; it is compiled to a
 postfix program when the node is built and run on a fixed stack per sample.
-`Unison Saw` is an oscillator (a stack of detuned saws is one sound source, as
-a saw is), not a synth.
+`Pan` (`noodle.util.pan`) is the equal-power stereo placement it uses.
 
 ### Silence skipping
 

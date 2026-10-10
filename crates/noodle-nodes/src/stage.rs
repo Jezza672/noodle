@@ -1,6 +1,6 @@
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Ports, Setup, Unit,
+    PerLane, Ports, Setup, Skip, Unit,
 };
 
 /// What a group's boundary node becomes when its gain or mute is in use. The
@@ -60,6 +60,11 @@ struct StageKernel;
 
 impl LaneKernel for StageKernel {
     type State = ();
+
+    /// Gain times silence is silence, so a group's stage passes the flags on.
+    fn skip(&self) -> Skip {
+        Skip::AnySilent(&[IN])
+    }
 
     fn process_lane(&mut self, _: &mut (), _: &Context, mut lane: Lane<'_, '_>) {
         let input = lane.inputs.get(IN);
@@ -137,5 +142,17 @@ mod tests {
         h.set(SOLO_MUTE, 1.0);
         h.run(4).unwrap();
         assert!(h.output(OUT).lane(0, 0).iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn silent_lanes_stay_silent_through_the_stage() {
+        let poly = Shape::new(2, 1);
+        let mut h = Harness::new(&GroupStage, &Config::new(), &[(IN, poly)], 48_000.0, 4).unwrap();
+        let mut input = h.input(IN, 4);
+        input.lane_mut(0, 0).fill(1.0);
+        input.silence(1, 0);
+        h.run(4).unwrap();
+        assert!(!h.output(OUT).is_silent(0, 0));
+        assert!(h.output(OUT).is_silent(1, 0));
     }
 }

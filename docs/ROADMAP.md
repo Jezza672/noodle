@@ -379,9 +379,10 @@ It becomes an instrument.
 (per-lane silence flags, `Skip` and `is_idle` on `LaneKernel`, a `tail` on
 `Voices`; see "Silence skipping" in ARCHITECTURE.md), and the rest of the
 synthesis nodes: `Square` and `Triangle` band-limited oscillators, a `Ladder`
-filter, a `Unison Saw` oscillator and a `Math` node (arithmetic on four inputs
-from a typed expression), with `examples/subtractive-synth.ron` (the synth
-is a group of those primitives with its controls as group inputs) and its
+filter, a `Pan` and a `Math` node (arithmetic on four inputs from a typed
+expression), with `examples/subtractive-synth.ron` (the synth
+is a group of those primitives, unison included as a nested group, with its
+controls as group inputs) and its
 golden render. Not done: a
 fade-then-steal for voice stealing (still hard), and a separate envelope
 report to `Voices` (the `tail` parameter stands in until feedback loops
@@ -439,8 +440,7 @@ filters, unison and spread); the delay node and feedback loops.
   `Voices` marks a voice inactive once it has been free for `tail` seconds,
   and nothing processes it until it's reused. Envelopes reporting their own
   release would need a wire back to `Voices`, so wait for feedback loops.
-- **Synthesis nodes.** *Done* (batch 4; unison is a `Unison Saw` oscillator
-  node, and there is no separate pan or spread node yet):
+- **Synthesis nodes.** *Done* (batch 4; unison is a group of saws, `Math` detune and `Pan`):
   - Band-limited oscillators.
   - ADSR envelope and LFO.
   - SVF and ladder filters.

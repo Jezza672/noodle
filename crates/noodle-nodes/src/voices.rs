@@ -43,7 +43,7 @@ struct VoicesPorts {
     #[param(
         "tail",
         "Tail",
-        ParamInfo::new(0.0, 30.0, 10.0).unit(Unit::Seconds)
+        ParamInfo::new(MIN_TAIL, 30.0, 10.0).unit(Unit::Seconds)
     )]
     tail: (),
     #[output("pitch", "Pitch")]
@@ -53,6 +53,10 @@ struct VoicesPorts {
     #[output("velocity", "Velocity")]
     velocity: (),
 }
+
+/// The shortest tail. A voice that goes inactive the moment its note ends would
+/// cut every release, so there is always a little.
+const MIN_TAIL: f32 = 0.05;
 
 const VOICE_COUNT: ConfigInfo = ConfigInfo::int("voices", "Voices", 8);
 const MAX_VOICES: usize = 64;
@@ -284,7 +288,7 @@ impl Node for VoicesNode {
             .first()
             .copied()
             .unwrap_or(0.0);
-        let tail = (f64::from(tail.max(0.0)) * f64::from(ctx.sample_rate)) as u64;
+        let tail = (f64::from(tail.max(MIN_TAIL)) * f64::from(ctx.sample_rate)) as u64;
         let outputs = io.outputs;
         self.begin_block();
         let mut cursor = 0;
@@ -513,8 +517,8 @@ mod tests {
     #[test]
     fn a_released_voice_keeps_its_pitch_until_the_tail_has_passed() {
         let mut h = voices(2);
-        // 0.01 s at 48 kHz is 480 frames: 30 blocks of 16.
-        h.set(VoicesPorts::TAIL, 0.01);
+        // 0.05 s at 48 kHz is 2400 frames: 150 blocks of 16.
+        h.set(VoicesPorts::TAIL, 0.05);
         h.send_events(VoicesPorts::NOTES, &[on(0, 1, 69, 0.5), off(8, 1)]);
         h.run(16).unwrap();
         h.send_events(VoicesPorts::NOTES, &[]);
@@ -526,7 +530,7 @@ mod tests {
         assert!(!silent(&h, VoicesPorts::PITCH, 0), "still ringing");
         assert!((pitch(&h, 0, 3) - 440.0).abs() < 1e-3);
 
-        for _ in 0..40 {
+        for _ in 0..160 {
             h.run(16).unwrap();
         }
         assert!(silent(&h, VoicesPorts::PITCH, 0), "tail over");
@@ -551,11 +555,13 @@ mod tests {
     #[test]
     fn an_inactive_voice_that_is_retaken_in_the_same_block_as_a_steal_stays_correct() {
         let mut h = voices(1);
-        h.set(VoicesPorts::TAIL, 0.0);
+        h.set(VoicesPorts::TAIL, 0.05);
         h.send_events(VoicesPorts::NOTES, &[on(0, 1, 60, 0.5), off(4, 1)]);
         h.run(16).unwrap();
         h.send_events(VoicesPorts::NOTES, &[]);
-        h.run(16).unwrap();
+        for _ in 0..160 {
+            h.run(16).unwrap();
+        }
         assert!(silent(&h, VoicesPorts::PITCH, 0));
         h.send_events(
             VoicesPorts::NOTES,

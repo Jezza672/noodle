@@ -47,6 +47,9 @@ pub enum Skip {
     AnySilent(&'static [usize]),
     /// Skip when all of these inputs are silent, as for a mixer.
     AllSilent(&'static [usize]),
+    /// Skip when every input from 0 up to this many is silent, for a node
+    /// whose number of inputs is config (a mixer's).
+    AllSilentBelow(usize),
 }
 
 /// One lane's view of a node's inputs and outputs for one block. The two
@@ -138,6 +141,7 @@ impl<K: LaneKernel> Node for PerLane<K> {
                 Skip::Never => false,
                 Skip::AnySilent(ports) => ports.iter().any(silent),
                 Skip::AllSilent(ports) => ports.iter().all(silent),
+                Skip::AllSilentBelow(n) => (0..n).all(|port| silent(&port)),
             };
             if skippable && self.kernel.is_idle(state) {
                 for output in io.outputs.iter_mut() {

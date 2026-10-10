@@ -13,8 +13,11 @@ use noodle_engine::{
 /// resonance rises the passband gets quieter, as on the hardware. `drive`
 /// scales the input before the saturation, so more of it distorts.
 ///
-/// The feedback comes from the previous sample, so at cutoffs near the top
-/// of the spectrum the resonance peak sits a little below the dial.
+/// The four one-poles are trapezoidal and the feedback is solved within the
+/// sample, not delayed, so the cutoff and the point where it rings are right
+/// at every pitch. The solve is linear and the saturation comes after it, at
+/// the input of the stages, so it is a linearised zero-delay ladder, not an
+/// exact model of the hardware.
 pub struct Ladder;
 
 #[derive(Ports)]
