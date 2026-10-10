@@ -61,6 +61,7 @@ impl NodeType for MidiIn {
         Ok(Instance::realtime(MidiInNode {
             input: self.bus.subscribe(),
             held: [0; 16],
+            ending: 0,
         }))
     }
 }
@@ -70,6 +71,8 @@ struct MidiInNode {
     /// Per channel, the keys that have a note-on and no note-off yet, one
     /// bit each, so "all notes off" can end them.
     held: [u128; 16],
+    /// Channels with an "all notes off" still to carry out.
+    ending: u16,
 }
 
 fn note_id(channel: u8, key: u8) -> NoteId {
@@ -103,30 +106,62 @@ impl MidiInNode {
     }
 }
 
+impl MidiInNode {
+    /// Ends the held notes on channels with an "all notes off" to carry out.
+    /// Each note is forgotten only once its note-off is in the buffer, so if
+    /// the buffer fills the rest wait for the next block. Returns whether it
+    /// finished.
+    fn flush_ending(&mut self, out: &mut noodle_engine::EventsOut<'_>) -> bool {
+        for channel in 0..16u8 {
+            let bit = 1u16 << channel;
+            if self.ending & bit == 0 {
+                continue;
+            }
+            while self.held[usize::from(channel)] != 0 {
+                let key = self.held[usize::from(channel)].trailing_zeros() as u8;
+                let off = Event {
+                    time: 0,
+                    kind: EventKind::NoteOff {
+                        note: note_id(channel, key),
+                        velocity: 0.0,
+                    },
+                };
+                if out.push(off).is_err() {
+                    return false;
+                }
+                self.held[usize::from(channel)] &= !(1 << key);
+            }
+            self.ending &= !bit;
+        }
+        true
+    }
+}
+
 impl Node for MidiInNode {
     fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         let wanted = io.inputs[MidiInPorts::CHANNEL].lane(0, 0)[0].round() as u8;
         let out = &mut io.event_outputs[MidiInPorts::OUT];
-        'messages: while let Some(message) = self.input.pop() {
+        // Left over from a block where the buffer filled.
+        if !self.flush_ending(out) {
+            return;
+        }
+        while let Some(message) = self.input.pop() {
             let channel = message[0] & 0x0F;
-            if wanted != 0 && channel + 1 != wanted {
+            // A note-off for a note that is held always gets through, so
+            // changing the channel can't leave it sounding.
+            let note_off =
+                message[0] & 0xF0 == 0x80 || (message[0] & 0xF0 == 0x90 && message[2] == 0);
+            let ends_held = note_off && self.held[usize::from(channel)] >> message[1] & 1 == 1;
+            if wanted != 0 && channel + 1 != wanted && !ends_held {
                 continue;
             }
             // Sound off (120) and all notes off (123) end what is held.
-            let all_off = message[0] & 0xF0 == 0xB0 && matches!(message[1], 120 | 123);
-            if all_off {
-                let held = std::mem::take(&mut self.held[usize::from(channel)]);
-                for key in (0..128u8).filter(|key| held >> key & 1 == 1) {
-                    let off = Event {
-                        time: 0,
-                        kind: EventKind::NoteOff {
-                            note: note_id(channel, key),
-                            velocity: 0.0,
-                        },
-                    };
-                    if out.push(off).is_err() {
-                        break 'messages;
-                    }
+            if message[0] & 0xF0 == 0xB0 && matches!(message[1], 120 | 123) {
+                self.ending |= 1 << channel;
+                if !self.flush_ending(out) {
+                    // The controller itself is dropped with the rest of the
+                    // block; the notes still held end next block.
+                    return;
                 }
             }
             if let Some(kind) = self.translate(message)
@@ -215,6 +250,52 @@ mod tests {
             })
             .collect();
         assert_eq!(keys, [61]);
+    }
+
+    #[test]
+    fn changing_the_channel_does_not_strand_a_held_note() {
+        let (mut h, bus) = node();
+        bus.send(key_on(2, 64, 100));
+        h.run(16).unwrap();
+        h.set(MidiInPorts::CHANNEL, 1.0);
+        bus.send([0x82, 64, 0]);
+        bus.send(key_on(2, 65, 100));
+        h.run(16).unwrap();
+        let events = h.events(MidiInPorts::OUT);
+        // The held note ends; the new one is on a filtered channel.
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(
+            matches!(events[0].kind, EventKind::NoteOff { note, .. } if note == note_id(2, 64))
+        );
+        // And a stray note-off for a note that isn't held is filtered.
+        bus.send([0x82, 70, 0]);
+        h.run(16).unwrap();
+        assert!(h.events(MidiInPorts::OUT).is_empty());
+    }
+
+    #[test]
+    fn all_notes_off_is_finished_in_a_later_block_if_the_buffer_fills() {
+        let (mut h, bus) = node();
+        for key in 0..60 {
+            bus.send(key_on(0, key, 100));
+        }
+        h.run(16).unwrap();
+        // 984 controllers leave room for 40 of the 60 note-offs.
+        for i in 0..984u16 {
+            bus.send([0xB0, 1, (i % 128) as u8]);
+        }
+        bus.send([0xB0, 123, 0]);
+        h.run(16).unwrap();
+        let count = |h: &Harness| {
+            h.events(MidiInPorts::OUT)
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::NoteOff { .. }))
+                .count()
+        };
+        let first = count(&h);
+        assert_eq!(first, 40);
+        h.run(16).unwrap();
+        assert_eq!(first + count(&h), 60, "every held note ends, none is lost");
     }
 
     #[test]

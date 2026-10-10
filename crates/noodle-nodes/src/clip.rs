@@ -43,6 +43,9 @@ const AUDIO: usize = 0;
 const MIDI: usize = 0;
 /// The most MIDI notes one track sounds at once; more are dropped.
 const MAX_SOUNDING: usize = 128;
+/// The note IDs of keys auditioned from the piano roll; see
+/// [`CLIP_NOTE_MASK`].
+const AUDITION_ID: u32 = 0x4000_0000;
 const FADE_SECONDS: f32 = 0.005;
 /// Offline, how often the node looks again while it waits for the hub or the
 /// disk, and how long it waits before giving up on them.
@@ -138,6 +141,8 @@ struct TrackInputNode {
     played_to: Option<u64>,
     /// New notes arrived since the sounding ones were last checked.
     recheck: bool,
+    /// The keys of the piano roll's keyboard that have a note-on out.
+    audition_held: [u64; 2],
 }
 
 /// A MIDI note that has started and not yet ended.
@@ -172,6 +177,7 @@ impl TrackInputNode {
             sounding: Vec::with_capacity(MAX_SOUNDING),
             played_to: None,
             recheck: false,
+            audition_held: [0; 2],
         }
     }
 
@@ -543,6 +549,7 @@ impl TrackInputNode {
                 velocity: 0.0,
             },
         };
+        self.play_audition(out);
         // A note that can't be ended because the buffer is full stays
         // sounding and is tried again next block.
         if !playing || !continuing {
@@ -600,6 +607,38 @@ impl TrackInputNode {
             }
         }
         self.notes = notes;
+    }
+
+    /// Starts and ends the notes the piano roll's keyboard holds. Their IDs
+    /// are their own, and they sound whatever the transport is doing.
+    fn play_audition(&mut self, out: &mut noodle_engine::EventsOut<'_>) {
+        for word in 0..2 {
+            let wanted = self.shared.audition[word].load(Ordering::Relaxed);
+            let mut changed = wanted ^ self.audition_held[word];
+            while changed != 0 {
+                let bit = changed.trailing_zeros();
+                changed &= changed - 1;
+                let key = word as u32 * 64 + bit;
+                let note = NoteId(AUDITION_ID | key);
+                let kind = if wanted >> bit & 1 == 1 {
+                    EventKind::NoteOn {
+                        note,
+                        channel: 0,
+                        key: key as u8,
+                        velocity: 0.8,
+                    }
+                } else {
+                    EventKind::NoteOff {
+                        note,
+                        velocity: 0.0,
+                    }
+                };
+                // A full buffer leaves the key as it was, to try again.
+                if out.push(Event { time: 0, kind }).is_ok() {
+                    self.audition_held[word] ^= 1 << bit;
+                }
+            }
+        }
     }
 
     fn start_note(

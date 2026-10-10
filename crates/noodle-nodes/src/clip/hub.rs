@@ -58,6 +58,8 @@ pub(super) struct Shared {
     pub loop_end: AtomicU64,
     pub bound: AtomicUsize,
     pub underruns: AtomicU64,
+    /// The keys held down from the piano roll's keyboard, one bit each.
+    pub audition: [AtomicU64; 2],
 }
 
 impl Shared {
@@ -71,6 +73,18 @@ impl Shared {
             loop_end: AtomicU64::new(0),
             bound: AtomicUsize::new(0),
             underruns: AtomicU64::new(0),
+            audition: [AtomicU64::new(0), AtomicU64::new(0)],
+        }
+    }
+
+    pub fn set_audition(&self, key: u8, on: bool) {
+        let key = key.min(127);
+        let bit = 1u64 << (key % 64);
+        let word = &self.audition[usize::from(key / 64)];
+        if on {
+            word.fetch_or(bit, Ordering::Relaxed);
+        } else {
+            word.fetch_and(!bit, Ordering::Relaxed);
         }
     }
 

@@ -96,6 +96,11 @@ pub struct ScheduledNote {
     pub velocity: f32,
 }
 
+/// Note IDs of notes in clips use the low 30 bits. The top two are for notes
+/// from elsewhere: the MIDI In node sets the top bit, and the piano roll's
+/// keyboard (see [`ClipFeeds::audition`]) the one below it.
+pub const CLIP_NOTE_MASK: u32 = 0x3FFF_FFFF;
+
 /// A track's MIDI notes, sorted by start (then ID). Notes of overlapping
 /// clips all play.
 pub type Notes = Vec<ScheduledNote>;
@@ -122,7 +127,7 @@ fn schedule_notes(
         let mut hasher = DefaultHasher::new();
         (id, note.start, note.key).hash(&mut hasher);
         out.push(ScheduledNote {
-            id: hasher.finish() as u32 & 0x7FFF_FFFF,
+            id: hasher.finish() as u32 & CLIP_NOTE_MASK,
             start,
             end,
             key: note.key,
@@ -317,6 +322,13 @@ impl ClipFeeds {
             }
         }
         errors
+    }
+
+    /// Holds `key` down (or lets it go) on the track input `node`, as if a
+    /// note were playing, for the piano roll's keyboard. The node plays it
+    /// from the next block, whether or not the transport runs.
+    pub fn audition(&self, node: NodeId, key: u8, on: bool) {
+        self.shared(node).set_audition(key, on);
     }
 
     /// How many nodes the feeds are keeping a schedule for.

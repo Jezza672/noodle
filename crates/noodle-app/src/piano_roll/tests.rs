@@ -287,6 +287,31 @@ fn pressing_a_key_on_the_keyboard_plays_it() {
 }
 
 #[test]
+fn a_key_held_when_the_roll_closes_is_let_go() {
+    let mut h = rig(&[]);
+    let g = geometry(&h);
+    let pos = Pos2::new(g.keyboard.center().x, g.y(62));
+    h.event(Event::PointerMoved(pos));
+    h.step();
+    h.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(h.state().auditioned, [(62, true)]);
+    // The clip is deleted under the held key.
+    let clip = h.state().clip;
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::RemoveClip { id: clip })]);
+    h.run();
+    assert_eq!(h.state_mut().roll.take_release(), Some(62));
+    assert_eq!(h.state_mut().roll.take_release(), None);
+}
+
+#[test]
 fn the_roll_closes_when_its_clip_goes() {
     let mut h = rig(&[note(0, 240, 60)]);
     let clip = h.state().clip;

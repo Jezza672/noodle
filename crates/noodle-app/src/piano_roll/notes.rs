@@ -26,7 +26,14 @@ pub fn moved(
     d_key: i32,
     clip_length: i64,
 ) -> Vec<MidiNote> {
-    let chosen = || selected.iter().filter_map(|&i| original.get(i));
+    // A note that starts past the clip's end can't be moved or placed.
+    let inside = |i: &usize| original.get(*i).is_some_and(|n| n.start.0 < clip_length);
+    let chosen = || {
+        selected
+            .iter()
+            .filter(|i| inside(i))
+            .filter_map(|&i| original.get(i))
+    };
     let earliest = chosen().map(|n| n.start.0).min().unwrap_or(0);
     let latest = chosen().map(|n| n.start.0).max().unwrap_or(0);
     let d_tick = d_tick.clamp(-earliest, (clip_length - 1 - latest).max(-earliest));
@@ -37,7 +44,7 @@ pub fn moved(
         .iter()
         .enumerate()
         .map(|(i, note)| {
-            if !selected.contains(&i) {
+            if !selected.contains(&i) || note.start.0 >= clip_length {
                 return *note;
             }
             MidiNote {
@@ -68,7 +75,7 @@ pub fn resized(
         .iter()
         .enumerate()
         .map(|(i, note)| {
-            if !selected.contains(&i) {
+            if !selected.contains(&i) || note.start.0 >= clip_length {
                 return *note;
             }
             let length = (note.length.0 + delta)
@@ -188,6 +195,21 @@ mod tests {
         assert_eq!((out[0].length.0, out[1].length.0), (3840, 3360));
         // A grabbed note that isn't there changes nothing.
         assert_eq!(resized(&notes, &first_two, 9, 0, 60, 3840), notes);
+    }
+
+    #[test]
+    fn notes_past_the_clips_end_are_left_alone() {
+        // Left over from before the clip was trimmed.
+        let notes = [note(100, 100, 60), note(5000, 240, 64)];
+        let both = all(2);
+        let moved_ = moved(&notes, &both, 300, 1, 3840);
+        assert_eq!(moved_[0], note(400, 100, 61));
+        assert_eq!(moved_[1], notes[1]);
+        let resized_ = resized(&notes, &both, 0, 500, 60, 3840);
+        assert_eq!(resized_[0].length.0, 400);
+        assert_eq!(resized_[1], notes[1]);
+        // Nothing to move at all: the selection is only the stray note.
+        assert_eq!(moved(&notes, &BTreeSet::from([1]), 300, 1, 3840), notes);
     }
 
     #[test]

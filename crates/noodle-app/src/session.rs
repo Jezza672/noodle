@@ -300,12 +300,11 @@ impl Session {
         }
     }
 
-    /// Plays `key` through the MIDI In nodes as if it came from the input
-    /// port: for trying notes from the piano roll's keyboard.
-    pub fn audition(&self, key: u8, on: bool) {
-        let status = if on { 0x90 } else { 0x80 };
-        self.midi
-            .send([status, key.min(127), if on { 100 } else { 0 }]);
+    /// Holds `key` down on the track input `node` (or lets it go): for
+    /// trying the notes of a clip on the piano roll's keyboard through the
+    /// synth the track feeds. It sounds whether or not the transport runs.
+    pub fn audition(&self, node: NodeId, key: u8, on: bool) {
+        self.clips.audition(node, key, on);
     }
 
     /// The MIDI input port that is open, if any.
@@ -1154,7 +1153,12 @@ fn fallback(config: &AudioConfig) -> Option<AudioConfig> {
         input: config.input.clone(),
         ..AudioConfig::default()
     };
-    (defaults != *config).then_some(defaults)
+    // The MIDI port plays no part in opening the audio.
+    let tried = AudioConfig {
+        midi_input: None,
+        ..config.clone()
+    };
+    (defaults != tried).then_some(defaults)
 }
 
 #[derive(Debug)]

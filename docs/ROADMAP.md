@@ -402,8 +402,8 @@ filters, unison and spread); the delay node and feedback loops.
   patch).
 - MIDI input (midir), MIDI clips and a piano roll. *Done* (batch 2).
   - **Still to do:** timestamp live MIDI inside the block, record MIDI into a
-    clip, quantise and copy/paste in the piano roll, and more than one MIDI
-    port at a time.
+    clip, quantise and copy/paste in the piano roll, more than one MIDI
+    port at a time, and reopening a port that was unplugged and comes back.
 - Voices node: voice allocation and stealing, producing polyphonic pitch, gate
   and velocity.
 - Polyphonic signals working end to end, and the Voice Mix node.

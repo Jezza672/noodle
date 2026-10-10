@@ -88,10 +88,17 @@ pub fn trim_end(
 ) -> Option<Clip> {
     if let Some(midi) = clip.as_midi() {
         let length = (edge.0 - clip.start.0).max(MIN_MIDI_LENGTH);
+        // Notes that start past the new end are cut off with it.
+        let notes = midi
+            .notes
+            .iter()
+            .filter(|note| note.start.0 < length)
+            .copied()
+            .collect();
         return Some(Clip {
             content: ClipContent::Midi(MidiClip {
                 length: Tick(length),
-                ..midi.clone()
+                notes,
             }),
             ..clip.clone()
         });
@@ -118,7 +125,7 @@ pub fn trim_end(
 /// the clip is extended to the left, start later in the clip.
 fn trim_midi_start(clip: &Clip, midi: &MidiClip, edge: Tick) -> Clip {
     let end = clip.start.0 + midi.length.0;
-    let start = edge.0.clamp(0, end - MIN_MIDI_LENGTH);
+    let start = edge.0.clamp(0, (end - MIN_MIDI_LENGTH).max(0));
     let delta = start - clip.start.0;
     let notes = midi
         .notes
@@ -352,6 +359,22 @@ mod tests {
         // It can't be cut down to nothing.
         let out = trim_start(&map(), &clip, Tick(99_999), RATE).unwrap();
         assert_eq!(out.as_midi().unwrap().length, Tick(MIN_MIDI_LENGTH));
+    }
+
+    #[test]
+    fn a_midi_clip_shorter_than_the_minimum_can_still_be_trimmed() {
+        let clip = midi_clip(0, 60, &[(0, 30, 60)]);
+        let out = trim_start(&map(), &clip, Tick(40), RATE).unwrap();
+        assert_eq!(out.start, Tick(0));
+        assert_eq!(out.as_midi().unwrap().length, Tick(60));
+    }
+
+    #[test]
+    fn trimming_the_end_cuts_off_notes_that_start_past_it() {
+        let clip = midi_clip(0, 3840, &[(0, 240, 60), (2000, 240, 62), (2880, 240, 64)]);
+        let out = trim_end(&map(), &clip, Tick(2400), RATE, None).unwrap();
+        let keys: Vec<u8> = out.as_midi().unwrap().notes.iter().map(|n| n.key).collect();
+        assert_eq!(keys, [60, 62]);
     }
 
     #[test]

@@ -157,3 +157,35 @@ fn nothing_plays_while_the_transport_stands_still() {
     rig.settle();
     assert!(run(&mut rig, 0, BEAT, false).is_empty());
 }
+
+#[test]
+fn an_auditioned_key_sounds_on_its_own_track_even_when_stopped() {
+    let mut rig = rig("midi-audition");
+    let other = Rig::new("midi-audition-other");
+    rig.feeds.audition(rig.id, 62, true);
+    let events = rig.run_events(0, BLOCK, false);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(
+        events[0].1,
+        EventKind::NoteOn {
+            key: 62,
+            channel: 0,
+            ..
+        }
+    ));
+    // Held: nothing more. Another track's input is not touched.
+    assert!(rig.run_events(0, BLOCK, false).is_empty());
+    let mut other = other;
+    assert!(other.run_events(0, BLOCK, false).is_empty());
+    // Let go: one off, naming the same note.
+    rig.feeds.audition(rig.id, 62, false);
+    let off = rig.run_events(0, BLOCK, false);
+    let (EventKind::NoteOn { note: on, .. }, EventKind::NoteOff { note: off, .. }) =
+        (events[0].1, off[0].1)
+    else {
+        panic!("a note-on and a note-off")
+    };
+    assert_eq!(on, off);
+    assert!(on.0 & 0x8000_0000 == 0, "apart from live MIDI's IDs");
+    assert!(rig.run_events(0, BLOCK, false).is_empty());
+}

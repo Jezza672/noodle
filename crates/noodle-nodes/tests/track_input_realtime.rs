@@ -137,6 +137,13 @@ fn playing_midi_clips_and_taking_in_edits_never_touches_the_allocator() {
         at += BLOCK as u64;
         pause();
     }
+    // Keys from the piano roll's keyboard go down and up.
+    rig.feeds.audition(rig.id, 70, true);
+    violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+    at += BLOCK as u64;
+    rig.feeds.audition(rig.id, 70, false);
+    violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+    at += BLOCK as u64;
     // An edit while notes sound, then a stop and a jump.
     rig.edit_clip(clip, |clip| {
         let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {

@@ -6,7 +6,7 @@
 //! result from the notes as they were when it began, so it is one undo step
 //! and snapping can't accumulate error.
 //!
-//! Clicking a key on the keyboard plays it through the MIDI In nodes (see
+//! Clicking a key on the keyboard plays it on the clip's track (see
 //! [`Output::audition`]).
 
 mod notes;
@@ -84,6 +84,8 @@ pub struct PianoRoll {
     drag: Option<Drag>,
     /// The key being auditioned from the keyboard.
     sounding: Option<u8>,
+    /// A key that was down when the roll closed, still to be let go.
+    release: Option<u8>,
     /// The length the last note had, which the next one starts with.
     last_length: Option<i64>,
     #[cfg(test)]
@@ -126,6 +128,7 @@ impl Default for PianoRoll {
             selected: BTreeSet::new(),
             drag: None,
             sounding: None,
+            release: None,
             last_length: None,
             #[cfg(test)]
             geometry: None,
@@ -145,9 +148,16 @@ impl PianoRoll {
     }
 
     pub fn close(&mut self) {
+        self.release = self.release.or(self.sounding.take());
         self.clip = None;
         self.drag = None;
         self.selected.clear();
+    }
+
+    /// A held audition key to let go, because the roll closed (or its clip
+    /// went) with the key down. The app asks every frame, open or not.
+    pub fn take_release(&mut self) -> Option<u8> {
+        self.release.take()
     }
 
     /// The clip being edited, if the roll is open.
@@ -190,7 +200,7 @@ impl PianoRoll {
 pub struct Output {
     pub edits: Vec<Edit>,
     /// Keys pressed (`true`) or released on the keyboard strip, to play
-    /// through the MIDI In nodes.
+    /// through the clip's track input.
     pub audition: Vec<(u8, bool)>,
 }
 

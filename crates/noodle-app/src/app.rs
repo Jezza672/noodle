@@ -48,6 +48,8 @@ pub struct App {
     editor: EditorState,
     timeline: TimelineState,
     piano_roll: PianoRoll,
+    /// The track the piano roll last played keys on, to let them go.
+    audition_track: Option<noodle_core::NodeId>,
     devices: DevicePicker,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -121,6 +123,7 @@ impl App {
             editor: EditorState::default(),
             timeline: TimelineState::default(),
             piano_roll: PianoRoll::default(),
+            audition_track: None,
             devices: DevicePicker::default(),
             confirming: None,
             after_save: None,
@@ -309,7 +312,7 @@ impl App {
                 }
             });
 
-        if self.piano_roll.clip().is_some() {
+        if let Some(clip) = self.piano_roll.clip() {
             egui::Panel::top("piano roll")
                 .resizable(true)
                 .default_size(piano_roll::DEFAULT_HEIGHT)
@@ -318,10 +321,19 @@ impl App {
                     let playhead = Some(self.session.playhead());
                     let out = piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
                     self.session.edit(out.edits);
-                    for (key, on) in out.audition {
-                        self.session.audition(key, on);
+                    if let Some(track) = self.session.project().clip(clip).map(|c| c.node) {
+                        self.audition_track = Some(track);
+                        for (key, on) in out.audition {
+                            self.session.audition(track, key, on);
+                        }
                     }
                 });
+        }
+        // A key still down when the roll closed or its clip went.
+        if let Some(key) = self.piano_roll.take_release()
+            && let Some(track) = self.audition_track
+        {
+            self.session.audition(track, key, false);
         }
 
         egui::CentralPanel::default()
