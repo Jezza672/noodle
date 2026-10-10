@@ -85,6 +85,42 @@ impl NodeType for Adsr {
     }
 }
 
+/// The shape the envelope traces for a gate held a given time, worked out in
+/// closed form for drawing it. Matches [`AdsrKernel`] up to sampling: the
+/// attack is linear, and the decay and release are exponential, each covering
+/// all but a thousandth of its distance in its time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AdsrShape {
+    pub attack: f32,
+    pub decay: f32,
+    pub sustain: f32,
+    pub release: f32,
+}
+
+impl AdsrShape {
+    /// The level `t` seconds after the gate rose, for a gate that falls at
+    /// `gate_time` (which should be at least the attack and decay together,
+    /// or the envelope is released from wherever it has got to).
+    pub fn level(&self, t: f32, gate_time: f32) -> f32 {
+        let (attack, decay) = (self.attack.max(1e-4), self.decay.max(1e-4));
+        let sustain = self.sustain.clamp(0.0, 1.0);
+        let held = |t: f32| {
+            if t < attack {
+                t / attack
+            } else {
+                sustain + (1.0 - sustain) * (-SIXTY_DB * (t - attack) / decay).exp()
+            }
+        };
+        if t < 0.0 {
+            0.0
+        } else if t <= gate_time {
+            held(t)
+        } else {
+            held(gate_time) * (-SIXTY_DB * (t - gate_time) / self.release.max(1e-4)).exp()
+        }
+    }
+}
+
 /// -ln(0.001): the exponent at which a decay has covered 99.9% of its distance.
 const SIXTY_DB: f32 = 6.907_755;
 
@@ -441,5 +477,30 @@ mod tests {
         h.run(480).unwrap();
         assert!(!h.output(OUT).is_silent(0, 0));
         assert!(h.output(OUT).lane(0, 0).iter().any(|&x| x > 0.5));
+    }
+
+    #[test]
+    fn the_drawn_shape_matches_the_envelope() {
+        let (attack, decay, sustain, release) = (0.02, 0.05, 0.4, 0.08);
+        let shape = AdsrShape {
+            attack,
+            decay,
+            sustain,
+            release,
+        };
+        let held = (0.25 * RATE) as usize;
+        let frames = held + (0.2 * RATE) as usize;
+        let mut h = harness(frames, Shape::MONO);
+        set_times(&mut h, attack, decay, sustain, release);
+        for (i, g) in h.input(GATE, frames).lane_mut(0, 0).iter_mut().enumerate() {
+            *g = if i < held { 1.0 } else { 0.0 };
+        }
+        h.run(frames).unwrap();
+        let out = h.output(OUT).lane(0, 0).to_vec();
+        let gate_time = held as f32 / RATE;
+        for (i, &level) in out.iter().enumerate() {
+            let drawn = shape.level(i as f32 / RATE, gate_time);
+            assert!((level - drawn).abs() < 5e-3, "{i}: {level} vs {drawn}");
+        }
     }
 }

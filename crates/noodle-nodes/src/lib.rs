@@ -34,7 +34,7 @@ mod vca;
 mod voice_mix;
 mod voices;
 
-pub use adsr::{ADSR_ID, Adsr};
+pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, render_streaming,
     spawn_render, spawn_render_to_cache,
@@ -53,8 +53,8 @@ pub use freeze::{
     spawn_freeze,
 };
 pub use gain::{GAIN_ID, Gain};
-pub use ladder::Ladder;
-pub use lfo::{LFO_ID, Lfo};
+pub use ladder::{LADDER_ID, Ladder, ladder_response};
+pub use lfo::{LFO_ID, Lfo, lfo_wave};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
@@ -70,7 +70,7 @@ pub use reroute::{REROUTE_ID, Reroute};
 pub use reverse::Reverse;
 pub use scope::{SCOPE_ID, Scope};
 pub use stage::GroupStage;
-pub use svf::Svf;
+pub use svf::{SVF_ID, Svf, svf_response};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};

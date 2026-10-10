@@ -321,6 +321,20 @@ fn boxed(
     }
 
     if let Some(area) = node.body {
+        // What each parameter is now: a wire's live value, else the node's
+        // own, else the default.
+        let values = |key: &str| {
+            let default = node.ports.iter().find_map(|port| match &port.kind {
+                PortKind::Param(info) if port.key == key => Some(info.default),
+                _ => None,
+            });
+            bodies
+                .param_live(node.id, key)
+                .map(|live| live.value)
+                .or_else(|| graph.node(node.id)?.params.get(key).copied())
+                .or(default)
+                .unwrap_or(0.0)
+        };
         body::paint(
             painter,
             f.t.rect_to_screen(area),
@@ -328,6 +342,7 @@ fn boxed(
             node.id,
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
+            &values,
         );
     }
 }
