@@ -386,7 +386,8 @@ dialog, the `MIDI In` node), MIDI clips on tracks, and a piano roll (see "MIDI
 input" and "MIDI clips" in ARCHITECTURE.md), with `examples/midi-clip.ron` and
 its golden render. Batch 1 is done: the port derive macro (`noodle-macros`), events
 as a signal type with the `Key` and `Mono Note` nodes, the ADSR, LFO and VCA
-nodes, and the modulation display (offset-in-slider-space parameters, and a
+nodes, a general-purpose Remap node (input range to output range along a
+Bézier curve drawn in the properties panel, `examples/remap-sweep.ron`), and the modulation display (offset-in-slider-space parameters, and a
 live meter with min and max ticks on wired parameters), with a monophonic
 synth example (`examples/synth-pluck.ron`) and its golden render. Still to
 do, in order: silence skipping and finished-voice skipping; the
