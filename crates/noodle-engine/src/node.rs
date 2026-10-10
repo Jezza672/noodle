@@ -49,6 +49,15 @@ pub trait NodeType: Send + Sync + 'static {
         &[]
     }
 
+    /// True if the node keeps nothing from block to block, so replacing it
+    /// with a rebuilt copy (after a config change that leaves its ports and
+    /// shapes alone) changes only what it computes, like moving a parameter,
+    /// and the swap needs no fade. A node with any state (a phase, a filter,
+    /// a delay line) must leave this false.
+    fn stateless(&self) -> bool {
+        false
+    }
+
     fn layout(&self, config: &Config) -> Result<Layout, NodeError>;
 
     /// The shapes of the outputs, given the shapes of the signal inputs

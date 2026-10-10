@@ -239,12 +239,19 @@ pub(crate) fn build(
             }
             None => match instantiate(&scheduled, sample_rate, max_frames) {
                 Ok(node) => {
-                    // A lane's source has no state, so rebuilding it for new
-                    // points changes only the value it writes, like a
-                    // parameter being moved: no fade needed. A lane that is
-                    // new is a change of wiring and still fades.
-                    if scheduled.node_type.info().id == crate::AUTOMATION_ID
-                        && previous.is_some_and(|p| p.nodes.contains_key(&id))
+                    // A stateless node (an automation lane's source, a
+                    // Remap) rebuilt with a new config and the same shapes
+                    // changes only the value it writes, like a parameter
+                    // being moved: no fade needed. A new node, or one whose
+                    // shapes changed, is a change of wiring and still fades.
+                    if scheduled.node_type.stateless()
+                        && previous.is_some_and(|p| {
+                            p.nodes.get(&id).is_some_and(|(old_key, _)| {
+                                old_key.type_id == key.type_id
+                                    && old_key.input_shapes == key.input_shapes
+                                    && old_key.output_shapes == key.output_shapes
+                            })
+                        })
                     {
                         carried_ids.insert(id);
                     }
