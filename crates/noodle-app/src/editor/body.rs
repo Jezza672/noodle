@@ -79,7 +79,7 @@ struct ParamWindow {
 
 impl ParamWindow {
     fn push(&mut self, now: f32, reading: ParamReading) {
-        self.last = reading.last;
+        self.last = reading.value;
         self.history.push_back((now, reading.min, reading.max));
         self.trim(now);
     }
@@ -120,22 +120,23 @@ impl Bodies {
         self.meters.retain(|&id, _| graph.node(id).is_some());
         self.scopes.retain(|&id, _| graph.node(id).is_some());
 
-        // Every wired parameter, whether or not it is drawn: reading a tap is
-        // what switches it on, and an unwired port has none.
+        // Every wired parameter. Reading one takes its range since the last
+        // read, so this is the only reader: the properties panel asks `Bodies`.
         self.clock += dt;
         let now = self.clock;
-        let params = &mut self.params;
-        reader.params(|node, key, reading| {
-            params
-                .entry((node, key.to_owned()))
-                .or_default()
-                .push(now, reading);
-        });
-        params.retain(|(node, key), _| {
-            graph
-                .source(&noodle_core::Endpoint::new(*node, key.as_str()))
-                .is_some()
-        });
+        let wired: std::collections::HashSet<(NodeId, String)> = graph
+            .connections()
+            .map(|c| (c.to.node, c.to.port))
+            .collect();
+        self.params.retain(|key, _| wired.contains(key));
+        for (node, key) in wired {
+            if let Some(reading) = telemetry.read_param(node, &key) {
+                self.params
+                    .entry((node, key))
+                    .or_default()
+                    .push(now, reading);
+            }
+        }
         for window in self.params.values_mut() {
             window.trim(now);
         }
@@ -544,7 +545,11 @@ mod tests {
     }
 
     fn reading(min: f32, max: f32, last: f32) -> ParamReading {
-        ParamReading { last, min, max }
+        ParamReading {
+            value: last,
+            min,
+            max,
+        }
     }
 
     #[test]
@@ -588,14 +593,13 @@ mod tests {
         .unwrap();
 
         let telemetry = Telemetry::new();
-        let tap = telemetry.open_tap(gain, "gain");
+        let tap = telemetry.open_param(gain, "gain");
         let mut bodies = Bodies::default();
-        // The first update switches the tap on; nothing has been written.
+        // Nothing has been written yet.
         bodies.update(&telemetry, &project, 0.016);
-        assert!(tap.wanted());
         assert_eq!(bodies.param_live(gain, "gain"), None);
 
-        tap.write(-12.0, 6.0, 0.0);
+        tap.write(&[-12.0, 6.0, 0.0]);
         bodies.update(&telemetry, &project, 0.016);
         let live = bodies.param_live(gain, "gain").unwrap();
         assert_eq!((live.min, live.max, live.value), (-12.0, 6.0, 0.0));

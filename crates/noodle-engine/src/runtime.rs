@@ -18,7 +18,7 @@ pub use crate::plan::Bus;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
-use crate::{Context, Diagnostic, Lanes, Registry, Transport, compile_with_lanes};
+use crate::{Context, Diagnostic, Lanes, Registry, Telemetry, Transport, compile_with_lanes};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
 /// making a new engine.
@@ -93,6 +93,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         sent: None,
         next_generation: 0,
         cells: Cells::new(),
+        telemetry: None,
         buses: None,
         control: control.clone(),
         tempo_map: TempoMap::default(),
@@ -132,6 +133,8 @@ pub struct Controller {
     sent: Option<PlanInfo>,
     next_generation: u64,
     cells: Cells,
+    /// Where wired parameters report their signals, if anything reads them.
+    telemetry: Option<Telemetry>,
     /// The devices sharing the output channels. `None` sends every Output
     /// node to all of them, as in an offline render.
     buses: Option<Vec<Bus>>,
@@ -220,17 +223,22 @@ impl Controller {
             schedule,
             self.sent.as_ref(),
             generation,
-            plan::Env {
-                settings: self.settings,
-                buses: self.buses.as_deref(),
-                telemetry: registry.telemetry(),
-            },
+            self.settings,
+            self.buses.as_deref(),
+            self.telemetry.as_ref(),
             &mut self.cells,
             &mut diagnostics,
         );
         self.pending = Some((plan, info));
         self.send_pending();
         diagnostics
+    }
+
+    /// Has the plans built from now on report the signal wired into each
+    /// parameter to `telemetry`, for [`Telemetry::read_param`]. Takes effect
+    /// at the next update.
+    pub fn set_telemetry(&mut self, telemetry: &Telemetry) {
+        self.telemetry = Some(telemetry.clone());
     }
 
     /// Sets an unconnected input's value without recompiling. The change is

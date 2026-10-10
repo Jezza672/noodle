@@ -168,6 +168,11 @@ impl EditorState {
         self.bodies.input_meters(node).get(channel).copied()
     }
 
+    /// What a wired parameter has been doing lately (see `Bodies::update`).
+    pub fn param_live(&self, node: NodeId, key: &str) -> Option<crate::widgets::Live> {
+        self.bodies.param_live(node, key)
+    }
+
     /// What a scope node last captured, for a view of it elsewhere.
     pub fn scope_view(&self, node: NodeId) -> Option<&noodle_engine::ScopeView> {
         self.bodies.scope_view(node)
@@ -1518,6 +1523,17 @@ fn keyboard(
     let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
     let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
     let copied = (copy || cut) && copy_selection(state, f);
+    if copied {
+        // The window only turns Ctrl/Cmd+V into a paste while the system
+        // clipboard holds text, so leave some for it to find. The nodes
+        // themselves wait in `state.clipboard`.
+        let (nodes, frames) = state
+            .clipboard
+            .as_ref()
+            .map_or((0, 0), |c| (c.nodes.len(), c.frames.len()));
+        ui.ctx()
+            .copy_text(format!("Noodle: {nodes} nodes, {frames} frames"));
+    }
     if cut && copied {
         edits.extend(state.delete_selection());
     }

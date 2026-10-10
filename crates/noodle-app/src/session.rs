@@ -498,7 +498,8 @@ impl Session {
             started = Ok(playing);
         }
         match started {
-            Ok((playback, controller)) => {
+            Ok((playback, mut controller)) => {
+                controller.set_telemetry(&self.telemetry);
                 // Playback carries on without input rather than failing.
                 // The status bar keeps saying so; see `input_problem`.
                 self.message = fell_back

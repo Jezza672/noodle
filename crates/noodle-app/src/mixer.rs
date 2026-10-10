@@ -11,8 +11,8 @@
 //! feeding them: a track's own gain, mute and solo stay on the track.
 
 use egui::{Align, Color32, Layout, RichText, Slider, Ui, Vec2};
-use noodle_core::group::{Controls, GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
-use noodle_core::{Command, Endpoint, Graph, NodeId, Project, Value, spare};
+use noodle_core::group::{Controls, GAIN, GROUP, MUTE};
+use noodle_core::{Command, Endpoint, NodeId, Project, Value, spare};
 
 use crate::editor::{MeterAxis, MeterChannel};
 use crate::session::Edit;
@@ -35,8 +35,6 @@ pub struct Strip {
     /// The boundary node the controls are set on. `None` for a group with
     /// no input or output node, which has nothing to set.
     pub node: Option<NodeId>,
-    /// Silent because another track is soloed.
-    pub muted_by_solo: bool,
     /// A lane or wire drives the gain, so the fader would do nothing.
     pub gain_automated: bool,
     /// The same for mute.
@@ -87,7 +85,6 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
                     solo: false,
                 },
                 node: Some(mixer),
-                muted_by_solo: false,
                 gain_automated: driven(project, Some(mixer), &gain_key),
                 mute_automated: driven(project, Some(mixer), &mute_key),
                 channel: Some(i - 1),
@@ -101,7 +98,6 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
 /// The strips for the top-level groups of a graph, in track order.
 pub fn strips(project: &Project) -> Vec<Strip> {
     let graph = project.graph();
-    let muted_by_solo = graph.solo_muted();
     let mut ids: Vec<NodeId> = graph
         .children(None)
         .filter(|(_, node)| node.type_id == GROUP)
@@ -118,7 +114,6 @@ pub fn strips(project: &Project) -> Vec<Strip> {
             },
             controls: graph.group_controls(id),
             node: graph.control_node(id),
-            muted_by_solo: muted_by_solo.contains(&id),
             gain_automated: driven(project, graph.control_node(id), GAIN),
             mute_automated: driven(project, graph.control_node(id), MUTE),
             channel: None,
@@ -146,30 +141,9 @@ fn set(node: NodeId, key: &str, value: Option<f32>) -> Command {
     }
 }
 
-/// Turns solo on or off for a group. Off clears it on every boundary node,
-/// since any of them can hold it.
-///
-/// Controls are reset by writing their default, never by removing the
-/// parameter: a set control keeps its stage in the compiled graph, and
-/// removing it would take the stage out and fade the whole output.
-pub fn solo_edit(graph: &Graph, strip: &Strip, on: bool) -> Option<Edit> {
-    let node = strip.node?;
-    if on {
-        return Some(Edit::Apply(set(node, SOLO, Some(1.0))));
-    }
-    let commands: Vec<_> = graph
-        .children(Some(strip.group))
-        .filter(|(_, n)| {
-            matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) && n.controls().solo
-        })
-        .map(|(id, _)| set(id, SOLO, Some(0.0)))
-        .collect();
-    Some(Edit::Apply(Command::Batch(commands)))
-}
-
 /// Draws the mixer and returns the edits made in it. `view` is the mixer
-/// node shown, or `None` for one strip per track; a node that has gone falls
-/// back to that.
+/// node shown. The mixer only ever looks at one mixer node, so a view that is
+/// unset, or whose node has gone, falls back to the first one.
 pub fn show(
     ui: &mut Ui,
     project: &Project,
@@ -178,34 +152,30 @@ pub fn show(
 ) -> Vec<Edit> {
     let graph = project.graph();
     let mixers = mixers(project);
-    if view.is_some_and(|m| !mixers.contains(&m)) {
-        *view = None;
+    if view.is_none_or(|m| !mixers.contains(&m)) {
+        // The mixer Add Track feeds, else any.
+        *view =
+            crate::timeline::add_track::default_mixer(graph).or_else(|| mixers.first().copied());
     }
-    if !mixers.is_empty() {
+    let Some(mixer) = *view else {
+        ui.weak("There is no mixer yet. Add a Mix node, or add a track.");
+        return Vec::new();
+    };
+    if mixers.len() > 1 {
         ui.horizontal(|ui| {
             ui.label("Mixer");
-            let label =
-                |m: Option<NodeId>| m.map_or("All tracks".to_string(), |m| format!("Mix {}", m.0));
             egui::ComboBox::from_id_salt("mixer view")
-                .selected_text(label(*view))
+                .selected_text(format!("Mix {}", mixer.0))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(view, None, label(None));
                     for &m in &mixers {
-                        ui.selectable_value(view, Some(m), label(Some(m)));
+                        ui.selectable_value(view, Some(m), format!("Mix {}", m.0));
                     }
                 });
         });
     }
-    let strips = match *view {
-        Some(mixer) => mixer_strips(project, mixer),
-        None => strips(project),
-    };
+    let strips = mixer_strips(project, mixer);
     if strips.is_empty() {
-        ui.weak(if view.is_some() {
-            "Nothing is wired into this mixer."
-        } else {
-            "No tracks yet."
-        });
+        ui.weak("Nothing is wired into this mixer.");
         return Vec::new();
     }
     let mut edits = Vec::new();
@@ -213,10 +183,8 @@ pub fn show(
         ui.horizontal_top(|ui| {
             for (index, strip) in strips.iter().enumerate() {
                 ui.push_id((strip.group, index), |ui| {
-                    let level = (*view)
-                        .zip(strip.channel)
-                        .and_then(|(mixer, channel)| levels(mixer, channel));
-                    strip_ui(ui, graph, strip, level, &mut edits);
+                    let level = strip.channel.and_then(|channel| levels(mixer, channel));
+                    strip_ui(ui, strip, level, &mut edits);
                 });
                 ui.separator();
             }
@@ -225,13 +193,7 @@ pub fn show(
     edits
 }
 
-fn strip_ui(
-    ui: &mut Ui,
-    graph: &Graph,
-    strip: &Strip,
-    level: Option<MeterChannel>,
-    edits: &mut Vec<Edit>,
-) {
+fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut Vec<Edit>) {
     ui.allocate_ui_with_layout(
         Vec2::new(STRIP_WIDTH, 0.0),
         Layout::top_down(Align::Center),
@@ -240,7 +202,7 @@ fn strip_ui(
             ui.label(RichText::new(&strip.name).strong());
             // A silent strip's fader is greyed, but its buttons stay live so
             // it can be unmuted or unsoloed.
-            let silent = strip.controls.mute || strip.muted_by_solo;
+            let silent = strip.controls.mute;
             // A lane overrides the parameter it drives, so those controls
             // are greyed out with the reason, as on the track header.
             ui.horizontal_top(|ui| {
@@ -286,18 +248,8 @@ fn strip_ui(
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
                         edits.push(Edit::Apply(set(node, &strip.mute_key, value)));
                     }
-                    // Solo belongs to the track, not to a mixer's input.
-                    if strip.channel.is_none() {
-                        let solo = toggle(ui, "S", strip.controls.solo, crate::theme::SOLO);
-                        if solo.on_hover_text("Solo: mutes the other tracks").clicked() {
-                            edits.extend(solo_edit(graph, strip, !strip.controls.solo));
-                        }
-                    }
                 });
             });
-            if strip.muted_by_solo && !strip.controls.mute {
-                ui.weak("muted by solo");
-            }
         },
     );
 }
@@ -353,7 +305,7 @@ mod tests {
     use egui::vec2;
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
-    use noodle_core::group::{GROUP, PORT_NAME};
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, PORT_NAME};
     use noodle_core::{Config, Node};
 
     use super::*;
@@ -445,91 +397,63 @@ mod tests {
         })]);
         let strips = strips(session.project());
         assert_eq!((strips[0].name.as_str(), strips[0].node), ("Group 7", None));
-        // Nothing to set, so nothing is offered.
-        assert_eq!(solo_edit(session.project().graph(), &strips[0], true), None);
     }
 
     #[test]
     fn showing_the_mixer_names_the_tracks() {
-        let harness = harness(two_tracks());
+        let harness = harness(mixed());
         harness.get_by_label("Drums");
         harness.get_by_label("Bass");
     }
 
     #[test]
-    fn no_tracks_says_so() {
-        let harness = harness(Session::new(crate::session::Nodes::all()));
-        harness.get_by_label("No tracks yet.");
+    fn with_no_mixer_it_says_so_and_there_is_no_all_tracks_view() {
+        let harness = harness(two_tracks());
+        harness.get_by_label_contains("There is no mixer yet");
+        assert!(harness.query_by_label("Drums").is_none());
+        assert!(harness.query_by_label_contains("All tracks").is_none());
     }
 
     #[test]
-    fn mute_toggles_the_output_nodes_mute_parameter() {
-        let mut harness = harness(two_tracks());
+    fn an_unwired_mixer_says_so() {
+        let mut session = Session::new(crate::session::Nodes::all());
+        session.edit([Edit::Apply(Command::AddNode {
+            id: NodeId(100),
+            node: Node::new(spare::MIXER),
+        })]);
+        let harness = harness(session);
+        harness.get_by_label("Nothing is wired into this mixer.");
+    }
+
+    #[test]
+    fn mute_toggles_the_channels_mute_parameter() {
+        let mut harness = harness(mixed());
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 3, MUTE), Some(1.0));
-        assert_eq!(param(&harness, 6, MUTE), None);
+        assert_eq!(param(&harness, 100, "mute1"), Some(1.0));
+        assert_eq!(param(&harness, 100, "mute2"), None);
         // Again: back to the default, still written so the stage stays.
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 3, MUTE), Some(0.0));
-    }
-
-    #[test]
-    fn solo_mutes_the_other_track_and_says_so() {
-        let mut harness = harness(two_tracks());
-        harness.get_all_by_label("S").next().unwrap().click();
-        harness.run();
-        assert_eq!(param(&harness, 3, SOLO), Some(1.0));
-        let graph = harness.state().project().graph();
-        assert_eq!(graph.solo_muted(), [NodeId(4)].into());
-        harness.get_by_label("muted by solo");
-        // The muted-by-solo track's own mute button is untouched and live.
-        assert_eq!(param(&harness, 6, MUTE), None);
-
-        harness.get_all_by_label("S").next().unwrap().click();
-        harness.run();
-        assert_eq!(param(&harness, 3, SOLO), Some(0.0));
-        assert!(harness.query_by_label("muted by solo").is_none());
-    }
-
-    #[test]
-    fn unsoloing_clears_solo_wherever_it_was_set() {
-        let mut session = two_tracks();
-        // Solo on the input node, as a hand-edited file might have it.
-        session.edit([Edit::Apply(Command::SetParam {
-            node: NodeId(2),
-            key: SOLO.into(),
-            value: Some(1.0),
-        })]);
-        let mut harness = harness(session);
-        harness.get_by_label("muted by solo");
-        harness.get_all_by_label("S").next().unwrap().click();
-        harness.run();
-        assert_eq!(param(&harness, 2, SOLO), Some(0.0));
-        assert!(harness.query_by_label("muted by solo").is_none());
+        assert_eq!(param(&harness, 100, "mute1"), Some(0.0));
     }
 
     #[test]
     fn a_fader_reads_the_gain_and_its_reading_resets_it() {
-        let mut session = two_tracks();
-        session.edit([Edit::Apply(Command::SetParam {
-            node: NodeId(3),
-            key: GAIN.into(),
-            value: Some(-12.0),
-        })]);
+        let mut session = mixed();
+        session.edit([Edit::Apply(set(NodeId(100), "gain1", Some(-12.0)))]);
         let mut harness = harness(session);
         let fader = harness.get_all_by_role(Role::Slider).next().unwrap();
         assert_eq!(fader.accesskit_node().numeric_value(), Some(-12.0));
         harness.get_by_label("-12.0 dB").click();
         harness.run();
-        assert_eq!(param(&harness, 3, GAIN), Some(0.0));
+        assert_eq!(param(&harness, 100, "gain1"), Some(0.0));
         harness.get_all_by_label("+0.0 dB").next().unwrap();
     }
 
     #[test]
     fn dragging_the_fader_sets_the_gain_as_one_undo_step() {
-        let mut harness = harness(two_tracks());
+        let mut harness = harness(mixed());
         let fader = harness.get_all_by_role(Role::Slider).next().unwrap();
         let from = fader.rect().center();
         let to = from + vec2(0.0, -40.0);
@@ -550,27 +474,18 @@ mod tests {
         }
         harness.event(button(false, to));
         harness.run();
-        let gain = param(&harness, 3, GAIN).expect("the fader moved");
+        let gain = param(&harness, 100, "gain1").expect("the fader moved");
         assert!(gain > 0.0, "dragged up: {gain}");
         // The whole drag is one step.
         let state = harness.state_mut();
         state.undo();
-        assert_eq!(
-            state
-                .project()
-                .graph()
-                .node(NodeId(3))
-                .unwrap()
-                .params
-                .get(GAIN),
-            None
-        );
+        assert_eq!(param(&harness, 100, "gain1"), None);
     }
 
     #[test]
     fn a_lane_on_gain_or_mute_greys_that_control_on_the_strip() {
         use noodle_core::{AutomationLane, AutomationPoint, Curve, LaneId};
-        let mut session = two_tracks();
+        let mut session = mixed();
         let point = AutomationPoint {
             tick: noodle_core::Tick(0),
             value: -6.0,
@@ -579,11 +494,11 @@ mod tests {
         let lane = |key: &str, id: u64| {
             Edit::Apply(Command::AddLane {
                 id: LaneId(id),
-                lane: AutomationLane::new(Endpoint::new(NodeId(3), key), vec![point]),
+                lane: AutomationLane::new(Endpoint::new(NodeId(100), key), vec![point]),
             })
         };
-        session.edit([lane(GAIN, 1)]);
-        let strips = strips(session.project());
+        session.edit([lane("gain1", 1)]);
+        let strips = mixer_strips(session.project(), NodeId(100));
         assert_eq!(
             [strips[0].gain_automated, strips[0].mute_automated],
             [true, false]
@@ -593,23 +508,23 @@ mod tests {
             [false, false]
         );
 
-        session.edit([lane(MUTE, 2)]);
+        session.edit([lane("mute1", 2)]);
         let mut harness = harness(session);
-        // Drums' mute is driven, so clicking it changes nothing; Bass's is not.
+        // The first channel's mute is driven, so clicking it changes nothing.
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 3, MUTE), None);
+        assert_eq!(param(&harness, 100, "mute1"), None);
         harness.get_all_by_label("M").nth(1).unwrap().click();
         harness.run();
-        assert_eq!(param(&harness, 6, MUTE), Some(1.0));
+        assert_eq!(param(&harness, 100, "mute2"), Some(1.0));
         let faders: Vec<_> = harness
             .query_all_by_role(Role::Slider)
             .map(|n| n.accesskit_node().is_disabled())
             .collect();
         assert_eq!(
             faders,
-            [true, true],
-            "Bass is muted now, so its fader is greyed too"
+            [true, true, false],
+            "channel 1 is driven, channel 2 is muted now, channel 3 is free"
         );
     }
 
@@ -721,16 +636,16 @@ mod tests {
     }
 
     #[test]
-    fn the_drop_down_falls_back_when_the_mixer_is_gone() {
-        let session = two_tracks();
+    fn the_view_falls_back_to_the_first_mixer_when_unset_or_gone() {
+        let session = mixed();
         let mut harness = Harness::new_ui_state(
             |ui, view: &mut Option<NodeId>| {
                 show(ui, session.project(), view, &|_, _| None);
             },
-            Some(NodeId(100)),
+            Some(NodeId(999)),
         );
         harness.run();
-        assert_eq!(*harness.state(), None);
+        assert_eq!(*harness.state(), Some(NodeId(100)));
         harness.get_by_label("Drums");
     }
 }

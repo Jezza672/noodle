@@ -77,7 +77,7 @@ pub fn register_library_blocking(registry: &mut Registry) -> Library {
 }
 
 fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
-    let telemetry = registry.telemetry().clone();
+    let telemetry = Telemetry::new();
     registry.register(Sine);
     registry.register(Saw);
     registry.register(WhiteNoise);

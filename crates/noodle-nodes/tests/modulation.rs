@@ -153,23 +153,20 @@ fn a_tap_shows_the_effective_value_of_a_log_parameter() {
     p.wire(offset, "out", svf, "cutoff");
     p.wire(svf, "low", out, "in");
 
-    let reader = p.telemetry.meter_reader();
     let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    controller.set_telemetry(&p.telemetry);
     assert!(
         controller
             .update_project(&p.project, &p.registry)
             .is_empty()
     );
     let mut buffer = vec![0.0; SETTINGS.max_frames];
-    // The first read switches the tap on.
     processor.process(&mut buffer);
-    assert_eq!(reader.param(svf, "cutoff"), None);
-    processor.process(&mut buffer);
-    let reading = reader.param(svf, "cutoff").expect("the tap reports");
-    assert!((reading.last - 1_000.0).abs() < 1.0, "{reading:?}");
+    let reading = p.telemetry.read_param(svf, "cutoff").expect("it reports");
+    assert!((reading.value - 1_000.0).abs() < 1.0, "{reading:?}");
     assert!((reading.min - 1_000.0).abs() < 1.0 && (reading.max - 1_000.0).abs() < 1.0);
     // Unwired ports have no tap.
-    assert_eq!(reader.param(svf, "resonance"), None);
+    assert_eq!(p.telemetry.read_param(svf, "resonance"), None);
     drop((controller, processor));
 }
 
@@ -191,20 +188,18 @@ fn a_tap_reports_the_swing_of_a_modulated_parameter() {
     p.wire(lfo, "out", svf, "resonance");
     p.wire(svf, "low", out, "in");
 
-    let reader = p.telemetry.meter_reader();
     let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    controller.set_telemetry(&p.telemetry);
     assert!(
         controller
             .update_project(&p.project, &p.registry)
             .is_empty()
     );
     let mut buffer = vec![0.0; SETTINGS.max_frames];
-    processor.process(&mut buffer);
-    let _ = reader.param(svf, "resonance");
     for _ in 0..8 {
         processor.process(&mut buffer);
     }
-    let reading = reader.param(svf, "resonance").unwrap();
+    let reading = p.telemetry.read_param(svf, "resonance").unwrap();
     assert!((reading.min - 0.4).abs() < 1e-3, "{reading:?}");
     assert!((reading.max - 0.6).abs() < 1e-3, "{reading:?}");
     drop((controller, processor));

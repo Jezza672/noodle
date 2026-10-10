@@ -7,12 +7,22 @@
 
 use egui::{RichText, Ui};
 use noodle_core::{Endpoint, Node, NodeId};
-use noodle_engine::{InputKind, Location, NodeType};
+use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
 use crate::session::{Edit, Session};
-use crate::widgets::{ConfigField, ParamField};
+use crate::widgets::format::format_value;
+use crate::widgets::{ConfigField, Live, ParamField};
 
-pub fn show(ui: &mut Ui, session: &Session, active: Option<NodeId>) -> Vec<Edit> {
+/// What the wired parameter `key` of a node has been doing lately, if known:
+/// the editor reads it once a frame.
+pub type LiveParams<'a> = &'a dyn Fn(NodeId, &str) -> Option<Live>;
+
+pub fn show(
+    ui: &mut Ui,
+    session: &Session,
+    active: Option<NodeId>,
+    live: LiveParams<'_>,
+) -> Vec<Edit> {
     let graph = session.project().graph();
     let Some((id, node)) = active.and_then(|id| Some((id, graph.node(id)?))) else {
         ui.weak("Select a node to see its properties.");
@@ -28,7 +38,7 @@ pub fn show(ui: &mut Ui, session: &Session, active: Option<NodeId>) -> Vec<Edit>
     match node_type {
         Some(node_type) => {
             config(ui, node_type.as_ref(), id, node, &mut edits);
-            params(ui, session, node_type.as_ref(), id, node, &mut edits);
+            params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }
         None => {
             // Nothing describes the values, so they can only be shown.
@@ -89,6 +99,7 @@ fn params(
     node_type: &dyn NodeType,
     id: NodeId,
     node: &Node,
+    live: LiveParams<'_>,
     edits: &mut Vec<Edit>,
 ) {
     // A config the node type rejects is reported by `problems`.
@@ -112,8 +123,17 @@ fn params(
             .graph()
             .source(&Endpoint::new(id, key))
             .cloned();
+        // A wired parameter shows what the wire is delivering right now.
+        let reading = source.as_ref().and_then(|_| {
+            live(id, key).map(|live| ParamReading {
+                value: live.value,
+                min: live.min,
+                max: live.max,
+            })
+        });
+        let shown = reading.map_or(value, |reading| reading.value);
         ui.add_enabled_ui(source.is_none(), |ui| {
-            let out = ParamField::new(&input.name, info, value)
+            let out = ParamField::new(&input.name, info, shown)
                 .id_salt((id, key))
                 .show(ui);
             if let Some(source) = &source {
@@ -123,7 +143,29 @@ fn params(
                 edits.extend(out.edits(id, key));
             }
         });
+        ui.label(RichText::new(range_text(info, reading)).weak().small());
     }
+}
+
+/// What a parameter accepts, and for a wired one the range its signal has
+/// covered lately: "Range 20 Hz to 20 kHz, default 440 Hz".
+fn range_text(info: &noodle_engine::ParamInfo, reading: Option<ParamReading>) -> String {
+    let at = |value| format_value(info, value);
+    let mut text = format!(
+        "Range {} to {}, default {}",
+        at(info.min),
+        at(info.max),
+        at(info.default)
+    );
+    if let Some(reading) = reading {
+        text.push_str(&format!(
+            "\nLive {}, recently {} to {}",
+            at(reading.value),
+            at(reading.min),
+            at(reading.max)
+        ));
+    }
+    text
 }
 
 /// e.g. "Sine › Out".
@@ -181,7 +223,7 @@ mod tests {
         };
         let mut harness = Harness::new_ui_state(
             |ui, state: &mut State| {
-                let edits = show(ui, &state.session, state.active);
+                let edits = show(ui, &state.session, state.active, &|_, _| None);
                 state.session.edit(edits);
             },
             state,
@@ -202,6 +244,12 @@ mod tests {
         harness.state_mut().active = None;
         harness.run();
         harness.get_by_label("Select a node to see its properties.");
+    }
+
+    #[test]
+    fn each_parameter_shows_the_range_it_accepts() {
+        let harness = harness([Node::new("noodle.osc.sine")]);
+        harness.get_all_by_label_contains("Range ").next().unwrap();
     }
 
     #[test]

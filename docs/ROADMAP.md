@@ -104,8 +104,7 @@ hit-testing and wire code, so they go in one PR, alongside the M2 app work.
 
 ### Backlog: modulation display (M3)
 
-**Done** (M3 batch 1), apart from the properties panel, which still greys a
-wired parameter out. How it was settled is in "Modulating a parameter" and
+**Done** (M3 batch 1). How it was settled is in "Modulating a parameter" and
 "Parameter widgets" in ARCHITECTURE.md. The decision differs from the
 proposal below in one way: offsetting in slider space is a per-parameter
 setting (`ParamInfo::offset()`), not the rule for every wire, because many
@@ -118,7 +117,9 @@ envelope nodes, which are the first sources people will wire into parameters.
 The log-versus-linear decision comes first, because the meter's scale depends
 on it.
 
-- **Show a modulated parameter's live value.** A parameter with a wire
+- **Show a modulated parameter's live value.** *Done:* the telemetry probe
+  (`Telemetry::read_param`), the properties panel, and the slider on the node
+  body as a meter with ticks over the last 3 seconds. A parameter with a wire
   into it currently greys out. Instead, its slider becomes a meter:
   - **Value:** the fill shows the parameter's current effective value, read
     every frame.
@@ -270,7 +271,8 @@ and several Output nodes each tied to one device). All of this theme is done.
 
 - **Done.** The mixer view maps onto a mixer node in the graph, with a drop-down to
   choose which one, so more mixers can be added and the default one
-  removed (11). "All tracks" is still there as the first choice.
+  removed (11). "All tracks" has since been removed: the mixer always shows
+  one mixer node, vertical meters and faders per channel.
 - **Done.** **Node views by double-click.** Double-clicking a Scope node opens a scope
   view pane, and double-clicking a Mixer node opens the mixer view on that
   mixer. Like the mixer view, the scope view keeps no state of its own and

@@ -15,8 +15,8 @@ use noodle_core::NodeId;
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
 use crate::{
     Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
-    ParamInfo, ParamKind, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
-    TapWriter, Telemetry,
+    ParamInfo, ParamKind, ParamWriter, Problem, Schedule, Settings, Setup, Shape, SignalIn,
+    SignalOut, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -100,8 +100,6 @@ struct PlanNode {
     outputs: Vec<View>,
     event_inputs: Vec<Option<usize>>,
     event_outputs: Vec<usize>,
-    /// Taps on the node's wired parameters, as (input index, tap).
-    taps: Vec<(usize, TapWriter)>,
     /// An Output node, whose input is mixed into the device output.
     is_output: bool,
     /// Where an Output node mixes to: the first output channel and the
@@ -110,6 +108,8 @@ struct PlanNode {
     bus: Option<(usize, usize)>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
+    /// Reports the signals wired into parameters, by input index.
+    probes: Vec<(usize, ParamWriter)>,
     scratch: Scratch,
 }
 
@@ -140,31 +140,20 @@ struct Scratch {
     event_outputs: Vec<EventsOut<'static>>,
 }
 
-/// What a plan is built for: the engine's settings, the output devices it
-/// mixes to, and the hub its taps report to.
-#[derive(Clone, Copy)]
-pub(crate) struct Env<'a> {
-    pub(crate) settings: Settings,
-    pub(crate) buses: Option<&'a [Bus]>,
-    pub(crate) telemetry: &'a Telemetry,
-}
-
 /// Builds a plan from a schedule, instantiating every node that can't carry
 /// over from `previous`. Nodes that fail to instantiate are kept, as silence,
 /// so the buffers downstream of them stay valid.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build(
     schedule: Schedule,
     previous: Option<&PlanInfo>,
     generation: u64,
-    env: Env<'_>,
+    settings: Settings,
+    buses: Option<&[Bus]>,
+    telemetry: Option<&Telemetry>,
     cells: &mut Cells,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (Box<Plan>, PlanInfo) {
-    let Env {
-        settings,
-        buses,
-        telemetry,
-    } = env;
     let Settings {
         sample_rate,
         max_frames,
@@ -267,14 +256,12 @@ pub(crate) fn build(
         };
 
         let mut inputs = Vec::with_capacity(scheduled.inputs.len());
-        let mut taps = Vec::new();
-        for (index, ((port, source), shape)) in scheduled
+        for ((port, source), shape) in scheduled
             .layout
             .inputs
             .iter()
             .zip(&scheduled.inputs)
             .zip(&scheduled.input_shapes)
-            .enumerate()
         {
             // The value a parameter holds when nothing drives it, or the base
             // that a wire offsets.
@@ -331,12 +318,6 @@ pub(crate) fn build(
                 (_, Some(value), _) => Input::Value(value),
                 (_, None, _) => unreachable!("every unconnected input has a value slot"),
             });
-            // Every wired parameter can report its live value.
-            if let (InputSource::Buffer(_) | InputSource::Modulated(..), InputKind::Param(_)) =
-                (*source, &port.kind)
-            {
-                taps.push((index, telemetry.open_tap(id, &port.key)));
-            }
         }
 
         let sources = scheduled
@@ -382,6 +363,23 @@ pub(crate) fn build(
             event_outputs: Vec::with_capacity(event_outputs.len()),
         };
 
+        let probes: Vec<(usize, ParamWriter)> = telemetry
+            .into_iter()
+            .flat_map(|telemetry| {
+                scheduled
+                    .layout
+                    .inputs
+                    .iter()
+                    .zip(&scheduled.inputs)
+                    .enumerate()
+                    .filter(|(_, (port, source))| {
+                        matches!(port.kind, InputKind::Param(_))
+                            && matches!(source, InputSource::Buffer(_) | InputSource::Modulated(..))
+                    })
+                    .map(move |(index, (port, _))| (index, telemetry.open_param(id, &port.key)))
+            })
+            .collect();
+
         let is_output = scheduled.node_type.info().id == OUTPUT_ID;
         let mut bus = None;
         if is_output {
@@ -411,10 +409,10 @@ pub(crate) fn build(
             outputs,
             event_inputs,
             event_outputs,
-            taps,
             is_output,
             bus,
             is_input: scheduled.node_type.info().id == INPUT_ID,
+            probes,
             scratch,
         });
     }
@@ -598,11 +596,6 @@ impl Plan {
                     Input::Offset(k) => self.offsets[k].signal(frames),
                 }));
                 outputs.extend(node.outputs.iter().map(|view| view.write(pool, frames)));
-                for (index, tap) in &node.taps {
-                    if tap.wanted() {
-                        report(tap, &inputs[*index]);
-                    }
-                }
                 event_inputs.extend(node.event_inputs.iter().map(|buffer| match buffer {
                     Some(b) => (*events.add(*b)).as_slice(),
                     None => &[],
@@ -612,6 +605,13 @@ impl Plan {
                         .iter()
                         .map(|&b| EventsOut::new(&mut *events.add(b))),
                 );
+            }
+
+            for (index, probe) in &node.probes {
+                let signal = &inputs[*index];
+                if signal.shape().lanes() > 0 {
+                    probe.write(signal.lane(0, 0));
+                }
             }
 
             let io = Io {
@@ -824,27 +824,6 @@ impl OffsetInput {
     fn signal(&self, frames: usize) -> SignalIn<'_> {
         let shape = self.source.shape;
         SignalIn::new(&self.scratch[..shape.lanes() * frames], shape, frames)
-    }
-}
-
-/// Reports the range of a wired parameter's value to its tap: across all
-/// lanes, and the last sample of the first.
-fn report(tap: &TapWriter, signal: &SignalIn<'_>) {
-    let shape = signal.shape();
-    let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
-    for voice in 0..shape.voices {
-        for channel in 0..shape.channels {
-            for &x in signal.lane(voice, channel) {
-                if x.is_finite() {
-                    min = min.min(x);
-                    max = max.max(x);
-                }
-            }
-        }
-    }
-    let last = signal.lane(0, 0).last().copied().unwrap_or(0.0);
-    if min <= max && last.is_finite() {
-        tap.write(min, max, last);
     }
 }
 

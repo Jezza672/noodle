@@ -52,7 +52,7 @@ pub use render::{Render, RenderError, render, render_project};
 pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{
-    Level, MeterReader, MeterWriter, ParamReading, ScopeView, ScopeWriter, TapWriter, Telemetry,
+    Level, MeterReader, MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,
 };
 pub use tempo::TempoTable;
 pub use transport::TransportControl;

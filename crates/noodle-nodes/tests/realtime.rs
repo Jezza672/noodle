@@ -80,7 +80,9 @@ impl Session {
     fn new() -> Self {
         let mut registry = Registry::with_builtins();
         let telemetry = noodle_nodes::register_all(&mut registry);
-        let (controller, processor) = engine(SETTINGS).unwrap();
+        let (mut controller, processor) = engine(SETTINGS).unwrap();
+        // So wired parameters are probed, as in the app.
+        controller.set_telemetry(&telemetry);
         Self {
             project: Project::new(),
             registry,
@@ -629,8 +631,7 @@ fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
 #[test]
 fn events_envelopes_and_modulated_parameters_never_allocate() {
     // button -> key -> mono note -> saw -> filter (cutoff offset by an LFO)
-    // -> vca (level from an ADSR) -> output, with the taps on every wired
-    // parameter switched on by a reader.
+    // -> vca (level from an ADSR) -> output, with every wired parameter probed.
     let mut s = Session::new();
     let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
     let key = s.add(Node::new("noodle.event.key"));
@@ -660,7 +661,6 @@ fn events_envelopes_and_modulated_parameters_never_allocate() {
     s.wire(vca, "out", output, "in");
     s.update();
 
-    let reader = s.telemetry.meter_reader();
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
     let mut heard = false;
     for round in 0..16 {
@@ -677,12 +677,11 @@ fn events_envelopes_and_modulated_parameters_never_allocate() {
             }
         });
         assert_eq!(violations, 0, "allocated in round {round}");
-        // The first read switches the tap on, so later rounds measure.
-        let _ = reader.param(svf, "cutoff");
-        let _ = reader.param(vca, "level");
+        let _ = s.telemetry.read_param(svf, "cutoff");
+        let _ = s.telemetry.read_param(vca, "level");
     }
     s.processor.process(&mut out);
-    let cutoff = reader.param(svf, "cutoff").expect("the cutoff is tapped");
+    let cutoff = s.telemetry.read_param(svf, "cutoff").expect("it reports");
     assert!(
         cutoff.max > cutoff.min,
         "the LFO should move the cutoff: {cutoff:?}"
