@@ -608,7 +608,9 @@ fn allocate(
                     Some(w) => {
                         let buffer = BufferId(source_buffer(w));
                         match &port.kind {
-                            InputKind::Param(info) if info.is_offset() => {
+                            InputKind::Param(info)
+                                if info.is_offset() && !from_lane[wires[w].from] =>
+                            {
                                 InputSource::Modulated(buffer, value)
                             }
                             _ => InputSource::Buffer(buffer),
