@@ -72,6 +72,10 @@ pub enum InputOrigin {
     /// Another node's output: its node in the flattened graph and the
     /// position of the output.
     Wire(NodeId, usize),
+    /// A wire into a parameter that offsets its value (see
+    /// [`Modulation::Offset`](crate::Modulation::Offset)): the source and
+    /// the base value the wire moves along the parameter's travel.
+    Modulated(NodeId, usize, f32),
     /// Unconnected: the value set in the project, or the port's default.
     Value(f32),
 }
@@ -176,9 +180,14 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
             .inputs
             .iter()
             .map(|source| match source {
-                InputSource::Buffer(b) | InputSource::Modulated(b, _) => signal_writers
+                InputSource::Buffer(b) => signal_writers
                     .get(b)
                     .map_or(InputOrigin::Value(0.0), |&(n, p)| InputOrigin::Wire(n, p)),
+                InputSource::Modulated(b, base) => signal_writers
+                    .get(b)
+                    .map_or(InputOrigin::Value(*base), |&(n, p)| {
+                        InputOrigin::Modulated(n, p, *base)
+                    }),
                 InputSource::Value(v) => InputOrigin::Value(*v),
                 InputSource::Absent => InputOrigin::Value(0.0),
             })
@@ -194,7 +203,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
             Some(Err(Uncacheable::NotDeterministic(info.name.to_string())))
         } else {
             let upstream = |origin: &InputOrigin| match origin {
-                InputOrigin::Wire(n, p) => Some((*n, *p)),
+                InputOrigin::Wire(n, p) | InputOrigin::Modulated(n, p, _) => Some((*n, *p)),
                 InputOrigin::Value(_) => None,
             };
             let events: Vec<_> = node
@@ -252,18 +261,12 @@ fn node_key(
     events: &[Option<(NodeId, usize)>],
 ) -> Result<CacheKey, Uncacheable> {
     let info = node.node_type.info();
-    // An offline node reads its inputs as whole signals, so it can't yet
-    // take a modulated parameter or events. Say so, rather than render it
-    // wrongly.
-    if node.layout.mode == crate::Mode::Offline
-        && (node
-            .inputs
-            .iter()
-            .any(|source| matches!(source, InputSource::Modulated(..)))
-            || events.iter().any(Option::is_some))
-    {
+    // An offline node reads its inputs as whole signals, which a wire into a
+    // parameter is too (see `apply_offset`), but it has no way to read
+    // events yet. Say so, rather than render it wrongly.
+    if node.layout.mode == crate::Mode::Offline && events.iter().any(Option::is_some) {
         return Err(Uncacheable::Because(
-            "an offline node can't take a modulated parameter or events yet".into(),
+            "an offline node can't take events yet".into(),
         ));
     }
     let mut b = KeyBuilder::new("node");

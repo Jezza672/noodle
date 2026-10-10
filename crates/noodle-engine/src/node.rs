@@ -313,6 +313,11 @@ pub struct Setup<'a> {
     /// so renders repeat exactly (and can be cached), but different for every
     /// node, so two noise sources aren't identical.
     pub seed: u64,
+    /// Where the transport's playhead is, in samples, as of the compile. A
+    /// node built mid-playback (a cached render swapped in, say) can use it
+    /// to have the audio at the playhead ready before its first block. It is
+    /// 0 for offline renders, which run from the start.
+    pub position: u64,
 }
 
 pub enum Instance {

@@ -471,16 +471,20 @@ play it from a MIDI keyboard and from a MIDI clip.
 
 ## M4: Caching
 
-**Status:** batches 1 and 2 are done. Batch 1: streaming offline renders, the
-offline renderer as a background job with progress and cancel, and the
-on-disk cache store. Batch 2: Merkle key derivation and cacheability analysis
-from the compiled graph, offline nodes running from the cache (Reverse; the
-compiler no longer refuses them), and freeze for nodes and groups, with a
-progress bar on the node and a cached-audio player in the plan. Still to do:
-the normalize and time-stretch nodes, and the export dialog. Known limits:
-an offline node still gets its whole range in memory, a frozen node plays for
-a fixed length (the clips' end plus a tail, at least 30 s), and a cached
-render is keyed by the sample rate it was made at.
+**Status:** done. Batch 1: streaming offline renders, the offline renderer
+as a background job with progress and cancel, and the on-disk cache store.
+Batch 2: Merkle key derivation and cacheability analysis from the compiled
+graph, offline nodes running from the cache (Reverse; the compiler no longer
+refuses them), and freeze for nodes and groups, with a progress bar on the
+node and a cached-audio player in the plan. Batch 3: the Normalize and Time
+Stretch offline nodes, offline nodes taking modulated parameters, the export
+dialog (WAV and FLAC, the whole project or a range, with offline and frozen
+nodes rendered first), the playhead handed to a cached player when it is
+swapped in (no dropout), clip files hashed off the UI thread, and clip files
+watched for changes. Known limits: an offline node still gets its whole range
+in memory, a frozen node plays for a fixed length (the clips' end plus a
+tail, at least 30 s), a cached render is keyed by the sample rate it was made
+at, and offline nodes take no events.
 
 - The offline renderer as a background service, with progress reporting to the UI.
 - **Streaming offline renders.** Offline nodes currently get the whole range in

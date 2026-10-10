@@ -167,6 +167,7 @@ pub(crate) fn build(
     buses: Option<&[Bus]>,
     telemetry: Option<&Telemetry>,
     cells: &mut Cells,
+    position: u64,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (Box<Plan>, PlanInfo) {
     let Settings {
@@ -256,7 +257,7 @@ pub(crate) fn build(
                 carried_ids.insert(id);
                 (None, true)
             }
-            None => match instantiate(&scheduled, sample_rate, max_frames) {
+            None => match instantiate(&scheduled, sample_rate, max_frames, position) {
                 Ok(node) => {
                     // A stateless node (an automation lane's source, a
                     // Remap) rebuilt with a new config and the same shapes
@@ -519,6 +520,7 @@ fn instantiate(
     scheduled: &crate::ScheduledNode,
     sample_rate: f32,
     max_frames: usize,
+    position: u64,
 ) -> Result<Box<dyn Node>, NodeError> {
     let setup = Setup {
         node: scheduled.id,
@@ -528,6 +530,7 @@ fn instantiate(
         input_shapes: &scheduled.input_shapes,
         output_shapes: &scheduled.output_shapes,
         seed: seed_for(scheduled.id),
+        position,
     };
     match scheduled.node_type.instantiate(&setup)? {
         Instance::Realtime(node) => Ok(node),

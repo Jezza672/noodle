@@ -8,6 +8,7 @@ mod cached;
 mod clip;
 mod curve;
 mod delay;
+mod export;
 mod freeze;
 mod gain;
 mod ladder;
@@ -18,6 +19,7 @@ mod metronome;
 mod midi_in;
 mod mix;
 mod noise;
+mod normalize;
 mod notes;
 mod osc;
 mod pan;
@@ -27,6 +29,7 @@ mod reverse;
 mod scope;
 mod stage;
 mod svf;
+mod time_stretch;
 mod vca;
 mod voice_mix;
 mod voices;
@@ -44,6 +47,7 @@ pub use clip::{
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
+pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_export};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
     spawn_freeze,
@@ -57,6 +61,7 @@ pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MidiIn};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
+pub use normalize::{NORMALIZE_ID, Normalize};
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
@@ -66,6 +71,7 @@ pub use reverse::Reverse;
 pub use scope::{SCOPE_ID, Scope};
 pub use stage::GroupStage;
 pub use svf::Svf;
+pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 pub use voices::{VOICES_ID, Voices};
@@ -134,6 +140,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);
+    registry.register(Normalize);
+    registry.register(TimeStretch);
     registry.register(Reroute);
     registry.register(GroupStage);
     registry.register(Meter::new(&telemetry));

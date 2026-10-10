@@ -48,6 +48,48 @@ impl Harness {
         max_frames: usize,
         seed: u64,
     ) -> Result<Self, NodeError> {
+        Self::build(
+            node_type,
+            config,
+            connected,
+            sample_rate,
+            max_frames,
+            seed,
+            0,
+        )
+    }
+
+    /// Like [`new`](Self::new), for a node built while the transport is
+    /// already `position` samples in, as when a plan is swapped in during
+    /// playback. The first block runs at that position too.
+    pub fn starting_at(
+        node_type: &dyn NodeType,
+        config: &Config,
+        connected: &[(usize, Shape)],
+        sample_rate: f32,
+        max_frames: usize,
+        position: u64,
+    ) -> Result<Self, NodeError> {
+        Self::build(
+            node_type,
+            config,
+            connected,
+            sample_rate,
+            max_frames,
+            0,
+            position,
+        )
+    }
+
+    fn build(
+        node_type: &dyn NodeType,
+        config: &Config,
+        connected: &[(usize, Shape)],
+        sample_rate: f32,
+        max_frames: usize,
+        seed: u64,
+        position: u64,
+    ) -> Result<Self, NodeError> {
         let connected_shape =
             |port: usize| connected.iter().find(|(p, _)| *p == port).map(|(_, s)| *s);
 
@@ -70,6 +112,7 @@ impl Harness {
             input_shapes: &input_shapes,
             output_shapes: &output_shapes,
             seed,
+            position,
         })?;
         assert_eq!(
             instance.mode(),
@@ -107,7 +150,7 @@ impl Harness {
                 .map(|_| Vec::with_capacity(1024))
                 .collect(),
             sample_rate,
-            position: 0,
+            position,
             frames: 0,
         })
     }

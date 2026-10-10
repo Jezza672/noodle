@@ -54,14 +54,14 @@ pub use node::{
 pub use noodle_core::{Config, NodeId, Value};
 pub use noodle_macros::Ports;
 pub use offline::{
-    Cancelled, OfflineError, OfflineInput, OfflineNode, OfflineOutput, Progress,
+    Cancelled, OfflineError, OfflineInput, OfflineNode, OfflineOutput, Progress, apply_offset,
     render_offline_node,
 };
 pub use param::{Modulation, ParamInfo, ParamKind, Taper, Unit};
 pub use registry::Registry;
 pub use render::{
     Render, RenderError, StreamError, Tap, TapSink, render, render_project,
-    render_project_streaming, render_taps,
+    render_project_streaming, render_project_streaming_replacing, render_taps,
 };
 pub use replace::{Replacement, Replacements, TapSpec};
 pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};

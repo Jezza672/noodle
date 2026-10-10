@@ -22,6 +22,10 @@ pub struct ClipSource {
     pub offset: u64,
     /// How much of the file it plays, in the file's frames.
     pub length: u64,
+    /// The file's modification time when the clip was scheduled. A file
+    /// replaced on disk gives the clip a new source, so streams open on the
+    /// old one are dropped and the new one is read.
+    pub stamp: Option<SystemTime>,
 }
 
 /// One clip, placed on the timeline in samples.
@@ -399,6 +403,7 @@ impl ClipFeeds {
                     to_engine(audio.fade_in).min(length),
                     to_engine(audio.fade_out).min(length),
                     ClipSource {
+                        stamp: std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
                         path,
                         offset: audio.offset,
                         length: audio.length,
@@ -485,6 +490,7 @@ mod tests {
                 path: format!("{id}.wav").into(),
                 offset: 0,
                 length,
+                stamp: None,
             },
         )
     }

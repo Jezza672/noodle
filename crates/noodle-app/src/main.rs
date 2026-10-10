@@ -6,6 +6,8 @@ mod acceptance;
 mod app;
 mod devices;
 mod editor;
+mod export_dialog;
+mod filewatch;
 mod freezing;
 mod metronome;
 mod mixer;

@@ -77,6 +77,7 @@ impl Rig {
                 input_shapes: &[],
                 output_shapes: &[Shape::STEREO],
                 seed: 0,
+                position: 0,
             })
             .unwrap();
         let Instance::Realtime(node) = instance else {

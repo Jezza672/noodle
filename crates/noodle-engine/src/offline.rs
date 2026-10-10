@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use noodle_core::{Config, NodeId};
 
 use crate::{
-    Context, Instance, Io, NodeError, NodeType, Setup, Shape, SignalIn, SignalOut, Transport,
-    plan::seed_for,
+    Context, Instance, Io, NodeError, NodeType, ParamInfo, Setup, Shape, SignalIn, SignalOut,
+    Transport, plan::seed_for,
 };
 
 /// An instance of an offline node (see [`Mode::Offline`](crate::Mode)).
@@ -96,6 +96,20 @@ pub enum OfflineInput {
     Signal { shape: Shape, data: Vec<f32> },
 }
 
+/// Turns the signal on a wire into an offsetting parameter (see
+/// [`Modulation::Offset`](crate::Modulation::Offset)) into the parameter's
+/// value, in place, as the real-time plan does: `value = from_travel(
+/// to_travel(base) + signal)`. A non-finite sample counts as 0. An offline
+/// node reads parameters this way too, so a wire modulates it the same as it
+/// would a real-time node.
+pub fn apply_offset(info: &ParamInfo, base: f32, samples: &mut [f32]) {
+    let position = info.position(base);
+    for x in samples {
+        let signal = if x.is_finite() { *x } else { 0.0 };
+        *x = info.value_at(position + signal);
+    }
+}
+
 /// What an offline node wrote to one output, in the same planar layout.
 pub struct OfflineOutput {
     pub shape: Shape,
@@ -169,6 +183,7 @@ pub fn render_offline_node(
         input_shapes: &input_shapes,
         output_shapes: &output_shapes,
         seed: seed_for(node),
+        position: 0,
     })?;
     let Instance::Offline(mut offline) = instance else {
         return Err(OfflineError::NotOffline);

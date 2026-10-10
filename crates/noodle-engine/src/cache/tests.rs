@@ -376,13 +376,18 @@ fn each_output_of_a_node_has_its_own_key() {
 }
 
 #[test]
-fn an_offline_node_with_a_modulated_parameter_is_refused() {
+fn an_offline_node_with_a_modulated_parameter_is_keyed_by_what_modulates_it() {
     let mut rig = Rig::new();
     let source = rig.add(1, "source");
     let offline = rig.add(2, "offline_param");
     rig.wire(source, offline, "in");
-    assert!(rig.key(offline).is_ok());
+    let bare = rig.key(offline).unwrap();
     let modulator = rig.add(3, "source");
     rig.wire(modulator, offline, "amount");
-    assert!(matches!(rig.key(offline), Err(Uncacheable::Because(_))));
+    let modulated = rig.key(offline).expect("an offline node can take a wire");
+    assert_ne!(bare, modulated);
+    // Another modulator is another key.
+    let other = rig.add(4, "source");
+    rig.wire(other, offline, "amount");
+    assert_ne!(modulated, rig.key(offline).unwrap());
 }
