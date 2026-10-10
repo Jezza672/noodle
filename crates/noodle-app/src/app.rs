@@ -935,27 +935,34 @@ mod tests {
     }
 
     #[test]
-    fn the_mixer_opens_from_the_view_menu_and_shows_the_tracks() {
-        use noodle_core::group::GROUP;
+    fn the_mixer_opens_from_the_view_menu_and_shows_a_mixer() {
         let mut app = empty();
         app.session.edit([Edit::Apply(Command::AddNode {
             id: noodle_core::NodeId(1),
-            node: Node::new(GROUP),
+            node: Node::new(noodle_core::spare::MIXER),
         })]);
         let mut harness = harness(app);
         harness.run();
-        assert!(harness.query_by_label("Group 1").is_none());
+        assert!(
+            harness
+                .query_by_label("Nothing is wired into this mixer.")
+                .is_none()
+        );
         harness.get_by_label("View").click();
         harness.run();
         harness.get_by_label("Mixer").click();
         harness.run();
-        harness.get_by_label("Group 1");
+        harness.get_by_label("Nothing is wired into this mixer.");
         // And closes again.
         harness.get_by_label("View").click();
         harness.run();
         harness.get_by_label("Mixer").click();
         harness.run();
-        assert!(harness.query_by_label("Group 1").is_none());
+        assert!(
+            harness
+                .query_by_label("Nothing is wired into this mixer.")
+                .is_none()
+        );
     }
 
     #[test]

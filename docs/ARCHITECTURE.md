@@ -173,8 +173,7 @@ The **Project** is the single source of truth. It holds one global graph:
     into the group's output by default. Undo removes all of it.
   - **Group input and output nodes carry the track's controls** as
     parameters: gain, mute, solo and the like. The track's gain, mute and
-    solo buttons in the arrangement view and the mixer show and set those
-    parameters. Gain and mute are ordinary runtime parameters, so they can be
+    solo buttons in the arrangement view show and set those parameters. Gain and mute are ordinary runtime parameters, so they can be
   automated and wired like any other. Solo is the exception (below).
   - Every group gets such an input and output node, not only tracks, so a
     nested group has the same controls.
@@ -197,16 +196,16 @@ The **Project** is the single source of truth. It holds one global graph:
     one shared "any solo" value so it could be automated, can come later if
     it is wanted.
 - The timeline and mixer are **views over the graph**, not separate structures.
-  The timeline shows the clips that feed each track. The mixer has two views:
-  "All tracks" shows each track group's gain, mute and solo, which are
-  parameters on its boundary nodes; a mixer node's view shows one strip per
-  wired input and sets the **Mix node's own** per-input parameters.
+  The timeline shows the clips that feed each track. The mixer shows one
+  mixer node (the first, unless another is chosen or double-clicked): one
+  strip per wired input, with a meter and a fader, and it sets the **Mix
+  node's own** per-input parameters. With no mixer node it says so.
   - **Mix inputs.** A Mix node has `in1`…`inN` audio inputs, then `gain1`…
     `gainN` (dB) and `mute1`…`muteN` parameter inputs, so each channel's
     fader and mute can be wired or automated like any other parameter. Its
     per-input meters read after the gain and mute. A track's own gain, mute
-    and solo stay on the track (header and "All tracks" view); the mixer node
-    view never touches them.
+    and solo stay on the track (its header); the mixer view never touches
+    them.
 
 Every change goes through a **command**. Applying a command returns its
 inverse, which gives undo/redo for free and gives the UI one place to hook
@@ -452,6 +451,15 @@ any input dropped because the disk stalled. The file is at the input's
 channel count and the engine's rate, and starts at the moment of the call:
 aligning it with the timeline, and with the input's latency, is the
 transport's job.
+
+**Wired parameters report their signal.** `Controller::set_telemetry` has
+plans build a probe for every parameter input with a wire on it. After the
+block is ready, before the node runs, the probe writes the last value and
+the min and max of lane 0 into atomics (no allocation, no locks).
+`Telemetry::read_param(node, key)` returns the live value and the range since
+the previous read; the properties panel shows it beside each wired
+parameter, with the range the parameter accepts. There is one reading per
+parameter, so only one reader should take it.
 
 **Data going back to the UI** goes through a `Telemetry` hub
 (`noodle-engine/src/telemetry.rs`), which the UI reads every frame by node ID.
@@ -900,7 +908,9 @@ It has these views:
     port before a parameter port, and is part of the move's undo step.
     Copy, Cut and Paste (Ctrl/Cmd+C, X, V) keep the nodes, the wires
     between them and frames in an in-app clipboard, pasted at the pointer
-    into the group being edited as one undo step.
+    into the group being edited as one undo step. The window turns Ctrl/Cmd+V
+    into a paste only while the system clipboard holds text, so a copy also
+    puts a short line of text there.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -1022,25 +1032,19 @@ through the telemetry API.
 
 ### Mixer
 
-The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view
-over the project and keeps no state of its own. It has one strip per
-top-level group, in track order (see below), named by the group's `name`
-config. A drop-down at the top can instead show a **mixer node**: one strip
-per wired input in input order, a track's controls where a group feeds the
-input and a strip with nothing to set for anything else, each with a level
-bar. Double-clicking a Mix node in the editor opens the mixer on it. A strip reads the group's gain, mute and solo from its boundary
-nodes (`Graph::group_controls`) and a fader move, a mute or a solo click is
-a `SetParam` on the node `Graph::control_node` picks, so it is undoable like
-any edit and one drag is one undo step. The reading under the fader resets
-the gain to 0 dB. Resets write the default and never remove the parameter,
-since a set control keeps its stage in the compiled graph and removing it
-would fade the whole output. A group with several outputs shows the first
-output node's controls. Solo mutes the other tracks as the compiler reads it
-(`Graph::solo_muted`), so a strip silenced by another's solo shows that, and
-its mute and solo buttons stay live. Turning solo off clears it on every
-boundary node of the group, since any can hold it. A strip's fader or mute
-is greyed, with the track header's tooltip, while an automation lane drives
-that parameter, since the lane overrides it.
+The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view over the
+project and keeps no state of its own. It shows **one mixer node**: the
+default mixer (the first top-level Mix node, which Add Track feeds), or the
+one double-clicked in the editor, with a drop-down when there are several.
+There is one strip per wired input in input order, named for the track
+feeding it, each with a vertical level meter, a fader, a reading that resets
+the gain to 0 dB, and a mute. The strip reads and sets the Mix node's own
+`gainN`/`muteN` parameters, so a fader move is a `SetParam` (one drag is one
+undo step). Resets write the default and never remove the parameter, since a
+set control keeps its stage in the compiled graph and removing it would
+fade the whole output. A strip's fader or mute is greyed, with the track
+header's tooltip, while a lane or wire drives that parameter. Solo stays on
+the track header. With no mixer node the view says so.
 
 The Mix node reports each input's peak and RMS through the telemetry hub
 (`MixNode` in `noodle-nodes/src/mix.rs`, one meter channel per input, voices
@@ -1052,8 +1056,8 @@ node and on the mixer view's strips.
 ### Track order
 
 `Project.track_order` is a list of group IDs, set by `Command::SetTrackOrder`
-(one undo step; it has no engine effect). The arrangement, the mixer's
-"All tracks" view read it through `Project::sort_tracks` (Add Track always
+(one undo step; it has no engine effect). The arrangement and the mixer's
+strip names read it through `Project::sort_tracks` (Add Track always
 puts a new track last):
 groups it names come first in that order, the rest follow by ID, and IDs
 that no longer exist are ignored, so deleting then undoing a track keeps its

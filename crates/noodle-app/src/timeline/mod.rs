@@ -6,7 +6,7 @@
 //! tempo. Every change is an [`Edit`] using the core's clip commands, so it
 //! can be undone.
 
-mod add_track;
+pub(crate) mod add_track;
 mod automation;
 mod clips;
 mod grid;
