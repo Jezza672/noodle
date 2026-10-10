@@ -35,6 +35,7 @@ pub fn show(
     problems(ui, session, id);
 
     let mut edits = Vec::new();
+    freezing(ui, session, id, &mut edits);
     match node_type {
         Some(node_type) => {
             config(ui, node_type.as_ref(), id, node, &mut edits);
@@ -48,6 +49,65 @@ pub fn show(
         }
     }
     edits
+}
+
+/// Whether the node is frozen, how its render is doing, and the button to
+/// change it.
+fn freezing(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
+    use crate::freezing::BadgeState;
+
+    let frozen = session.project().is_frozen(id);
+    let badge = session.freeze_badges().get(&id);
+    if !frozen && badge.is_none() {
+        // Offer to freeze only what can be: a node or group with audio out.
+        let node = session.project().graph().node(id);
+        let has_audio = node.is_some_and(|node| {
+            if node.type_id == noodle_core::group::GROUP {
+                return !session.project().graph().group_ports(id).outputs.is_empty();
+            }
+            session
+                .registry()
+                .get(&node.type_id)
+                .and_then(|t| t.layout(&node.config).ok())
+                .is_some_and(|layout| !layout.outputs.is_empty())
+        });
+        if !has_audio {
+            return;
+        }
+    }
+    ui.horizontal(|ui| {
+        let label = if frozen { "Unfreeze" } else { "Freeze" };
+        if ui
+            .button(label)
+            .on_hover_text("Render this once and play the result, so it costs no CPU (Shift+F)")
+            .clicked()
+        {
+            edits.push(Edit::Apply(Command::SetFrozen {
+                node: id,
+                frozen: !frozen,
+            }));
+        }
+        if let Some(badge) = badge {
+            match &badge.state {
+                BadgeState::Ready => {
+                    ui.weak(if badge.frozen { "Frozen" } else { "Rendered" });
+                }
+                BadgeState::Rendering(fraction) => {
+                    ui.add(
+                        egui::ProgressBar::new(*fraction)
+                            .desired_width(120.0)
+                            .show_percentage(),
+                    );
+                }
+                BadgeState::Waiting => {
+                    ui.weak("Waiting to render");
+                }
+                BadgeState::Failed(why) => {
+                    ui.colored_label(ui.visuals().error_fg_color, why);
+                }
+            }
+        }
+    });
 }
 
 fn problems(ui: &mut Ui, session: &Session, id: NodeId) {

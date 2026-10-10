@@ -1,6 +1,6 @@
 //! The whole project, and saving and loading it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,9 @@ pub struct Project {
     lanes: BTreeMap<LaneId, AutomationLane>,
     next_lane_id: u64,
     track_order: Vec<NodeId>,
+    /// Nodes and groups whose output plays from a cached render (see
+    /// "Caching" in docs/ARCHITECTURE.md).
+    frozen: BTreeSet<NodeId>,
 }
 
 impl Default for Project {
@@ -38,6 +41,7 @@ impl Default for Project {
             lanes: BTreeMap::new(),
             next_lane_id: 1,
             track_order: Vec::new(),
+            frozen: BTreeSet::new(),
         }
     }
 }
@@ -52,6 +56,7 @@ impl PartialEq for Project {
             && self.clips == other.clips
             && self.lanes == other.lanes
             && self.track_order == other.track_order
+            && self.frozen == other.frozen
     }
 }
 
@@ -70,6 +75,8 @@ struct ProjectFile {
     lanes: BTreeMap<LaneId, AutomationLane>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     track_order: Vec<NodeId>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    frozen: BTreeSet<NodeId>,
 }
 
 /// The clips and lanes that went with a node.
@@ -161,6 +168,25 @@ impl Project {
             let rank = self.track_order.iter().position(|g| g == id);
             (rank.unwrap_or(usize::MAX), *id)
         });
+    }
+
+    /// The nodes and groups marked frozen. A frozen node plays from a cached
+    /// render once there is one; until then it plays live.
+    pub fn frozen(&self) -> &BTreeSet<NodeId> {
+        &self.frozen
+    }
+
+    pub fn is_frozen(&self, node: NodeId) -> bool {
+        self.frozen.contains(&node)
+    }
+
+    /// Returns whether the node was frozen before.
+    pub(crate) fn set_frozen(&mut self, node: NodeId, frozen: bool) -> bool {
+        if frozen {
+            !self.frozen.insert(node)
+        } else {
+            self.frozen.remove(&node)
+        }
     }
 
     pub(crate) fn replace_track_order(&mut self, order: Vec<NodeId>) -> Vec<NodeId> {
@@ -343,6 +369,12 @@ impl Project {
                 .copied()
                 .filter(|id| self.graph.node(*id).is_some())
                 .collect(),
+            frozen: self
+                .frozen
+                .iter()
+                .copied()
+                .filter(|id| self.graph.node(*id).is_some())
+                .collect(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -367,6 +399,7 @@ impl Project {
             lanes: file.lanes,
             next_lane_id,
             track_order: file.track_order,
+            frozen: file.frozen,
         };
         for (id, clip) in &project.clips {
             project.check_clip(*id, clip).map_err(LoadError::Broken)?;
@@ -872,6 +905,31 @@ mod tests {
         assert_eq!(project.clip(clip).unwrap().start, Tick(1200));
         history.undo(&mut project).unwrap();
         assert_eq!(project.clip(clip).unwrap(), &original);
+    }
+
+    #[test]
+    fn freezing_undoes_saves_and_forgets_removed_nodes() {
+        let (mut project, mut history, node, ..) = with_timeline();
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetFrozen { node, frozen: true },
+        );
+        assert!(project.is_frozen(node));
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert!(loaded.is_frozen(node));
+        history.undo(&mut project).unwrap();
+        assert!(!project.is_frozen(node));
+        assert!(!project.to_ron().contains("frozen"));
+        let missing = NodeId(999);
+        assert_eq!(
+            Command::SetFrozen {
+                node: missing,
+                frozen: true
+            }
+            .apply(&mut project),
+            Err(EditError::NoSuchNode(missing))
+        );
     }
 
     #[test]

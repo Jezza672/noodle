@@ -143,6 +143,31 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Node> {
         .collect()
 }
 
+/// The nodes' outputs in the flat graph that feed a group's outputs: what
+/// freezing the group renders. A port with nothing wired inside, or whose
+/// source chain ends at a group input, has none.
+pub(crate) fn group_outputs(
+    graph: &Graph,
+    keep: &BTreeSet<NodeId>,
+    group: NodeId,
+) -> Vec<Endpoint> {
+    let stages = stages(graph, keep);
+    let mut sources = Vec::new();
+    for port in graph.group_ports(group).outputs {
+        let endpoint = if stages.contains_key(&port.node) {
+            Some(Endpoint::new(port.node, STAGE_OUT))
+        } else {
+            resolve(graph, &stages, &Endpoint::new(port.node, OUTPUT_PORT))
+        };
+        if let Some(endpoint) = endpoint
+            && !sources.contains(&endpoint)
+        {
+            sources.push(endpoint);
+        }
+    }
+    sources
+}
+
 /// Follows an input's wire back through group boundaries to the real node
 /// that produces its signal, or `None` if the chain ends at an unconnected
 /// group input or output, or loops. A stage ends the chain too: it is the

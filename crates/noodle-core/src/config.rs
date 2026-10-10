@@ -70,4 +70,9 @@ impl Config {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The settings in key order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.0.iter().map(|(key, value)| (key.as_str(), value))
+    }
 }

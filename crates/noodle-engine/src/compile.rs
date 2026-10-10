@@ -25,7 +25,11 @@ use std::sync::Arc;
 
 use noodle_core::{Config, Endpoint, Graph, NodeId};
 
-use crate::{InputKind, Lanes, Layout, Mode, NodeError, NodeType, Registry, Shape, ShapeError};
+use crate::replace::Overrides;
+use crate::{
+    InputKind, Lanes, Layout, Mode, NodeError, NodeType, Registry, Replacements, Shape, ShapeError,
+    TapSpec,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BufferId(pub usize);
@@ -108,8 +112,13 @@ pub enum Problem {
     UnknownNodeType(String),
     /// The node type rejected the node's config or input shapes.
     Node(NodeError),
-    /// Offline nodes need cached renders, which come in M4.
+    /// An offline node reached the compiler without a cached render standing
+    /// in for it. Compiling through the cache (see `Controller::update_cached`)
+    /// takes care of that.
     OfflineUnsupported,
+    /// An offline node, or a node being frozen, can't be cached, because
+    /// something upstream isn't a pure function of the timeline.
+    NotCacheable(String),
     /// The project sets a value for an input the node doesn't have. The
     /// value is ignored but kept in the project.
     UnknownParam(String),
@@ -144,8 +153,9 @@ impl fmt::Display for Problem {
             Self::UnknownNodeType(id) => write!(f, "unknown node type `{id}`"),
             Self::Node(error) => error.fmt(f),
             Self::OfflineUnsupported => {
-                f.write_str("offline nodes need cached renders, which aren't built yet")
+                f.write_str("this offline node needs a cached render and none stands in for it")
             }
+            Self::NotCacheable(why) => write!(f, "can't be cached: {why}"),
             Self::UnknownParam(key) => write!(f, "this node has no input `{key}`"),
             Self::UnknownPort(endpoint) => {
                 write!(f, "node {} has no port `{}`", endpoint.node, endpoint.port)
@@ -266,11 +276,58 @@ pub fn compile_with_lanes(
     lanes: &Lanes<'_>,
     registry: &Registry,
 ) -> (Schedule, Vec<Diagnostic>) {
+    compile_with(graph, lanes, registry, &Options::default())
+}
+
+/// [`compile_with_lanes`] with some outputs played from `replacements`, as
+/// [`Controller::update_project_replacing`](crate::Controller::update_project_replacing)
+/// compiles. Nodes that only fed the replaced outputs are left out.
+pub fn compile_replacing(
+    graph: &Graph,
+    lanes: &Lanes<'_>,
+    registry: &Registry,
+    replacements: &Replacements,
+) -> (Schedule, Vec<Diagnostic>) {
+    let options = Options {
+        replacements: Some(replacements),
+        ..Options::default()
+    };
+    compile_with(graph, lanes, registry, &options)
+}
+
+/// What else to do while compiling.
+#[derive(Default)]
+pub(crate) struct Options<'a> {
+    /// Keep offline nodes in the schedule, which the cache analysis needs to
+    /// see them. Otherwise they are refused, since a plan can't run them:
+    /// they are replaced by cached audio first.
+    pub keep_offline: bool,
+    /// Outputs to play from elsewhere.
+    pub replacements: Option<&'a Replacements>,
+    /// Sinks to watch outputs with. The graph is cut down to what feeds them.
+    pub taps: &'a [TapSpec],
+}
+
+/// [`compile_with_lanes`], also replacing outputs and adding taps.
+pub(crate) fn compile_with(
+    graph: &Graph,
+    lanes: &Lanes<'_>,
+    registry: &Registry,
+    options: &Options<'_>,
+) -> (Schedule, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
     let graph = crate::flatten::flatten_keeping(graph, &keep);
     let graph = &*crate::automation::add_lanes(&graph, lanes, registry, &mut diagnostics);
-    let mut candidates = resolve_nodes(graph, registry, &mut diagnostics);
+    let no_replacements = Replacements::new();
+    let rewritten = crate::replace::rewrite(
+        graph,
+        options.replacements.unwrap_or(&no_replacements),
+        options.taps,
+    );
+    let graph = &*rewritten.graph;
+    let overrides = &rewritten.overrides;
+    let mut candidates = resolve_nodes(graph, registry, overrides, options, &mut diagnostics);
     let mut wires = resolve_wires(graph, &candidates, &mut diagnostics);
     split_loop_nodes(&mut candidates, &wires);
     assign_vertices(&candidates, &mut wires);
@@ -305,11 +362,13 @@ pub fn compile_with_lanes(
 fn resolve_nodes<'a>(
     graph: &'a Graph,
     registry: &Registry,
+    overrides: &Overrides,
+    options: &Options<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Candidate<'a>> {
     let mut candidates = Vec::new();
     for (id, node) in graph.nodes() {
-        let Some(node_type) = registry.get(&node.type_id) else {
+        let Some(node_type) = overrides.get(&id).or_else(|| registry.get(&node.type_id)) else {
             diagnostics.push(Diagnostic::node(
                 id,
                 Problem::UnknownNodeType(node.type_id.clone()),
@@ -323,7 +382,7 @@ fn resolve_nodes<'a>(
                 continue;
             }
         };
-        if layout.mode == Mode::Offline {
+        if layout.mode == Mode::Offline && !options.keep_offline {
             diagnostics.push(Diagnostic::node(id, Problem::OfflineUnsupported));
             continue;
         }

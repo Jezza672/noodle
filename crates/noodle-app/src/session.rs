@@ -12,8 +12,12 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{Clip, Command, EditError, FrameId, History, NodeId, Project, Tick};
-use noodle_engine::{Controller, Diagnostic, Registry, Telemetry, TempoTable, compile_with_lanes};
+use noodle_engine::{
+    Controller, Diagnostic, Registry, Settings, Telemetry, TempoTable, compile_replacing,
+    compile_with_lanes,
+};
 use noodle_io::{
     AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, RecordError, Recorder, Stream,
     Take,
@@ -90,6 +94,8 @@ pub struct Session {
     midi_connection: Option<noodle_io::MidiConnection>,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
+    /// The renders behind frozen nodes and offline nodes.
+    freezing: Freezing,
     /// Where the playhead is while no stream is open, so it can be set and
     /// read when stopped, and playing starts from it.
     parked: Tick,
@@ -120,6 +126,17 @@ pub struct Session {
     /// next one replaces it.
     message: Option<String>,
 }
+
+/// The settings frozen audio is rendered with when no stream is open.
+const FREEZE_SETTINGS: Settings = Settings {
+    sample_rate: 48_000.0,
+    max_frames: 512,
+    channels: 2,
+};
+/// Seconds a render runs past the last clip, for tails.
+const FREEZE_TAIL: f32 = 4.0;
+/// The shortest render in seconds, for projects with little or no timeline.
+const FREEZE_MINIMUM: f32 = 30.0;
 
 /// A take being recorded.
 struct Recording {
@@ -238,6 +255,7 @@ impl Session {
             midi,
             midi_connection: None,
             clip_problems: Vec::new(),
+            freezing: Freezing::new(),
             parked: Tick(0),
             path: None,
             dirty: false,
@@ -419,12 +437,19 @@ impl Session {
             self.recompile();
         } else {
             if let Some(audio) = &mut self.audio {
-                for (node, key, value) in effect.params {
-                    audio.controller.set_param(node, &key, value);
+                for (node, key, value) in &effect.params {
+                    audio.controller.set_param(*node, key, *value);
                 }
             }
             if effect.clips {
                 self.feed_clips();
+            }
+            // A parameter or clip upstream of a frozen node makes its render
+            // stale. Look again once the editing pauses.
+            if (effect.clips || !effect.params.is_empty())
+                && Freezing::in_use(&self.project, &self.registry)
+            {
+                self.freezing.touch();
             }
         }
         self.update_dirty();
@@ -675,6 +700,18 @@ impl Session {
     /// Housekeeping to do every frame: frees plans the audio thread is done
     /// with, and checks the device's health.
     pub fn maintain(&mut self) {
+        match self.freezing.poll() {
+            Polled::Nothing => {
+                if self.freezing.due() {
+                    self.recompile();
+                }
+            }
+            Polled::Finished => self.recompile(),
+            Polled::Failed(why) => {
+                self.message = Some(format!("Couldn't render: {why}"));
+                self.recompile();
+            }
+        }
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -908,6 +945,71 @@ impl Session {
         self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
     }
 
+    /// The folder the project's audio files are relative to.
+    fn base(&self) -> &Path {
+        self.path
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+    }
+
+    /// Looks at the cache of renders for the project and starts the ones it
+    /// lacks. Returns what plays in place of the cached nodes, if anything is
+    /// frozen or offline.
+    fn refresh_freezing(&mut self) -> Option<noodle_nodes::FreezePlan> {
+        // Frozen audio is keyed by the rate it was rendered at, so use the
+        // stream's, or a common one before a stream is open.
+        let settings = self
+            .audio
+            .as_ref()
+            .map_or(FREEZE_SETTINGS, |audio| audio.controller.settings());
+        let rate = settings.sample_rate;
+        let base = self.base().to_owned();
+        // Only measured when something needs it: it looks at every audio file.
+        let frames = if Freezing::in_use(&self.project, &self.registry) {
+            let table = TempoTable::new(self.project.tempo_map(), rate);
+            let end = self
+                .clips
+                .project_frames(&self.project, &table, rate as u32, &base);
+            (end as usize + (FREEZE_TAIL * rate) as usize).max((FREEZE_MINIMUM * rate) as usize)
+        } else {
+            0
+        };
+        let look = Look {
+            project: &self.project,
+            registry: &self.registry,
+            settings,
+            base: &base,
+            frames,
+        };
+        match self.freezing.refresh(&look) {
+            Ok(plan) => plan,
+            Err(message) => {
+                self.message = Some(message);
+                None
+            }
+        }
+    }
+
+    /// Whether the cache of renders wants another look soon, so the app
+    /// should keep running even if nothing else moves.
+    pub fn freeze_pending(&self) -> bool {
+        self.freezing.progress().is_some() || self.freezing.is_waiting()
+    }
+
+    /// What to show on frozen and offline nodes.
+    pub fn freeze_badges(&self) -> &std::collections::BTreeMap<NodeId, Badge> {
+        self.freezing.badges()
+    }
+
+    /// Keeps renders in `dir` instead of the user's cache folder.
+    #[cfg(test)]
+    pub fn use_cache_dir(&mut self, dir: PathBuf) {
+        self.freezing.use_cache_dir(dir);
+        self.recompile();
+    }
+
     fn recompile(&mut self) {
         // Devices are fixed for a stream's lifetime, so an Output node tied
         // to another one means playing afresh. `play` compiles.
@@ -924,15 +1026,35 @@ impl Session {
                 return;
             }
         }
-        self.diagnostics = match &mut self.audio {
-            Some(audio) => audio
+        let plan = self.refresh_freezing();
+        self.diagnostics = match (&mut self.audio, &plan) {
+            (Some(audio), Some(plan)) => audio.controller.update_project_replacing(
+                &self.project,
+                &self.registry,
+                &plan.replacements,
+            ),
+            (Some(audio), None) => audio
                 .controller
                 .update_project(&self.project, &self.registry),
-            None => {
+            (None, plan) => {
                 let lanes: Vec<_> = self.project.lanes().collect();
-                compile_with_lanes(self.project.graph(), &lanes, &self.registry).1
+                match plan {
+                    Some(plan) => {
+                        compile_replacing(
+                            self.project.graph(),
+                            &lanes,
+                            &self.registry,
+                            &plan.replacements,
+                        )
+                        .1
+                    }
+                    None => compile_with_lanes(self.project.graph(), &lanes, &self.registry).1,
+                }
             }
         };
+        if let Some(plan) = plan {
+            self.diagnostics.extend(plan.diagnostics);
+        }
         self.feed_clips();
     }
 
@@ -1219,6 +1341,156 @@ mod tests {
 
     fn error(kind: noodle_io::DeviceErrorKind) -> DeviceError {
         kind.into()
+    }
+
+    /// A sine into an output, with the sine in a group.
+    fn grouped_sine(session: &mut Session) -> (NodeId, NodeId) {
+        let osc = session.new_node_id();
+        let out = session.new_node_id();
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: osc,
+                node: Node::new("noodle.osc.sine"),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: out,
+                node: Node::new(OUTPUT_ID),
+            }),
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(osc, "out"),
+                to: Endpoint::new(out, "in"),
+            })),
+        ]);
+        let mut next = session.new_node_id().0;
+        let (group, command) = noodle_core::group::group_nodes(session.project(), &[osc], || {
+            next += 1;
+            NodeId(next)
+        })
+        .unwrap();
+        session.edit([Edit::Apply(command)]);
+        (group, osc)
+    }
+
+    /// Runs the housekeeping until `done` holds, or fails after a while.
+    fn until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !done(session) {
+            assert!(Instant::now() < deadline, "never happened: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+            session.maintain();
+        }
+    }
+
+    #[test]
+    fn freezing_a_group_renders_it_in_the_background_and_undoes() {
+        use crate::freezing::BadgeState;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().to_owned());
+        let (group, osc) = grouped_sine(&mut session);
+        assert!(session.freeze_badges().is_empty());
+
+        session.edit([Edit::Apply(Command::SetFrozen {
+            node: group,
+            frozen: true,
+        })]);
+        let badge = session
+            .freeze_badges()
+            .get(&group)
+            .expect("a badge")
+            .clone();
+        assert!(badge.frozen);
+        assert!(
+            matches!(badge.state, BadgeState::Rendering(_) | BadgeState::Ready),
+            "{badge:?}"
+        );
+        until(&mut session, "the freeze finishes", |s| {
+            s.freeze_badges().get(&group).map(|b| &b.state) == Some(&BadgeState::Ready)
+        });
+
+        // Changing a parameter inside the group makes the render stale. The
+        // session notices once the editing pauses, and renders again.
+        session.edit([Edit::Apply(Command::SetParam {
+            node: osc,
+            key: "frequency".into(),
+            value: Some(220.0),
+        })]);
+        until(&mut session, "the stale render is noticed", |s| {
+            s.freeze_badges().get(&group).map(|b| &b.state) != Some(&BadgeState::Ready)
+        });
+        until(&mut session, "it renders again", |s| {
+            s.freeze_badges().get(&group).map(|b| &b.state) == Some(&BadgeState::Ready)
+        });
+
+        // Unfreezing, and undoing that.
+        session.undo();
+        session.undo();
+        assert!(
+            !session.project().is_frozen(group) || session.freeze_badges().contains_key(&group)
+        );
+        session.edit([Edit::Apply(Command::SetFrozen {
+            node: group,
+            frozen: false,
+        })]);
+        assert!(session.freeze_badges().is_empty());
+        assert!(!session.freeze_pending());
+    }
+
+    #[test]
+    fn an_offline_node_renders_itself_and_a_node_that_cant_be_cached_says_why() {
+        use crate::freezing::BadgeState;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().to_owned());
+        let osc = session.new_node_id();
+        let reverse = session.new_node_id();
+        let out = session.new_node_id();
+        let wire = |from: NodeId, to: NodeId| {
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(from, "out"),
+                to: Endpoint::new(to, "in"),
+            }))
+        };
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: osc,
+                node: Node::new("noodle.osc.sine"),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: reverse,
+                node: Node::new("noodle.offline.reverse"),
+            }),
+            Edit::Apply(Command::AddNode {
+                id: out,
+                node: Node::new(OUTPUT_ID),
+            }),
+            wire(osc, reverse),
+            wire(reverse, out),
+        ]);
+        until(&mut session, "the offline node renders", |s| {
+            s.freeze_badges().get(&reverse).map(|b| &b.state) == Some(&BadgeState::Ready)
+        });
+        assert!(!session.freeze_badges()[&reverse].frozen);
+
+        // Live input in front of it can't be cached.
+        let input = session.new_node_id();
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: input,
+                node: Node::new(noodle_engine::INPUT_ID),
+            }),
+            wire(input, reverse),
+        ]);
+        let badge = session.freeze_badges().get(&reverse).unwrap();
+        assert!(matches!(&badge.state, BadgeState::Failed(why) if why.contains("same every time")));
+        assert!(
+            session
+                .diagnostics()
+                .iter()
+                .any(|d| matches!(d.problem, noodle_engine::Problem::NotCacheable(_)))
+        );
     }
 
     #[test]

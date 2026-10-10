@@ -22,6 +22,7 @@ use noodle_io::{MidiBus, MidiReceiver};
 pub const MIDI_IN_ID: &str = "noodle.event.midi_in";
 
 #[derive(Ports)]
+#[ports(nondeterministic)]
 struct MidiInPorts {
     /// Only this channel is played; 0 plays them all.
     #[param("channel", "Channel", ParamInfo::new(0.0, 16.0, 0.0).smoothing(0.0))]

@@ -4,6 +4,7 @@
 mod cache;
 mod decode;
 mod devices;
+mod hash;
 mod input;
 mod midi;
 mod output;
@@ -19,6 +20,7 @@ pub use devices::{
     AudioConfig, AudioError, COMMON_SAMPLE_RATES, Capabilities, Chosen, DeviceInfo, DeviceList,
     Direction, HostInfo, InputChoice, capabilities, choose_config, devices, hosts,
 };
+pub use hash::FileHasher;
 pub use input::{Capture, Feed, input_path, recordable_input_path};
 pub use midi::{
     MidiBus, MidiConnection, MidiError, MidiMessage, MidiReceiver, connect_midi, midi_inputs,

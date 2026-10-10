@@ -69,6 +69,11 @@ pub enum Command {
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
+    /// Freezes or unfreezes a node or group.
+    SetFrozen {
+        node: NodeId,
+        frozen: bool,
+    },
     AddClip {
         id: ClipId,
         clip: Clip,
@@ -135,6 +140,13 @@ impl Command {
             }
             Command::SetTempoMap(map) => {
                 return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
+            }
+            Command::SetFrozen { node, frozen } => {
+                if project.graph().node(node).is_none() {
+                    return Err(EditError::NoSuchNode(node));
+                }
+                let was = project.set_frozen(node, frozen);
+                return Ok(Command::SetFrozen { node, frozen: was });
             }
             Command::SetTrackOrder(order) => {
                 return Ok(Command::SetTrackOrder(project.replace_track_order(order)));
@@ -261,6 +273,7 @@ impl Command {
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
             | Command::SetTrackOrder(_)
+            | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
@@ -282,6 +295,7 @@ enum Target<'a> {
     Lane(LaneId),
     TempoMap,
     TrackOrder,
+    Frozen(NodeId),
 }
 
 fn target(command: &Command) -> Option<Target<'_>> {
@@ -293,6 +307,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
+        Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
     }
 }

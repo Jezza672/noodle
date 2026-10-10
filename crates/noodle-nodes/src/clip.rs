@@ -95,6 +95,47 @@ impl NodeType for TrackInput {
         Ok(vec![Shape::STEREO])
     }
 
+    fn cache_inputs(
+        &self,
+        node: noodle_core::NodeId,
+        _config: &Config,
+        env: &noodle_engine::CacheEnv<'_>,
+        key: &mut noodle_core::KeyBuilder,
+    ) -> Result<(), noodle_engine::Uncacheable> {
+        // The clips live in the project, not in the graph, so they are keyed
+        // here: where each one starts, what it plays, and the contents of its
+        // file, since a file replaced at the same path must give a new key.
+        for (id, clip) in env.project.clips_on(node) {
+            key.u64(id.0).i64(clip.start.0);
+            match &clip.content {
+                noodle_core::ClipContent::Audio(audio) => {
+                    let file = (env.file_key)(&audio.source).ok_or_else(|| {
+                        noodle_engine::Uncacheable::Because(format!("can't read {}", audio.source))
+                    })?;
+                    key.str("audio")
+                        .key(&file)
+                        .u64(audio.offset)
+                        .u64(audio.length)
+                        .f32(audio.gain)
+                        .u64(audio.fade_in)
+                        .u64(audio.fade_out);
+                }
+                noodle_core::ClipContent::Midi(midi) => {
+                    key.str("midi")
+                        .i64(midi.length.0)
+                        .u64(midi.notes.len() as u64);
+                    for note in &midi.notes {
+                        key.i64(note.start.0)
+                            .i64(note.length.0)
+                            .u64(u64::from(note.key))
+                            .f32(note.velocity);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let shared = self.feeds.shared(setup.node);
         let links = hub::spawn(shared.clone(), setup.sample_rate.round() as u32);

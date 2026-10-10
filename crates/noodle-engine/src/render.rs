@@ -1,11 +1,13 @@
 //! Rendering without an audio device, as fast as the machine allows.
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
-use noodle_core::{Graph, Project};
+use noodle_core::{Endpoint, Graph, Project};
 
 use crate::{
-    Cancelled, Controller, Diagnostic, Progress, Registry, Settings, SettingsError, engine,
+    Cancelled, Controller, Diagnostic, Instance, Layout, NodeError, NodeInfo, NodeType, Progress,
+    Registry, Replacements, Settings, SettingsError, Setup, SignalIn, TapSpec, engine,
 };
 
 pub struct Render {
@@ -139,6 +141,113 @@ pub fn render_project_streaming<E>(
         progress.report(done as f32 / frames as f32)?;
     }
     Ok(diagnostics)
+}
+
+/// Receives the signal at a tapped output, one block at a time, in order.
+/// A sink can't fail the render, so one that can fail (a file write) keeps
+/// the error and the caller looks at it afterwards.
+pub type TapSink = Box<dyn FnMut(SignalIn<'_>) + Send>;
+
+/// An output to watch: `endpoint` is a node and output port key in the
+/// flattened graph, as [`Analysis`](crate::Analysis) names them.
+pub struct Tap {
+    pub endpoint: Endpoint,
+    pub sink: TapSink,
+}
+
+/// Renders the project from the start for `frames` frames, delivering the
+/// signal at each tap to its sink instead of mixing it to an output. Only the
+/// nodes that feed a tap run, so nothing plays and nothing with side effects
+/// is touched. Outputs in `replacements` play from their sources, which is
+/// how a render builds on caches that already exist.
+///
+/// Progress and cancellation work as in [`render_project_streaming`].
+pub fn render_taps<E>(
+    project: &Project,
+    registry: &Registry,
+    settings: Settings,
+    frames: usize,
+    progress: &Progress,
+    replacements: &Replacements,
+    taps: Vec<Tap>,
+) -> Result<Vec<Diagnostic>, StreamError<E>> {
+    let (mut controller, mut processor) =
+        engine(settings).map_err(|error| StreamError::Render(error.into()))?;
+    let too_long = || StreamError::Render(RenderError::TooLong { frames });
+    let chunk_frames = settings.max_frames.max(1).min(frames.max(1));
+    let len = chunk_frames
+        .checked_mul(settings.channels)
+        .ok_or_else(too_long)?;
+    let mut chunk = vec![0.0; len];
+
+    let (specs, sinks): (Vec<_>, Vec<_>) = taps
+        .into_iter()
+        .map(|tap| {
+            let sink = Arc::new(Mutex::new(Some(tap.sink)));
+            let spec = TapSpec {
+                endpoint: tap.endpoint,
+                node_type: Arc::new(TapType {
+                    sink: Arc::clone(&sink),
+                }),
+            };
+            (spec, sink)
+        })
+        .unzip();
+    let diagnostics = controller.update_project_tapping(project, registry, replacements, &specs);
+    drop(sinks);
+    let mut done = 0;
+    progress.report(0.0)?;
+    while done < frames {
+        let n = chunk_frames.min(frames - done);
+        processor.process(&mut chunk[..n * settings.channels]);
+        done += n;
+        progress.report(done as f32 / frames as f32)?;
+    }
+    Ok(diagnostics)
+}
+
+const TAP_ID: &str = "noodle.internal.tap";
+
+static TAP_INFO: NodeInfo = NodeInfo {
+    id: TAP_ID,
+    version: 1,
+    name: "Tap",
+    category: crate::INTERNAL_CATEGORY,
+};
+
+/// The sink node a tap becomes. It hands its sink to the one instance made.
+struct TapType {
+    sink: Arc<Mutex<Option<TapSink>>>,
+}
+
+impl NodeType for TapType {
+    fn info(&self) -> &NodeInfo {
+        &TAP_INFO
+    }
+
+    fn layout(&self, _config: &noodle_core::Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().input("in", "In"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        let sink = self
+            .sink
+            .lock()
+            .expect("tap lock")
+            .take()
+            .ok_or_else(|| NodeError::config("a tap can only be instantiated once"))?;
+        Ok(Instance::realtime(TapNode { sink }))
+    }
+}
+
+struct TapNode {
+    sink: TapSink,
+}
+
+impl crate::Node for TapNode {
+    fn process(&mut self, _ctx: &crate::Context, io: crate::Io<'_, '_>) {
+        (self.sink)(io.inputs[0]);
+    }
 }
 
 fn render_with(

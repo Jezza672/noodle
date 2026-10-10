@@ -883,3 +883,89 @@ fn a_feedback_loop_through_a_delay_never_allocates_even_while_the_loop_is_made_a
         );
     }
 }
+
+#[test]
+fn a_cached_player_never_allocates_through_seeks_and_loops() {
+    use noodle_core::{Tick, group::group_nodes};
+    use noodle_nodes::{Freezer, RenderRequest, freeze};
+
+    const FRAMES: usize = 60_000;
+    let mut s = Session::new();
+    let osc = s.add(Node::new("noodle.osc.sine"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(osc, "out", output, "in");
+    let project = s.project.clone();
+    let mut next = project.next_node_id().0;
+    let (group, command) = group_nodes(&project, &[osc], || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    s.edit(command);
+    s.edit(Command::SetFrozen {
+        node: group,
+        frozen: true,
+    });
+
+    let dir = std::env::temp_dir().join(format!("noodle-cached-rt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let freezer = Freezer::new(noodle_io::CacheStore::open(&dir).unwrap());
+    let request = RenderRequest {
+        project: s.project.clone(),
+        base: dir.clone(),
+        settings: SETTINGS,
+        frames: FRAMES,
+        extend_registry: None,
+    };
+    freeze(&freezer, &request, &noodle_engine::Progress::new()).unwrap();
+    let analysis = freezer.analyze(&s.project, &s.registry, SETTINGS, FRAMES, &dir);
+    let plan = freezer.plan(&analysis, SETTINGS, FRAMES, false);
+    assert!(!plan.replacements.is_empty());
+    let diagnostics =
+        s.controller
+            .update_project_replacing(&s.project, &s.registry, &plan.replacements);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    // Let the player's worker read ahead.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..12 {
+        match round % 4 {
+            0 => transport.seek(Tick(480 * round)),
+            1 => transport.set_loop(Some((Tick(0), Tick(960)))),
+            2 => transport.set_loop(None),
+            _ => {
+                transport.stop();
+                transport.play();
+            }
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // A loop that really wraps, with the worker keeping up.
+    transport.set_loop(Some((Tick(0), Tick(960))));
+    transport.seek(Tick(0));
+    s.controller.maintain();
+    let violations = realtime(|| {
+        for i in 0..30 {
+            s.processor.process(&mut out);
+            heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            if i % 4 == 3 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    });
+    assert_eq!(violations, 0, "allocated while the loop wrapped");
+    assert!(transport.position() < 30_000, "the loop never wrapped");
+    assert!(heard, "the cached player never sounded");
+    assert!(out.iter().all(|x| x.is_finite()));
+}

@@ -423,6 +423,36 @@ impl ClipFeeds {
         problems
     }
 
+    /// Where the last clip in `project` ends, in frames at `rate`; 0 for a
+    /// project with no clips. A clip whose file can't be read counts as
+    /// ending where it starts.
+    pub fn project_frames(
+        &self,
+        project: &Project,
+        table: &TempoTable,
+        rate: u32,
+        base: &Path,
+    ) -> u64 {
+        project
+            .clips()
+            .map(|(_, clip)| {
+                let start = table.sample_at_tick(clip.start);
+                match &clip.content {
+                    ClipContent::Midi(midi) => {
+                        table.sample_at_tick(noodle_core::Tick(clip.start.0 + midi.length.0))
+                    }
+                    ClipContent::Audio(audio) => {
+                        let path = base.join(&audio.source);
+                        self.file_info(&path).map_or(start, |info| {
+                            start + clip_frames(&info, audio.offset, audio.length, rate)
+                        })
+                    }
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     fn file_info(&self, path: &Path) -> Result<FileInfo, String> {
         let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let mut files = self.inner.files.lock().expect("feeds lock");

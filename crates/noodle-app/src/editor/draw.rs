@@ -7,6 +7,7 @@ use noodle_core::Endpoint;
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
 use super::view::Transform;
 use super::{EditorState, Frame_, Gesture, Problems, Splice, StrokeAction, body, wire};
+use crate::freezing::{Badge, BadgeState};
 use crate::theme::{self, editor as colors};
 
 /// Below this zoom, text is too small to read, so it isn't drawn.
@@ -150,7 +151,15 @@ pub fn nodes(
         if node.reroute {
             reroute(painter, f, node, outline);
         } else {
-            boxed(painter, f, node, outline, problem, &state.bodies);
+            boxed(
+                painter,
+                f,
+                node,
+                outline,
+                problem,
+                &state.bodies,
+                state.freeze.get(&node.id),
+            );
         }
         then(node);
     }
@@ -172,6 +181,7 @@ fn boxed(
     outline: Stroke,
     problem: bool,
     bodies: &body::Bodies,
+    badge: Option<&Badge>,
 ) {
     let z = f.t.zoom;
     let rect = f.t.rect_to_screen(node.rect);
@@ -220,6 +230,34 @@ fn boxed(
                 Align2::RIGHT_CENTER,
             );
         }
+        if let Some(badge) = badge {
+            let (label, color) = badge_label(badge);
+            if !label.is_empty() {
+                painter.text(
+                    header.right_center() - Vec2::new(if problem { 24.0 } else { 10.0 } * z, 0.0),
+                    Align2::RIGHT_CENTER,
+                    label,
+                    FontId::proportional(10.0 * z),
+                    color,
+                );
+            }
+        }
+    }
+    // A render under way: a bar along the foot of the header.
+    if let Some(Badge {
+        state: BadgeState::Rendering(fraction),
+        ..
+    }) = badge
+    {
+        let thickness = (2.5 * z).max(1.5);
+        let track = Rect::from_min_max(
+            Pos2::new(header.left(), header.bottom() - thickness),
+            header.right_bottom(),
+        );
+        painter.rect_filled(track, 0.0, colors::NODE_OUTLINE);
+        let mut filled = track;
+        filled.set_right(track.left() + track.width() * fraction.clamp(0.0, 1.0));
+        painter.rect_filled(filled, 0.0, colors::ACTIVE);
     }
 
     let graph = f.project.graph();
@@ -291,6 +329,24 @@ fn boxed(
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
         );
+    }
+}
+
+/// What a frozen or offline node says about its render, and in what colour.
+fn badge_label(badge: &Badge) -> (String, Color32) {
+    match (&badge.state, badge.frozen) {
+        (BadgeState::Ready, true) => ("Frozen".into(), colors::ACTIVE),
+        (BadgeState::Ready, false) => ("Cached".into(), colors::TEXT_WEAK),
+        (BadgeState::Rendering(fraction), frozen) => (
+            format!(
+                "{} {:.0}%",
+                if frozen { "Freezing" } else { "Rendering" },
+                fraction * 100.0
+            ),
+            colors::TEXT,
+        ),
+        (BadgeState::Waiting, _) => ("Waiting".into(), colors::TEXT_WEAK),
+        (BadgeState::Failed(_), _) => ("Not rendered".into(), colors::PROBLEM),
     }
 }
 
