@@ -76,7 +76,9 @@ fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
     }
     // Edits arrive while it plays: one that dips, one that doesn't.
     rig.edit_clip(a, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content;
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
         audio.gain = 0.4;
     });
     rig.wav("c.wav", 1, 10_000, |_, _| 0.1);
@@ -116,6 +118,53 @@ fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
         if at == end {
             at = start;
         }
+        pause();
+    }
+    assert_eq!(violations, 0, "the audio thread allocated or freed memory");
+}
+
+#[test]
+fn playing_midi_clips_and_taking_in_edits_never_touches_the_allocator() {
+    let mut rig = Rig::new("realtime-midi");
+    let notes: Vec<(i64, i64, u8)> = (0..32).map(|i| (i * 240, 700, 40 + i as u8)).collect();
+    let clip = rig.add_midi_clip(0, 8, &notes);
+    rig.settle();
+    let mut violations = 0;
+    let mut at = 0u64;
+    let pause = || std::thread::sleep(Duration::from_millis(2));
+    for _ in 0..40 {
+        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+        at += BLOCK as u64;
+        pause();
+    }
+    // Keys from the piano roll's keyboard go down and up.
+    rig.feeds.audition(rig.id, 70, true);
+    violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+    at += BLOCK as u64;
+    rig.feeds.audition(rig.id, 70, false);
+    violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+    at += BLOCK as u64;
+    // An edit while notes sound, then a stop and a jump.
+    rig.edit_clip(clip, |clip| {
+        let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.notes.truncate(8);
+    });
+    for _ in 0..40 {
+        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+        at += BLOCK as u64;
+        pause();
+    }
+    for _ in 0..4 {
+        violations += realtime(|| rig.run_quiet(at, BLOCK, false));
+        pause();
+    }
+    violations += realtime(|| rig.node.reset());
+    at = BEAT / 3;
+    for _ in 0..40 {
+        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+        at += BLOCK as u64;
         pause();
     }
     assert_eq!(violations, 0, "the audio thread allocated or freed memory");

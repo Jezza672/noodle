@@ -91,7 +91,9 @@ fn add_clip(
 ) {
     let id = project.new_clip_id();
     let mut clip = Clip::audio(track, Tick(beat * BEAT_TICKS), file, length as u64);
-    let ClipContent::Audio(audio) = &mut clip.content;
+    let ClipContent::Audio(audio) = &mut clip.content else {
+        unreachable!("not an audio clip")
+    };
     audio.offset = offset;
     apply(project, history, Command::AddClip { id, clip });
 }

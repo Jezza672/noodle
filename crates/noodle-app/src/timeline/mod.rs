@@ -9,9 +9,10 @@
 pub(crate) mod add_track;
 mod automation;
 mod clips;
-mod grid;
+pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
+mod midi_preview;
 mod sources;
 mod waveform;
 
@@ -39,6 +40,8 @@ const EDGE: f32 = 6.0;
 const MIN_TRIMMABLE: f32 = 24.0;
 /// The sample rate to lay a clip out at when its file can't be read.
 const FALLBACK_RATE: u32 = 48_000;
+/// A new MIDI clip is a bar of 4/4 long.
+const NEW_MIDI_CLIP: i64 = 3840;
 const MIN_PPQ: f32 = 8.0;
 const MAX_PPQ: f32 = 600.0;
 
@@ -247,6 +250,8 @@ pub struct Output {
     pub pick: Option<Target>,
     /// Tracks whose record-arm button was pressed, with the state asked for.
     pub arm: Vec<(NodeId, bool)>,
+    /// A MIDI clip they double-clicked, to open in the piano roll.
+    pub open_midi: Option<ClipId>,
 }
 
 /// Where imported audio goes when it isn't dropped on a lane.
@@ -282,14 +287,14 @@ pub fn show(
         // place clips in.
         let extent = project
             .clips()
-            .filter_map(|(_, clip)| {
-                let audio = clip.as_audio()?;
-                let source = state
-                    .sources
-                    .get(ui.ctx(), directory.as_deref(), &audio.source)
-                    .map(|loaded| loaded.source);
-                let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
-                Some(clips::end_tick(map, clip.start, audio.length, rate).quarters())
+            .map(|(_, clip)| {
+                let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                    state
+                        .sources
+                        .get(ui.ctx(), directory.as_deref(), &audio.source)
+                        .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+                });
+                clips::clip_end(map, clip, rate).quarters()
             })
             .fold(0.0, f64::max) as f32
             + 16.0;
@@ -354,6 +359,7 @@ pub fn show(
         );
     }
 
+    let mut open_midi = None;
     let mut hit_clip = false;
     let clips_before = state.selected.clone();
     for (index, &track) in tracks.iter().enumerate() {
@@ -363,15 +369,15 @@ pub fn show(
         }
         let colour = colors::track_colour(index);
         for (id, clip) in project.clips_on(track) {
-            let Some(audio) = clip.as_audio() else {
-                continue;
-            };
-            let loaded = state
-                .sources
-                .get(ui.ctx(), directory.as_deref(), &audio.source);
+            let audio = clip.as_audio();
+            let loaded = audio.and_then(|audio| {
+                state
+                    .sources
+                    .get(ui.ctx(), directory.as_deref(), &audio.source)
+            });
             let source = loaded.as_ref().map(|loaded| loaded.source);
             let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
-            let end = clips::end_tick(map, clip.start, audio.length, rate);
+            let end = clips::clip_end(map, clip, rate);
             let full = Rect::from_min_max(
                 Pos2::new(axis.x(clip.start), top + 3.0),
                 Pos2::new(
@@ -445,6 +451,9 @@ pub fn show(
                     originals,
                     press_x: press.x,
                 });
+            } else if response.double_clicked() && clip.as_midi().is_some() {
+                state.selected = BTreeSet::from([id]);
+                open_midi = Some(id);
             } else if response.clicked() {
                 if ui.input(|i| i.modifiers.shift) {
                     if !state.selected.remove(&id) {
@@ -483,34 +492,44 @@ pub fn show(
 
             let painter = ui.painter_at(visible);
             painter.rect_filled(full, f32::from(crate::theme::RADIUS), colour);
-            if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
-                let drawn = waveform::draw(
-                    &painter,
-                    &mut state.waveforms,
-                    full,
-                    visible,
-                    &waveform::Clip {
-                        id,
-                        peaks,
-                        audio,
-                        colour,
-                    },
-                );
-                #[cfg(test)]
-                {
-                    state.waveforms_drawn += usize::from(drawn);
+            let missing = audio.is_some() && source.is_none();
+            let label = match (audio, clip.as_midi()) {
+                (Some(audio), _) => {
+                    if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
+                        let drawn = waveform::draw(
+                            &painter,
+                            &mut state.waveforms,
+                            full,
+                            visible,
+                            &waveform::Clip {
+                                id,
+                                peaks,
+                                audio,
+                                colour,
+                            },
+                        );
+                        #[cfg(test)]
+                        {
+                            state.waveforms_drawn += usize::from(drawn);
+                        }
+                        #[cfg(not(test))]
+                        let _ = drawn;
+                    }
+                    let name = std::path::Path::new(&audio.source).file_name().map_or_else(
+                        || audio.source.clone(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
+                    if missing {
+                        format!("{name} (missing)")
+                    } else {
+                        name
+                    }
                 }
-                #[cfg(not(test))]
-                let _ = drawn;
-            }
-            let name = std::path::Path::new(&audio.source).file_name().map_or_else(
-                || audio.source.clone(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            let label = if source.is_none() {
-                format!("{name} (missing)")
-            } else {
-                name
+                (None, Some(midi)) => {
+                    midi_preview::draw(&painter, axis, full, clip.start, midi);
+                    format!("MIDI ({} notes)", midi.notes.len())
+                }
+                (None, None) => String::new(),
             };
             #[cfg(test)]
             state.drawn_text.push(label.clone());
@@ -521,7 +540,7 @@ pub fn show(
                 FontId::proportional(11.0),
                 Color32::BLACK.gamma_multiply(0.75),
             );
-            if source.is_none() {
+            if missing {
                 painter.rect_stroke(
                     full,
                     f32::from(crate::theme::RADIUS),
@@ -536,7 +555,7 @@ pub fn show(
                     StrokeKind::Inside,
                 );
             }
-            if full.width() >= MIN_TRIMMABLE * 2.0 && source.is_some() {
+            if full.width() >= MIN_TRIMMABLE * 2.0 && audio.is_some() && source.is_some() {
                 let handles = Handles {
                     ui,
                     state,
@@ -626,13 +645,14 @@ pub fn show(
             jump = match key {
                 Key::ArrowLeft => selected.map(|clip| clip.start).min(),
                 _ => selected
-                    .filter_map(|clip| {
-                        let audio = clip.as_audio()?;
-                        let rate = state
-                            .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)
-                            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate);
-                        Some(clips::end_tick(map, clip.start, audio.length, rate))
+                    .map(|clip| {
+                        let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                            state
+                                .sources
+                                .get(ui.ctx(), directory.as_deref(), &audio.source)
+                                .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+                        });
+                        clips::clip_end(map, clip, rate)
                     })
                     .max(),
             };
@@ -732,6 +752,32 @@ pub fn show(
         state.menu_at = background.interact_pointer_pos();
     }
     background.context_menu(|ui| {
+        if ui.button("New MIDI clip").clicked() {
+            ui.close();
+            let at = state
+                .menu_at
+                .filter(|p| content.contains(*p) && !tracks.is_empty());
+            let (track, tick) = match at {
+                Some(at) => (
+                    tracks[rows.track_at(at.y - content.top() + state.scroll_y)],
+                    grid::snap(map, axis.tick(at.x).max(Tick::ZERO)),
+                ),
+                None => match state.import_target(project, playhead.unwrap_or(Tick::ZERO)) {
+                    Some(target) => (target.track, target.at),
+                    None => {
+                        notice = Some("Add a track before adding a MIDI clip".to_string());
+                        return;
+                    }
+                },
+            };
+            let id = project.next_clip_id();
+            state.selected = BTreeSet::from([id]);
+            edits.push(Edit::Apply(Command::AddClip {
+                id,
+                clip: Clip::midi(track, tick, Tick(NEW_MIDI_CLIP)),
+            }));
+            open_midi = Some(id);
+        }
         if ui.button("Import audio…").clicked() {
             ui.close();
             let on_lane = state.menu_at.filter(|p| content.contains(*p));
@@ -758,6 +804,7 @@ pub fn show(
         notice,
         pick,
         arm,
+        open_midi,
     }
 }
 
@@ -971,8 +1018,7 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
         }
         Mode::FadeIn | Mode::FadeOut => return None,
         Mode::TrimEnd => {
-            let audio = grabbed.as_audio()?;
-            let end = clips::end_tick(map, grabbed.start, audio.length, rate);
+            let end = clips::clip_end(map, grabbed, rate);
             let edge = snap(Tick(end.0 + delta));
             let clip = clips::trim_end(map, grabbed, edge, rate, source.and_then(|s| s.frames))?;
             vec![Command::SetClip {
