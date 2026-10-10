@@ -26,15 +26,18 @@ use crate::app::App;
 use crate::session::{Nodes, Session};
 
 fn main() -> ExitCode {
+    // Plugins are scanned in a child process, which is this program started
+    // with a hidden argument.
+    noodle_plugins::run_scan_child_if_requested();
     let mut session = match std::env::args_os().nth(1) {
-        Some(path) => match Session::open(Nodes::all(), path.as_ref()) {
+        Some(path) => match Session::open(Nodes::all_with_plugins(), path.as_ref()) {
             Ok(session) => session,
             Err(error) => {
                 eprintln!("noodle: {error}");
                 return ExitCode::FAILURE;
             }
         },
-        None => Session::new(Nodes::all()),
+        None => Session::new(Nodes::all_with_plugins()),
     };
     if let Some(path) = prefs::default_path() {
         session.set_audio_config(prefs::init(path).audio);

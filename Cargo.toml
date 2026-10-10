@@ -13,6 +13,7 @@ noodle-engine = { path = "crates/noodle-engine" }
 noodle-nodes = { path = "crates/noodle-nodes" }
 noodle-io = { path = "crates/noodle-io" }
 noodle-macros = { path = "crates/noodle-macros" }
+noodle-plugins = { path = "crates/noodle-plugins" }
 
 # Unoptimised DSP is too slow to listen to, even while debugging.
 [profile.dev]

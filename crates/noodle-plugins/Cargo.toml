@@ -1,0 +1,33 @@
+[package]
+name = "noodle-plugins"
+description = "Plugin hosting: CLAP plugins as graph nodes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "noodle-plugin-scan"
+path = "src/bin/scan.rs"
+
+# A small CLAP plugin the tests load: a gain effect with a note-driven
+# sine, and some state that isn't a parameter.
+[[example]]
+name = "test_plugin"
+path = "examples/test_plugin.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+noodle-core.workspace = true
+noodle-engine.workspace = true
+clack-host = "0.2.0"
+clack-extensions = { version = "0.2.0", features = ["clack-host", "params", "audio-ports", "note-ports", "state"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+directories = "6.0.0"
+
+[dev-dependencies]
+clack-plugin = "0.2.0"
+clack-extensions = { version = "0.2.0", features = ["clack-plugin", "params", "audio-ports", "note-ports", "state"] }
+tempfile = "3.27.0"
+noodle-nodes.workspace = true

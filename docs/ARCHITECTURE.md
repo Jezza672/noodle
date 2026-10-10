@@ -47,10 +47,10 @@ crates/
   noodle-io       Device I/O (cpal, midir), file decoding, disk streaming.
                  Calls into the engine from device callbacks.
   noodle-app      The egui application.
-  noodle-plugins  (M5) CLAP and VST3 hosting, exposed to the graph as nodes.
+  noodle-plugins  (M5) CLAP hosting (VST3 later), exposed to the graph as nodes.
 ```
 
-Dependencies only point downwards: `app → io/nodes → engine → core`. The engine
+Dependencies only point downwards: `app → io/nodes/plugins → engine → core`. The engine
 never opens a device and never touches UI code. It exposes a command/event API,
 so it can run headless in tests, in the offline renderer, or behind another UI
 later.
@@ -724,7 +724,7 @@ out, for plugins that use randomness.
 A plugin is a node. Its parameters become input ports, and its audio and note
 ports become graph ports. Plugin state is saved in the Project.
 
-- **CLAP** is hosted through `clack`.
+- **CLAP** is hosted through `clack` (`noodle-plugins`).
 - **VST3** is hosted through the Rust `vst3` bindings, or through a thin C++
   shim over Steinberg's SDK (MIT-licensed since 3.8) exposed through a C ABI.
 - **AU** may come later. Most macOS plugins also ship as VST3 or CLAP.
@@ -736,6 +736,103 @@ ports become graph ports. Plugin state is saved in the Project.
   the session.
 - **Latency:** plugins report their latency, and plugin delay compensation is
   added to the plan in M6.
+
+### CLAP hosting
+
+**Scanning.** `ScanCommand` runs a scanner in a child process for each
+`.clap` file (`noodle-plugin-scan <file>`, or `noodle` / `noodle-app` started
+with the hidden `--noodle-scan-plugin` argument, which their `main` hands to
+`run_scan_child_if_requested`). The child loads the file, instantiates each
+plugin to read its audio ports, note ports and parameters, and prints one JSON
+line (`Descriptor`s). A crash, a hang (30 s timeout, then it is killed) or a
+file that isn't a plugin comes back as an `error` on that file's `PluginFile`,
+not as a failure of the scan. `ScanCache` keeps the results in the user's
+cache folder, keyed by each file's size and modification time, so a file is
+scanned again only when it changes (a failed one too). The standard folders
+are `~/.clap` and `/usr/lib/clap` on Linux, `/Library/Audio/Plug-Ins/CLAP`
+(system and user) on macOS and `%COMMONPROGRAMFILES%\CLAP` and
+`%LOCALAPPDATA%\Programs\Common\CLAP` on Windows, plus `CLAP_PATH`.
+
+**Node types.** A `Catalog` builds one `NodeType` per scanned plugin, with ID
+`clap.<plugin id>` and category "Plugins". Ports come from the scan alone, so
+a project's graph compiles without loading any plugin code, and the layout
+never depends on config:
+
+| Port | Key |
+|---|---|
+| audio inputs, one per CLAP audio input port | `in`, `in2`, ... |
+| a parameter input per non-hidden, writable CLAP parameter | `p<param id>` |
+| audio outputs | `out`, `out2`, ... |
+| note input ports (first one read) | `notes`, `notes2`, ... |
+| note output ports (first one written) | `notes_out`, ... |
+
+A parameter is `Offset`-modulated, with the plugin's range and default; a
+stepped CLAP parameter is a stepped one (the node rounds the value before
+sending). One instance has one voice: a polyphonic wire into a plugin is a
+compile error, so put a Voice Mix before it. A mono wire into a stereo port
+feeds both channels; any other channel mismatch is an error.
+
+**Instances.** CLAP says a plugin instance belongs to its main thread, but a
+node must be `Send`. So `instantiate` starts a thread per instance
+(`host.rs`) which loads the file, restores saved state, creates and activates
+the plugin, and hands the audio processor to the node. The node starts
+processing, and on drop gives the processor back so the plugin is deactivated
+and destroyed on its own thread. Loading and activation happen in
+`instantiate`, off the audio thread.
+
+**Processing** (`node.rs`). Each block is copied into preallocated plugin
+buffers (in chunks of at most `max_frames`), parameters whose value changed
+are sent as timed `ParamValue` events (at frame 0, and every `PARAM_STEP` = 32
+frames while a wire drives them, so audio-rate modulation is stepped), notes
+are converted to CLAP note events (a note-off is given the key and channel its
+note-on had, since Noodle's note-off carries only the id), and the plugin's
+output is copied out. A plugin's note output becomes the node's event output.
+The transport (tempo, position, signature, playing) is passed on. Nothing on
+this path allocates (`tests/realtime.rs` checks it), so events beyond 4096 per
+block are dropped. A plugin that fails in `process` gives silence for that
+block. Every parameter is sent on the first block: the port values, not the
+plugin's own, are authoritative for exposed parameters.
+
+**State.** The node's `state` config setting holds the plugin's saved state as
+base64 text, so it is written to the project file with the rest of the graph.
+It is loaded into the plugin before activation. `capture_state` loads a
+plugin (optionally with earlier state) and returns what it saves; the
+editor window (not built yet) is what will change state worth capturing.
+Bad base64, or state the plugin refuses, is a node error rather than a crash.
+
+**Caching.** Plugins are deterministic by default, so they can be frozen and
+exported from the cache. The key covers the plugin's ID, its file's size and
+modification time (not a content hash: hashing a plugin on every edit would be
+slow) and the node's config (so its state). A plugin that uses randomness sets
+the `nondeterministic` setting, and is never cached.
+
+**Rendering.** Freeze, export and background renders build their own
+registries, so `Catalog::extender()` is passed as
+`RenderRequest::extend_registry`, and a render sees the same plugins as live
+playback. The app scans in the background at startup (the cache is read first,
+so plugins found last time are available at once) and compiles again when the
+scan reports.
+
+**Config exceptions.** The `state` and `nondeterministic` settings change
+neither ports nor shapes, which the config-versus-parameter rule says makes
+them parameters. They stay config because neither is a number a wire could
+sensibly drive: state is an opaque blob and `nondeterministic` is a flag.
+
+**Threads.** `instantiate` loads a plugin on its own thread (waiting up to 30
+s, then failing the node), and `start_processing` runs on the first block, on
+the audio thread. Each instance having its own "main thread" is a known
+shortcut: plugins that tie global state to one thread (JUCE-based ones) and
+editor windows (macOS wants the GUI on the process's main thread) need one
+shared plugin thread, to be settled with the editor work. The same work must
+make capturing state also write the plugin's parameter values back to the
+node's port values, because the ports win on the first block.
+
+**Limits.** The transport's bar fields assume quarter-note beats and a
+meter that has not changed. A plugin that crashes while playing takes the process with it
+(until out-of-process hosting in M6); no editor windows yet; plugin latency is
+ignored; only the first note port is wired; CLAP extensions beyond audio
+ports, note ports, parameters and state (e.g. tail, voice info, remote
+controls) are not used.
 
 ## UI (`noodle-app`)
 
