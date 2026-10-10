@@ -8,6 +8,7 @@
 //! edit, and the caller turns it into a command.
 
 pub mod config;
+pub mod curve;
 pub mod format;
 pub mod param;
 pub mod taper;
@@ -16,4 +17,5 @@ pub mod taper;
 mod tests;
 
 pub use config::ConfigField;
+pub use curve::CurveEditor;
 pub use param::{Live, ParamField};

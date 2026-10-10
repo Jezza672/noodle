@@ -691,6 +691,47 @@ fn events_envelopes_and_modulated_parameters_never_allocate() {
 }
 
 #[test]
+fn a_remap_never_allocates_while_its_curve_is_edited() {
+    // lfo -> remap (pitch) -> sine -> output, and the curve is rewritten
+    // between blocks: the table is built off the audio thread each time.
+    let mut s = Session::new();
+    let lfo = s.add(Node::new("noodle.mod.lfo").with_param("rate", 5.0));
+    let remap = s.add(
+        Node::new("noodle.util.remap")
+            .with_param("in_min", -1.0)
+            .with_param("out_min", 200.0)
+            .with_param("out_max", 800.0),
+    );
+    let sine = s.add(Node::new("noodle.osc.sine"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(lfo, "out", remap, "in");
+    s.wire(remap, "out", sine, "frequency");
+    s.wire(sine, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..8 {
+        let curve = format!("0 0 0 0 {} 0;1 1 -0.3 0 0 0", 0.1 * round as f32);
+        s.edit(Command::SetConfig {
+            node: remap,
+            key: "curve".to_owned(),
+            value: Some(Value::Text(curve)),
+        });
+        s.update();
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(heard && out.iter().all(|x| x.is_finite()));
+}
+
+#[test]
 fn outputs_on_two_devices_never_allocate_and_each_has_a_scope() {
     let settings = Settings {
         channels: 4,

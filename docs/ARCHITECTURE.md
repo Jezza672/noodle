@@ -105,6 +105,14 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Why config can't be modulated:** ports and buffers can't change in the
     middle of a block, so changing config recompiles the graph and rebuilds
     the node.
+  - **Data that isn't a scalar is config too.** The Remap node's mapping
+    curve is a list of Bézier points, which a parameter (one `f32`) can't
+    hold, so it is a text config value (`curve`; the empty string is the
+    straight line). Rebuilding the node on an edit is what makes it
+    real-time safe: `instantiate` builds a 1025-entry lookup table off the
+    audio thread, and the audio thread only reads it (`Curve` in
+    `noodle-nodes/src/curve.rs`). The two ranges are ordinary parameters, so
+    they can be modulated.
   - **Blender has the same split:** most values are sockets, but a few are
     properties drawn on the node body, like a Math node's operation, which
     changes which inputs it shows.
@@ -1080,7 +1088,9 @@ It has these views:
   - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
-  and compile problems. A parameter with a wire into it is greyed out and shows the live value.
+  and compile problems. The Remap node's curve gets a curve editor
+  (`widgets/curve.rs`): drag points and handles, click the line to add a
+  point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
   (Its live value and range come from the editor, as on the node.)
 
 The UI only changes the Project by issuing commands, and only reads engine state

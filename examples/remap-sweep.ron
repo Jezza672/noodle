@@ -1,0 +1,22 @@
+// A Remap node turning a slow bipolar LFO (-1 to 1) into a pitch sweep from
+// 220 to 880 Hz. Its curve is an S: slow at both ends, quick through the
+// middle, so the sweep lingers on the low and high notes instead of gliding
+// through them evenly.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.mod.lfo", params: {"rate": 4.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.util.remap", params: {"in_min": -1.0, "in_max": 1.0, "out_min": 220.0, "out_max": 880.0}, config: {"curve": "0 0 0 0 0.45 0;1 1 -0.45 0 0 0"}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.osc.sine", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 600.0, y: 0.0)),
+            5: (type: "noodle.io.output", position: (x: 800.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "in")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "frequency")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+        ],
+    ),
+)

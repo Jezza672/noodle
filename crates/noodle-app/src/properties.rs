@@ -6,12 +6,12 @@
 //! signal replaces its value until the wire is removed.
 
 use egui::{RichText, Ui};
-use noodle_core::{Endpoint, Node, NodeId};
+use noodle_core::{Command, Endpoint, Node, NodeId};
 use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
 use crate::session::{Edit, Session};
 use crate::widgets::format::format_value;
-use crate::widgets::{ConfigField, Live, ParamField};
+use crate::widgets::{ConfigField, CurveEditor, Live, ParamField};
 
 /// What the wired parameter `key` of a node has been doing lately, if known:
 /// the editor reads it once a frame.
@@ -82,6 +82,30 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
                 format!("Plays on {device}")
             })
             .on_hover_text("Choose the device in View → Outputs.");
+            continue;
+        }
+        if node_type.info().id == noodle_nodes::REMAP_ID
+            && info.key == noodle_nodes::REMAP_CURVE_KEY
+        {
+            let text = info.get_text(&node.config);
+            ui.label(info.name);
+            let curve = noodle_nodes::Curve::from_text(&text);
+            edits.extend(CurveEditor::new(id, info.key, &curve).show(ui));
+            ui.label(
+                RichText::new(
+                    "Left to right is the input range, bottom to top the output range. \
+                     Click the line to add a point.",
+                )
+                .weak()
+                .small(),
+            );
+            if ui.small_button("Reset to straight line").clicked() {
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: id,
+                    key: info.key.to_owned(),
+                    value: None,
+                }));
+            }
             continue;
         }
         let out = ConfigField::new(info, node.config.get(info.key))
@@ -330,6 +354,74 @@ mod tests {
         let harness = super::tests::harness([mix(0)]);
         harness.get_by_label_contains("inputs");
         harness.get_by_value("0");
+    }
+
+    fn curve_of(harness: &Harness<'_, State>) -> noodle_nodes::Curve {
+        let graph = harness.state().session.project().graph();
+        let config = &graph.node(NodeId(1)).unwrap().config;
+        match config.get("curve") {
+            Some(Value::Text(text)) => noodle_nodes::Curve::from_text(text),
+            _ => noodle_nodes::Curve::linear(),
+        }
+    }
+
+    #[test]
+    fn the_remap_curve_is_edited_with_the_mouse() {
+        let mut harness = harness([Node::new("noodle.util.remap")]);
+        harness.set_size(vec2(300.0, 600.0));
+        harness.run();
+        // The editor is a square under the "Curve" label, `side` wide.
+        let label = harness.get_by_label("Curve").rect();
+        let side = 240.0f32.min(300.0 - 2.0 * label.min.x);
+        let at = |x: f32, y: f32| {
+            egui::pos2(label.min.x + x * side, label.max.y + 4.0 + side * (1.0 - y))
+        };
+        assert_eq!(curve_of(&harness).points().len(), 2);
+
+        // Click the middle of the straight line: a point appears.
+        harness.hover_at(at(0.5, 0.5));
+        harness.run();
+        harness.drag_at(at(0.5, 0.5));
+        harness.run();
+        harness.drop_at(at(0.5, 0.5));
+        harness.run();
+        let curve = curve_of(&harness);
+        assert_eq!(curve.points().len(), 3, "{curve:?}");
+        assert!((curve.points()[1].x - 0.5).abs() < 0.1);
+
+        // Clicking away from the line adds nothing.
+        harness.hover_at(at(0.5, 0.9));
+        harness.run();
+        harness.drag_at(at(0.5, 0.9));
+        harness.run();
+        harness.drop_at(at(0.5, 0.9));
+        harness.run();
+        assert_eq!(curve_of(&harness).points().len(), 3);
+
+        // Drag the new point up.
+        let from = at(curve.points()[1].x, curve.points()[1].y);
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        harness.hover_at(at(0.5, 0.9));
+        harness.run();
+        harness.drop_at(at(0.5, 0.9));
+        harness.run();
+        let curve = curve_of(&harness);
+        assert!(curve.points()[1].y > 0.8, "{curve:?}");
+        // One undo step for the whole drag.
+        harness.state_mut().session.undo();
+        harness.run();
+        let undone = curve_of(&harness);
+        assert_eq!(undone.points().len(), 3);
+        assert!((undone.points()[1].y - 0.5).abs() < 0.05, "{undone:?}");
+
+        // The button puts it back to a line.
+        harness.get_by_label("Reset to straight line").click();
+        harness.run();
+        harness.run();
+        assert_eq!(curve_of(&harness), noodle_nodes::Curve::linear());
     }
 
     /// Replaces the text in the focused field.

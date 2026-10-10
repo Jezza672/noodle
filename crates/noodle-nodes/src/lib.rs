@@ -4,6 +4,7 @@
 mod adsr;
 mod button;
 mod clip;
+mod curve;
 mod gain;
 mod lfo;
 mod meter;
@@ -12,6 +13,7 @@ mod mix;
 mod noise;
 mod notes;
 mod osc;
+mod remap;
 mod reroute;
 mod reverse;
 mod scope;
@@ -26,6 +28,7 @@ pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
     TRACK_INPUT_ID, TrackInput, active_at,
 };
+pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use gain::{GAIN_ID, Gain};
 pub use lfo::{LFO_ID, Lfo};
 pub use meter::{METER_ID, Meter};
@@ -34,6 +37,7 @@ pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine};
+pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverse::Reverse;
 pub use scope::{SCOPE_ID, Scope};
@@ -89,6 +93,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.replace(noodle_engine::Output::new(&telemetry));
     registry.register(Svf);
     registry.register(Vca);
+    registry.register(Remap);
     registry.register(Adsr);
     registry.register(Lfo);
     registry.register(Key);
