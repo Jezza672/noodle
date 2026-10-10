@@ -392,7 +392,10 @@ into a parameter port.** It is not a clip and not a node the user wires.
   source has no state, so the plan stays seamless: the new points apply from
   the next block, like a parameter being moved. If the edit changes the value
   at the playhead, the value jumps (a hold step can click); adding or
-  removing a lane changes the wiring, and fades like any other.
+  removing a lane changes the wiring, and fades like any other. This is
+  `NodeType::stateless()`: a node that returns true (lane sources, Remap) is
+  rebuilt without a fade when only its config changes and its shapes don't,
+  so dragging a Remap curve doesn't chop the sound.
 - **The parameter widget.** For a parameter with a lane, the widget shows the
   lane's value at the playhead and is greyed like a wired parameter. The lane
   is edited as a lane.

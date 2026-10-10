@@ -1,6 +1,6 @@
-// A Remap node turning a slow bipolar LFO (-1 to 1) into a pitch sweep from
-// 220 to 880 Hz. Its curve is an S: slow at both ends, quick through the
-// middle, so the sweep lingers on the low and high notes instead of gliding
+// A Remap node turning a quick bipolar LFO (4 Hz, -1 to 1) into a pitch sweep from
+// 220 to 880 Hz. Its curve is an S: flat at both ends, steep through the
+// middle, so each sweep lingers on the low and high notes instead of gliding
 // through them evenly.
 (
     format: 1,

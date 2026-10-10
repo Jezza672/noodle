@@ -65,6 +65,12 @@ impl NodeType for Remap {
         &SETTINGS
     }
 
+    /// Only a lookup table, so a rebuilt copy swaps in without a fade: the
+    /// output follows the curve while it is dragged.
+    fn stateless(&self) -> bool {
+        true
+    }
+
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(RemapPorts::layout())
     }

@@ -732,6 +732,44 @@ fn a_remap_never_allocates_while_its_curve_is_edited() {
 }
 
 #[test]
+fn editing_a_remap_curve_does_not_fade_the_output() {
+    // A constant 0.5 comes out of the Remap whichever of these point-symmetric
+    // curves it holds, so any dip in the output is a fade, not the new curve.
+    let mut s = Session::new();
+    let remap = s.add(
+        Node::new("noodle.util.remap")
+            .with_param("in_min", -1.0)
+            .with_param("in_max", 1.0),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(remap, "out", output, "in");
+    s.update();
+    let mut block = vec![0.0; 64 * SETTINGS.channels];
+    for _ in 0..20 {
+        s.processor.process(&mut block);
+    }
+    let mut lowest = f32::MAX;
+    for round in 0..10 {
+        let reach = 0.1 + 0.05 * round as f32;
+        let curve = format!("0 0 0 0 {reach} 0;1 1 -{reach} 0 0 0");
+        s.edit(Command::SetConfig {
+            node: remap,
+            key: "curve".to_owned(),
+            value: Some(Value::Text(curve)),
+        });
+        s.update();
+        for _ in 0..4 {
+            s.processor.process(&mut block);
+            lowest = block
+                .chunks(SETTINGS.channels)
+                .map(|frame| frame[0])
+                .fold(lowest, f32::min);
+        }
+    }
+    assert!(lowest > 0.45, "the output dipped to {lowest} during edits");
+}
+
+#[test]
 fn outputs_on_two_devices_never_allocate_and_each_has_a_scope() {
     let settings = Settings {
         channels: 4,

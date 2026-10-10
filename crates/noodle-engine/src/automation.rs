@@ -186,6 +186,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Automation {
+    fn stateless(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

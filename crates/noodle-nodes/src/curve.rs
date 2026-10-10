@@ -157,7 +157,10 @@ impl Curve {
         if index == 0 || index + 1 >= self.points.len() {
             return;
         }
-        self.points[index].x = x;
+        // Between the neighbours, so it never shoves them along.
+        let lo = self.points[index - 1].x + MIN_GAP;
+        let hi = self.points[index + 1].x - MIN_GAP;
+        self.points[index].x = x.clamp(lo, hi.max(lo));
         self.points[index].y = y;
         self.sanitize();
     }
@@ -262,9 +265,32 @@ impl Curve {
         lut.into_boxed_slice()
     }
 
-    /// The curve's height at `x` (0 to 1), for drawing and tests.
+    /// The curve's height at `x` (0 to 1), for drawing and tests. Works on
+    /// the one segment that holds `x`, so it is cheap to call often.
     pub fn eval(&self, x: f32) -> f32 {
-        lookup(&self.lut(), x)
+        let x = x.clamp(0.0, 1.0);
+        let i = self
+            .points
+            .windows(2)
+            .position(|w| x <= w[1].x)
+            .unwrap_or(self.points.len() - 2);
+        let (p0, p3) = (self.points[i], self.points[i + 1]);
+        let c = [
+            (p0.x, p0.y),
+            (p0.x + p0.out_handle.0, p0.y + p0.out_handle.1),
+            (p3.x + p3.in_handle.0, p3.y + p3.in_handle.1),
+            (p3.x, p3.y),
+        ];
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..24 {
+            let mid = 0.5 * (lo + hi);
+            if bezier(&c, mid).0 < x {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        bezier(&c, 0.5 * (lo + hi)).1.clamp(0.0, 1.0)
     }
 }
 
@@ -362,6 +388,34 @@ mod tests {
         let a = c.insert_at(0.3);
         let b = c.insert_at(0.7);
         c.move_point(a, 0.95, 0.5);
+        assert!(c.points()[a].x < c.points()[b].x);
+    }
+
+    #[test]
+    fn eval_agrees_with_the_lookup_table() {
+        let mut c = Curve::linear();
+        let i = c.insert_at(0.3);
+        c.move_point(i, 0.3, 0.8);
+        c.move_handle(0, Handle::Out, 0.2, 0.0);
+        let lut = c.lut();
+        for k in 0..=40 {
+            let x = k as f32 / 40.0;
+            assert!((c.eval(x) - lookup(&lut, x)).abs() < 3e-3, "x = {x}");
+        }
+    }
+
+    #[test]
+    fn dragging_past_a_neighbour_stops_at_it() {
+        let mut c = Curve::linear();
+        let a = c.insert_at(0.3);
+        let b = c.insert_at(0.6);
+        let before = (c.points()[b].x, c.points()[b].y);
+        c.move_point(a, 0.9, 0.5);
+        assert_eq!(
+            (c.points()[b].x, c.points()[b].y),
+            before,
+            "the neighbour was shoved"
+        );
         assert!(c.points()[a].x < c.points()[b].x);
     }
 
