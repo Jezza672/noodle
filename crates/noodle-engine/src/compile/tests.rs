@@ -319,6 +319,54 @@ fn reuses_buffers_along_a_chain() {
     assert_eq!(schedule.buffer_lanes.len(), 2);
 }
 
+/// Two chains, `source → thru → thru`, side by side, then summed.
+fn two_chains() -> Project {
+    let mut p = Project::new();
+    let sum = add(&mut p, Node::new("sum"));
+    for port in ["a", "b"] {
+        let mut previous = add(&mut p, Node::new("source"));
+        for _ in 0..2 {
+            let next = add(&mut p, Node::new("thru"));
+            wire(&mut p, previous, "out", next, "in");
+            previous = next;
+        }
+        wire(&mut p, previous, "out", sum, port);
+    }
+    p
+}
+
+fn compile_independent(project: &Project) -> Schedule {
+    let options = Options {
+        independent_buffers: true,
+        ..Options::default()
+    };
+    let (schedule, diagnostics) = compile_with(project.graph(), &[], &registry(), &options);
+    check(project.graph(), &schedule, &diagnostics);
+    schedule
+}
+
+#[test]
+fn independent_buffers_keep_branches_from_sharing() {
+    let p = two_chains();
+    // Reusing freely, the second chain takes the first's freed buffers; kept
+    // apart, each chain has its own, so they can run at the same time.
+    let shared = compile_checked(&p).0.buffer_lanes.len();
+    let apart = compile_independent(&p).buffer_lanes.len();
+    assert!(apart > shared, "{apart} buffers vs {shared}");
+}
+
+#[test]
+fn independent_buffers_still_reuse_along_a_chain() {
+    let mut p = Project::new();
+    let mut previous = add(&mut p, Node::new("source"));
+    for _ in 0..5 {
+        let next = add(&mut p, Node::new("thru"));
+        wire(&mut p, previous, "out", next, "in");
+        previous = next;
+    }
+    assert_eq!(compile_independent(&p).buffer_lanes.len(), 2);
+}
+
 #[test]
 fn keeps_a_buffer_until_its_last_reader() {
     let mut p = Project::new();

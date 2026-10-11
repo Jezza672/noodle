@@ -226,8 +226,23 @@ impl DevicePicker {
         .on_hover_text("Smaller is quicker to respond, larger is safer from dropouts");
         ui.end_row();
 
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let mut threads = self.draft.threads;
+        combo(ui, "Worker threads", threads_label(threads), |ui| {
+            for count in 0..cores.max(2) {
+                ui.selectable_value(&mut threads, count, threads_label(count));
+            }
+        })
+        .on_hover_text(
+            "Extra threads that run branches of a wide graph side by side. \
+             Helps when the CPU meter climbs on graphs with many parallel \
+             voices or plugins; View > CPU meters shows the effect",
+        );
+        ui.end_row();
+
         self.draft.sample_rate = rate;
         self.draft.buffer_size = buffer;
+        self.draft.threads = threads;
         if output != self.draft.output || input != self.draft.input {
             self.draft.output = output;
             self.draft.input = input;
@@ -408,6 +423,14 @@ fn sample_rates(output: Option<&Capabilities>, input: Option<&Capabilities>) -> 
 
 /// The buffer sizes to offer: the usual powers of two, within the output's
 /// range when it says.
+fn threads_label(count: usize) -> String {
+    match count {
+        0 => "Off (audio thread only)".to_owned(),
+        1 => "1 extra thread".to_owned(),
+        n => format!("{n} extra threads"),
+    }
+}
+
 fn buffer_sizes(output: Option<&Capabilities>) -> Vec<u32> {
     let range = output.and_then(|caps| caps.buffer_sizes);
     BUFFER_SIZES

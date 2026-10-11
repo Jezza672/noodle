@@ -49,6 +49,9 @@ pub struct AudioConfig {
     /// here because it is chosen in the same dialog and saved with the rest;
     /// changing it doesn't restart the audio.
     pub midi_input: Option<String>,
+    /// Extra threads that help the audio thread render graphs whose branches
+    /// can run side by side. 0 renders on the audio thread alone.
+    pub threads: usize,
 }
 
 /// Which device, if any, records into Input nodes. Off by default, since

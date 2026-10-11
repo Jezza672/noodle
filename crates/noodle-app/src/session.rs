@@ -1840,9 +1840,11 @@ fn fallback(config: &AudioConfig) -> Option<AudioConfig> {
         input: config.input.clone(),
         ..AudioConfig::default()
     };
-    // The MIDI port plays no part in opening the audio.
+    // Neither the MIDI port nor the worker threads play a part in opening
+    // the audio.
     let tried = AudioConfig {
         midi_input: None,
+        threads: 0,
         ..config.clone()
     };
     (defaults != tried).then_some(defaults)
@@ -2664,6 +2666,7 @@ mod tests {
             sample_rate: Some(96_000),
             buffer_size: Some(64),
             midi_input: Some("Keys".into()),
+            threads: 3,
         };
         assert_eq!(
             fallback(&chosen),

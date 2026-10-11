@@ -35,7 +35,7 @@
 //! with its own hub.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use noodle_core::NodeId;
@@ -45,6 +45,8 @@ use noodle_core::NodeId;
 #[derive(Clone, Default)]
 pub struct Telemetry {
     inner: Arc<Mutex<Channels>>,
+    /// How long whole blocks take, for every plan that reports.
+    blocks: Arc<BlockCells>,
 }
 
 /// Each node's open channels, oldest first.
@@ -205,6 +207,8 @@ impl Telemetry {
             cells,
             load: 0.0,
             peak: 0.0,
+            nanos: 0,
+            blocks: 0,
         }
     }
 
@@ -227,6 +231,77 @@ impl Telemetry {
             .collect();
         all.sort_by_key(|(node, _)| *node);
         all
+    }
+
+    /// Every node's total processing time since its plan started running, for
+    /// a profile. Nodes that haven't reported are left out.
+    pub fn read_all_cpu_totals(&self) -> Vec<(NodeId, CpuTotals)> {
+        let channels = self.lock();
+        let mut all: Vec<_> = channels
+            .cpu
+            .iter()
+            .filter_map(|(&node, list)| {
+                let cells = live(list, |cells| cells.written.load(Ordering::Acquire))?;
+                cells.written.load(Ordering::Acquire).then(|| {
+                    (
+                        node,
+                        CpuTotals {
+                            nanos: cells.nanos.load(Ordering::Relaxed),
+                            blocks: cells.blocks.load(Ordering::Relaxed),
+                        },
+                    )
+                })
+            })
+            .collect();
+        all.sort_by_key(|(node, _)| *node);
+        all
+    }
+
+    /// A writer for whole-block timing, for a plan to time its blocks with.
+    /// Every writer feeds the same [`BlockStats`].
+    pub fn block_writer(&self) -> BlockWriter {
+        BlockWriter(self.blocks.clone())
+    }
+
+    /// How long blocks have taken since the last [`reset_blocks`](Self::reset_blocks).
+    pub fn read_blocks(&self) -> BlockStats {
+        let cells = &*self.blocks;
+        let blocks = cells.blocks.load(Ordering::Relaxed);
+        let used = cells.used_ns.load(Ordering::Relaxed);
+        let budget = cells.budget_ns.load(Ordering::Relaxed);
+        let mut histogram = [0u64; LOAD_BUCKETS];
+        for (out, cell) in histogram.iter_mut().zip(&cells.histogram) {
+            *out = cell.load(Ordering::Relaxed);
+        }
+        BlockStats {
+            blocks,
+            mean: if budget == 0 {
+                0.0
+            } else {
+                (used as f64 / budget as f64) as f32
+            },
+            worst: f32::from_bits(cells.worst.load(Ordering::Relaxed)),
+            misses: cells.misses.load(Ordering::Relaxed),
+            panics: cells.panics.load(Ordering::Relaxed),
+            histogram,
+        }
+    }
+
+    /// Starts the block statistics over.
+    pub fn reset_blocks(&self) {
+        let cells = &*self.blocks;
+        for cell in [
+            &cells.blocks,
+            &cells.used_ns,
+            &cells.budget_ns,
+            &cells.misses,
+        ] {
+            cell.store(0, Ordering::Relaxed);
+        }
+        cells.worst.store(0, Ordering::Relaxed);
+        for cell in &cells.histogram {
+            cell.store(0, Ordering::Relaxed);
+        }
     }
 
     /// Copies `node`'s most recent scope frames into `view`, reusing its
@@ -336,7 +411,19 @@ pub struct CpuReading {
 struct CpuCells {
     load: AtomicU32,
     peak: AtomicU32,
+    /// Everything the node has used since its plan started, and the blocks
+    /// that took it.
+    nanos: AtomicU64,
+    blocks: AtomicU64,
     written: AtomicBool,
+}
+
+/// What a node has used in total, for a profile (unlike [`CpuReading`], which
+/// smooths).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuTotals {
+    pub nanos: u64,
+    pub blocks: u64,
 }
 
 /// The audio thread's end of a node's CPU channel.
@@ -344,6 +431,8 @@ pub struct CpuWriter {
     cells: Arc<CpuCells>,
     load: f32,
     peak: f32,
+    nanos: u64,
+    blocks: u64,
 }
 
 impl CpuWriter {
@@ -364,7 +453,108 @@ impl CpuWriter {
         self.cells
             .peak
             .store(self.peak.to_bits(), Ordering::Relaxed);
+        self.nanos += used_ns;
+        self.blocks += 1;
+        self.cells.nanos.store(self.nanos, Ordering::Relaxed);
+        self.cells.blocks.store(self.blocks, Ordering::Relaxed);
         self.cells.written.store(true, Ordering::Release);
+    }
+}
+
+/// Buckets in [`BlockStats::histogram`]: ten for each tenth of the budget up
+/// to all of it, then up to one and a half times it, then beyond.
+pub const LOAD_BUCKETS: usize = 12;
+
+/// How long whole blocks took to render against the time they last, since
+/// statistics were last reset. A block that takes more than its budget is a
+/// deadline miss: on a live stream, an underrun.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockStats {
+    pub blocks: u64,
+    /// Time used over time available, across all blocks. 1.0 is one core's
+    /// whole real-time budget.
+    pub mean: f32,
+    /// The slowest block, as a fraction of its budget.
+    pub worst: f32,
+    /// Blocks that took longer than their budget.
+    pub misses: u64,
+    /// Blocks in which a node panicked (only caught, and its output silenced,
+    /// when the plan runs on worker threads).
+    pub panics: u64,
+    /// Blocks by load: bucket `i` (below 10) holds loads from `i`/10 up to
+    /// (`i` + 1)/10; bucket 10 up to 1.5, bucket 11 beyond.
+    pub histogram: [u64; LOAD_BUCKETS],
+}
+
+impl BlockStats {
+    /// The load that `fraction` of blocks stayed under (0.99 for the 99th
+    /// percentile), to the resolution of the histogram: the top of the bucket
+    /// that crosses it, or `worst` if that is the last one.
+    pub fn percentile(&self, fraction: f64) -> f32 {
+        if self.blocks == 0 {
+            return 0.0;
+        }
+        let target = (self.blocks as f64 * fraction).ceil() as u64;
+        let mut seen = 0;
+        for (bucket, &count) in self.histogram.iter().enumerate() {
+            seen += count;
+            if seen >= target {
+                return match bucket {
+                    0..=9 => (bucket + 1) as f32 / 10.0,
+                    10 => 1.5,
+                    _ => self.worst,
+                }
+                .min(self.worst.max(0.0));
+            }
+        }
+        self.worst
+    }
+}
+
+#[derive(Default)]
+struct BlockCells {
+    blocks: AtomicU64,
+    used_ns: AtomicU64,
+    budget_ns: AtomicU64,
+    /// Bits of the slowest block's load. Loads are never negative, so the
+    /// bits order like the numbers.
+    worst: AtomicU32,
+    misses: AtomicU64,
+    panics: AtomicU64,
+    histogram: [AtomicU64; LOAD_BUCKETS],
+}
+
+/// The audio thread's end of the block statistics.
+pub struct BlockWriter(Arc<BlockCells>);
+
+impl BlockWriter {
+    /// Reports that a node panicked in a block.
+    pub fn note_panic(&self) {
+        self.0.panics.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reports that a block took `used_ns` of the `budget_ns` it lasts.
+    pub fn record(&self, used_ns: u64, budget_ns: f64) {
+        if budget_ns <= 0.0 {
+            return;
+        }
+        let cells = &*self.0;
+        let load = (used_ns as f64 / budget_ns) as f32;
+        let bucket = match load {
+            l if l < 1.0 => ((l * 10.0) as usize).min(9),
+            l if l < 1.5 => 10,
+            _ => 11,
+        };
+        cells.histogram[bucket].fetch_add(1, Ordering::Relaxed);
+        cells.blocks.fetch_add(1, Ordering::Relaxed);
+        cells.used_ns.fetch_add(used_ns, Ordering::Relaxed);
+        cells
+            .budget_ns
+            .fetch_add(budget_ns as u64, Ordering::Relaxed);
+        cells.worst.fetch_max(load.to_bits(), Ordering::Relaxed);
+        if load > 1.0 {
+            cells.misses.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -595,6 +785,55 @@ mod tests {
     use super::*;
 
     const NODE: NodeId = NodeId(7);
+
+    #[test]
+    fn block_statistics_count_loads_misses_and_percentiles() {
+        let telemetry = Telemetry::new();
+        assert_eq!(telemetry.read_blocks(), BlockStats::default());
+        assert_eq!(telemetry.read_blocks().percentile(0.99), 0.0);
+        let writer = telemetry.block_writer();
+        // 98 blocks at 5%, one at 55%, one over budget at 130%.
+        for _ in 0..98 {
+            writer.record(50, 1000.0);
+        }
+        writer.record(550, 1000.0);
+        writer.record(1300, 1000.0);
+        let stats = telemetry.read_blocks();
+        assert_eq!(stats.blocks, 100);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.histogram[0], 98);
+        assert_eq!(stats.histogram[5], 1);
+        assert_eq!(stats.histogram[10], 1);
+        assert!((stats.worst - 1.3).abs() < 1e-6, "{}", stats.worst);
+        let expected_mean = (98.0 * 50.0 + 550.0 + 1300.0) / 100_000.0;
+        assert!((stats.mean - expected_mean as f32).abs() < 1e-6);
+        // Percentiles are the top of the bucket they land in.
+        assert!((stats.percentile(0.5) - 0.1).abs() < 1e-6);
+        assert!((stats.percentile(0.99) - 0.6).abs() < 1e-6);
+        assert!((stats.percentile(1.0) - 1.3).abs() < 1e-6);
+
+        telemetry.reset_blocks();
+        assert_eq!(telemetry.read_blocks(), BlockStats::default());
+    }
+
+    #[test]
+    fn cpu_totals_add_up_over_blocks() {
+        let telemetry = Telemetry::new();
+        let mut writer = telemetry.open_cpu(NODE);
+        assert!(telemetry.read_all_cpu_totals().is_empty());
+        writer.record(300, 1000.0);
+        writer.record(200, 1000.0);
+        assert_eq!(
+            telemetry.read_all_cpu_totals(),
+            [(
+                NODE,
+                CpuTotals {
+                    nanos: 500,
+                    blocks: 2
+                }
+            )]
+        );
+    }
 
     #[test]
     fn a_param_reports_its_value_and_the_range_since_the_last_read() {
