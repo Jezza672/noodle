@@ -13,7 +13,9 @@ use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::OUTPUT_ID;
-use noodle_engine::{CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry};
+use noodle_engine::{
+    BlockStats, CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry,
+};
 use noodle_nodes::{METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
@@ -76,7 +78,20 @@ pub struct Bodies {
     cpu: HashMap<NodeId, CpuReading>,
     /// The nodes' loads added up, before groups are given their sums.
     cpu_total: f32,
+    /// How whole blocks have been taking, over the last few seconds, while
+    /// `show_cpu`.
+    blocks: BlockStats,
+    /// The window before the current one, shown while the current is short.
+    blocks_before: BlockStats,
+    /// When the current window began, on `clock`.
+    blocks_since: f32,
 }
+
+/// How long a window of block statistics lasts, in seconds.
+const BLOCK_WINDOW_SECONDS: f32 = 5.0;
+
+/// Blocks a window needs before it is shown instead of the one before.
+const BLOCK_WINDOW_MIN: u64 = 200;
 
 /// How far back a wired parameter's range marks look, in seconds.
 pub const PARAM_WINDOW_SECONDS: f32 = 3.0;
@@ -143,6 +158,14 @@ impl Bodies {
                 }
             }
             self.cpu.extend(groups);
+            // Block statistics run in windows: read the current one, and
+            // start the next when this one is old enough.
+            self.blocks = telemetry.read_blocks();
+            if self.clock - self.blocks_since > BLOCK_WINDOW_SECONDS {
+                self.blocks_before = self.blocks;
+                self.blocks_since = self.clock;
+                telemetry.reset_blocks();
+            }
         }
         // A new session brings a new hub.
         if !self.reader.as_ref().is_some_and(|r| r.reads(telemetry)) {
@@ -246,6 +269,20 @@ impl Bodies {
     /// overhead).
     pub fn cpu_total(&self) -> Option<f32> {
         self.show_cpu.then_some(self.cpu_total)
+    }
+
+    /// How whole blocks have been taking lately (worst case, deadline
+    /// misses), if CPU meters are on and enough blocks have run.
+    pub fn block_stats(&self) -> Option<BlockStats> {
+        if !self.show_cpu {
+            return None;
+        }
+        let stats = if self.blocks.blocks >= BLOCK_WINDOW_MIN {
+            self.blocks
+        } else {
+            self.blocks_before
+        };
+        (stats.blocks > 0).then_some(stats)
     }
 
     /// Whether anything is shown that changes while audio plays.

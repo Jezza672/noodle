@@ -62,7 +62,8 @@ Code that runs on the audio thread (everything reachable from
 
 - allocate or free memory
 - take a lock, including the locks hidden inside `Arc` drop or channel internals
-- make a system call: file I/O, logging, thread spawning, sleeping
+- make a system call: file I/O, logging, thread spawning, sleeping (waking a
+  parked worker thread is the one exception; see Parallel processing)
 - run a loop whose length isn't bounded by the block size, voice count or
   graph size
 
@@ -1100,6 +1101,83 @@ header shows the sum of the nodes inside it at any depth. A split node (feedback
 half's time is not counted. Time spent in delay lines is not attributed to a
 node.
 
+### Parallel processing
+
+`engine_with_workers(settings, n, always)` starts `n` helper threads beside
+the audio thread (the processor's half, `Processor::start_workers`, is
+crate-private so the controller always compiles to match). Off by
+default (the app's audio settings, `noodle play --threads` and
+`noodle profile --threads` turn it on). The
+single-threaded path is unchanged, and a graph that can't use helpers runs
+exactly as before.
+
+**What can run at once.** A plan's steps are in a valid order for one thread,
+and `plan::step_graph` turns that order into a dependency graph
+(`parallel::StepGraph`) from the buffers each step reads and writes: a step
+waits for the writer of every buffer it reads (and every event buffer), and,
+because the compiler reuses buffers, for the readers and writer of the buffer
+it overwrites. A split (feedback) node's input half waits for its output half,
+which holds the instance. Delay compensation lines are part of the step that
+owns them. The graph is built off the audio thread, with the plan, and
+`PlanShape` (`Controller::plan_shape`) reports its steps, longest chain and
+width.
+
+**Buffers.** Reusing a buffer is what stops two branches overlapping: the
+second branch would take the first's freed buffer and have to wait for it.
+When workers are on, the compiler (`Options::independent_buffers`) hands a
+freed buffer only to a step that already follows everything that used it in the
+signal flow (bit sets of each step's ancestors), so reuse adds no ordering. A
+plain chain still uses two buffers; side-by-side branches each keep their
+own. The cost is memory for wide graphs.
+
+**Running a block.** Each step claims itself with a compare-and-swap on its
+count of unfinished prerequisites (a plan-sized array of atomics reset at the
+start of the block, no queue), runs, and decrements its dependents. The audio
+thread works on the block too and returns when every step is done and every
+worker has left (the block's data is on its stack). Workers spin for about
+40 µs after a block and then park; the audio thread unparks only the ones that
+are parked. Nothing locks or allocates, and a panic in a node is caught, so
+the block still finishes: that node's outputs are silent for the block and the
+block counts in `BlockStats::panics` (the single-threaded path still
+propagates the panic). Workers flush subnormals like the audio thread (the
+mode is per thread; `workers_flush_subnormals`). `tests/parallel.rs` checks
+the sound is bit-identical to one thread's, and counts allocations on every
+thread.
+
+**Output.** An Output node mixes into its own scratch buffer; the buffers are
+added to the device output in schedule order at the end of the block. The sum
+differs from the single-threaded one only in the last bits (a voice sum is
+grouped differently).
+
+**When it pays.** Handing a block to other threads costs a few microseconds a
+core, so unless `always` is set a plan runs on workers only if it has at least
+4 steps and 1.5 times as many steps as its longest chain. That counts every
+step as equal; `noodle profile --threads N` measures the real thing. Known
+limits: the workers are plain threads, not raised to real-time priority; a
+worker descheduled in the middle of a step stalls the block (as in any such
+design); more workers than idle cores makes things worse; `mix` of several
+voices is one step, so one fat node limits the speedup.
+
+### Profiling
+
+`noodle profile project.ron` renders as fast as it will go
+(`noodle_engine::profile_project`, `noodle_nodes::profile` for projects with
+clips) and prints: the render's speed against real time; per-block load
+(`BlockStats`: mean, 99th percentile, worst, and how many blocks ran over
+their budget, which are underruns on a live stream); each node's total time
+and share, with the group it sits in; and the graph's shape (always the shape a plan for workers has, even in the
+one-thread run). `--threads N` renders again with helpers, with the same
+rule `play` uses for when helpers take part (`--always` forces them), and
+prints the speedup.
+
+`Telemetry::block_writer` times every `Processor::render` call (a device
+callback, workers included: the real deadline, not the chunks a loop wrap or
+fade cuts it into) into atomics, read with `Telemetry::read_blocks` (a 12-bucket
+histogram: tenths of the budget up to 1.0, then up to 1.5, then beyond) and
+cleared with `reset_blocks`; per-node totals come from `CpuWriter` through
+`read_all_cpu_totals`. With CPU meters on, the editor shows the worst block of
+the last few seconds under the graph total, red when any ran over.
+
 ## UI (`noodle-app`)
 
 The UI is egui, rendered on the GPU, in the "Canvas" look chosen from the design
@@ -1402,7 +1480,9 @@ telemetry hub (`EditorState::scope_view`).
   property tests that generate random graphs and check that the plans are
   valid.
 - **Real-time safety:** the audio-thread allocation check runs in all
-  debug builds and tests.
+  debug builds and tests. `tests/parallel.rs` does the same for a plan on
+  worker threads, counting allocations on every thread, and checks it sounds
+  like one thread through plan swaps.
 - **Plan swapping:** tests swap plans mid-render and check that the output
   is continuous, with no click at the swap: identical for an edit off the
   audible path, and no jump steeper than the signal's own for one on it.

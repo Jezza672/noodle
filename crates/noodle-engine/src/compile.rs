@@ -296,8 +296,12 @@ pub fn compile_replacing(
 }
 
 /// What else to do while compiling.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Options<'a> {
+    /// Reuse a buffer only where that adds no ordering between steps that
+    /// could otherwise run at the same time, so a plan can run on several
+    /// threads. Costs memory for wide graphs.
+    pub independent_buffers: bool,
     /// Keep offline nodes in the schedule, which the cache analysis needs to
     /// see them. Otherwise they are refused, since a plan can't run them:
     /// they are replaced by cached audio first.
@@ -355,7 +359,14 @@ pub(crate) fn compile_with(
         &signal_source,
         &mut diagnostics,
     );
-    let schedule = allocate(candidates, &order, &wires, &signal_source, &event_source);
+    let schedule = allocate(
+        candidates,
+        &order,
+        &wires,
+        &signal_source,
+        &event_source,
+        options.independent_buffers,
+    );
     (schedule, diagnostics)
 }
 
@@ -774,12 +785,17 @@ fn blame_shape(
 /// A buffer is freed once the last node reading it has run, and reused for a
 /// later output. A node's outputs are allocated before its own inputs are
 /// freed, so they never share a buffer with them.
+///
+/// With `independent`, a buffer is reused only by a step that already follows
+/// everything that used it: the reuse then orders nothing that wasn't
+/// ordered by the signal flow, so steps that could overlap still can.
 fn allocate(
     candidates: Vec<Candidate<'_>>,
     order: &[Step],
     wires: &[Wire],
     signal_source: &[Vec<Option<usize>>],
     event_source: &[Vec<Option<usize>>],
+    independent: bool,
 ) -> Schedule {
     let n = candidates.len();
     let runs: Vec<Step> = order
@@ -823,6 +839,13 @@ fn allocate(
     let mut event_buffers = 0;
     let mut free_events = Vec::new();
     let mut written: HashMap<(Kind, usize, usize), usize> = HashMap::new();
+    // For `independent`: the steps before each step in the signal flow (as
+    // bit sets), the step that wrote each output, and the steps that used
+    // each buffer since it was last written.
+    let words = runs.len().div_ceil(64);
+    let mut before: Vec<Vec<u64>> = Vec::new();
+    let mut writer_step: HashMap<(Kind, usize, usize), usize> = HashMap::new();
+    let mut users: [Vec<Vec<usize>>; 2] = [Vec::new(), Vec::new()];
     let mut nodes = Vec::with_capacity(runs.len());
     let mut candidates: Vec<Option<Candidate<'_>>> = candidates.into_iter().map(Some).collect();
 
@@ -899,6 +922,40 @@ fn allocate(
             })
             .collect();
 
+        if independent {
+            let mut mine = vec![0u64; words];
+            let mut preds: Vec<usize> = Vec::new();
+            if phase == Phase::Input {
+                // The input half follows its own output half.
+                preds.extend((0..runs.len()).filter(|&t| runs[t].node == i && t < s));
+            }
+            let sources = signal_source[i]
+                .iter()
+                .enumerate()
+                .filter(|(port, _)| reads(*port))
+                .map(|(_, source)| source)
+                .chain(event_source[i].iter().take(events))
+                .flatten()
+                .filter(|w| live(w));
+            for &w in sources {
+                let wire = &wires[w];
+                let key = (wire.kind, wire.from, wire.from_port);
+                preds.push(writer_step[&key]);
+                let kind = wire.kind as usize;
+                users[kind][written[&key]].push(s);
+            }
+            for p in preds {
+                mine[p / 64] |= 1 << (p % 64);
+                for (word, &theirs) in mine.iter_mut().zip(&before[p]) {
+                    *word |= theirs;
+                }
+            }
+            before.push(mine);
+        }
+        let follows = |used: &[usize]| {
+            !independent || used.iter().all(|&t| before[s][t / 64] >> (t % 64) & 1 == 1)
+        };
+
         let output_shapes = c.output_shapes.clone().unwrap();
         let written_here = if phase == Phase::Input { 0 } else { usize::MAX };
         let outputs: Vec<BufferId> = output_shapes
@@ -906,18 +963,39 @@ fn allocate(
             .take(written_here)
             .enumerate()
             .map(|(port, shape)| {
-                let b = take_buffer(&mut buffer_lanes, &mut free_buffers, shape.lanes());
+                let b = take_buffer(&mut buffer_lanes, &mut free_buffers, shape.lanes(), |b| {
+                    follows(used(&users[0], b))
+                });
                 written.insert((Kind::Signal, i, port), b);
+                writer_step.insert((Kind::Signal, i, port), s);
+                if independent {
+                    if users[0].len() <= b {
+                        users[0].resize(b + 1, Vec::new());
+                    }
+                    users[0][b] = vec![s];
+                }
                 BufferId(b)
             })
             .collect();
         let event_outputs: Vec<EventBufferId> = (0..c.layout.event_outputs.len().min(events))
             .map(|port| {
-                let b = free_events.pop().unwrap_or_else(|| {
-                    event_buffers += 1;
-                    event_buffers - 1
-                });
+                let reusable = free_events
+                    .iter()
+                    .rposition(|&b| follows(used(&users[1], b)));
+                let b = reusable
+                    .map(|at| free_events.swap_remove(at))
+                    .unwrap_or_else(|| {
+                        event_buffers += 1;
+                        event_buffers - 1
+                    });
                 written.insert((Kind::Event, i, port), b);
+                writer_step.insert((Kind::Event, i, port), s);
+                if independent {
+                    if users[1].len() <= b {
+                        users[1].resize(b + 1, Vec::new());
+                    }
+                    users[1][b] = vec![s];
+                }
                 EventBufferId(b)
             })
             .collect();
@@ -968,18 +1046,30 @@ fn allocate(
     }
 }
 
+/// The steps that have used `buffer` since it was written.
+fn used(users: &[Vec<usize>], buffer: usize) -> &[usize] {
+    users.get(buffer).map_or(&[], Vec::as_slice)
+}
+
 /// Takes the smallest free buffer that's big enough. Failing that, it grows
 /// the biggest free buffer, and failing that, it adds a new one.
-fn take_buffer(buffer_lanes: &mut Vec<usize>, free: &mut Vec<usize>, lanes: usize) -> usize {
+fn take_buffer(
+    buffer_lanes: &mut Vec<usize>,
+    free: &mut Vec<usize>,
+    lanes: usize,
+    usable: impl Fn(usize) -> bool,
+) -> usize {
     let big_enough = free
         .iter()
         .enumerate()
+        .filter(|(_, b)| usable(**b))
         .filter(|(_, b)| buffer_lanes[**b] >= lanes)
         .min_by_key(|(_, b)| buffer_lanes[**b])
         .map(|(i, _)| i);
     let biggest = || {
         free.iter()
             .enumerate()
+            .filter(|(_, b)| usable(**b))
             .max_by_key(|(_, b)| buffer_lanes[**b])
             .map(|(i, _)| i)
     };

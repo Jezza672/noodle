@@ -18,8 +18,10 @@ mod job;
 mod lane;
 mod node;
 mod offline;
+mod parallel;
 mod param;
 mod plan;
+mod profile;
 mod registry;
 mod render;
 mod replace;
@@ -58,17 +60,21 @@ pub use offline::{
     render_offline_node,
 };
 pub use param::{Modulation, ParamInfo, ParamKind, Taper, Unit};
+pub use plan::PlanShape;
+pub use profile::{NodeProfile, Profile, profile_project};
 pub use registry::Registry;
 pub use render::{
     Render, RenderError, StreamError, Tap, TapSink, render, render_project,
     render_project_streaming, render_project_streaming_replacing, render_taps,
 };
 pub use replace::{Replacement, Replacements, TapSpec};
-pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};
+pub use runtime::{
+    Bus, Controller, Processor, Settings, SettingsError, engine, engine_with_workers,
+};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{
-    CpuReading, CpuWriter, Level, MeterReader, MeterWriter, ParamReading, ParamWriter, ScopeView,
-    ScopeWriter, Telemetry,
+    BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level, MeterReader,
+    MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,
 };
 pub use tempo::TempoTable;
 pub use transport::TransportControl;
