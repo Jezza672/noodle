@@ -456,3 +456,53 @@ pub fn capture_state(
     }
     crate::thread::capture_fresh(path, plugin_id, state)
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    /// A plugin's library must stay loaded after its entry is dropped: its
+    /// Objective-C objects can still be in the main thread's autorelease
+    /// pool, and draining it after the library is unloaded crashes (issue
+    /// 112). The test plugin is a Rust cdylib, which macOS never unloads, so
+    /// this builds a C one that it would.
+    #[test]
+    fn a_loaded_plugin_library_is_never_unloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("stub.c");
+        std::fs::write(
+            &source,
+            "#include <stdbool.h>\n\
+             static bool init(const char *p) { return true; }\n\
+             static void deinit(void) {}\n\
+             static const void *get_factory(const char *id) { return 0; }\n\
+             __attribute__((visibility(\"default\")))\n\
+             const struct { unsigned v[3]; void *a, *b, *c; } clap_entry =\n\
+             { {1, 2, 0}, (void *)init, (void *)deinit, (void *)get_factory };\n",
+        )
+        .unwrap();
+        let library = dir.path().join("stub.clap");
+        let built = std::process::Command::new("clang")
+            .args(["-dynamiclib", "-o"])
+            .arg(&library)
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(built.success(), "clang failed");
+
+        let entry = load_entry(&library).expect("the stub loads");
+        let mapped = || {
+            // SAFETY: RTLD_NOLOAD only reports whether the library is mapped.
+            unsafe {
+                libloading::os::unix::Library::open(
+                    Some(&library),
+                    libloading::os::unix::RTLD_LAZY | 0x10, // RTLD_NOLOAD
+                )
+            }
+            .is_ok()
+        };
+        assert!(mapped(), "loaded");
+        drop(entry);
+        assert!(mapped(), "unloaded when its last entry was dropped");
+    }
+}
