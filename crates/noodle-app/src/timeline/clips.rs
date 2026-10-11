@@ -182,6 +182,121 @@ pub fn set_fade_out(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<
 }
 
 /// Shortens fades that no longer fit inside the clip.
+/// The clip cut in two at `at`: the part before it and the part from it on,
+/// each a clip of its own that plays what was there, sample for sample.
+/// `None` if `at` isn't inside the clip. A fade out stays with the second
+/// half and a fade in with the first. A MIDI note that spans the cut is
+/// shortened in the first half and sounds again at the start of the second.
+pub fn split(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<(Clip, Clip)> {
+    if at <= clip.start {
+        return None;
+    }
+    match &clip.content {
+        ClipContent::Audio(audio) => {
+            let rate = f64::from(rate);
+            // From the (rounded) cut tick, so both halves agree on the frame.
+            let cut = map
+                .sample_at(at, rate)
+                .checked_sub(map.sample_at(clip.start, rate))?;
+            if cut == 0 || cut >= audio.length {
+                return None;
+            }
+            let mut first = audio.clone();
+            first.length = cut;
+            first.fade_out = 0;
+            fit_fades(&mut first);
+            let mut second = audio.clone();
+            second.offset += cut;
+            second.length -= cut;
+            second.fade_in = 0;
+            fit_fades(&mut second);
+            Some((
+                Clip {
+                    content: ClipContent::Audio(first),
+                    ..clip.clone()
+                },
+                Clip {
+                    start: at,
+                    content: ClipContent::Audio(second),
+                    ..clip.clone()
+                },
+            ))
+        }
+        ClipContent::Midi(midi) => {
+            let cut = at.0 - clip.start.0;
+            if cut <= 0 || cut >= midi.length.0 {
+                return None;
+            }
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for note in &midi.notes {
+                let end = note.start.0 + note.length.0;
+                if note.start.0 < cut {
+                    before.push(noodle_core::MidiNote {
+                        length: Tick(note.length.0.min(cut - note.start.0)),
+                        ..*note
+                    });
+                }
+                if end > cut {
+                    let from = (note.start.0 - cut).max(0);
+                    after.push(noodle_core::MidiNote {
+                        start: Tick(from),
+                        length: Tick(end - cut - from),
+                        ..*note
+                    });
+                }
+            }
+            Some((
+                Clip {
+                    content: ClipContent::Midi(MidiClip {
+                        length: Tick(cut),
+                        notes: before,
+                    }),
+                    ..clip.clone()
+                },
+                Clip {
+                    start: at,
+                    content: ClipContent::Midi(MidiClip {
+                        length: Tick(midi.length.0 - cut),
+                        notes: after,
+                    }),
+                    ..clip.clone()
+                },
+            ))
+        }
+    }
+}
+
+/// The audio clip with its contents slid `delta` ticks later (earlier if
+/// negative) under the same window: the clip keeps its place and length and
+/// plays other parts of the file. It stops at the file's start, and at its
+/// end when that is known. `None` for a MIDI clip.
+pub fn slip(
+    map: &TempoMap,
+    clip: &Clip,
+    delta: i64,
+    rate: u32,
+    file_frames: Option<u64>,
+) -> Option<Clip> {
+    let audio = clip.as_audio()?;
+    let rate = f64::from(rate);
+    let here = map.sample_at(clip.start, rate) as i64;
+    // The distance in frames at this place in the tempo map, either way.
+    let far = map.sample_at(Tick(clip.start.0 + delta.abs()), rate) as i64;
+    let moved = (far - here) * delta.signum();
+    // Contents move later, so the window looks at earlier parts of the file.
+    let wanted = audio.offset as i64 - moved;
+    let latest = file_frames.map_or(i64::MAX, |frames| {
+        frames.saturating_sub(audio.length) as i64
+    });
+    let mut audio = audio.clone();
+    audio.offset = wanted.clamp(0, latest.max(0)) as u64;
+    Some(Clip {
+        content: ClipContent::Audio(audio),
+        ..clip.clone()
+    })
+}
+
 fn fit_fades(audio: &mut AudioClip) {
     audio.fade_in = audio.fade_in.min(audio.length);
     audio.fade_out = audio.fade_out.min(audio.length - audio.fade_in);
@@ -382,5 +497,64 @@ mod tests {
         let clip = midi_clip(0, 3840, &[]);
         assert!(set_fade_in(&map(), &clip, Tick(480), RATE).is_none());
         assert!(set_fade_out(&map(), &clip, Tick(480), RATE).is_none());
+    }
+
+    #[test]
+    fn splitting_cuts_the_audio_in_two_without_a_gap() {
+        let mut original = clip(960, 1_000, 48_000);
+        original.content = ClipContent::Audio(AudioClip {
+            fade_in: 100,
+            fade_out: 200,
+            ..audio(&original).clone()
+        });
+        // One beat (24000 frames at 120 bpm) after the start.
+        let (a, b) = split(&map(), &original, Tick(960 + 960), RATE).unwrap();
+        assert_eq!((a.start, b.start), (Tick(960), Tick(1_920)));
+        assert_eq!((audio(&a).offset, audio(&a).length), (1_000, 24_000));
+        assert_eq!((audio(&b).offset, audio(&b).length), (25_000, 24_000));
+        assert_eq!((audio(&a).fade_in, audio(&a).fade_out), (100, 0));
+        assert_eq!((audio(&b).fade_in, audio(&b).fade_out), (0, 200));
+    }
+
+    #[test]
+    fn splitting_outside_the_clip_does_nothing() {
+        let original = clip(960, 0, 24_000);
+        assert!(split(&map(), &original, Tick(960), RATE).is_none());
+        assert!(split(&map(), &original, Tick(100), RATE).is_none());
+        // The clip is exactly one beat long.
+        assert!(split(&map(), &original, Tick(1_920), RATE).is_none());
+        assert!(split(&map(), &original, Tick(5_000), RATE).is_none());
+    }
+
+    #[test]
+    fn splitting_a_midi_clip_splits_a_note_that_spans_the_cut() {
+        let original = midi_clip(0, 1_920, &[(0, 480, 60), (720, 480, 62), (1_500, 100, 64)]);
+        let (a, b) = split(&map(), &original, Tick(960), RATE).unwrap();
+        let (a, b) = (a.as_midi().unwrap(), b.as_midi().unwrap());
+        assert_eq!((a.length, b.length), (Tick(960), Tick(960)));
+        let span = |m: &MidiClip| {
+            m.notes
+                .iter()
+                .map(|n| (n.start.0, n.length.0, n.key))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(span(a), vec![(0, 480, 60), (720, 240, 62)]);
+        assert_eq!(span(b), vec![(0, 240, 62), (540, 100, 64)]);
+    }
+
+    #[test]
+    fn slipping_moves_the_window_over_the_file_and_stops_at_its_ends() {
+        let original = clip(960, 10_000, 24_000);
+        // A beat later: the window looks 24000 frames earlier, but only
+        // 10000 are there.
+        let slipped = slip(&map(), &original, 960, RATE, Some(100_000)).unwrap();
+        assert_eq!(audio(&slipped).offset, 0);
+        assert_eq!(slipped.start, original.start);
+        let slipped = slip(&map(), &original, -480, RATE, Some(100_000)).unwrap();
+        assert_eq!(audio(&slipped).offset, 22_000);
+        // At most to where the clip still fits in the file.
+        let slipped = slip(&map(), &original, -4_800, RATE, Some(50_000)).unwrap();
+        assert_eq!(audio(&slipped).offset, 26_000);
+        assert!(slip(&map(), &midi_clip(0, 960, &[]), 10, RATE, None).is_none());
     }
 }
