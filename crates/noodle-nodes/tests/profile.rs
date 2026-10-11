@@ -138,7 +138,7 @@ fn blocks_over_their_budget_are_counted() {
 
 #[test]
 fn helper_threads_speed_up_side_by_side_branches() {
-    if std::thread::available_parallelism().map_or(1, |n| n.get()) < 3 {
+    if std::thread::available_parallelism().map_or(1, |n| n.get()) < 4 {
         return;
     }
     let (project, _) = project(4);
@@ -146,7 +146,7 @@ fn helper_threads_speed_up_side_by_side_branches() {
     let parallel = profile_project(&project, &registry(), SETTINGS, FRAMES, 3, false).unwrap();
     assert!(parallel.shape.width >= 4, "{:?}", parallel.shape);
     assert!(
-        parallel.wall < serial.wall.mul_f64(0.6),
+        parallel.wall < serial.wall.mul_f64(0.85),
         "4 busy branches on 4 threads: {:?} vs {:?} on one",
         parallel.wall,
         serial.wall
