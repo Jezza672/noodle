@@ -64,9 +64,43 @@ pub fn is_running(node: NodeId) -> bool {
     find(node).is_ok()
 }
 
-/// Opens the node's plugin editor (or brings it back if it was hidden).
-pub fn open_editor(node: NodeId) -> Result<(), HostError> {
-    thread::open_editor(find(node)?.0)
+/// Which running instance an editor belongs to. A node can be built again
+/// (a recompile, a freeze render), so a caller that keeps an editor open
+/// holds this, not the node ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorKey(u64);
+
+/// Opens the node's plugin editor (or brings it back if it was hidden) on its
+/// newest running instance.
+pub fn open_editor(node: NodeId) -> Result<EditorKey, HostError> {
+    let key = find(node)?.0;
+    thread::open_editor(key)?;
+    Ok(EditorKey(key))
+}
+
+fn flags_of(key: EditorKey) -> Option<Arc<Flags>> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .find(|r| r.key == key.0)
+        .map(|r| Arc::clone(&r.flags))
+}
+
+/// Whether the instance is still running (it is gone once the node is built
+/// again).
+pub fn editor_instance_running(key: EditorKey) -> bool {
+    flags_of(key).is_some()
+}
+
+/// Whether that instance's editor window is up.
+pub fn editor_key_is_open(key: EditorKey) -> bool {
+    flags_of(key).is_some_and(|f| f.editor_open.load(std::sync::atomic::Ordering::Acquire))
+}
+
+/// Reads that instance.
+pub fn capture_key(key: EditorKey) -> Result<Captured, HostError> {
+    thread::capture(key.0)
 }
 
 /// Closes the editor, if it is open.
@@ -112,11 +146,12 @@ impl Captured {
             let Some(param) = descriptor.params.iter().find(|p| p.id == *id) else {
                 continue;
             };
-            let (min, max) = if param.max > param.min {
-                (param.min, param.max)
-            } else {
-                (0.0, 1.0)
-            };
+            let (min, max) =
+                if param.min.is_finite() && param.max.is_finite() && param.max > param.min {
+                    (param.min, param.max)
+                } else {
+                    (0.0, 1.0)
+                };
             if !value.is_finite() {
                 continue;
             }

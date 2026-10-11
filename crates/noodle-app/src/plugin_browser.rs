@@ -107,7 +107,7 @@ impl PluginBrowser {
                 for plugin in &found {
                     ui.horizontal(|ui| {
                         if ui.button("Add").clicked() {
-                            chosen = Some(format!("clap.{}", plugin.id));
+                            chosen = Some(plugin.node_id());
                         }
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&plugin.name).strong());

@@ -170,7 +170,7 @@ pub struct Session {
     plugin_files: Vec<noodle_plugins::PluginFile>,
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
-    plugin_editors: BTreeSet<NodeId>,
+    plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
     telemetry: Telemetry,
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
@@ -347,7 +347,7 @@ impl Session {
             plugins,
             plugin_scan,
             plugin_files,
-            plugin_editors: BTreeSet::new(),
+            plugin_editors: Default::default(),
             telemetry,
             clips,
             midi,
@@ -548,32 +548,50 @@ impl Session {
             return;
         }
         match noodle_plugins::open_editor(node) {
-            Ok(()) => {
-                self.plugin_editors.insert(node);
+            Ok(key) => {
+                self.plugin_editors.insert(node, key);
             }
             Err(error) => self.message = Some(format!("Couldn't open the editor: {error}")),
         }
     }
 
-    /// Stores the state of each plugin whose editor has closed.
+    /// Stores the state of each plugin whose editor has closed. The node
+    /// stays on the list until that worked, or its plugin instance is gone
+    /// (the graph was built again, which loses what the editor changed).
     fn poll_plugin_editors(&mut self) {
-        let closed: Vec<NodeId> = self
+        let closed: Vec<(NodeId, noodle_plugins::EditorKey)> = self
             .plugin_editors
             .iter()
-            .copied()
-            .filter(|node| !noodle_plugins::editor_is_open(*node))
+            .map(|(n, k)| (*n, *k))
+            .filter(|(_, key)| !noodle_plugins::editor_key_is_open(*key))
             .collect();
-        for node in closed {
-            self.plugin_editors.remove(&node);
+        for (node, key) in closed {
+            if !noodle_plugins::editor_instance_running(key) {
+                self.plugin_editors.remove(&node);
+                continue;
+            }
             let Some(plugin) = self.plugin_of(node) else {
+                self.plugin_editors.remove(&node);
                 continue;
             };
             let descriptor = plugin.descriptor().clone();
-            match noodle_plugins::capture(node) {
+            match noodle_plugins::capture_key(key) {
                 Ok(captured) => {
-                    let command = captured.commands(node, &descriptor);
-                    self.edit([Edit::Apply(command)]);
-                    self.message = Some(format!("Kept the state of {}", descriptor.name));
+                    self.plugin_editors.remove(&node);
+                    let unchanged = self.project.graph().node(node).is_some_and(|n| {
+                        n.config.get(noodle_plugins::STATE_KEY)
+                            == Some(&noodle_core::Value::Text(captured.state_text()))
+                            && captured.params.iter().all(|(id, v)| {
+                                n.params
+                                    .get(&noodle_plugins::param_key(*id))
+                                    .is_none_or(|p| (f64::from(*p) - v).abs() < 1e-6)
+                            })
+                    });
+                    if !unchanged {
+                        let command = captured.commands(node, &descriptor);
+                        self.edit([Edit::Apply(command)]);
+                        self.message = Some(format!("Kept the state of {}", descriptor.name));
+                    }
                 }
                 Err(error) => {
                     self.message = Some(format!("Couldn't keep the plugin's state: {error}"));
@@ -859,6 +877,7 @@ impl Session {
         self.history = History::new();
         self.path = path;
         self.dirty = false;
+        self.plugin_editors.clear();
         self.message = None;
         self.parked = Tick(0);
         self.recompile();

@@ -138,3 +138,34 @@ fn many_instances_load_and_close_from_many_threads_on_the_one_plugin_thread() {
         }
     });
 }
+
+#[test]
+fn an_editor_is_followed_by_its_instance_even_when_the_node_is_built_again() {
+    let catalog = catalog();
+    let node_type = node_type(&catalog);
+    let node = NodeId(9_200);
+    let live = build(node_type, node, &Config::new());
+    let key = open_editor(node).unwrap();
+    assert!(noodle_plugins::editor_key_is_open(key));
+
+    // A render builds the same node afterwards. Asking by node would now
+    // find the render, but the key still means the instance with the editor.
+    let render = build(node_type, node, &Config::new());
+    assert!(noodle_plugins::editor_key_is_open(key));
+    until("the user turns Gain down", || {
+        gain(&noodle_plugins::capture_key(key).unwrap()) == 0.25
+    });
+    assert_eq!(
+        gain(&capture(node).unwrap()),
+        1.0,
+        "the render is untouched"
+    );
+
+    drop(render);
+    close_editor(node); // the node's newest is now the live one
+    until("the editor closes", || {
+        !noodle_plugins::editor_key_is_open(key)
+    });
+    drop(live);
+    assert!(!noodle_plugins::editor_instance_running(key));
+}

@@ -225,7 +225,7 @@ impl NodeType for ClapNodeType {
             ),
             _ => None,
         };
-        let loaded = thread::start(
+        let mut loaded = thread::start(
             &self.path,
             &self.descriptor.id,
             state,
@@ -233,10 +233,10 @@ impl NodeType for ClapNodeType {
             setup.max_frames,
         )
         .map_err(|error| NodeError::config(error.to_string()))?;
-        editor::register(setup.node, loaded.key, loaded.flags);
+        editor::register(setup.node, loaded.key, Arc::clone(&loaded.flags));
         Ok(Instance::realtime(ClapNode::new(
             &self.descriptor,
-            loaded.processor.into(),
+            loaded.take_processor().into(),
             loaded.key,
             setup.max_frames,
         )))

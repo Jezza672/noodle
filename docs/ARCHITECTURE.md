@@ -814,7 +814,7 @@ block). The app opens editors from the properties panel (`Edit::PluginEditor`)
 and captures when the window closes (`Session::poll_plugin_editors`), as one
 undo step. That is a config change, so the node recompiles and its plugin is
 reloaded from the stored state. State changed while an editor is open is
-stored only when it closes.
+stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
 
 **Plugin browser** (`noodle-app/src/plugin_browser.rs`, View > Plugins). Lists
 the catalog with a search over name, vendor, ID and kind; Add puts the node on

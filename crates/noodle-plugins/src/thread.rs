@@ -52,8 +52,25 @@ struct Live {
 /// An instance, activated and ready.
 pub(crate) struct Loaded {
     pub key: u64,
-    pub processor: StoppedPluginAudioProcessor<Host>,
+    processor: Option<StoppedPluginAudioProcessor<Host>>,
     pub flags: Arc<Flags>,
+}
+
+impl Loaded {
+    /// The processor, which the node then owns (and gives back with `close`).
+    pub fn take_processor(&mut self) -> StoppedPluginAudioProcessor<Host> {
+        self.processor.take().expect("taken once")
+    }
+}
+
+impl Drop for Loaded {
+    fn drop(&mut self) {
+        // Dropped without the node having taken it: the caller timed out just
+        // as the load finished. Let the thread deactivate the instance.
+        if let Some(processor) = self.processor.take() {
+            close(self.key, processor);
+        }
+    }
 }
 
 enum Command {
@@ -246,25 +263,19 @@ fn handle(command: Command, live: &mut HashMap<u64, Live>, next_key: &mut u64) {
         } => {
             let result = load(&path, &plugin_id, state.as_deref(), sample_rate, max_frames);
             match result {
-                Ok((mut instance_live, processor)) => {
+                Ok((instance_live, processor)) => {
                     let key = *next_key;
                     *next_key += 1;
                     let flags = Arc::clone(&instance_live.flags);
                     let loaded = Loaded {
                         key,
-                        processor,
+                        processor: Some(processor),
                         flags,
                     };
-                    match reply.send(Ok(loaded)) {
-                        Ok(()) => {
-                            live.insert(key, instance_live);
-                        }
-                        Err(mpsc::SendError(Ok(loaded))) => {
-                            // The node gave up waiting (see `LOAD_TIMEOUT`).
-                            instance_live.instance.deactivate(loaded.processor);
-                        }
-                        Err(_) => {}
-                    }
+                    // Registered first: if the caller is gone, dropping the
+                    // `Loaded` sends a Close for this key.
+                    live.insert(key, instance_live);
+                    let _ = reply.send(Ok(loaded));
                 }
                 Err(error) => {
                     let _ = reply.send(Err(error));
