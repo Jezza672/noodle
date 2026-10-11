@@ -3580,4 +3580,24 @@ mod tests {
         session.midi_bus().send([0x90, 69, 100]);
         assert!(loudness(&mut session, meter, true) > 0.01);
     }
+
+    #[test]
+    fn an_armed_track_inside_a_group_plays_its_synth_too() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, meter) = track_synth(&mut session);
+        // A real track's input and its instrument live inside a group.
+        let nodes: Vec<NodeId> = (1..=7).map(NodeId).collect();
+        let mut next = session.project().next_node_id().0;
+        let (_, command) = noodle_core::group::group_nodes(session.project(), &nodes[..5], || {
+            next += 1;
+            NodeId(next - 1)
+        })
+        .unwrap();
+        session.edit([Edit::Apply(command)]);
+        session.start_engine();
+        session.arm(track, true);
+        session.midi_bus().send([0x90, 69, 100]);
+        assert!(loudness(&mut session, meter, true) > 0.01);
+    }
 }
