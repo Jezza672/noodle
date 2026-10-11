@@ -293,7 +293,7 @@ fn state_captured_from_a_plugin_restores_to_the_same_sound() {
     let node = node_type(&catalog);
     let saved = 0.125f32.to_le_bytes();
     let captured = capture_state(node.path(), PLUGIN_ID, Some(&saved)).unwrap();
-    assert_eq!(captured, saved);
+    // The plugin's bytes come back wrapped in a length and checksum.
     let text = base64::engine::general_purpose::STANDARD.encode(&captured);
     let config = Config::new().with(STATE_KEY, Value::Text(text));
     let mut h = Harness::new(node, &config, &[], RATE, 256).unwrap();
@@ -303,6 +303,79 @@ fn state_captured_from_a_plugin_restores_to_the_same_sound() {
             .lane(0, 1)
             .iter()
             .all(|&s| (s - 0.125).abs() < 1e-6)
+    );
+}
+
+/// Gain 0.5 in state, bias 0: input 1.0 comes out as 0.5 only if the host
+/// left the gain alone (the plugin reports a default of 1.0).
+#[test]
+fn an_untouched_port_leaves_the_state_s_value_alone() {
+    let mut bytes = 0.0f32.to_le_bytes().to_vec();
+    bytes.extend(0.5f32.to_le_bytes());
+    let text = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let config = Config::new().with(STATE_KEY, Value::Text(text));
+    let mut h = harness(&config, &[(IN, Shape::new(1, 2))]);
+    fill_input(&mut h, 64, |_| 1.0);
+    h.run(64).unwrap();
+    assert!(
+        h.output(0)
+            .lane(0, 0)
+            .iter()
+            .all(|&s| (s - 0.5).abs() < 1e-6)
+    );
+}
+
+#[test]
+fn damaged_state_is_refused_before_the_plugin_sees_it() {
+    let catalog = catalog();
+    let node = node_type(&catalog);
+    let saved = 0.125f32.to_le_bytes();
+    let captured = capture_state(node.path(), PLUGIN_ID, Some(&saved)).unwrap();
+    let encode = |bytes: &[u8]| {
+        Config::new().with(
+            STATE_KEY,
+            Value::Text(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        )
+    };
+    assert!(Harness::new(node, &encode(&captured), &[], RATE, 256).is_ok());
+    // Cut short.
+    let cut = &captured[..captured.len() - 1];
+    assert!(Harness::new(node, &encode(cut), &[], RATE, 256).is_err());
+    // Edited.
+    let mut edited = captured.clone();
+    *edited.last_mut().unwrap() ^= 1;
+    assert!(Harness::new(node, &encode(&edited), &[], RATE, 256).is_err());
+}
+
+#[test]
+fn the_params_setting_chooses_which_parameters_get_ports() {
+    let catalog = catalog();
+    let node = node_type(&catalog);
+    let keys = |config: &Config| {
+        node.layout(config)
+            .unwrap()
+            .inputs
+            .iter()
+            .map(|p| p.key.to_string())
+            .collect::<Vec<_>>()
+    };
+    // Without the setting every parameter has a port, as in projects saved
+    // before it existed. A big plugin's new node starts with `none` instead.
+    assert_eq!(keys(&Config::new()), ["in", "p1", "p2"]);
+    assert_eq!(noodle_plugins::initial_params(node.descriptor()), None);
+    let only =
+        |text: &str| Config::new().with(noodle_plugins::PARAMS_KEY, Value::Text(text.into()));
+    assert_eq!(keys(&only("2")), ["in", "p2"]);
+    assert_eq!(keys(&only("none")), ["in"]);
+    // The node still builds and plays with a parameter hidden.
+    let mut h = Harness::new(node, &only("none"), &[(IN, Shape::new(1, 2))], RATE, 256).unwrap();
+    fill_input(&mut h, 64, |_| 0.5);
+    h.run(64).unwrap();
+    assert!(
+        h.output(0)
+            .lane(0, 0)
+            .iter()
+            .all(|&s| (s - 0.5).abs() < 1e-6)
     );
 }
 

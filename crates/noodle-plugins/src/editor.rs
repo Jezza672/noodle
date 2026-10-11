@@ -17,9 +17,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
 use noodle_core::{Command, NodeId, Value};
+use noodle_engine::Config;
 
 use crate::STATE_KEY;
-use crate::descriptor::{Descriptor, param_key};
+use crate::descriptor::{Descriptor, exposed_params, param_key};
 use crate::host::{Flags, HostError};
 use crate::{thread, vst3};
 
@@ -147,15 +148,16 @@ impl Captured {
     }
 
     /// The edit that stores this in the node: its `state` setting, and a
-    /// value for each parameter the plugin lists (clamped into its range).
-    pub fn commands(&self, node: NodeId, descriptor: &Descriptor) -> Command {
+    /// value for each parameter the node exposes (clamped into its range).
+    pub fn commands(&self, node: NodeId, descriptor: &Descriptor, config: &Config) -> Command {
+        let exposed = exposed_params(descriptor, config);
         let mut commands = vec![Command::SetConfig {
             node,
             key: STATE_KEY.into(),
             value: Some(Value::Text(self.state_text())),
         }];
         for (id, value) in &self.params {
-            let Some(param) = descriptor.params.iter().find(|p| p.id == *id) else {
+            let Some(param) = exposed.iter().find(|p| p.id == *id) else {
                 continue;
             };
             let (min, max) =

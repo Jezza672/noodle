@@ -291,7 +291,9 @@ fn state_captured_from_a_plugin_restores_to_the_same_sound() {
     let node = vst3_node_type(&catalog);
     let saved = state_of(1.0, 0.0, 0.125);
     let captured = capture_state(node.path(), &node.descriptor().id, Some(&saved)).unwrap();
-    assert_eq!(captured, saved);
+    // The same bytes, with the checksummed header.
+    assert_eq!(captured[..4], *b"NVS2");
+    assert_eq!(captured[12..], saved[8..]);
     let mut h = Harness::new(node, &state_config(&captured), &[], RATE, 256).unwrap();
     h.run(32).unwrap();
     assert!(
@@ -314,6 +316,21 @@ fn bad_state_is_an_error_not_a_crash() {
     // The right header, but too little for the plugin to read.
     let cut = state_of(1.0, 0.0, 0.0)[..10].to_vec();
     assert!(Harness::new(node, &state_config(&cut), &[], RATE, 256).is_err());
+}
+
+#[test]
+fn saved_state_has_a_checksum_that_refuses_cut_or_edited_bytes() {
+    let catalog = vst3_catalog();
+    let node = vst3_node_type(&catalog);
+    let saved = state_of(1.0, 0.0, 0.25);
+    let captured = capture_state(node.path(), &node.descriptor().id, Some(&saved)).unwrap();
+    assert!(captured.starts_with(b"NVS2"));
+    assert!(Harness::new(node, &state_config(&captured), &[], RATE, 256).is_ok());
+    let cut = &captured[..captured.len() - 1];
+    assert!(Harness::new(node, &state_config(cut), &[], RATE, 256).is_err());
+    let mut edited = captured.clone();
+    *edited.last_mut().unwrap() ^= 1;
+    assert!(Harness::new(node, &state_config(&edited), &[], RATE, 256).is_err());
 }
 
 #[test]

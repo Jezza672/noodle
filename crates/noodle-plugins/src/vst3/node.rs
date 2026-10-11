@@ -13,7 +13,7 @@ use vst3::Steinberg::*;
 
 use noodle_engine::{Context, Event as NoodleEvent, EventKind, Expression, Io, Node, NoteId};
 
-use crate::descriptor::Descriptor;
+use crate::descriptor::{Descriptor, ParamDesc};
 use crate::node::{PARAM_STEP, param_range};
 
 use super::classes::{Changes, DiscardChanges, Edits, Events, raw};
@@ -130,6 +130,7 @@ impl Vst3Node {
     pub fn new(
         plugin: Plugin,
         descriptor: &Descriptor,
+        exposed: &[&ParamDesc],
         midi_assignments: &[(i16, i16, ParamID)],
         gui_key: Option<u64>,
         max_frames: usize,
@@ -148,8 +149,7 @@ impl Vst3Node {
         let out_buffers = buffers_for(&mut audio_out);
 
         let first_param = descriptor.audio_inputs.len();
-        let mut slots: Vec<Slot> = descriptor
-            .params
+        let mut slots: Vec<Slot> = exposed
             .iter()
             .enumerate()
             .map(|(index, param)| {

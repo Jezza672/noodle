@@ -373,10 +373,50 @@ pub(crate) fn visible_params(handle: &mut PluginMainThreadHandle) -> Vec<(ClapId
     params
 }
 
+/// Marks state wrapped by [`seal_state`].
+const STATE_MAGIC: &[u8; 4] = b"NCS1";
+
+pub(crate) fn checksum(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5_u32, |hash, &byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
+}
+
+/// Wraps a plugin's state in a length and checksum. Some plugins crash the
+/// host on state that is cut short, and the plugin runs in our process, so
+/// damaged state has to be refused before it gets to them.
+pub(crate) fn seal_state(state: &[u8]) -> Vec<u8> {
+    let mut sealed = Vec::with_capacity(state.len() + 12);
+    sealed.extend_from_slice(STATE_MAGIC);
+    sealed.extend_from_slice(&(state.len() as u32).to_le_bytes());
+    sealed.extend_from_slice(&checksum(state).to_le_bytes());
+    sealed.extend_from_slice(state);
+    sealed
+}
+
+/// The plugin's own bytes from state [`seal_state`] wrapped; or, for state
+/// saved before the wrapper existed (which can't be checked), the bytes as
+/// they are.
+pub(crate) fn unseal_state(state: &[u8]) -> Result<&[u8], HostError> {
+    let Some(rest) = state.strip_prefix(STATE_MAGIC) else {
+        return Ok(state);
+    };
+    let damaged = || HostError("the saved plugin state is damaged (cut short or edited)".into());
+    let (len, rest) = rest.split_first_chunk::<4>().ok_or_else(damaged)?;
+    let (sum, payload) = rest.split_first_chunk::<4>().ok_or_else(damaged)?;
+    if payload.len() != u32::from_le_bytes(*len) as usize
+        || checksum(payload) != u32::from_le_bytes(*sum)
+    {
+        return Err(damaged());
+    }
+    Ok(payload)
+}
+
 pub(crate) fn load_state(
     instance: &mut PluginInstance<Host>,
     state: &[u8],
 ) -> Result<(), HostError> {
+    let state = unseal_state(state)?;
     let handle = instance.plugin_handle();
     let ext = handle
         .get_extension::<PluginState>()
@@ -393,7 +433,7 @@ pub(crate) fn save_state_of(instance: &mut PluginInstance<Host>) -> Result<Vec<u
     let mut bytes = Vec::new();
     ext.save(&handle, &mut bytes)
         .map_err(|error| HostError(error.to_string()))?;
-    Ok(bytes)
+    Ok(seal_state(&bytes))
 }
 
 /// Loads a plugin, optionally restores `state` into it, and returns the state

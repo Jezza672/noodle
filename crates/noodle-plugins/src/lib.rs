@@ -38,3 +38,7 @@ pub use window::{EditorWindow, ParentWindow, set_window_factory};
 
 /// The node setting that holds a plugin's saved state, as base64 text.
 pub const STATE_KEY: &str = "state";
+
+/// The node setting that lists which parameters get ports (see
+/// [`exposed_params`]).
+pub const PARAMS_KEY: &str = "params";
