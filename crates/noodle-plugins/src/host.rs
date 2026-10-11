@@ -1,4 +1,4 @@
-//! Loading CLAP plugins, with clack: the host's callbacks, and describing a
+//! Loading CLAP plugins (VST3 is in `vst3/`), with clack: the host's callbacks, and describing a
 //! plugin file for the scanner. Live instances belong to the shared plugin
 //! thread (see `thread.rs`).
 
@@ -20,7 +20,7 @@ use clack_extensions::state::PluginState;
 use clack_extensions::timer::{HostTimer, HostTimerImpl, TimerId};
 use clack_host::prelude::*;
 
-use crate::descriptor::{AudioPort, Descriptor, ParamDesc};
+use crate::descriptor::{AudioPort, Descriptor, ParamDesc, PluginFormat};
 
 /// The host side of a plugin.
 pub(crate) struct Host;
@@ -254,6 +254,9 @@ fn text(bytes: Option<&std::ffi::CStr>) -> String {
 /// code (it instantiates each one to read its ports), so call it in the
 /// scanner's child process.
 pub fn describe_file(path: &Path) -> Result<Vec<Descriptor>, HostError> {
+    if PluginFormat::of_path(path) == PluginFormat::Vst3 {
+        return crate::vst3::describe_file(path);
+    }
     let entry = load_entry(path)?;
     let factory = entry
         .get_plugin_factory()
@@ -323,6 +326,7 @@ fn describe_instance(instance: &mut PluginInstance<Host>) -> Descriptor {
         .map(|(_, info)| info)
         .collect();
     Descriptor {
+        format: PluginFormat::Clap,
         id: String::new(),
         name: String::new(),
         vendor: String::new(),
@@ -399,5 +403,8 @@ pub fn capture_state(
     plugin_id: &str,
     state: Option<&[u8]>,
 ) -> Result<Vec<u8>, HostError> {
+    if PluginFormat::of_path(path) == PluginFormat::Vst3 {
+        return crate::vst3::capture_state(path, plugin_id, state);
+    }
     crate::thread::capture_fresh(path, plugin_id, state)
 }

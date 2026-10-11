@@ -57,6 +57,10 @@ fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edi
     let Some(plugin) = session.plugin_of(id) else {
         return;
     };
+    if plugin.descriptor().format == noodle_plugins::PluginFormat::Vst3 {
+        ui.weak("VST3 editors aren't supported yet: set its parameters here.");
+        return;
+    }
     let open = session.plugin_editor_open(id);
     ui.horizontal(|ui| {
         let label = if open { "Close editor" } else { "Open editor" };

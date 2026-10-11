@@ -1,6 +1,6 @@
 [package]
 name = "noodle-plugins"
-description = "Plugin hosting: CLAP plugins as graph nodes."
+description = "Plugin hosting: CLAP and VST3 plugins as graph nodes."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,6 +16,12 @@ name = "test_plugin"
 path = "examples/test_plugin.rs"
 crate-type = ["cdylib"]
 
+# Its twin as a VST3 plugin.
+[[example]]
+name = "test_vst3"
+path = "examples/test_vst3.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 noodle-core.workspace = true
 noodle-engine.workspace = true
@@ -25,9 +31,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 directories = "6.0.0"
+vst3 = "0.3"
+libloading = "0.8"
 
 # Native windows for embedded plugin editors (see `src/window`).
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSGeometry", "NSThread"] }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSGraphics", "NSResponder", "NSView", "NSWindow"] }

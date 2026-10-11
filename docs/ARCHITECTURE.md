@@ -764,8 +764,8 @@ A plugin is a node. Its parameters become input ports, and its audio and note
 ports become graph ports. Plugin state is saved in the Project.
 
 - **CLAP** is hosted through `clack` (`noodle-plugins`).
-- **VST3** is hosted through the Rust `vst3` bindings, or through a thin C++
-  shim over Steinberg's SDK (MIT-licensed since 3.8) exposed through a C ABI.
+- **VST3** is hosted through the Rust `vst3` bindings (raw COM, loaded with
+  `libloading`): see "VST3 hosting" below.
 - **AU** may come later. Most macOS plugins also ship as VST3 or CLAP.
 - Plugin editors open as separate native windows: embedded in a window the host makes (macOS, Windows), or the plugin's own floating window (Linux, or when it can't embed). Both run on the plugin thread.
 - Scanning runs in a child process, so a plugin that crashes during scanning
@@ -875,8 +875,75 @@ undo step. That is a config change, so the node recompiles and its plugin is
 reloaded from the stored state. State changed while an editor is open is
 stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
 
+### VST3 hosting
+
+A VST3 plugin is the same kind of node as a CLAP one (`PluginNodeType`, the
+same `Catalog`, scan cache, browser and caching), with ID `vst3.<class id>`
+(32 hex digits; `Descriptor::format` says which standard it is, and scan
+results saved before VST3 load as CLAP). The code is in
+`noodle-plugins/src/vst3/`.
+
+- **Files.** A `.vst3` is a bundle on every system (a folder holding the
+  binary at `Contents/x86_64-linux/<name>.so`, `Contents/MacOS/<name>` or
+  `Contents/x86_64-win/<name>.vst3`) or, on Windows, a plain DLL. The scan
+  returns it as one file and doesn't search inside. Folders: `~/.vst3`,
+  `/usr/lib/vst3`, `/usr/local/lib/vst3` on Linux;
+  `/Library/Audio/Plug-Ins/VST3` (system and user) on macOS;
+  `%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3` on
+  Windows; plus `VST3_PATH`.
+- **Loading** (`module.rs`). The binary is opened, its entry point is run
+  (`ModuleEntry` with the `dlopen` handle on Linux, `bundleEntry` with the
+  `CFBundle` on macOS, `InitDll` on Windows) and `GetPluginFactory` gives the
+  factory. A module is shared by everything loaded from it (the entry runs
+  once while any plugin is alive, `ModuleExit` after the last), and each plugin
+  holds an `Arc<Module>` so the code outlives it. The classes that count are
+  those in the category "Audio Module Class".
+- **Plugin** (`plugin.rs`). The component, its `IAudioProcessor` and a
+  controller: the component itself if it is also an `IEditController`,
+  otherwise the class it names, initialised on its own. Both get an
+  `IHostApplication` (the host's name only: no `IMessage`) and the controller
+  an `IComponentHandler` that accepts and ignores edits. Set-up follows the
+  standard's order: bus arrangements (the plugin's own), every bus activated,
+  `setupProcessing`, `setActive`, and `setProcessing` on the first block, on the
+  audio thread. Tear-down is the reverse, with the component released last.
+  The component is made, set up and dropped on the shared plugin thread (via
+  `thread::run_job`, so a macOS plugin that wants the main thread gets it where
+  the app has adopted its UI thread), processed on the audio thread.
+- **Ports.** As for CLAP. Every audio bus is a port (`in`, `in2`, ...; the
+  plugin's default channel count) and every event input bus is a note input
+  (`notes`, `notes2`, ...). Parameters come from the controller: hidden,
+  read-only and program-change ones are left out. A continuous parameter's port
+  holds its normalized value, 0 to 1 (VST3 has no host-side plain range
+  without asking the controller per value); a stepped one holds 0 to its
+  step count and is rounded.
+- **Processing** (`node.rs`). Per chunk of at most `max_frames`: the inputs
+  are copied into preallocated buses, a parameter whose value changed becomes a
+  point in its `IParamValueQueue` (at the chunk's start, then every
+  `PARAM_STEP` frames while a wire drives it), notes become `Event`s
+  (`kNoteOnEvent`, `kNoteOffEvent` with the key the note-on had, note
+  expressions, polyphonic pressure) merged in time order across the note inputs,
+  and a note output bus is read back. The queues and event lists are COM
+  objects of a fixed size made when the node is built (`classes.rs`), so
+  nothing allocates in a block (`tests/realtime.rs` checks it; points past a
+  queue's room are dropped). A port at its default is not sent, so state the
+  plugin was restored from isn't overwritten by an untouched port (CLAP sends
+  everything on the first block). Raw MIDI controllers (modulation wheel,
+  volume, pan, expression, sustain, channel pressure, pitch bend) go through
+  the controller's `IMidiMapping` to parameters, which need no port; a
+  controller with no mapping is sent as a legacy MIDI event.
+- **State.** `Plugin::save_state` writes `NVS1`, the component's state length
+  as a little-endian `u32`, the component's state, then the controller's (only
+  for a separate controller), through memory `IBStream`s. Loading hands the
+  component its bytes, then the controller `setComponentState` with the same
+  bytes and its own `setState`. It lives in the `state` setting like CLAP's.
+- **Not yet.** Editors (`IPlugView`: the editor button says so), `IMessage`
+  between a component and its controller (plugins that need it to
+  synchronise may misbehave), units and program lists, 64-bit audio,
+  `IProcessContextRequirements`, and note output other than note on and off.
+  Latency is not reported.
+
 **Plugin browser** (`noodle-app/src/plugin_browser.rs`, View > Plugins). Lists
-the catalog with a search over name, vendor, ID and kind; Add puts the node on
+the catalog with a search over name, vendor, ID, format and kind; Add puts the node on
 the canvas; Rescan runs the scan in the background (Shift scans every file
 again) and the files that failed are listed with why.
 

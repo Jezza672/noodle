@@ -119,6 +119,11 @@ enum Command {
     CloseEditor {
         key: u64,
     },
+    /// Runs a job on the thread (VST3 plugins are made and dropped this way).
+    Run {
+        job: Box<dyn FnOnce() + Send>,
+        waits: bool,
+    },
 }
 
 /// The instances, and what the thread keeps for them.
@@ -232,7 +237,11 @@ fn queue() -> &'static Queue {
 impl Command {
     /// Whether the sender waits for an answer.
     fn waits(&self) -> bool {
-        !matches!(self, Command::Close { .. } | Command::CloseEditor { .. })
+        match self {
+            Command::Close { .. } | Command::CloseEditor { .. } => false,
+            Command::Run { waits, .. } => *waits,
+            _ => true,
+        }
     }
 }
 
@@ -280,6 +289,30 @@ fn wait<T>(receiver: &Receiver<Result<T, HostError>>, timeout: Duration) -> Resu
 
 fn cstring(id: &str) -> Result<CString, HostError> {
     CString::new(id).map_err(|e| HostError(e.to_string()))
+}
+
+/// Runs `job` on the plugin thread and waits up to `timeout` for what it
+/// returns. A result that arrives too late is dropped there.
+pub(crate) fn run_job<T: Send + 'static>(
+    timeout: Duration,
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, HostError> {
+    let (reply, receiver) = mpsc::channel();
+    send(Command::Run {
+        job: Box::new(move || {
+            let _ = reply.send(Ok(job()));
+        }),
+        waits: true,
+    })?;
+    wait(&receiver, timeout)
+}
+
+/// Runs `job` on the plugin thread without waiting for it.
+pub(crate) fn run_job_detached(job: impl FnOnce() + Send + 'static) {
+    let _ = send(Command::Run {
+        job: Box::new(job),
+        waits: false,
+    });
 }
 
 /// Loads the plugin, restores `state` into it if given, and activates it.
@@ -444,6 +477,7 @@ fn destroy_editor(live: &mut Live) {
 
 fn handle(command: Command, live: &mut HashMap<u64, Live>, next_key: &mut u64) {
     match command {
+        Command::Run { job, .. } => job(),
         Command::Load {
             path,
             plugin_id,

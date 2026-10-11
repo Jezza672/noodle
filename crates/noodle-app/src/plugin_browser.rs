@@ -15,7 +15,7 @@ pub struct PluginBrowser {
     added: usize,
 }
 
-/// The plugins matching every word of `query` by name, vendor or ID, with
+/// The plugins matching every word of `query` by name, vendor, ID or format, with
 /// those whose name matches first.
 fn matches<'a>(
     plugins: impl Iterator<Item = &'a noodle_plugins::Descriptor>,
@@ -25,10 +25,11 @@ fn matches<'a>(
     let mut found: Vec<_> = plugins
         .filter(|p| {
             let haystack = format!(
-                "{} {} {} {}",
+                "{} {} {} {} {}",
                 p.name,
                 p.vendor,
                 p.id,
+                p.format.name(),
                 if p.instrument { "instrument" } else { "effect" }
             )
             .to_lowercase();
@@ -112,7 +113,8 @@ impl PluginBrowser {
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&plugin.name).strong());
                             ui.weak(format!(
-                                "{} · {}",
+                                "{} · {} · {}",
+                                plugin.format.name(),
                                 if plugin.vendor.is_empty() {
                                     "unknown vendor"
                                 } else {
@@ -159,6 +161,7 @@ mod tests {
 
     fn plugin(id: &str, name: &str, vendor: &str, instrument: bool) -> Descriptor {
         Descriptor {
+            format: noodle_plugins::PluginFormat::Clap,
             id: id.into(),
             name: name.into(),
             vendor: vendor.into(),

@@ -59,7 +59,16 @@ const FRAMES: usize = 256;
 #[test]
 fn processing_blocks_with_notes_and_modulation_never_allocates() {
     let catalog = catalog();
-    let node_type = node_type(&catalog);
+    never_allocates(node_type(&catalog));
+}
+
+#[test]
+fn a_vst3_plugin_processing_blocks_with_notes_and_modulation_never_allocates() {
+    let catalog = vst3_catalog();
+    never_allocates(vst3_node_type(&catalog));
+}
+
+fn never_allocates(node_type: &noodle_plugins::PluginNodeType) {
     let config = Config::new();
     let layout = node_type.layout(&config).unwrap();
     // Wire audio in and the gain parameter.
@@ -181,8 +190,17 @@ fn processing_blocks_with_notes_and_modulation_never_allocates() {
 /// notes still arrive (parameter changes stop short to leave them room).
 #[test]
 fn a_flood_of_parameter_changes_and_notes_never_allocates_and_keeps_notes() {
+    flood(plugin_path());
+}
+
+#[test]
+fn a_vst3_flood_of_parameter_changes_and_notes_never_allocates_and_keeps_notes() {
+    flood(vst3_path());
+}
+
+fn flood(path: std::path::PathBuf) {
     use noodle_plugins::{Catalog, ParamDesc, scan_file};
-    let mut file = scan_file(&scanner(), &plugin_path());
+    let mut file = scan_file(&scanner(), &path);
     // A thousand extra parameters, which the plugin ignores. (Real ids 1 and 2
     // stay, so the gain still works.)
     let plugin = &mut file.plugins[0];
@@ -198,7 +216,7 @@ fn a_flood_of_parameter_changes_and_notes_never_allocates_and_keeps_notes() {
         });
     }
     let catalog = Catalog::new(&[file]);
-    let node_type = node_type(&catalog);
+    let node_type = catalog.iter().next().expect("the test plugin");
     let config = Config::new();
     let layout = node_type.layout(&config).unwrap();
     let input_shapes = vec![Shape::MONO; layout.inputs.len()];

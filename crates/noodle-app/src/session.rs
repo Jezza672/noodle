@@ -545,7 +545,7 @@ impl Session {
     }
 
     /// The plugin a node is, if it is one.
-    pub fn plugin_of(&self, node: NodeId) -> Option<&noodle_plugins::ClapNodeType> {
+    pub fn plugin_of(&self, node: NodeId) -> Option<&noodle_plugins::PluginNodeType> {
         let node = self.project.graph().node(node)?;
         self.plugins.get(&node.type_id)
     }
@@ -2352,6 +2352,7 @@ mod tests {
             len: 0,
             modified: 0,
             plugins: vec![noodle_plugins::Descriptor {
+                format: noodle_plugins::PluginFormat::Clap,
                 id: id.into(),
                 name: "Fake".into(),
                 vendor: "Nobody".into(),

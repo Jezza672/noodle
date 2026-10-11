@@ -34,10 +34,11 @@ use noodle_engine::{
 
 use crate::STATE_KEY;
 use crate::descriptor::{
-    Descriptor, file_stamp, input_key, note_input_key, note_output_key, output_key, param_key,
+    Descriptor, PluginFormat, file_stamp, input_key, note_input_key, note_output_key, output_key,
+    param_key,
 };
 use crate::host::Host;
-use crate::{editor, thread};
+use crate::{editor, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
 pub const PARAM_STEP: usize = 32;
@@ -65,15 +66,15 @@ const NONDETERMINISTIC: ConfigInfo = ConfigInfo::int(
 
 static CONFIG: [ConfigInfo; 1] = [NONDETERMINISTIC];
 
-/// A node type for one plugin.
-pub struct ClapNodeType {
+/// A node type for one plugin, of either format.
+pub struct PluginNodeType {
     info: &'static NodeInfo,
     path: PathBuf,
     descriptor: Descriptor,
     layout: Layout,
 }
 
-impl ClapNodeType {
+impl PluginNodeType {
     /// Leaks the names the node info needs; make one per plugin and share it.
     pub fn new(path: PathBuf, descriptor: Descriptor) -> Self {
         let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
@@ -101,13 +102,19 @@ impl ClapNodeType {
     }
 }
 
-fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
+/// A parameter's range and default as the port has them: a plugin's own
+/// when it makes sense, else 0 to 1.
+pub(crate) fn param_range(min: f64, max: f64, default: f64) -> (f32, f32, f32) {
     let (min, max) = if min.is_finite() && max.is_finite() && max > min {
         (min as f32, max as f32)
     } else {
         (0.0, 1.0)
     };
-    let default = (default as f32).clamp(min, max);
+    (min, max, (default as f32).clamp(min, max))
+}
+
+fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
+    let (min, max, default) = param_range(min, max, default);
     let info = ParamInfo::new(min, max, default).unit(Unit::None);
     if stepped {
         ParamInfo {
@@ -148,7 +155,7 @@ fn layout_of(descriptor: &Descriptor) -> Layout {
     layout
 }
 
-impl NodeType for ClapNodeType {
+impl NodeType for PluginNodeType {
     fn info(&self) -> &NodeInfo {
         self.info
     }
@@ -225,6 +232,22 @@ impl NodeType for ClapNodeType {
             ),
             _ => None,
         };
+        if self.descriptor.format == PluginFormat::Vst3 {
+            let loaded = vst3::load(
+                &self.path,
+                &self.descriptor.id,
+                state,
+                setup.sample_rate,
+                setup.max_frames,
+            )
+            .map_err(|error| NodeError::config(error.to_string()))?;
+            return Ok(Instance::realtime(vst3::Vst3Node::new(
+                loaded.plugin,
+                &self.descriptor,
+                &loaded.midi_assignments,
+                setup.max_frames,
+            )));
+        }
         let mut loaded = thread::start(
             &self.path,
             &self.descriptor.id,
@@ -245,7 +268,7 @@ impl NodeType for ClapNodeType {
 
 /// A node type shared between registries, so a render's registry and the live
 /// one build the same thing without leaking a new `NodeInfo` each time.
-pub(crate) struct Shared(pub Arc<ClapNodeType>);
+pub(crate) struct Shared(pub Arc<PluginNodeType>);
 
 impl NodeType for Shared {
     fn info(&self) -> &NodeInfo {

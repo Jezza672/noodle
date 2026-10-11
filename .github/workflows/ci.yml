@@ -42,9 +42,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       # Real third-party CLAP plugins for `noodle-plugins`' real_plugins
       # tests, and a virtual X display for their editors.
-      - name: Install CLAP plugins
+      - name: Install CLAP and VST3 plugins
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y dpf-plugins-clap dragonfly-reverb-clap lsp-plugins-clap xvfb
+        run: sudo apt-get install -y dpf-plugins-clap dragonfly-reverb-clap lsp-plugins-clap dpf-plugins-vst3 dragonfly-reverb-vst3 xvfb
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
@@ -56,4 +56,4 @@ jobs:
         if: runner.os == 'Linux'
         env:
           NOODLE_REQUIRE_REAL_PLUGINS: '1'
-        run: xvfb-run -a cargo test -p noodle-plugins --test real_plugins
+        run: xvfb-run -a cargo test -p noodle-plugins --test real_plugins --test real_vst3

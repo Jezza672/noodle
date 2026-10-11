@@ -509,7 +509,7 @@ export produces output identical to live playback.
 
 ## M5: Plugins
 
-**Status:** batches 1 to 3 are done; VST3 is next. Batch 1: CLAP hosting through
+**Status:** batches 1 to 4 are done; the Mac check with a real plugin is owed. Batch 1: CLAP hosting through
 clack (`noodle-plugins`): scanning in a child process with a cache, plugin nodes
 whose ports are the plugin's audio ports, note ports and parameters, saved
 state in the project, registration through the render hook. Batch 2: one shared
@@ -520,9 +520,14 @@ with search, Rescan and failed files. Batch 3: the plugin thread can be the
 app's UI thread (macOS, Windows), editors embedded in host-made windows
 (`src/window/`), every note port read and written, folders named `.clap`
 searched, and tests against real third-party plugins (`real_plugins.rs`,
-Debian's DISTRHO, Dragonfly and LSP CLAP plugins on Linux CI). Not started:
-VST3. Owed: a real plugin (Surge XT, Vital) played on the Mac, including its
-editor and the new windows.
+Debian's DISTRHO, Dragonfly and LSP CLAP plugins on Linux CI). Batch 4: VST3
+hosting (`src/vst3/`): scanning `.vst3` bundles in the same child process and
+cache, plugin nodes `vst3.<class id>` with parameters, audio buses, note
+buses, MIDI controllers through `IMidiMapping`, saved state, a VST3 test
+plugin (`examples/test_vst3.rs`) and tests against DISTRHO and Dragonfly's
+VST3 builds on Linux CI. Not yet for VST3: editors, `IMessage`. Owed: a real
+plugin (Surge XT, Vital) played on the Mac, including its editor and the new
+windows, and a VST3 one.
 
 - **CLAP hosting through clack:**
   - Scanning in a child process (done).
@@ -531,7 +536,7 @@ editor and the new windows.
   - Editor windows (done: embedded in host windows on macOS and Windows, floating on Linux).
   - Plugin state saved in the project, captured from the editor (done).
 - Plugin browser (done).
-- VST3 hosting.
+- VST3 hosting (done, no editors yet).
 
 **Done when:** common free CLAP and VST3 plugins (instruments and effects)
 load, play, save and restore on all three platforms.
