@@ -40,7 +40,7 @@ fn ports_come_from_the_plugin() {
     let inputs: Vec<_> = layout.inputs.iter().map(|p| p.key.to_string()).collect();
     assert_eq!(inputs, ["in", "p1", "p2"]);
     assert_eq!(keys(&layout.outputs), ["out"]);
-    assert_eq!(keys(&layout.event_inputs), ["notes"]);
+    assert_eq!(keys(&layout.event_inputs), ["notes", "notes2"]);
     assert!(layout.event_outputs.is_empty());
     // The gain's port carries the plugin's range and default.
     let noodle_engine::InputKind::Param(gain) = &layout.inputs[GAIN].kind else {
@@ -180,6 +180,36 @@ fn a_note_makes_the_plugin_sound_at_that_pitch_and_a_note_off_stops_it() {
     h.send_events(0, &[note_off(0, 7)]);
     h.run(256).unwrap();
     assert!(h.output(0).lane(0, 0).iter().all(|&s| s == 0.0));
+}
+
+#[test]
+fn every_note_input_reaches_the_plugin_in_time_order() {
+    let mut h = harness(&Config::new(), &[]);
+    // A4 on the first port at frame 0, A4 on the second (an octave up) at
+    // frame 100, and the second port's earlier note first in its list.
+    h.send_events(0, &[note_on(0, 1, 69, 1.0)]);
+    h.send_events(1, &[note_on(100, 2, 69, 1.0)]);
+    h.run(256).unwrap();
+    let out = h.output(0);
+    for (i, &s) in out.lane(0, 0).iter().enumerate().skip(1) {
+        let low = (TAU * 440.0 * i as f32 / RATE).sin() * 0.2;
+        let high = if i > 100 {
+            (TAU * 880.0 * (i - 100) as f32 / RATE).sin() * 0.2
+        } else {
+            0.0
+        };
+        assert!((s - (low + high)).abs() < 3e-3, "frame {i}: {s} vs {}", low + high);
+    }
+    // A note-off on the second port by id alone stops that note only.
+    h.send_events(0, &[]);
+    h.send_events(1, &[note_off(0, 2)]);
+    h.run(256).unwrap();
+    let out = h.output(0);
+    let tail = out.lane(0, 0);
+    let expected = |i: usize| (TAU * 440.0 * (256 + i) as f32 / RATE).sin() * 0.2;
+    for i in 0..256 {
+        assert!((tail[i] - expected(i)).abs() < 3e-3, "frame {i}");
+    }
 }
 
 #[test]

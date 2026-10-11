@@ -21,7 +21,7 @@ fn scanning_reports_the_plugins_ports_and_parameters() {
     assert_eq!(plugin.audio_inputs.len(), 1);
     assert_eq!(plugin.audio_inputs[0].channels, 2);
     assert_eq!(plugin.audio_outputs[0].channels, 2);
-    assert_eq!((plugin.note_inputs, plugin.note_outputs), (1, 0));
+    assert_eq!((plugin.note_inputs, plugin.note_outputs), (2, 0));
     let params: Vec<_> = plugin
         .params
         .iter()

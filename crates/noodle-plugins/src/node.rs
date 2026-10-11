@@ -303,6 +303,7 @@ impl PortBuffers {
 }
 
 struct NoteKey {
+    port: u16,
     note: u32,
     channel: u8,
     key: u8,
@@ -323,6 +324,8 @@ struct ClapNode {
     out_events: EventBuffer,
     params: Vec<ParamSlot>,
     notes: Vec<NoteKey>,
+    /// Where each note input's merge has got to, in `build_events`.
+    cursors: Vec<usize>,
     steady: u64,
 }
 
@@ -375,6 +378,7 @@ impl ClapNode {
             out_events: EventBuffer::with_capacity(MAX_EVENTS),
             params,
             notes: Vec::with_capacity(MAX_NOTES),
+            cursors: vec![0; descriptor.note_inputs as usize],
             steady: 0,
         }
     }
@@ -459,13 +463,30 @@ impl ClapNode {
         self.in_events.clear();
         self.sample_params(io, start, 0);
         let mut next_step = PARAM_STEP;
-        // Only the first note port is read; plugins with several are rare.
-        let events = io.event_inputs.first().copied().unwrap_or(&[]);
-        for event in events {
-            let time = event.time as usize;
-            if time < start || time >= start + n {
-                continue;
+        // Every note input is read, merged into one time-ordered stream (the
+        // plugin wants its events in order whatever port they are for).
+        self.cursors.iter_mut().for_each(|c| *c = 0);
+        loop {
+            let mut pick: Option<(usize, usize)> = None;
+            for (port, cursor) in self.cursors.iter_mut().enumerate() {
+                let events = io.event_inputs.get(port).copied().unwrap_or(&[]);
+                while let Some(event) = events.get(*cursor) {
+                    let time = event.time as usize;
+                    if time < start {
+                        *cursor += 1;
+                    } else {
+                        if time < start + n && pick.is_none_or(|(_, t)| time < t) {
+                            pick = Some((port, time));
+                        }
+                        break;
+                    }
+                }
             }
+            let Some((port, time)) = pick else {
+                break;
+            };
+            let event = &io.event_inputs[port][self.cursors[port]];
+            self.cursors[port] += 1;
             let at = time - start;
             while next_step <= at {
                 self.sample_params(io, start, next_step);
@@ -474,7 +495,7 @@ impl ClapNode {
             if self.in_events.len() as usize >= MAX_EVENTS {
                 break;
             }
-            self.push_note(event, at as u32);
+            self.push_note(port as u16, event, at as u32);
         }
         while next_step < n {
             self.sample_params(io, start, next_step);
@@ -516,7 +537,7 @@ impl ClapNode {
         }
     }
 
-    fn push_note(&mut self, event: &Event, time: u32) {
+    fn push_note(&mut self, port: u16, event: &Event, time: u32) {
         match event.kind {
             EventKind::NoteOn {
                 note,
@@ -524,27 +545,28 @@ impl ClapNode {
                 key,
                 velocity,
             } => {
-                self.notes.retain(|n| n.note != note.0);
+                self.notes.retain(|n| !(n.port == port && n.note == note.0));
                 if self.notes.len() == MAX_NOTES {
                     self.notes.remove(0);
                 }
                 self.notes.push(NoteKey {
+                    port,
                     note: note.0,
                     channel,
                     key,
                 });
                 self.in_events.push(&NoteOnEvent::new(
                     time,
-                    pckn(note.0, channel, key),
+                    pckn(port, note.0, channel, key),
                     f64::from(velocity),
                 ));
             }
             EventKind::NoteOff { note, velocity } => {
-                let (channel, key) = self.note_key(note.0);
-                self.notes.retain(|n| n.note != note.0);
+                let (channel, key) = self.note_key(port, note.0);
+                self.notes.retain(|n| !(n.port == port && n.note == note.0));
                 self.in_events.push(&NoteOffEvent::new(
                     time,
-                    pckn(note.0, channel, key),
+                    pckn(port, note.0, channel, key),
                     f64::from(velocity),
                 ));
             }
@@ -553,7 +575,7 @@ impl ClapNode {
                 expression,
                 value,
             } => {
-                let (channel, key) = self.note_key(note.0);
+                let (channel, key) = self.note_key(port, note.0);
                 let (kind, value) = match expression {
                     Expression::Pitch => (NoteExpressionType::Tuning, value),
                     Expression::Pressure => (NoteExpressionType::Pressure, value),
@@ -564,54 +586,60 @@ impl ClapNode {
                 };
                 self.in_events.push(&NoteExpressionEvent::new(
                     time,
-                    pckn(note.0, channel, key),
+                    pckn(port, note.0, channel, key),
                     kind,
                     f64::from(value),
                 ));
             }
             EventKind::Midi(data) => {
-                self.in_events.push(&MidiEvent::new(time, 0, data));
+                self.in_events.push(&MidiEvent::new(time, port, data));
             }
         }
     }
 
-    fn note_key(&self, note: u32) -> (u8, u8) {
+    fn note_key(&self, port: u16, note: u32) -> (u8, u8) {
         self.notes
             .iter()
-            .find(|n| n.note == note)
+            .find(|n| n.port == port && n.note == note)
             .map_or((0, 0), |n| (n.channel, n.key))
     }
 
     /// Passes the plugin's note output on.
     fn emit_notes(&mut self, io: &mut Io<'_, '_>, start: usize) {
-        let Some(out) = io.event_outputs.first_mut() else {
+        if io.event_outputs.is_empty() {
             return;
-        };
+        }
         for event in self.out_events.iter() {
             let time = event.header().time().saturating_add(start as u32);
-            let kind = match event.as_core_event() {
-                Some(CoreEventSpace::NoteOn(on)) => EventKind::NoteOn {
-                    note: NoteId(on.note_id().into_specific().unwrap_or(0)),
-                    channel: on.channel().into_specific().unwrap_or(0) as u8,
-                    key: on.key().into_specific().unwrap_or(0) as u8,
-                    velocity: on.velocity() as f32,
-                },
-                Some(CoreEventSpace::NoteOff(off)) => EventKind::NoteOff {
-                    note: NoteId(off.note_id().into_specific().unwrap_or(0)),
-                    velocity: off.velocity() as f32,
-                },
-                Some(CoreEventSpace::Midi(midi)) => EventKind::Midi(midi.data()),
+            let (port, kind) = match event.as_core_event() {
+                Some(CoreEventSpace::NoteOn(on)) => (
+                    on.port_index().into_specific().unwrap_or(0),
+                    EventKind::NoteOn {
+                        note: NoteId(on.note_id().into_specific().unwrap_or(0)),
+                        channel: on.channel().into_specific().unwrap_or(0) as u8,
+                        key: on.key().into_specific().unwrap_or(0) as u8,
+                        velocity: on.velocity() as f32,
+                    },
+                ),
+                Some(CoreEventSpace::NoteOff(off)) => (
+                    off.port_index().into_specific().unwrap_or(0),
+                    EventKind::NoteOff {
+                        note: NoteId(off.note_id().into_specific().unwrap_or(0)),
+                        velocity: off.velocity() as f32,
+                    },
+                ),
+                Some(CoreEventSpace::Midi(midi)) => (midi.port_index(), EventKind::Midi(midi.data())),
                 _ => continue,
             };
-            if out.push(Event { time, kind }).is_err() {
-                break;
-            }
+            // A port the plugin didn't declare goes to the first.
+            let port = usize::from(port).min(io.event_outputs.len() - 1);
+            let _ = io.event_outputs[port].push(Event { time, kind });
         }
     }
 }
 
-fn pckn(note: u32, channel: u8, key: u8) -> Pckn {
-    Pckn::new(0u16, u16::from(channel), u16::from(key), note)
+fn pckn(port: u16, note: u32, channel: u8, key: u8) -> Pckn {
+    Pckn::new(port, u16::from(channel), u16::from(key), note)
 }
 
 /// What the transport looks like `start` frames into the block.

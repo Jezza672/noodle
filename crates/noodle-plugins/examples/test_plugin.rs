@@ -3,7 +3,8 @@
 //! - Audio: stereo in, stereo out. The output is the input times `Gain`
 //!   (inverted if `Invert` is on), plus a sine for each held note, plus
 //!   `bias`.
-//! - Notes: one note input port; a note-on starts a sine at the note's pitch.
+//! - Notes: two note input ports; a note-on starts a sine at the note's
+//!   pitch, an octave higher if it arrives on the second port.
 //! - Parameters: `Gain` (continuous) and `Invert` (stepped).
 //! - Editor: a floating "window" that draws nothing. While it is shown, a
 //!   timer (host timer support) plays the user: the first tick turns `Gain`
@@ -230,14 +231,14 @@ impl PluginAudioPortsImpl for MainThread<'_> {
 
 impl PluginNotePortsImpl for MainThread<'_> {
     fn count(&self, is_input: bool) -> u32 {
-        u32::from(is_input)
+        if is_input { 2 } else { 0 }
     }
 
     fn get(&self, index: u32, is_input: bool, writer: &mut NotePortInfoWriter) {
-        if index == 0 && is_input {
+        if is_input && index < 2 {
             writer.set(&NotePortInfo {
-                id: ClapId::new(0),
-                name: b"notes",
+                id: ClapId::new(index),
+                name: if index == 0 { b"notes" } else { b"notes up" },
                 supported_dialects: NoteDialects::CLAP,
                 preferred_dialect: Some(NoteDialect::Clap),
             });
@@ -335,6 +336,7 @@ impl PluginStateImpl for MainThread<'_> {
 }
 
 struct Voice {
+    port: u16,
     key: u16,
     phase: f32,
     step: f32,
@@ -435,8 +437,14 @@ impl Processor<'_> {
     fn note_event(&mut self, event: &UnknownEvent) {
         if let Some(on) = event.as_event::<NoteOnEvent>() {
             let key = on.key().into_specific().unwrap_or(0);
-            let freq = 440.0 * 2f32.powf((f32::from(key) - 69.0) / 12.0);
+            let up = if on.port_index().into_specific() == Some(1) {
+                12.0
+            } else {
+                0.0
+            };
+            let freq = 440.0 * 2f32.powf((f32::from(key) + up - 69.0) / 12.0);
             let voice = Voice {
+                port: on.port_index().into_specific().unwrap_or(0),
                 key,
                 phase: 0.0,
                 step: freq / self.sample_rate,
@@ -447,8 +455,12 @@ impl Processor<'_> {
             }
         } else if let Some(off) = event.as_event::<NoteOffEvent>() {
             let key = off.key().into_specific();
+            let port = off.port_index().into_specific().unwrap_or(0);
             for slot in &mut self.voices {
-                if slot.as_ref().is_some_and(|v| Some(v.key) == key) {
+                if slot
+                    .as_ref()
+                    .is_some_and(|v| Some(v.key) == key && v.port == port)
+                {
                     *slot = None;
                 }
             }
