@@ -702,6 +702,59 @@ fn shift_a_searches_and_adds_at_the_pointer() {
     assert!(h.state().editor.search.is_none());
 }
 
+/// A node type whose new nodes start with a setting, as plugin nodes with
+/// many parameters do.
+struct StartsWithConfig;
+
+static STARTS_WITH_CONFIG: noodle_engine::NodeInfo = noodle_engine::NodeInfo {
+    id: "test.starts_with_config",
+    version: 1,
+    name: "Starts With Config",
+    category: "Test",
+};
+
+impl noodle_engine::NodeType for StartsWithConfig {
+    fn info(&self) -> &noodle_engine::NodeInfo {
+        &STARTS_WITH_CONFIG
+    }
+    fn initial_config(&self) -> noodle_core::Config {
+        noodle_core::Config::new().with("start", noodle_core::Value::Text("none".into()))
+    }
+    fn layout(
+        &self,
+        _config: &noodle_core::Config,
+    ) -> Result<noodle_engine::Layout, noodle_engine::NodeError> {
+        Ok(noodle_engine::Layout::realtime())
+    }
+    fn instantiate(
+        &self,
+        _setup: &noodle_engine::Setup<'_>,
+    ) -> Result<noodle_engine::Instance, noodle_engine::NodeError> {
+        Err(noodle_engine::NodeError::config("test stub"))
+    }
+}
+
+#[test]
+fn a_node_added_from_the_search_starts_with_its_types_initial_config() {
+    let mut nodes = crate::session::Nodes::all();
+    nodes.registry.register(StartsWithConfig);
+    let mut h = rig();
+    h.state_mut().session = Session::new(nodes);
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("starts with".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    let (_, node) = graph.nodes().next().expect("a node was added");
+    assert_eq!(node.type_id, "test.starts_with_config");
+    assert_eq!(
+        node.config.get("start"),
+        Some(&noodle_core::Value::Text("none".into()))
+    );
+}
+
 #[test]
 fn escape_closes_the_search() {
     let mut h = rig();
