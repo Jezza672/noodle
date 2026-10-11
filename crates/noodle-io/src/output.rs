@@ -1491,9 +1491,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         let seconds = transport.position() as f32 / playback.settings().sample_rate;
         let elapsed = started.elapsed().as_secs_f32();
-        // It paces itself by the clock: neither flat out nor stalled.
+        // It paces itself by the clock: neither flat out nor stalled. A
+        // callback runs its blocks at once, so it can lead the clock by a
+        // period or so; flat out would be far past that.
         assert!(
-            seconds > 0.2 && seconds <= elapsed,
+            seconds > 0.2 && seconds <= elapsed + 0.05,
             "{seconds} in {elapsed}"
         );
     }
