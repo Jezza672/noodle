@@ -167,6 +167,13 @@ impl NodeType for PluginNodeType {
         &CONFIG
     }
 
+    fn initial_config(&self) -> Config {
+        match crate::initial_params(&self.descriptor) {
+            Some(text) => Config::new().with(PARAMS_KEY, noodle_engine::Value::Text(text)),
+            None => Config::new(),
+        }
+    }
+
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         let exposed = exposed_params(&self.descriptor, config);
         let mut layout = layout_of(&self.descriptor, &exposed);
@@ -293,6 +300,9 @@ impl NodeType for Shared {
     }
     fn config(&self) -> &[ConfigInfo] {
         self.0.config()
+    }
+    fn initial_config(&self) -> Config {
+        self.0.initial_config()
     }
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         self.0.layout(config)

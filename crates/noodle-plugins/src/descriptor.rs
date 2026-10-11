@@ -181,9 +181,10 @@ pub fn param_key(id: u32) -> String {
 }
 
 /// A plugin with at most this many parameters shows all of them on a new
-/// node; one with more shows none (a synth can have hundreds, which makes a
-/// node too tall to use). See [`initial_params`].
-pub const DEFAULT_EXPOSED_LIMIT: usize = 32;
+/// node; one with more shows none, and the user opts in to the ones they
+/// want (a synth can have hundreds, which makes a node too tall to use).
+/// See [`initial_params`].
+pub const DEFAULT_EXPOSED_LIMIT: usize = 4;
 
 /// The `params` setting a newly added node of this plugin starts with, if it
 /// needs one. A node without the setting shows every parameter, which is what
@@ -229,5 +230,51 @@ pub fn params_text(ids: &[u32]) -> String {
         "none".to_owned()
     } else {
         ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptor(format: PluginFormat, params: usize) -> Descriptor {
+        Descriptor {
+            format,
+            id: "test".into(),
+            name: "Test".into(),
+            vendor: String::new(),
+            instrument: false,
+            audio_inputs: Vec::new(),
+            audio_outputs: Vec::new(),
+            note_inputs: 0,
+            note_outputs: 0,
+            params: (0..params as u32)
+                .map(|id| ParamDesc {
+                    id,
+                    name: format!("p{id}"),
+                    module: String::new(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    stepped: false,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn parameters_are_opt_in_from_five_up_for_both_formats() {
+        for format in [PluginFormat::Clap, PluginFormat::Vst3] {
+            for count in [0, 1, 4] {
+                assert_eq!(initial_params(&descriptor(format, count)), None);
+            }
+            for count in [5, 6, 300] {
+                let d = descriptor(format, count);
+                let initial = initial_params(&d).expect("starts with a choice");
+                let config =
+                    Config::new().with(crate::PARAMS_KEY, noodle_engine::Value::Text(initial));
+                assert!(exposed_params(&d, &config).is_empty());
+            }
+        }
     }
 }
