@@ -250,14 +250,17 @@ impl NodeType for PluginNodeType {
             let flags = Arc::new(Flags::default());
             let key = vst3::gui::register(&loaded.plugin, &flags);
             editor::register(setup.node, key, flags);
-            return Ok(Instance::realtime(vst3::Vst3Node::new(
-                loaded.plugin,
-                &self.descriptor,
-                &exposed,
-                &loaded.midi_assignments,
-                Some(key),
-                setup.max_frames,
-            )));
+            return Ok(Instance::realtime(
+                vst3::Vst3Node::new(
+                    loaded.plugin,
+                    &self.descriptor,
+                    &exposed,
+                    &loaded.midi_assignments,
+                    Some(key),
+                    setup.max_frames,
+                )
+                .with_latency(loaded.latency),
+            ));
         }
         let mut loaded = thread::start(
             &self.path,
@@ -268,13 +271,15 @@ impl NodeType for PluginNodeType {
         )
         .map_err(|error| NodeError::config(error.to_string()))?;
         editor::register(setup.node, loaded.key, Arc::clone(&loaded.flags));
-        Ok(Instance::realtime(ClapNode::new(
+        let mut node = ClapNode::new(
             &self.descriptor,
             &exposed,
             loaded.take_processor().into(),
             loaded.key,
             setup.max_frames,
-        )))
+        );
+        node.latency = loaded.latency;
+        Ok(Instance::realtime(node))
     }
 }
 
@@ -362,6 +367,8 @@ struct ClapNode {
     /// Where each note input's merge has got to, in `build_events`.
     cursors: Vec<usize>,
     steady: u64,
+    /// The latency the plugin reported when it was activated, in samples.
+    latency: u32,
 }
 
 impl ClapNode {
@@ -422,6 +429,7 @@ impl ClapNode {
             notes: Vec::with_capacity(MAX_NOTES),
             cursors: vec![0; descriptor.note_inputs as usize],
             steady: 0,
+            latency: 0,
         }
     }
 
@@ -722,6 +730,10 @@ fn transport_event(ctx: &Context, start: usize) -> TransportEvent {
 }
 
 impl Node for ClapNode {
+    fn latency(&self) -> u32 {
+        self.latency
+    }
+
     fn process(&mut self, ctx: &Context, mut io: Io<'_, '_>) {
         let mut start = 0;
         while start < ctx.frames {

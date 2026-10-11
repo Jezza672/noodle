@@ -97,6 +97,8 @@ pub(crate) struct Vst3Node {
     gui_key: Option<u64>,
     notes: Vec<NoteKey>,
     cursors: Vec<usize>,
+    /// The latency the plugin reported when it was activated, in samples.
+    latency: u32,
     started: bool,
     steady: i64,
 }
@@ -119,6 +121,12 @@ fn buffers_for(buses: &mut [Bus]) -> Vec<AudioBusBuffers> {
 }
 
 impl Vst3Node {
+    /// Records the latency the plugin reported when it was loaded.
+    pub fn with_latency(mut self, latency: u32) -> Self {
+        self.latency = latency;
+        self
+    }
+
     pub fn new(
         plugin: Plugin,
         descriptor: &Descriptor,
@@ -233,6 +241,7 @@ impl Vst3Node {
             gui_key,
             notes: Vec::with_capacity(MAX_NOTES),
             cursors: vec![0; descriptor.note_inputs as usize],
+            latency: 0,
             started: false,
             steady: 0,
         }
@@ -699,6 +708,10 @@ fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
 }
 
 impl Node for Vst3Node {
+    fn latency(&self) -> u32 {
+        self.latency
+    }
+
     fn process(&mut self, ctx: &Context, mut io: Io<'_, '_>) {
         let mut start = 0;
         while start < ctx.frames {

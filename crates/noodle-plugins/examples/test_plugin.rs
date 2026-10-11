@@ -24,6 +24,7 @@ use clack_extensions::audio_ports::{
 use clack_extensions::gui::{
     GuiApiType, GuiConfiguration, GuiSize, HostGui, PluginGui, PluginGuiImpl, Window,
 };
+use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
     PluginNotePortsImpl,
@@ -65,6 +66,7 @@ impl Plugin for TestPlugin {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginGui>()
+            .register::<PluginLatency>()
             .register::<PluginTimer>();
     }
 }
@@ -268,6 +270,17 @@ impl PluginAudioPortsImpl for MainThread<'_> {
                 in_place_pair: None,
             });
         }
+    }
+}
+
+/// Reports the latency in `NOODLE_TEST_PLUGIN_LATENCY` (samples), so the
+/// latency tests can ask for any; it passes audio through undelayed.
+impl PluginLatencyImpl for MainThread<'_> {
+    fn get(&self) -> u32 {
+        std::env::var("NOODLE_TEST_PLUGIN_LATENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
     }
 }
 

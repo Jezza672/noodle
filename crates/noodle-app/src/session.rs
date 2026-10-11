@@ -1282,10 +1282,15 @@ impl Session {
             }
         }
         let (rate, latency) = match &self.audio {
-            Some(audio) => (
-                f64::from(audio.controller.settings().sample_rate),
-                audio.playback.output_latency(),
-            ),
+            Some(audio) => {
+                let rate = f64::from(audio.controller.settings().sample_rate);
+                // What the player heard was also held back by plugin delay
+                // compensation.
+                let pdc = std::time::Duration::from_secs_f64(
+                    audio.controller.output_latency() as f64 / rate,
+                );
+                (rate, audio.playback.output_latency() + pdc)
+            }
             None => (
                 f64::from(FREEZE_SETTINGS.sample_rate),
                 std::time::Duration::ZERO,

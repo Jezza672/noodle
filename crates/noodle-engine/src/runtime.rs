@@ -295,6 +295,19 @@ impl Controller {
         self.telemetry = Some(telemetry.clone());
     }
 
+    /// How many samples later than the timeline the mix sounds, because of
+    /// plugin delay compensation: the slowest path's latency, which every
+    /// other path is delayed to match. Zero when no node reports latency.
+    /// An offline render drops this many leading frames so its audio lines
+    /// up with the timeline; live playback just sounds this much late.
+    pub fn output_latency(&self) -> usize {
+        self.pending
+            .as_ref()
+            .map(|(_, info)| info)
+            .or(self.sent.as_ref())
+            .map_or(0, |info| info.output_latency as usize)
+    }
+
     /// Sets an unconnected input's value without recompiling. The change is
     /// smoothed if the input is a continuous parameter. Does nothing if the
     /// node has no such unconnected input in the current plan, or if `value`

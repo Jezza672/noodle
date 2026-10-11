@@ -13,7 +13,7 @@ use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::OUTPUT_ID;
-use noodle_engine::{Level, MeterReader, ParamReading, ScopeView, Telemetry};
+use noodle_engine::{CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry};
 use noodle_nodes::{METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
@@ -70,6 +70,12 @@ pub struct Bodies {
     params: HashMap<(NodeId, String), ParamWindow>,
     /// Seconds since the first update, for the windows.
     clock: f32,
+    /// Whether CPU meters are shown, so they're only read when wanted.
+    show_cpu: bool,
+    /// Each node's share of the audio thread's time, while `show_cpu`.
+    cpu: HashMap<NodeId, CpuReading>,
+    /// The nodes' loads added up, before groups are given their sums.
+    cpu_total: f32,
 }
 
 /// How far back a wired parameter's range marks look, in seconds.
@@ -119,6 +125,25 @@ impl Bodies {
     /// time since the last update, in seconds, for the peaks' decay.
     pub fn update(&mut self, telemetry: &Telemetry, project: &Project, dt: f32) {
         let graph = project.graph();
+        self.cpu.clear();
+        self.cpu_total = 0.0;
+        if self.show_cpu {
+            self.cpu.extend(telemetry.read_all_cpu());
+            self.cpu_total = self.cpu.values().map(|reading| reading.load).sum();
+            // A group is flattened away and never runs itself, so it shows
+            // what the nodes inside it (at any depth) take.
+            let mut groups: HashMap<NodeId, CpuReading> = HashMap::new();
+            for (&id, reading) in &self.cpu {
+                let mut parent = graph.node(id).and_then(|node| node.parent);
+                while let Some(group) = parent {
+                    let sum = groups.entry(group).or_default();
+                    sum.load += reading.load;
+                    sum.peak += reading.peak;
+                    parent = graph.node(group).and_then(|node| node.parent);
+                }
+            }
+            self.cpu.extend(groups);
+        }
         // A new session brings a new hub.
         if !self.reader.as_ref().is_some_and(|r| r.reads(telemetry)) {
             self.reader = None;
@@ -201,9 +226,34 @@ impl Bodies {
         self.params.get(&(node, key.to_owned()))?.live()
     }
 
+    /// Turns the per-node CPU meters on or off.
+    pub fn set_show_cpu(&mut self, on: bool) {
+        self.show_cpu = on;
+    }
+
+    pub fn show_cpu(&self) -> bool {
+        self.show_cpu
+    }
+
+    /// How much of the block time `node` is taking, if CPU meters are on and
+    /// it has reported.
+    pub fn cpu(&self, node: NodeId) -> Option<CpuReading> {
+        self.cpu.get(&node).copied()
+    }
+
+    /// The whole graph's share of the audio thread's time, if CPU meters are
+    /// on: the nodes' loads added up (without the device and the engine's own
+    /// overhead).
+    pub fn cpu_total(&self) -> Option<f32> {
+        self.show_cpu.then_some(self.cpu_total)
+    }
+
     /// Whether anything is shown that changes while audio plays.
     pub fn is_live(&self) -> bool {
-        !self.meters.is_empty() || !self.scopes.is_empty() || !self.params.is_empty()
+        self.show_cpu
+            || !self.meters.is_empty()
+            || !self.scopes.is_empty()
+            || !self.params.is_empty()
     }
 }
 
@@ -433,6 +483,44 @@ mod tests {
     use super::*;
     use noodle_core::{Command, Node};
     use noodle_nodes::METER_ID;
+
+    #[test]
+    fn a_group_shows_what_the_nodes_inside_it_take() {
+        let mut project = Project::new();
+        let ids: Vec<NodeId> = (0..3).map(|_| project.new_node_id()).collect();
+        for &id in &ids {
+            Command::AddNode {
+                id,
+                node: Node::new("noodle.util.gain"),
+            }
+            .apply(&mut project)
+            .unwrap();
+        }
+        let (group, command) =
+            noodle_core::group::group_nodes(&project, &ids[..2], || NodeId(100)).unwrap();
+        command.apply(&mut project).unwrap();
+
+        let telemetry = Telemetry::new();
+        let mut writers: Vec<_> = ids.iter().map(|&id| telemetry.open_cpu(id)).collect();
+        // Loads of 0.1, 0.2 and 0.4 of a block, held long enough to settle.
+        for (writer, share) in writers.iter_mut().zip([0.1, 0.2, 0.4]) {
+            for _ in 0..600 {
+                writer.record((share * 1e6) as u64, 1e6);
+            }
+        }
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, 0.016);
+        assert_eq!(bodies.cpu(group), None, "off until switched on");
+        bodies.set_show_cpu(true);
+        bodies.update(&telemetry, &project, 0.016);
+        let inside = bodies.cpu(group).expect("the group reports");
+        assert!((inside.load - 0.3).abs() < 0.01, "{}", inside.load);
+        let total = bodies.cpu_total().unwrap();
+        assert!(
+            (total - 0.7).abs() < 0.01,
+            "groups aren't counted twice: {total}"
+        );
+    }
 
     #[test]
     fn meter_scale_runs_from_floor_to_ceiling() {

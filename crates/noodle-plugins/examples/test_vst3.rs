@@ -333,8 +333,13 @@ impl IAudioProcessorTrait for Processor {
         }
     }
 
+    /// The latency in `NOODLE_TEST_PLUGIN_LATENCY` (samples), so the latency
+    /// tests can ask for any; the audio isn't actually delayed.
     unsafe fn getLatencySamples(&self) -> u32 {
-        0
+        std::env::var("NOODLE_TEST_PLUGIN_LATENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
     }
 
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {

@@ -35,6 +35,8 @@ pub(crate) use plugin::{Plugin, class_id_from_text};
 pub(crate) struct Loaded {
     pub plugin: Plugin,
     pub midi_assignments: Vec<(i16, i16, vst3::Steinberg::Vst::ParamID)>,
+    /// The latency the plugin reported once activated, in samples.
+    pub latency: u32,
 }
 
 /// Makes, restores and activates the plugin with class ID `class_id` in the
@@ -57,9 +59,17 @@ pub(crate) fn load(
         }
         plugin.activate(f64::from(sample_rate), max_frames)?;
         let midi_assignments = plugin.midi_assignments();
+        // Asked here, on the plugin thread like everything else, and only
+        // once activated.
+        // SAFETY: a plain query on a live, set-up processor.
+        let latency = unsafe {
+            use vst3::Steinberg::Vst::IAudioProcessorTrait;
+            plugin.processor.getLatencySamples()
+        };
         Ok(Loaded {
             plugin,
             midi_assignments,
+            latency,
         })
     })?
 }
