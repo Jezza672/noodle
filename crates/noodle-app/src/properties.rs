@@ -527,16 +527,10 @@ mod tests {
             session,
             active: Some(NodeId(1)),
         };
-        let mut harness = Harness::new_ui_state(
-            |ui, state: &mut State| {
-                let edits = show(ui, &state.session, state.active, &|_, _| None);
-                state.session.edit(edits);
-            },
-            state,
-        );
-        harness.set_size(vec2(300.0, 400.0));
-        harness.run();
-        harness
+        crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
+            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            state.session.edit(edits);
+        })
     }
 
     fn param(harness: &Harness<'_, State>, key: &str) -> Option<f32> {

@@ -31,7 +31,7 @@ pub use midi::{
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
-    Playback, Stream, is_fatal, play, play_with_outputs, play_with_outputs_stopped,
+    Playback, Stream, VirtualCapture, is_fatal, play, play_with_outputs, play_with_outputs_stopped,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};

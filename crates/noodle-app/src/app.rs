@@ -163,7 +163,7 @@ impl App {
         }
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
     }
@@ -1200,12 +1200,7 @@ mod tests {
         harness.get_by_label("▶");
     }
 
-    fn virtual_output() -> noodle_io::AudioConfig {
-        noodle_io::AudioConfig {
-            output: Some(noodle_io::VIRTUAL_OUTPUT.into()),
-            ..noodle_io::AudioConfig::default()
-        }
-    }
+    use crate::testkit::virtual_audio as virtual_output;
 
     #[test]
     fn the_audio_button_turns_the_engine_on_and_off_and_play_leaves_it_alone() {

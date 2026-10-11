@@ -1003,6 +1003,13 @@ impl Session {
         }
     }
 
+    /// The tap on the virtual output when the engine plays on it, for tests
+    /// that check the sound the app made.
+    #[cfg(test)]
+    pub fn virtual_capture(&self) -> Option<noodle_io::VirtualCapture> {
+        self.audio.as_ref()?.playback.virtual_capture()
+    }
+
     /// Whether the engine, the audio stream that runs the graph, is open.
     /// It runs whether or not the transport does.
     pub fn engine_running(&self) -> bool {
@@ -1196,7 +1203,7 @@ impl Session {
     }
 
     /// The tempo map the audio thread is using, if the stream is open.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub fn tempo_in_engine(&self) -> Option<&noodle_core::TempoMap> {
         self.audio
             .as_ref()
@@ -1527,7 +1534,7 @@ impl Session {
     }
 
     /// What a track input is doing with its clips.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub fn clip_status(&self, track: NodeId) -> noodle_nodes::ClipStatus {
         self.clips.status(track)
     }
@@ -3433,12 +3440,7 @@ mod tests {
         assert_eq!(clips(&session)[0].1, Tick(480));
     }
 
-    fn virtual_config() -> AudioConfig {
-        AudioConfig {
-            output: Some(noodle_io::VIRTUAL_OUTPUT.into()),
-            ..AudioConfig::default()
-        }
-    }
+    use crate::testkit::virtual_audio as virtual_config;
 
     #[test]
     fn the_engine_runs_without_the_transport_and_stop_leaves_it_running() {
@@ -3495,6 +3497,26 @@ mod tests {
         assert!(!session.transport_running());
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(session.playhead(), at);
+    }
+
+    #[test]
+    fn a_project_plays_audible_sound_through_the_virtual_output() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/vibrato.ron");
+        let mut session = Session::open(Nodes::all(), &path).expect("the example opens");
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        let tap = session
+            .virtual_capture()
+            .expect("playing on the virtual output");
+        tap.start();
+        session.play();
+        std::thread::sleep(Duration::from_millis(400));
+        let heard = tap.take();
+        assert!(heard.len() > 4_000, "{} samples", heard.len());
+        assert!(heard.iter().all(|x| x.is_finite()));
+        let peak = heard.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+        assert!(peak > 0.01 && peak <= 1.0, "peak {peak}");
     }
 
     #[test]

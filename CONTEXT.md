@@ -33,3 +33,6 @@ An armed track hearing live MIDI through its own synth, with no `MIDI In` node w
 
 **Virtual output**:
 An output device that plays to nowhere. It is the last fallback when no real output device can be opened, and can be chosen like any device. The Engine runs on it as normal, in real time, and discards the audio.
+
+**User action (in tests)**:
+One gesture a person makes, sent to the app as the pointer and keyboard events it would see: a drag, click, double click, key press, wheel turn or file drop. All tests perform them through one shared set of helpers.

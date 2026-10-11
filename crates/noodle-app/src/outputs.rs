@@ -422,15 +422,10 @@ mod tests {
             view: OutputsView::with_lister(fake_devices),
             session,
         };
-        let mut harness = Harness::new_ui_state(
-            |ui, state: &mut State| {
-                let edits = state.view.show(ui, &state.session);
-                state.session.edit(edits);
-            },
-            state,
-        );
-        harness.run();
-        harness
+        crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
+            let edits = state.view.show(ui, &state.session);
+            state.session.edit(edits);
+        })
     }
 
     fn shown(harness: &Harness<'_, State>, label: &str) -> String {
