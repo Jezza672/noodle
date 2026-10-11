@@ -9,7 +9,8 @@
 //! tests do.
 
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -18,6 +19,18 @@ use rtrb::{Consumer, Producer, RingBuffer};
 /// Messages with one data byte (program change, channel pressure) have a
 /// zero in the last.
 pub type MidiMessage = [u8; 3];
+
+/// A message and when it arrived, in microseconds on the clock of
+/// [`now_micros`].
+pub type TimedMessage = (u64, MidiMessage);
+
+/// Microseconds since the first call, on a monotonic clock. Cheap and safe to
+/// call on the audio thread once it has been called anywhere before, which
+/// opening a [`MidiBus`] does.
+pub fn now_micros() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64
+}
 
 /// Messages a subscriber can fall behind by before new ones are dropped.
 const QUEUE: usize = 1024;
@@ -56,11 +69,12 @@ pub fn parse_message(bytes: &[u8]) -> Option<MidiMessage> {
 /// Clones share the same subscribers.
 #[derive(Clone, Default)]
 pub struct MidiBus {
-    subscribers: Arc<Mutex<Vec<Producer<MidiMessage>>>>,
+    subscribers: Arc<Mutex<Vec<Producer<TimedMessage>>>>,
 }
 
 impl MidiBus {
     pub fn new() -> Self {
+        now_micros();
         Self::default()
     }
 
@@ -78,10 +92,16 @@ impl MidiBus {
     /// Hands a message to every receiver. One that has fallen `QUEUE`
     /// messages behind misses it.
     pub fn send(&self, message: MidiMessage) {
+        self.send_at(message, now_micros());
+    }
+
+    /// The same for a message that arrived at `micros` on the clock of
+    /// [`now_micros`].
+    pub fn send_at(&self, message: MidiMessage, micros: u64) {
         let mut subscribers = self.subscribers.lock().expect("subscribers lock");
         subscribers.retain(|p| !p.is_abandoned());
         for producer in subscribers.iter_mut() {
-            let _ = producer.push(message);
+            let _ = producer.push((micros, message));
         }
     }
 
@@ -102,11 +122,16 @@ impl MidiBus {
 }
 
 /// The audio thread's end of a [`MidiBus`] subscription.
-pub struct MidiReceiver(Consumer<MidiMessage>);
+pub struct MidiReceiver(Consumer<TimedMessage>);
 
 impl MidiReceiver {
     /// The oldest message not yet taken. Never blocks or allocates.
     pub fn pop(&mut self) -> Option<MidiMessage> {
+        self.pop_timed().map(|(_, message)| message)
+    }
+
+    /// The same with the time the message arrived.
+    pub fn pop_timed(&mut self) -> Option<TimedMessage> {
         self.0.pop().ok()
     }
 }

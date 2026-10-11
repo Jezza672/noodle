@@ -3,9 +3,10 @@
 //!
 //! The port itself belongs to the app (a choice in the settings, not part of
 //! the project, like the audio device), and its messages reach every MIDI In
-//! node through a [`MidiBus`]. A message that arrives during a block is
-//! played at the start of the next one, so live playing is up to one block
-//! (about 11 ms in the app) late and has that much jitter.
+//! node through a [`MidiBus`]. Each message carries the time it arrived. One
+//! that arrived during the previous block is played at the same offset into
+//! this one, so live playing is exactly one block late and has no jitter
+//! beyond what the audio callbacks themselves have.
 //!
 //! Note-ons and note-offs become note events; everything else (controllers,
 //! pitch bend, aftertouch, program changes) passes on as raw MIDI events.
@@ -41,12 +42,37 @@ static INFO: NodeInfo = NodeInfo {
 /// Registered by [`register_library`](crate::register_library).
 pub struct MidiIn {
     bus: MidiBus,
+    clock: Clock,
 }
+
+/// The time now, in microseconds on the clock the bus stamps messages with.
+pub type Clock = fn() -> u64;
 
 impl MidiIn {
     pub fn new(bus: &MidiBus) -> Self {
-        Self { bus: bus.clone() }
+        Self::with_clock(bus, noodle_io::now_micros)
     }
+
+    /// With another clock, for tests that need to say when a block runs.
+    pub fn with_clock(bus: &MidiBus, clock: Clock) -> Self {
+        Self {
+            bus: bus.clone(),
+            clock,
+        }
+    }
+}
+
+/// The frame of a block that a message arriving at `arrival` plays at, when
+/// the previous block began at `previous_start` (both in microseconds). The
+/// first block, and messages from before the previous one began, play at the
+/// start.
+fn frame_offset(arrival: u64, previous_start: Option<u64>, sample_rate: f32, frames: usize) -> u32 {
+    let Some(start) = previous_start else {
+        return 0;
+    };
+    let micros = arrival.saturating_sub(start) as f64;
+    let frame = (micros * f64::from(sample_rate) / 1e6) as usize;
+    frame.min(frames.saturating_sub(1)) as u32
 }
 
 impl NodeType for MidiIn {
@@ -61,6 +87,8 @@ impl NodeType for MidiIn {
     fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
         Ok(Instance::realtime(MidiInNode {
             input: self.bus.subscribe(),
+            clock: self.clock,
+            previous_start: None,
             held: [0; 16],
             ending: 0,
         }))
@@ -69,6 +97,9 @@ impl NodeType for MidiIn {
 
 struct MidiInNode {
     input: MidiReceiver,
+    clock: Clock,
+    /// When the previous block began.
+    previous_start: Option<u64>,
     /// Per channel, the keys that have a note-on and no note-off yet, one
     /// bit each, so "all notes off" can end them.
     held: [u128; 16],
@@ -112,7 +143,7 @@ impl MidiInNode {
     /// Each note is forgotten only once its note-off is in the buffer, so if
     /// the buffer fills the rest wait for the next block. Returns whether it
     /// finished.
-    fn flush_ending(&mut self, out: &mut noodle_engine::EventsOut<'_>) -> bool {
+    fn flush_ending(&mut self, out: &mut noodle_engine::EventsOut<'_>, time: u32) -> bool {
         for channel in 0..16u8 {
             let bit = 1u16 << channel;
             if self.ending & bit == 0 {
@@ -121,7 +152,7 @@ impl MidiInNode {
             while self.held[usize::from(channel)] != 0 {
                 let key = self.held[usize::from(channel)].trailing_zeros() as u8;
                 let off = Event {
-                    time: 0,
+                    time,
                     kind: EventKind::NoteOff {
                         note: note_id(channel, key),
                         velocity: 0.0,
@@ -139,14 +170,16 @@ impl MidiInNode {
 }
 
 impl Node for MidiInNode {
-    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let start = (self.clock)();
+        let previous_start = self.previous_start.replace(start);
         let wanted = io.inputs[MidiInPorts::CHANNEL].lane(0, 0)[0].round() as u8;
         let out = &mut io.event_outputs[MidiInPorts::OUT];
         // Left over from a block where the buffer filled.
-        if !self.flush_ending(out) {
+        if !self.flush_ending(out, 0) {
             return;
         }
-        while let Some(message) = self.input.pop() {
+        while let Some((arrival, message)) = self.input.pop_timed() {
             let channel = message[0] & 0x0F;
             // A note-off for a note that is held always gets through, so
             // changing the channel can't leave it sounding.
@@ -156,17 +189,18 @@ impl Node for MidiInNode {
             if wanted != 0 && channel + 1 != wanted && !ends_held {
                 continue;
             }
+            let time = frame_offset(arrival, previous_start, ctx.sample_rate, ctx.frames);
             // Sound off (120) and all notes off (123) end what is held.
             if message[0] & 0xF0 == 0xB0 && matches!(message[1], 120 | 123) {
                 self.ending |= 1 << channel;
-                if !self.flush_ending(out) {
+                if !self.flush_ending(out, time) {
                     // The controller itself is dropped with the rest of the
                     // block; the notes still held end next block.
                     return;
                 }
             }
             if let Some(kind) = self.translate(message)
-                && out.push(Event { time: 0, kind }).is_err()
+                && out.push(Event { time, kind }).is_err()
             {
                 break;
             }
@@ -189,6 +223,41 @@ mod tests {
 
     fn key_on(channel: u8, key: u8, velocity: u8) -> [u8; 3] {
         [0x90 | channel, key, velocity]
+    }
+
+    #[test]
+    fn frame_offsets_follow_the_arrival_time() {
+        // 48 kHz: 1000 microseconds is 48 frames.
+        assert_eq!(frame_offset(5_000, None, 48_000.0, 128), 0);
+        assert_eq!(frame_offset(5_000, Some(4_000), 48_000.0, 128), 48);
+        // From before the previous block, or past the end of this one.
+        assert_eq!(frame_offset(3_000, Some(4_000), 48_000.0, 128), 0);
+        assert_eq!(frame_offset(90_000, Some(4_000), 48_000.0, 128), 127);
+    }
+
+    static NOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[test]
+    fn a_message_plays_at_the_offset_it_arrived_at_in_the_previous_block() {
+        use std::sync::atomic::Ordering;
+        let bus = MidiBus::new();
+        let mut h = Harness::new(
+            &MidiIn::with_clock(&bus, || NOW.load(Ordering::Relaxed)),
+            &Config::new(),
+            &[],
+            48_000.0,
+            128,
+        )
+        .unwrap();
+        NOW.store(10_000, Ordering::Relaxed);
+        h.run(128).unwrap();
+        // 500 microseconds after the first block began is frame 24.
+        bus.send_at(key_on(0, 60, 100), 10_500);
+        bus.send_at([0x80, 60, 0], 11_000);
+        NOW.store(12_667, Ordering::Relaxed);
+        h.run(128).unwrap();
+        let times: Vec<u32> = h.events(MidiInPorts::OUT).iter().map(|e| e.time).collect();
+        assert_eq!(times, vec![24, 48]);
     }
 
     #[test]

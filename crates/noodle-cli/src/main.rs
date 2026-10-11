@@ -220,7 +220,7 @@ fn list_devices(host: Option<&str>) -> Result<(), String> {
 }
 
 /// Frames per block for live playback: about 11 ms at 48 kHz.
-const MAX_FRAMES: usize = 512;
+const MAX_FRAMES: usize = 128;
 /// How often to check the project file for changes.
 const POLL: Duration = Duration::from_millis(100);
 

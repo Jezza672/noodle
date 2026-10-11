@@ -28,8 +28,8 @@ use noodle_io::{
 };
 use noodle_nodes::{ClipFeeds, ClipProblem, Library};
 
-/// Frames per block while playing: about 11 ms at 48 kHz.
-const MAX_FRAMES: usize = 512;
+/// Frames per block while playing: about 2.7 ms at 48 kHz.
+const MAX_FRAMES: usize = 128;
 
 /// More reroutes than this within [`REROUTE_WINDOW`] means the output is
 /// flapping, and playback stops instead of restarting again.
