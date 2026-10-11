@@ -109,6 +109,7 @@ enum Action {
     ToggleScope,
     ToggleOutputs,
     TogglePlugins,
+    ToggleCpu,
     ImportAudio,
     ExportAudio,
     /// Asks where the export the dialog chose is to be written.
@@ -579,6 +580,13 @@ impl App {
             {
                 actions.push(Action::TogglePlugins);
             }
+            if ui
+                .selectable_label(self.editor.show_cpu(), "CPU meters")
+                .on_hover_text("Show how much of the audio thread's time each node takes")
+                .clicked()
+            {
+                actions.push(Action::ToggleCpu);
+            }
         });
     }
 
@@ -931,6 +939,7 @@ impl App {
             }
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
+            Action::ToggleCpu => self.editor.set_show_cpu(!self.editor.show_cpu()),
             Action::ToggleOutputs => {
                 self.outputs_open = !self.outputs_open;
                 if self.outputs_open {
@@ -1316,6 +1325,20 @@ mod tests {
         harness.run();
         harness.get_by_label("Rescan");
         harness.get_by_label_contains("0 of 0 plugins");
+    }
+
+    #[test]
+    fn cpu_meters_are_switched_on_and_off_from_the_view_menu() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(!harness.state().editor().show_cpu());
+        for expected in [true, false] {
+            harness.get_by_label("View").click();
+            harness.run();
+            harness.get_by_label("CPU meters").click();
+            harness.run();
+            assert_eq!(harness.state().editor().show_cpu(), expected);
+        }
     }
 
     #[test]

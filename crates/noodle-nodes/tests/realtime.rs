@@ -1019,3 +1019,108 @@ fn live_monitoring_never_allocates_while_notes_come_and_go() {
         assert_eq!(violations, 0, "allocated in round {round}");
     }
 }
+
+/// Passes its input through 100 samples late and says so, so the engine has
+/// something to compensate for.
+struct Latent;
+
+static LATENT_INFO: noodle_engine::NodeInfo = noodle_engine::NodeInfo {
+    id: "test.latent",
+    version: 1,
+    name: "Latent",
+    category: "Test",
+};
+
+impl noodle_engine::NodeType for Latent {
+    fn info(&self) -> &noodle_engine::NodeInfo {
+        &LATENT_INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<noodle_engine::Layout, noodle_engine::NodeError> {
+        Ok(noodle_engine::Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out"))
+    }
+
+    fn instantiate(
+        &self,
+        _setup: &noodle_engine::Setup<'_>,
+    ) -> Result<noodle_engine::Instance, noodle_engine::NodeError> {
+        Ok(noodle_engine::Instance::realtime(LatentNode {
+            ring: vec![0.0; 100],
+            pos: 0,
+        }))
+    }
+}
+
+struct LatentNode {
+    ring: Vec<f32>,
+    pos: usize,
+}
+
+impl noodle_engine::Node for LatentNode {
+    fn process(&mut self, _ctx: &noodle_engine::Context, io: noodle_engine::Io<'_, '_>) {
+        let input = io.inputs[0].lane(0, 0);
+        let out = io.outputs[0].lane_mut(0, 0);
+        for (o, &x) in out.iter_mut().zip(input) {
+            *o = std::mem::replace(&mut self.ring[self.pos], x);
+            self.pos = (self.pos + 1) % self.ring.len();
+        }
+    }
+
+    fn latency(&self) -> u32 {
+        self.ring.len() as u32
+    }
+}
+
+#[test]
+fn delay_compensation_never_allocates_through_plan_swaps_and_seeks() {
+    // saw -> latent -> mix, and a sine straight into the mix, which is
+    // delayed to match. The plan is swapped (a node is added and removed)
+    // and the transport jumps while rendering.
+    let mut s = Session::new();
+    s.registry.register(Latent);
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let latent = s.add(Node::new("test.latent"));
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", latent, "in");
+    s.wire(latent, "out", mix, "in1");
+    s.wire(sine, "out", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+    assert_eq!(s.controller.output_latency(), 100);
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 300 * SETTINGS.channels];
+    for round in 0..8 {
+        // The latent path is cut and restored, so the latency to compensate
+        // comes and goes with each plan.
+        let cut = round % 2 == 1;
+        if cut {
+            s.edit(Command::Disconnect {
+                input: Endpoint::new(mix, "in1"),
+            });
+        } else if round > 0 {
+            s.wire(latent, "out", mix, "in1");
+        }
+        s.update();
+        assert_eq!(s.controller.output_latency(), if cut { 0 } else { 100 });
+        if round % 3 == 2 {
+            transport.seek(noodle_core::Tick(1_000));
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+        assert!(
+            out.iter().any(|&x| x.abs() > 1e-3),
+            "silent in round {round}"
+        );
+    }
+}

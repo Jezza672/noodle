@@ -24,6 +24,7 @@ use clack_extensions::audio_ports::{
 use clack_extensions::gui::{
     GuiApiType, GuiConfiguration, GuiSize, HostGui, PluginGui, PluginGuiImpl, Window,
 };
+use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
     PluginNotePortsImpl,
@@ -34,6 +35,7 @@ use clack_extensions::params::{
 };
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
+use clack_plugin::entry::prelude::*;
 use clack_plugin::events::event_types::{NoteOffEvent, NoteOnEvent};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
@@ -65,6 +67,7 @@ impl Plugin for TestPlugin {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginGui>()
+            .register::<PluginLatency>()
             .register::<PluginTimer>();
     }
 }
@@ -268,6 +271,17 @@ impl PluginAudioPortsImpl for MainThread<'_> {
                 in_place_pair: None,
             });
         }
+    }
+}
+
+/// Reports the latency in `NOODLE_TEST_PLUGIN_LATENCY` (samples), so the
+/// latency tests can ask for any; it passes audio through undelayed.
+impl PluginLatencyImpl for MainThread<'_> {
+    fn get(&self) -> u32 {
+        std::env::var("NOODLE_TEST_PLUGIN_LATENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
     }
 }
 
@@ -524,4 +538,27 @@ impl PluginAudioProcessorParams for Processor<'_> {
     }
 }
 
-clack_export_entry!(SinglePluginEntry<TestPlugin>);
+/// The entry, which writes a file named by `NOODLE_TEST_DEINIT_MARKER` when
+/// the host deinitialises the plugin (dropping the entry). A test can then
+/// see whether the host unloaded it.
+struct TestEntry(SinglePluginEntry<TestPlugin>);
+
+impl Entry for TestEntry {
+    fn new(plugin_path: Option<&std::ffi::CStr>) -> Result<Self, EntryLoadError> {
+        SinglePluginEntry::new(plugin_path).map(Self)
+    }
+
+    fn declare_factories<'a>(&'a self, builder: &mut EntryFactories<'a>) {
+        self.0.declare_factories(builder);
+    }
+}
+
+impl Drop for TestEntry {
+    fn drop(&mut self) {
+        if let Some(path) = std::env::var_os("NOODLE_TEST_DEINIT_MARKER") {
+            let _ = std::fs::write(path, b"deinit");
+        }
+    }
+}
+
+clack_export_entry!(TestEntry);

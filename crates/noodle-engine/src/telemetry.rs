@@ -54,6 +54,8 @@ struct Channels {
     scopes: HashMap<NodeId, Vec<ScopeReader>>,
     /// Wired parameters' values, by node and port key.
     params: HashMap<(NodeId, String), Vec<Arc<ParamCells>>>,
+    /// How much of the block budget each node's processing takes.
+    cpu: HashMap<NodeId, Vec<Arc<CpuCells>>>,
     /// The IDs of the live [`MeterReader`]s.
     readers: HashSet<u64>,
     next_reader: u64,
@@ -74,6 +76,10 @@ impl Channels {
             !list.is_empty()
         });
         self.params.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
+        self.cpu.retain(|_, list| {
             list.retain(|cells| Arc::strong_count(cells) > 1);
             !list.is_empty()
         });
@@ -190,6 +196,39 @@ impl Telemetry {
         })
     }
 
+    /// Opens a channel for `node`'s processing time. Call this when building
+    /// a plan, not on the audio thread.
+    pub fn open_cpu(&self, node: NodeId) -> CpuWriter {
+        let cells = Arc::new(CpuCells::default());
+        self.lock().cpu.entry(node).or_default().push(cells.clone());
+        CpuWriter {
+            cells,
+            load: 0.0,
+            peak: 0.0,
+        }
+    }
+
+    /// How much of the audio thread's time `node` takes, or `None` if
+    /// nothing has reported (the node isn't in the running plan, or no block
+    /// has run since it was).
+    pub fn read_cpu(&self, node: NodeId) -> Option<CpuReading> {
+        let channels = self.lock();
+        channels.cpu.get(&node).and_then(|list| cpu_reading(list))
+    }
+
+    /// Every node's reading, for a profiler view. Nodes that haven't
+    /// reported are left out.
+    pub fn read_all_cpu(&self) -> Vec<(NodeId, CpuReading)> {
+        let channels = self.lock();
+        let mut all: Vec<_> = channels
+            .cpu
+            .iter()
+            .filter_map(|(&node, list)| Some((node, cpu_reading(list)?)))
+            .collect();
+        all.sort_by_key(|(node, _)| *node);
+        all
+    }
+
     /// Copies `node`'s most recent scope frames into `view`, reusing its
     /// memory. Returns false, leaving `view` alone, if the node has no scope.
     pub fn read_scope(&self, node: NodeId, view: &mut ScopeView) -> bool {
@@ -269,6 +308,63 @@ impl Drop for MeterReader {
         let mut channels = self.hub.lock();
         channels.readers.remove(&self.id);
         channels.held.retain(|&(_, reader), _| reader != self.id);
+    }
+}
+
+fn cpu_reading(list: &[Arc<CpuCells>]) -> Option<CpuReading> {
+    let cells = live(list, |cells| cells.written.load(Ordering::Acquire))?;
+    if !cells.written.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(CpuReading {
+        load: f32::from_bits(cells.load.load(Ordering::Relaxed)),
+        peak: f32::from_bits(cells.peak.load(Ordering::Relaxed)),
+    })
+}
+
+/// How much of the time a block has to be rendered a node uses. 1.0 is the
+/// whole of it, so a node at 0.5 alone would use half a core's real time.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CpuReading {
+    /// A smoothed average over recent blocks.
+    pub load: f32,
+    /// The worst recent block, falling away slowly.
+    pub peak: f32,
+}
+
+#[derive(Default)]
+struct CpuCells {
+    load: AtomicU32,
+    peak: AtomicU32,
+    written: AtomicBool,
+}
+
+/// The audio thread's end of a node's CPU channel.
+pub struct CpuWriter {
+    cells: Arc<CpuCells>,
+    load: f32,
+    peak: f32,
+}
+
+impl CpuWriter {
+    /// Reports that processing a block took `used_ns` of the `budget_ns` the
+    /// block lasts (its frames at the sample rate).
+    pub fn record(&mut self, used_ns: u64, budget_ns: f64) {
+        if budget_ns <= 0.0 {
+            return;
+        }
+        let used = (used_ns as f64 / budget_ns) as f32;
+        // About a second of smoothing at typical block sizes: slow enough to
+        // read, quick enough to follow an edit.
+        self.load += (used - self.load) * 0.02;
+        self.peak = used.max(self.peak * 0.995);
+        self.cells
+            .load
+            .store(self.load.to_bits(), Ordering::Relaxed);
+        self.cells
+            .peak
+            .store(self.peak.to_bits(), Ordering::Relaxed);
+        self.cells.written.store(true, Ordering::Release);
     }
 }
 

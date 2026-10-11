@@ -841,8 +841,9 @@ ports become graph ports. Plugin state is saved in the Project.
 - **Out-of-process hosting (M6)** runs plugins in sandbox processes that
   exchange audio through shared memory, so a crashing plugin can't take down
   the session.
-- **Latency:** plugins report their latency, and plugin delay compensation is
-  added to the plan in M6.
+- **Latency:** plugins report their latency (CLAP's latency extension, VST3's
+  `getLatencySamples`, both read once after activation, on the plugin thread) and the engine
+  compensates for it; see [Performance (M6)](#performance-m6).
 
 ### CLAP hosting
 
@@ -900,6 +901,7 @@ dropped, and releasing them after the plugin is unloaded or deinitialised
 crashes. So on macOS each plugin file, CLAP or VST3, stays loaded for the
 life of the app: the entry's `deinit` and the bundle's exit never run, and a
 plugin file replaced on disk takes effect after a restart.
+(`tests/keep_loaded.rs` checks this through the test plugins' `deinit` and module exit.)
 
 **Instances and the plugin thread.** CLAP says a plugin instance belongs to
 its main thread, and JUCE-based plugins expect that to be one thread for the
@@ -1071,7 +1073,8 @@ results saved before VST3 load as CLAP). The code is in
   bars from the project's start are all the current signature's length.
 - **Not yet.** A Linux window for editors, units and program lists, 64-bit
   audio, `IProcessContextRequirements`, `IRunLoop`, and note output other than
-  note on and off. Latency is not reported.
+  note on and off. Latency is read once, when the plugin is created; a change
+  the plugin announces later is not followed.
 
 **Plugin browser** (`noodle-app/src/plugin_browser.rs`, View > Plugins). Lists
 the catalog with a search over name, vendor, ID, format and kind; Add puts the node on
@@ -1104,10 +1107,62 @@ the audio thread.
 meter that has not changed. A plugin that crashes while playing takes the process with it
 (until out-of-process hosting in M6); editors are separate windows (not drawn inside the app's window), Linux has no
 embedding and no `posix-fd`, and the macOS and Windows editor windows are
-checked only by CI compiling them and by one hand test on the Mac; plugin latency is
-ignored; CLAP extensions beyond audio
+checked only by CI compiling them and by one hand test on the Mac; CLAP extensions beyond audio
 ports, note ports, parameters and state (e.g. tail, voice info, remote
 controls) are not used.
+
+## Performance (M6)
+
+### Delay compensation
+
+A node reports how late its outputs sound with `Node::latency` (samples; a
+plugin's reported latency, or a lookahead's). It is read once, when the plan is
+built, right after the node is created, and clamped to `MAX_LATENCY` (two
+seconds at 96 kHz). A node that carries over from the previous plan keeps the
+latency recorded in `PlanInfo`.
+
+`plan::compensate` runs after the plan's nodes are made. Walking the schedule,
+it gives every signal buffer an *arrival*: the slowest of its writer's inputs
+plus the writer's own latency. Where paths meet, the early ones get a
+`DelayLine` so everything lines up with the slowest:
+
+- a node with several signal inputs lines them up with each other;
+- every *sink* (an Output node that plays, or a tap) lines up with the
+  slowest sink, so two Output nodes on different devices stay in sync;
+- the lines read their source at the consumer's step and write a private region
+  appended to the plan's pool, so the compiler's buffer reuse is not touched,
+  and cost nothing when no node reports latency;
+- a feedback loop's own input is never compensated (the loop already carries
+  its delay), and event ports are not compensated at all (a plugin's latency is
+  in its audio, and notes arrive on time);
+- a plan swap hands each line's contents to its successor (keyed by node,
+  input and delay), and a transport jump clears them with the nodes.
+
+A plan swap is seamless when its delay lines match by node, input and delay,
+whatever their slots, so unrelated edits don't fade the output. The mix as a
+whole is then `output_latency` samples late (`Controller::output_latency`).
+Live playback just sounds that much late, as in any DAW, and recording
+subtracts it along with the device's output latency (`Session::stop_recording`, MIDI takes); offline renders (`render`, `render_project_streaming*`,
+`render_taps`, so exports and freezes) render that many extra frames and drop
+them from the front, so what they write lines up with the timeline.
+`noodle-nodes/tests/pdc.rs` covers the alignment and the trim,
+`realtime.rs` that it never allocates through plan swaps and seeks, and
+`noodle-plugins/tests/latency.rs` that CLAP and VST3 plugins report theirs
+(the test plugins read `NOODLE_TEST_PLUGIN_LATENCY`).
+
+### CPU meters
+
+When a `Telemetry` hub is set, each node's step is timed
+(`Instant::now` around its `process`, no allocation) and reported through
+`Telemetry::open_cpu`/`read_cpu`/`read_all_cpu` as a share of the block's
+time (`CpuReading`: a smoothed `load` and a slowly falling `peak`; 1.0 is the
+whole block). Without a hub nothing is timed, so offline renders pay nothing.
+The editor's View > CPU meters shows each node's load in its header, coloured
+amber from 15 % and red from 50 % (or a peak over 90 %), and the graph's total
+in the corner. A group has no step of its own (it is flattened away), so its
+header shows the sum of the nodes inside it at any depth. A split node (feedback loop) reports its output half; the input
+half's time is not counted. Time spent in delay lines is not attributed to a
+node.
 
 ## UI (`noodle-app`)
 

@@ -98,6 +98,10 @@ pub mod editor {
     /// The active node's outline: the one the properties panel shows.
     pub const ACTIVE: Color32 = Color32::from_rgb(255, 255, 255);
     pub const PROBLEM: Color32 = Color32::from_rgb(255, 90, 79);
+    /// A node using a fair share of the audio thread's time.
+    pub const CPU_MEDIUM: Color32 = Color32::from_rgb(240, 180, 70);
+    /// A node close to making the audio late.
+    pub const CPU_HIGH: Color32 = PROBLEM;
     pub const WIRE: Color32 = Color32::from_rgb(92, 200, 230);
     /// Wires to and from selected nodes.
     pub const WIRE_SELECTED: Color32 = Color32::from_rgb(200, 241, 105);

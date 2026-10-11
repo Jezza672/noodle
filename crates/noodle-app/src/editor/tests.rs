@@ -2417,3 +2417,19 @@ fn double_clicking_a_mixer_or_scope_asks_for_its_view() {
     // Other nodes have no view.
     assert_eq!(view_request_after_double_click("noodle.util.gain").0, None);
 }
+
+#[test]
+fn cpu_labels_round_by_size_and_warn_as_the_load_grows() {
+    use super::draw::cpu_label;
+    use crate::theme::editor as colors;
+    use noodle_engine::CpuReading;
+    let at = |load: f32, peak: f32| cpu_label(CpuReading { load, peak });
+    assert_eq!(at(0.0, 0.0).0, "0%");
+    assert_eq!(at(0.0234, 0.0).0, "2.3%");
+    assert_eq!(at(0.256, 0.3).0, "26%");
+    assert_eq!(at(0.01, 0.01).1, colors::TEXT_WEAK);
+    assert_eq!(at(0.2, 0.3).1, colors::CPU_MEDIUM);
+    assert_eq!(at(0.6, 0.6).1, colors::CPU_HIGH);
+    // A single bad block shows even when the average is low.
+    assert_eq!(at(0.05, 0.95).1, colors::CPU_HIGH);
+}

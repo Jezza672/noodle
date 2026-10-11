@@ -25,6 +25,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clack_extensions::gui::{GuiApiType, GuiConfiguration, GuiSize, PluginGui, Window};
+use clack_extensions::latency::PluginLatency;
 use clack_extensions::params::PluginParams;
 use clack_extensions::timer::PluginTimer;
 use clack_host::prelude::*;
@@ -54,6 +55,8 @@ struct Live {
     /// given, to tell when the user has resized it.
     window: Option<Box<dyn EditorWindow>>,
     size: (u32, u32),
+    /// The plugin's reported latency, asked for once it is activated.
+    latency: u32,
 }
 
 impl Drop for Live {
@@ -69,6 +72,8 @@ pub(crate) struct Loaded {
     pub key: u64,
     processor: Option<StoppedPluginAudioProcessor<Host>>,
     pub flags: Arc<Flags>,
+    /// The latency the plugin reported once activated, in samples.
+    pub latency: u32,
 }
 
 impl Loaded {
@@ -494,10 +499,12 @@ fn handle(command: Command, live: &mut HashMap<u64, Live>, next_key: &mut u64) {
                     let key = *next_key;
                     *next_key += 1;
                     let flags = Arc::clone(&instance_live.flags);
+                    let latency = instance_live.latency;
                     let loaded = Loaded {
                         key,
                         processor: Some(processor),
                         flags,
+                        latency,
                     };
                     // Registered first: if the caller is gone, dropping the
                     // `Loaded` sends a Close for this key.
@@ -584,6 +591,13 @@ fn load(
             },
         )
         .map_err(|e| HostError(e.to_string()))?;
+    // Latency is only meaningful once the plugin is activated.
+    let latency = {
+        let handle = instance.plugin_handle();
+        handle
+            .get_extension::<PluginLatency>()
+            .map_or(0, |ext| ext.get(&handle))
+    };
     Ok((
         Live {
             instance,
@@ -592,6 +606,7 @@ fn load(
             gui: false,
             window: None,
             size: (0, 0),
+            latency,
         },
         processor,
     ))

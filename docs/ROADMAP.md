@@ -559,10 +559,16 @@ load, play, save and restore on all three platforms.
 
 ## M6: Performance and robustness
 
+**Status:** batch 1 is done: plugin delay compensation and per-node CPU
+meters. Parallel graph processing and out-of-process hosting are next. A
+plugin that changes its latency after loading (restart request, latency
+`changed`) is not followed until the node is rebuilt.
+
 - Running the graph in parallel across real-time worker threads.
-- Plugin delay compensation.
+- Plugin delay compensation (done: CLAP and VST3 latency, delay lines in the
+  plan, offline renders trimmed to the timeline).
 - Out-of-process plugin hosting.
-- CPU meters per node, and profiling tools.
+- CPU meters per node (done: View > CPU meters), and profiling tools.
 
 ## Later
 
