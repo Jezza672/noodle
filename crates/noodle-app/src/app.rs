@@ -833,6 +833,11 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The plugins' timers, and what other threads asked of them, when
+        // this thread hosts them (macOS, Windows).
+        if let Some(wait) = noodle_plugins::pump() {
+            ui.ctx().request_repaint_after(wait);
+        }
         self.show(ui);
     }
 }

@@ -24,12 +24,13 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clack_extensions::gui::{GuiApiType, GuiConfiguration, PluginGui};
+use clack_extensions::gui::{GuiApiType, GuiConfiguration, GuiSize, PluginGui, Window};
 use clack_extensions::params::PluginParams;
 use clack_extensions::timer::PluginTimer;
 use clack_host::prelude::*;
 
 use crate::editor::Captured;
+use crate::window::{self, EditorWindow, ParentWindow};
 use crate::host::{
     Flags, Host, HostError, LOAD_TIMEOUT, host_info, load_entry, load_state, new_instance,
     save_state_of, visible_params,
@@ -49,6 +50,10 @@ struct Live {
     flags: Arc<Flags>,
     /// The plugin's editor exists (shown or hidden), so `destroy` is owed.
     gui: bool,
+    /// The host window an embedded editor is in, and the size it was last
+    /// given, to tell when the user has resized it.
+    window: Option<Box<dyn EditorWindow>>,
+    size: (u32, u32),
 }
 
 /// An instance, activated and ready.
@@ -187,8 +192,10 @@ pub fn adopt_current_thread(wake: impl Fn() + Send + Sync + 'static) -> bool {
 }
 
 /// Runs what other threads have asked of the adopted plugin thread, and its
-/// instances' timers. Returns how long until it next needs calling, or
-/// `None` if this isn't the adopted thread (or nothing is adopted).
+/// instances' timers. Returns how long until it should be called again, or
+/// `None` if nothing is running that needs it (a queued command calls the
+/// `wake` given to [`adopt_current_thread`]), or this isn't the adopted
+/// thread.
 pub fn pump() -> Option<Duration> {
     ADOPTED.with(|a| {
         let mut adopted = a.try_borrow_mut().ok()?;
@@ -197,7 +204,7 @@ pub fn pump() -> Option<Duration> {
             adopted.executor.handle(command);
         }
         adopted.executor.housekeeping();
-        Some(adopted.executor.next_wake())
+        (!adopted.executor.live.is_empty()).then(|| adopted.executor.next_wake())
     })
 }
 
@@ -338,8 +345,62 @@ fn housekeeping(live: &mut Live, now: Instant) {
             }
         }
     }
-    if live.flags.editor_closed.swap(false, Ordering::AcqRel) {
+    if live.flags.editor_closed.swap(false, Ordering::AcqRel)
+        || live.window.as_ref().is_some_and(|w| w.is_closed())
+    {
         destroy_editor(live);
+    }
+    resize_window(live);
+}
+
+/// Carries out a resize the plugin asked for, or the user made by dragging
+/// the window's edge.
+fn resize_window(live: &mut Live) {
+    let Some(window) = live.window.as_mut() else {
+        return;
+    };
+    let asked = live.flags.resize.swap(0, Ordering::AcqRel);
+    let handle = live.instance.plugin_handle();
+    let Some(gui) = handle.get_extension::<PluginGui>() else {
+        return;
+    };
+    if asked != 0 {
+        let size = ((asked >> 32) as u32, asked as u32);
+        window.set_size(size.0, size.1, gui.can_resize(&handle));
+        live.size = window.size();
+        let _ = gui.set_size(
+            &handle,
+            GuiSize {
+                width: live.size.0,
+                height: live.size.1,
+            },
+        );
+    } else if window.size() != live.size {
+        // The user dragged it: the plugin may want a different size.
+        let wanted = window.size();
+        let GuiSize { width, height } = gui
+            .adjust_size(
+                &handle,
+                GuiSize {
+                    width: wanted.0,
+                    height: wanted.1,
+                },
+            )
+            .unwrap_or(GuiSize {
+                width: wanted.0,
+                height: wanted.1,
+            });
+        if (width, height) != wanted {
+            window.set_size(width, height, true);
+        }
+        live.size = window.size();
+        let _ = gui.set_size(
+            &handle,
+            GuiSize {
+                width: live.size.0,
+                height: live.size.1,
+            },
+        );
     }
 }
 
@@ -349,9 +410,15 @@ fn destroy_editor(live: &mut Live) {
     }
     live.gui = false;
     live.flags.editor_open.store(false, Ordering::Release);
+    live.flags.embedded.store(false, Ordering::Release);
+    live.flags.resize.store(0, Ordering::Release);
     let handle = live.instance.plugin_handle();
     if let Some(gui) = handle.get_extension::<PluginGui>() {
         gui.destroy(&handle);
+    }
+    // The plugin's view goes before the window it was in.
+    if let Some(mut window) = live.window.take() {
+        window.hide();
     }
 }
 
@@ -467,6 +534,8 @@ fn load(
             _entry: entry,
             flags,
             gui: false,
+            window: None,
+            size: (0, 0),
         },
         processor,
     ))
@@ -500,16 +569,33 @@ fn apis() -> &'static [GuiApiType<'static>] {
 }
 
 fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
+    if live.gui {
+        // Already up: bring it back if it was hidden.
+        let handle = live.instance.plugin_handle();
+        let gui = handle
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| HostError("this plugin has no editor".into()))?;
+        gui.show(&handle)
+            .map_err(|e| HostError(format!("can't show the editor: {e}")))?;
+        if let Some(window) = live.window.as_mut() {
+            window.show();
+        }
+        return Ok(());
+    }
+    // Embedded in a window of ours if the application makes those and the
+    // plugin can; otherwise the plugin's own floating window.
+    let embedded_error = if window::available() {
+        match open_embedded(live) {
+            Ok(()) => return Ok(()),
+            Err(error) => Some(error),
+        }
+    } else {
+        None
+    };
     let handle = live.instance.plugin_handle();
     let Some(gui) = handle.get_extension::<PluginGui>() else {
         return Err(HostError("this plugin has no editor".into()));
     };
-    if live.gui {
-        // Already up: bring it back if it was hidden.
-        return gui
-            .show(&handle)
-            .map_err(|e| HostError(format!("can't show the editor: {e}")));
-    }
     let configuration = apis()
         .iter()
         .map(|api| GuiConfiguration {
@@ -517,7 +603,11 @@ fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
             is_floating: true,
         })
         .find(|c| gui.is_api_supported(&handle, *c))
-        .ok_or_else(|| HostError("this plugin has no editor that floats on this system".into()))?;
+        .ok_or_else(|| {
+            embedded_error.unwrap_or_else(|| {
+                HostError("this plugin has no editor that floats on this system".into())
+            })
+        })?;
     gui.create(&handle, configuration)
         .map_err(|e| HostError(format!("can't create the editor: {e}")))?;
     live.gui = true;
@@ -528,5 +618,67 @@ fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
         return Err(HostError(format!("can't show the editor: {error}")));
     }
     live.flags.editor_open.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// What a plugin is given when it has no size of its own to offer.
+const DEFAULT_SIZE: (u32, u32) = (800, 600);
+
+/// Opens the editor inside a window the host makes.
+fn open_embedded(live: &mut Live) -> Result<(), HostError> {
+    let Live {
+        instance,
+        flags,
+        gui: gui_exists,
+        window: live_window,
+        size: live_size,
+        ..
+    } = live;
+    let handle = &instance.plugin_handle();
+    let gui = &handle
+        .get_extension::<PluginGui>()
+        .ok_or_else(|| HostError("this plugin has no editor".into()))?;
+    let configuration = apis()
+        .iter()
+        .map(|api| GuiConfiguration {
+            api_type: *api,
+            is_floating: false,
+        })
+        .find(|c| gui.is_api_supported(handle, *c))
+        .ok_or_else(|| HostError("this plugin has no editor that embeds on this system".into()))?;
+    let mut window = window::make("Plugin editor")
+        .ok_or_else(|| HostError("can't make a window for the editor".into()))?;
+    gui.create(handle, configuration)
+        .map_err(|e| HostError(format!("can't create the editor: {e}")))?;
+    let result = (|| {
+        let size = gui
+            .get_size(handle)
+            .map_or(DEFAULT_SIZE, |s| (s.width, s.height));
+        window.set_size(size.0, size.1, gui.can_resize(handle));
+        let parent = match window.parent() {
+            // SAFETY: the window made the handle.
+            ParentWindow::Cocoa(view) => unsafe { Window::from_cocoa_nsview(view) },
+            ParentWindow::Win32(hwnd) => unsafe { Window::from_win32_hwnd(hwnd) },
+            ParentWindow::X11(id) => Window::from_x11_handle(id),
+        };
+        // SAFETY: the window stays alive in `live` until the editor is
+        // destroyed, which is when the plugin is told it is gone.
+        unsafe { gui.set_parent(handle, parent) }
+            .map_err(|e| HostError(format!("can't embed the editor: {e}")))?;
+        gui.show(handle)
+            .map_err(|e| HostError(format!("can't show the editor: {e}")))?;
+        *live_size = window.size();
+        Ok(())
+    })();
+    if let Err(error) = result {
+        gui.destroy(handle);
+        return Err(error);
+    }
+    window.show();
+    *live_window = Some(window);
+    *gui_exists = true;
+    flags.embedded.store(true, Ordering::Release);
+    flags.editor_closed.store(false, Ordering::Release);
+    flags.editor_open.store(true, Ordering::Release);
     Ok(())
 }

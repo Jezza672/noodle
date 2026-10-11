@@ -5,7 +5,7 @@
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,12 @@ pub(crate) struct Flags {
     pub editor_closed: AtomicBool,
     /// The plugin asked for a call on the main thread.
     pub callback: AtomicBool,
+    /// The editor is embedded in a window of the host's, so the plugin's
+    /// resize requests are the host's to carry out.
+    pub embedded: AtomicBool,
+    /// A size the plugin asked for (width in the high half, height in the
+    /// low), or 0.
+    pub resize: AtomicU64,
     timers: Mutex<Timers>,
 }
 
@@ -94,8 +100,13 @@ impl SharedHandler<'_> for HostShared {
 impl HostGuiImpl for HostShared {
     fn resize_hints_changed(&self) {}
 
-    fn request_resize(&self, _new_size: GuiSize) -> Result<(), clack_host::host::HostError> {
-        // Floating windows size themselves.
+    fn request_resize(&self, new_size: GuiSize) -> Result<(), clack_host::host::HostError> {
+        // Floating windows size themselves; an embedded one is resized by the
+        // plugin thread when it next looks.
+        if self.flags.embedded.load(Ordering::Acquire) {
+            let packed = (u64::from(new_size.width) << 32) | u64::from(new_size.height);
+            self.flags.resize.store(packed, Ordering::Release);
+        }
         Ok(())
     }
 

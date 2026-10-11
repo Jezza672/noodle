@@ -21,7 +21,7 @@ use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, PluginAudioPorts, PluginAudioPortsImpl,
 };
 use clack_extensions::gui::{
-    GuiApiType, GuiConfiguration, GuiSize, PluginGui, PluginGuiImpl, Window,
+    GuiApiType, GuiConfiguration, GuiSize, HostGui, PluginGui, PluginGuiImpl, Window,
 };
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
@@ -92,6 +92,9 @@ impl DefaultPluginFactory for TestPlugin {
             host,
             shared,
             gui: Cell::new(Gui::None),
+            embedded: Cell::new(false),
+            parented: Cell::new(false),
+            resized: Cell::new(false),
             timer: Cell::new(None),
         })
     }
@@ -108,12 +111,17 @@ pub struct MainThread<'a> {
     host: HostMainThreadHandle<'a>,
     shared: &'a Shared,
     gui: Cell<Gui>,
+    /// Created for a window of the host's, and given its parent.
+    embedded: Cell<bool>,
+    parented: Cell<bool>,
+    /// Already asked the host for a bigger window.
+    resized: Cell<bool>,
     timer: Cell<Option<TimerId>>,
 }
 
 impl PluginGuiImpl for MainThread<'_> {
     fn is_api_supported(&self, configuration: GuiConfiguration) -> bool {
-        configuration.is_floating && configuration.api_type == native_api()
+        configuration.api_type == native_api()
     }
 
     fn get_preferred_api(&self) -> Option<GuiConfiguration<'_>> {
@@ -123,8 +131,11 @@ impl PluginGuiImpl for MainThread<'_> {
         })
     }
 
-    fn create(&self, _configuration: GuiConfiguration) -> Result<(), PluginError> {
+    fn create(&self, configuration: GuiConfiguration) -> Result<(), PluginError> {
         self.gui.set(Gui::Created);
+        self.embedded.set(!configuration.is_floating);
+        self.parented.set(false);
+        self.resized.set(false);
         Ok(())
     }
 
@@ -148,8 +159,25 @@ impl PluginGuiImpl for MainThread<'_> {
         Ok(())
     }
 
-    fn set_parent(&self, _window: Window) -> Result<(), PluginError> {
-        Err(PluginError::Message("floating only"))
+    fn set_parent(&self, window: Window) -> Result<(), PluginError> {
+        // The tests' window hands out this handle.
+        if !self.embedded.get() || window.as_generic_ptr() as usize != PARENT {
+            return Err(PluginError::Message("wrong parent"));
+        }
+        self.parented.set(true);
+        Ok(())
+    }
+
+    fn can_resize(&self) -> bool {
+        true
+    }
+
+    /// Sizes snap to multiples of 10.
+    fn adjust_size(&self, size: GuiSize) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: size.width / 10 * 10,
+            height: size.height / 10 * 10,
+        })
     }
 
     fn set_transient(&self, _window: Window) -> Result<(), PluginError> {
@@ -159,6 +187,9 @@ impl PluginGuiImpl for MainThread<'_> {
     fn show(&self) -> Result<(), PluginError> {
         if self.gui.get() == Gui::None {
             return Err(PluginError::Message("not created"));
+        }
+        if self.embedded.get() && !self.parented.get() {
+            return Err(PluginError::Message("no parent"));
         }
         self.gui.set(Gui::Shown);
         if self.timer.get().is_none()
@@ -192,9 +223,19 @@ impl PluginTimerImpl for MainThread<'_> {
         if self.gui.get() == Gui::Shown {
             // The user drags the Gain knob.
             self.shared.gain.store(0.25f32.to_bits(), Ordering::Relaxed);
+            // And, in a host window, asks for a bigger one.
+            if self.embedded.get()
+                && !self.resized.replace(true)
+                && let Some(gui) = self.host.get_extension::<HostGui>()
+            {
+                let _ = gui.request_resize(&self.host.shared(), 300, 150);
+            }
         }
     }
 }
+
+/// The parent window handle the tests' windows give out.
+const PARENT: usize = 0xED17;
 
 fn native_api() -> GuiApiType<'static> {
     if cfg!(windows) {

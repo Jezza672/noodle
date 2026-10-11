@@ -50,7 +50,7 @@ fn an_adopted_thread_runs_the_plugins_and_their_timers_when_it_pumps() {
         counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }));
     assert!(!adopt_current_thread(|| {}), "only once");
-    assert_eq!(pump().map(|d| d <= Duration::from_millis(50)), Some(true));
+    assert_eq!(pump(), None, "nothing running yet");
 
     let catalog = catalog();
     let node_type = node_type(&catalog);
@@ -67,6 +67,7 @@ fn an_adopted_thread_runs_the_plugins_and_their_timers_when_it_pumps() {
         pump();
         std::thread::sleep(Duration::from_millis(10));
     }
+    assert!(pump().is_some_and(|d| d <= Duration::from_millis(50)));
     close_editor(local);
     drop(instance);
 
