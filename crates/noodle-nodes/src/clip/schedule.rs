@@ -100,10 +100,12 @@ pub struct ScheduledNote {
     pub velocity: f32,
 }
 
-/// Note IDs of notes in clips use the low 30 bits. The top two are for notes
-/// from elsewhere: the MIDI In node sets the top bit, and the piano roll's
-/// keyboard (see [`ClipFeeds::audition`]) the one below it.
-pub const CLIP_NOTE_MASK: u32 = 0x3FFF_FFFF;
+/// Note IDs of notes in clips use the low 29 bits. The top three are for notes
+/// from elsewhere: the MIDI In node sets the top bit, the piano roll's
+/// keyboard (see [`ClipFeeds::audition`]) the one below it, and live
+/// monitoring (see [`TrackInput::with_midi`](super::TrackInput::with_midi))
+/// the one below that.
+pub const CLIP_NOTE_MASK: u32 = 0x1FFF_FFFF;
 
 /// A track's MIDI notes, sorted by start (then ID). Notes of overlapping
 /// clips all play.
@@ -333,6 +335,16 @@ impl ClipFeeds {
     /// from the next block, whether or not the transport runs.
     pub fn audition(&self, node: NodeId, key: u8, on: bool) {
         self.shared(node).set_audition(key, on);
+    }
+
+    /// Turns live monitoring on or off for the track input `node`: while on,
+    /// it plays the live MIDI of the bus it was built with (see
+    /// [`TrackInput::with_midi`](super::TrackInput::with_midi)), without the
+    /// transport having to run.
+    pub fn set_monitoring(&self, node: NodeId, on: bool) {
+        self.shared(node)
+            .monitoring
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// How many nodes the feeds are keeping a schedule for.

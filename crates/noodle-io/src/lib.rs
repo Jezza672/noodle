@@ -19,7 +19,8 @@ pub use cache::{CacheInfo, CacheStore, CacheWriter, CachedAudio};
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
 pub use devices::{
     AudioConfig, AudioError, COMMON_SAMPLE_RATES, Capabilities, Chosen, DeviceInfo, DeviceList,
-    Direction, HostInfo, InputChoice, capabilities, choose_config, devices, hosts,
+    Direction, HostInfo, InputChoice, VIRTUAL_OUTPUT, capabilities, choose_config, devices, hosts,
+    virtual_output,
 };
 pub use export::{ExportError, ExportFormat, ExportWriter};
 pub use hash::{FileHasher, Peek};
@@ -30,7 +31,7 @@ pub use midi::{
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
-    Playback, Stream, is_fatal, play, play_with_outputs,
+    Playback, Stream, is_fatal, play, play_with_outputs, play_with_outputs_stopped,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};

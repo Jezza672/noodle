@@ -7,7 +7,7 @@ use std::cell::Cell;
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
 use noodle_engine::{OUTPUT_ID, Processor, Registry, Settings, engine};
 use noodle_io::MidiBus;
-use noodle_nodes::{MIDI_IN_ID, VOICE_MIX_ID, VOICES_ID, register_library};
+use noodle_nodes::{MIDI_IN_ID, TRACK_INPUT_ID, VOICE_MIX_ID, VOICES_ID, register_library};
 
 struct Guarded;
 
@@ -59,12 +59,26 @@ const SETTINGS: Settings = Settings {
 
 /// MIDI In → Mono Note → saw → VCA (enveloped by an ADSR) → Output.
 fn synth() -> (Processor, MidiBus, impl Sized) {
+    let (processor, library, controller) = synth_from(&[(MIDI_IN_ID, "out")]);
+    (processor, library.midi, controller)
+}
+
+/// The same synth played from `sources`, each a node type and the event
+/// output it plays from, in place of the MIDI In node. They are nodes 1 up;
+/// the synth follows.
+fn synth_from(
+    sources: &[(&str, &str)],
+) -> (Processor, noodle_nodes::Library, noodle_engine::Controller) {
     let mut registry = Registry::with_builtins();
     let library = register_library(&mut registry);
     let mut project = Project::new();
     let mut ids = Vec::new();
-    for (type_id, params) in [
-        (MIDI_IN_ID, vec![]),
+    let sources_end = sources.len();
+    let mut nodes = vec![];
+    for (type_id, _) in sources {
+        nodes.push((*type_id, vec![]));
+    }
+    nodes.extend([
         ("noodle.event.mono", vec![]),
         ("noodle.osc.saw", vec![]),
         (
@@ -78,7 +92,8 @@ fn synth() -> (Processor, MidiBus, impl Sized) {
         ),
         ("noodle.util.vca", vec![]),
         (OUTPUT_ID, vec![]),
-    ] {
+    ]);
+    for (type_id, params) in nodes {
         let id = NodeId(ids.len() as u64 + 1);
         let mut node = Node::new(type_id);
         for (key, value) in params {
@@ -87,13 +102,21 @@ fn synth() -> (Processor, MidiBus, impl Sized) {
         Command::AddNode { id, node }.apply(&mut project).unwrap();
         ids.push(id);
     }
+    let n = sources_end;
+    for (i, (_, port)) in sources.iter().enumerate() {
+        Command::Connect(Connection {
+            from: Endpoint::new(ids[i], *port),
+            to: Endpoint::new(ids[n], "in"),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
     for (from, port, to, to_port) in [
-        (0, "out", 1, "in"),
-        (1, "pitch", 2, "frequency"),
-        (1, "gate", 3, "gate"),
-        (2, "out", 4, "in"),
-        (3, "out", 4, "level"),
-        (4, "out", 5, "in"),
+        (n, "pitch", n + 1, "frequency"),
+        (n, "gate", n + 2, "gate"),
+        (n + 1, "out", n + 3, "in"),
+        (n + 2, "out", n + 3, "level"),
+        (n + 3, "out", n + 4, "in"),
     ] {
         Command::Connect(Connection {
             from: Endpoint::new(ids[from], port),
@@ -105,7 +128,7 @@ fn synth() -> (Processor, MidiBus, impl Sized) {
     let (mut controller, processor) = engine(SETTINGS).unwrap();
     let diagnostics = controller.update_project(&project, &registry);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    (processor, library.midi, controller)
+    (processor, library, controller)
 }
 
 fn block(processor: &mut Processor) -> Vec<f32> {
@@ -305,4 +328,59 @@ fn more_keys_than_voices_steal_without_stopping_the_sound_or_allocating() {
         violations += realtime(|| processor.process(&mut out));
     }
     assert_eq!(violations, 0, "the audio thread allocated or freed memory");
+}
+
+/// A synth played by an armed track's own live MIDI, with the timeline
+/// stopped, and no MIDI In node anywhere.
+#[test]
+fn an_armed_track_plays_its_synth_from_the_keyboard_with_the_transport_stopped() {
+    let (mut processor, library, controller) = synth_from(&[(TRACK_INPUT_ID, "midi")]);
+    controller.transport().stop();
+    let track = NodeId(1);
+    // Not armed: the keys do nothing.
+    library.midi.send([0x90, 69, 100]);
+    assert!(blocks(&mut processor, 8).iter().all(|&s| s == 0.0));
+    library.midi.send([0x80, 69, 0]);
+    let _ = blocks(&mut processor, 8);
+
+    library.clips.set_monitoring(track, true);
+    library.midi.send([0x93, 69, 100]);
+    let _ = block(&mut processor);
+    let sound = blocks(&mut processor, 20);
+    assert!(sound.iter().any(|&s| s.abs() > 0.1));
+    assert!(
+        (frequency(&sound) - 440.0).abs() < 15.0,
+        "{}",
+        frequency(&sound)
+    );
+
+    // Starting and stopping the timeline leaves the held note sounding.
+    controller.transport().play();
+    assert!(blocks(&mut processor, 8).iter().any(|&s| s.abs() > 0.1));
+    controller.transport().stop();
+    assert!(blocks(&mut processor, 8).iter().any(|&s| s.abs() > 0.1));
+
+    // Disarming lets it go.
+    library.clips.set_monitoring(track, false);
+    let _ = blocks(&mut processor, 8);
+    assert!(blocks(&mut processor, 4).iter().all(|&s| s.abs() < 1e-4));
+}
+
+/// A MIDI In node wired to the same synth as an armed track sends every note
+/// twice, under note IDs of their own (a polyphonic synth sounds it twice).
+/// Allowed, and documented; what matters is that nothing is left hanging.
+#[test]
+fn a_wired_midi_in_and_an_armed_track_both_play_and_both_release() {
+    let (mut processor, library, controller) =
+        synth_from(&[(MIDI_IN_ID, "out"), (TRACK_INPUT_ID, "midi")]);
+    controller.transport().stop();
+    library.clips.set_monitoring(NodeId(2), true);
+    library.midi.send([0x90, 69, 100]);
+    let _ = block(&mut processor);
+    let sound = blocks(&mut processor, 20);
+    assert!(sound.iter().any(|&s| s.abs() > 0.1));
+    // Released, both notes end: nothing is left hanging.
+    library.midi.send([0x80, 69, 0]);
+    let _ = blocks(&mut processor, 8);
+    assert!(blocks(&mut processor, 4).iter().all(|&s| s.abs() < 1e-4));
 }

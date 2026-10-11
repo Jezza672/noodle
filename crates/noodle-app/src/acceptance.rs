@@ -195,7 +195,7 @@ fn build_a_patch_play_and_tweak_it_save_and_reopen_it() {
         h.key_press(Key::Space);
         h.run_steps(3);
         let session = h.state().session();
-        assert!(session.is_playing(), "{:?}", session.message());
+        assert!(session.engine_running(), "{:?}", session.message());
         assert_eq!(session.input_problem(), None);
         play_for(&mut h, Duration::from_millis(200));
         // A full-scale sine settles at about 0.707.
@@ -213,7 +213,7 @@ fn build_a_patch_play_and_tweak_it_save_and_reopen_it() {
     {
         play_for(&mut h, Duration::from_millis(200));
         let session = h.state().session();
-        assert!(session.is_playing(), "{:?}", session.message());
+        assert!(session.engine_running(), "{:?}", session.message());
         // Underruns, input glitches and device errors all land here.
         assert_eq!(session.message(), None, "playback was clean");
         assert!(rms(&h, meter) > 0.3, "still playing after the tweak");
@@ -249,7 +249,7 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     let mut h = harness(App::new(session));
     h.key_press(Key::Space);
     h.run_steps(3);
-    assert!(h.state().session().is_playing());
+    assert!(h.state().session().engine_running());
 
     let playhead = |h: &H| h.state().session().playhead();
     play_for(&mut h, Duration::from_millis(300));
@@ -266,8 +266,9 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
     play_for(&mut h, Duration::from_millis(200));
     assert_eq!(playhead(&h), Tick(0));
 
-    // A new project starts at the beginning, running. The null device isn't
-    // clocked, so the playhead runs far ahead; it should drop back.
+    // A new project starts at the beginning, running or stopped as the last
+    // one was. The null device isn't clocked, so the playhead runs far
+    // ahead; it should drop back.
     h.state_mut().session_mut().set_transport_running(true);
     play_for(&mut h, Duration::from_millis(200));
     h.state_mut().session_mut().set_transport_running(false);
@@ -283,10 +284,10 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
         lowest < Tick(far.0 / 2),
         "rewound from {far:?}, lowest {lowest:?}"
     );
-    assert!(h.state().session().transport_running());
+    assert!(!h.state().session().transport_running());
 
-    // Stopping keeps the playhead; it can be moved while stopped, and
-    // playing starts from there.
+    // The playhead can be moved while stopped, and playing starts from
+    // there.
     h.state_mut().session_mut().set_transport_running(false);
     h.state_mut().session_mut().seek(Tick(7680));
     // The audio thread takes the seek at its next block.
@@ -297,15 +298,35 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
         play_for(&mut h, Duration::from_millis(10));
     }
     let session = h.state_mut().session_mut();
-    session.stop();
     assert_eq!(session.playhead(), Tick(7680));
+    // Stopping while stopped goes back to the start, and the engine stays
+    // up.
+    session.stop();
+    assert!(session.engine_running());
+    for _ in 0..100 {
+        if h.state().session().playhead() == Tick(0) {
+            break;
+        }
+        play_for(&mut h, Duration::from_millis(10));
+    }
+    let session = h.state_mut().session_mut();
+    assert_eq!(session.playhead(), Tick(0));
     session.seek(Tick(3840));
+    for _ in 0..100 {
+        if h.state().session().playhead() == Tick(3840) {
+            break;
+        }
+        play_for(&mut h, Duration::from_millis(10));
+    }
+    let session = h.state_mut().session_mut();
     assert_eq!(session.playhead(), Tick(3840));
     session.play();
-    assert!(session.is_playing(), "{:?}", session.message());
+    assert!(session.engine_running(), "{:?}", session.message());
     session.set_transport_running(false);
     play_for(&mut h, Duration::from_millis(200));
-    assert_eq!(playhead(&h), Tick(3840), "playing started from the seek");
+    // The null device isn't clocked, so it may have run on a little before
+    // the pause took hold; it started from the seek and not from the start.
+    assert!(playhead(&h) >= Tick(3840), "playing started from the seek");
     h.state_mut().session_mut().set_transport_running(true);
 
     // A tempo edit reaches the engine.
@@ -351,7 +372,7 @@ fn a_clip_on_a_track_plays_and_follows_edits() {
         to: Endpoint::new(output, "in"),
     }))]);
     session.play();
-    assert!(session.is_playing(), "{:?}", session.message());
+    assert!(session.engine_running(), "{:?}", session.message());
     // The null device isn't clocked, so playback races ahead of the disk
     // thread; hold the timeline at the start, where the clip will begin.
     session.set_transport_running(false);
@@ -398,8 +419,8 @@ fn a_clip_on_a_track_plays_and_follows_edits() {
     );
     assert_eq!(h.state().session().clip_problems().len(), 2);
 
-    // Stopping leaves nothing scheduled, so nothing to report.
-    h.state_mut().session_mut().stop();
+    // Turning the engine off leaves nothing scheduled, so nothing to report.
+    h.state_mut().session_mut().stop_engine();
     assert!(h.state().session().clip_problems().is_empty());
 }
 
@@ -573,7 +594,7 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
     {
         h.state_mut().session_mut().play();
         assert!(
-            h.state().session().is_playing(),
+            h.state().session().engine_running(),
             "{:?}",
             h.state().session().message()
         );
@@ -607,14 +628,14 @@ fn an_output_tied_to_another_device_restarts_playback_and_reports_when_it_cannot
     let mut session = Session::new(Nodes::all());
     session.set_audio_config(null_devices());
     session.play();
-    assert!(session.is_playing(), "{:?}", session.message());
+    assert!(session.engine_running(), "{:?}", session.message());
     assert!(session.output_devices().is_empty());
 
     // A pause survives the restart.
     session.set_transport_running(false);
     let output = session.new_node_id();
     session.edit([crate::outputs::add(output, "alsa:missing")]);
-    assert!(session.is_playing(), "playback carries on");
+    assert!(session.engine_running(), "playback carries on");
     assert!(!session.transport_running());
     let [status] = session.output_devices() else {
         panic!("the device was asked for: {:?}", session.output_devices());
@@ -637,7 +658,7 @@ fn an_output_tied_to_another_device_restarts_playback_and_reports_when_it_cannot
 
     // Back on the main output, nothing extra is opened.
     session.edit([crate::outputs::assign(output, "")]);
-    assert!(session.is_playing());
+    assert!(session.engine_running());
     assert!(session.output_devices().is_empty());
     assert!(session.diagnostics().is_empty());
 

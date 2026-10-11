@@ -51,7 +51,19 @@ impl Rig {
         rig
     }
 
+    /// A rig whose track input plays the live MIDI sent on `bus` while its
+    /// track is monitored.
+    pub fn monitored(name: &str, bus: &noodle_io::MidiBus) -> Self {
+        let mut rig = Self::build(name, ClipFeeds::blocking(), Some(bus));
+        rig.blocking = true;
+        rig
+    }
+
     pub fn with_feeds(name: &str, feeds: ClipFeeds) -> Self {
+        Self::build(name, feeds, None)
+    }
+
+    fn build(name: &str, feeds: ClipFeeds, bus: Option<&noodle_io::MidiBus>) -> Self {
         let dir = std::env::temp_dir().join(format!("noodle-track-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         let mut project = Project::new();
@@ -66,7 +78,10 @@ impl Rig {
                 },
             )
             .unwrap();
-        let node_type = TrackInput::new(&feeds);
+        let node_type = match bus {
+            Some(bus) => TrackInput::with_midi(&feeds, bus),
+            None => TrackInput::new(&feeds),
+        };
         let config = Config::new();
         let instance = node_type
             .instantiate(&Setup {

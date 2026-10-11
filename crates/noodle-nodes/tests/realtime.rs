@@ -970,6 +970,56 @@ fn a_cached_player_never_allocates_through_seeks_and_loops() {
     assert!(out.iter().all(|x| x.is_finite()));
 }
 
+#[test]
+fn live_monitoring_never_allocates_while_notes_come_and_go() {
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let track = project.new_node_id();
+    let output = project.new_node_id();
+    for (id, node) in [
+        (track, Node::new(noodle_nodes::TRACK_INPUT_ID)),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    Command::Connect(Connection {
+        from: Endpoint::new(track, "audio"),
+        to: Endpoint::new(output, "in"),
+    })
+    .apply(&mut project)
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    for round in 0..16u8 {
+        // Notes, a controller, then the track is disarmed with some held and
+        // armed again, while the transport starts and stops.
+        library.midi.send([0x90 | (round & 3), 48 + round, 100]);
+        library.midi.send([0xB0, 1, 64]);
+        library.midi.send([0x80, 48 + round.saturating_sub(2), 0]);
+        library.clips.set_monitoring(track, round % 5 != 4);
+        if round % 3 == 0 {
+            library.midi.all_notes_off();
+        }
+        if round % 2 == 0 {
+            transport.stop();
+        } else {
+            transport.play();
+        }
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}
+
 /// Passes its input through 100 samples late and says so, so the engine has
 /// something to compensate for.
 struct Latent;

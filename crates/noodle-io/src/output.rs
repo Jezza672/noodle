@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -15,8 +16,8 @@ use noodle_engine::{Bus, Controller, Processor, Settings, TransportControl, engi
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
-    AudioConfig, AudioError, Chosen, Direction, InputChoice, choose_config, device_name,
-    find_device, host_for,
+    AudioConfig, AudioError, Chosen, Direction, InputChoice, VIRTUAL_OUTPUT, choose_config,
+    device_name, find_device, host_for,
 };
 use crate::input::{Capture, Feed, recordable_input_path};
 use crate::midi::{AudioClock, MidiBus, now_micros};
@@ -361,7 +362,7 @@ impl Fill for ExtraOutput {
 /// Audio playing on a device. Dropping it fades the sound out and stops it.
 pub struct Playback {
     fade: Arc<Fade>,
-    _stream: cpal::Stream,
+    _stream: MainStream,
     /// Dropped before the input stream, so a recording in progress is
     /// finished while the input is still running.
     recorder: Option<Recorder>,
@@ -406,6 +407,71 @@ impl Drop for Playback {
             if !self.drained.is_empty() {
                 std::thread::sleep(queued.min(Duration::from_millis(500)));
             }
+        }
+    }
+}
+
+/// What runs the engine: a device's stream, or the virtual output's timer.
+/// Held for being dropped, which stops it.
+#[allow(dead_code)]
+enum MainStream {
+    Device(cpal::Stream),
+    Virtual(VirtualClock),
+}
+
+/// The virtual output: a thread that calls the writer once per block's
+/// duration, in real time, and discards what it renders. It stands in for a
+/// device that plays to nowhere, with the same fade-out on stopping, the same
+/// MIDI timing and the same pace.
+struct VirtualClock {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// Frames per callback of the virtual output unless the settings say.
+const VIRTUAL_BUFFER: u32 = 256;
+/// The sample rate of the virtual output unless the settings say.
+const VIRTUAL_RATE: u32 = 48_000;
+/// The smallest and largest buffer the virtual output takes, in frames.
+pub(crate) const VIRTUAL_BUFFERS: (u32, u32) = (16, 8192);
+/// The channels of the virtual output.
+const VIRTUAL_CHANNELS: usize = 2;
+
+impl VirtualClock {
+    fn start(mut writer: Box<DeviceWriter>, frames: u32, rate: u32) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let period = Duration::from_secs_f64(f64::from(frames) / f64::from(rate));
+        let thread = std::thread::Builder::new()
+            .name("noodle virtual output".into())
+            .spawn(move || {
+                let mut buffer = vec![0.0f32; frames as usize * VIRTUAL_CHANNELS];
+                let mut next = Instant::now();
+                while !flag.load(Ordering::Relaxed) {
+                    writer.write(&mut buffer);
+                    next += period;
+                    let now = Instant::now();
+                    if next > now {
+                        std::thread::sleep(next - now);
+                    } else if now - next > period * 8 {
+                        // Far behind (the machine was suspended, say): carry
+                        // on from now rather than rushing to catch up.
+                        next = now;
+                    }
+                }
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for VirtualClock {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -609,25 +675,88 @@ pub fn play_with_outputs(
     max_frames: usize,
     midi: &MidiBus,
 ) -> Result<(Playback, Controller), AudioError> {
-    let host_id = host_for(
-        choice.host.as_deref(),
-        choice.output.as_deref(),
-        Direction::Output,
-    )?;
-    let host = open_host(host_id)?;
-    let device = find_device(&host, choice.output.as_deref(), Direction::Output)?;
-    let name = device_name(&device);
-    let main_id = device.id().ok().map(|id| id.to_string());
-    let ranges: Vec<_> = device.supported_output_configs()?.collect();
-    let Chosen { config, format } = choose_config(
-        &ranges,
-        device.default_output_config()?,
-        choice.sample_rate,
-        choice.buffer_size,
-    )?;
+    open_playback(choice, extra, max_frames, midi, true)
+}
+
+/// [`play_with_outputs`] with the transport stopped from the first block, for
+/// an engine that runs before anything is played: the graph renders, but a
+/// timeline waits for the transport to start.
+pub fn play_with_outputs_stopped(
+    choice: &AudioConfig,
+    extra: &[String],
+    max_frames: usize,
+    midi: &MidiBus,
+) -> Result<(Playback, Controller), AudioError> {
+    open_playback(choice, extra, max_frames, midi, false)
+}
+
+fn open_playback(
+    choice: &AudioConfig,
+    extra: &[String],
+    max_frames: usize,
+    midi: &MidiBus,
+    running: bool,
+) -> Result<(Playback, Controller), AudioError> {
+    let (host_id, target, name, main_id, main_channels, rate) =
+        if choice.output.as_deref() == Some(VIRTUAL_OUTPUT) {
+            // Input and the default host still come from the settings, so a
+            // virtual output can be paired with a real microphone.
+            let host_id = host_for(choice.host.as_deref(), None, Direction::Output)?;
+            // What `virtual_output()` advertises; a hand-edited setting
+            // outside it is refused, not trusted.
+            let frames = choice.buffer_size.unwrap_or(VIRTUAL_BUFFER);
+            if !(VIRTUAL_BUFFERS.0..=VIRTUAL_BUFFERS.1).contains(&frames) {
+                return Err(AudioError::UnsupportedBufferSize {
+                    frames,
+                    min: VIRTUAL_BUFFERS.0,
+                    max: VIRTUAL_BUFFERS.1,
+                });
+            }
+            let rate = choice.sample_rate.unwrap_or(VIRTUAL_RATE);
+            if rate == 0 {
+                return Err(AudioError::UnsupportedSampleRate(rate));
+            }
+            (
+                host_id,
+                Target::Virtual { frames },
+                "Virtual (no sound)".to_owned(),
+                Some(VIRTUAL_OUTPUT.to_owned()),
+                VIRTUAL_CHANNELS,
+                rate,
+            )
+        } else {
+            let host_id = host_for(
+                choice.host.as_deref(),
+                choice.output.as_deref(),
+                Direction::Output,
+            )?;
+            let host = open_host(host_id)?;
+            let device = find_device(&host, choice.output.as_deref(), Direction::Output)?;
+            let name = device_name(&device);
+            let main_id = device.id().ok().map(|id| id.to_string());
+            let ranges: Vec<_> = device.supported_output_configs()?.collect();
+            let Chosen { config, format } = choose_config(
+                &ranges,
+                device.default_output_config()?,
+                choice.sample_rate,
+                choice.buffer_size,
+            )?;
+            let channels = usize::from(config.channels);
+            let rate = config.sample_rate;
+            (
+                host_id,
+                Target::Device {
+                    device,
+                    config,
+                    format,
+                },
+                name,
+                main_id,
+                channels,
+                rate,
+            )
+        };
     let mut health = Health::new();
-    let main_channels = usize::from(config.channels);
-    let rate = config.sample_rate;
 
     // The extra devices, opened but not started. The engine's channels are
     // the main device's and then each of these, in order.
@@ -675,6 +804,9 @@ pub fn play_with_outputs(
         channels: e.channels,
     }));
     controller.set_buses(buses)?;
+    if !running {
+        controller.transport().stop();
+    }
 
     // Input that can't be opened doesn't stop the sound: playback goes on
     // without it, and says why.
@@ -730,7 +862,14 @@ pub fn play_with_outputs(
     }
     let mut reporter = health.reporter(Stream::Output);
     let on_error = move |error| reporter.report(error);
-    let stream = open_format(&device, config, format, writer, on_error)?;
+    let stream = match target {
+        Target::Device {
+            device,
+            config,
+            format,
+        } => Unstarted::Device(open_format(&device, config, format, writer, on_error)?),
+        Target::Virtual { frames } => Unstarted::Virtual(Box::new(writer), frames),
+    };
     // Input first, so the output finds some waiting.
     let (input_stream, input, recorder) = match input {
         Some((input_stream, name, channels, recorder)) => match input_stream.play() {
@@ -756,7 +895,19 @@ pub fn play_with_outputs(
         }
     }
     let extra_streams = playing;
-    stream.play()?;
+    let stream = match stream {
+        Unstarted::Device(stream) => {
+            stream.play()?;
+            MainStream::Device(stream)
+        }
+        Unstarted::Virtual(writer, frames) => {
+            MainStream::Virtual(VirtualClock::start(writer, frames, rate).map_err(|error| {
+                AudioError::Virtual {
+                    reason: error.to_string(),
+                }
+            })?)
+        }
+    };
     Ok((
         Playback {
             fade,
@@ -774,6 +925,24 @@ pub fn play_with_outputs(
         },
         controller,
     ))
+}
+
+/// What the main output plays on.
+enum Target {
+    Device {
+        device: cpal::Device,
+        config: StreamConfig,
+        format: SampleFormat,
+    },
+    Virtual {
+        frames: u32,
+    },
+}
+
+/// The main output, built and waiting for the inputs and extras to start.
+enum Unstarted {
+    Device(cpal::Stream),
+    Virtual(Box<DeviceWriter>, u32),
 }
 
 /// An extra output device, ready to open a stream on.
@@ -1303,5 +1472,100 @@ mod tests {
         let mut block = vec![9.0f32; 40_000];
         extra.fill(&mut block);
         assert!(block.contains(&0.5), "never started");
+    }
+
+    fn virtual_config() -> AudioConfig {
+        AudioConfig {
+            output: Some(VIRTUAL_OUTPUT.to_owned()),
+            ..AudioConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_virtual_output_runs_the_engine_in_real_time() {
+        let (playback, controller) = play(&virtual_config(), 128).unwrap();
+        assert_eq!(playback.device(), "Virtual (no sound)");
+        assert_eq!(playback.settings().channels, 2);
+        let transport = controller.transport();
+        let started = Instant::now();
+        std::thread::sleep(Duration::from_millis(400));
+        let seconds = transport.position() as f32 / playback.settings().sample_rate;
+        let elapsed = started.elapsed().as_secs_f32();
+        // It paces itself by the clock: neither flat out nor stalled. A
+        // callback runs its blocks at once, so it can lead the clock by a
+        // period or so; flat out would be far past that.
+        assert!(
+            seconds > 0.2 && seconds <= elapsed + 0.05,
+            "{seconds} in {elapsed}"
+        );
+    }
+
+    #[test]
+    fn the_virtual_output_stops_with_the_playback() {
+        let (playback, controller) = play(&virtual_config(), 128).unwrap();
+        let transport = controller.transport();
+        std::thread::sleep(Duration::from_millis(50));
+        drop(playback);
+        let stopped = transport.position();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(transport.position(), stopped);
+    }
+
+    #[test]
+    fn the_virtual_output_publishes_when_its_blocks_run_for_midi_timing() {
+        let bus = MidiBus::new();
+        let (_playback, _controller) =
+            play_with_outputs(&virtual_config(), &[], 128, &bus).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(bus.clock().window().is_some());
+        assert!(bus.clock().anchor().is_some());
+    }
+
+    #[test]
+    fn the_virtual_output_takes_the_chosen_rate_and_rejects_empty_buffers() {
+        let config = AudioConfig {
+            sample_rate: Some(44_100),
+            buffer_size: Some(64),
+            ..virtual_config()
+        };
+        let (playback, _) = play(&config, 128).unwrap();
+        assert_eq!(playback.settings().sample_rate, 44_100.0);
+        for frames in [0, 15, 8193, u32::MAX] {
+            let config = AudioConfig {
+                buffer_size: Some(frames),
+                ..virtual_config()
+            };
+            assert!(
+                matches!(
+                    play(&config, 128),
+                    Err(AudioError::UnsupportedBufferSize { .. })
+                ),
+                "{frames}"
+            );
+        }
+        let silent_clock = AudioConfig {
+            sample_rate: Some(0),
+            ..virtual_config()
+        };
+        assert!(matches!(
+            play(&silent_clock, 128),
+            Err(AudioError::UnsupportedSampleRate(0))
+        ));
+    }
+
+    #[test]
+    fn an_engine_opened_stopped_holds_the_transport_until_it_is_started() {
+        let bus = MidiBus::new();
+        let (_playback, controller) =
+            play_with_outputs_stopped(&virtual_config(), &[], 128, &bus).unwrap();
+        let transport = controller.transport();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!transport.is_playing());
+        assert_eq!(transport.position(), 0);
+        // The graph still renders: the clock shows the blocks running.
+        assert!(bus.clock().window().is_some());
+        transport.play();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(transport.position() > 0);
     }
 }
