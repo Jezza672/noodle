@@ -6,13 +6,13 @@ use std::sync::Arc;
 use noodle_engine::{NodeType, Registry};
 
 use crate::descriptor::PluginFile;
-use crate::node::{ClapNodeType, Shared};
+use crate::node::{PluginNodeType, Shared};
 use crate::scan::{ScanCache, ScanCommand, find_plugin_files, standard_dirs};
 
 /// A set of scanned plugins, ready to be registered as node types.
 #[derive(Clone, Default)]
 pub struct Catalog {
-    types: Vec<Arc<ClapNodeType>>,
+    types: Vec<Arc<PluginNodeType>>,
 }
 
 /// A function that adds the catalog's node types to a registry; the type of
@@ -27,8 +27,8 @@ impl Catalog {
         let mut types = Vec::new();
         for file in files.iter().filter(|f| f.error.is_none()) {
             for plugin in &file.plugins {
-                if seen.insert(plugin.id.clone()) {
-                    types.push(Arc::new(ClapNodeType::new(
+                if seen.insert(plugin.node_id()) {
+                    types.push(Arc::new(PluginNodeType::new(
                         file.path.clone(),
                         plugin.clone(),
                     )));
@@ -46,12 +46,12 @@ impl Catalog {
         self.types.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &ClapNodeType> {
+    pub fn iter(&self) -> impl Iterator<Item = &PluginNodeType> {
         self.types.iter().map(|t| &**t)
     }
 
     /// The plugin whose node type is `node_type_id` (`clap.<plugin id>`).
-    pub fn get(&self, node_type_id: &str) -> Option<&ClapNodeType> {
+    pub fn get(&self, node_type_id: &str) -> Option<&PluginNodeType> {
         self.iter().find(|t| t.info().id == node_type_id)
     }
 

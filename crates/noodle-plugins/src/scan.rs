@@ -156,11 +156,14 @@ fn run_child(command: &ScanCommand, path: &Path) -> Result<Vec<Descriptor>, Stri
     serde_json::from_str(json).map_err(|error| format!("unreadable scan result: {error}"))
 }
 
-/// Where CLAP plugins are installed by convention, plus `CLAP_PATH`.
+/// Where CLAP and VST3 plugins are installed by convention, plus `CLAP_PATH`
+/// and `VST3_PATH`.
 pub fn standard_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(paths) = std::env::var_os("CLAP_PATH") {
-        dirs.extend(std::env::split_paths(&paths));
+    for var in ["CLAP_PATH", "VST3_PATH"] {
+        if let Some(paths) = std::env::var_os(var) {
+            dirs.extend(std::env::split_paths(&paths));
+        }
     }
     let home = directories::BaseDirs::new().map(|d| d.home_dir().to_owned());
     #[cfg(target_os = "linux")]
@@ -170,6 +173,11 @@ pub fn standard_dirs() -> Vec<PathBuf> {
         }
         dirs.push("/usr/lib/clap".into());
         dirs.push("/usr/local/lib/clap".into());
+        if let Some(home) = &home {
+            dirs.push(home.join(".vst3"));
+        }
+        dirs.push("/usr/lib/vst3".into());
+        dirs.push("/usr/local/lib/vst3".into());
     }
     #[cfg(target_os = "macos")]
     {
@@ -177,6 +185,10 @@ pub fn standard_dirs() -> Vec<PathBuf> {
             dirs.push(home.join("Library/Audio/Plug-Ins/CLAP"));
         }
         dirs.push("/Library/Audio/Plug-Ins/CLAP".into());
+        if let Some(home) = &home {
+            dirs.push(home.join("Library/Audio/Plug-Ins/VST3"));
+        }
+        dirs.push("/Library/Audio/Plug-Ins/VST3".into());
     }
     #[cfg(target_os = "windows")]
     {
@@ -186,14 +198,21 @@ pub fn standard_dirs() -> Vec<PathBuf> {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
             dirs.push(PathBuf::from(local).join("Programs/Common/CLAP"));
         }
+        if let Some(common) = std::env::var_os("COMMONPROGRAMFILES") {
+            dirs.push(PathBuf::from(common).join("VST3"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("Programs/Common/VST3"));
+        }
         let _ = &home;
     }
     dirs
 }
 
-/// The `.clap` files under `dirs`. On macOS a `.clap` is a folder (a
-/// bundle) and is returned as one file, not searched; elsewhere a folder with
-/// that name is searched like any other.
+/// The `.clap` and `.vst3` files under `dirs`. On macOS a `.clap` is a folder
+/// (a bundle) and is returned as one file, not searched; elsewhere a folder
+/// with that name is searched like any other. A `.vst3` is a bundle on every
+/// system (a folder holding the binary), so it is always returned as one.
 pub fn find_plugin_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -203,8 +222,11 @@ pub fn find_plugin_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
             let path = entry.path();
             // A `.clap` folder is a bundle on macOS; elsewhere it is just a
             // folder (some packages put the file inside one of that name).
-            let named = path.extension().is_some_and(|ext| ext == "clap");
-            if named && (cfg!(target_os = "macos") || !path.is_dir()) {
+            let ext = path.extension();
+            let named = ext.is_some_and(|ext| ext == "clap");
+            if ext.is_some_and(|ext| ext == "vst3")
+                || (named && (cfg!(target_os = "macos") || !path.is_dir()))
+            {
                 found.push(path);
             } else if depth < 3 && path.is_dir() {
                 walk(&path, depth + 1, found);

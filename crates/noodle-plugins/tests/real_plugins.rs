@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use common::*;
 use noodle_engine::testing::Harness;
 use noodle_engine::{Config, Shape};
-use noodle_plugins::{Catalog, ClapNodeType, PluginFile, find_plugin_files, scan_file};
+use noodle_plugins::{Catalog, PluginFile, PluginNodeType, find_plugin_files, scan_file};
 
 fn installed() -> Vec<PathBuf> {
     let files = find_plugin_files(&[PathBuf::from("/usr/lib/clap")]);
@@ -59,7 +59,7 @@ fn every_installed_plugin_scans_and_loads_and_makes_finite_sound() {
 
 /// Builds the plugin, runs a few blocks of sound and a note through it, saves
 /// its state, and builds it again from that state.
-fn exercise(node_type: &ClapNodeType) {
+fn exercise(node_type: &PluginNodeType) {
     let layout = noodle_engine::NodeType::layout(node_type, &Config::new()).unwrap();
     // The audio inputs come first, one signal each.
     let connected: Vec<(usize, Shape)> = node_type
@@ -103,7 +103,7 @@ fn exercise(node_type: &ClapNodeType) {
     }
 }
 
-fn find<'a>(catalog: &'a Catalog, id: &str) -> Option<&'a ClapNodeType> {
+fn find<'a>(catalog: &'a Catalog, id: &str) -> Option<&'a PluginNodeType> {
     catalog.iter().find(|t| t.descriptor().id == id)
 }
 

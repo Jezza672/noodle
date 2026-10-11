@@ -6,10 +6,50 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// One plugin in a file. A CLAP file can hold several.
+/// The plugin standard a file follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PluginFormat {
+    #[default]
+    Clap,
+    Vst3,
+}
+
+impl PluginFormat {
+    /// The word for it in node IDs and the plugin browser.
+    pub fn name(self) -> &'static str {
+        match self {
+            PluginFormat::Clap => "CLAP",
+            PluginFormat::Vst3 => "VST3",
+        }
+    }
+
+    /// The prefix of node type IDs of this format's plugins.
+    pub fn node_prefix(self) -> &'static str {
+        match self {
+            PluginFormat::Clap => "clap.",
+            PluginFormat::Vst3 => "vst3.",
+        }
+    }
+
+    /// The format a plugin file is in, from its extension.
+    pub fn of_path(path: &std::path::Path) -> Self {
+        if path.extension().is_some_and(|ext| ext == "vst3") {
+            PluginFormat::Vst3
+        } else {
+            PluginFormat::Clap
+        }
+    }
+}
+
+/// One plugin in a file. A CLAP file can hold several, and so can a VST3
+/// bundle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Descriptor {
-    /// The plugin's own ID, e.g. `com.u-he.diva`.
+    /// Absent in scans saved before VST3 was supported, which are all CLAP.
+    #[serde(default)]
+    pub format: PluginFormat,
+    /// The plugin's own ID, e.g. `com.u-he.diva` for CLAP; for VST3 the class
+    /// ID as 32 hex digits.
     pub id: String,
     pub name: String,
     pub vendor: String,
@@ -52,7 +92,7 @@ pub struct PluginFile {
     pub len: u64,
     pub modified: u64,
     pub plugins: Vec<Descriptor>,
-    /// Why scanning failed (the file crashed, hung or isn't a CLAP plugin).
+    /// Why scanning failed (the file crashed, hung or isn't a plugin).
     /// A failed file isn't scanned again until it changes.
     #[serde(default)]
     pub error: Option<String>,
@@ -105,12 +145,9 @@ pub fn file_stamp(path: &std::path::Path) -> Option<(u64, u64)> {
 impl Descriptor {
     /// The node type ID for this plugin.
     pub fn node_id(&self) -> String {
-        format!("{NODE_PREFIX}{}", self.id)
+        format!("{}{}", self.format.node_prefix(), self.id)
     }
 }
-
-/// Node type IDs of plugins start with this, then the plugin's own ID.
-pub const NODE_PREFIX: &str = "clap.";
 
 /// The port key of the `index`th audio input (`in`, `in2`, ...).
 pub fn input_key(index: usize) -> String {
