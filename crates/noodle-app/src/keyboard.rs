@@ -78,6 +78,7 @@ impl KeyboardMidi {
         if on { Vec::new() } else { self.release_all() }
     }
 
+    #[cfg(test)]
     pub fn octave(&self) -> i8 {
         self.octave
     }

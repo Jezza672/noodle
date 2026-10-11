@@ -97,6 +97,8 @@ enum Action {
     Rewind,
     ToggleRecord,
     ToggleKeyboard,
+    /// How the MIDI of the next take is snapped.
+    SetRecordQuantise(crate::midi_take::Quantise),
     TogglePause,
     AudioSettings,
     ToggleMixer,
@@ -633,6 +635,7 @@ impl App {
         {
             actions.push(Action::ToggleRecord);
         }
+        self.quantise_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
         let at = self
@@ -642,6 +645,27 @@ impl App {
             .position(self.session.playhead());
         let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
+    }
+
+    /// How recorded MIDI is snapped to the beat. What is heard while
+    /// recording is never snapped, only the clip the take becomes.
+    fn quantise_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let current = self.session.record_quantise();
+        egui::ComboBox::from_id_salt("record_quantise")
+            .width(48.0)
+            .selected_text(format!("Q {}", current.label()))
+            .show_ui(ui, |ui| {
+                for choice in crate::midi_take::Quantise::ALL {
+                    if ui
+                        .selectable_label(choice == current, choice.label())
+                        .clicked()
+                    {
+                        actions.push(Action::SetRecordQuantise(choice));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Snap the notes of recorded MIDI to this grid");
     }
 
     /// The computer keyboard as a MIDI source. While on it shows the octave
@@ -836,6 +860,7 @@ impl App {
                 }
             }
             Action::Rewind => self.session.rewind(),
+            Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);

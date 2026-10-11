@@ -424,9 +424,13 @@ filters, unison and spread); the delay node and feedback loops.
   the `Key` and `Mono Note` nodes, test-harness support and an end-to-end
   patch).
 - MIDI input (midir), MIDI clips and a piano roll. *Done* (batch 2).
-  - **Still to do:** timestamp live MIDI inside the block, record MIDI into a
-    clip, quantise and copy/paste in the piano roll, more than one MIDI
-    port at a time. (Reopening a port that was unplugged and comes back is
+  - Live MIDI is timestamped inside the block and the app plays 128-frame
+    blocks; the computer keyboard is a MIDI source (toolbar button); Record
+    captures MIDI into a clip with an optional quantise grid and
+    output-latency compensation.
+  - **Still to do:** quantise and copy/paste in the piano roll, more than one
+    MIDI port at a time, overdubbing into an existing clip, a count-in,
+    keeping the raw take for re-quantising. (Reopening a port that was unplugged and comes back is
     done: the session looks at the port list about once a second.)
 - Voices node: voice allocation and stealing, producing polyphonic pitch, gate
   and velocity. *Done* (batch 3).

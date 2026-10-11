@@ -11,6 +11,7 @@ mod filewatch;
 mod freezing;
 mod keyboard;
 mod metronome;
+mod midi_take;
 mod mixer;
 mod outputs;
 mod piano_roll;

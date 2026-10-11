@@ -59,6 +59,9 @@ struct Fade {
     /// The most frames the callback has been asked for at once, which is how
     /// much the device queues ahead of what it is playing.
     period: AtomicU32,
+    /// How long after the callback the device says its samples play, in
+    /// microseconds: the output latency, as far as the driver knows it.
+    latency_micros: AtomicU64,
 }
 
 impl DeviceWriter {
@@ -302,10 +305,18 @@ impl ExtraOutput {
 
 /// Something a stream's callback fills with audio.
 trait Fill: Send + 'static {
+    /// How long after this callback the samples it fills will play.
+    fn playback_latency(&mut self, _latency: Duration) {}
     fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]);
 }
 
 impl Fill for DeviceWriter {
+    fn playback_latency(&mut self, latency: Duration) {
+        self.fade
+            .latency_micros
+            .store(latency.as_micros() as u64, Ordering::Relaxed);
+    }
+
     fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
         self.write(output);
     }
@@ -386,6 +397,12 @@ pub struct OpenedOutput {
 }
 
 impl Playback {
+    /// How long after the audio thread renders a sample the device plays it,
+    /// as the driver reports it: zero until the first callback.
+    pub fn output_latency(&self) -> Duration {
+        Duration::from_micros(self.fade.latency_micros.load(Ordering::Relaxed))
+    }
+
     pub fn device(&self) -> &str {
         &self.device
     }
@@ -863,7 +880,11 @@ fn open<T: SizedSample + FromSample<f32>>(
 ) -> Result<cpal::Stream, DeviceError> {
     device.build_output_stream(
         config,
-        move |output: &mut [T], _: &cpal::OutputCallbackInfo| filler.fill(output),
+        move |output: &mut [T], info: &cpal::OutputCallbackInfo| {
+            let time = info.timestamp();
+            filler.playback_latency(time.playback.duration_since(time.callback));
+            filler.fill(output);
+        },
         on_error,
         None,
     )

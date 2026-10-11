@@ -316,7 +316,7 @@ key of the signal input it reads *last*: `Delay`'s `in`, and `Voices`' `busy`.
 - **Cost of a loop.** The output half runs before this block's input exists.
   `Delay` therefore reads at least `max_frames` samples back while in a loop
   (the engine's largest block, a constant, so the delay doesn't change with
-  the size of the block in hand; about 10 ms at 512 frames); shorter times are held to that. A `Delay` that
+  the size of the block in hand; about 2.7 ms at the app's 128 frames); shorter times are held to that. A `Delay` that
   is not on a loop has no minimum.
 - **Shapes.** The output half is shaped before the loop input is known. The
   compiler assumes a mono loop input, finishes, and if the real input
@@ -391,10 +391,22 @@ restart the audio.
   program changes pass on as raw `Midi` events. All notes off and all sound
   off end the notes it still holds. Its `channel` parameter (0 for all)
   filters.
-- **Timing.** A message that arrives during a block is played at the start of
-  the next, so live playing is up to one block (about 11 ms in the app) late
-  and shares that jitter. Timestamping events within the block is a later
-  improvement.
+- **Timing.** Every message is stamped with its arrival time on a monotonic
+  clock (`noodle_io::now_micros`) when the driver's thread receives it. The
+  node notes the clock at the start of each block and plays a message at the
+  frame the same distance into this block as it arrived into the previous
+  one, so live playing is exactly one block late with no jitter beyond the
+  audio callbacks' own. The app and `noodle play` use 128-frame blocks (about
+  2.7 ms), and renders do too, so a render matches what was heard; the
+  keyboard below is the exception to the precision, since egui hands keys
+  over once per UI frame.
+- **The computer keyboard.** A toolbar button (or M) turns the home row into
+  an octave of keys, as in Ableton: A W S E D F T G Y H U J K and O L P ;
+  are the notes from C3 (60), Z and X change the octave, C and V the
+  velocity. The keys are sent to the same bus as a hardware port and are
+  taken out of the frame's input, so nothing else (X to delete, say) acts on
+  them; a text field, a dialog or the window losing focus lets go of held
+  notes. It is app state, off at start, and not saved.
 - **Auditioning.** The piano roll's keyboard holds keys down on the clip's
   own track input (`ClipFeeds::audition`, a bitmask in the node's shared
   state, so no queue and no allocation), and the track input turns changes
@@ -464,6 +476,23 @@ said so), and a take with no audio adds nothing and
 deletes its file. Input that was dropped because the disk stalled is
 reported. The clip is placed at the playhead without compensating for the
 audio device's latency, so a take can sit a little late; that is still to do.
+
+**MIDI takes.** The same Record also captures MIDI. It subscribes to the
+session's MIDI bus (hardware ports and the computer keyboard alike) and keeps
+each message with its arrival time. Those times are mapped onto the timeline
+from the clock and the transport position at the start of the take, assuming
+the transport runs steadily through it, and moved earlier by the output
+latency the device reported (`Playback::output_latency`), since the player
+was playing along to what they heard. The take ends with one MIDI clip per
+armed track from the start of the take: a note still held ends where the take
+does, a note-off with no note-on is ignored, and a take with no notes adds
+no clip. The audio and MIDI clips of a take are one `Batch`. Audio is recorded
+only when an input is chosen in the audio settings; without one a take is
+MIDI alone. The Q menu in the transport sets a grid (off, 1/4, 1/8, 1/16,
+1/32, 1/8 and 1/16 triplets) that the starts of the notes snap to when the
+clip is made, keeping their lengths, shortening a note that now runs into the
+same key's next one and dropping a second note on the same tick. What is
+heard while playing is never snapped. The raw timing is not kept.
 
 ## Automation (M2)
 

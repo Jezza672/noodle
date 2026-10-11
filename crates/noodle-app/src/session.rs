@@ -193,9 +193,11 @@ pub struct Session {
     armed: BTreeSet<NodeId>,
     /// The take being recorded, if there is one.
     recording: Option<Recording>,
+    /// How the MIDI of the next take is snapped. Not saved with the project.
+    record_quantise: crate::midi_take::Quantise,
     /// Stands in for the input stream's recorder in tests.
     #[cfg(test)]
-    fake_input: Option<Recorder>,
+    fake_input: Option<Box<dyn TakeSink>>,
     /// Something the user should know, such as a failed save, shown until the
     /// next one replaces it.
     message: Option<String>,
@@ -206,7 +208,7 @@ pub struct Session {
 /// The settings frozen audio is rendered with when no stream is open.
 const FREEZE_SETTINGS: Settings = Settings {
     sample_rate: 48_000.0,
-    max_frames: 512,
+    max_frames: 128,
     channels: 2,
 };
 /// Seconds a render runs past the last clip, for tails.
@@ -220,8 +222,13 @@ struct Recording {
     tracks: Vec<NodeId>,
     /// Where the take starts on the timeline.
     start: Tick,
-    /// The file, relative to the project file.
-    relative: String,
+    /// The audio file, relative to the project file, when an input is being
+    /// recorded.
+    relative: Option<String>,
+    /// The MIDI played during the take.
+    midi: crate::midi_take::MidiTake,
+    /// How the MIDI is snapped when the take ends.
+    quantise: crate::midi_take::Quantise,
 }
 
 /// Something that can record the input to a file.
@@ -350,6 +357,7 @@ impl Session {
             reroutes: Reroutes::default(),
             armed: BTreeSet::new(),
             recording: None,
+            record_quantise: crate::midi_take::Quantise::default(),
             #[cfg(test)]
             fake_input: None,
             message: None,
@@ -918,6 +926,10 @@ impl Session {
     /// Housekeeping to do every frame: frees plans the audio thread is done
     /// with, and checks the device's health.
     pub fn maintain(&mut self) {
+        // The bus holds only so many messages, so a take drains it often.
+        if let Some(recording) = &mut self.recording {
+            recording.midi.poll();
+        }
         match self.freezing.poll() {
             Polled::Nothing => {
                 if self.freezing.due() {
@@ -1005,6 +1017,15 @@ impl Session {
         self.armed.contains(&track)
     }
 
+    /// How the MIDI of the next take is snapped to the beat.
+    pub fn record_quantise(&self) -> crate::midi_take::Quantise {
+        self.record_quantise
+    }
+
+    pub fn set_record_quantise(&mut self, quantise: crate::midi_take::Quantise) {
+        self.record_quantise = quantise;
+    }
+
     pub fn is_recording(&self) -> bool {
         self.recording.is_some()
     }
@@ -1013,7 +1034,7 @@ impl Session {
     fn sink(&mut self) -> Option<&mut dyn TakeSink> {
         #[cfg(test)]
         if let Some(fake) = &mut self.fake_input {
-            return Some(fake);
+            return Some(fake.as_mut());
         }
         self.audio
             .as_mut()
@@ -1066,39 +1087,84 @@ impl Session {
             Some(sink) => sink.start(&path),
             None => Err(RecordError::NoInput),
         };
-        match started {
-            Ok(()) => {
-                self.recording = Some(Recording {
-                    tracks,
-                    start,
-                    relative,
-                });
-                self.message = None;
+        // No audio input chosen is not a failure: the take is MIDI alone.
+        let relative = match started {
+            Ok(()) => Some(relative),
+            Err(RecordError::NoInput) => None,
+            Err(error) => {
+                self.message = Some(format!("Couldn't record: {error}"));
+                return;
             }
-            Err(error) => self.message = Some(format!("Couldn't record: {error}")),
-        }
+        };
+        let start_sample = match &self.audio {
+            Some(audio) => audio.controller.transport().position(),
+            None => self
+                .project
+                .tempo_map()
+                .sample_at(start, f64::from(FREEZE_SETTINGS.sample_rate)),
+        };
+        self.recording = Some(Recording {
+            tracks,
+            start,
+            relative,
+            midi: crate::midi_take::MidiTake::start(
+                &self.midi,
+                noodle_io::now_micros(),
+                start_sample,
+            ),
+            quantise: self.record_quantise,
+        });
+        self.message = None;
     }
 
-    /// Ends the take and adds it to the project: one audio clip on each track
+    /// Ends the take and adds it to the project: an audio clip, if an input
+    /// was recorded, and a MIDI clip, if any notes were played, on each track
     /// that was armed, all in one undo step. Does nothing if not recording.
     pub fn stop_recording(&mut self) {
         let Some(recording) = self.recording.take() else {
             return;
         };
-        let taken = match self.sink() {
-            Some(sink) => sink.stop(),
-            None => Err(RecordError::NotRecording),
-        };
-        let take = match taken {
-            Ok(take) => take,
-            Err(error) => {
-                self.message = Some(format!("The recording failed: {error}"));
-                return;
+        let stop_micros = noodle_io::now_micros();
+        let mut notes = Vec::new();
+        let mut take = None;
+        if recording.relative.is_some() {
+            let taken = match self.sink() {
+                Some(sink) => sink.stop(),
+                None => Err(RecordError::NotRecording),
+            };
+            match taken {
+                Ok(done) if done.frames == 0 => {
+                    let _ = std::fs::remove_file(&done.path);
+                }
+                Ok(done) => take = Some(done),
+                Err(error) => {
+                    self.message = Some(format!("The recording failed: {error}"));
+                }
             }
+        }
+        let (rate, latency) = match &self.audio {
+            Some(audio) => (
+                f64::from(audio.controller.settings().sample_rate),
+                audio.playback.output_latency(),
+            ),
+            None => (
+                f64::from(FREEZE_SETTINGS.sample_rate),
+                std::time::Duration::ZERO,
+            ),
         };
-        if take.frames == 0 {
-            let _ = std::fs::remove_file(&take.path);
-            self.message = Some("Nothing was recorded".into());
+        if let Some((start, clip)) = recording.midi.finish(&crate::midi_take::Finish {
+            stop_micros,
+            output_latency_micros: latency.as_micros() as u64,
+            sample_rate: rate,
+            tempo_map: self.project.tempo_map(),
+            quantise: recording.quantise,
+        }) {
+            notes.push((start, clip));
+        }
+        if take.is_none() && notes.is_empty() {
+            if self.message.is_none() {
+                self.message = Some("Nothing was recorded".into());
+            }
             return;
         }
         let tracks: Vec<NodeId> = recording
@@ -1109,32 +1175,45 @@ impl Session {
             .collect();
         if tracks.is_empty() {
             // An empty batch would be an undo step that does nothing.
-            self.message = Some(format!(
-                "The armed tracks were deleted, so the take was kept as {}",
-                recording.relative
-            ));
+            self.message = Some(match &recording.relative {
+                Some(relative) if take.is_some() => {
+                    format!("The armed tracks were deleted, so the take was kept as {relative}")
+                }
+                _ => "The armed tracks were deleted, so the take was dropped".into(),
+            });
             return;
         }
-        let commands = tracks
-            .into_iter()
-            .map(|track| Command::AddClip {
-                id: self.project.new_clip_id(),
-                clip: Clip::audio(
-                    track,
-                    recording.start,
-                    recording.relative.clone(),
-                    take.frames,
-                ),
-            })
-            .collect();
+        let mut commands = Vec::new();
+        for &track in &tracks {
+            if let (Some(take), Some(relative)) = (&take, &recording.relative) {
+                commands.push(Command::AddClip {
+                    id: self.project.new_clip_id(),
+                    clip: Clip::audio(track, recording.start, relative.clone(), take.frames),
+                });
+            }
+            for (start, midi) in &notes {
+                let mut clip = Clip::midi(track, *start, midi.length);
+                if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
+                    content.notes = midi.notes.clone();
+                }
+                commands.push(Command::AddClip {
+                    id: self.project.new_clip_id(),
+                    clip,
+                });
+            }
+        }
         self.edit([Edit::Apply(Command::Batch(commands))]);
-        self.message = Some(match take.dropped {
-            0 => format!("Recorded {}", recording.relative),
-            lost => format!(
-                "Recorded {}, but {lost} frames of input were lost",
-                recording.relative
-            ),
-        });
+        let mut what = Vec::new();
+        if let (Some(relative), Some(take)) = (&recording.relative, &take) {
+            what.push(match take.dropped {
+                0 => format!("Recorded {relative}"),
+                lost => format!("Recorded {relative}, but {lost} frames of input were lost"),
+            });
+        }
+        for (_, midi) in &notes {
+            what.push(format!("Recorded {} notes", midi.notes.len()));
+        }
+        self.message = Some(what.join("; "));
     }
 
     /// Clips the track inputs couldn't play, with the reason. Empty while
@@ -2674,7 +2753,7 @@ mod tests {
         assert_eq!(tracks.len(), count);
         assert!(session.save_as(&dir.join("song.ron")));
         let (tap, recorder) = noodle_io::record_path(1, 48_000.0);
-        session.fake_input = Some(recorder);
+        session.fake_input = Some(Box::new(recorder));
         (session, tap, tracks)
     }
 
@@ -2687,6 +2766,95 @@ mod tests {
                 (clip.node, clip.start, audio.source.clone(), audio.length)
             })
             .collect()
+    }
+
+    /// Stands in for a machine with no audio input chosen.
+    struct NoInput;
+
+    impl TakeSink for NoInput {
+        fn start(&mut self, _: &Path) -> Result<(), RecordError> {
+            Err(RecordError::NoInput)
+        }
+        fn stop(&mut self) -> Result<Take, RecordError> {
+            Err(RecordError::NotRecording)
+        }
+    }
+
+    /// Per MIDI clip, its track and its notes as (key, start, length).
+    type Notes = Vec<(u8, Tick, Tick)>;
+
+    fn midi_clips(session: &Session) -> Vec<(NodeId, Notes)> {
+        session
+            .project()
+            .clips()
+            .filter_map(|(_, clip)| match &clip.content {
+                noodle_core::ClipContent::Midi(midi) => Some((
+                    clip.node,
+                    midi.notes
+                        .iter()
+                        .map(|n| (n.key, n.start, n.length))
+                        .collect(),
+                )),
+                noodle_core::ClipContent::Audio(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn midi_played_during_a_take_becomes_a_midi_clip_without_an_audio_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 2);
+        session.fake_input = Some(Box::new(NoInput));
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        session.midi_bus().send([0x90, 60, 100]);
+        session.midi_bus().send([0x80, 60, 0]);
+        session.stop_recording();
+        let clips = midi_clips(&session);
+        assert_eq!(clips.len(), 2);
+        for (_, notes) in &clips {
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].0, 60);
+        }
+        assert!(
+            session
+                .project()
+                .clips()
+                .all(|(_, c)| c.as_audio().is_none()),
+            "no audio input, no audio clip"
+        );
+        // One undo takes the whole take away.
+        session.undo();
+        assert_eq!(session.project().clips().count(), 0);
+    }
+
+    #[test]
+    fn a_take_with_audio_and_notes_makes_both_in_one_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.record();
+        tap.push(&[0.5; 480]);
+        session.midi_bus().send([0x90, 64, 90]);
+        session.stop_recording();
+        assert_eq!(session.project().clips().count(), 2);
+        assert_eq!(midi_clips(&session).len(), 1);
+        session.undo();
+        assert_eq!(session.project().clips().count(), 0);
+    }
+
+    #[test]
+    fn a_take_with_neither_notes_nor_audio_adds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.fake_input = Some(Box::new(NoInput));
+        session.arm(tracks[0], true);
+        session.record();
+        session.stop_recording();
+        assert_eq!(session.project().clips().count(), 0);
+        assert_eq!(session.message(), Some("Nothing was recorded"));
     }
 
     #[test]

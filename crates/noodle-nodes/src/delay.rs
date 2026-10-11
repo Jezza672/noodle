@@ -18,7 +18,7 @@ use noodle_engine::{
 /// from what the line already holds and one, later in the block, that reads
 /// the input. The output can then be at most as new as the block before, so
 /// *inside a loop* the delay is at least one block, the engine's largest (about
-/// 10 ms at 512 frames), and shorter times are held to that. Outside a
+/// 2.7 ms at the app's 128 frames), and shorter times are held to that. Outside a
 /// loop there is no minimum.
 ///
 /// **Silence.** A lane whose input stays silent for as long as the line is

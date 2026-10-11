@@ -126,7 +126,7 @@ fn run(command: Command) -> Result<(), String> {
             let project = load(&project_path)?;
             let settings = Settings {
                 sample_rate: sample_rate as f32,
-                max_frames: 512,
+                max_frames: 128,
                 channels,
             };
             // `as` saturates, so a huge length would quietly be truncated.
