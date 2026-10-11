@@ -2,12 +2,15 @@
 //! turned into a MIDI clip when it ends.
 //!
 //! Messages carry the time they arrived on the monotonic clock of
-//! [`noodle_io::now_micros`]. The take notes the clock and the transport's
-//! position when it starts, and takes the transport to have run steadily
-//! since (the same assumption an audio take makes), so a message's time maps
-//! to a place on the timeline without help from the audio thread. Notes are
-//! moved earlier by the output latency, since the player was playing along
-//! to what they heard, then optionally snapped to a grid.
+//! [`noodle_io::now_micros`]. The audio thread publishes, every device
+//! callback, a pair of that clock and the transport's position (the
+//! [`AudioClock`](noodle_io::AudioClock)'s anchor). Each message is mapped to
+//! the timeline through the newest pair when it was collected, which is at
+//! most a UI frame after it arrived, so neither the stream's startup nor the
+//! two clocks' drift over a long take matters. Notes are moved earlier by the
+//! output latency, since the player was playing along to what they heard,
+//! and the clip starts that much earlier too, then the starts are optionally
+//! snapped to a grid.
 
 use noodle_core::{MidiClip, MidiNote, TICKS_PER_QUARTER, TempoMap, Tick};
 use noodle_io::{MidiBus, MidiMessage, MidiReceiver};
@@ -68,10 +71,16 @@ pub struct MidiTake {
     receiver: MidiReceiver,
     /// The clock when the take started.
     start_micros: u64,
-    /// The transport's position then, in samples.
+    /// The transport's position then, in samples. Used for messages that
+    /// arrive before the audio thread has published an anchor.
     start_sample: u64,
-    messages: Vec<(u64, MidiMessage)>,
+    /// Each message with the arrival time and the anchor current when it
+    /// was collected.
+    messages: Vec<(u64, MidiMessage, Anchor)>,
 }
+
+/// A `(micros, transport sample)` pair from the audio thread.
+type Anchor = Option<(u64, u64)>;
 
 /// The settings a take is turned into a clip with.
 pub struct Finish<'a> {
@@ -80,25 +89,28 @@ pub struct Finish<'a> {
     pub sample_rate: f64,
     pub tempo_map: &'a TempoMap,
     pub quantise: Quantise,
+    /// The newest anchor when the take ended.
+    pub anchor: Anchor,
 }
 
 impl MidiTake {
     /// Starts listening on `bus`.
     pub fn start(bus: &MidiBus, start_micros: u64, start_sample: u64) -> Self {
         Self {
-            receiver: bus.subscribe(),
+            receiver: bus.subscribe_notes(),
             start_micros,
             start_sample,
             messages: Vec::new(),
         }
     }
 
-    /// Moves what has arrived out of the bus's queue, which is only so long.
-    /// Call it regularly.
-    pub fn poll(&mut self) {
+    /// Moves what has arrived out of the bus's queue, which is only so long,
+    /// noting `anchor`, the audio thread's newest, with it. Call it every UI
+    /// frame.
+    pub fn poll(&mut self, anchor: Anchor) {
         while let Some((at, message)) = self.receiver.pop_timed() {
             if at >= self.start_micros {
-                self.messages.push((at, message));
+                self.messages.push((at, message, anchor));
             }
         }
     }
@@ -106,37 +118,47 @@ impl MidiTake {
     /// Ends the take. The clip starts where the take did and runs to where it
     /// ended, or `None` if no note was played.
     pub fn finish(mut self, finish: &Finish<'_>) -> Option<(Tick, MidiClip)> {
-        self.poll();
+        self.poll(finish.anchor);
         let Finish {
             stop_micros,
             output_latency_micros,
             sample_rate,
             tempo_map,
             quantise,
+            anchor: stop_anchor,
         } = *finish;
-        let tick_at = |micros: u64| -> i64 {
-            let elapsed = micros.saturating_sub(self.start_micros);
-            let shifted = (elapsed as f64 - output_latency_micros as f64).max(0.0);
-            let sample = self.start_sample as f64 + shifted * sample_rate / 1e6;
+        let latency_samples = output_latency_micros as f64 * sample_rate / 1e6;
+        let fallback = (self.start_micros, self.start_sample);
+        let tick_at = |micros: u64, anchor: Anchor| -> i64 {
+            let (anchor_micros, anchor_sample) = anchor.unwrap_or(fallback);
+            let since = micros as f64 - anchor_micros as f64;
+            let sample = anchor_sample as f64 + since * sample_rate / 1e6 - latency_samples;
             tempo_map
-                .tick_at_sample(sample.round() as u64, sample_rate)
+                .tick_at_sample(sample.max(0.0).round() as u64, sample_rate)
                 .round() as i64
         };
+        // What was heard when Record was pressed is what the transport had
+        // rendered a device latency before.
         let clip_start = tempo_map
-            .tick_at_sample(self.start_sample, sample_rate)
+            .tick_at_sample(
+                (self.start_sample as f64 - latency_samples)
+                    .max(0.0)
+                    .round() as u64,
+                sample_rate,
+            )
             .round() as i64;
-        let stop = tick_at(stop_micros);
+        let stop = tick_at(stop_micros, stop_anchor);
 
         // (key, start tick, end tick, velocity), starts and ends unquantised.
         let mut open: [[Option<(i64, f32)>; 128]; 16] = [[None; 128]; 16];
         let mut notes: Vec<(u8, i64, i64, f32)> = Vec::new();
-        for &(at, [status, key, velocity]) in &self.messages {
+        for &(at, [status, key, velocity], anchor) in &self.messages {
             if at > stop_micros {
                 break;
             }
             let channel = usize::from(status & 0x0F);
             let key_index = usize::from(key & 0x7F);
-            let tick = tick_at(at);
+            let tick = tick_at(at, anchor);
             let on = status & 0xF0 == 0x90 && velocity > 0;
             let off = status & 0xF0 == 0x80 || (status & 0xF0 == 0x90 && velocity == 0);
             if on {
@@ -248,6 +270,7 @@ mod tests {
             sample_rate: RATE,
             tempo_map: &map,
             quantise,
+            anchor: None,
         })
         .map(|(start, clip)| {
             assert_eq!(start, Tick(0));
@@ -372,6 +395,58 @@ mod tests {
         let mut notes = cut.notes.clone();
         notes.sort_by_key(|n| n.start);
         assert_eq!(notes[0].start.0 + notes[0].length.0, notes[1].start.0);
+    }
+
+    #[test]
+    fn notes_follow_the_audio_threads_anchor_not_the_moment_record_was_pressed() {
+        // Record was pressed at 1 s with the transport at 0, but the stream
+        // took 200 ms to start: its first callback, at 1.2 s, found the
+        // transport at 0. A note at 1.7 s is half a second in: 960 ticks.
+        let bus = MidiBus::new();
+        let mut take = MidiTake::start(&bus, 1_000_000, 0);
+        bus.send_at([ON, 60, 100], 1_700_000);
+        take.poll(Some((1_200_000, 0)));
+        bus.send_at([OFF, 60, 0], 1_900_000);
+        let map = map();
+        let (start, clip) = take
+            .finish(&Finish {
+                stop_micros: 2_000_000,
+                output_latency_micros: 0,
+                sample_rate: RATE,
+                tempo_map: &map,
+                quantise: Quantise::Off,
+                anchor: Some((1_950_000, 36_000)),
+            })
+            .unwrap();
+        assert_eq!(start, Tick(0));
+        assert_eq!(clip.notes[0].start, Tick(960));
+        // The off came after the last poll, so it was mapped through the
+        // stopping anchor: 1.9 s is 50 ms before 36000 samples (0.75 s), so
+        // 0.7 s: 1344 ticks.
+        assert_eq!(clip.notes[0].start.0 + clip.notes[0].length.0, 1344);
+    }
+
+    #[test]
+    fn the_clip_starts_a_latency_before_the_press_and_keeps_early_notes() {
+        // Pressed with the transport at 1 s (2 quarter notes): with 100 ms of
+        // latency the heard position was 0.9 s, 1728 ticks.
+        let bus = MidiBus::new();
+        let take = MidiTake::start(&bus, 1_000_000, 48_000);
+        bus.send_at([ON, 60, 100], 1_010_000);
+        let map = map();
+        let (start, clip) = take
+            .finish(&Finish {
+                stop_micros: 1_500_000,
+                output_latency_micros: 100_000,
+                sample_rate: RATE,
+                tempo_map: &map,
+                quantise: Quantise::Off,
+                anchor: None,
+            })
+            .unwrap();
+        assert_eq!(start, Tick(1728));
+        // The note at 10 ms is 1.01 s less 100 ms of latency = 0.91 s: 1747.
+        assert_eq!(clip.notes[0].start, Tick(1747 - 1728));
     }
 
     #[test]

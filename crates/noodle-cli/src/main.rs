@@ -234,8 +234,9 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     // Output nodes tied to other devices play on those too. The devices are
     // opened once, so a reload that changes them takes a restart.
     let mut devices = noodle_engine::output_devices(project.graph());
-    let (mut playback, mut controller) = noodle_io::play_with_outputs(config, &devices, MAX_FRAMES)
-        .map_err(|error| error.to_string())?;
+    let (mut playback, mut controller) =
+        noodle_io::play_with_outputs(config, &devices, MAX_FRAMES, &noodle_io::MidiBus::new())
+            .map_err(|error| error.to_string())?;
     for status in playback.outputs() {
         match &status.result {
             Ok(opened) => eprintln!(

@@ -3,10 +3,11 @@
 //!
 //! The port itself belongs to the app (a choice in the settings, not part of
 //! the project, like the audio device), and its messages reach every MIDI In
-//! node through a [`MidiBus`]. Each message carries the time it arrived. One
-//! that arrived during the previous block is played at the same offset into
-//! this one, so live playing is exactly one block late and has no jitter
-//! beyond what the audio callbacks themselves have.
+//! node through a [`MidiBus`]. Each message carries the time it arrived. The
+//! device callback says which span of arrivals each block plays (see
+//! `AudioClock`), so a note played at some point of one device period sounds
+//! at the same point of the next: live playing is one device period late and
+//! has no jitter beyond the callbacks' own, whatever the period is.
 //!
 //! Note-ons and note-offs become note events; everything else (controllers,
 //! pitch bend, aftertouch, program changes) passes on as raw MIDI events.
@@ -18,7 +19,7 @@ use noodle_engine::{
     Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
     NoteId, ParamInfo, Ports, Setup,
 };
-use noodle_io::{MidiBus, MidiReceiver};
+use noodle_io::{MidiBus, MidiReceiver, TimedMessage, now_micros};
 
 pub const MIDI_IN_ID: &str = "noodle.event.midi_in";
 
@@ -42,7 +43,7 @@ static INFO: NodeInfo = NodeInfo {
 /// Registered by [`register_library`](crate::register_library).
 pub struct MidiIn {
     bus: MidiBus,
-    clock: Clock,
+    clock: Option<Clock>,
 }
 
 /// The time now, in microseconds on the clock the bus stamps messages with.
@@ -50,14 +51,19 @@ pub type Clock = fn() -> u64;
 
 impl MidiIn {
     pub fn new(bus: &MidiBus) -> Self {
-        Self::with_clock(bus, noodle_io::now_micros)
+        Self {
+            bus: bus.clone(),
+            clock: None,
+        }
     }
 
-    /// With another clock, for tests that need to say when a block runs.
+    /// Ignoring what the device says about its blocks, and treating each
+    /// block as beginning when `clock` says. For tests, and it is what a node
+    /// does anyway when no device drives the engine.
     pub fn with_clock(bus: &MidiBus, clock: Clock) -> Self {
         Self {
             bus: bus.clone(),
-            clock,
+            clock: Some(clock),
         }
     }
 }
@@ -86,8 +92,10 @@ impl NodeType for MidiIn {
 
     fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
         Ok(Instance::realtime(MidiInNode {
-            input: self.bus.subscribe(),
             clock: self.clock,
+            bus: self.bus.clone(),
+            input: self.bus.subscribe(),
+            pending: None,
             previous_start: None,
             held: [0; 16],
             ending: 0,
@@ -97,8 +105,11 @@ impl NodeType for MidiIn {
 
 struct MidiInNode {
     input: MidiReceiver,
-    clock: Clock,
-    /// When the previous block began.
+    bus: MidiBus,
+    clock: Option<Clock>,
+    /// A message taken from the queue that belongs to a later block.
+    pending: Option<TimedMessage>,
+    /// When the previous block began, for the lack of a device saying so.
     previous_start: Option<u64>,
     /// Per channel, the keys that have a note-on and no note-off yet, one
     /// bit each, so "all notes off" can end them.
@@ -171,15 +182,36 @@ impl MidiInNode {
 
 impl Node for MidiInNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
-        let start = (self.clock)();
-        let previous_start = self.previous_start.replace(start);
+        // Which arrivals this block plays. With a device driving the engine,
+        // the callback says: a span as long as the block, starting one device
+        // period before the block's place in the callback, so what was played
+        // at some point of a period sounds at the same point of the next, and
+        // what is later than the span waits. Without one, whatever arrived
+        // since the previous block began plays in this one, late ones bunched
+        // at its end.
+        let block_micros = (ctx.frames as f64 * 1e6 / f64::from(ctx.sample_rate)) as u64;
+        let (start, limit) = match (self.clock, self.bus.clock().window()) {
+            (None, Some(window)) => (Some(window), Some(window.saturating_add(block_micros))),
+            (clock, _) => {
+                let now = clock.map_or_else(now_micros, |clock| clock());
+                (self.previous_start.replace(now), None)
+            }
+        };
         let wanted = io.inputs[MidiInPorts::CHANNEL].lane(0, 0)[0].round() as u8;
         let out = &mut io.event_outputs[MidiInPorts::OUT];
         // Left over from a block where the buffer filled.
         if !self.flush_ending(out, 0) {
             return;
         }
-        while let Some((arrival, message)) = self.input.pop_timed() {
+        // Events have to be in time order, and the bus can hand over two
+        // messages out of order when the keyboard and a port send together.
+        let mut last = 0;
+        while let Some((arrival, message)) = self.pending.take().or_else(|| self.input.pop_timed())
+        {
+            if limit.is_some_and(|limit| arrival >= limit) {
+                self.pending = Some((arrival, message));
+                break;
+            }
             let channel = message[0] & 0x0F;
             // A note-off for a note that is held always gets through, so
             // changing the channel can't leave it sounding.
@@ -189,7 +221,8 @@ impl Node for MidiInNode {
             if wanted != 0 && channel + 1 != wanted && !ends_held {
                 continue;
             }
-            let time = frame_offset(arrival, previous_start, ctx.sample_rate, ctx.frames);
+            let time = frame_offset(arrival, start, ctx.sample_rate, ctx.frames).max(last);
+            last = time;
             // Sound off (120) and all notes off (123) end what is held.
             if message[0] & 0xF0 == 0xB0 && matches!(message[1], 120 | 123) {
                 self.ending |= 1 << channel;
@@ -234,6 +267,59 @@ mod tests {
         assert_eq!(frame_offset(3_000, Some(4_000), 48_000.0, 128), 0);
         assert_eq!(frame_offset(90_000, Some(4_000), 48_000.0, 128), 127);
     }
+
+    #[test]
+    fn a_device_callback_with_several_blocks_places_messages_by_the_span_each_plays() {
+        let bus = MidiBus::new();
+        let mut h = Harness::new(&MidiIn::new(&bus), &Config::new(), &[], 48_000.0, 128).unwrap();
+        // 128 frames at 48 kHz last 2666 microseconds.
+        let first = 100_000;
+        let second = first + 2_666;
+        bus.send_at(key_on(0, 59, 100), first - 100); // older than the span
+        bus.send_at(key_on(0, 60, 100), first + 500);
+        bus.send_at(key_on(0, 61, 100), second + 1_000); // the next block's
+        bus.clock().set_window(first);
+        h.run(128).unwrap();
+        let notes = |h: &Harness| -> Vec<(u32, u8)> {
+            h.events(MidiInPorts::OUT)
+                .iter()
+                .filter_map(|e| match e.kind {
+                    EventKind::NoteOn { key, .. } => Some((e.time, key)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(notes(&h), vec![(0, 59), (24, 60)]);
+        bus.clock().set_window(second);
+        h.run(128).unwrap();
+        assert_eq!(notes(&h), vec![(48, 61)]);
+    }
+
+    #[test]
+    fn messages_stamped_out_of_order_still_give_ordered_events() {
+        use std::sync::atomic::Ordering;
+        let bus = MidiBus::new();
+        let mut h = Harness::new(
+            &MidiIn::with_clock(&bus, || ORDER.load(Ordering::Relaxed)),
+            &Config::new(),
+            &[],
+            48_000.0,
+            128,
+        )
+        .unwrap();
+        ORDER.store(10_000, Ordering::Relaxed);
+        h.run(128).unwrap();
+        // 1000 microseconds in is frame 48, and 500 is frame 24: the second
+        // message arrived first, as two threads sending at once can manage.
+        bus.send_at(key_on(0, 60, 100), 11_000);
+        bus.send_at(key_on(0, 61, 100), 10_500);
+        ORDER.store(12_667, Ordering::Relaxed);
+        h.run(128).unwrap();
+        let times: Vec<u32> = h.events(MidiInPorts::OUT).iter().map(|e| e.time).collect();
+        assert_eq!(times, vec![48, 48]);
+    }
+
+    static ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     static NOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

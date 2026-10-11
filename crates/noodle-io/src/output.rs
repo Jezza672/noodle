@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
-use noodle_engine::{Bus, Controller, Processor, Settings, engine};
+use noodle_engine::{Bus, Controller, Processor, Settings, TransportControl, engine};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
@@ -19,6 +19,7 @@ use crate::devices::{
     find_device, host_for,
 };
 use crate::input::{Capture, Feed, recordable_input_path};
+use crate::midi::{AudioClock, MidiBus, now_micros};
 use crate::record::{RecordError, Recorder, Take};
 
 pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
@@ -44,6 +45,8 @@ pub struct DeviceWriter {
     gain: f32,
     /// How much the gain falls per frame while fading out.
     step: f32,
+    /// Where to say when the blocks run, for MIDI timing and recording.
+    midi_clock: Option<(Arc<AudioClock>, Arc<TransportControl>)>,
 }
 
 /// How long the output takes to fade out when playback stops. Cutting a
@@ -80,7 +83,22 @@ impl DeviceWriter {
             fade: Arc::default(),
             gain: 1.0,
             step: 1.0 / (FADE_OUT.as_secs_f32() * sample_rate).max(1.0),
+            midi_clock: None,
         }
+    }
+
+    /// Has the writer say, on every callback, when its blocks run: where the
+    /// transport is at the callback's start, and for each block which span of
+    /// MIDI arrivals it plays (the callback's length before it, so MIDI
+    /// played during one device period sounds in the next, at the same place
+    /// in it). `transport` is the engine's.
+    pub fn with_midi_clock(
+        mut self,
+        clock: Arc<AudioClock>,
+        transport: Arc<TransportControl>,
+    ) -> Self {
+        self.midi_clock = Some((clock, transport));
+        self
     }
 
     /// A writer whose Input nodes play what `feed` delivers.
@@ -144,8 +162,20 @@ impl DeviceWriter {
             .period
             .fetch_max((output.len() / channels) as u32, Ordering::Relaxed);
         let block = self.scratch.len() / engine_channels;
+        let rate = f64::from(self.processor.settings().sample_rate);
+        let called = now_micros();
+        let period = ((output.len() / channels) as f64 * 1e6 / rate) as u64;
+        if let Some((clock, transport)) = &self.midi_clock {
+            clock.publish_anchor(called, transport.position());
+        }
+        let mut done = 0usize;
         for chunk in output.chunks_mut(block * channels) {
             let frames = chunk.len() / channels;
+            if let Some((clock, _)) = &self.midi_clock {
+                let into = (done as f64 * 1e6 / rate) as u64;
+                clock.set_window(called.saturating_sub(period) + into);
+            }
+            done += frames;
             let scratch = &mut self.scratch[..frames * engine_channels];
             match &mut self.input {
                 Some(feed) => {
@@ -553,9 +583,12 @@ impl Reporter {
 /// failing: see [`Playback::input_problem`]. Send the engine graphs
 /// with the returned [`Controller`].
 ///
+/// `midi` is told when the blocks run, so the MIDI In nodes on it place
+/// notes within a block and recordings know where the transport was.
+///
 /// Errors while playing are reported through [`Playback::health`].
 pub fn play(choice: &AudioConfig, max_frames: usize) -> Result<(Playback, Controller), AudioError> {
-    play_with_outputs(choice, &[], max_frames)
+    play_with_outputs(choice, &[], max_frames, &MidiBus::new())
 }
 
 /// [`play`] with more output devices, `extra` by ID, for Output nodes tied to
@@ -574,6 +607,7 @@ pub fn play_with_outputs(
     choice: &AudioConfig,
     extra: &[String],
     max_frames: usize,
+    midi: &MidiBus,
 ) -> Result<(Playback, Controller), AudioError> {
     let host_id = host_for(
         choice.host.as_deref(),
@@ -669,6 +703,7 @@ pub fn play_with_outputs(
             }
         }
     };
+    let writer = writer.with_midi_clock(Arc::clone(midi.clock()), controller.transport());
     let (writer, outputs) = writer.with_outputs(
         main_channels,
         &extras.iter().map(|e| e.channels).collect::<Vec<_>>(),
@@ -1188,6 +1223,33 @@ mod tests {
         assert_eq!(extra.glitches.load(Ordering::Relaxed), 1);
         // What's left is a cushion, not the whole backlog.
         assert!(extra.queue.slots() <= 3 * (64 + 32));
+    }
+
+    #[test]
+    fn a_callback_tells_the_clock_where_the_transport_is_and_which_span_each_block_plays() {
+        let (controller, processor) = engine(SETTINGS).unwrap();
+        let clock = Arc::new(AudioClock::default());
+        let mut writer = DeviceWriter::new(processor)
+            .with_midi_clock(Arc::clone(&clock), controller.transport());
+        assert_eq!(clock.anchor(), None);
+        assert_eq!(clock.window(), None);
+        // Four 64-frame blocks (1333 microseconds each) in one callback.
+        let before = now_micros();
+        writer.write(&mut [0.0f32; 256 * 2]);
+        let after = now_micros();
+        let (called, sample) = clock.anchor().expect("an anchor");
+        assert!((before..=after).contains(&called));
+        assert_eq!(sample, 0);
+        // The last block plays the span that began three blocks into the
+        // period before this callback.
+        let window = clock.window().expect("a window");
+        let period = 5_333;
+        let into = 4_000;
+        assert!(
+            (before.saturating_sub(period) + into..=after.saturating_sub(period) + into)
+                .contains(&window),
+            "{window} vs {before}..{after}"
+        );
     }
 
     #[test]

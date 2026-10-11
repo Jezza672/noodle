@@ -914,14 +914,16 @@ impl Session {
         }
         // Output nodes tied to other devices play on those as well.
         let devices = noodle_engine::output_devices(self.project.graph());
-        let mut started = noodle_io::play_with_outputs(&self.audio_config, &devices, MAX_FRAMES);
+        let mut started =
+            noodle_io::play_with_outputs(&self.audio_config, &devices, MAX_FRAMES, &self.midi);
         let mut fell_back = None;
         // A saved device that's been unplugged, or a rate it no longer
         // takes, shouldn't stop the app making sound. The setting is kept
         // for when the device is back.
         if let Err(error) = &started
             && let Some(defaults) = fallback(&self.audio_config)
-            && let Ok(playing) = noodle_io::play_with_outputs(&defaults, &devices, MAX_FRAMES)
+            && let Ok(playing) =
+                noodle_io::play_with_outputs(&defaults, &devices, MAX_FRAMES, &self.midi)
         {
             fell_back = Some(on_default_output(error));
             started = Ok(playing);
@@ -1057,7 +1059,7 @@ impl Session {
     pub fn maintain(&mut self) {
         // The bus holds only so many messages, so a take drains it often.
         if let Some(recording) = &mut self.recording {
-            recording.midi.poll();
+            recording.midi.poll(self.midi.clock().anchor());
         }
         match self.freezing.poll() {
             Polled::Nothing => {
@@ -1257,6 +1259,9 @@ impl Session {
         let stop_micros = noodle_io::now_micros();
         let mut notes = Vec::new();
         let mut take = None;
+        // What to tell the user, kept together: a failed audio take mustn't
+        // be hidden by the notes that were played.
+        let mut notices = Vec::new();
         if recording.relative.is_some() {
             let taken = match self.sink() {
                 Some(sink) => sink.stop(),
@@ -1267,9 +1272,7 @@ impl Session {
                     let _ = std::fs::remove_file(&done.path);
                 }
                 Ok(done) => take = Some(done),
-                Err(error) => {
-                    self.message = Some(format!("The recording failed: {error}"));
-                }
+                Err(error) => notices.push(format!("The recording failed: {error}")),
             }
         }
         let (rate, latency) = match &self.audio {
@@ -1288,13 +1291,15 @@ impl Session {
             sample_rate: rate,
             tempo_map: self.project.tempo_map(),
             quantise: recording.quantise,
+            anchor: self.midi.clock().anchor(),
         }) {
             notes.push((start, clip));
         }
         if take.is_none() && notes.is_empty() {
-            if self.message.is_none() {
-                self.message = Some("Nothing was recorded".into());
+            if notices.is_empty() {
+                notices.push("Nothing was recorded".into());
             }
+            self.message = Some(notices.join("; "));
             return;
         }
         let tracks: Vec<NodeId> = recording
@@ -1305,12 +1310,13 @@ impl Session {
             .collect();
         if tracks.is_empty() {
             // An empty batch would be an undo step that does nothing.
-            self.message = Some(match &recording.relative {
+            notices.push(match &recording.relative {
                 Some(relative) if take.is_some() => {
                     format!("The armed tracks were deleted, so the take was kept as {relative}")
                 }
                 _ => "The armed tracks were deleted, so the take was dropped".into(),
             });
+            self.message = Some(notices.join("; "));
             return;
         }
         let mut commands = Vec::new();
@@ -1333,17 +1339,16 @@ impl Session {
             }
         }
         self.edit([Edit::Apply(Command::Batch(commands))]);
-        let mut what = Vec::new();
         if let (Some(relative), Some(take)) = (&recording.relative, &take) {
-            what.push(match take.dropped {
+            notices.push(match take.dropped {
                 0 => format!("Recorded {relative}"),
                 lost => format!("Recorded {relative}, but {lost} frames of input were lost"),
             });
         }
         for (_, midi) in &notes {
-            what.push(format!("Recorded {} notes", midi.notes.len()));
+            notices.push(format!("Recorded {} notes", midi.notes.len()));
         }
-        self.message = Some(what.join("; "));
+        self.message = Some(notices.join("; "));
     }
 
     /// Clips the track inputs couldn't play, with the reason. Empty while
@@ -3014,6 +3019,33 @@ mod tests {
         // One undo takes the whole take away.
         session.undo();
         assert_eq!(session.project().clips().count(), 0);
+    }
+
+    /// An input that starts but fails when the take ends.
+    struct FailsAtTheEnd;
+
+    impl TakeSink for FailsAtTheEnd {
+        fn start(&mut self, _: &Path) -> Result<(), RecordError> {
+            Ok(())
+        }
+        fn stop(&mut self) -> Result<Take, RecordError> {
+            Err(RecordError::NotRecording)
+        }
+    }
+
+    #[test]
+    fn a_failed_audio_take_is_still_reported_when_notes_were_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.fake_input = Some(Box::new(FailsAtTheEnd));
+        session.arm(tracks[0], true);
+        session.record();
+        session.midi_bus().send([0x90, 60, 100]);
+        session.stop_recording();
+        assert_eq!(midi_clips(&session).len(), 1);
+        let message = session.message().unwrap();
+        assert!(message.contains("The recording failed"), "{message}");
+        assert!(message.contains("Recorded 1 notes"), "{message}");
     }
 
     #[test]

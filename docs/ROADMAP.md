@@ -428,6 +428,8 @@ filters, unison and spread); the delay node and feedback loops.
     blocks; the computer keyboard is a MIDI source (toolbar button); Record
     captures MIDI into a clip with an optional quantise grid and
     output-latency compensation.
+  - The 128-frame block is a fixed choice for now (4× the per-block overhead
+    of 512); the engine block could follow the device period again.
   - **Still to do:** quantise and copy/paste in the piano roll, more than one
     MIDI port at a time, overdubbing into an existing clip, a count-in,
     keeping the raw take for re-quantising. (Reopening a port that was unplugged and comes back is

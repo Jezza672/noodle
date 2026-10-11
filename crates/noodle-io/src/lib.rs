@@ -25,8 +25,8 @@ pub use export::{ExportError, ExportFormat, ExportWriter};
 pub use hash::{FileHasher, Peek};
 pub use input::{Capture, Feed, input_path, recordable_input_path};
 pub use midi::{
-    MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver, TimedMessage,
-    connect_midi, midi_inputs, now_micros, parse_message, same_port,
+    AudioClock, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver,
+    TimedMessage, connect_midi, midi_inputs, now_micros, parse_message, same_port,
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,

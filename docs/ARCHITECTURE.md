@@ -392,14 +392,21 @@ restart the audio.
   off end the notes it still holds. Its `channel` parameter (0 for all)
   filters.
 - **Timing.** Every message is stamped with its arrival time on a monotonic
-  clock (`noodle_io::now_micros`) when the driver's thread receives it. The
-  node notes the clock at the start of each block and plays a message at the
-  frame the same distance into this block as it arrived into the previous
-  one, so live playing is exactly one block late with no jitter beyond the
-  audio callbacks' own. The app and `noodle play` use 128-frame blocks (about
-  2.7 ms), and renders do too, so a render matches what was heard; the
-  keyboard below is the exception to the precision, since egui hands keys
-  over once per UI frame.
+  clock (`noodle_io::now_micros`), under the bus's lock so stamps are in
+  queue order. Each device callback tells the bus's `AudioClock` when it ran,
+  and for each engine block inside it which span of arrivals that block
+  plays: the callback's length before the block's own place in it. A note
+  played at some point of one device period therefore sounds at the same
+  point of the next, in whichever block that falls, and what is later than
+  the block's span waits for the next. Live playing is one device period late
+  with no jitter beyond the callbacks' own, however long the period is. The
+  callback also publishes an anchor, a pair of the clock and the transport's
+  sample, that recording reads (see "MIDI takes"). Without a device the node
+  plays whatever arrived since its previous block began. The app and
+  `noodle play` use 128-frame engine blocks (about 2.7 ms), and renders do
+  too, so a render matches what was heard; that costs more per-block overhead
+  than 512 did. Events a node emits are kept in time order even if the bus
+  hands over two messages out of order.
 - **The computer keyboard.** A toolbar button (or M) turns the home row into
   an octave of keys, as in Ableton: A W S E D F T G Y H U J K and O L P ;
   are the notes from C3 (60), Z and X change the octave, C and V the
@@ -478,13 +485,16 @@ reported. The clip is placed at the playhead without compensating for the
 audio device's latency, so a take can sit a little late; that is still to do.
 
 **MIDI takes.** The same Record also captures MIDI. It subscribes to the
-session's MIDI bus (hardware ports and the computer keyboard alike) and keeps
-each message with its arrival time. Those times are mapped onto the timeline
-from the clock and the transport position at the start of the take, assuming
-the transport runs steadily through it, and moved earlier by the output
-latency the device reported (`Playback::output_latency`), since the player
-was playing along to what they heard. The take ends with one MIDI clip per
-armed track from the start of the take: a note still held ends where the take
+session's MIDI bus for notes (hardware ports and the computer keyboard alike)
+and keeps each message with its arrival time. Every UI frame the take notes
+the audio thread's newest anchor with what it collected, and maps each
+message to the timeline through it, so the stream's startup delay and clock
+drift don't matter. Times are moved earlier by the output latency the device
+reported (`Playback::output_latency`), since the player was playing along to
+what they heard, and the clip starts that much before the playhead was when
+Record was pressed. Like an audio take, a MIDI clip goes on every armed track,
+whether or not it takes MIDI, so arm only the tracks that should get one. The
+take ends with one MIDI clip per armed track from the start of the take: a note still held ends where the take
 does, a note-off with no note-on is ignored, and a take with no notes adds
 no clip. The audio and MIDI clips of a take are one `Batch`. Audio is recorded
 only when an input is chosen in the audio settings; without one a take is
