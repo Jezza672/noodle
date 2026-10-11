@@ -843,9 +843,18 @@ extern "system" fn InitDll() -> bool {
     true
 }
 
+/// Writes the file named by `NOODLE_TEST_DEINIT_MARKER` when the host exits
+/// the module, so a test can see whether the host unloaded it.
+fn record_exit() {
+    if let Some(path) = std::env::var_os("NOODLE_TEST_DEINIT_MARKER") {
+        let _ = std::fs::write(path, b"exit");
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
 extern "system" fn ExitDll() -> bool {
+    record_exit();
     true
 }
 
@@ -858,6 +867,7 @@ extern "system" fn bundleEntry(_bundle: *mut c_void) -> bool {
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 extern "system" fn bundleExit() -> bool {
+    record_exit();
     true
 }
 
@@ -870,6 +880,7 @@ extern "system" fn ModuleEntry(_handle: *mut c_void) -> bool {
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 extern "system" fn ModuleExit() -> bool {
+    record_exit();
     true
 }
 
