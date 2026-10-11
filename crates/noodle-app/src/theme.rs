@@ -18,6 +18,8 @@ pub const SELECTED: Color32 = Color32::from_rgb(60, 90, 168);
 /// Mute, solo and record.
 pub const MUTE: Color32 = Color32::from_rgb(255, 122, 107);
 pub const RECORD: Color32 = Color32::from_rgb(255, 90, 79);
+/// The audio engine running on something other than what was chosen.
+pub const WARNING: Color32 = Color32::from_rgb(240, 160, 64);
 /// Corner radius for panels, buttons and nodes.
 pub const RADIUS: u8 = 8;
 /// Corner radius of a node.

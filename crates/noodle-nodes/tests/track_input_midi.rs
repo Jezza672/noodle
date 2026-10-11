@@ -192,3 +192,137 @@ fn an_auditioned_key_sounds_on_its_own_track_even_when_stopped() {
     assert!(on.0 & 0x8000_0000 == 0, "apart from live MIDI's IDs");
     assert!(rig.run_events(0, BLOCK, false).is_empty());
 }
+
+/// The events of one block as (time in the block, event).
+fn block(rig: &mut Rig, position: u64, playing: bool) -> Vec<(u32, EventKind)> {
+    rig.run_quiet(position, BLOCK, playing);
+    rig.events().iter().map(|e| (e.time, e.kind)).collect()
+}
+
+fn note_on(key: u8) -> [u8; 3] {
+    [0x90, key, 100]
+}
+
+fn note_off(key: u8) -> [u8; 3] {
+    [0x80, key, 0]
+}
+
+fn live_notes(events: &[(u32, EventKind)]) -> Vec<(bool, u8)> {
+    events
+        .iter()
+        .filter_map(|(_, kind)| match *kind {
+            EventKind::NoteOn { key, .. } => Some((true, key)),
+            EventKind::NoteOff { note, .. } => Some((false, (note.0 & 0xFF) as u8)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_monitored_track_plays_live_midi_with_the_transport_stopped() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-live", &bus);
+    rig.feeds.set_monitoring(rig.id, true);
+    bus.send(note_on(60));
+    // Stopped, and still the note comes out, from any channel.
+    let events = block(&mut rig, 0, false);
+    assert_eq!(live_notes(&events), [(true, 60)]);
+    bus.send([0x95, 64, 100]);
+    let events = block(&mut rig, 0, false);
+    assert_eq!(live_notes(&events), [(true, 64)]);
+    bus.send(note_off(60));
+    assert_eq!(live_notes(&block(&mut rig, 0, false)), [(false, 60)]);
+}
+
+#[test]
+fn a_track_that_is_not_monitored_ignores_live_midi_for_good() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-unmonitored", &bus);
+    bus.send(note_on(60));
+    assert!(block(&mut rig, 0, false).is_empty());
+    // What was played before it was monitored is not replayed.
+    rig.feeds.set_monitoring(rig.id, true);
+    assert!(block(&mut rig, 0, false).is_empty());
+}
+
+#[test]
+fn stopping_and_starting_the_transport_leaves_live_notes_alone() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-live-stop", &bus);
+    rig.add_midi_clip(0, 4, &[(0, 3840, 72)]);
+    rig.settle();
+    rig.feeds.set_monitoring(rig.id, true);
+    bus.send(note_on(60));
+    let started = block(&mut rig, 0, true);
+    assert_eq!(live_notes(&started), [(true, 60), (true, 72)]);
+    // The clip's note ends on stop, and the held live note does not.
+    let stopped = block(&mut rig, BLOCK as u64, false);
+    assert_eq!(live_notes(&stopped).len(), 1, "{stopped:?}");
+    assert!(stopped.iter().all(
+        |(_, kind)| !matches!(kind, EventKind::NoteOff { note, .. } if note.0 & 0x2000_0000 != 0)
+    ));
+    assert!(block(&mut rig, BLOCK as u64, false).is_empty());
+    bus.send(note_off(60));
+    assert_eq!(live_notes(&block(&mut rig, 0, false)), [(false, 60)]);
+}
+
+#[test]
+fn disarming_ends_the_live_notes_that_are_held() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-live-disarm", &bus);
+    rig.feeds.set_monitoring(rig.id, true);
+    bus.send(note_on(60));
+    bus.send(note_on(64));
+    block(&mut rig, 0, false);
+    rig.feeds.set_monitoring(rig.id, false);
+    bus.send(note_on(67));
+    let events = block(&mut rig, 0, false);
+    assert_eq!(live_notes(&events), [(false, 60), (false, 64)]);
+    assert!(block(&mut rig, 0, false).is_empty());
+}
+
+#[test]
+fn all_notes_off_ends_live_notes() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-live-panic", &bus);
+    rig.feeds.set_monitoring(rig.id, true);
+    bus.send(note_on(60));
+    block(&mut rig, 0, false);
+    bus.all_notes_off();
+    let offs = live_notes(&block(&mut rig, 0, false));
+    assert_eq!(offs, [(false, 60)]);
+}
+
+#[test]
+fn live_notes_are_merged_with_a_clips_in_time_order() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-live-order", &bus);
+    // A note at the very start of the block the test runs second.
+    rig.add_midi_clip(1, 4, &[(0, 480, 72)]);
+    rig.settle();
+    rig.feeds.set_monitoring(rig.id, true);
+    block(&mut rig, 0, false);
+    // Arrives some way into the next block, which the clip's note starts.
+    std::thread::sleep(Duration::from_millis(4));
+    bus.send(note_on(60));
+    let events = block(&mut rig, BEAT, true);
+    let times: Vec<u32> = events.iter().map(|&(t, _)| t).collect();
+    assert_eq!(times.len(), 2, "{events:?}");
+    assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
+    assert_eq!(times[0], 0);
+    assert!(times[1] > 0);
+}
+
+#[test]
+fn live_notes_use_ids_of_their_own() {
+    let bus = noodle_io::MidiBus::new();
+    let mut rig = Rig::monitored("midi-live-ids", &bus);
+    rig.feeds.set_monitoring(rig.id, true);
+    bus.send(note_on(60));
+    let events = block(&mut rig, 0, false);
+    let EventKind::NoteOn { note, .. } = events[0].1 else {
+        panic!("{events:?}")
+    };
+    // Apart from the MIDI In node's (top bit), a clip's, and the piano roll's.
+    assert_eq!(note.0 & 0xF000_0000, 0x2000_0000);
+}

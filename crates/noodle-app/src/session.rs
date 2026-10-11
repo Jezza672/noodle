@@ -316,6 +316,10 @@ struct Audio {
     devices: Vec<String>,
     /// What the user has been told about the devices.
     monitor: Monitor,
+    /// Set when the engine runs on something other than what was chosen: the
+    /// system default, or the virtual output. Lasts as long as the stream,
+    /// for the toolbar to show.
+    fallback: Option<String>,
 }
 
 /// Running totals of audible trouble since playback started.
@@ -443,8 +447,7 @@ impl Session {
             self.connect_midi();
         }
         if audio_changed && self.audio.is_some() {
-            self.close_stream();
-            self.play();
+            self.reopen_stream();
         }
     }
 
@@ -990,8 +993,12 @@ impl Session {
     }
 
     fn replace(&mut self, project: Project, path: Option<PathBuf>) {
-        // The take belongs to the project it was recorded in.
+        // The take belongs to the project it was recorded in, and so does
+        // the arming: track IDs mean other tracks in the next project.
         self.stop_recording();
+        for track in std::mem::take(&mut self.armed) {
+            self.clips.set_monitoring(track, false);
+        }
         self.saved = project.clone();
         self.project = project;
         self.history = History::new();
@@ -1001,37 +1008,87 @@ impl Session {
         self.message = None;
         self.parked = Tick(0);
         self.recompile();
-        // A new project starts from its beginning, running, whatever the
-        // last one's playhead was doing.
+        // A new project starts from its beginning, running or not as the
+        // last one's was.
         if let Some(audio) = &self.audio {
-            let transport = audio.controller.transport();
-            transport.seek(Tick(0));
-            transport.play();
+            audio.controller.transport().seek(Tick(0));
         }
     }
 
-    pub fn is_playing(&self) -> bool {
+    /// Whether the engine, the audio stream that runs the graph, is open.
+    /// It runs whether or not the transport does.
+    pub fn engine_running(&self) -> bool {
         self.audio.is_some()
     }
 
+    /// Why the engine isn't on what was chosen, if it isn't: it fell back to
+    /// the system default output, or to the virtual output, which plays to
+    /// nowhere. Lasts as long as the engine runs.
+    pub fn engine_warning(&self) -> Option<&str> {
+        self.audio.as_ref()?.fallback.as_deref()
+    }
+
+    /// Starts the engine, with the transport stopped: the graph renders and
+    /// live MIDI plays, and the timeline waits for [`Session::play`]. Does
+    /// nothing if it's running.
+    pub fn start_engine(&mut self) {
+        self.open_stream(false);
+    }
+
+    /// Closes the audio stream, keeping the playhead for the next start.
+    /// Nothing sounds, live MIDI included, and a drone falls silent.
+    pub fn stop_engine(&mut self) {
+        self.stop_recording();
+        self.close_stream();
+        self.feed_clips();
+    }
+
+    /// Starts the timeline from the playhead, starting the engine first if
+    /// it's off.
     pub fn play(&mut self) {
+        self.open_stream(false);
+        self.set_transport_running(true);
+    }
+
+    /// Opens the audio stream if it isn't open, with the transport running
+    /// or stopped. The chosen output is tried first, then the system's
+    /// default, then the virtual output, which always opens. The fallbacks
+    /// are not saved, and say so in [`Session::engine_warning`].
+    fn open_stream(&mut self, running: bool) {
         if self.audio.is_some() {
             return;
         }
         // Output nodes tied to other devices play on those as well.
         let devices = noodle_engine::output_devices(self.project.graph());
-        let mut started =
-            noodle_io::play_with_outputs(&self.audio_config, &devices, MAX_FRAMES, &self.midi);
+        let open = |config: &AudioConfig| {
+            noodle_io::play_with_outputs_stopped(config, &devices, MAX_FRAMES, &self.midi).map(
+                |(playback, controller)| {
+                    if running {
+                        controller.transport().play();
+                    }
+                    (playback, controller)
+                },
+            )
+        };
+        let mut started = open(&self.audio_config);
         let mut fell_back = None;
         // A saved device that's been unplugged, or a rate it no longer
         // takes, shouldn't stop the app making sound. The setting is kept
         // for when the device is back.
         if let Err(error) = &started
             && let Some(defaults) = fallback(&self.audio_config)
-            && let Ok(playing) =
-                noodle_io::play_with_outputs(&defaults, &devices, MAX_FRAMES, &self.midi)
+            && let Ok(playing) = open(&defaults)
         {
             fell_back = Some(on_default_output(error));
+            started = Ok(playing);
+        }
+        // Nothing real opens: run on the virtual output, so the app still
+        // works for editing and live MIDI still reaches the graph.
+        if let Err(error) = &started
+            && self.audio_config.output.as_deref() != Some(noodle_io::VIRTUAL_OUTPUT)
+            && let Ok(playing) = open(&virtual_fallback(&self.audio_config))
+        {
+            fell_back = Some(on_virtual_output(error));
             started = Ok(playing);
         }
         match started {
@@ -1040,6 +1097,7 @@ impl Session {
                 // Playback carries on without input rather than failing.
                 // The status bar keeps saying so; see `input_problem`.
                 self.message = fell_back
+                    .clone()
                     .or_else(|| playback.input_problem().map(no_input))
                     .or_else(|| output_problems(&playback));
                 self.audio = Some(Audio {
@@ -1047,6 +1105,7 @@ impl Session {
                     controller,
                     devices,
                     monitor: Monitor::default(),
+                    fallback: fell_back,
                 });
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
@@ -1061,6 +1120,14 @@ impl Session {
         }
     }
 
+    /// Closes the stream and opens it again on the settings, keeping the
+    /// transport as it was. For a change of device.
+    fn reopen_stream(&mut self) {
+        let running = self.transport_running();
+        self.close_stream();
+        self.open_stream(running);
+    }
+
     /// Why playback is going on without the input that was asked for. It
     /// lasts as long as playback, unlike [`Session::message`].
     pub fn input_problem(&self) -> Option<String> {
@@ -1071,15 +1138,15 @@ impl Session {
         }
     }
 
-    /// Closes the stream, keeping the playhead for the next play. Stopping
-    /// again while stopped rewinds, as in Logic and GarageBand.
+    /// Stops the timeline where it is. Stopping again while it's stopped
+    /// rewinds, as in Logic and GarageBand. The engine keeps running, and so
+    /// do the live notes held down.
     pub fn stop(&mut self) {
-        self.stop_recording();
-        if self.audio.is_none() {
-            self.parked = Tick(0);
+        if self.transport_running() {
+            self.set_transport_running(false);
+        } else {
+            self.rewind();
         }
-        self.close_stream();
-        self.feed_clips();
     }
 
     /// Whether the transport is running. The audio stream can be open with
@@ -1226,10 +1293,9 @@ impl Session {
     /// backends reroute the stream by themselves but leave it silent, so
     /// start again on whatever is now the default, and say so.
     fn restart_on_new_output(&mut self) {
-        self.close_stream();
-        self.play();
+        self.reopen_stream();
         let Some(audio) = &self.audio else {
-            // `play` has said why it couldn't.
+            // `open_stream` has said why it couldn't.
             self.feed_clips();
             return;
         };
@@ -1243,13 +1309,16 @@ impl Session {
         });
     }
 
-    /// Arms or disarms a track (by its track input node) for recording.
+    /// Arms or disarms a track (by its track input node) for recording. An
+    /// armed track also plays the live MIDI through its own synth, whether
+    /// or not the transport runs: see [`noodle_nodes::TrackInput::with_midi`].
     pub fn arm(&mut self, track: NodeId, on: bool) {
         if on {
             self.armed.insert(track);
         } else {
             self.armed.remove(&track);
         }
+        self.clips.set_monitoring(track, on);
     }
 
     pub fn is_armed(&self, track: NodeId) -> bool {
@@ -1501,6 +1570,13 @@ impl Session {
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
+        // The feeds forget a node that is gone, monitoring flag and all, and
+        // undoing the delete brings it back unmonitored while still armed.
+        for &track in &self.armed {
+            if self.project.graph().node(track).is_some() {
+                self.clips.set_monitoring(track, true);
+            }
+        }
     }
 
     /// The folder the project's audio files are relative to.
@@ -1605,13 +1681,7 @@ impl Session {
         // to another one means playing afresh. `play` compiles.
         let wanted = noodle_engine::output_devices(self.project.graph());
         if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
-            // A new engine starts running, so keep a pause.
-            let paused = !self.transport_running();
-            self.close_stream();
-            self.play();
-            if paused && let Some(audio) = &self.audio {
-                audio.controller.transport().stop();
-            }
+            self.reopen_stream();
             if self.audio.is_some() {
                 return;
             }
@@ -1856,6 +1926,22 @@ fn no_input(error: &AudioError) -> String {
 
 fn on_default_output(error: &AudioError) -> String {
     format!("Playing on the default output: {error}")
+}
+
+fn on_virtual_output(error: &AudioError) -> String {
+    format!(
+        "No audio output opened, so the engine runs on the virtual output and makes no sound: {error}"
+    )
+}
+
+/// What to try when no real output opens: the virtual one, keeping the
+/// input.
+fn virtual_fallback(config: &AudioConfig) -> AudioConfig {
+    AudioConfig {
+        output: Some(noodle_io::VIRTUAL_OUTPUT.to_owned()),
+        input: config.input.clone(),
+        ..AudioConfig::default()
+    }
 }
 
 /// What to try when the chosen output settings can't play: the system's
@@ -3006,7 +3092,7 @@ mod tests {
         };
         session.set_audio_config(config.clone());
         assert_eq!(session.audio_config(), &config);
-        assert!(!session.is_playing());
+        assert!(!session.engine_running());
         assert_eq!(session.message(), None);
     }
 
@@ -3367,6 +3453,263 @@ mod tests {
         session.seek(Tick(0));
         assert!(!session.is_recording());
         assert_eq!(clips(&session)[0].1, Tick(480));
+    }
+
+    fn virtual_config() -> AudioConfig {
+        AudioConfig {
+            output: Some(noodle_io::VIRTUAL_OUTPUT.into()),
+            ..AudioConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_engine_runs_without_the_transport_and_stop_leaves_it_running() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        assert_eq!(session.engine_warning(), None);
+        // Started stopped: the timeline waits.
+        assert!(!session.transport_running());
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(session.playhead(), Tick(0));
+
+        session.play();
+        assert!(session.transport_running());
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(session.playhead() > Tick(0));
+
+        // Stop pauses, in place, and the engine stays up.
+        session.stop();
+        assert!(session.engine_running());
+        assert!(!session.transport_running());
+        std::thread::sleep(Duration::from_millis(50));
+        let held = session.playhead();
+        assert!(held > Tick(0));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(session.playhead(), held);
+
+        // Stopping again rewinds.
+        session.stop();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(session.engine_running());
+        assert_eq!(session.playhead(), Tick(0));
+    }
+
+    #[test]
+    fn playing_starts_a_stopped_engine_and_turning_it_off_keeps_the_playhead() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        assert!(!session.engine_running());
+        session.seek(Tick(1920));
+        session.play();
+        assert!(session.engine_running(), "{:?}", session.message());
+        assert!(session.transport_running());
+        session.set_transport_running(false);
+        std::thread::sleep(Duration::from_millis(100));
+        let at = session.playhead();
+        session.stop_engine();
+        assert!(!session.engine_running());
+        assert_eq!(session.playhead(), at);
+        // It comes back stopped, from where it was.
+        session.start_engine();
+        assert!(session.engine_running());
+        assert!(!session.transport_running());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(session.playhead(), at);
+    }
+
+    #[test]
+    fn a_change_of_device_keeps_the_transport_as_it_was() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        // Stopped stays stopped.
+        session.set_audio_config(AudioConfig {
+            sample_rate: Some(44_100),
+            ..virtual_config()
+        });
+        assert!(session.engine_running());
+        assert!(!session.transport_running());
+        // Running stays running.
+        session.play();
+        session.set_audio_config(virtual_config());
+        assert!(session.transport_running());
+    }
+
+    #[test]
+    fn with_no_real_output_the_engine_falls_back_and_says_so() {
+        let mut session = Session::new(Nodes::all());
+        let chosen = AudioConfig {
+            output: Some("alsa:no such device".into()),
+            ..AudioConfig::default()
+        };
+        session.set_audio_config(chosen.clone());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        // The system default if there is one (a dev machine), else the
+        // virtual output.
+        let warning = session.engine_warning().expect("a warning").to_owned();
+        assert!(
+            warning.contains("default output") || warning.contains("virtual output"),
+            "{warning}"
+        );
+        // The choice is kept for when the device is back.
+        assert_eq!(session.audio_config(), &chosen);
+        assert_eq!(session.message(), Some(warning.as_str()));
+    }
+
+    #[test]
+    fn choosing_the_virtual_output_is_no_fallback() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        assert_eq!(session.engine_warning(), None);
+        assert_eq!(session.message(), None);
+    }
+
+    /// track input → mono → saw → VCA ← ADSR, → meter and output. Returns the
+    /// track and the meter.
+    fn track_synth(session: &mut Session) -> (NodeId, NodeId) {
+        let ids: Vec<NodeId> = [
+            noodle_nodes::TRACK_INPUT_ID,
+            "noodle.event.mono",
+            "noodle.osc.saw",
+            "noodle.mod.adsr",
+            "noodle.util.vca",
+            "noodle.view.meter",
+            OUTPUT_ID,
+        ]
+        .into_iter()
+        .map(|type_id| add(session, Node::new(type_id)))
+        .collect();
+        for (from, port, to, to_port) in [
+            (0, "midi", 1, "in"),
+            (1, "pitch", 2, "frequency"),
+            (1, "gate", 3, "gate"),
+            (2, "out", 4, "in"),
+            (3, "out", 4, "level"),
+            (4, "out", 5, "in"),
+            (4, "out", 6, "in"),
+        ] {
+            session.edit([Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(ids[from], port),
+                to: Endpoint::new(ids[to], to_port),
+            }))]);
+        }
+        (ids[0], ids[5])
+    }
+
+    /// How loud the meter is, after giving the engine up to two seconds to
+    /// get there.
+    fn loudness(session: &mut Session, meter: NodeId, loud: bool) -> f32 {
+        let reader = session.telemetry().meter_reader();
+        let mut level = 0.0;
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(10));
+            session.maintain();
+            level = reader.meter(meter).map_or(0.0, |levels| levels[0].rms);
+            if (level > 0.01) == loud {
+                break;
+            }
+        }
+        level
+    }
+
+    #[test]
+    fn an_armed_track_plays_its_synth_from_the_keyboard_without_the_transport() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, meter) = track_synth(&mut session);
+        session.start_engine();
+        assert!(!session.transport_running());
+        let keys = session.midi_bus().clone();
+
+        // Not armed: the keyboard does nothing.
+        keys.send([0x90, 69, 100]);
+        assert!(loudness(&mut session, meter, true) < 0.01);
+        keys.send([0x80, 69, 0]);
+
+        // Armed: the same keys sound, with the transport stopped.
+        session.arm(track, true);
+        keys.send([0x90, 69, 100]);
+        assert!(loudness(&mut session, meter, true) > 0.01);
+        assert!(!session.transport_running());
+
+        // Play and stop leave the held note alone. (A rewind is a seek, which
+        // resets every node, so it ends the note.)
+        session.play();
+        session.stop();
+        assert!(loudness(&mut session, meter, true) > 0.01);
+
+        keys.send([0x80, 69, 0]);
+        assert!(loudness(&mut session, meter, false) < 0.01);
+    }
+
+    #[test]
+    fn disarming_a_track_lets_go_of_the_notes_it_holds() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, meter) = track_synth(&mut session);
+        session.start_engine();
+        session.arm(track, true);
+        session.midi_bus().send([0x90, 60, 100]);
+        assert!(loudness(&mut session, meter, true) > 0.01);
+        session.arm(track, false);
+        assert!(loudness(&mut session, meter, false) < 0.01);
+    }
+
+    #[test]
+    fn a_new_project_does_not_inherit_the_arming() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, _) = track_synth(&mut session);
+        session.arm(track, true);
+        session.new_project();
+        assert!(!session.is_armed(track));
+    }
+
+    #[test]
+    fn an_armed_track_still_sounds_after_deleting_it_and_undoing() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, meter) = track_synth(&mut session);
+        session.start_engine();
+        session.arm(track, true);
+        session.edit([Edit::Apply(Command::RemoveNode { id: track })]);
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(10));
+            session.maintain();
+        }
+        // Another edit makes the feeds forget the node.
+        add(&mut session, Node::new("noodle.osc.sine"));
+        session.undo();
+        session.undo();
+        assert!(session.project().graph().node(track).is_some());
+        assert!(session.is_armed(track));
+        session.midi_bus().send([0x90, 69, 100]);
+        assert!(loudness(&mut session, meter, true) > 0.01);
+    }
+
+    #[test]
+    fn an_armed_track_inside_a_group_plays_its_synth_too() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, meter) = track_synth(&mut session);
+        // A real track's input and its instrument live inside a group.
+        let nodes: Vec<NodeId> = (1..=7).map(NodeId).collect();
+        let mut next = session.project().next_node_id().0;
+        let (_, command) = noodle_core::group::group_nodes(session.project(), &nodes[..5], || {
+            next += 1;
+            NodeId(next - 1)
+        })
+        .unwrap();
+        session.edit([Edit::Apply(command)]);
+        session.start_engine();
+        session.arm(track, true);
+        session.midi_bus().send([0x90, 69, 100]);
+        assert!(loudness(&mut session, meter, true) > 0.01);
     }
 }
 

@@ -58,6 +58,13 @@ pub trait NodeType: Send + Sync + 'static {
         false
     }
 
+    /// The config a newly added node of this type starts with, for settings
+    /// whose first value isn't the same as leaving them out. Whatever adds a
+    /// node from the UI (the add-node search, the plugin browser) applies it.
+    fn initial_config(&self) -> Config {
+        Config::new()
+    }
+
     fn layout(&self, config: &Config) -> Result<Layout, NodeError>;
 
     /// The key of a signal input that the node reads only *after* it has

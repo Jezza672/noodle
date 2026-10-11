@@ -391,7 +391,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
         .bodies
         .update(session.telemetry(), session.project(), dt);
     // Meters and scopes move with the audio, so keep drawing while it plays.
-    if session.is_playing() && state.bodies.is_live() {
+    if session.engine_running() && state.bodies.is_live() {
         ui.ctx().request_repaint();
     }
     let mut new_node_id = || session.new_node_id();
@@ -2087,6 +2087,9 @@ fn popups(
                         let id = (inputs.new_node_id)();
                         let mut node = Node::new(type_id).at(at.x, at.y);
                         node.parent = state.group;
+                        if let Some(node_type) = inputs.registry.get(type_id) {
+                            node.config = node_type.initial_config();
+                        }
                         if matches!(type_id, GROUP_INPUT | GROUP_OUTPUT) {
                             node.config = noodle_core::Config::new().with(
                                 group::PORT_NAME,

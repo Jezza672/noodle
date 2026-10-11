@@ -486,6 +486,18 @@ after it is made. Add primitives (oscillators, filters, math), not synths.
 **Done when:** you can build a polyphonic subtractive synth from nodes and
 play it from a MIDI keyboard and from a MIDI clip.
 
+### Live playing without the transport (done)
+
+Requested by Jeremy: play a graph from a MIDI instrument without starting the
+timeline. The design is in [ADR 0001](adr/0001-engine-runs-independently-of-the-transport.md)
+and "The engine and the transport" in ARCHITECTURE.md. Done in one batch: the
+engine starts with the app and the toolbar's Audio toggle turns it off; Play,
+Stop and rewind only move the transport; an armed track plays live MIDI
+through its own synth (live monitoring); and a failed output falls back to
+the system default and then to the new virtual output, which can also be
+picked in the audio settings as "Virtual (no sound)". Not done: remembering
+the toggle between launches, and retrying the saved device when it returns.
+
 ## M4: Caching
 
 **Status:** done. Batch 1: streaming offline renders, the offline renderer
