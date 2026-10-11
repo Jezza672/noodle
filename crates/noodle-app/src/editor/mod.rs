@@ -391,7 +391,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
         .bodies
         .update(session.telemetry(), session.project(), dt);
     // Meters and scopes move with the audio, so keep drawing while it plays.
-    if session.is_playing() && state.bodies.is_live() {
+    if session.engine_running() && state.bodies.is_live() {
         ui.ctx().request_repaint();
     }
     let mut new_node_id = || session.new_node_id();

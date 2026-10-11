@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, TouchPhase, Vec2};
 use egui_kittest::Harness;
+use noodle_io::{AudioConfig, VIRTUAL_OUTPUT};
 
 /// Presses `button` at the first point, moves through the rest in small
 /// steps, and releases at the last, holding `modifiers` throughout. It stops
@@ -146,4 +147,25 @@ pub fn drop_files<S>(h: &mut Harness<'_, S>, at: Pos2, files: &[PathBuf]) {
     }
     h.step();
     h.run();
+}
+
+/// Audio settings that play on the virtual output: the engine runs in real
+/// time on every platform and nothing is heard.
+pub fn virtual_audio() -> AudioConfig {
+    AudioConfig {
+        output: Some(VIRTUAL_OUTPUT.into()),
+        ..AudioConfig::default()
+    }
+}
+
+/// A harness that draws one view with `ui` over `state`, at `size`, and has
+/// settled its first frames.
+pub fn harness<S>(
+    state: S,
+    size: Vec2,
+    ui: impl FnMut(&mut egui::Ui, &mut S) + 'static,
+) -> Harness<'static, S> {
+    let mut h = Harness::builder().with_size(size).build_ui_state(ui, state);
+    h.run();
+    h
 }

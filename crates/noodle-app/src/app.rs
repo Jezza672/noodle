@@ -101,7 +101,8 @@ enum Action {
     ToggleKeyboard,
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
-    TogglePause,
+    /// Turns the audio engine on or off.
+    ToggleEngine,
     AudioSettings,
     ToggleMixer,
     ToggleMetronome,
@@ -396,11 +397,16 @@ impl App {
         }
         self.dragging = dragging;
         self.update_title(ui.ctx());
-        if self.session.is_playing() {
+        if self.session.engine_running() {
             // Keeps health checks and plan freeing going while idle, and the
-            // playhead moving at about 60 frames a second.
+            // playhead moving at about 60 frames a second while it does.
+            let wait = if self.session.transport_running() {
+                16
+            } else {
+                100
+            };
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(16));
+                .request_repaint_after(std::time::Duration::from_millis(wait));
         }
         for action in actions {
             self.request(ui.ctx(), action);
@@ -599,20 +605,19 @@ impl App {
     }
 
     fn transport_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let playing = self.session.is_playing();
-        let open = playing;
-        ui.add_enabled_ui(open, |ui| {
-            if ui.button("⏮").on_hover_text("Back to the start").clicked() {
-                actions.push(Action::Rewind);
-            }
-        });
+        // The transport moves whether or not the engine is on: playing turns
+        // the engine on, and stopping leaves it running.
+        let playing = self.session.transport_running();
+        if ui.button("⏮").on_hover_text("Back to the start").clicked() {
+            actions.push(Action::Rewind);
+        }
         let (label, tip) = if playing {
-            ("⏹", "Stop (Space)")
-        } else {
             (
-                "▶",
-                "Play through the output device chosen in Audio Settings (Space)",
+                "⏹",
+                "Stop the timeline (Space). Stopping again goes back to the start",
             )
+        } else {
+            ("▶", "Play the timeline from the playhead (Space)")
         };
         let label = egui::RichText::new(label).color(if playing {
             theme::ACCENT
@@ -626,20 +631,7 @@ impl App {
         {
             actions.push(Action::TogglePlayback);
         }
-        ui.add_enabled_ui(open, |ui| {
-            let pause = if self.session.transport_running() {
-                "⏸"
-            } else {
-                "⏵"
-            };
-            if ui
-                .button(pause)
-                .on_hover_text("Pause or resume the timeline")
-                .clicked()
-            {
-                actions.push(Action::TogglePause);
-            }
-        });
+        self.engine_button(ui, actions);
         let recording = self.session.is_recording();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
             theme::RECORD
@@ -691,6 +683,35 @@ impl App {
 
     /// The computer keyboard as a MIDI source. While on it shows the octave
     /// and velocity the Z X C V keys set.
+    /// The audio engine's switch. Lit while it runs, amber when it runs on
+    /// something other than what was chosen (the hover says what).
+    fn engine_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let on = self.session.engine_running();
+        let warning = self.session.engine_warning();
+        let (label, colour) = match (on, warning) {
+            (true, Some(_)) => ("⚠ Audio", theme::WARNING),
+            (true, None) => ("Audio", theme::ACCENT),
+            (false, _) => ("Audio", theme::timeline::TEXT_WEAK),
+        };
+        let tip = match (on, warning) {
+            (true, Some(warning)) => format!(
+                "The audio engine is on, but not as chosen: {warning}. Click to turn it off"
+            ),
+            (true, None) => "The audio engine is on: the graph sounds, and live MIDI plays \
+                 through the armed tracks, even with the timeline stopped. Click to turn it off"
+                .to_owned(),
+            (false, _) => "The audio engine is off, so nothing sounds. Click to turn it on".into(),
+        };
+        let label = egui::RichText::new(label).color(colour);
+        if ui
+            .add(egui::Button::new(label).selected(on))
+            .on_hover_text(tip)
+            .clicked()
+        {
+            actions.push(Action::ToggleEngine);
+        }
+    }
+
     fn keyboard_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let on = self.keyboard.is_on();
         let label = if on {
@@ -874,10 +895,17 @@ impl App {
             Action::Undo => self.session.undo(),
             Action::Redo => self.session.redo(),
             Action::TogglePlayback => {
-                if self.session.is_playing() {
+                if self.session.transport_running() {
                     self.session.stop();
                 } else {
                     self.session.play();
+                }
+            }
+            Action::ToggleEngine => {
+                if self.session.engine_running() {
+                    self.session.stop_engine();
+                } else {
+                    self.session.start_engine();
                 }
             }
             Action::Rewind => self.session.rewind(),
@@ -893,10 +921,6 @@ impl App {
                 } else {
                     self.session.record();
                 }
-            }
-            Action::TogglePause => {
-                let running = self.session.transport_running();
-                self.session.set_transport_running(!running);
             }
             Action::AudioSettings => self.devices.open(self.session.audio_config()),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
@@ -1173,6 +1197,51 @@ mod tests {
         harness.get_by_label("No nodes yet. Shift+A adds one.");
         harness.get_by_label("No problems");
         harness.get_by_label("▶");
+    }
+
+    use crate::testkit::virtual_audio as virtual_output;
+
+    #[test]
+    fn the_audio_button_turns_the_engine_on_and_off_and_play_leaves_it_alone() {
+        let mut app = empty();
+        app.session.set_audio_config(virtual_output());
+        app.session.start_engine();
+        let mut harness = harness(app);
+        harness.run_steps(3);
+        assert!(harness.state().session.engine_running());
+        assert!(!harness.state().session.transport_running());
+
+        // Play and stop move the transport, never the engine.
+        harness.get_by_label("▶").click();
+        harness.run_steps(3);
+        assert!(harness.state().session.transport_running());
+        harness.get_by_label("⏹").click();
+        harness.run_steps(3);
+        assert!(!harness.state().session.transport_running());
+        assert!(harness.state().session.engine_running());
+
+        harness.get_by_label("Audio").click();
+        harness.run_steps(3);
+        assert!(!harness.state().session.engine_running());
+        // Playing with the engine off turns it on.
+        harness.get_by_label("▶").click();
+        harness.run_steps(3);
+        assert!(harness.state().session.engine_running());
+        assert!(harness.state().session.transport_running());
+    }
+
+    #[test]
+    fn the_audio_button_shows_when_the_engine_fell_back() {
+        let mut app = empty();
+        app.session.set_audio_config(noodle_io::AudioConfig {
+            output: Some("alsa:no such device".into()),
+            ..noodle_io::AudioConfig::default()
+        });
+        app.session.start_engine();
+        let mut harness = harness(app);
+        harness.run_steps(3);
+        assert!(harness.state().session.engine_warning().is_some());
+        harness.get_by_label("⚠ Audio");
     }
 
     #[test]
@@ -1524,7 +1593,7 @@ mod tests {
         assert!(harness.query_by_label("Audio Settings").is_none());
         let session = harness.state().session();
         assert_eq!(session.audio_config().buffer_size, Some(256));
-        assert!(!session.is_playing());
+        assert!(!session.engine_running());
         let saved = crate::prefs::load(&prefs).unwrap();
         assert_eq!(saved.audio.buffer_size, Some(256));
     }

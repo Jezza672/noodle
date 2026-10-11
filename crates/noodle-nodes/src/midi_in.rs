@@ -92,21 +92,27 @@ impl NodeType for MidiIn {
 
     fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
         Ok(Instance::realtime(MidiInNode {
-            clock: self.clock,
-            bus: self.bus.clone(),
-            input: self.bus.subscribe(),
-            pending: None,
-            previous_start: None,
-            held: [0; 16],
-            ending: 0,
+            live: LiveMidi::new(&self.bus, self.clock, NOTE_ID_BASE),
         }))
     }
 }
 
 struct MidiInNode {
-    input: MidiReceiver,
+    live: LiveMidi,
+}
+
+/// The top bit of the note IDs MIDI In makes, which keeps them apart from
+/// the IDs notes in MIDI clips have.
+const NOTE_ID_BASE: u32 = 0x8000_0000;
+
+/// What turns the messages on a [`MidiBus`] into events, block by block: the
+/// MIDI In node, and the track inputs of armed tracks (live monitoring).
+pub(crate) struct LiveMidi {
     bus: MidiBus,
+    input: MidiReceiver,
     clock: Option<Clock>,
+    /// The note IDs it makes are this with the channel and key.
+    id_base: u32,
     /// A message taken from the queue that belongs to a later block.
     pending: Option<TimedMessage>,
     /// When the previous block began, for the lack of a device saying so.
@@ -118,20 +124,32 @@ struct MidiInNode {
     ending: u16,
 }
 
-fn note_id(channel: u8, key: u8) -> NoteId {
-    NoteId(0x8000_0000 | u32::from(channel) << 8 | u32::from(key))
-}
+impl LiveMidi {
+    pub fn new(bus: &MidiBus, clock: Option<Clock>, id_base: u32) -> Self {
+        Self {
+            bus: bus.clone(),
+            input: bus.subscribe(),
+            clock,
+            id_base,
+            pending: None,
+            previous_start: None,
+            held: [0; 16],
+            ending: 0,
+        }
+    }
 
-impl MidiInNode {
-    /// The events a message stands for, in order. At most two kinds per
-    /// message except "all notes off", which is handled by the caller.
-    fn translate(&mut self, [status, a, b]: [u8; 3]) -> Option<EventKind> {
+    fn note_id(&self, channel: u8, key: u8) -> NoteId {
+        NoteId(self.id_base | u32::from(channel) << 8 | u32::from(key))
+    }
+
+    /// The event a message stands for.
+    fn translate(&mut self, [status, a, b]: [u8; 3]) -> EventKind {
         let channel = status & 0x0F;
-        Some(match status & 0xF0 {
+        match status & 0xF0 {
             0x90 if b > 0 => {
                 self.held[usize::from(channel)] |= 1 << a;
                 EventKind::NoteOn {
-                    note: note_id(channel, a),
+                    note: self.note_id(channel, a),
                     channel,
                     key: a,
                     velocity: f32::from(b) / 127.0,
@@ -140,16 +158,14 @@ impl MidiInNode {
             0x80 | 0x90 => {
                 self.held[usize::from(channel)] &= !(1 << a);
                 EventKind::NoteOff {
-                    note: note_id(channel, a),
+                    note: self.note_id(channel, a),
                     velocity: f32::from(b) / 127.0,
                 }
             }
             _ => EventKind::Midi([status, a, b]),
-        })
+        }
     }
-}
 
-impl MidiInNode {
     /// Ends the held notes on channels with an "all notes off" to carry out.
     /// Each note is forgotten only once its note-off is in the buffer, so if
     /// the buffer fills the rest wait for the next block. Returns whether it
@@ -165,7 +181,7 @@ impl MidiInNode {
                 let off = Event {
                     time,
                     kind: EventKind::NoteOff {
-                        note: note_id(channel, key),
+                        note: self.note_id(channel, key),
                         velocity: 0.0,
                     },
                 };
@@ -178,10 +194,16 @@ impl MidiInNode {
         }
         true
     }
-}
 
-impl Node for MidiInNode {
-    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+    /// Writes the events for the block. `channel` is the one channel to play
+    /// (0 for all of them), or `None` to play nothing: what arrives is
+    /// dropped and the notes held are ended.
+    pub fn process(
+        &mut self,
+        ctx: &Context,
+        channel: Option<u8>,
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) {
         // Which arrivals this block plays. With a device driving the engine,
         // the callback says: a span as long as the block, starting one device
         // period before the block's place in the callback, so what was played
@@ -197,8 +219,9 @@ impl Node for MidiInNode {
                 (self.previous_start.replace(now), None)
             }
         };
-        let wanted = io.inputs[MidiInPorts::CHANNEL].lane(0, 0)[0].round() as u8;
-        let out = &mut io.event_outputs[MidiInPorts::OUT];
+        if channel.is_none() && self.held.iter().any(|&keys| keys != 0) {
+            self.ending = u16::MAX;
+        }
         // Left over from a block where the buffer filled.
         if !self.flush_ending(out, 0) {
             return;
@@ -212,32 +235,41 @@ impl Node for MidiInNode {
                 self.pending = Some((arrival, message));
                 break;
             }
-            let channel = message[0] & 0x0F;
+            let message_channel = message[0] & 0x0F;
             // A note-off for a note that is held always gets through, so
             // changing the channel can't leave it sounding.
             let note_off =
                 message[0] & 0xF0 == 0x80 || (message[0] & 0xF0 == 0x90 && message[2] == 0);
-            let ends_held = note_off && self.held[usize::from(channel)] >> message[1] & 1 == 1;
-            if wanted != 0 && channel + 1 != wanted && !ends_held {
+            let ends_held =
+                note_off && self.held[usize::from(message_channel)] >> message[1] & 1 == 1;
+            let wanted = channel.is_some_and(|wanted| wanted == 0 || message_channel + 1 == wanted);
+            if !wanted && !ends_held {
                 continue;
             }
             let time = frame_offset(arrival, start, ctx.sample_rate, ctx.frames).max(last);
             last = time;
             // Sound off (120) and all notes off (123) end what is held.
             if message[0] & 0xF0 == 0xB0 && matches!(message[1], 120 | 123) {
-                self.ending |= 1 << channel;
+                self.ending |= 1 << message_channel;
                 if !self.flush_ending(out, time) {
                     // The controller itself is dropped with the rest of the
                     // block; the notes still held end next block.
                     return;
                 }
             }
-            if let Some(kind) = self.translate(message)
-                && out.push(Event { time, kind }).is_err()
-            {
+            let kind = self.translate(message);
+            if out.push(Event { time, kind }).is_err() {
                 break;
             }
         }
+    }
+}
+
+impl Node for MidiInNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let wanted = io.inputs[MidiInPorts::CHANNEL].lane(0, 0)[0].round() as u8;
+        let out = &mut io.event_outputs[MidiInPorts::OUT];
+        self.live.process(ctx, Some(wanted), out);
     }
 
     fn reset(&mut self) {}
@@ -247,6 +279,10 @@ impl Node for MidiInNode {
 mod tests {
     use super::*;
     use noodle_engine::testing::Harness;
+
+    fn note_id(channel: u8, key: u8) -> NoteId {
+        NoteId(NOTE_ID_BASE | u32::from(channel) << 8 | u32::from(key))
+    }
 
     fn node() -> (Harness, MidiBus) {
         let bus = MidiBus::new();

@@ -338,16 +338,10 @@ mod tests {
     }
 
     fn harness(session: Session) -> Harness<'static, Session> {
-        let mut harness = Harness::new_ui_state(
-            |ui, session: &mut Session| {
-                let edits = show(ui, session.project(), &mut None, &|_, _| None);
-                session.edit(edits);
-            },
-            session,
-        );
-        harness.set_size(vec2(600.0, 600.0));
-        harness.run();
-        harness
+        crate::testkit::harness(session, vec2(600.0, 600.0), |ui, session: &mut Session| {
+            let edits = show(ui, session.project(), &mut None, &|_, _| None);
+            session.edit(edits);
+        })
     }
 
     fn param(harness: &Harness<'_, Session>, node: u64, key: &str) -> Option<f32> {

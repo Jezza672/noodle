@@ -370,6 +370,74 @@ pool, so nothing allocates.
   free-ran to.
 - **Real-time rules** hold: a skip is a branch and a memset.
 
+### The engine and the transport
+
+The **engine** is the audio stream that runs the graph; the **transport** is
+the moving timeline (see CONTEXT.md and ADR 0001). They are separate. The app
+starts the engine at launch (`Session::start_engine`, called by `main`; a
+`Session` made for a test or a headless run starts with it off) and the
+toolbar's Audio toggle turns it off (`Session::stop_engine`). Play, Stop and
+rewind only touch the transport:
+
+- **Play** (`Session::play`) starts the engine first if it's off, then the
+  transport. **Stop** pauses the transport in place, and **Stop again**
+  rewinds. Neither closes the stream, and notes held on the keyboard keep
+  sounding through them. (A rewind is a seek, and a seek resets every node, so
+  it ends a held note along with reverb tails; the key's note-off is harmless.)
+- **An engine opened from the toggle starts with the transport stopped**
+  (`noodle_io::play_with_outputs_stopped` stops it before the first block, so a
+  clip at the start of the timeline doesn't blip). A change of device
+  (`reopen_stream`) keeps the transport as it was. A new project seeks to the
+  start and leaves the transport running or stopped as it was.
+- **Idle cost.** A graph with nothing to do renders silence, which the engine
+  already skips (a silent lane is a branch and a memset), so an idle engine is
+  cheap. A graph that makes sound on its own, like a drone, sounds as soon as
+  the engine is on; that's the price of ADR 0001. The window repaints at about
+  10 frames a second while the engine runs with the transport stopped, and 60
+  while it runs.
+- **The fallback.** `Session::start_engine` tries the saved output, then the
+  system default (as `play` always did), then the **virtual output**. Either
+  fallback is not saved, shows a message in the status bar, and sets
+  `Session::engine_warning`, which turns the Audio toggle amber until the
+  engine is closed. The saved device is tried again next time the engine
+  opens, but not while it runs.
+- **The virtual output** (`noodle-io/src/output.rs`, ID `virtual`, listed
+  last in every device list as "Virtual (no sound)") runs the same
+  `DeviceWriter` from a timer thread, once per buffer's duration (256 frames
+  by default, 2 channels, 48 kHz unless the settings say). It discards what
+  it renders. It keeps the real thing's behaviour, the fade-out on stopping,
+  the `AudioClock` windows and anchors MIDI timing and recording read, and the
+  pace: real time, not flat out, since MIDI stamps and the record anchor
+  depend on the clock moving at audio speed. It is for machines with no
+  device, CI, tests and `noodle play --output virtual`. Output nodes tied to
+  other devices and audio input still open as usual around it.
+
+### Live monitoring
+
+An **armed** track (the R on its header, `Session::arm`) plays live MIDI
+through its own synth, with no `MIDI In` node and without the transport:
+`ClipFeeds::set_monitoring` switches a flag in the track input's shared state,
+and a track input built with `TrackInput::with_midi` (the library's is)
+subscribes to the `MidiBus` like a `MIDI In` node and merges what it hears
+into its `midi` output. It takes every source (a port, the computer keyboard)
+on every channel.
+
+- The code that turns bus messages into events, with the timing, the held-note
+  bookkeeping and all notes off, is `LiveMidi` in `midi_in.rs`, shared with
+  the `MIDI In` node. A track that isn't monitored still empties its queue and
+  drops what it finds, and lets go of live notes it holds when it's disarmed.
+- Live note IDs have their own bit (`0x2000_0000`: clips use the low 29 bits,
+  live monitoring the next, the piano roll's keyboard the next, `MIDI In` the
+  top bit), so a clip's note-off never ends a live note and the reverse.
+- The track input inserts events in time order (`EventsOut::insert`), because
+  live events and a clip's notes in one block arrive from two sources.
+- **Doubling.** A `MIDI In` node wired to the same synth as an armed track
+  sends every note twice under two note IDs, so a polyphonic synth sounds it
+  twice. That's allowed: the wiring is the user's. Disarm the track, or
+  remove the node.
+- The arming is session state and not saved; a new project starts with no
+  track armed.
+
 ### MIDI input
 
 A MIDI port is chosen in the audio settings dialog (`AudioConfig::midi_input`,
@@ -440,8 +508,8 @@ before the start, keys and velocities in range).
   past the end is dropped) and sends the sorted list to the track input along
   with its audio schedule, so one version number covers both and an offline
   render waits for both. The track input's `midi` output gets a note-on at the
-  sample a note starts and a note-off where it ends. Note IDs in clips use the low 30 bits, so they can't collide with live MIDI (top bit) or the
-  piano roll's keyboard. A note is known by its
+  sample a note starts and a note-off where it ends. Note IDs in clips use the low 29 bits, so they can't collide with live MIDI (top bit), the
+  piano roll's keyboard or live monitoring. A note is known by its
   clip, start and key, so editing other notes while it sounds doesn't cut it;
   if the note itself is moved, resized or removed, the old one ends at once.
   At most 128 notes sound at once on a track.
@@ -473,10 +541,10 @@ A track is armed in the session (the R on its header), which is app state and
 not saved with the project. Record needs an armed track and a saved project,
 since takes are stored next to it, in a `<project name> recordings` folder as
 `take-001.wav`, `take-002.wav` and so on, and a clip's source is a path
-relative to the project file like any other. Record starts the stream and the
+relative to the project file like any other. Record starts the engine and the
 transport if they aren't running and starts `Playback::start_recording` at
 the playhead. Ending the take (the button, stopping, pausing or seeking the transport, or
-the stream closing, say for an output change) stops the recorder and adds one
+the engine being turned off or closing, say for an output change) stops the recorder and adds one
 audio clip of the whole take, starting where recording began, to every armed
 track as a single `Batch`, so one undo removes the take. An armed track that
 was deleted meanwhile gets no clip (if all were deleted, the file is kept and
