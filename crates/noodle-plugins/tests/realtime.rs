@@ -159,6 +159,10 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType) {
             }],
             _ => Vec::new(),
         };
+        if block == 20 {
+            // A seek resets the node on the audio thread.
+            assert_eq!(realtime(|| node.reset()), 0, "reset allocated or freed");
+        }
         let inputs: Vec<SignalIn<'_>> = input_buffers.iter().map(|b| b.as_in(FRAMES)).collect();
         let mut outputs: Vec<SignalOut<'_>> = vec![output_buffer.as_out(FRAMES)];
         let event_inputs: [&[Event]; 2] = [&events, &second];

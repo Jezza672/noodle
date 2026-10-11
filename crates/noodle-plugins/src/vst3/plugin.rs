@@ -226,12 +226,16 @@ impl Plugin {
             {
                 return Err(fail("the plugin can't process 32-bit audio"));
             }
-            let arrangements = |direction: BusDirection, count: i32| {
+            let mut all_known = true;
+            let mut arrangements = |direction: BusDirection, count: i32| {
                 (0..count)
                     .map(|index| {
                         let mut arrangement: SpeakerArrangement = 0;
-                        self.processor
-                            .getBusArrangement(direction, index, &mut arrangement);
+                        all_known &= ok(self.processor.getBusArrangement(
+                            direction,
+                            index,
+                            &mut arrangement,
+                        ));
                         arrangement
                     })
                     .collect::<Vec<_>>()
@@ -246,13 +250,16 @@ impl Plugin {
             );
             let mut inputs = arrangements(BusDirections_::kInput as i32, ins);
             let mut outputs = arrangements(BusDirections_::kOutput as i32, outs);
-            // Declining is fine: the plugin keeps the arrangement it has.
-            self.processor.setBusArrangements(
-                inputs.as_mut_ptr(),
-                inputs.len() as i32,
-                outputs.as_mut_ptr(),
-                outputs.len() as i32,
-            );
+            // Declining is fine: the plugin keeps the arrangement it has. If
+            // it couldn't say what that is, it isn't asked to change.
+            if all_known {
+                self.processor.setBusArrangements(
+                    inputs.as_mut_ptr(),
+                    inputs.len() as i32,
+                    outputs.as_mut_ptr(),
+                    outputs.len() as i32,
+                );
+            }
             for (media, direction) in [
                 (MediaTypes_::kAudio, BusDirections_::kInput),
                 (MediaTypes_::kAudio, BusDirections_::kOutput),
@@ -298,15 +305,14 @@ impl Plugin {
     }
 
     /// Clears the plugin's internal state (delay lines, voices), as a
-    /// transport restart should.
+    /// transport restart should. Stopping and starting processing is the
+    /// standard's signal for it, and is allowed on the audio thread
+    /// (`setActive` is not).
     pub fn reset(&mut self) {
         if self.processing {
-            // SAFETY: stopping and starting processing is how a reset is
-            // asked for.
+            // SAFETY: plain calls into the plugin.
             unsafe {
                 self.processor.setProcessing(0);
-                self.component.setActive(0);
-                self.component.setActive(1);
                 self.processor.setProcessing(1);
             }
         }
@@ -469,7 +475,20 @@ fn describe_class(module: &Arc<Module>, class: &ClassInfo) -> Result<Descriptor,
 
 /// A class ID as 32 hex digits, the plugin's ID in Noodle.
 pub(crate) fn class_id_text(cid: &TUID) -> String {
-    cid.iter().map(|&b| format!("{:02X}", b as u8)).collect()
+    let mut bytes = cid.map(|b| b as u8);
+    swap_guid_fields(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+/// On Windows a class ID is stored as a COM GUID, whose first three fields are
+/// little-endian; elsewhere they are big-endian. Swapping them makes a plugin's
+/// ID text the same on every system, so a project opens on any of them.
+fn swap_guid_fields(bytes: &mut [u8; 16]) {
+    if cfg!(windows) {
+        bytes[0..4].reverse();
+        bytes[4..6].reverse();
+        bytes[6..8].reverse();
+    }
 }
 
 /// The inverse of [`class_id_text`].
@@ -481,5 +500,7 @@ pub(crate) fn class_id_from_text(text: &str) -> Option<TUID> {
     for (i, slot) in cid.iter_mut().enumerate() {
         *slot = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()? as std::ffi::c_char;
     }
-    Some(cid)
+    let mut bytes = cid.map(|b| b as u8);
+    swap_guid_fields(&mut bytes);
+    Some(bytes.map(|b| b as std::ffi::c_char))
 }

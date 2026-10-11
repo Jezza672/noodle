@@ -392,7 +392,11 @@ impl Vst3Node {
                         (value + 120.0) / 240.0,
                     ),
                     Expression::Timbre => (NoteExpressionTypeIDs_::kBrightnessTypeID as u32, value),
-                    Expression::Volume => (NoteExpressionTypeIDs_::kVolumeTypeID as u32, value),
+                    // Noodle's volume is linear gain; VST3's normalized 0 to 1 is
+                    // 0 to 4 in gain (0.25 is unity).
+                    Expression::Volume => {
+                        (NoteExpressionTypeIDs_::kVolumeTypeID as u32, value / 4.0)
+                    }
                     Expression::Pan => (
                         NoteExpressionTypeIDs_::kPanTypeID as u32,
                         (value + 1.0) / 2.0,
@@ -443,8 +447,8 @@ impl Vst3Node {
             self.changes.push(mapped.slot, time, value);
             return;
         }
-        // Not mapped to a parameter: the legacy event, for plugins that take
-        // MIDI directly.
+        // Not mapped to a parameter: sent as the legacy event, which few
+        // plugins read as input; without a mapping the message is mostly lost.
         let (control, value, value2) = match controller {
             129 => (129, data[1], data[2]),
             128 => (128, data[1], 0),
@@ -480,7 +484,7 @@ impl Vst3Node {
                     x if x == Event_::EventTypes_::kNoteOnEvent as u32 => {
                         let on = event.__field0.noteOn;
                         EventKind::NoteOn {
-                            note: NoteId(on.noteId.max(0) as u32),
+                            note: output_note_id(on.noteId, on.channel, on.pitch),
                             channel: on.channel.clamp(0, 15) as u8,
                             key: on.pitch.clamp(0, 127) as u8,
                             velocity: on.velocity,
@@ -489,7 +493,7 @@ impl Vst3Node {
                     x if x == Event_::EventTypes_::kNoteOffEvent as u32 => {
                         let off = event.__field0.noteOff;
                         EventKind::NoteOff {
-                            note: NoteId(off.noteId.max(0) as u32),
+                            note: output_note_id(off.noteId, off.channel, off.pitch),
                             velocity: off.velocity,
                         }
                     }
@@ -499,6 +503,17 @@ impl Vst3Node {
             let port = (event.busIndex.max(0) as usize).min(io.event_outputs.len() - 1);
             let _ = io.event_outputs[port].push(NoodleEvent { time, kind });
         }
+    }
+}
+
+/// The ID of a note a plugin plays. Plugins that don't track notes by ID send
+/// -1; those are told apart by channel and key, in a range IDs from real
+/// counters don't reach.
+fn output_note_id(id: i32, channel: i16, pitch: i16) -> NoteId {
+    if id >= 0 {
+        NoteId(id as u32)
+    } else {
+        NoteId(0x8000_0000 | (channel.clamp(0, 15) as u32) << 8 | pitch.clamp(0, 127) as u32)
     }
 }
 

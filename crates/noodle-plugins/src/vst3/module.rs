@@ -269,7 +269,7 @@ fn binary_in(path: &Path) -> Option<PathBuf> {
         "vst3"
     };
     let stem = path.file_stem()?;
-    let named = dir.join(stem).with_extension(extension);
+    let named = dir.join(format!("{}.{extension}", stem.to_string_lossy()));
     if named.is_file() {
         return Some(named);
     }
