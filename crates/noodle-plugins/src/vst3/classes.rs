@@ -6,12 +6,16 @@
 //! `process` call), so they keep their data in `UnsafeCell`s and never
 //! allocate after they are made.
 
-use std::cell::{Cell, UnsafeCell};
-use std::ffi::c_void;
+use std::cell::{Cell, RefCell, UnsafeCell};
+use std::ffi::{CStr, CString, c_void};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
-use vst3::{Class, ComRef, ComWrapper};
+use vst3::{Class, ComRef, ComWrapper, Interface};
+
+use crate::host::Flags;
 
 /// Copies `text` into a plugin's UTF-16 buffer, cut to fit.
 pub(crate) fn copy_wstring(text: &str, out: &mut [TChar]) {
@@ -43,9 +47,8 @@ pub(crate) fn cstring(text: &[std::ffi::c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// `IHostApplication`: the host's name. Plugins ask it for messages and
-/// attribute lists too; it has none, which plugins that use them for more
-/// than an editor tolerate.
+/// `IHostApplication`: the host's name, and the messages and attribute lists
+/// plugins use to talk to each other (see [`HostMessage`]).
 pub(crate) struct HostApp;
 
 impl Class for HostApp {
@@ -60,18 +63,324 @@ impl IHostApplicationTrait for HostApp {
 
     unsafe fn createInstance(
         &self,
-        _cid: *mut TUID,
-        _iid: *mut TUID,
-        _obj: *mut *mut c_void,
+        cid: *mut TUID,
+        iid: *mut TUID,
+        obj: *mut *mut c_void,
     ) -> tresult {
-        kNotImplemented
+        if cid.is_null() || iid.is_null() || obj.is_null() {
+            return kInvalidArgument;
+        }
+        let bytes = |id: *mut TUID| unsafe { *id }.map(|b| b as u8);
+        let (cid, iid) = (bytes(cid), bytes(iid));
+        // SAFETY: `obj` is the plugin's out pointer; the object handed over
+        // carries one reference for it.
+        if cid == IMessage::IID && iid == IMessage::IID {
+            let Some(ptr) = ComWrapper::new(HostMessage::new()).to_com_ptr::<IMessage>() else {
+                return kOutOfMemory;
+            };
+            unsafe { *obj = ptr.into_raw() as *mut c_void };
+            kResultOk
+        } else if cid == IAttributeList::IID && iid == IAttributeList::IID {
+            let Some(ptr) = ComWrapper::new(Attributes::default()).to_com_ptr::<IAttributeList>()
+            else {
+                return kOutOfMemory;
+            };
+            unsafe { *obj = ptr.into_raw() as *mut c_void };
+            kResultOk
+        } else {
+            kNotImplemented
+        }
+    }
+}
+
+/// A value in an [`Attributes`] list.
+enum Attr {
+    Int(i64),
+    Float(f64),
+    /// UTF-16, with its terminator.
+    Text(Vec<TChar>),
+    Binary(Vec<u8>),
+}
+
+/// `IAttributeList`: named values a message carries.
+#[derive(Default)]
+pub(crate) struct Attributes {
+    map: RefCell<Vec<(CString, Attr)>>,
+}
+
+impl Class for Attributes {
+    type Interfaces = (IAttributeList,);
+}
+
+impl Attributes {
+    fn set(&self, id: *const std::ffi::c_char, value: Attr) -> tresult {
+        if id.is_null() {
+            return kInvalidArgument;
+        }
+        // SAFETY: the plugin passes a C string.
+        let key = unsafe { CStr::from_ptr(id) }.to_owned();
+        let mut map = self.map.borrow_mut();
+        match map.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = value,
+            None => map.push((key, value)),
+        }
+        kResultOk
+    }
+
+    fn get<T>(
+        &self,
+        id: *const std::ffi::c_char,
+        read: impl FnOnce(&Attr) -> Option<T>,
+    ) -> Option<T> {
+        if id.is_null() {
+            return None;
+        }
+        // SAFETY: as for `set`.
+        let key = unsafe { CStr::from_ptr(id) };
+        let map = self.map.borrow();
+        map.iter()
+            .find(|(k, _)| k.as_c_str() == key)
+            .and_then(|(_, v)| read(v))
+    }
+}
+
+impl IAttributeListTrait for Attributes {
+    unsafe fn setInt(&self, id: *const std::ffi::c_char, value: int64) -> tresult {
+        self.set(id, Attr::Int(value))
+    }
+
+    unsafe fn getInt(&self, id: *const std::ffi::c_char, value: *mut int64) -> tresult {
+        match self.get(id, |a| if let Attr::Int(v) = a { Some(*v) } else { None }) {
+            Some(v) if !value.is_null() => {
+                unsafe { *value = v };
+                kResultOk
+            }
+            _ => kResultFalse,
+        }
+    }
+
+    unsafe fn setFloat(&self, id: *const std::ffi::c_char, value: f64) -> tresult {
+        self.set(id, Attr::Float(value))
+    }
+
+    unsafe fn getFloat(&self, id: *const std::ffi::c_char, value: *mut f64) -> tresult {
+        match self.get(id, |a| {
+            if let Attr::Float(v) = a {
+                Some(*v)
+            } else {
+                None
+            }
+        }) {
+            Some(v) if !value.is_null() => {
+                unsafe { *value = v };
+                kResultOk
+            }
+            _ => kResultFalse,
+        }
+    }
+
+    unsafe fn setString(&self, id: *const std::ffi::c_char, string: *const TChar) -> tresult {
+        if string.is_null() {
+            return kInvalidArgument;
+        }
+        let mut text = Vec::new();
+        let mut at = string;
+        // SAFETY: the plugin passes a zero-terminated UTF-16 string.
+        unsafe {
+            while *at != 0 {
+                text.push(*at);
+                at = at.add(1);
+            }
+        }
+        text.push(0);
+        self.set(id, Attr::Text(text))
+    }
+
+    unsafe fn getString(
+        &self,
+        id: *const std::ffi::c_char,
+        string: *mut TChar,
+        size_in_bytes: uint32,
+    ) -> tresult {
+        let room = size_in_bytes as usize / std::mem::size_of::<TChar>();
+        if string.is_null() || room == 0 {
+            return kInvalidArgument;
+        }
+        let found = self.get(id, |a| {
+            if let Attr::Text(t) = a {
+                Some(t.clone())
+            } else {
+                None
+            }
+        });
+        let Some(text) = found else {
+            return kResultFalse;
+        };
+        // SAFETY: the plugin gave `size_in_bytes` of room.
+        let out = unsafe { std::slice::from_raw_parts_mut(string, room) };
+        let n = text.len().min(room);
+        out[..n].copy_from_slice(&text[..n]);
+        out[room - 1] = 0;
+        kResultOk
+    }
+
+    unsafe fn setBinary(
+        &self,
+        id: *const std::ffi::c_char,
+        data: *const c_void,
+        size_in_bytes: uint32,
+    ) -> tresult {
+        if data.is_null() && size_in_bytes != 0 {
+            return kInvalidArgument;
+        }
+        let bytes = if size_in_bytes == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the plugin passes `size_in_bytes` of data.
+            unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) }
+                .to_vec()
+        };
+        self.set(id, Attr::Binary(bytes))
+    }
+
+    unsafe fn getBinary(
+        &self,
+        id: *const std::ffi::c_char,
+        data: *mut *const c_void,
+        size_in_bytes: *mut uint32,
+    ) -> tresult {
+        if id.is_null() || data.is_null() || size_in_bytes.is_null() {
+            return kInvalidArgument;
+        }
+        // SAFETY: as for `set`.
+        let key = unsafe { CStr::from_ptr(id) };
+        // The pointer stays valid until the attribute is set again or the
+        // list is gone, which is how the standard has it.
+        let map = self.map.borrow();
+        match map.iter().find(|(k, _)| k.as_c_str() == key) {
+            Some((_, Attr::Binary(bytes))) => {
+                unsafe {
+                    *data = bytes.as_ptr() as *const c_void;
+                    *size_in_bytes = bytes.len() as uint32;
+                }
+                kResultOk
+            }
+            _ => kResultFalse,
+        }
+    }
+}
+
+/// `IMessage`: what the component and controller of one plugin send each
+/// other through `IConnectionPoint`. Delivered on the sender's thread.
+pub(crate) struct HostMessage {
+    id: RefCell<CString>,
+    attributes: ComWrapper<Attributes>,
+}
+
+impl Class for HostMessage {
+    type Interfaces = (IMessage,);
+}
+
+impl HostMessage {
+    fn new() -> Self {
+        Self {
+            id: RefCell::new(CString::default()),
+            attributes: ComWrapper::new(Attributes::default()),
+        }
+    }
+}
+
+impl IMessageTrait for HostMessage {
+    unsafe fn getMessageID(&self) -> FIDString {
+        // The string lives until the ID is set again.
+        self.id.borrow().as_ptr()
+    }
+
+    unsafe fn setMessageID(&self, id: FIDString) {
+        if !id.is_null() {
+            // SAFETY: the plugin passes a C string.
+            *self.id.borrow_mut() = unsafe { CStr::from_ptr(id) }.to_owned();
+        }
+    }
+
+    unsafe fn getAttributes(&self) -> *mut IAttributeList {
+        raw::<IAttributeList, _>(&self.attributes)
+    }
+}
+
+/// Parameter edits made by a controller (from its editor), waiting for the
+/// audio thread to send them to the processor.
+///
+/// A controller reports an edit through the component handler, and the host
+/// is meant to pass it to the processor as a parameter change; without that a
+/// plugin whose controller is separate from its processor changes its
+/// display and not its sound. The table is made once the controller's
+/// parameters are known and never grows, so the audio thread reads it
+/// without a lock.
+#[derive(Default)]
+pub(crate) struct Edits {
+    table: OnceLock<EditTable>,
+    dirty: AtomicBool,
+}
+
+struct EditTable {
+    /// Ascending.
+    ids: Vec<ParamID>,
+    /// A value's `f64` bits, or [`NONE`] if there is no edit waiting.
+    values: Vec<AtomicU64>,
+}
+
+/// An `f64` NaN, which no edit is.
+const NONE: u64 = 0x7FF8_0000_0000_0000;
+
+impl Edits {
+    /// Sets which parameters edits are kept for (the first call wins).
+    pub fn set_ids(&self, mut ids: Vec<ParamID>) {
+        ids.sort_unstable();
+        ids.dedup();
+        let values = ids.iter().map(|_| AtomicU64::new(NONE)).collect();
+        let _ = self.table.set(EditTable { ids, values });
+    }
+
+    /// The parameters edits are kept for, ascending.
+    pub fn ids(&self) -> &[ParamID] {
+        self.table.get().map_or(&[], |t| &t.ids)
+    }
+
+    fn record(&self, id: ParamID, value: f64) {
+        let Some(table) = self.table.get() else {
+            return;
+        };
+        if let Ok(index) = table.ids.binary_search(&id)
+            && value.is_finite()
+        {
+            table.values[index].store(value.clamp(0.0, 1.0).to_bits(), Ordering::Release);
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
+
+    /// Calls `send(index, value)` for each edit waiting, `index` being the
+    /// parameter's place in [`ids`](Self::ids). Doesn't allocate or lock.
+    pub fn take(&self, mut send: impl FnMut(usize, f64)) {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let Some(table) = self.table.get() else {
+            return;
+        };
+        for (index, cell) in table.values.iter().enumerate() {
+            let bits = cell.swap(NONE, Ordering::AcqRel);
+            if bits != NONE {
+                send(index, f64::from_bits(bits));
+            }
+        }
     }
 }
 
 /// `IComponentHandler`: the controller's way of telling the host about edits.
-/// Noodle has no VST3 editor yet, so a controller has nothing to report that
-/// matters; the plugin is told its calls worked.
-pub(crate) struct ComponentHandler;
+pub(crate) struct ComponentHandler {
+    pub edits: Arc<Edits>,
+}
 
 impl Class for ComponentHandler {
     type Interfaces = (IComponentHandler,);
@@ -81,13 +390,40 @@ impl IComponentHandlerTrait for ComponentHandler {
     unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
         kResultOk
     }
-    unsafe fn performEdit(&self, _id: ParamID, _value: ParamValue) -> tresult {
+    unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
+        self.edits.record(id, value);
         kResultOk
     }
     unsafe fn endEdit(&self, _id: ParamID) -> tresult {
         kResultOk
     }
     unsafe fn restartComponent(&self, _flags: int32) -> tresult {
+        kResultOk
+    }
+}
+
+/// `IPlugFrame`: how an embedded editor asks the host for another size. The
+/// plugin thread carries it out the next time it looks (the plugin may ask
+/// from inside a call the host made).
+pub(crate) struct Frame {
+    pub flags: Arc<Flags>,
+}
+
+impl Class for Frame {
+    type Interfaces = (IPlugFrame,);
+}
+
+impl IPlugFrameTrait for Frame {
+    unsafe fn resizeView(&self, _view: *mut IPlugView, new_size: *mut ViewRect) -> tresult {
+        if new_size.is_null() {
+            return kInvalidArgument;
+        }
+        let rect = unsafe { &*new_size };
+        let width = (rect.right - rect.left).max(1) as u64;
+        let height = (rect.bottom - rect.top).max(1) as u64;
+        self.flags
+            .resize
+            .store((width << 32) | height, Ordering::Release);
         kResultOk
     }
 }
@@ -267,14 +603,15 @@ impl Class for Changes {
 }
 
 impl Changes {
-    /// Room for `ids`' parameters, each able to hold `points` points a block.
-    pub fn new(ids: &[ParamID], points: usize) -> ComWrapper<Changes> {
+    /// Room for each of `params`' parameters, each able to hold the given
+    /// number of points a block.
+    pub fn new(params: &[(ParamID, usize)]) -> ComWrapper<Changes> {
         ComWrapper::new(Changes {
-            queues: ids
+            queues: params
                 .iter()
-                .map(|&id| Queue::new(id, points, false))
+                .map(|&(id, points)| Queue::new(id, points, false))
                 .collect(),
-            active: UnsafeCell::new(Vec::with_capacity(ids.len())),
+            active: UnsafeCell::new(Vec::with_capacity(params.len())),
         })
     }
 

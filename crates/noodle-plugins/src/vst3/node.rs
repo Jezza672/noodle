@@ -5,6 +5,8 @@
 //! samples wired parameters every [`PARAM_STEP`] frames and hands them over
 //! as timed points, and merges every note input into one time-ordered stream.
 
+use std::sync::Arc;
+
 use vst3::ComWrapper;
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
@@ -14,7 +16,7 @@ use noodle_engine::{Context, Event as NoodleEvent, EventKind, Expression, Io, No
 use crate::descriptor::Descriptor;
 use crate::node::{PARAM_STEP, param_range};
 
-use super::classes::{Changes, DiscardChanges, Events, raw};
+use super::classes::{Changes, DiscardChanges, Edits, Events, raw};
 use super::plugin::Plugin;
 
 /// The most events handed to a plugin per block; see the CLAP node.
@@ -42,6 +44,11 @@ struct Slot {
 struct MidiParam {
     channel: u8,
     controller: u8,
+    slot: usize,
+}
+
+/// A parameter the plugin's editor changes: where its slot is.
+struct EditSlot {
     slot: usize,
 }
 
@@ -80,6 +87,12 @@ pub(crate) struct Vst3Node {
     out_events: ComWrapper<Events>,
     slots: Vec<Slot>,
     midi_params: Vec<MidiParam>,
+    /// What the controller's editor changed, and the slot of each parameter
+    /// it may change (in the order of the edits' IDs).
+    edits: Arc<Edits>,
+    edit_slots: Vec<EditSlot>,
+    /// The editor this node's plugin can open, to forget on drop.
+    gui_key: Option<u64>,
     notes: Vec<NoteKey>,
     cursors: Vec<usize>,
     started: bool,
@@ -108,6 +121,7 @@ impl Vst3Node {
         plugin: Plugin,
         descriptor: &Descriptor,
         midi_assignments: &[(i16, i16, ParamID)],
+        gui_key: Option<u64>,
         max_frames: usize,
     ) -> Self {
         let mut audio_in: Vec<Bus> = descriptor
@@ -164,9 +178,35 @@ impl Vst3Node {
             });
         }
 
-        let ids: Vec<ParamID> = slots.iter().map(|s| s.id).collect();
         // A point at each parameter step, and the block's start and end.
         let points = max_frames / PARAM_STEP + 3;
+        // Parameters the editor changes but nothing else drives get a slot
+        // with room for a couple of points a chunk.
+        let edits = Arc::clone(plugin.edits());
+        let mut capacity: Vec<usize> = slots.iter().map(|_| points + 16).collect();
+        let edit_slots = edits
+            .ids()
+            .iter()
+            .map(|&id| {
+                let slot = match slots.iter().position(|s| s.id == id) {
+                    Some(slot) => slot,
+                    None => {
+                        slots.push(Slot {
+                            id,
+                            input: None,
+                            min: 0.0,
+                            max: 1.0,
+                            steps: 0,
+                            last: f32::NAN,
+                        });
+                        capacity.push(2);
+                        slots.len() - 1
+                    }
+                };
+                EditSlot { slot }
+            })
+            .collect();
+        let params: Vec<(ParamID, usize)> = slots.iter().map(|s| s.id).zip(capacity).collect();
         Self {
             plugin: Some(plugin),
             max_frames,
@@ -174,12 +214,15 @@ impl Vst3Node {
             audio_out,
             in_buffers,
             out_buffers,
-            changes: Changes::new(&ids, points + 16),
+            changes: Changes::new(&params),
             discard: DiscardChanges::new(),
             in_events: Events::new(MAX_EVENTS),
             out_events: Events::new(MAX_EVENTS),
             slots,
             midi_params,
+            edits,
+            edit_slots,
+            gui_key,
             notes: Vec::with_capacity(MAX_NOTES),
             cursors: vec![0; descriptor.note_inputs as usize],
             started: false,
@@ -197,6 +240,7 @@ impl Vst3Node {
         self.changes.clear();
         self.in_events.clear();
         self.out_events.clear();
+        self.apply_edits();
         self.build_events(io, start, n);
 
         let Some(plugin) = self.plugin.as_mut() else {
@@ -247,6 +291,19 @@ impl Vst3Node {
                 out.lane_mut(0, channel)[start..start + n].fill(0.0);
             }
         }
+    }
+
+    /// Passes on what the plugin's editor changed since the last chunk, at the
+    /// chunk's start. A port's last-sent value is left alone, so a port that
+    /// isn't touched doesn't undo the edit (capturing the editor stores the
+    /// edit in the port, which then agrees with it).
+    fn apply_edits(&mut self) {
+        let (changes, edit_slots) = (&self.changes, &self.edit_slots);
+        self.edits.take(|index, value| {
+            if let Some(edit) = edit_slots.get(index) {
+                changes.push(edit.slot, 0, value);
+            }
+        });
     }
 
     /// Fills the chunk's parameter changes and note events, in time order.
@@ -589,6 +646,14 @@ fn legacy_midi(bus: i32, time: i32, channel: u8, control: u8, value: i8, value2:
     event
 }
 
+/// The start of the bar `beats` (quarter notes) is in, in quarter notes. A bar
+/// is `numerator` beats of a 1/`denominator` note each: 6/8 is three quarter
+/// notes long, 4/4 four and 2/2 four.
+fn bar_start(beats: f64, numerator: i32, denominator: i32) -> f64 {
+    let bar = f64::from(numerator.max(1)) * 4.0 / f64::from(denominator.max(1));
+    (beats / bar).floor() * bar
+}
+
 /// What the transport looks like `start` frames into the block.
 fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
     use ProcessContext_::StatesAndFlags_::*;
@@ -600,6 +665,7 @@ fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
     let rate = f64::from(ctx.sample_rate);
     let beats = t.tick / 960.0 + advance / rate * t.bpm / 60.0;
     let numerator = i32::from(t.signature.numerator).max(1);
+    let denominator = i32::from(t.signature.denominator).max(1);
     context.state =
         (kTempoValid | kTimeSigValid | kProjectTimeMusicValid | kBarPositionValid | kContTimeValid)
             as u32;
@@ -610,10 +676,10 @@ fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
     context.projectTimeSamples = t.position as i64 + advance as i64;
     context.continousTimeSamples = steady;
     context.projectTimeMusic = beats;
-    context.barPositionMusic = (beats / f64::from(numerator)).floor() * f64::from(numerator);
+    context.barPositionMusic = bar_start(beats, numerator, denominator);
     context.tempo = t.bpm;
     context.timeSigNumerator = numerator;
-    context.timeSigDenominator = i32::from(t.signature.denominator).max(1);
+    context.timeSigDenominator = denominator;
     context
 }
 
@@ -637,9 +703,39 @@ impl Node for Vst3Node {
 
 impl Drop for Vst3Node {
     fn drop(&mut self) {
-        // The plugin is torn down on the plugin thread, like it was made.
-        if let Some(plugin) = self.plugin.take() {
-            crate::thread::run_job_detached(move || drop(plugin));
+        // The plugin is torn down on the plugin thread, like it was made,
+        // and its editor goes first.
+        if let Some(key) = self.gui_key {
+            crate::editor::unregister(key);
         }
+        if let Some(plugin) = self.plugin.take() {
+            let key = self.gui_key;
+            crate::thread::run_job_detached(move || {
+                if let Some(key) = key {
+                    super::gui::unregister(key);
+                }
+                drop(plugin);
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bar_start;
+
+    #[test]
+    fn a_bar_is_as_long_as_its_signature_says() {
+        // 4/4: four quarter notes.
+        assert_eq!(bar_start(9.5, 4, 4), 8.0);
+        // 6/8: three quarter notes (the old numerator-only reckoning said 6).
+        assert_eq!(bar_start(9.5, 6, 8), 9.0);
+        assert_eq!(bar_start(8.9, 6, 8), 6.0);
+        // 3/2: six quarter notes.
+        assert_eq!(bar_start(13.0, 3, 2), 12.0);
+        // 7/16: 1.75 quarter notes.
+        assert_eq!(bar_start(3.6, 7, 16), 3.5);
+        // The very start.
+        assert_eq!(bar_start(0.0, 5, 4), 0.0);
     }
 }

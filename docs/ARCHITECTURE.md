@@ -901,8 +901,11 @@ results saved before VST3 load as CLAP). The code is in
 - **Plugin** (`plugin.rs`). The component, its `IAudioProcessor` and a
   controller: the component itself if it is also an `IEditController`,
   otherwise the class it names, initialised on its own. Both get an
-  `IHostApplication` (the host's name only: no `IMessage`) and the controller
-  an `IComponentHandler` that accepts and ignores edits. Set-up follows the
+  `IHostApplication` (the host's name, and `IMessage`/`IAttributeList` for
+  plugins that make them) and the controller an `IComponentHandler`; a separate
+  component and controller are wired through `IConnectionPoint`, so their
+  messages reach each other (on the sender's thread; disconnected before
+  teardown). Set-up follows the
   standard's order: bus arrangements (the plugin's own), every bus activated,
   `setupProcessing`, `setActive`, and `setProcessing` on the first block, on the
   audio thread. Tear-down is the reverse, with the component released last.
@@ -936,11 +939,36 @@ results saved before VST3 load as CLAP). The code is in
   for a separate controller), through memory `IBStream`s. Loading hands the
   component its bytes, then the controller `setComponentState` with the same
   bytes and its own `setState`. It lives in the `state` setting like CLAP's.
-- **Not yet.** Editors (`IPlugView`: the editor button says so), `IMessage`
-  between a component and its controller (plugins that need it to
-  synchronise may misbehave), units and program lists, 64-bit audio,
-  `IProcessContextRequirements`, and note output other than note on and off.
-  Latency is not reported.
+- **Editors** (`gui.rs`). VST3 has no floating windows, so an editor is
+  always an `IPlugView` embedded in a window the app makes (the window
+  factory of `window/`; macOS and Windows have one built in, Linux has none
+  yet, so there opening an editor says so). The `Gui` for each plugin lives
+  in a table on the plugin thread under a key (a VST3 key has the top bit
+  set, which is how `editor.rs` tells it from a CLAP instance's); open, close
+  and capture are jobs on that thread, and the node holds only the key. The
+  view gets an `IPlugFrame` whose `resizeView` only sets a flag, which the
+  thread's housekeeping carries out (resize the window, then `onSize`), as
+  it does the user dragging the window's edge (`checkSizeConstraint`, then
+  `onSize`) and a closed window. Capturing a running VST3 reads the
+  component's and controller's state and each listed parameter's normalized
+  value from the controller, from the plugin thread while the audio thread
+  runs, as the standard's UI-thread calls allow.
+- **Edits.** A controller reports what the user does in the editor through
+  `IComponentHandler::performEdit`; the host must pass it to the processor, or
+  a plugin with a separate controller would change its display and not its
+  sound. The handler stores the value in an `Edits` table (one atomic per
+  parameter that isn't read-only, hidden ones included, made when the plugin
+  is) and the audio thread reads it at the start of each chunk and queues a
+  parameter change, without a lock or an allocation. The port's last-sent
+  value is left alone, so an untouched port doesn't undo the edit; capturing
+  the editor then stores the edit in the port. Not mirrored the other way:
+  a wire modulating a parameter doesn't move the editor's display.
+- **Transport.** `barPositionMusic` is the start of the current bar in
+  quarter notes from the signature (6/8 is three quarters long), assuming the
+  bars from the project's start are all the current signature's length.
+- **Not yet.** A Linux window for editors, units and program lists, 64-bit
+  audio, `IProcessContextRequirements`, `IRunLoop`, and note output other than
+  note on and off. Latency is not reported.
 
 **Plugin browser** (`noodle-app/src/plugin_browser.rs`, View > Plugins). Lists
 the catalog with a search over name, vendor, ID, format and kind; Add puts the node on
