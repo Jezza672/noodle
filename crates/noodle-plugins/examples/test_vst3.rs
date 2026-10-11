@@ -143,7 +143,7 @@ impl IComponentTrait for Processor {
         bus.mediaType = media;
         bus.direction = dir;
         bus.busType = BusTypes_::kMain as BusType;
-        bus.flags = BusInfo_::BusFlags_::kDefaultActive;
+        bus.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
         match (media as MediaTypes, dir as BusDirections, index) {
             (MediaTypes_::kAudio, BusDirections_::kInput, 0) => {
                 bus.channelCount = 2;
