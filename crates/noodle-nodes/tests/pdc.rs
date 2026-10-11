@@ -236,3 +236,55 @@ fn two_latent_paths_align_to_the_slower() {
     let rendered = render(&graph, &registry(), SETTINGS, 300).unwrap();
     assert_eq!(peaks(&rendered.samples), [(0, 2.0)]);
 }
+
+#[test]
+fn editing_an_unrelated_node_does_not_fade_a_compensated_graph() {
+    // Adding or removing an unconnected node shifts every slot in the
+    // schedule, but the delay lines are the same, so the swap is seamless.
+    let sines = |extra: bool| {
+        let mut nodes = vec![
+            (
+                NodeId(1),
+                Node::new("noodle.osc.sine").with_param("frequency", 480.0),
+            ),
+            (
+                NodeId(2),
+                Node::new("test.latent")
+                    .with_config(Config::new().with("latency", Value::Int(150))),
+            ),
+            (NodeId(3), Node::new("noodle.util.mix")),
+            (NodeId(4), Node::new("noodle.io.output")),
+        ];
+        if extra {
+            nodes.insert(0, (NodeId(0), Node::new("noodle.osc.sine")));
+        }
+        Graph::from_parts(
+            nodes,
+            vec![
+                wire((1, "out"), (2, "in")),
+                wire((2, "out"), (3, "in1")),
+                wire((1, "out"), (3, "in2")),
+                wire((3, "out"), (4, "in")),
+            ],
+        )
+        .unwrap()
+    };
+    let registry = registry();
+    let (mut controller, mut processor) = noodle_engine::engine(SETTINGS).unwrap();
+    controller.update(&sines(false), &registry);
+    let mut block = vec![0.0; SETTINGS.max_frames * SETTINGS.channels];
+    let mut lowest = f32::MAX;
+    for round in 0..8 {
+        for _ in 0..20 {
+            processor.process(&mut block);
+            if round > 0 {
+                let peak = block.iter().fold(0.0f32, |p, x| p.max(x.abs()));
+                lowest = lowest.min(peak);
+            }
+        }
+        controller.update(&sines(round % 2 == 0), &registry);
+        controller.maintain();
+    }
+    // Two copies of a sine, so peaks sit near 2 unless a fade dips them.
+    assert!(lowest > 1.0, "a swap faded the output: {lowest}");
+}

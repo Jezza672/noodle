@@ -245,13 +245,16 @@ impl NodeType for PluginNodeType {
             let flags = Arc::new(Flags::default());
             let key = vst3::gui::register(&loaded.plugin, &flags);
             editor::register(setup.node, key, flags);
-            return Ok(Instance::realtime(vst3::Vst3Node::new(
-                loaded.plugin,
-                &self.descriptor,
-                &loaded.midi_assignments,
-                Some(key),
-                setup.max_frames,
-            )));
+            return Ok(Instance::realtime(
+                vst3::Vst3Node::new(
+                    loaded.plugin,
+                    &self.descriptor,
+                    &loaded.midi_assignments,
+                    Some(key),
+                    setup.max_frames,
+                )
+                .with_latency(loaded.latency),
+            ));
         }
         let mut loaded = thread::start(
             &self.path,

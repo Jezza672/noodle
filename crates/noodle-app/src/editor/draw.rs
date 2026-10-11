@@ -360,7 +360,6 @@ fn boxed(
     }
 }
 
-/// What a frozen or offline node says about its render, and in what colour.
 /// A node's CPU load as a percentage of the block time, coloured by how close
 /// it is to making the audio thread late.
 pub(crate) fn cpu_label(reading: CpuReading) -> (String, Color32) {
@@ -382,6 +381,7 @@ pub(crate) fn cpu_label(reading: CpuReading) -> (String, Color32) {
     (label, color)
 }
 
+/// What a frozen or offline node says about its render, and in what colour.
 fn badge_label(badge: &Badge) -> (String, Color32) {
     match (&badge.state, badge.frozen) {
         (BadgeState::Ready, true) => ("Frozen".into(), colors::ACTIVE),

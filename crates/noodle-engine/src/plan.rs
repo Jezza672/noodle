@@ -59,6 +59,9 @@ pub(crate) struct PlanInfo {
     /// Every delay line inserted for compensation, by the node and input it
     /// feeds: (slot, index in the slot's lines, delay in samples). Sorted.
     delays: Vec<DelayRecord>,
+    /// The same without the slots, which move when the schedule shifts: what
+    /// two plans must share to swap without a fade. Sorted.
+    delay_keys: Vec<((NodeId, usize), u32)>,
     /// How late the mix sounds, in samples, once everything is aligned.
     pub(crate) output_latency: u32,
 }
@@ -238,6 +241,7 @@ pub(crate) fn build(
         silent: HashSet::new(),
         latency: HashMap::new(),
         delays: Vec::new(),
+        delay_keys: Vec::new(),
         output_latency: 0,
     };
     let mut slot_info: Vec<SlotInfo> = Vec::with_capacity(schedule.nodes.len());
@@ -532,7 +536,8 @@ pub(crate) fn build(
     *cells = live_cells;
 
     info.audible = audible_wiring(&wiring, &nodes);
-    let seamless = previous.is_some_and(|p| p.audible == info.audible && p.delays == info.delays)
+    let seamless = previous
+        .is_some_and(|p| p.audible == info.audible && p.delay_keys == info.delay_keys)
         && info.audible.keys().all(|id| {
             // A node that was silent and still is sounds the same, though
             // it's rebuilt each time.
@@ -1246,6 +1251,11 @@ fn compensate(
         }
     }
     info.delays.sort_by_key(|(key, _)| *key);
+    info.delay_keys = info
+        .delays
+        .iter()
+        .map(|&(key, (_, _, delay))| (key, delay))
+        .collect();
     migrations
 }
 

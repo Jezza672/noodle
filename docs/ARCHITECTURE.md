@@ -774,7 +774,7 @@ ports become graph ports. Plugin state is saved in the Project.
   exchange audio through shared memory, so a crashing plugin can't take down
   the session.
 - **Latency:** plugins report their latency (CLAP's latency extension, VST3's
-  `getLatencySamples`, both read once after activation) and the engine
+  `getLatencySamples`, both read once after activation, on the plugin thread) and the engine
   compensates for it; see [Performance (M6)](#performance-m6).
 
 ### CLAP hosting
@@ -1038,9 +1038,11 @@ plus the writer's own latency. Where paths meet, the early ones get a
 - a plan swap hands each line's contents to its successor (keyed by node,
   input and delay), and a transport jump clears them with the nodes.
 
-The mix as a whole is then `output_latency` samples late
-(`Controller::output_latency`). Live playback just sounds that much late, as
-in any DAW; offline renders (`render`, `render_project_streaming*`,
+A plan swap is seamless when its delay lines match by node, input and delay,
+whatever their slots, so unrelated edits don't fade the output. The mix as a
+whole is then `output_latency` samples late (`Controller::output_latency`).
+Live playback just sounds that much late, as in any DAW, and recording
+subtracts it along with the device's output latency (`Session::stop_recording`, MIDI takes); offline renders (`render`, `render_project_streaming*`,
 `render_taps`, so exports and freezes) render that many extra frames and drop
 them from the front, so what they write lines up with the timeline.
 `noodle-nodes/tests/pdc.rs` covers the alignment and the trim,
@@ -1057,7 +1059,8 @@ time (`CpuReading`: a smoothed `load` and a slowly falling `peak`; 1.0 is the
 whole block). Without a hub nothing is timed, so offline renders pay nothing.
 The editor's View > CPU meters shows each node's load in its header, coloured
 amber from 15 % and red from 50 % (or a peak over 90 %), and the graph's total
-in the corner. A split node (feedback loop) reports its output half; the input
+in the corner. A group has no step of its own (it is flattened away), so its
+header shows the sum of the nodes inside it at any depth. A split node (feedback loop) reports its output half; the input
 half's time is not counted. Time spent in delay lines is not attributed to a
 node.
 
