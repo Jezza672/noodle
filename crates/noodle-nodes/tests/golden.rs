@@ -16,7 +16,7 @@ use noodle_nodes::render_project_with_clips;
 
 const SETTINGS: Settings = Settings {
     sample_rate: 48_000.0,
-    max_frames: 512,
+    max_frames: 128,
     channels: 1,
 };
 /// A quarter of a second: long enough to listen to, short enough to keep the

@@ -9,7 +9,9 @@
 //! tests do.
 
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -18,6 +20,85 @@ use rtrb::{Consumer, Producer, RingBuffer};
 /// Messages with one data byte (program change, channel pressure) have a
 /// zero in the last.
 pub type MidiMessage = [u8; 3];
+
+/// A message and when it arrived, in microseconds on the clock of
+/// [`now_micros`].
+pub type TimedMessage = (u64, MidiMessage);
+
+/// Microseconds since the first call, on a monotonic clock. Cheap and safe to
+/// call on the audio thread once it has been called anywhere before, which
+/// opening a [`MidiBus`] does.
+pub fn now_micros() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64
+}
+
+/// What the audio thread tells the rest of the program about when its
+/// blocks run, on the clock of [`now_micros`]. The device callback writes it
+/// and the MIDI In nodes and recordings read it, so nothing waits.
+#[derive(Default)]
+pub struct AudioClock {
+    /// One more than the start of the span of arrival times that the block
+    /// about to run plays, or 0 before any callback.
+    window: AtomicU64,
+    /// A seqlock round: odd while the anchor below is being written.
+    sequence: AtomicU64,
+    anchor_micros: AtomicU64,
+    anchor_sample: AtomicU64,
+}
+
+impl AudioClock {
+    /// Says which arrivals the next block plays: the ones from `micros` on,
+    /// for as long as the block lasts.
+    pub fn set_window(&self, micros: u64) {
+        self.window
+            .store(micros.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// The start of the span the block being run plays, if a device is
+    /// driving the engine.
+    pub fn window(&self) -> Option<u64> {
+        self.window.load(Ordering::Relaxed).checked_sub(1)
+    }
+
+    /// Records that the transport was at `sample` when the clock read
+    /// `micros`. Called once per device callback.
+    pub fn publish_anchor(&self, micros: u64, sample: u64) {
+        let round = self.sequence.load(Ordering::Relaxed);
+        self.sequence.store(round + 1, Ordering::Release);
+        self.anchor_micros.store(micros, Ordering::Relaxed);
+        self.anchor_sample.store(sample, Ordering::Relaxed);
+        self.sequence.store(round + 2, Ordering::Release);
+    }
+
+    /// The latest `(micros, transport sample)` pair, or `None` before the
+    /// first callback.
+    pub fn anchor(&self) -> Option<(u64, u64)> {
+        for _ in 0..8 {
+            let before = self.sequence.load(Ordering::Acquire);
+            if before == 0 {
+                return None;
+            }
+            if before % 2 == 1 {
+                continue;
+            }
+            let pair = (
+                self.anchor_micros.load(Ordering::Relaxed),
+                self.anchor_sample.load(Ordering::Relaxed),
+            );
+            std::sync::atomic::fence(Ordering::Acquire);
+            if self.sequence.load(Ordering::Relaxed) == before {
+                return Some(pair);
+            }
+        }
+        None
+    }
+}
+
+/// Whether a message is a note-on or note-off.
+pub fn is_note(message: &MidiMessage) -> bool {
+    matches!(message[0] & 0xF0, 0x80 | 0x90)
+}
 
 /// Messages a subscriber can fall behind by before new ones are dropped.
 const QUEUE: usize = 1024;
@@ -56,33 +137,64 @@ pub fn parse_message(bytes: &[u8]) -> Option<MidiMessage> {
 /// Clones share the same subscribers.
 #[derive(Clone, Default)]
 pub struct MidiBus {
-    subscribers: Arc<Mutex<Vec<Producer<MidiMessage>>>>,
+    subscribers: Arc<Mutex<Vec<Subscriber>>>,
+    clock: Arc<AudioClock>,
+}
+
+struct Subscriber {
+    producer: Producer<TimedMessage>,
+    /// Only note-ons and note-offs are wanted.
+    notes_only: bool,
 }
 
 impl MidiBus {
     pub fn new() -> Self {
+        now_micros();
         Self::default()
     }
 
     /// A new receiver of every message sent from now on. Dropping it
     /// unsubscribes.
     pub fn subscribe(&self) -> MidiReceiver {
+        self.subscribe_with(false)
+    }
+
+    /// The same for receivers that want only notes, so a stream of
+    /// controllers can't crowd them out of the queue.
+    pub fn subscribe_notes(&self) -> MidiReceiver {
+        self.subscribe_with(true)
+    }
+
+    fn subscribe_with(&self, notes_only: bool) -> MidiReceiver {
         let (producer, consumer) = RingBuffer::new(QUEUE);
         self.subscribers
             .lock()
             .expect("subscribers lock")
-            .push(producer);
+            .push(Subscriber {
+                producer,
+                notes_only,
+            });
         MidiReceiver(consumer)
     }
 
+    /// When the audio thread's blocks run. The device callback fills it in.
+    pub fn clock(&self) -> &Arc<AudioClock> {
+        &self.clock
+    }
+
     /// Hands a message to every receiver. One that has fallen `QUEUE`
-    /// messages behind misses it.
+    /// messages behind misses it. The time is read once the lock is held, so
+    /// two threads sending at once are stamped in the order they are queued.
     pub fn send(&self, message: MidiMessage) {
         let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        subscribers.retain(|p| !p.is_abandoned());
-        for producer in subscribers.iter_mut() {
-            let _ = producer.push(message);
-        }
+        deliver(&mut subscribers, message, now_micros());
+    }
+
+    /// The same for a message that arrived at `micros` on the clock of
+    /// [`now_micros`].
+    pub fn send_at(&self, message: MidiMessage, micros: u64) {
+        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
+        deliver(&mut subscribers, message, micros);
     }
 
     /// Releases every note on every channel (controller 123), for when the
@@ -96,17 +208,32 @@ impl MidiBus {
     /// How many receivers are listening.
     pub fn receivers(&self) -> usize {
         let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        subscribers.retain(|p| !p.is_abandoned());
+        subscribers.retain(|s| !s.producer.is_abandoned());
         subscribers.len()
     }
 }
 
+fn deliver(subscribers: &mut Vec<Subscriber>, message: MidiMessage, micros: u64) {
+    let note = is_note(&message);
+    subscribers.retain(|s| !s.producer.is_abandoned());
+    for subscriber in subscribers.iter_mut() {
+        if note || !subscriber.notes_only {
+            let _ = subscriber.producer.push((micros, message));
+        }
+    }
+}
+
 /// The audio thread's end of a [`MidiBus`] subscription.
-pub struct MidiReceiver(Consumer<MidiMessage>);
+pub struct MidiReceiver(Consumer<TimedMessage>);
 
 impl MidiReceiver {
     /// The oldest message not yet taken. Never blocks or allocates.
     pub fn pop(&mut self) -> Option<MidiMessage> {
+        self.pop_timed().map(|(_, message)| message)
+    }
+
+    /// The same with the time the message arrived.
+    pub fn pop_timed(&mut self) -> Option<TimedMessage> {
         self.0.pop().ok()
     }
 }
