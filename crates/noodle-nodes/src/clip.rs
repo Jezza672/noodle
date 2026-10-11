@@ -27,7 +27,7 @@ use noodle_engine::{
     Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
     NoteId, Setup, Shape,
 };
-use noodle_io::ClipStream;
+use noodle_io::{ClipStream, MidiBus};
 use rtrb::{Consumer, Producer, PushError};
 
 use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
@@ -36,6 +36,8 @@ pub use schedule::{
     ScheduledNote, active_at,
 };
 use schedule::{Segments, same_sound};
+
+use crate::midi_in::LiveMidi;
 
 pub const TRACK_INPUT_ID: &str = "noodle.track.input";
 
@@ -62,15 +64,32 @@ static INFO: NodeInfo = NodeInfo {
     category: "Track",
 };
 
+/// The note IDs of live monitoring; see [`TrackInput::with_midi`].
+const LIVE_ID: u32 = 0x2000_0000;
+
 /// Registered by [`register_library`](crate::register_library).
 pub struct TrackInput {
     feeds: ClipFeeds,
+    midi: Option<MidiBus>,
 }
 
 impl TrackInput {
     pub fn new(feeds: &ClipFeeds) -> Self {
         Self {
             feeds: feeds.clone(),
+            midi: None,
+        }
+    }
+
+    /// A track input that, while its track is monitored (see
+    /// [`ClipFeeds::set_monitoring`]), also plays what arrives on `bus`, from
+    /// every source on every channel, whatever the transport is doing. A MIDI
+    /// In node wired to the same synth plays the notes a second time: the
+    /// two make their own note IDs.
+    pub fn with_midi(feeds: &ClipFeeds, bus: &MidiBus) -> Self {
+        Self {
+            midi: Some(bus.clone()),
+            ..Self::new(feeds)
         }
     }
 }
@@ -139,12 +158,12 @@ impl NodeType for TrackInput {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let shared = self.feeds.shared(setup.node);
         let links = hub::spawn(shared.clone(), setup.sample_rate.round() as u32);
-        Ok(Instance::realtime(TrackInputNode::new(
-            shared,
-            links,
-            setup.sample_rate,
-            setup.max_frames,
-        )))
+        let mut node = TrackInputNode::new(shared, links, setup.sample_rate, setup.max_frames);
+        node.live = self
+            .midi
+            .as_ref()
+            .map(|bus| LiveMidi::new(bus, None, LIVE_ID));
+        Ok(Instance::realtime(node))
     }
 }
 
@@ -184,6 +203,8 @@ struct TrackInputNode {
     recheck: bool,
     /// The keys of the piano roll's keyboard that have a note-on out.
     audition_held: [u64; 2],
+    /// Live MIDI for monitoring, if the node was given a bus.
+    live: Option<LiveMidi>,
 }
 
 /// A MIDI note that has started and not yet ended.
@@ -219,6 +240,7 @@ impl TrackInputNode {
             played_to: None,
             recheck: false,
             audition_held: [0; 2],
+            live: None,
         }
     }
 
@@ -594,7 +616,7 @@ impl TrackInputNode {
         // A note that can't be ended because the buffer is full stays
         // sounding and is tried again next block.
         if !playing || !continuing {
-            self.sounding.retain(|s| out.push(off(s.id, 0)).is_err());
+            self.sounding.retain(|s| out.insert(off(s.id, 0)).is_err());
         }
         let notes = self.notes.take();
         if self.recheck {
@@ -611,7 +633,7 @@ impl TrackInputNode {
                         s.end = note.end;
                         true
                     }
-                    None => out.push(off(s.id, 0)).is_err(),
+                    None => out.insert(off(s.id, 0)).is_err(),
                 }
             });
         }
@@ -634,7 +656,7 @@ impl TrackInputNode {
                     }
                     (_, Some((i, s))) => {
                         let time = s.end.max(position) - position;
-                        if out.push(off(s.id, time)).is_err() {
+                        if out.insert(off(s.id, time)).is_err() {
                             break;
                         }
                         self.sounding.swap_remove(i);
@@ -675,7 +697,7 @@ impl TrackInputNode {
                     }
                 };
                 // A full buffer leaves the key as it was, to try again.
-                if out.push(Event { time: 0, kind }).is_ok() {
+                if out.insert(Event { time: 0, kind }).is_ok() {
                     self.audition_held[word] ^= 1 << bit;
                 }
             }
@@ -700,7 +722,7 @@ impl TrackInputNode {
                 velocity: note.velocity,
             },
         };
-        if out.push(on).is_ok() {
+        if out.insert(on).is_ok() {
             self.sounding.push(Sounding {
                 id: note.id,
                 start: note.start,
@@ -756,6 +778,12 @@ impl Node for TrackInputNode {
         self.schedule = current;
         self.left[..n].fill(0.0);
         self.right[..n].fill(0.0);
+        // Live notes are played whatever the transport does. A track that
+        // isn't monitored lets go of any it holds.
+        if let Some(live) = &mut self.live {
+            let monitoring = self.shared.monitoring.load(Ordering::Relaxed);
+            live.process(ctx, monitoring.then_some(0), &mut io.event_outputs[MIDI]);
+        }
         self.play_notes(
             transport.position,
             n,

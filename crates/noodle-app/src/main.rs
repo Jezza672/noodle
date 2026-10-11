@@ -60,6 +60,9 @@ fn main() -> ExitCode {
     if let Some(path) = prefs::default_path() {
         session.set_audio_config(prefs::init(path).audio);
     }
+    // The engine runs from the start, as in Ableton, so live MIDI plays
+    // before anything else is done. The toolbar turns it off.
+    session.start_engine();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Noodle")

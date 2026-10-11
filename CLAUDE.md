@@ -34,7 +34,10 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 - **Linux dependency:** cpal needs `libasound2-dev`. CI installs it; in a
   cloud session, run `apt-get install -y libasound2-dev` first.
 - **No audio device in the cloud.** `noodle play` fails cleanly there. To run
-  the real stream path anyway, point ALSA at a null device with
+  the engine anyway, use the virtual output: `noodle play --output virtual x.ron`,
+  or `AudioConfig { output: Some("virtual") }` in a test. It runs in real time and
+  discards the audio. (The app falls back to it by itself when no real output
+  opens.) To run the real stream path, point ALSA at a null device with
   `printf 'pcm.!default { type null }\n' > ~/.asoundrc` (and delete it after).
 
 ## Crates
@@ -45,7 +48,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
 | `noodle-macros` | `#[derive(Ports)]`: a node's `Layout` and port-index constants from one declaration. Re-exported as `noodle_engine::Ports`. |
 | `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `track_input_midi.rs`, `midi_input.rs`, `offline_clips.rs`, `export.rs`, `m2_acceptance.rs`. `render_project_with_clips` renders a project with audio clips offline. |
-| `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`), WAV and FLAC export writing (`export.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
+| `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`, including the virtual output's ID), WAV and FLAC export writing (`export.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
 | `noodle-plugins` | CLAP hosting through clack and VST3 hosting through the `vst3` bindings (`vst3/`; `examples/test_vst3.rs` is its test plugin, `tests/real_vst3.rs` uses real ones; install `dpf-plugins-vst3 dragonfly-reverb-vst3` too): scanning in a child process (`scan.rs`), plugin nodes (`node.rs`, `host.rs`), the `Catalog` that registers them, the shared plugin thread (`thread.rs`) and editor windows (`window/`). `examples/test_plugin.rs` is a small CLAP plugin the tests load; `tests/real_plugins.rs` uses real ones if installed (`apt-get install dpf-plugins-clap lsp-plugins-clap dragonfly-reverb-clap xvfb`; editors need `xvfb-run`). After editing the example plugin run `cargo build -p noodle-plugins --examples`: `cargo test --test x` doesn't rebuild it. |
 | `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
 | `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`. |

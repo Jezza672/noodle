@@ -146,8 +146,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(GroupStage);
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
-    registry.register(TrackInput::new(&clips));
     let midi = noodle_io::MidiBus::new();
+    registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     Library {
         telemetry,

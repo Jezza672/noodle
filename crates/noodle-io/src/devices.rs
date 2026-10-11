@@ -152,7 +152,28 @@ pub fn devices(host: Option<&str>) -> Result<DeviceList, AudioError> {
             });
         }
     }
+    list.outputs.push(virtual_output());
     Ok(list)
+}
+
+/// The ID of the virtual output in [`AudioConfig::output`]. It has no host
+/// (no colon), so it never matches a real device's ID.
+pub const VIRTUAL_OUTPUT: &str = "virtual";
+
+/// The virtual output as a device: it runs the engine in real time on a
+/// timer and plays to nowhere. Always listed last.
+pub fn virtual_output() -> DeviceInfo {
+    DeviceInfo {
+        id: VIRTUAL_OUTPUT.to_owned(),
+        name: "Virtual (no sound)".to_owned(),
+        is_default: false,
+        capabilities: Capabilities {
+            max_channels: 2,
+            default_sample_rate: Some(48_000),
+            sample_rates: COMMON_SAMPLE_RATES.to_vec(),
+            buffer_sizes: Some((16, 8192)),
+        },
+    }
 }
 
 /// A device's configurations in formats Noodle can play, if it has any.
@@ -427,6 +448,10 @@ pub enum AudioError {
         min: u32,
         max: u32,
     },
+    /// The virtual output's thread wouldn't start.
+    Virtual {
+        reason: String,
+    },
 }
 
 impl From<DeviceError> for AudioError {
@@ -463,6 +488,9 @@ impl fmt::Display for AudioError {
             }
             Self::UnsupportedSampleRate(rate) => {
                 write!(f, "the device doesn't support a sample rate of {rate} Hz")
+            }
+            Self::Virtual { reason } => {
+                write!(f, "couldn't start the virtual output: {reason}")
             }
             Self::UnsupportedBufferSize { frames, min, max } => write!(
                 f,

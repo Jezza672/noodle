@@ -8,7 +8,7 @@
 //! node is dropped.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -60,6 +60,8 @@ pub(super) struct Shared {
     pub underruns: AtomicU64,
     /// The keys held down from the piano roll's keyboard, one bit each.
     pub audition: [AtomicU64; 2],
+    /// Whether live MIDI is played through the track.
+    pub monitoring: AtomicBool,
 }
 
 impl Shared {
@@ -74,6 +76,7 @@ impl Shared {
             bound: AtomicUsize::new(0),
             underruns: AtomicU64::new(0),
             audition: [AtomicU64::new(0), AtomicU64::new(0)],
+            monitoring: AtomicBool::new(false),
         }
     }
 

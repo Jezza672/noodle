@@ -182,7 +182,7 @@ impl OutputsView {
                         ui,
                         row,
                         status,
-                        session.is_playing(),
+                        session.engine_running(),
                         main.as_deref(),
                         problem,
                     );
