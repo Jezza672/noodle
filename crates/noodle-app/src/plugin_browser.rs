@@ -140,7 +140,7 @@ impl PluginBrowser {
             let mut node = Node::new(type_id).at(60.0 + offset, 60.0 + offset);
             // A synth with hundreds of parameters starts with none on the node.
             if let Some(initial) = initial {
-                node.config.insert(
+                node.config.set(
                     noodle_plugins::PARAMS_KEY.to_owned(),
                     noodle_core::Value::Text(initial),
                 );
