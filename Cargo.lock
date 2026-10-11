@@ -2517,6 +2517,7 @@ dependencies = [
 name = "noodle-engine"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "noodle-core",
  "noodle-macros",
  "rtrb",
@@ -2570,6 +2571,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "directories",
  "libloading 0.8.9",
+ "memmap2",
  "noodle-core",
  "noodle-engine",
  "noodle-nodes",

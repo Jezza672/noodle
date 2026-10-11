@@ -33,6 +33,7 @@ base64 = "0.22"
 directories = "6.0.0"
 vst3 = "0.3"
 libloading = "0.8"
+memmap2 = "0.9"
 
 # Native windows for embedded plugin editors (see `src/window`).
 [target.'cfg(target_os = "macos")'.dependencies]

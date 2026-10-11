@@ -11,6 +11,16 @@ use noodle_engine::{
 };
 use noodle_nodes::register_all;
 
+/// These tests measure how long nodes spin against the clock, so they take
+/// turns: another test's helper threads (which ask for priority over ordinary
+/// threads) would otherwise take the cores the spinning node needs.
+static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn turn() -> std::sync::MutexGuard<'static, ()> {
+    TURN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 const SETTINGS: Settings = Settings {
     sample_rate: 48_000.0,
     max_frames: 64,
@@ -130,6 +140,7 @@ const FRAMES: usize = 64 * 400;
 
 #[test]
 fn a_profile_reports_each_nodes_share_and_the_blocks() {
+    let _turn = turn();
     let (project, busy) = project(1);
     let profile = profile_project(&project, &registry(), SETTINGS, FRAMES, 0, false).unwrap();
     assert!(profile.diagnostics.is_empty());
@@ -156,6 +167,7 @@ fn a_profile_reports_each_nodes_share_and_the_blocks() {
 
 #[test]
 fn blocks_over_their_budget_are_counted() {
+    let _turn = turn();
     // Four branches take at least 1.6 ms of a 1.33 ms block.
     let (project, _) = project(4);
     let profile = profile_project(&project, &registry(), SETTINGS, FRAMES, 0, false).unwrap();
@@ -170,6 +182,7 @@ fn blocks_over_their_budget_are_counted() {
 
 #[test]
 fn helper_threads_speed_up_side_by_side_branches() {
+    let _turn = turn();
     if std::thread::available_parallelism().map_or(1, |n| n.get()) < 4 {
         return;
     }
@@ -192,6 +205,7 @@ fn helper_threads_speed_up_side_by_side_branches() {
 
 #[test]
 fn a_panicking_node_on_workers_is_silenced_and_counted() {
+    let _turn = turn();
     let mut registry = registry();
     registry.register(Boom);
     let (mut project, _) = project(2);
@@ -218,6 +232,7 @@ fn a_panicking_node_on_workers_is_silenced_and_counted() {
 
 #[test]
 fn the_shape_shows_the_width_threads_could_use_even_on_one_thread() {
+    let _turn = turn();
     let (project, _) = project(4);
     let profile = profile_project(&project, &registry(), SETTINGS, FRAMES, 0, false).unwrap();
     assert!(profile.shape.width >= 4, "{:?}", profile.shape);

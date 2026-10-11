@@ -171,6 +171,12 @@ pub struct Session {
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
     plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
+    /// Whether plugins run in processes of their own.
+    sandbox_plugins: bool,
+    /// How many restarts of each plugin host have been reported, and when
+    /// the hosts were last looked at.
+    host_restarts: std::collections::BTreeMap<NodeId, (u32, bool)>,
+    hosts_checked: Option<Instant>,
     telemetry: Telemetry,
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
@@ -355,6 +361,9 @@ impl Session {
             plugin_scan,
             plugin_files,
             plugin_editors: Default::default(),
+            sandbox_plugins: false,
+            host_restarts: Default::default(),
+            hosts_checked: None,
             telemetry,
             clips,
             midi,
@@ -519,6 +528,85 @@ impl Session {
         self.plugin_files
             .iter()
             .filter_map(|f| Some((f.path.as_path(), f.error.as_deref()?)))
+    }
+
+    /// Whether plugins run in processes of their own, so one that crashes or
+    /// hangs doesn't take the app with it.
+    pub fn sandbox_plugins(&self) -> bool {
+        self.sandbox_plugins
+    }
+
+    /// Runs plugins in processes of their own, or in the app. The graph
+    /// compiles again so the plugins already in it move.
+    pub fn set_sandbox_plugins(&mut self, on: bool) {
+        if on == self.sandbox_plugins {
+            return;
+        }
+        let command = if on {
+            match noodle_plugins::SandboxCommand::current_exe() {
+                Ok(command) => Some(command),
+                Err(error) => {
+                    self.message = Some(format!("Can't start plugin processes: {error}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        noodle_plugins::set_sandbox(command);
+        self.sandbox_plugins = on;
+        self.host_restarts.clear();
+        if self.has_plugin_nodes() {
+            self.recompile();
+        }
+    }
+
+    fn has_plugin_nodes(&self) -> bool {
+        self.project
+            .graph()
+            .nodes()
+            .any(|(_, node)| self.plugins.get(&node.type_id).is_some())
+    }
+
+    /// Says so when a plugin's process died or hung and was started again
+    /// (or the node gave up). Looks about twice a second.
+    fn poll_plugin_hosts(&mut self, now: Instant) {
+        if !self.sandbox_plugins
+            || self
+                .hosts_checked
+                .is_some_and(|at| now.duration_since(at) < Duration::from_millis(500))
+        {
+            return;
+        }
+        self.hosts_checked = Some(now);
+        let mut report = None;
+        for (id, node) in self.project.graph().nodes() {
+            let Some(plugin) = self.plugins.get(&node.type_id) else {
+                continue;
+            };
+            let Some(status) = noodle_plugins::sandbox_status(id) else {
+                continue;
+            };
+            let seen = self.host_restarts.entry(id).or_default();
+            if status.restarts > seen.0 || (status.failed && !seen.1) {
+                *seen = (status.restarts, status.failed);
+                let why = status.last_error.unwrap_or_default();
+                report = Some(if status.failed {
+                    format!(
+                        "{} keeps crashing and was switched off ({why}). Edit the node to try again.",
+                        plugin.descriptor().name
+                    )
+                } else {
+                    format!(
+                        "{} crashed or stopped answering and was restarted ({why})",
+                        plugin.descriptor().name
+                    )
+                });
+            }
+        }
+        if report.is_some() {
+            self.message = report;
+        }
     }
 
     pub fn plugin_scanning(&self) -> bool {
@@ -1084,6 +1172,7 @@ impl Session {
         self.poll_export();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
+        self.poll_plugin_hosts(Instant::now());
         let Some(audio) = &mut self.audio else {
             return;
         };

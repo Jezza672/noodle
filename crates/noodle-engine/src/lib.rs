@@ -21,6 +21,7 @@ mod offline;
 mod parallel;
 mod param;
 mod plan;
+mod priority;
 mod profile;
 mod registry;
 mod render;
@@ -61,6 +62,7 @@ pub use offline::{
 };
 pub use param::{Modulation, ParamInfo, ParamKind, Taper, Unit};
 pub use plan::PlanShape;
+pub use priority::{Priority, raise_current_thread};
 pub use profile::{NodeProfile, Profile, profile_project};
 pub use registry::Registry;
 pub use render::{
