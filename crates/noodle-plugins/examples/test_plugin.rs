@@ -5,14 +5,22 @@
 //!   `bias`.
 //! - Notes: one note input port; a note-on starts a sine at the note's pitch.
 //! - Parameters: `Gain` (continuous) and `Invert` (stepped).
+//! - Editor: a floating "window" that draws nothing. While it is shown, a
+//!   timer (host timer support) plays the user: the first tick turns `Gain`
+//!   down to 0.25, as if a knob had been dragged. That makes the editor, the
+//!   host's timers and capturing parameters from a live plugin testable.
 //! - State: `bias`, a number that is not a parameter and so can only come back
 //!   through saved state.
 
+use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, PluginAudioPorts, PluginAudioPortsImpl,
+};
+use clack_extensions::gui::{
+    GuiApiType, GuiConfiguration, GuiSize, PluginGui, PluginGuiImpl, Window,
 };
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
@@ -23,6 +31,7 @@ use clack_extensions::params::{
     PluginMainThreadParams, PluginParams,
 };
 use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_plugin::events::event_types::{NoteOffEvent, NoteOnEvent};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
@@ -52,7 +61,9 @@ impl Plugin for TestPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
-            .register::<PluginState>();
+            .register::<PluginState>()
+            .register::<PluginGui>()
+            .register::<PluginTimer>();
     }
 }
 
@@ -73,15 +84,125 @@ impl DefaultPluginFactory for TestPlugin {
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a Shared,
     ) -> Result<MainThread<'a>, PluginError> {
-        Ok(MainThread { shared })
+        Ok(MainThread {
+            host,
+            shared,
+            gui: Cell::new(Gui::None),
+            timer: Cell::new(None),
+        })
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Gui {
+    None,
+    Created,
+    Shown,
+}
+
 pub struct MainThread<'a> {
+    host: HostMainThreadHandle<'a>,
     shared: &'a Shared,
+    gui: Cell<Gui>,
+    timer: Cell<Option<TimerId>>,
+}
+
+impl PluginGuiImpl for MainThread<'_> {
+    fn is_api_supported(&self, configuration: GuiConfiguration) -> bool {
+        configuration.is_floating && configuration.api_type == native_api()
+    }
+
+    fn get_preferred_api(&self) -> Option<GuiConfiguration<'_>> {
+        Some(GuiConfiguration {
+            api_type: native_api(),
+            is_floating: true,
+        })
+    }
+
+    fn create(&self, _configuration: GuiConfiguration) -> Result<(), PluginError> {
+        self.gui.set(Gui::Created);
+        Ok(())
+    }
+
+    fn destroy(&self) {
+        self.hide_editor();
+        self.gui.set(Gui::None);
+    }
+
+    fn set_scale(&self, _scale: f64) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn get_size(&self) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: 200,
+            height: 100,
+        })
+    }
+
+    fn set_size(&self, _size: GuiSize) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn set_parent(&self, _window: Window) -> Result<(), PluginError> {
+        Err(PluginError::Message("floating only"))
+    }
+
+    fn set_transient(&self, _window: Window) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn show(&self) -> Result<(), PluginError> {
+        if self.gui.get() == Gui::None {
+            return Err(PluginError::Message("not created"));
+        }
+        self.gui.set(Gui::Shown);
+        if self.timer.get().is_none()
+            && let Some(timer) = self.host.get_extension::<HostTimer>()
+        {
+            self.timer.set(timer.register_timer(&self.host, 20).ok());
+        }
+        Ok(())
+    }
+
+    fn hide(&self) -> Result<(), PluginError> {
+        self.hide_editor();
+        Ok(())
+    }
+}
+
+impl MainThread<'_> {
+    fn hide_editor(&self) {
+        if let (Some(id), Some(timer)) = (self.timer.take(), self.host.get_extension::<HostTimer>())
+        {
+            let _ = timer.unregister_timer(&self.host, id);
+        }
+        if self.gui.get() == Gui::Shown {
+            self.gui.set(Gui::Created);
+        }
+    }
+}
+
+impl PluginTimerImpl for MainThread<'_> {
+    fn on_timer(&self, _timer_id: TimerId) {
+        if self.gui.get() == Gui::Shown {
+            // The user drags the Gain knob.
+            self.shared.gain.store(0.25f32.to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+
+fn native_api() -> GuiApiType<'static> {
+    if cfg!(windows) {
+        GuiApiType::WIN32
+    } else if cfg!(target_os = "macos") {
+        GuiApiType::COCOA
+    } else {
+        GuiApiType::X11
+    }
 }
 
 impl PluginShared<'_> for Shared {}

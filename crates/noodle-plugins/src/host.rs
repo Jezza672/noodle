@@ -1,42 +1,200 @@
-//! Loading CLAP plugins, with clack.
-//!
-//! A plugin instance belongs to the thread that made it ("the main thread" in
-//! CLAP terms), but a node has to be `Send`. So each instance gets its own
-//! thread, which makes the plugin, activates it, and then waits until the
-//! node hands the audio processor back to be deactivated. The node itself
-//! holds only the processor, which CLAP lets the audio thread use.
+//! Loading CLAP plugins, with clack: the host's callbacks, and describing a
+//! plugin file for the scanner. Live instances belong to the shared plugin
+//! thread (see `thread.rs`).
 
-use std::ffi::CString;
 use std::io::Cursor;
 use std::path::Path;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, Instant};
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
+use clack_extensions::gui::{GuiSize, HostGui, HostGuiImpl};
 use clack_extensions::note_ports::PluginNotePorts;
-use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
+use clack_extensions::params::{
+    HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamInfoBuffer,
+    ParamInfoFlags, ParamRescanFlags, PluginParams,
+};
 use clack_extensions::state::PluginState;
+use clack_extensions::timer::{HostTimer, HostTimerImpl, TimerId};
 use clack_host::prelude::*;
 
 use crate::descriptor::{AudioPort, Descriptor, ParamDesc};
 
-/// The host side of a plugin. Plugins may ask for things (a restart, a
-/// callback); nothing here needs them yet.
+/// The host side of a plugin.
 pub(crate) struct Host;
 
-pub(crate) struct HostShared;
+/// What the plugin thread and the rest of the program share about one
+/// instance, outside the plugin's own handlers.
+#[derive(Default)]
+pub(crate) struct Flags {
+    /// The editor window is up.
+    pub editor_open: AtomicBool,
+    /// The plugin closed its window itself (or lost it): the thread still has
+    /// to destroy the editor.
+    pub editor_closed: AtomicBool,
+    /// The plugin asked for a call on the main thread.
+    pub callback: AtomicBool,
+    timers: Mutex<Timers>,
+}
+
+struct Timer {
+    id: TimerId,
+    period: Duration,
+    due: Instant,
+}
+
+#[derive(Default)]
+struct Timers {
+    next: u32,
+    list: Vec<Timer>,
+}
+
+impl Flags {
+    /// When the next timer is due, if any are registered.
+    pub fn next_due(&self) -> Option<Instant> {
+        let timers = self.timers.lock().unwrap_or_else(PoisonError::into_inner);
+        timers.list.iter().map(|t| t.due).min()
+    }
+
+    /// The timers that are due at `now`, rescheduled.
+    pub fn take_due(&self, now: Instant) -> Vec<TimerId> {
+        let mut timers = self.timers.lock().unwrap_or_else(PoisonError::into_inner);
+        timers
+            .list
+            .iter_mut()
+            .filter(|t| t.due <= now)
+            .map(|t| {
+                t.due = now + t.period;
+                t.id
+            })
+            .collect()
+    }
+}
+
+pub(crate) struct HostShared {
+    flags: Arc<Flags>,
+}
+
+impl HostShared {
+    pub fn new(flags: Arc<Flags>) -> Self {
+        Self { flags }
+    }
+}
 
 impl SharedHandler<'_> for HostShared {
     fn request_restart(&self) {}
     fn request_process(&self) {}
-    fn request_callback(&self) {}
+    fn request_callback(&self) {
+        self.flags.callback.store(true, Ordering::Release);
+    }
+}
+
+impl HostGuiImpl for HostShared {
+    fn resize_hints_changed(&self) {}
+
+    fn request_resize(&self, _new_size: GuiSize) -> Result<(), clack_host::host::HostError> {
+        // Floating windows size themselves.
+        Ok(())
+    }
+
+    fn request_show(&self) -> Result<(), clack_host::host::HostError> {
+        Err(clack_host::host::HostError::Message(
+            "the editor is opened from the node",
+        ))
+    }
+
+    fn request_hide(&self) -> Result<(), clack_host::host::HostError> {
+        Err(clack_host::host::HostError::Message(
+            "the editor is closed from the node",
+        ))
+    }
+
+    fn closed(&self, _was_destroyed: bool) {
+        self.flags.editor_open.store(false, Ordering::Release);
+        self.flags.editor_closed.store(true, Ordering::Release);
+    }
+}
+
+impl HostParamsImplShared for HostShared {
+    // Parameter changes made in the editor reach the audio thread through the
+    // plugin itself; the host has nothing to flush.
+    fn request_flush(&self) {}
+}
+
+pub(crate) struct HostMain<'a> {
+    shared: &'a HostShared,
+}
+
+impl<'a> MainThreadHandler<'a> for HostMain<'a> {}
+
+impl HostParamsImplMainThread for HostMain<'_> {
+    fn rescan(&self, _flags: ParamRescanFlags) {}
+    fn clear(&self, _param_id: ClapId, _flags: ParamClearFlags) {}
+}
+
+/// The shortest period a plugin's timer is given, whatever it asks for.
+const MIN_TIMER_PERIOD: Duration = Duration::from_millis(10);
+
+impl HostTimerImpl for HostMain<'_> {
+    fn register_timer(&self, period_ms: u32) -> Result<TimerId, clack_host::host::HostError> {
+        let mut timers = self
+            .shared
+            .flags
+            .timers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let id = TimerId(timers.next);
+        timers.next += 1;
+        let period = Duration::from_millis(u64::from(period_ms)).max(MIN_TIMER_PERIOD);
+        timers.list.push(Timer {
+            id,
+            period,
+            due: Instant::now() + period,
+        });
+        Ok(id)
+    }
+
+    fn unregister_timer(&self, timer_id: TimerId) -> Result<(), clack_host::host::HostError> {
+        self.shared
+            .flags
+            .timers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .list
+            .retain(|t| t.id != timer_id);
+        Ok(())
+    }
 }
 
 impl HostHandlers for Host {
     type Shared<'a> = HostShared;
-    type MainThread<'a> = ();
+    type MainThread<'a> = HostMain<'a>;
     type AudioProcessor<'a> = ();
+
+    fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &HostShared) {
+        builder
+            .register::<HostGui>()
+            .register::<HostParams>()
+            .register::<HostTimer>();
+    }
+}
+
+pub(crate) fn new_instance(
+    entry: &PluginEntry,
+    id: &std::ffi::CStr,
+    info: &HostInfo,
+    flags: Arc<Flags>,
+) -> Result<PluginInstance<Host>, HostError> {
+    PluginInstance::<Host>::new(
+        |_| HostShared::new(flags),
+        |shared| HostMain { shared },
+        entry,
+        id,
+        info,
+    )
+    .map_err(|e| HostError(e.to_string()))
 }
 
 #[derive(Debug)]
@@ -58,7 +216,7 @@ pub const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// unusable, and a plugin that has them is exposing internals.
 pub const MAX_PARAMS: usize = 1024;
 
-fn host_info() -> Result<HostInfo, HostError> {
+pub(crate) fn host_info() -> Result<HostInfo, HostError> {
     HostInfo::new(
         "Noodle",
         "Noodle",
@@ -68,7 +226,7 @@ fn host_info() -> Result<HostInfo, HostError> {
     .map_err(|e| HostError(e.to_string()))
 }
 
-fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
+pub(crate) fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
     // SAFETY: loading a plugin runs its code. That's what the user asked for
     // by choosing it; scanning does it in a child process for that reason.
     unsafe { PluginEntry::load(path) }
@@ -95,17 +253,16 @@ pub fn describe_file(path: &Path) -> Result<Vec<Descriptor>, HostError> {
     for descriptor in factory.plugin_descriptors() {
         let Some(id) = descriptor.id() else { continue };
         // One plugin that won't start doesn't hide the file's others.
-        let mut instance =
-            match PluginInstance::<Host>::new(|_| HostShared, |_| (), &entry, id, &info) {
-                Ok(instance) => instance,
-                Err(error) => {
-                    failure = Some(HostError(format!(
-                        "can't create {}: {error}",
-                        id.to_string_lossy()
-                    )));
-                    continue;
-                }
-            };
+        let mut instance = match new_instance(&entry, id, &info, Arc::default()) {
+            Ok(instance) => instance,
+            Err(error) => {
+                failure = Some(HostError(format!(
+                    "can't create {}: {error}",
+                    id.to_string_lossy()
+                )));
+                continue;
+            }
+        };
         let mut described = describe_instance(&mut instance);
         described.id = id.to_string_lossy().into_owned();
         described.name = text(descriptor.name());
@@ -150,30 +307,10 @@ fn describe_instance(instance: &mut PluginInstance<Host>) -> Descriptor {
     };
     let note_inputs = notes(&mut handle, true);
     let note_outputs = notes(&mut handle, false);
-    let mut params = Vec::new();
-    if let Some(ext) = handle.get_extension::<PluginParams>() {
-        let mut buffer = ParamInfoBuffer::new();
-        for index in 0..ext.count(&handle).min(MAX_PARAMS as u32) {
-            let Some(info) = ext.get_info(&handle, index, &mut buffer) else {
-                continue;
-            };
-            if info
-                .flags
-                .intersects(ParamInfoFlags::IS_HIDDEN | ParamInfoFlags::IS_READONLY)
-            {
-                continue;
-            }
-            params.push(ParamDesc {
-                id: info.id.get(),
-                name: String::from_utf8_lossy(info.name).into_owned(),
-                module: String::from_utf8_lossy(info.module).into_owned(),
-                min: info.min_value,
-                max: info.max_value,
-                default: info.default_value,
-                stepped: info.flags.contains(ParamInfoFlags::IS_STEPPED),
-            });
-        }
-    }
+    let params = visible_params(&mut handle)
+        .into_iter()
+        .map(|(_, info)| info)
+        .collect();
     Descriptor {
         id: String::new(),
         name: String::new(),
@@ -187,97 +324,44 @@ fn describe_instance(instance: &mut PluginInstance<Host>) -> Descriptor {
     }
 }
 
-/// What a running instance reports once it's active.
-pub(crate) struct Running {
-    pub processor: StoppedPluginAudioProcessor<Host>,
-    pub control: Control,
-}
-
-/// The handle to an instance's thread. The node closes it when it's dropped.
-pub(crate) struct Control {
-    close: mpsc::Sender<StoppedPluginAudioProcessor<Host>>,
-}
-
-impl Control {
-    /// Gives the processor back so the plugin is deactivated and destroyed on
-    /// its own thread.
-    pub fn close(self, processor: StoppedPluginAudioProcessor<Host>) {
-        let _ = self.close.send(processor);
+/// The parameters a user can set (not hidden, not read-only), up to
+/// [`MAX_PARAMS`], with the plugin's own IDs.
+pub(crate) fn visible_params(handle: &mut PluginMainThreadHandle) -> Vec<(ClapId, ParamDesc)> {
+    let mut params = Vec::new();
+    let Some(ext) = handle.get_extension::<PluginParams>() else {
+        return params;
+    };
+    let mut buffer = ParamInfoBuffer::new();
+    for index in 0..ext.count(handle).min(MAX_PARAMS as u32) {
+        let Some(info) = ext.get_info(handle, index, &mut buffer) else {
+            continue;
+        };
+        if info
+            .flags
+            .intersects(ParamInfoFlags::IS_HIDDEN | ParamInfoFlags::IS_READONLY)
+        {
+            continue;
+        }
+        params.push((
+            info.id,
+            ParamDesc {
+                id: info.id.get(),
+                name: String::from_utf8_lossy(info.name).into_owned(),
+                module: String::from_utf8_lossy(info.module).into_owned(),
+                min: info.min_value,
+                max: info.max_value,
+                default: info.default_value,
+                stepped: info.flags.contains(ParamInfoFlags::IS_STEPPED),
+            },
+        ));
     }
+    params
 }
 
-/// Loads the plugin, restores `state` into it if given, and activates it.
-pub(crate) fn start(
-    path: &Path,
-    plugin_id: &str,
-    state: Option<Vec<u8>>,
-    sample_rate: f32,
-    max_frames: usize,
-) -> Result<Running, HostError> {
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let (close, incoming) = mpsc::channel();
-    let path = path.to_owned();
-    let plugin_id = CString::new(plugin_id).map_err(|e| HostError(e.to_string()))?;
-    thread::Builder::new()
-        .name("noodle-plugin".into())
-        .spawn(move || {
-            let created = (|| {
-                let entry = load_entry(&path)?;
-                let info = host_info()?;
-                let mut instance =
-                    PluginInstance::<Host>::new(|_| HostShared, |_| (), &entry, &plugin_id, &info)
-                        .map_err(|e| HostError(e.to_string()))?;
-                if let Some(state) = &state {
-                    load_state(&mut instance, state)?;
-                }
-                let processor = instance
-                    .activate(
-                        |_, _| (),
-                        PluginAudioConfiguration {
-                            sample_rate: f64::from(sample_rate),
-                            min_frames_count: 1,
-                            max_frames_count: max_frames as u32,
-                        },
-                    )
-                    .map_err(|e| HostError(e.to_string()))?;
-                Ok::<_, HostError>((entry, instance, processor))
-            })();
-            let (_entry, mut instance, processor) = match created {
-                Ok(parts) => parts,
-                Err(error) => {
-                    let _ = ready_tx.send(Err(error));
-                    return;
-                }
-            };
-            if let Err(mpsc::SendError(Ok(processor))) = ready_tx.send(Ok(processor)) {
-                // The node gave up waiting (see `LOAD_TIMEOUT`).
-                instance.deactivate(processor);
-                return;
-            }
-            // Until the node gives the processor back (or is leaked, and the
-            // sender with it).
-            if let Ok(processor) = incoming.recv() {
-                instance.deactivate(processor);
-            }
-        })
-        .map_err(|e| HostError(e.to_string()))?;
-    let processor = ready_rx
-        .recv_timeout(LOAD_TIMEOUT)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => {
-                HostError(format!("the plugin didn't load within {LOAD_TIMEOUT:?}"))
-            }
-            mpsc::RecvTimeoutError::Disconnected => {
-                HostError("the plugin's thread ended while loading".into())
-            }
-        })??;
-    Ok(Running {
-        processor,
-        control: Control { close },
-    })
-}
-
-fn load_state(instance: &mut PluginInstance<Host>, state: &[u8]) -> Result<(), HostError> {
+pub(crate) fn load_state(
+    instance: &mut PluginInstance<Host>,
+    state: &[u8],
+) -> Result<(), HostError> {
     let handle = instance.plugin_handle();
     let ext = handle
         .get_extension::<PluginState>()
@@ -286,7 +370,7 @@ fn load_state(instance: &mut PluginInstance<Host>, state: &[u8]) -> Result<(), H
         .map_err(|error| HostError(error.to_string()))
 }
 
-fn save_state_of(instance: &mut PluginInstance<Host>) -> Result<Vec<u8>, HostError> {
+pub(crate) fn save_state_of(instance: &mut PluginInstance<Host>) -> Result<Vec<u8>, HostError> {
     let handle = instance.plugin_handle();
     let ext = handle
         .get_extension::<PluginState>()
@@ -298,21 +382,11 @@ fn save_state_of(instance: &mut PluginInstance<Host>) -> Result<Vec<u8>, HostErr
 }
 
 /// Loads a plugin, optionally restores `state` into it, and returns the state
-/// it then saves. This is how state gets into a project: the result goes in
-/// the node's `state` setting (see [`crate::STATE_KEY`]). Runs the plugin's
-/// code, on the calling thread.
+/// it then saves. Runs the plugin's code, on the shared plugin thread.
 pub fn capture_state(
     path: &Path,
     plugin_id: &str,
     state: Option<&[u8]>,
 ) -> Result<Vec<u8>, HostError> {
-    let entry = load_entry(path)?;
-    let info = host_info()?;
-    let id = CString::new(plugin_id).map_err(|e| HostError(e.to_string()))?;
-    let mut instance = PluginInstance::<Host>::new(|_| HostShared, |_| (), &entry, &id, &info)
-        .map_err(|e| HostError(e.to_string()))?;
-    if let Some(state) = state {
-        load_state(&mut instance, state)?;
-    }
-    save_state_of(&mut instance)
+    crate::thread::capture_fresh(path, plugin_id, state)
 }

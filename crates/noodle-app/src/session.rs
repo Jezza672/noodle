@@ -55,6 +55,13 @@ pub enum Edit {
     /// `Drag` until the next [`Edit::EndDrag`] is one undo step.
     Drag(Command),
     EndDrag,
+    /// Opens or closes a plugin node's editor window. Closing it (here or in
+    /// the window) stores the plugin's state and parameter values in the
+    /// node, as one undo step.
+    PluginEditor {
+        node: NodeId,
+        open: bool,
+    },
 }
 
 /// The node types a session can use, and the hub their telemetry (meters,
@@ -71,6 +78,8 @@ pub struct Nodes {
     pub plugins: noodle_plugins::Catalog,
     /// Where a background plugin scan reports, if one is running.
     pub plugin_scan: Option<std::sync::mpsc::Receiver<noodle_plugins::Discovery>>,
+    /// Every plugin file the last scan looked at, for the plugin browser.
+    pub plugin_files: Vec<noodle_plugins::PluginFile>,
 }
 
 impl Nodes {
@@ -89,6 +98,7 @@ impl Nodes {
             midi,
             plugins: noodle_plugins::Catalog::default(),
             plugin_scan: None,
+            plugin_files: Vec::new(),
         }
     }
 
@@ -101,6 +111,7 @@ impl Nodes {
             .map(|path| noodle_plugins::ScanCache::load(&path))
             .unwrap_or_default();
         nodes.set_plugins(noodle_plugins::Catalog::new(&cached.files));
+        nodes.plugin_files = cached.files;
         let (sender, receiver) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("noodle-plugin-scan".into())
@@ -156,6 +167,10 @@ pub struct Session {
     plugins: noodle_plugins::Catalog,
     /// Where a background plugin scan reports, until it has.
     plugin_scan: Option<std::sync::mpsc::Receiver<noodle_plugins::Discovery>>,
+    plugin_files: Vec<noodle_plugins::PluginFile>,
+    /// Plugin nodes whose editor was opened from here: when one closes, its
+    /// state is stored.
+    plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
     telemetry: Telemetry,
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
@@ -322,6 +337,7 @@ impl Session {
             midi,
             plugins,
             plugin_scan,
+            plugin_files,
         } = nodes;
         let mut session = Self {
             saved: Project::new(),
@@ -330,6 +346,8 @@ impl Session {
             registry,
             plugins,
             plugin_scan,
+            plugin_files,
+            plugin_editors: Default::default(),
             telemetry,
             clips,
             midi,
@@ -451,6 +469,7 @@ impl Session {
         match receiver.try_recv() {
             Ok(found) => {
                 self.plugin_scan = None;
+                self.plugin_files = found.files.clone();
                 let known = self.plugins.len();
                 let failed = found.files.iter().filter(|f| f.error.is_some()).count();
                 if found.catalog.len() != known || found.scanned > 0 {
@@ -473,6 +492,111 @@ impl Session {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.plugin_scan = None,
+        }
+    }
+
+    /// The plugins the browser lists.
+    pub fn plugins(&self) -> &noodle_plugins::Catalog {
+        &self.plugins
+    }
+
+    /// Plugin files the last scan couldn't read, with why.
+    pub fn failed_plugin_files(&self) -> impl Iterator<Item = (&Path, &str)> {
+        self.plugin_files
+            .iter()
+            .filter_map(|f| Some((f.path.as_path(), f.error.as_deref()?)))
+    }
+
+    pub fn plugin_scanning(&self) -> bool {
+        self.plugin_scan.is_some()
+    }
+
+    /// Looks for plugins again in the background. Without `everything`, only
+    /// new and changed files are scanned; with it, every file is, which
+    /// also gives ones that failed another chance.
+    pub fn rescan_plugins(&mut self, everything: bool) {
+        if self.plugin_scan.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("noodle-plugin-scan".into())
+            .spawn(move || {
+                let _ = sender.send(noodle_plugins::discover_with(everything));
+            });
+        match spawned {
+            Ok(_) => self.plugin_scan = Some(receiver),
+            Err(error) => self.message = Some(format!("Couldn't scan for plugins: {error}")),
+        }
+    }
+
+    /// The plugin a node is, if it is one.
+    pub fn plugin_of(&self, node: NodeId) -> Option<&noodle_plugins::ClapNodeType> {
+        let node = self.project.graph().node(node)?;
+        self.plugins.get(&node.type_id)
+    }
+
+    /// Whether the node's plugin editor window is up.
+    pub fn plugin_editor_open(&self, node: NodeId) -> bool {
+        noodle_plugins::editor_is_open(node)
+    }
+
+    fn plugin_editor(&mut self, node: NodeId, open: bool) {
+        if !open {
+            // Storing the state waits for the window to be gone.
+            noodle_plugins::close_editor(node);
+            return;
+        }
+        match noodle_plugins::open_editor(node) {
+            Ok(key) => {
+                self.plugin_editors.insert(node, key);
+            }
+            Err(error) => self.message = Some(format!("Couldn't open the editor: {error}")),
+        }
+    }
+
+    /// Stores the state of each plugin whose editor has closed. The node
+    /// stays on the list until that worked, or its plugin instance is gone
+    /// (the graph was built again, which loses what the editor changed).
+    fn poll_plugin_editors(&mut self) {
+        let closed: Vec<(NodeId, noodle_plugins::EditorKey)> = self
+            .plugin_editors
+            .iter()
+            .map(|(n, k)| (*n, *k))
+            .filter(|(_, key)| !noodle_plugins::editor_key_is_open(*key))
+            .collect();
+        for (node, key) in closed {
+            if !noodle_plugins::editor_instance_running(key) {
+                self.plugin_editors.remove(&node);
+                continue;
+            }
+            let Some(plugin) = self.plugin_of(node) else {
+                self.plugin_editors.remove(&node);
+                continue;
+            };
+            let descriptor = plugin.descriptor().clone();
+            match noodle_plugins::capture_key(key) {
+                Ok(captured) => {
+                    self.plugin_editors.remove(&node);
+                    let unchanged = self.project.graph().node(node).is_some_and(|n| {
+                        n.config.get(noodle_plugins::STATE_KEY)
+                            == Some(&noodle_core::Value::Text(captured.state_text()))
+                            && captured.params.iter().all(|(id, v)| {
+                                n.params
+                                    .get(&noodle_plugins::param_key(*id))
+                                    .is_none_or(|p| (f64::from(*p) - v).abs() < 1e-6)
+                            })
+                    });
+                    if !unchanged {
+                        let command = captured.commands(node, &descriptor);
+                        self.edit([Edit::Apply(command)]);
+                        self.message = Some(format!("Kept the state of {}", descriptor.name));
+                    }
+                }
+                Err(error) => {
+                    self.message = Some(format!("Couldn't keep the plugin's state: {error}"));
+                }
+            }
         }
     }
 
@@ -635,6 +759,10 @@ impl Session {
                     self.history.end_group();
                     continue;
                 }
+                Edit::PluginEditor { node, open } => {
+                    self.plugin_editor(node, open);
+                    continue;
+                }
             };
             let this = Effect::of(&command);
             match self.history.apply(&mut self.project, command) {
@@ -749,6 +877,7 @@ impl Session {
         self.history = History::new();
         self.path = path;
         self.dirty = false;
+        self.plugin_editors.clear();
         self.message = None;
         self.parked = Tick(0);
         self.recompile();
@@ -928,6 +1057,7 @@ impl Session {
         self.watch_files(Instant::now());
         self.poll_export();
         self.poll_plugin_scan();
+        self.poll_plugin_editors();
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -2178,6 +2308,62 @@ mod tests {
         let mut render_registry = Registry::new();
         session.extend_registry().expect("a hook")(&mut render_registry);
         assert!(render_registry.get("clap.fake.one").is_some());
+    }
+
+    #[test]
+    fn the_scan_reports_files_that_failed_and_a_rescan_waits_for_one_in_progress() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut nodes = Nodes::all();
+        nodes.plugin_scan = Some(receiver);
+        let mut session = Session::new(nodes);
+        assert!(session.plugin_scanning());
+        // A second scan isn't started over the first.
+        session.rescan_plugins(true);
+        assert!(session.plugin_scanning());
+
+        let mut files = vec![fake_plugin_file("fake.one")];
+        let mut bad = fake_plugin_file("fake.bad");
+        bad.plugins.clear();
+        bad.path = "/plugins/bad.clap".into();
+        bad.error = Some("it crashed".into());
+        files.push(bad);
+        sender
+            .send(noodle_plugins::Discovery {
+                catalog: noodle_plugins::Catalog::new(&files),
+                files,
+                scanned: 2,
+            })
+            .unwrap();
+        session.maintain();
+        assert!(!session.plugin_scanning());
+        assert_eq!(session.plugins().len(), 1);
+        let failed: Vec<_> = session.failed_plugin_files().collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].1, "it crashed");
+    }
+
+    #[test]
+    fn opening_the_editor_of_a_plugin_that_is_not_running_says_so() {
+        let mut session = Session::new(Nodes::all());
+        let id = session.new_node_id();
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id,
+                node: noodle_core::Node::new("clap.fake.one"),
+            }),
+            Edit::PluginEditor {
+                node: id,
+                open: true,
+            },
+        ]);
+        assert!(
+            session
+                .message()
+                .is_some_and(|m| m.starts_with("Couldn't open the editor"))
+        );
+        assert!(!session.plugin_editor_open(id));
+        // Nothing was waiting to be kept.
+        session.maintain();
     }
 
     #[test]

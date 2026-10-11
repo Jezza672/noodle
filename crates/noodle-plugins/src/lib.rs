@@ -11,12 +11,20 @@
 
 mod catalog;
 mod descriptor;
+mod editor;
 mod host;
 mod node;
 mod scan;
+mod thread;
 
-pub use catalog::{Catalog, Discovery, ExtendRegistry, discover, discover_in};
+pub use catalog::{
+    Catalog, Discovery, ExtendRegistry, discover, discover_in, discover_in_with, discover_with,
+};
 pub use descriptor::*;
+pub use editor::{
+    Captured, EditorKey, capture, capture_key, close_editor, editor_instance_running,
+    editor_is_open, editor_key_is_open, is_running, open_editor,
+};
 pub use host::{HostError, MAX_PARAMS, capture_state, describe_file};
 pub use node::{ClapNodeType, PARAM_STEP};
 pub use scan::{

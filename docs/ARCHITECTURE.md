@@ -728,7 +728,7 @@ ports become graph ports. Plugin state is saved in the Project.
 - **VST3** is hosted through the Rust `vst3` bindings, or through a thin C++
   shim over Steinberg's SDK (MIT-licensed since 3.8) exposed through a C ABI.
 - **AU** may come later. Most macOS plugins also ship as VST3 or CLAP.
-- Plugin editors open as separate native windows.
+- Plugin editors open as separate native windows (floating, from the shared plugin thread).
 - Scanning runs in a child process, so a plugin that crashes during scanning
   can't take down the app.
 - **Out-of-process hosting (M6)** runs plugins in sandbox processes that
@@ -772,13 +772,17 @@ sending). One instance has one voice: a polyphonic wire into a plugin is a
 compile error, so put a Voice Mix before it. A mono wire into a stereo port
 feeds both channels; any other channel mismatch is an error.
 
-**Instances.** CLAP says a plugin instance belongs to its main thread, but a
-node must be `Send`. So `instantiate` starts a thread per instance
-(`host.rs`) which loads the file, restores saved state, creates and activates
-the plugin, and hands the audio processor to the node. The node starts
-processing, and on drop gives the processor back so the plugin is deactivated
-and destroyed on its own thread. Loading and activation happen in
-`instantiate`, off the audio thread.
+**Instances and the plugin thread.** CLAP says a plugin instance belongs to
+its main thread, and JUCE-based plugins expect that to be one thread for the
+whole process. So one shared plugin thread (`thread.rs`, started on first
+use) owns every live instance. `instantiate` sends it a load command (30 s
+limit) and gets back the audio processor, which the node holds; on drop the
+node sends the processor back and the thread deactivates and destroys the
+instance. The thread also runs what CLAP gives the main thread: plugin timers
+(`timer-support`), `request_callback`, and editor creation and destruction.
+It is not the process's main thread, so a macOS plugin whose editor insists on
+that may fail to open (reported as an error, not a crash). One plugin that
+hangs while loading blocks the others until M6's out-of-process hosting.
 
 **Processing** (`node.rs`). Each block is copied into preallocated plugin
 buffers (in chunks of at most `max_frames`), parameters whose value changed
@@ -795,10 +799,27 @@ plugin's own, are authoritative for exposed parameters.
 
 **State.** The node's `state` config setting holds the plugin's saved state as
 base64 text, so it is written to the project file with the rest of the graph.
-It is loaded into the plugin before activation. `capture_state` loads a
-plugin (optionally with earlier state) and returns what it saves; the
-editor window (not built yet) is what will change state worth capturing.
-Bad base64, or state the plugin refuses, is a node error rather than a crash.
+It is loaded into the plugin before activation. Bad base64, or state the
+plugin refuses, is a node error rather than a crash. `capture_state` loads a
+plugin (optionally with earlier state) and returns what it saves.
+
+**Editors and capture** (`editor.rs`). Running plugin nodes register by node
+ID. `open_editor(node)` opens the plugin's floating window (CLAP `gui`; the
+platform's API, floating only, no embedding yet). Edits in the window go to
+the running plugin, so they are heard at once. `capture(node)` reads the live
+plugin's saved state and every parameter's value; `Captured::commands` turns
+that into one `Command::Batch`: `SetConfig state` plus a `SetParam` per
+parameter, so the ports agree with the plugin (the ports win on the first
+block). The app opens editors from the properties panel (`Edit::PluginEditor`)
+and captures when the window closes (`Session::poll_plugin_editors`), as one
+undo step. That is a config change, so the node recompiles and its plugin is
+reloaded from the stored state. State changed while an editor is open is
+stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
+
+**Plugin browser** (`noodle-app/src/plugin_browser.rs`, View > Plugins). Lists
+the catalog with a search over name, vendor, ID and kind; Add puts the node on
+the canvas; Rescan runs the scan in the background (Shift scans every file
+again) and the files that failed are listed with why.
 
 **Caching.** Plugins are deterministic by default, so they can be frozen and
 exported from the cache. The key covers the plugin's ID, its file's size and
@@ -820,16 +841,11 @@ sensibly drive: state is an opaque blob and `nondeterministic` is a flag.
 
 **Threads.** `instantiate` loads a plugin on its own thread (waiting up to 30
 s, then failing the node), and `start_processing` runs on the first block, on
-the audio thread. Each instance having its own "main thread" is a known
-shortcut: plugins that tie global state to one thread (JUCE-based ones) and
-editor windows (macOS wants the GUI on the process's main thread) need one
-shared plugin thread, to be settled with the editor work. The same work must
-make capturing state also write the plugin's parameter values back to the
-node's port values, because the ports win on the first block.
+the audio thread. 
 
 **Limits.** The transport's bar fields assume quarter-note beats and a
 meter that has not changed. A plugin that crashes while playing takes the process with it
-(until out-of-process hosting in M6); no editor windows yet; plugin latency is
+(until out-of-process hosting in M6); embedded (non-floating) editors and `posix-fd` support are missing; plugin latency is
 ignored; only the first note port is wired; CLAP extensions beyond audio
 ports, note ports, parameters and state (e.g. tail, voice info, remote
 controls) are not used.
