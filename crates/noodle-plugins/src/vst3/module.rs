@@ -2,6 +2,7 @@
 //! point and getting the plugin factory.
 
 use std::collections::HashMap;
+#[cfg(not(windows))]
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};

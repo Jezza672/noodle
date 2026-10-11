@@ -5,6 +5,8 @@
 //! samples wired parameters every [`PARAM_STEP`] frames and hands them over
 //! as timed points, and merges every note input into one time-ordered stream.
 
+#![allow(clippy::unnecessary_cast)]
+
 use vst3::ComWrapper;
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
@@ -386,12 +388,15 @@ impl Vst3Node {
                 // -1 to 1 here.
                 let (kind, value) = match expression {
                     Expression::Pitch => (
-                        NoteExpressionTypeIDs_::kTuningTypeID,
+                        NoteExpressionTypeIDs_::kTuningTypeID as u32,
                         (value + 120.0) / 240.0,
                     ),
-                    Expression::Timbre => (NoteExpressionTypeIDs_::kBrightnessTypeID, value),
-                    Expression::Volume => (NoteExpressionTypeIDs_::kVolumeTypeID, value),
-                    Expression::Pan => (NoteExpressionTypeIDs_::kPanTypeID, (value + 1.0) / 2.0),
+                    Expression::Timbre => (NoteExpressionTypeIDs_::kBrightnessTypeID as u32, value),
+                    Expression::Volume => (NoteExpressionTypeIDs_::kVolumeTypeID as u32, value),
+                    Expression::Pan => (
+                        NoteExpressionTypeIDs_::kPanTypeID as u32,
+                        (value + 1.0) / 2.0,
+                    ),
                     Expression::Pressure => unreachable!("handled above"),
                 };
                 self.in_events.push(note_expression(
@@ -472,7 +477,7 @@ impl Vst3Node {
             // SAFETY: the union member read is the one the type says.
             let kind = unsafe {
                 match u32::from(event.r#type) {
-                    Event_::EventTypes_::kNoteOnEvent => {
+                    x if x == Event_::EventTypes_::kNoteOnEvent as u32 => {
                         let on = event.__field0.noteOn;
                         EventKind::NoteOn {
                             note: NoteId(on.noteId.max(0) as u32),
@@ -481,7 +486,7 @@ impl Vst3Node {
                             velocity: on.velocity,
                         }
                     }
-                    Event_::EventTypes_::kNoteOffEvent => {
+                    x if x == Event_::EventTypes_::kNoteOffEvent as u32 => {
                         let off = event.__field0.noteOff;
                         EventKind::NoteOff {
                             note: NoteId(off.noteId.max(0) as u32),
@@ -511,7 +516,7 @@ fn blank_event(bus: i32, time: i32, kind: u32) -> Event {
 }
 
 fn note_on(bus: i32, time: i32, id: i32, channel: i16, pitch: i16, velocity: f32) -> Event {
-    let mut event = blank_event(bus, time, Event_::EventTypes_::kNoteOnEvent);
+    let mut event = blank_event(bus, time, Event_::EventTypes_::kNoteOnEvent as u32);
     event.__field0.noteOn = NoteOnEvent {
         channel,
         pitch,
@@ -524,7 +529,7 @@ fn note_on(bus: i32, time: i32, id: i32, channel: i16, pitch: i16, velocity: f32
 }
 
 fn note_off(bus: i32, time: i32, id: i32, channel: i16, pitch: i16, velocity: f32) -> Event {
-    let mut event = blank_event(bus, time, Event_::EventTypes_::kNoteOffEvent);
+    let mut event = blank_event(bus, time, Event_::EventTypes_::kNoteOffEvent as u32);
     event.__field0.noteOff = NoteOffEvent {
         channel,
         pitch,
@@ -536,7 +541,7 @@ fn note_off(bus: i32, time: i32, id: i32, channel: i16, pitch: i16, velocity: f3
 }
 
 fn poly_pressure(bus: i32, time: i32, id: i32, channel: i16, pitch: i16, pressure: f32) -> Event {
-    let mut event = blank_event(bus, time, Event_::EventTypes_::kPolyPressureEvent);
+    let mut event = blank_event(bus, time, Event_::EventTypes_::kPolyPressureEvent as u32);
     event.__field0.polyPressure = PolyPressureEvent {
         channel,
         pitch,
@@ -547,7 +552,11 @@ fn poly_pressure(bus: i32, time: i32, id: i32, channel: i16, pitch: i16, pressur
 }
 
 fn note_expression(bus: i32, time: i32, id: i32, kind: u32, value: f64) -> Event {
-    let mut event = blank_event(bus, time, Event_::EventTypes_::kNoteExpressionValueEvent);
+    let mut event = blank_event(
+        bus,
+        time,
+        Event_::EventTypes_::kNoteExpressionValueEvent as u32,
+    );
     event.__field0.noteExpressionValue = NoteExpressionValueEvent {
         typeId: kind,
         noteId: id,
@@ -557,7 +566,7 @@ fn note_expression(bus: i32, time: i32, id: i32, kind: u32, value: f64) -> Event
 }
 
 fn legacy_midi(bus: i32, time: i32, channel: u8, control: u8, value: i8, value2: i8) -> Event {
-    let mut event = blank_event(bus, time, Event_::EventTypes_::kLegacyMIDICCOutEvent);
+    let mut event = blank_event(bus, time, Event_::EventTypes_::kLegacyMIDICCOutEvent as u32);
     event.__field0.midiCCOut = LegacyMIDICCOutEvent {
         controlNumber: control,
         channel: channel as i8,
@@ -581,7 +590,7 @@ fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
     context.state =
         kTempoValid | kTimeSigValid | kProjectTimeMusicValid | kBarPositionValid | kContTimeValid;
     if t.playing {
-        context.state |= kPlaying;
+        context.state |= kPlaying as u32;
     }
     context.sampleRate = rate;
     context.projectTimeSamples = t.position as i64 + advance as i64;

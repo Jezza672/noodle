@@ -14,6 +14,7 @@
 //! The component and the controller are separate classes, as in most VST3
 //! plugins; the controller learns the component's values from its state.
 #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+#![allow(clippy::unnecessary_cast)]
 
 use std::cell::{Cell, UnsafeCell};
 use std::f32::consts::TAU;
@@ -315,8 +316,9 @@ impl IAudioProcessorTrait for Processor {
             while next_event < events.len() && events[next_event].sampleOffset as usize <= i {
                 let event = events[next_event];
                 next_event += 1;
-                match u32::from(event.r#type) {
-                    Event_::EventTypes_::kNoteOnEvent => {
+                let kind = u32::from(event.r#type);
+                match kind {
+                    x if x == Event_::EventTypes_::kNoteOnEvent as u32 => {
                         let on = unsafe { event.__field0.noteOn };
                         let octave = if event.busIndex == 1 { 2.0 } else { 1.0 };
                         let hz = 440.0 * 2f32.powf((f32::from(on.pitch) - 69.0) / 12.0) * octave;
@@ -330,7 +332,7 @@ impl IAudioProcessorTrait for Processor {
                             };
                         }
                     }
-                    Event_::EventTypes_::kNoteOffEvent => {
+                    x if x == Event_::EventTypes_::kNoteOffEvent as u32 => {
                         let off = unsafe { event.__field0.noteOff };
                         for v in state.voices.iter_mut().filter(|v| v.active) {
                             if v.id == off.noteId || (off.noteId < 0 && v.pitch == off.pitch) {
