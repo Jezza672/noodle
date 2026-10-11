@@ -5,8 +5,6 @@
 //! samples wired parameters every [`PARAM_STEP`] frames and hands them over
 //! as timed points, and merges every note input into one time-ordered stream.
 
-#![allow(clippy::unnecessary_cast)]
-
 use vst3::ComWrapper;
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;

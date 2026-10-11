@@ -8,6 +8,10 @@
 //! Not supported yet: plugin editors (`IPlugView`), `IMessage` between a
 //! component and its controller, units and program lists, and 64-bit audio.
 
+// The VST3 enum constants are `u32` on most systems and `i32` on Windows, so
+// casts to the field types are needed on some and redundant on others.
+#![allow(clippy::unnecessary_cast)]
+
 mod classes;
 mod module;
 mod node;
