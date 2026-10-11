@@ -590,7 +590,8 @@ A plugin that changes its latency after loading (restart request, latency
   editors of sandboxed plugins embed in host-made windows on macOS and
   Windows as in the app, with the host's main thread as its plugin thread;
   only checked by CI compiling them and by the Linux emulation of that
-  arrangement, so the Mac and Windows hand check is owed).
+  arrangement, so the Mac and Windows hand check is owed, including that the
+  editor really embeds and gets focus from a background host).
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
 

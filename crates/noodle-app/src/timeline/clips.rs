@@ -181,7 +181,6 @@ pub fn set_fade_out(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<
     })
 }
 
-/// Shortens fades that no longer fit inside the clip.
 /// The clip cut in two at `at`: the part before it and the part from it on,
 /// each a clip of its own that plays what was there, sample for sample.
 /// `None` if `at` isn't inside the clip. A fade out stays with the second
@@ -269,8 +268,8 @@ pub fn split(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<(Clip, 
 
 /// The audio clip with its contents slid `delta` ticks later (earlier if
 /// negative) under the same window: the clip keeps its place and length and
-/// plays other parts of the file. It stops at the file's start, and at its
-/// end when that is known. `None` for a MIDI clip.
+/// plays other parts of the file. It stops at the file's start and end.
+/// `None` for a MIDI clip, or while the file's length isn't known.
 pub fn slip(
     map: &TempoMap,
     clip: &Clip,
@@ -286,9 +285,8 @@ pub fn slip(
     let moved = (far - here) * delta.signum();
     // Contents move later, so the window looks at earlier parts of the file.
     let wanted = audio.offset as i64 - moved;
-    let latest = file_frames.map_or(i64::MAX, |frames| {
-        frames.saturating_sub(audio.length) as i64
-    });
+    // Without the file's length there is no telling where it ends.
+    let latest = file_frames?.saturating_sub(audio.length) as i64;
     let mut audio = audio.clone();
     audio.offset = wanted.clamp(0, latest.max(0)) as u64;
     Some(Clip {
@@ -297,6 +295,7 @@ pub fn slip(
     })
 }
 
+/// Shortens fades that no longer fit inside the clip.
 fn fit_fades(audio: &mut AudioClip) {
     audio.fade_in = audio.fade_in.min(audio.length);
     audio.fade_out = audio.fade_out.min(audio.length - audio.fade_in);

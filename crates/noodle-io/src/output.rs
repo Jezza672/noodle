@@ -303,16 +303,15 @@ impl ExtraOutput {
         let wanted = out.len();
         let available = self.queue.slots();
         // Enough to survive until the main stream's next callback: its block,
-        // and this callback's.
-        // Plus the time this device gets its samples to the speakers faster
-        // than the main one does, held back so the two sound together.
+        // and this callback's. Never less than the time this device gets its
+        // samples to the speakers faster than the main one does: holding the
+        // queue that deep is what makes the two sound together, and the
+        // cushion is a floor on that, not an addition to it.
         let main_latency =
             Duration::from_micros(self.main_period.latency_micros.load(Ordering::Relaxed));
         let aligned = latency_gap_frames(main_latency, self.own_latency, self.sample_rate);
-        let lead = (self.main_period.period.load(Ordering::Relaxed) as usize
-            + wanted / channels
-            + aligned)
-            * channels;
+        let cushion = self.main_period.period.load(Ordering::Relaxed) as usize + wanted / channels;
+        let lead = cushion.max(aligned) * channels;
         // A queue too small for that would never fill.
         let lead = lead.min(self.queue.buffer().capacity() / 3);
         if self.filling {
@@ -1389,14 +1388,16 @@ mod tests {
         writer.fade.latency_micros.store(40_000, Ordering::Relaxed);
         let held = latency_gap_frames(Duration::from_millis(40), Duration::ZERO, rate);
         let mut second = vec![9.0f32; 32];
+        let blocks = held.div_ceil(64);
         // A cushion that would be enough without the latency gap.
-        for _ in 0..3 {
+        for _ in 0..blocks - 2 {
             writer.write(&mut vec![0.0f32; 64 * 2]);
         }
         extra.fill(&mut second);
         assert!(second.iter().all(|&x| x == 0.0), "{second:?}");
-        // Once the backlog covers the gap, it plays.
-        for _ in 0..(held / 64 + 3) {
+        // It plays once the backlog is as deep as the gap, not the gap plus
+        // the cushion (96 frames, more than the two blocks it gets).
+        for _ in 0..2 {
             writer.write(&mut vec![0.0f32; 64 * 2]);
         }
         extra.fill(&mut second);

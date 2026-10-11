@@ -1185,7 +1185,16 @@ The code is `noodle-plugins/src/sandbox/`:
   on a thread of their own; editors are then embedded in host-made windows
   exactly as in-process. On Linux the main thread runs blocks and plugins draw
   their own windows. `--noodle-plugin-host-pumped` runs the macOS/Windows
-  arrangement on any system (the sandbox tests use it on Linux). `editor_open` reaches the app
+  arrangement on any system (the sandbox tests use it on Linux). Limits: the
+  test plugin only embeds in the tests' fake parent, so CI on macOS and Windows
+  covers the pump and threading but not embedding in a real NSView/HWND (that
+  is the hand check with a real plugin); a nested modal loop inside
+  `sendEvent`/`DispatchMessageW` (live resize, a menu, a window drag) stalls
+  the control loop, so plugin timers and state captures wait until it ends; and
+  a background host may not get focus (Windows refuses `SetForegroundWindow`
+  without `AllowSetForegroundWindow` from the app; macOS 14+ activation is
+  cooperative: the app should `yieldActivation(to:)` the host) which the hand
+  check will show. `editor_open` reaches the app
   through the shared header, at most 100 ms stale.
 
 Costs and limits: a block's hand-over is a copy in and out plus two wake-ups,
