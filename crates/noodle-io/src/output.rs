@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
-use noodle_engine::{Bus, Controller, Processor, Settings, TransportControl, engine};
+use noodle_engine::{Bus, Controller, Processor, Settings, TransportControl, engine_with_workers};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
@@ -665,7 +665,7 @@ pub fn play_with_outputs(
         max_frames,
         channels: engine_channels,
     };
-    let (mut controller, processor) = engine(settings)?;
+    let (mut controller, processor) = engine_with_workers(settings, choice.threads, false)?;
     let mut buses = vec![Bus {
         device: main_id.clone().unwrap_or_default(),
         channels: main_channels,
@@ -929,7 +929,7 @@ fn open<T: SizedSample + FromSample<f32>>(
 mod tests {
     use crate::input::input_path;
     use noodle_core::{Command, Connection, Endpoint, Node, Project};
-    use noodle_engine::{INPUT_ID, OUTPUT_ID, Registry};
+    use noodle_engine::{INPUT_ID, OUTPUT_ID, Registry, engine};
 
     use super::*;
 

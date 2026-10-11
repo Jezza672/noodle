@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use noodle_core::Project;
 use noodle_engine::{Diagnostic, Job, Registry, Settings, StreamError};
 use noodle_io::{AudioConfig, InputChoice, Stream};
-use noodle_nodes::{RenderRequest, render_streaming};
+use noodle_nodes::{RenderRequest, profile as profile_project, render_streaming};
 
 #[derive(Parser)]
 #[command(
@@ -38,6 +38,30 @@ enum Command {
         #[arg(long, default_value_t = 2)]
         channels: usize,
     },
+    /// Render a project as fast as it will go and report where the time
+    /// went: each node's share, how long blocks took against the time they
+    /// last, and how much of the graph could run on several threads.
+    Profile {
+        /// The project file (.ron).
+        project: PathBuf,
+        /// How much audio to render, in seconds.
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f64,
+        #[arg(long, default_value_t = 48_000)]
+        sample_rate: u32,
+        #[arg(long, default_value_t = 2)]
+        channels: usize,
+        /// Frames per block (the device buffer, when playing).
+        #[arg(long, default_value_t = MAX_FRAMES)]
+        block: usize,
+        /// Also render with this many helper threads and compare. Use the
+        /// same number `play --threads` would.
+        #[arg(long, default_value_t = 0)]
+        threads: usize,
+        /// How many nodes to list.
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+    },
     /// Play a project on an audio device until Ctrl-C. Saving the file
     /// while it plays swaps the new version in.
     Play {
@@ -45,6 +69,10 @@ enum Command {
         project: PathBuf,
         #[command(flatten)]
         device: DeviceArgs,
+        /// Extra threads that help render graphs with branches that can run
+        /// side by side (try `noodle profile --threads` first).
+        #[arg(long, default_value_t = 0)]
+        threads: usize,
     },
     /// List the CLAP and VST3 plugins found on this machine. A plugin's node
     /// type is `clap.<plugin id>` or `vst3.<class id>`; its ports are the plugin's audio and note ports
@@ -93,6 +121,7 @@ impl DeviceArgs {
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
             midi_input: None,
+            threads: 0,
         }
     }
 }
@@ -186,9 +215,156 @@ fn run(command: Command) -> Result<(), String> {
             list_plugins();
             Ok(())
         }
-        Command::Play { project, device } => play(&project, &device.config()),
+        Command::Play {
+            project,
+            device,
+            threads,
+        } => play(
+            &project,
+            &AudioConfig {
+                threads,
+                ..device.config()
+            },
+        ),
+        Command::Profile {
+            project,
+            seconds,
+            sample_rate,
+            channels,
+            block,
+            threads,
+            top,
+        } => profile(
+            &project,
+            ProfileArgs {
+                seconds,
+                sample_rate,
+                channels,
+                block,
+                threads,
+                top,
+            },
+        ),
         Command::Devices { host } => list_devices(host.as_deref()),
     }
+}
+
+struct ProfileArgs {
+    seconds: f64,
+    sample_rate: u32,
+    channels: usize,
+    block: usize,
+    threads: usize,
+    top: usize,
+}
+
+fn profile(project_path: &Path, args: ProfileArgs) -> Result<(), String> {
+    if !(args.seconds.is_finite() && args.seconds > 0.0 && args.seconds < 86_400.0) {
+        return Err(format!("can't profile {} seconds", args.seconds));
+    }
+    if args.block == 0 || args.channels == 0 {
+        return Err("block size and channels must be above 0".into());
+    }
+    let project = load(project_path)?;
+    let request = RenderRequest {
+        project,
+        base: project_path.parent().unwrap_or(Path::new("")).to_owned(),
+        settings: Settings {
+            sample_rate: args.sample_rate as f32,
+            max_frames: args.block,
+            channels: args.channels,
+        },
+        frames: (args.seconds * f64::from(args.sample_rate)).round() as usize,
+        extend_registry: Some(noodle_plugins::discover().catalog.extender()),
+    };
+    let run = |workers: usize| {
+        profile_project(&request, workers, args.threads > 0)
+            .map_err(|error| format!("can't profile {}: {error}", project_path.display()))
+    };
+    // The single-threaded run attributes time to nodes cleanly; with helpers
+    // the nodes also wait on each other's memory and the pool.
+    let (serial, report_data) = run(0)?;
+    report(&report_data.diagnostics);
+    for error in &report_data.errors {
+        eprintln!("warning: can't read {error}");
+    }
+    println!(
+        "{:.1} s of audio at {} Hz, blocks of {} frames, {} channels.",
+        serial.seconds(),
+        args.sample_rate,
+        args.block,
+        args.channels
+    );
+    print_run("One thread", &serial);
+    println!();
+    println!("Nodes (share of one core's real-time budget):");
+    let graph = request.project.graph();
+    println!("  {:>7}  {:>6}  node", "load", "share");
+    let work = serial.work().as_secs_f64().max(1e-9);
+    for node in serial.nodes.iter().take(args.top) {
+        let name = graph.node(node.id).map_or("?", |n| n.type_id.as_str());
+        let group = {
+            let mut path = Vec::new();
+            let mut parent = graph.node(node.id).and_then(|n| n.parent);
+            while let Some(id) = parent {
+                path.push(id.0.to_string());
+                parent = graph.node(id).and_then(|n| n.parent);
+            }
+            if path.is_empty() {
+                String::new()
+            } else {
+                format!(" (in group {})", path.join("/"))
+            }
+        };
+        println!(
+            "  {:>6.2}%  {:>5.1}%  #{} {name}{group}",
+            serial.load(node) * 100.0,
+            node.total.as_secs_f64() / work * 100.0,
+            node.id.0,
+        );
+    }
+    if serial.nodes.len() > args.top {
+        println!("  ... and {} more", serial.nodes.len() - args.top);
+    }
+    println!();
+    let shape = serial.shape;
+    println!(
+        "Graph: {} steps, longest chain {}, up to {} at once.",
+        shape.steps, shape.critical_path, shape.width
+    );
+    if shape.steps > 0 && shape.critical_path > 0 {
+        println!(
+            "  Counting every step as equal, threads could speed it up at most {:.1}x.",
+            shape.steps as f64 / shape.critical_path as f64
+        );
+    }
+    if args.threads > 0 {
+        let (parallel, _) = run(args.threads)?;
+        println!();
+        print_run(&format!("{} helper threads", args.threads), &parallel);
+        println!(
+            "  {:.2}x the speed of one thread.",
+            serial.wall.as_secs_f64() / parallel.wall.as_secs_f64().max(1e-9)
+        );
+    }
+    Ok(())
+}
+
+fn print_run(title: &str, profile: &noodle_engine::Profile) {
+    let blocks = &profile.blocks;
+    println!(
+        "{title}: rendered in {:.2} s, {:.1}x real time.",
+        profile.wall.as_secs_f64(),
+        profile.realtime_factor()
+    );
+    println!(
+        "  blocks: mean {:.1}% of budget, 99% under {:.0}%, worst {:.0}%, {} over budget of {}.",
+        blocks.mean * 100.0,
+        blocks.percentile(0.99) * 100.0,
+        blocks.worst * 100.0,
+        blocks.misses,
+        blocks.blocks
+    );
 }
 
 fn list_devices(host: Option<&str>) -> Result<(), String> {

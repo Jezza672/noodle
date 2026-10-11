@@ -14,11 +14,12 @@ use std::time::Instant;
 use noodle_core::NodeId;
 
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
+use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
-    Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io,
-    MAX_LATENCY, Node, NodeError, ParamInfo, ParamKind, ParamWriter, Phase, Problem, Schedule,
-    Settings, Setup, Shape, SignalIn, SignalOut, Telemetry,
+    BlockWriter, Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource,
+    Instance, Io, MAX_LATENCY, Node, NodeError, ParamInfo, ParamKind, ParamWriter, Phase, Problem,
+    Schedule, Settings, Setup, Shape, SignalIn, SignalOut, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -64,6 +65,22 @@ pub(crate) struct PlanInfo {
     delay_keys: Vec<((NodeId, usize), u32)>,
     /// How late the mix sounds, in samples, once everything is aligned.
     pub(crate) output_latency: u32,
+    /// How much of the plan can run at once.
+    pub(crate) shape: PlanShape,
+}
+
+/// How a plan's steps depend on each other, which decides how much running
+/// it on several threads can help.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanShape {
+    /// Steps in the schedule (a node, or one half of a split node).
+    pub steps: usize,
+    /// The longest chain of steps that must run one after the other. Rendering
+    /// can't take fewer than this many steps' worth of time, however many
+    /// threads there are.
+    pub critical_path: usize,
+    /// The most steps that could run at the same time.
+    pub width: usize,
 }
 
 /// (node, input index) -> (slot, index among the slot's delay lines, delay).
@@ -116,6 +133,10 @@ pub(crate) struct Plan {
     /// delay lines whose contents carry over.
     delay_migrations: Vec<((usize, usize), (usize, usize))>,
     max_frames: usize,
+    /// What each step waits for, to run the plan on several threads.
+    graph: StepGraph,
+    /// Reports how long each block takes, when something is watching.
+    blocks: Option<BlockWriter>,
 }
 
 struct PlanNode {
@@ -148,6 +169,10 @@ struct PlanNode {
     /// the slowest one, run just before the node.
     delays: Vec<DelayLine>,
     scratch: Scratch,
+    /// Where an Output node mixes to when the plan runs on several threads:
+    /// `frames * channels` samples, added to the device output at the end
+    /// of the block in schedule order. Empty unless `bus` is set.
+    bus_out: Box<[f32]>,
 }
 
 /// Where a signal lives in the pool.
@@ -243,6 +268,7 @@ pub(crate) fn build(
         delays: Vec::new(),
         delay_keys: Vec::new(),
         output_latency: 0,
+        shape: PlanShape::default(),
     };
     let mut slot_info: Vec<SlotInfo> = Vec::with_capacity(schedule.nodes.len());
     let mut nodes = Vec::with_capacity(schedule.nodes.len());
@@ -521,6 +547,10 @@ pub(crate) fn build(
                 .map(|telemetry| telemetry.open_cpu(id)),
             delays: Vec::new(),
             scratch,
+            bus_out: match bus {
+                Some(_) => vec![0.0; max_frames * channels].into_boxed_slice(),
+                None => Box::default(),
+            },
         });
     }
     let delay_migrations = compensate(
@@ -545,6 +575,12 @@ pub(crate) fn build(
                 || (info.silent.contains(id) && previous.is_some_and(|p| p.silent.contains(id)))
         });
 
+    let graph = step_graph(&nodes, &offsets_in);
+    info.shape = PlanShape {
+        steps: graph.steps(),
+        critical_path: graph.critical_path(),
+        width: graph.width(),
+    };
     let plan = Plan {
         generation,
         previous: previous.map(|p| p.generation),
@@ -562,6 +598,8 @@ pub(crate) fn build(
         value_migrations,
         delay_migrations,
         max_frames,
+        graph,
+        blocks: telemetry.map(Telemetry::block_writer),
     };
     (Box::new(plan), info)
 }
@@ -676,13 +714,16 @@ impl Plan {
     }
 
     /// Renders one block into `output`, interleaved with `channels` channels,
-    /// with `input` feeding Input nodes. Real-time safe.
+    /// with `input` feeding Input nodes. Real-time safe. With `workers`, steps
+    /// that don't depend on each other run on several threads when the plan
+    /// is wide enough for that to pay.
     pub(crate) fn run(
         &mut self,
         ctx: &Context,
         input: Interleaved<'_>,
         output: &mut [f32],
         channels: usize,
+        workers: Option<&Workers>,
     ) {
         let frames = ctx.frames;
         debug_assert!(frames <= self.max_frames);
@@ -697,114 +738,283 @@ impl Plan {
         // Views are made from raw pointers because one node's outputs and
         // another's inputs can be the same buffer at different times, which
         // safe borrows can't express.
-        let pool = self.pool.as_mut_ptr();
-        let silent = self.silent.as_mut_ptr();
-        let events = self.events.as_mut_ptr();
+        let frame = Frame {
+            nodes: self.nodes.as_mut_ptr(),
+            pool: self.pool.as_mut_ptr(),
+            silent: self.silent.as_mut_ptr(),
+            events: self.events.as_mut_ptr(),
+            values: self.values.as_ptr(),
+            offsets: self.offsets.as_mut_ptr(),
+            zeros: &self.zeros,
+            max_frames: self.max_frames,
+            channels,
+            ctx,
+            input,
+        };
 
-        for index in 0..self.nodes.len() {
-            // A split node's input half runs the instance of its output half,
-            // which is earlier.
-            let (earlier, rest) = self.nodes.split_at_mut(index);
-            let node = &mut rest[0];
-            let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
-            let mut outputs: Vec<SignalOut<'_>> = recycle(mem::take(&mut node.scratch.outputs));
-            let mut event_inputs: Vec<&[Event]> =
-                recycle(mem::take(&mut node.scratch.event_inputs));
-            let mut event_outputs: Vec<EventsOut<'_>> =
-                recycle(mem::take(&mut node.scratch.event_outputs));
-
-            for delay in &mut node.delays {
-                // SAFETY: the source buffer is one of this node's inputs, so
-                // it holds this block's signal and nothing writes it now; the
-                // destination is private to the delay line.
-                unsafe { delay.run(pool, silent, frames, self.max_frames) };
-            }
-            for input in &node.inputs {
-                if let Input::Offset(k) = *input {
-                    let offset = &mut self.offsets[k];
-                    // SAFETY: `pool` is the plan's pool, and nothing writes
-                    // the source buffer while the offset is computed.
-                    unsafe { offset.compute(pool, frames, &self.values[offset.value]) };
+        let started = self.blocks.is_some().then(Instant::now);
+        match workers.filter(|w| w.worth(&self.graph)) {
+            None => {
+                for index in 0..self.nodes.len() {
+                    // SAFETY: one step at a time, in schedule order.
+                    unsafe { run_step(&frame, index, output.as_mut_ptr(), false) };
                 }
             }
-
-            // SAFETY: every view is in bounds of the pool or event buffers,
-            // which outlive this block. The compiler guarantees that a node's
-            // outputs share no buffer with its inputs or each other, and only
-            // this node's views exist while it runs.
-            unsafe {
-                inputs.extend(node.inputs.iter().map(|input| {
-                    match *input {
-                        Input::Buffer(view) => view.read(pool, silent, frames, self.max_frames),
-                        Input::Value(slot) => self.values[slot].signal(frames),
-                        Input::Offset(k) => self.offsets[k].signal(frames),
-                        Input::Absent => SignalIn::new(&self.zeros[..frames], Shape::MONO, frames)
-                            .with_silent(&ABSENT_SILENT),
+            Some(workers) => {
+                let run = ParallelRun {
+                    frame: &frame,
+                    graph: &self.graph,
+                };
+                self.graph.reset();
+                // SAFETY: the graph runs each step once, after every step
+                // whose buffers it touches; see `step_graph`.
+                unsafe { workers.run(ParallelRun::work, (&run as *const ParallelRun).cast()) };
+                // In schedule order, so the sum doesn't depend on which
+                // thread got there first.
+                for node in &self.nodes {
+                    for (out, &x) in output.iter_mut().zip(&node.bus_out[..]) {
+                        *out += x;
                     }
-                }));
-                outputs.extend(
-                    node.outputs
-                        .iter()
-                        .map(|view| view.write(pool, silent, frames, self.max_frames)),
-                );
-                event_inputs.extend(node.event_inputs.iter().map(|buffer| match buffer {
-                    Some(b) => (*events.add(*b)).as_slice(),
-                    None => &[],
-                }));
-                event_outputs.extend(
-                    node.event_outputs
-                        .iter()
-                        .map(|&b| EventsOut::new(&mut *events.add(b))),
-                );
-            }
-
-            for (index, probe) in &node.probes {
-                let signal = &inputs[*index];
-                if signal.shape().lanes() > 0 {
-                    probe.write(signal.lane(0, 0));
                 }
             }
-
-            let io = Io {
-                inputs: &inputs,
-                outputs: &mut outputs,
-                event_inputs: &event_inputs,
-                event_outputs: &mut event_outputs,
-            };
-            let instance = match node.owner {
-                Some(owner) => &mut earlier[owner].instance,
-                None => &mut node.instance,
-            };
-            let started = node.cpu.is_some().then(Instant::now);
-            match (instance, node.phase) {
-                (Some(instance), Phase::Whole) => instance.process(ctx, io),
-                (Some(instance), Phase::Output) => instance.process_output(ctx, io),
-                (Some(instance), Phase::Input) => instance.process_input(ctx, io),
-                // Only possible if plans arrived out of order.
-                (None, Phase::Input) => {}
-                (None, _) => Silence.process(ctx, io),
-            }
-            if let (Some(cpu), Some(started)) = (&mut node.cpu, started) {
-                cpu.record(
-                    started.elapsed().as_nanos() as u64,
-                    frames as f64 * 1e9 / f64::from(ctx.sample_rate),
-                );
-            }
-            if node.is_input {
-                read_input(input, &mut outputs[0]);
-            }
-            // Mixed now, not after the whole schedule: the compiler frees a
-            // buffer after its last reader, so a later node may reuse it.
-            if let Some((first, count)) = node.bus {
-                mix_into(inputs[0], output, channels, first, count);
-            }
-
-            node.scratch.inputs = recycle(inputs);
-            node.scratch.outputs = recycle(outputs);
-            node.scratch.event_inputs = recycle(event_inputs);
-            node.scratch.event_outputs = recycle(event_outputs);
+        }
+        if let (Some(blocks), Some(started)) = (&self.blocks, started) {
+            blocks.record(
+                started.elapsed().as_nanos() as u64,
+                frames as f64 * 1e9 / f64::from(ctx.sample_rate),
+            );
         }
     }
+}
+
+/// Everything a block needs to run steps, as raw pointers into a [`Plan`] so
+/// that several threads can each work on different steps.
+struct Frame<'a> {
+    nodes: *mut PlanNode,
+    pool: *mut f32,
+    silent: *mut bool,
+    events: *mut Vec<Event>,
+    values: *const ValueInput,
+    offsets: *mut OffsetInput,
+    zeros: &'a [f32],
+    max_frames: usize,
+    channels: usize,
+    ctx: &'a Context,
+    input: Interleaved<'a>,
+}
+
+/// A block shared between threads.
+struct ParallelRun<'a> {
+    frame: &'a Frame<'a>,
+    graph: &'a StepGraph,
+}
+
+impl ParallelRun<'_> {
+    /// SAFETY: `data` is a `ParallelRun` that outlives the call.
+    unsafe fn work(data: *const ()) {
+        let run = unsafe { &*data.cast::<ParallelRun>() };
+        run.graph.work(|index| {
+            // SAFETY: the graph hands each step to one thread, after
+            // everything it must follow.
+            let mix = unsafe { (*run.frame.nodes.add(index)).bus_out.as_mut_ptr() };
+            unsafe { run_step(run.frame, index, mix, true) };
+        });
+    }
+}
+
+/// Runs one step: builds the node's views, runs it, and mixes it into
+/// `mix_out` if it is an Output node. With `fresh`, `mix_out` is a scratch
+/// buffer that starts empty; otherwise it is the device output.
+///
+/// SAFETY: no other thread may touch this node, the buffers it reads or
+/// writes, its offsets or its owner's instance, and every step it must follow
+/// has finished.
+unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bool) {
+    let &Frame {
+        nodes,
+        pool,
+        silent,
+        events,
+        values,
+        offsets,
+        zeros,
+        max_frames,
+        channels,
+        ctx,
+        input,
+    } = frame;
+    let frames = ctx.frames;
+    let node = unsafe { &mut *nodes.add(index) };
+    let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
+    let mut outputs: Vec<SignalOut<'_>> = recycle(mem::take(&mut node.scratch.outputs));
+    let mut event_inputs: Vec<&[Event]> = recycle(mem::take(&mut node.scratch.event_inputs));
+    let mut event_outputs: Vec<EventsOut<'_>> = recycle(mem::take(&mut node.scratch.event_outputs));
+
+    for delay in &mut node.delays {
+        // SAFETY: the source buffer is one of this node's inputs, so it holds
+        // this block's signal and nothing writes it now; the destination is
+        // private to the delay line.
+        unsafe { delay.run(pool, silent, frames, max_frames) };
+    }
+    for input in &node.inputs {
+        if let Input::Offset(k) = *input {
+            let offset = unsafe { &mut *offsets.add(k) };
+            // SAFETY: `pool` is the plan's pool, and nothing writes the
+            // source buffer while the offset is computed.
+            unsafe { offset.compute(pool, frames, &*values.add(offset.value)) };
+        }
+    }
+
+    // SAFETY: every view is in bounds of the pool or event buffers, which
+    // outlive this block. The compiler guarantees that a node's outputs share
+    // no buffer with its inputs or each other, and only this node's views
+    // exist while it runs.
+    unsafe {
+        inputs.extend(node.inputs.iter().map(|input| match *input {
+            Input::Buffer(view) => view.read(pool, silent, frames, max_frames),
+            Input::Value(slot) => (*values.add(slot)).signal(frames),
+            Input::Offset(k) => (*offsets.add(k)).signal(frames),
+            Input::Absent => {
+                SignalIn::new(&zeros[..frames], Shape::MONO, frames).with_silent(&ABSENT_SILENT)
+            }
+        }));
+        outputs.extend(
+            node.outputs
+                .iter()
+                .map(|view| view.write(pool, silent, frames, max_frames)),
+        );
+        event_inputs.extend(node.event_inputs.iter().map(|buffer| match buffer {
+            Some(b) => (*events.add(*b)).as_slice(),
+            None => &[],
+        }));
+        event_outputs.extend(
+            node.event_outputs
+                .iter()
+                .map(|&b| EventsOut::new(&mut *events.add(b))),
+        );
+    }
+
+    for (index, probe) in &node.probes {
+        let signal = &inputs[*index];
+        if signal.shape().lanes() > 0 {
+            probe.write(signal.lane(0, 0));
+        }
+    }
+
+    let io = Io {
+        inputs: &inputs,
+        outputs: &mut outputs,
+        event_inputs: &event_inputs,
+        event_outputs: &mut event_outputs,
+    };
+    // A split node's input half runs the instance of its output half, which
+    // is earlier.
+    let instance = match node.owner {
+        Some(owner) => unsafe { &mut (*nodes.add(owner)).instance },
+        None => &mut node.instance,
+    };
+    let started = node.cpu.is_some().then(Instant::now);
+    match (instance, node.phase) {
+        (Some(instance), Phase::Whole) => instance.process(ctx, io),
+        (Some(instance), Phase::Output) => instance.process_output(ctx, io),
+        (Some(instance), Phase::Input) => instance.process_input(ctx, io),
+        // Only possible if plans arrived out of order.
+        (None, Phase::Input) => {}
+        (None, _) => Silence.process(ctx, io),
+    }
+    if let (Some(cpu), Some(started)) = (&mut node.cpu, started) {
+        cpu.record(
+            started.elapsed().as_nanos() as u64,
+            frames as f64 * 1e9 / f64::from(ctx.sample_rate),
+        );
+    }
+    if node.is_input {
+        read_input(input, &mut outputs[0]);
+    }
+    // Mixed now, not after the whole schedule: the compiler frees a buffer
+    // after its last reader, so a later node may reuse it.
+    if let Some((first, count)) = node.bus {
+        // SAFETY: `mix_out` holds `frames * channels` samples.
+        let out = unsafe { std::slice::from_raw_parts_mut(mix_out, frames * channels) };
+        if fresh {
+            out.fill(0.0);
+        }
+        mix_into(inputs[0], out, channels, first, count);
+    }
+
+    node.scratch.inputs = recycle(inputs);
+    node.scratch.outputs = recycle(outputs);
+    node.scratch.event_inputs = recycle(event_inputs);
+    node.scratch.event_outputs = recycle(event_outputs);
+}
+
+/// Works out which steps must wait for which, from the buffers each reads and
+/// writes. The compiler reuses buffers, so besides a step waiting for the
+/// writer of what it reads, it waits for the readers (and writer) of what it
+/// overwrites. A split node's input half also waits for its output half,
+/// which holds the instance.
+fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput]) -> StepGraph {
+    // Buffers (and event buffers) are told apart by where they start: a view
+    // always begins at its buffer's start.
+    #[derive(Default)]
+    struct Track {
+        writer: Option<usize>,
+        readers: Vec<usize>,
+    }
+    let mut pool: HashMap<usize, Track> = HashMap::new();
+    let mut events: HashMap<usize, Track> = HashMap::new();
+    let mut waits: Vec<Vec<usize>> = Vec::with_capacity(nodes.len());
+    for (step, node) in nodes.iter().enumerate() {
+        let mut wait = Vec::new();
+        wait.extend(node.owner);
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        for input in &node.inputs {
+            match *input {
+                Input::Buffer(view) if view.shape.lanes() > 0 => reads.push(view.offset),
+                Input::Offset(k) if offsets[k].source.shape.lanes() > 0 => {
+                    reads.push(offsets[k].source.offset);
+                }
+                _ => {}
+            }
+        }
+        for delay in &node.delays {
+            if delay.source.shape.lanes() > 0 {
+                reads.push(delay.source.offset);
+                writes.push(delay.dest.offset);
+            }
+        }
+        writes.extend(
+            node.outputs
+                .iter()
+                .filter(|v| v.shape.lanes() > 0)
+                .map(|v| v.offset),
+        );
+        let event_reads: Vec<usize> = node.event_inputs.iter().flatten().copied().collect();
+        let event_writes = &node.event_outputs;
+        for (tracks, reads, writes) in [
+            (&mut pool, &reads[..], &writes[..]),
+            (&mut events, &event_reads[..], &event_writes[..]),
+        ] {
+            for &key in reads {
+                let track = tracks.entry(key).or_default();
+                wait.extend(track.writer);
+                track.readers.push(step);
+            }
+            for &key in writes {
+                let track = tracks.entry(key).or_default();
+                wait.extend(track.writer);
+                wait.extend(track.readers.iter().copied());
+                track.writer = Some(step);
+                track.readers.clear();
+            }
+        }
+        wait.retain(|&w| w != step);
+        wait.sort_unstable();
+        wait.dedup();
+        waits.push(wait);
+    }
+    StepGraph::new(&waits)
 }
 
 impl View {

@@ -15,8 +15,9 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::compile::{Options, compile_with};
 use crate::denormals::Flush;
+use crate::parallel::Workers;
 pub use crate::plan::Bus;
-use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
+use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo, PlanShape};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
 use crate::{Context, Diagnostic, Lanes, Registry, Replacements, TapSpec, Telemetry, Transport};
@@ -92,6 +93,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         returned,
         pending: None,
         sent: None,
+        parallel: false,
         next_generation: 0,
         cells: Cells::new(),
         telemetry: None,
@@ -119,7 +121,23 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         tempo_returns,
         seen_seek: 0,
         pending_seek: None,
+        workers: None,
     };
+    Ok((controller, processor))
+}
+
+/// [`engine`] whose processor has `workers` threads helping it, and whose
+/// controller compiles plans that can use them (`always` as for
+/// [`Processor::start_workers`]). Spawns the threads, so call it off the
+/// audio thread.
+pub fn engine_with_workers(
+    settings: Settings,
+    workers: usize,
+    always: bool,
+) -> Result<(Controller, Processor), SettingsError> {
+    let (mut controller, mut processor) = engine(settings)?;
+    processor.start_workers(workers, always);
+    controller.parallel = workers > 0;
     Ok((controller, processor))
 }
 
@@ -132,6 +150,8 @@ pub struct Controller {
     pending: Option<(Box<Plan>, PlanInfo)>,
     /// The last plan sent, which the next plan takes over from.
     sent: Option<PlanInfo>,
+    /// Plans are compiled to run on worker threads (see [`engine_with_workers`]).
+    parallel: bool,
     next_generation: u64,
     cells: Cells,
     /// Where wired parameters report their signals, if anything reads them.
@@ -267,6 +287,10 @@ impl Controller {
         options: &Options<'_>,
     ) -> Vec<Diagnostic> {
         self.free_returned();
+        let options = &Options {
+            independent_buffers: self.parallel,
+            ..*options
+        };
         let (schedule, mut diagnostics) = compile_with(graph, lanes, registry, options);
         let generation = self.next_generation;
         self.next_generation += 1;
@@ -306,6 +330,16 @@ impl Controller {
             .map(|(_, info)| info)
             .or(self.sent.as_ref())
             .map_or(0, |info| info.output_latency as usize)
+    }
+
+    /// How much of the latest plan could run at once, for judging whether
+    /// worker threads would help.
+    pub fn plan_shape(&self) -> PlanShape {
+        self.pending
+            .as_ref()
+            .map(|(_, info)| info)
+            .or(self.sent.as_ref())
+            .map_or_else(PlanShape::default, |info| info.shape)
     }
 
     /// Sets an unconnected input's value without recompiling. The change is
@@ -388,9 +422,27 @@ pub struct Processor {
     seen_seek: u64,
     /// A seek waiting for the output to go silent.
     pending_seek: Option<noodle_core::Tick>,
+    /// Threads that share out a wide plan's steps with the audio thread.
+    workers: Option<Workers>,
 }
 
 impl Processor {
+    /// Starts `count` worker threads that help render plans whose steps can
+    /// overlap, replacing any already running; 0 stops them. Call it before
+    /// handing the processor to the audio thread: it spawns threads.
+    ///
+    /// Only plans wide enough to pay for the hand-off run in parallel, unless
+    /// `always` is set. Output differs from the single-threaded render at
+    /// most in the last bits of a float sum.
+    pub fn start_workers(&mut self, count: usize, always: bool) {
+        self.workers = (count > 0).then(|| Workers::start(count, always));
+    }
+
+    /// How many worker threads help the audio thread.
+    pub fn workers(&self) -> usize {
+        self.workers.as_ref().map_or(0, Workers::count)
+    }
+
     pub fn settings(&self) -> Settings {
         self.settings
     }
@@ -475,7 +527,7 @@ impl Processor {
                             signature: self.table.signature_at(tick),
                         },
                     };
-                    plan.run(&ctx, input_chunk, chunk, channels);
+                    plan.run(&ctx, input_chunk, chunk, channels, self.workers.as_ref());
                 }
                 None => chunk.fill(0.0),
             }

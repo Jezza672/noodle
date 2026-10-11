@@ -548,6 +548,16 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             egui::FontId::monospace(12.0),
             color,
         );
+        if let Some(stats) = state.bodies.block_stats() {
+            let (text, color) = draw::block_label(&stats);
+            painter.text(
+                canvas.right_top() + Vec2::new(-12.0, 26.0),
+                egui::Align2::RIGHT_TOP,
+                text,
+                egui::FontId::monospace(12.0),
+                color,
+            );
+        }
     }
     if let Some(p) = pointer_pos {
         draw::gesture(&painter, &f, &state.gesture, p);
