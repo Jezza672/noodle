@@ -1,7 +1,8 @@
 //! The editor driven like a user would: pointer and keyboard events into a
 //! real [`Session`], checking the project that results.
 
-use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, TouchPhase, Vec2};
+use crate::testkit::{click, double_click, drag_with as drag, press, wheel};
+use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position};
@@ -109,47 +110,6 @@ fn socket(h: &H, node: NodeId, side: Side, key: &str) -> Pos2 {
 fn title(h: &H, node: NodeId) -> Pos2 {
     let rect = scene(h).node(node).unwrap().rect;
     screen(h, rect.min + Vec2::new(rect.width() / 2.0, 8.0))
-}
-
-/// Presses `button` at the first point, moves through the rest, and releases
-/// at the last, holding `modifiers` throughout.
-fn drag(h: &mut H, button: PointerButton, modifiers: Modifiers, path: &[Pos2]) {
-    h.event(Event::ModifiersChanged(modifiers));
-    h.event(Event::PointerMoved(path[0]));
-    h.step();
-    h.event(Event::PointerButton {
-        pos: path[0],
-        button,
-        pressed: true,
-        modifiers,
-    });
-    h.step();
-    for &p in &path[1..] {
-        // In small steps, as a real pointer moves.
-        h.event(Event::PointerMoved(p));
-        h.step();
-    }
-    let last = *path.last().unwrap();
-    h.event(Event::PointerButton {
-        pos: last,
-        button,
-        pressed: false,
-        modifiers,
-    });
-    h.step();
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
-}
-
-fn click(h: &mut H, p: Pos2, modifiers: Modifiers) {
-    drag(h, PointerButton::Primary, modifiers, &[p]);
-}
-
-fn press(h: &mut H, at: Pos2, modifiers: Modifiers, key: Key) {
-    h.hover_at(at);
-    h.step();
-    h.key_press_modifiers(modifiers, key);
-    h.run();
 }
 
 fn empty_space(h: &H) -> Pos2 {
@@ -491,20 +451,6 @@ fn backspace_deletes_the_selection_like_delete() {
     assert!(h.state().session.project().graph().node(sine).is_none());
 }
 
-fn double_click(h: &mut H, at: Pos2) {
-    h.event(Event::PointerMoved(at));
-    for pressed in [true, false, true, false] {
-        h.event(Event::PointerButton {
-            pos: at,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-    }
-    h.step();
-    h.run();
-}
-
 #[test]
 fn double_clicking_a_wire_breaks_it_as_one_undo_step() {
     let mut h = rig();
@@ -728,19 +674,6 @@ fn the_search_box_can_be_driven_with_arrows() {
     h.run();
     let graph = h.state().session.project().graph();
     assert_eq!(graph.nodes().next().unwrap().1.type_id, "noodle.osc.sine");
-}
-
-fn wheel(h: &mut H, at: Pos2, unit: MouseWheelUnit, delta: Vec2) {
-    h.hover_at(at);
-    h.event(Event::MouseWheel {
-        unit,
-        delta,
-        phase: TouchPhase::Move,
-        modifiers: Modifiers::NONE,
-    });
-    // Not run(): egui keeps repainting while it smooths the scroll, which the
-    // editor doesn't use.
-    h.step();
 }
 
 #[test]

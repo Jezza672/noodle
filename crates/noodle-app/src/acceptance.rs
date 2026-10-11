@@ -10,6 +10,7 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
+use crate::testkit::{drag_playing, drop_files};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -30,31 +31,6 @@ fn harness(app: App) -> H {
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
     h
-}
-
-/// Presses the primary button at the first point, moves through the rest
-/// and releases at the last.
-fn drag(h: &mut H, path: &[Pos2]) {
-    h.event(Event::PointerMoved(path[0]));
-    h.step();
-    h.event(Event::PointerButton {
-        pos: path[0],
-        button: PointerButton::Primary,
-        pressed: true,
-        modifiers: Modifiers::NONE,
-    });
-    h.step();
-    for &p in &path[1..] {
-        h.event(Event::PointerMoved(p));
-        h.step();
-    }
-    h.event(Event::PointerButton {
-        pos: *path.last().unwrap(),
-        button: PointerButton::Primary,
-        pressed: false,
-        modifiers: Modifiers::NONE,
-    });
-    h.run_steps(3);
 }
 
 /// Shift+A at `at`, then picks the first search result for `query`.
@@ -403,30 +379,6 @@ fn a_clip_on_a_track_plays_and_follows_edits() {
     assert!(h.state().session().clip_problems().is_empty());
 }
 
-#[derive(Debug)]
-struct Dropped(std::path::PathBuf);
-
-impl egui::DroppedFile for Dropped {
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn bytes(&self) -> Result<Vec<u8>, String> {
-        Err("not needed".into())
-    }
-}
-
-/// Drops `file` with the pointer at `at`.
-fn drop_file(h: &mut H, at: Pos2, file: &Path) {
-    h.event(Event::PointerMoved(at));
-    h.step();
-    h.input_mut()
-        .dropped_files
-        .push(std::sync::Arc::new(Dropped(file.to_owned())));
-    h.step();
-    h.run();
-}
-
 /// M2's "done when", driven through the whole app as a user would: arrange
 /// clips on tracks, automate a parameter, look at the mixer, and mix down,
 /// offline and live, checking the levels.
@@ -644,4 +596,12 @@ fn an_output_tied_to_another_device_restarts_playback_and_reports_when_it_cannot
     // Undo asks for the device again.
     session.undo();
     assert_eq!(session.output_devices().len(), 1);
+}
+
+fn drag(h: &mut H, path: &[Pos2]) {
+    drag_playing(h, path);
+}
+
+fn drop_file(h: &mut H, at: Pos2, file: &Path) {
+    drop_files(h, at, &[file.to_owned()]);
 }

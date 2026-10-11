@@ -1,7 +1,8 @@
 //! Automation lanes in the arrangement, driven like a user would: pointer and
 //! keyboard events into a real [`Session`], checking the lanes that result.
 
-use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
+use crate::testkit;
+use egui::{Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use noodle_core::group::{self, GROUP_OUTPUT, create_track};
@@ -96,44 +97,6 @@ fn spot(h: &H, id: LaneId, beat: f32, along: f32) -> Pos2 {
         row.left() + beat * 60.0,
         row.bottom() - 8.0 - along * (row.height() - 16.0),
     )
-}
-
-fn press(h: &mut H, pos: Pos2, button: PointerButton, modifiers: Modifiers) {
-    h.event(Event::PointerMoved(pos));
-    h.step();
-    for pressed in [true, false] {
-        h.event(Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers,
-        });
-        h.step();
-    }
-    h.run();
-}
-
-fn click(h: &mut H, pos: Pos2) {
-    press(h, pos, PointerButton::Primary, Modifiers::NONE);
-}
-
-fn drag(h: &mut H, path: &[Pos2]) {
-    h.event(Event::PointerMoved(path[0]));
-    h.step();
-    let button = |pos, pressed| Event::PointerButton {
-        pos,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers: Modifiers::NONE,
-    };
-    h.event(button(path[0], true));
-    h.step();
-    for &p in &path[1..] {
-        h.event(Event::PointerMoved(p));
-        h.step();
-    }
-    h.event(button(*path.last().unwrap(), false));
-    h.run();
 }
 
 fn gain(output: NodeId) -> Endpoint {
@@ -427,4 +390,16 @@ fn a_track_control_with_a_lane_is_greyed_and_says_so() {
         vec![point(0, 0.0, Curve::Hold)],
     );
     assert!(h.get_by_label("M").accesskit_node().is_disabled());
+}
+
+fn press(h: &mut H, pos: Pos2, button: PointerButton, modifiers: Modifiers) {
+    testkit::click_with(h, button, modifiers, pos);
+}
+
+fn click(h: &mut H, pos: Pos2) {
+    testkit::click(h, pos, Modifiers::NONE);
+}
+
+fn drag(h: &mut H, path: &[Pos2]) {
+    testkit::drag(h, Modifiers::NONE, path);
 }

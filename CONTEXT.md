@@ -21,3 +21,6 @@ Snapping the starts of a take's notes to a grid when the take is committed. Moni
 
 **Latency compensation**:
 Shifting a take earlier by the output device's latency, so it lines up with what the player heard.
+
+**User action (in tests)**:
+One gesture a person makes, sent to the app as the pointer and keyboard events it would see: a drag, click, double click, key press, wheel turn or file drop. All tests perform them through one shared set of helpers.

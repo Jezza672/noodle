@@ -1,6 +1,7 @@
 //! The arrangement driven like a user would: pointer and keyboard events into
 //! a real [`Session`], checking the clips that result.
 
+use crate::testkit::{double_click, drag, drop_files};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -88,29 +89,6 @@ fn centre(h: &H, id: ClipId) -> Pos2 {
 
 fn rect(h: &H, id: ClipId) -> egui::Rect {
     h.state().timeline.clip_rect(id).unwrap()
-}
-
-/// Presses at the first point, moves through the rest, releases at the last.
-fn drag(h: &mut H, modifiers: Modifiers, path: &[Pos2]) {
-    h.event(Event::ModifiersChanged(modifiers));
-    h.event(Event::PointerMoved(path[0]));
-    h.step();
-    let button = |pos, pressed| Event::PointerButton {
-        pos,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers,
-    };
-    h.event(button(path[0], true));
-    h.step();
-    for &p in &path[1..] {
-        h.event(Event::PointerMoved(p));
-        h.step();
-    }
-    h.event(button(*path.last().unwrap(), false));
-    h.step();
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
 }
 
 enum Grab {
@@ -773,32 +751,6 @@ fn a_clip_too_narrow_for_trimming_has_no_fade_handles() {
     assert!(h.state().timeline.fade_handle(id, true).is_none());
 }
 
-#[derive(Debug)]
-struct Dropped(std::path::PathBuf);
-
-impl egui::DroppedFile for Dropped {
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-
-    fn bytes(&self) -> Result<Vec<u8>, String> {
-        Err("not needed".into())
-    }
-}
-
-/// Drops `files` with the pointer at `at`.
-fn drop_files(h: &mut H, at: Pos2, files: &[std::path::PathBuf]) {
-    h.event(Event::PointerMoved(at));
-    h.step();
-    for file in files {
-        h.input_mut()
-            .dropped_files
-            .push(std::sync::Arc::new(Dropped(file.clone())));
-    }
-    h.step();
-    h.run();
-}
-
 /// Writes a wav of `frames` frames next to the project and returns its path.
 fn wav(h: &H, name: &str, frames: usize) -> std::path::PathBuf {
     let path = h.state()._dir.path().join(name);
@@ -917,23 +869,6 @@ fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
     h.get_by_label("Import audio…").click();
     h.run();
     assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
-}
-
-fn double_click(h: &mut H, at: Pos2) {
-    h.event(Event::PointerMoved(at));
-    h.step();
-    for _ in 0..2 {
-        for pressed in [true, false] {
-            h.event(Event::PointerButton {
-                pos: at,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            });
-        }
-        h.step();
-    }
-    h.run();
 }
 
 fn type_and_press(h: &mut H, text: &str, key: Key) {
