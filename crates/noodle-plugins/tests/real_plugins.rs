@@ -14,7 +14,13 @@ use noodle_engine::{Config, Shape};
 use noodle_plugins::{Catalog, ClapNodeType, PluginFile, find_plugin_files, scan_file};
 
 fn installed() -> Vec<PathBuf> {
-    find_plugin_files(&[PathBuf::from("/usr/lib/clap")])
+    let files = find_plugin_files(&[PathBuf::from("/usr/lib/clap")]);
+    // CI sets this, so a change to its packages can't quietly skip the tests.
+    assert!(
+        !files.is_empty() || std::env::var_os("NOODLE_REQUIRE_REAL_PLUGINS").is_none(),
+        "NOODLE_REQUIRE_REAL_PLUGINS is set but /usr/lib/clap has no plugins"
+    );
+    files
 }
 
 fn scanned() -> Vec<PluginFile> {

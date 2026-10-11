@@ -185,16 +185,17 @@ fn a_note_makes_the_plugin_sound_at_that_pitch_and_a_note_off_stops_it() {
 #[test]
 fn every_note_input_reaches_the_plugin_in_time_order() {
     let mut h = harness(&Config::new(), &[]);
-    // A4 on the first port at frame 0, A4 on the second (an octave up) at
-    // frame 100, and the second port's earlier note first in its list.
-    h.send_events(0, &[note_on(0, 1, 69, 1.0)]);
-    h.send_events(1, &[note_on(100, 2, 69, 1.0)]);
+    // A4 on the second port (an octave up) at frame 0 and on the first at
+    // frame 100: the later port's event is the earlier in time. Same note id
+    // on both, so the notes are kept apart by port.
+    h.send_events(0, &[note_on(100, 1, 69, 1.0)]);
+    h.send_events(1, &[note_on(0, 1, 69, 1.0)]);
     h.run(256).unwrap();
     let out = h.output(0);
     for (i, &s) in out.lane(0, 0).iter().enumerate().skip(1) {
-        let low = (TAU * 440.0 * i as f32 / RATE).sin() * 0.2;
-        let high = if i > 100 {
-            (TAU * 880.0 * (i - 100) as f32 / RATE).sin() * 0.2
+        let high = (TAU * 880.0 * i as f32 / RATE).sin() * 0.2;
+        let low = if i > 100 {
+            (TAU * 440.0 * (i - 100) as f32 / RATE).sin() * 0.2
         } else {
             0.0
         };
@@ -204,14 +205,14 @@ fn every_note_input_reaches_the_plugin_in_time_order() {
             low + high
         );
     }
-    // A note-off on the second port by id alone stops that note only.
+    // A note-off by id on the second port stops that port's note only, though
+    // the first port's note has the same id.
     h.send_events(0, &[]);
-    h.send_events(1, &[note_off(0, 2)]);
+    h.send_events(1, &[note_off(0, 1)]);
     h.run(256).unwrap();
     let out = h.output(0);
-    let tail = out.lane(0, 0);
-    let expected = |i: usize| (TAU * 440.0 * (256 + i) as f32 / RATE).sin() * 0.2;
-    for (i, &s) in tail.iter().enumerate() {
+    let expected = |i: usize| (TAU * 440.0 * (256 + i - 100) as f32 / RATE).sin() * 0.2;
+    for (i, &s) in out.lane(0, 0).iter().enumerate() {
         assert!((s - expected(i)).abs() < 3e-3, "frame {i}");
     }
 }

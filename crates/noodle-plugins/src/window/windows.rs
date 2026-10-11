@@ -9,10 +9,10 @@ use windows_sys::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_STYLE, GetClientRect,
-    IDC_ARROW, IsWindowVisible, LoadCursorW, RegisterClassW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, WM_CLOSE, WNDCLASSW, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW,
-    WS_THICKFRAME,
+    GetWindowLongPtrW, IDC_ARROW, IsIconic, IsWindowVisible, LoadCursorW, RegisterClassW, SW_HIDE,
+    SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSW, WS_CLIPCHILDREN,
+    WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
 };
 
 use super::{EditorWindow, ParentWindow};
@@ -98,10 +98,16 @@ impl EditorWindow for WinWindow {
     }
 
     fn set_size(&mut self, width: u32, height: u32, resizable: bool) {
-        let mut style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
-        if !resizable {
-            style &= !(WS_THICKFRAME | WS_MAXIMIZEBOX);
-        }
+        // Change only the resizing bits: the rest of the style word is state
+        // (visible, minimized) that setting a whole new word would wipe.
+        // SAFETY: our own window.
+        let current = unsafe { GetWindowLongPtrW(self.hwnd, GWL_STYLE) } as u32;
+        let resizing = WS_THICKFRAME | WS_MAXIMIZEBOX;
+        let style = if resizable {
+            current | resizing
+        } else {
+            current & !resizing
+        };
         let mut rect = RECT {
             left: 0,
             top: 0,
@@ -132,6 +138,11 @@ impl EditorWindow for WinWindow {
             bottom: 0,
         };
         // SAFETY: our own window and a rectangle on the stack.
+        if unsafe { IsIconic(self.hwnd) } != 0 {
+            // A minimized window has no client area to speak of.
+            return (0, 0);
+        }
+        // SAFETY: as above.
         unsafe { GetClientRect(self.hwnd, &mut rect) };
         (rect.right.max(0) as u32, rect.bottom.max(0) as u32)
     }

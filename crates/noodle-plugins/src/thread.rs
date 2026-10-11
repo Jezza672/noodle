@@ -56,6 +56,14 @@ struct Live {
     size: (u32, u32),
 }
 
+impl Drop for Live {
+    fn drop(&mut self) {
+        // However it goes, the plugin's view goes before its window and the
+        // plugin itself.
+        destroy_editor(self);
+    }
+}
+
 /// An instance, activated and ready.
 pub(crate) struct Loaded {
     pub key: u64,
@@ -221,6 +229,13 @@ fn queue() -> &'static Queue {
     })
 }
 
+impl Command {
+    /// Whether the sender waits for an answer.
+    fn waits(&self) -> bool {
+        !matches!(self, Command::Close { .. } | Command::CloseEditor { .. })
+    }
+}
+
 fn gone() -> HostError {
     HostError("the plugin thread ended".into())
 }
@@ -232,12 +247,15 @@ fn send(command: Command) -> Result<(), HostError> {
         Ok(mut adopted) => match adopted.as_mut() {
             Some(adopted) => {
                 adopted.executor.handle(command);
-                None
+                Ok(None)
             }
-            None => Some(command),
+            None => Ok(Some(command)),
         },
-        Err(_) => Some(command),
-    });
+        // A command is running on this (the adopted) thread and a plugin has
+        // called back into us. A command that waits would wait for itself.
+        Err(_) if command.waits() => Err(HostError("the plugin thread is busy".into())),
+        Err(_) => Ok(Some(command)),
+    })?;
     let Some(command) = command else {
         return Ok(());
     };
@@ -377,7 +395,7 @@ fn resize_window(live: &mut Live) {
                 height: live.size.1,
             },
         );
-    } else if window.size() != live.size {
+    } else if window.size() != live.size && window.size() != (0, 0) && gui.can_resize(&handle) {
         // The user dragged it: the plugin may want a different size.
         let wanted = window.size();
         let GuiSize { width, height } = gui
@@ -663,6 +681,8 @@ fn open_embedded(live: &mut Live) -> Result<(), HostError> {
             ParentWindow::Win32(hwnd) => unsafe { Window::from_win32_hwnd(hwnd) },
             ParentWindow::X11(id) => Window::from_x11_handle(id),
         };
+        // From here the plugin may ask for another size.
+        flags.embedded.store(true, Ordering::Release);
         // SAFETY: the window stays alive in `live` until the editor is
         // destroyed, which is when the plugin is told it is gone.
         unsafe { gui.set_parent(handle, parent) }
@@ -673,6 +693,8 @@ fn open_embedded(live: &mut Live) -> Result<(), HostError> {
         Ok(())
     })();
     if let Err(error) = result {
+        flags.embedded.store(false, Ordering::Release);
+        flags.resize.store(0, Ordering::Release);
         gui.destroy(handle);
         return Err(error);
     }
