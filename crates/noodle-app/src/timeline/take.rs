@@ -30,11 +30,6 @@ pub fn draw(
         return None;
     }
     let red = crate::theme::RECORD;
-    painter.rect_filled(
-        full,
-        f32::from(crate::theme::RADIUS),
-        red.gamma_multiply(0.35),
-    );
     let (audio, midi) = (
         take.audio && take.audio_tracks.contains(&track),
         take.midi_tracks.contains(&track),
@@ -42,6 +37,11 @@ pub fn draw(
     if !audio && !midi {
         return None;
     }
+    painter.rect_filled(
+        full,
+        f32::from(crate::theme::RADIUS),
+        red.gamma_multiply(0.35),
+    );
     if audio {
         let area = Rect::from_min_max(full.min + vec2(0.0, waveform::LABEL), full.max);
         let width = full.width();
@@ -70,6 +70,7 @@ pub fn draw(
     }
     let label = match (audio, notes) {
         (true, 0) => "Recording".to_owned(),
+        (_, 1) => "Recording (1 note)".to_owned(),
         (_, n) => format!("Recording ({n} notes)"),
     };
     painter.text(

@@ -107,7 +107,8 @@ impl RecordTap {
             input.len().is_multiple_of(self.channels),
             "input is whole frames"
         );
-        let fits = input.len().min(self.producer.slots());
+        // Whole frames only, or the channels would swap after a drop.
+        let fits = input.len().min(self.producer.slots()) / self.channels * self.channels;
         if fits < input.len() {
             self.dropped
                 .fetch_add((input.len() - fits) as u64, Ordering::Relaxed);
@@ -426,6 +427,23 @@ mod tests {
         tap.push(&[5.0f32]);
         recorder.stop().unwrap();
         assert_eq!(read_wav(&path).unwrap().samples, [5.0]);
+    }
+
+    #[test]
+    fn a_full_ring_drops_whole_frames_and_the_recording_survives() {
+        // Three frames of room in a stereo ring: a four frame block fits
+        // only three, and not 6.5 of them.
+        let (producer, consumer) = RingBuffer::new(7);
+        let armed = Arc::new(AtomicBool::new(true));
+        let mut tap = RecordTap {
+            producer,
+            channels: 2,
+            armed,
+            dropped: Arc::new(AtomicU64::new(0)),
+        };
+        tap.push(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(consumer.slots(), 6);
+        assert_eq!(tap.dropped.load(Ordering::Relaxed), 2);
     }
 
     #[test]

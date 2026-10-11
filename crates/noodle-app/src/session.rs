@@ -1465,9 +1465,15 @@ impl Session {
             None => Err(RecordError::NoInput),
         };
         // No audio input chosen is not a failure: the take is MIDI alone.
+        let mut notice = None;
         let relative = match started {
             Ok(()) => Some(relative),
-            Err(RecordError::NoInput) => None,
+            Err(RecordError::NoInput) => {
+                if !audio_tracks.is_empty() {
+                    notice = Some("No audio input is chosen, so only MIDI is recorded".into());
+                }
+                None
+            }
             Err(error) => {
                 self.message = Some(format!("Couldn't record: {error}"));
                 return;
@@ -1492,7 +1498,7 @@ impl Session {
             ),
             quantise: self.record_quantise,
         });
-        self.message = None;
+        self.message = notice;
     }
 
     /// The sample rate to place a take with, and how long after the
@@ -3422,6 +3428,17 @@ mod tests {
         session.stop_recording();
         assert_eq!(session.project().clips().count(), 0);
         assert!(!dir.path().join("song recordings").exists());
+    }
+
+    #[test]
+    fn arming_audio_with_no_input_chosen_says_so_when_recording_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.fake_input = Some(Box::new(NoInput));
+        session.arm_kind(tracks[0], ArmKind::Audio, true);
+        session.record();
+        assert!(session.is_recording());
+        assert!(session.message().unwrap().contains("No audio input"));
     }
 
     #[test]

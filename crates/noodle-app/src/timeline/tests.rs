@@ -1616,7 +1616,7 @@ fn a_take_in_progress_shows_its_notes() {
         h.state()
             .timeline
             .drawn_text()
-            .contains(&"Recording (1 notes)".to_owned())
+            .contains(&"Recording (1 note)".to_owned())
     );
 }
 
@@ -1651,5 +1651,5 @@ fn a_take_is_drawn_only_on_tracks_armed_for_what_it_holds() {
     // The notes are on the MIDI track's take alone.
     let text = h.state().timeline.drawn_text();
     assert!(text.contains(&"Recording".to_owned()), "{text:?}");
-    assert!(text.contains(&"Recording (1 notes)".to_owned()), "{text:?}");
+    assert!(text.contains(&"Recording (1 note)".to_owned()), "{text:?}");
 }

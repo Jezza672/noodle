@@ -375,6 +375,8 @@ pub fn show(
     let mut hit_clip = false;
     let clips_before = state.selected.clone();
     let take = session.take_preview();
+    // Every audio-armed track shows the same waveform: work it out once.
+    let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> = Default::default();
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
         if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
@@ -383,7 +385,15 @@ pub fn show(
         let colour = colors::track_colour(index);
         if let Some(take) = &take {
             let drawn = take::draw(&painter, axis, top, take, track, |n| {
-                session.take_waveform(n)
+                let mut cached = take_wave.borrow_mut();
+                match &*cached {
+                    Some((columns, peaks)) if *columns == n => peaks.clone(),
+                    _ => {
+                        let peaks = session.take_waveform(n);
+                        *cached = Some((n, peaks.clone()));
+                        peaks
+                    }
+                }
             });
             #[cfg(test)]
             if let Some((rect, label)) = drawn {
