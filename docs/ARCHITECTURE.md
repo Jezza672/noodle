@@ -949,9 +949,13 @@ results saved before VST3 load as CLAP). The code is in
   view gets an `IPlugFrame` whose `resizeView` only sets a flag, which the
   thread's housekeeping carries out (resize the window, then `onSize`), as
   it does the user dragging the window's edge (`checkSizeConstraint`, then
-  `onSize`) and a closed window. Capturing a running VST3 reads the
-  component's and controller's state and each listed parameter's normalized
-  value from the controller, from the plugin thread while the audio thread
+  `onSize`) and a closed window (a resize is thus carried out up to 50 ms after
+  the plugin asks, not inside `resizeView`). Capturing a running VST3 first
+  tells the controller what the processor was given through ports and MIDI
+  (`setParamNormalized`, from a mirror of the last values sent, so a stale
+  controller value never overwrites a port), then reads the component's and
+  controller's state and each listed parameter's value (a stepped one as its
+  step number) from the plugin thread while the audio thread
   runs, as the standard's UI-thread calls allow.
 - **Edits.** A controller reports what the user does in the editor through
   `IComponentHandler::performEdit`; the host must pass it to the processor, or

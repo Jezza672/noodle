@@ -328,6 +328,9 @@ struct EditTable {
     ids: Vec<ParamID>,
     /// A value's `f64` bits, or [`NONE`] if there is no edit waiting.
     values: Vec<AtomicU64>,
+    /// The last value the processor was given for each parameter (from a
+    /// port, a MIDI controller or an edit), or [`NONE`].
+    sent: Vec<AtomicU64>,
 }
 
 /// An `f64` NaN, which no edit is.
@@ -339,12 +342,41 @@ impl Edits {
         ids.sort_unstable();
         ids.dedup();
         let values = ids.iter().map(|_| AtomicU64::new(NONE)).collect();
-        let _ = self.table.set(EditTable { ids, values });
+        let sent = ids.iter().map(|_| AtomicU64::new(NONE)).collect();
+        let _ = self.table.set(EditTable { ids, values, sent });
     }
 
     /// The parameters edits are kept for, ascending.
     pub fn ids(&self) -> &[ParamID] {
         self.table.get().map_or(&[], |t| &t.ids)
+    }
+
+    /// The parameter's place in [`ids`](Self::ids).
+    pub fn index_of(&self, id: ParamID) -> Option<usize> {
+        self.table.get()?.ids.binary_search(&id).ok()
+    }
+
+    /// Notes what the processor was last given for the parameter at `index`.
+    /// Doesn't allocate or lock.
+    pub fn note_sent(&self, index: usize, value: f64) {
+        if let Some(cell) = self.table.get().and_then(|t| t.sent.get(index)) {
+            cell.store(value.to_bits(), Ordering::Release);
+        }
+    }
+
+    /// Calls `f(id, value)` for each parameter the processor was given a
+    /// value for and that has no edit still waiting, for the controller to be
+    /// told: it only hears of edits made in its own editor.
+    pub fn for_each_sent(&self, mut f: impl FnMut(ParamID, f64)) {
+        let Some(table) = self.table.get() else {
+            return;
+        };
+        for (index, id) in table.ids.iter().enumerate() {
+            let bits = table.sent[index].load(Ordering::Acquire);
+            if bits != NONE && table.values[index].load(Ordering::Acquire) == NONE {
+                f(*id, f64::from_bits(bits));
+            }
+        }
     }
 
     fn record(&self, id: ParamID, value: f64) {

@@ -130,6 +130,16 @@ fn the_editor_embeds_and_its_edits_and_messages_reach_the_processor() {
             .all(|&s| (s - 1.0).abs() < 1e-6)
     );
 
+    // A port the user set reaches the processor only; capturing tells the
+    // controller first, so it doesn't store its stale default over the port.
+    h.set(1, 0.2);
+    run_with_input(&mut h, 1.0);
+    let before = capture(node).expect("capture");
+    let gain = before.params.iter().find(|(p, _)| *p == GAIN).unwrap().1;
+    assert!((gain - 0.2).abs() < 1e-6, "{gain}");
+    h.set(1, 0.5);
+    run_with_input(&mut h, 1.0);
+
     open_editor(node).expect("the plugin embeds");
     assert!(editor_is_open(node));
     {

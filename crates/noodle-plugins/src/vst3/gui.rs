@@ -26,7 +26,7 @@ use crate::host::{Flags, HostError};
 use crate::thread::{self, COMMAND_TIMEOUT};
 use crate::window::{self, EditorWindow, ParentWindow};
 
-use super::classes::{Frame, raw};
+use super::classes::{Edits, Frame, raw};
 use super::module::Module;
 use super::plugin::{Control, Plugin};
 
@@ -47,6 +47,7 @@ const DEFAULT_SIZE: (u32, u32) = (800, 600);
 /// One plugin's editor.
 struct Gui {
     control: Control,
+    edits: Arc<Edits>,
     flags: Arc<Flags>,
     frame: ComWrapper<Frame>,
     view: Option<ComPtr<IPlugView>>,
@@ -80,6 +81,7 @@ pub(crate) fn register(plugin: &Plugin, flags: &Arc<Flags>) -> u64 {
     let key = KEY_BIT | NEXT_KEY.fetch_add(1, Ordering::Relaxed);
     let gui = OnPluginThread(Gui {
         control: plugin.control(),
+        edits: Arc::clone(plugin.edits()),
         flags: Arc::clone(flags),
         frame: ComWrapper::new(Frame {
             flags: Arc::clone(flags),
@@ -89,7 +91,9 @@ pub(crate) fn register(plugin: &Plugin, flags: &Arc<Flags>) -> u64 {
         size: (0, 0),
         _module: Arc::clone(plugin.module()),
     });
-    thread::run_job_detached(move || {
+    // Waited for, so the editor can be opened as soon as the node is
+    // findable. (If this fails the editor reports the plugin isn't running.)
+    let _ = thread::run_job(COMMAND_TIMEOUT, move || {
         let gui = gui;
         GUIS.with(|guis| guis.borrow_mut().insert(key, gui.0));
     });
@@ -121,6 +125,19 @@ fn with_gui<T>(key: u64, f: impl FnOnce(&mut Gui) -> Result<T, HostError>) -> Re
     })
 }
 
+/// Tells the controller what the processor was given through ports and MIDI,
+/// which it would not otherwise hear of (so an editor shows it, and a capture
+/// doesn't store the controller's stale value over it).
+fn sync_controller(gui: &Gui) {
+    let Some(controller) = &gui.control.controller else {
+        return;
+    };
+    gui.edits.for_each_sent(|id, value| {
+        // SAFETY: a plain call into the plugin, from the plugin thread.
+        unsafe { controller.setParamNormalized(id, value) };
+    });
+}
+
 /// Opens the editor (or shows it again if it was hidden).
 pub(crate) fn open(key: u64) -> Result<(), HostError> {
     thread::run_job(COMMAND_TIMEOUT, move || with_gui(key, open_view))?
@@ -140,6 +157,7 @@ pub(crate) fn close(key: u64) {
 pub(crate) fn capture(key: u64) -> Result<Captured, HostError> {
     thread::run_job(COMMAND_TIMEOUT, move || {
         with_gui(key, |gui| {
+            sync_controller(gui);
             Ok(Captured {
                 state: gui.control.save_state()?,
                 params: gui.control.values(),
@@ -188,6 +206,7 @@ fn open_view(gui: &mut Gui) -> Result<(), HostError> {
         }
         return Ok(());
     }
+    sync_controller(gui);
     let mut window = window::make("Plugin editor").ok_or_else(|| {
         HostError(
             "VST3 editors need a window made by the app, which this system doesn't have".into(),

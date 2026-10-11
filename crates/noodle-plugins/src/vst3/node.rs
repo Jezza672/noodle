@@ -35,6 +35,8 @@ struct Slot {
     max: f32,
     /// Steps of a stepped parameter (the port then holds 0 to `steps`), or 0.
     steps: i32,
+    /// This parameter's place in the edits table, if it has one.
+    edit_index: Option<usize>,
     /// The last value sent, as the port has it. Starts at the default, so a
     /// parameter nobody touched leaves the plugin's own (or restored) value.
     last: f32,
@@ -150,6 +152,7 @@ impl Vst3Node {
                     min,
                     max,
                     steps: if param.stepped { max as i32 } else { 0 },
+                    edit_index: None,
                     last: (param.default as f32).clamp(min, max),
                 }
             })
@@ -166,6 +169,7 @@ impl Vst3Node {
                         min: 0.0,
                         max: 1.0,
                         steps: 0,
+                        edit_index: None,
                         last: f32::NAN,
                     });
                     slots.len() - 1
@@ -197,6 +201,7 @@ impl Vst3Node {
                             min: 0.0,
                             max: 1.0,
                             steps: 0,
+                            edit_index: None,
                             last: f32::NAN,
                         });
                         capacity.push(2);
@@ -206,6 +211,9 @@ impl Vst3Node {
                 EditSlot { slot }
             })
             .collect();
+        for slot in &mut slots {
+            slot.edit_index = edits.index_of(slot.id);
+        }
         let params: Vec<(ParamID, usize)> = slots.iter().map(|s| s.id).zip(capacity).collect();
         Self {
             plugin: Some(plugin),
@@ -298,10 +306,11 @@ impl Vst3Node {
     /// isn't touched doesn't undo the edit (capturing the editor stores the
     /// edit in the port, which then agrees with it).
     fn apply_edits(&mut self) {
-        let (changes, edit_slots) = (&self.changes, &self.edit_slots);
+        let (changes, edit_slots, edits_ref) = (&self.changes, &self.edit_slots, &self.edits);
         self.edits.take(|index, value| {
             if let Some(edit) = edit_slots.get(index) {
                 changes.push(edit.slot, 0, value);
+                edits_ref.note_sent(index, value);
             }
         });
     }
@@ -377,6 +386,9 @@ impl Vst3Node {
                 f64::from(value)
             };
             self.changes.push(index, at as i32, normalized);
+            if let Some(i) = slot.edit_index {
+                self.edits.note_sent(i, normalized);
+            }
         }
     }
 
@@ -500,6 +512,9 @@ impl Vst3Node {
             .find(|m| m.channel == channel && m.controller == controller)
         {
             self.changes.push(mapped.slot, time, value);
+            if let Some(i) = self.slots[mapped.slot].edit_index {
+                self.edits.note_sent(i, value);
+            }
             return;
         }
         // Not mapped to a parameter: sent as the legacy event, which few

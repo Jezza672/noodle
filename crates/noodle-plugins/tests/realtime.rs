@@ -220,10 +220,9 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType, id: NodeId, edito
     // The blocks were real: the notes made sound.
     assert!(heard);
     if editor {
-        // And the edit was real: Gain, which the wire was driving, is the
-        // editor's now (a quarter) in what the plugin reports.
-        let captured = noodle_plugins::capture(id).expect("capture");
-        assert!(captured.params.iter().any(|&(p, v)| p == 1 && v == 0.25));
+        // The plugin is still there to capture (the editor's edit itself is
+        // checked in `vst3_editor.rs`).
+        assert!(noodle_plugins::capture(id).is_ok());
     }
 }
 
