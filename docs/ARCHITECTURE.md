@@ -482,8 +482,13 @@ track as a single `Batch`, so one undo removes the take. An armed track that
 was deleted meanwhile gets no clip (if all were deleted, the file is kept and
 said so), and a take with no audio adds nothing and
 deletes its file. Input that was dropped because the disk stalled is
-reported. The clip is placed at the playhead without compensating for the
-audio device's latency, so a take can sit a little late; that is still to do.
+reported. What the player played arrived after a round trip: the output
+latency they heard the project through (the driver's `playback - callback`
+time plus plugin delay compensation) and the input's own
+(`callback - capture`, kept by the input callback in `Recorder::input_latency`).
+The clip starts at the playhead but skips that many frames of the file
+(`recorded_clip`), so the take lines up with the project as heard. MIDI takes
+subtract the output side only.
 
 **MIDI takes.** The same Record also captures MIDI. It subscribes to the
 session's MIDI bus for notes (hardware ports and the computer keyboard alike)
@@ -869,7 +874,7 @@ frames while a wire drives them, so audio-rate modulation is stepped), notes
 are converted to CLAP note events (a note-off is given the key and channel its
 note-on had, since Noodle's note-off carries only the id), and the plugin's
 output is copied out. A plugin's note output becomes the node's event output.
-The transport (tempo, position, signature, playing) is passed on. Nothing on
+The transport (tempo, position, signature and where it began, playing) is passed on. Nothing on
 this path allocates (`tests/realtime.rs` checks it), so events beyond 4096 per
 block are dropped. A plugin that fails in `process` gives silence for that
 block. A parameter is sent once its port value differs from the plugin's

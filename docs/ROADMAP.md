@@ -187,8 +187,9 @@ device (checking that every clip streams).
 - Nothing has been listened to on a real device. CI now runs Linux, macOS
   and Windows on every PR, so the remaining check is a short `noodle play`
   on the Mac.
-- Recording has no latency compensation for takes yet, and hasn't been tried
-  with a real microphone.
+- Audio takes skip the measured round trip (output latency, plugin delay
+  compensation and the input's capture latency, as the driver reports them),
+  but this hasn't been tried with a real microphone.
 - The follow-ups below (group ports, track order and delete, mixer
   nodes, several outputs, clip copying) are the rest of the milestone's
   planned work.
@@ -205,7 +206,8 @@ device (checking that every clip streams).
 - **Arrangement view:** tracks, and moving, trimming and fading clips.
 - Mixer view over the track groups.
 - Automation lanes.
-- Recording audio input to clips (done, apart from latency compensation).
+- Recording audio input to clips (done, with latency compensation; a real
+  microphone is still to be tried).
 
 **Done when:** you can arrange several audio clips on tracks, process them
 through node graphs, automate a parameter, and mix them down live.
@@ -297,13 +299,20 @@ and several Output nodes each tied to one device). All of this theme is done.
   (View > Outputs). The engine renders one buffer for all the devices'
   channels and the main device's callback hands the rest to the other devices'
   streams through queues; see "Playing on several devices" in
-  ARCHITECTURE.md. Still open: the extra devices follow the main device's
-  sample rate (no resampling), and their latency isn't compensated.
+  ARCHITECTURE.md. A device whose samples play sooner than the main
+  device's is held back by the difference so the two sound together (up to
+  about a sixth of a second; a device slower than the main one can't be caught
+  up). Still open: the extra devices follow the main device's sample rate (no
+  resampling).
 
 **Clips and the arrangement (M2).**
 
-- **Done.** Ctrl or Cmd-drag a clip to copy it to the new place (17). More clip
-  editing (split, duplicate, slip) is expected after this.
+- **Done.** Ctrl or Cmd-drag a clip to copy it to the new place (17). **Done:**
+  S cuts the selected clips (every clip, if none is selected) at the
+  playhead into two clips that play the same samples; Cmd/Ctrl+D copies the
+  selection to just after itself; Shift+Alt-drag slips an audio clip's
+  contents under its window. A MIDI note spanning a cut is shortened in the
+  first half and sounds again at the start of the second.
 - **Done.** Import audio moves to the File menu, and the timeline's right-click menu
   offers it too (21). **Now.**
 - **Done.** With a clip selected, Ctrl or Cmd+Left and Right move the playhead to the
@@ -364,12 +373,14 @@ Metronome node and the metronome button.
 - **Done.** A button shows a distinct state when its node is missing (dimmed;
   pressing adds one) or broken (red, with the reason on hover), and what it's
   bound to can be edited (24) by rewiring in the node editor.
-- **Still to do:** a way to add other buttons to the pill, and binding a
-  button to a chosen node or parameter from the pill itself. The metronome
-  has no accent or sound settings beyond `level` yet. A signature change
-  inside the project counts beats from tick 0 (each beat a multiple of the
-  current beat length), so after one the clicks and the bar accent can land
-  off the new meter's grid. Fixing it needs the meter's start tick on `Transport`.
+- **Done.** Other buttons in the pill: every top-level Button node except the
+  metronome's shows as a ⏻ button (lit while on, tooltip naming what it
+  drives), and the ＋ menu adds one wired to any unwired two-valued
+  (Off/On) parameter of a top-level node, as one undo step.
+- **Done.** The metronome has `pitch` and `accent` parameters, and counts
+  beats from the start of the time signature in force (`Transport::signature_start`),
+  so the clicks and the bar accent stay on the meter's grid after a change
+  of meter (from the next block, like a tempo change).
 
 ## M3: Events and polyphony
 
@@ -564,7 +575,10 @@ A plugin that changes its latency after loading (restart request, latency
   plan, offline renders trimmed to the timeline).
 - Out-of-process plugin hosting (done: a host process per plugin node,
   audio through shared memory, silence and a restart when it dies or hangs;
-  editors only on Linux so far).
+  editors of sandboxed plugins embed in host-made windows on macOS and
+  Windows as in the app, with the host's main thread as its plugin thread;
+  only checked by CI compiling them and by the Linux emulation of that
+  arrangement, so the Mac and Windows hand check is owed).
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
 
