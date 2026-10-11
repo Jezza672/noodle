@@ -11,6 +11,7 @@ use crate::editor::{self, EditorState};
 use crate::export_dialog::ExportDialog;
 use crate::outputs::OutputsView;
 use crate::piano_roll::{self, PianoRoll};
+use crate::plugin_browser::PluginBrowser;
 use crate::session::{Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
 use crate::{metronome, mixer, properties, theme};
@@ -77,6 +78,7 @@ pub struct App {
     scope_view: Option<NodeId>,
     /// Whether the outputs view is showing.
     outputs_open: bool,
+    plugin_browser: PluginBrowser,
     outputs: OutputsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
@@ -105,6 +107,7 @@ enum Action {
     ToggleMetronome,
     ToggleScope,
     ToggleOutputs,
+    TogglePlugins,
     ImportAudio,
     ExportAudio,
     /// Asks where the export the dialog chose is to be written.
@@ -152,6 +155,7 @@ impl App {
             scope_open: false,
             scope_view: None,
             outputs_open: false,
+            plugin_browser: PluginBrowser::default(),
             outputs: OutputsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
         }
@@ -370,6 +374,8 @@ impl App {
             });
 
         self.confirm_dialog(ui.ctx(), &mut actions);
+        let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
+        self.session.edit(edits);
         self.export.show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
             actions.push(Action::StartExport);
@@ -559,6 +565,13 @@ impl App {
                 .clicked()
             {
                 actions.push(Action::ToggleOutputs);
+            }
+            if ui
+                .selectable_label(self.plugin_browser.is_open(), "Plugins")
+                .on_hover_text("Find and add CLAP plugins")
+                .clicked()
+            {
+                actions.push(Action::TogglePlugins);
             }
         });
     }
@@ -893,6 +906,7 @@ impl App {
                 }
             }
             Action::ToggleScope => self.scope_open = !self.scope_open,
+            Action::TogglePlugins => self.plugin_browser.toggle(),
             Action::ToggleOutputs => {
                 self.outputs_open = !self.outputs_open;
                 if self.outputs_open {
@@ -1210,6 +1224,19 @@ mod tests {
         harness.get_by_label("To");
         // An empty project's range runs from 0 to 0: nothing to write.
         harness.get_by_label("The range ends before it starts");
+    }
+
+    #[test]
+    fn the_plugin_browser_opens_from_the_view_menu() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(harness.query_by_label("Rescan").is_none());
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Plugins").click();
+        harness.run();
+        harness.get_by_label("Rescan");
+        harness.get_by_label_contains("0 of 0 plugins");
     }
 
     #[test]

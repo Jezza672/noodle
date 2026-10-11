@@ -35,6 +35,7 @@ pub fn show(
     problems(ui, session, id);
 
     let mut edits = Vec::new();
+    plugin_editor(ui, session, id, &mut edits);
     freezing(ui, session, id, &mut edits);
     match node_type {
         Some(node_type) => {
@@ -49,6 +50,30 @@ pub fn show(
         }
     }
     edits
+}
+
+/// A plugin node's editor button.
+fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
+    let Some(plugin) = session.plugin_of(id) else {
+        return;
+    };
+    let open = session.plugin_editor_open(id);
+    ui.horizontal(|ui| {
+        let label = if open { "Close editor" } else { "Open editor" };
+        if ui
+            .button(label)
+            .on_hover_text(format!(
+                "{}'s own window. Closing it keeps what you changed in the project.",
+                plugin.descriptor().name
+            ))
+            .clicked()
+        {
+            edits.push(Edit::PluginEditor {
+                node: id,
+                open: !open,
+            });
+        }
+    });
 }
 
 /// Whether the node is frozen, how its render is doing, and the button to

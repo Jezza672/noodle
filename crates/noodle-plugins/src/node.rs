@@ -36,7 +36,8 @@ use crate::STATE_KEY;
 use crate::descriptor::{
     Descriptor, file_stamp, input_key, note_input_key, note_output_key, output_key, param_key,
 };
-use crate::host::{self, Control, Host};
+use crate::host::Host;
+use crate::{editor, thread};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
 pub const PARAM_STEP: usize = 32;
@@ -224,7 +225,7 @@ impl NodeType for ClapNodeType {
             ),
             _ => None,
         };
-        let running = host::start(
+        let mut loaded = thread::start(
             &self.path,
             &self.descriptor.id,
             state,
@@ -232,10 +233,11 @@ impl NodeType for ClapNodeType {
             setup.max_frames,
         )
         .map_err(|error| NodeError::config(error.to_string()))?;
+        editor::register(setup.node, loaded.key, Arc::clone(&loaded.flags));
         Ok(Instance::realtime(ClapNode::new(
             &self.descriptor,
-            running.processor.into(),
-            running.control,
+            loaded.take_processor().into(),
+            loaded.key,
             setup.max_frames,
         )))
     }
@@ -310,7 +312,8 @@ struct ClapNode {
     /// Started on the first block, which runs on the audio thread (CLAP's
     /// `start_processing` belongs there).
     processor: Option<PluginAudioProcessor<Host>>,
-    control: Option<Control>,
+    /// The shared plugin thread's key for this instance.
+    key: u64,
     max_frames: usize,
     audio_in: Vec<PortBuffers>,
     audio_out: Vec<PortBuffers>,
@@ -327,7 +330,7 @@ impl ClapNode {
     fn new(
         descriptor: &Descriptor,
         processor: PluginAudioProcessor<Host>,
-        control: Control,
+        key: u64,
         max_frames: usize,
     ) -> Self {
         let audio_in: Vec<_> = descriptor
@@ -362,7 +365,7 @@ impl ClapNode {
             .collect();
         Self {
             processor: Some(processor),
-            control: Some(control),
+            key,
             max_frames,
             audio_in,
             audio_out,
@@ -666,11 +669,12 @@ impl Node for ClapNode {
 
 impl Drop for ClapNode {
     fn drop(&mut self) {
-        if let (Some(processor), Some(control)) = (self.processor.take(), self.control.take()) {
+        editor::unregister(self.key);
+        if let Some(processor) = self.processor.take() {
             // Stopping belongs on the audio thread too, but a node is dropped
             // on the controller's thread; the plugin is deactivated right
             // after, which is what matters.
-            control.close(processor.into_stopped());
+            thread::close(self.key, processor.into_stopped());
         }
     }
 }
