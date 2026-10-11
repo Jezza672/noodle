@@ -61,7 +61,16 @@ fn exercise(node_type: &ClapNodeType) {
         .audio_inputs
         .iter()
         .enumerate()
-        .map(|(i, p)| (i, if p.channels == 1 { Shape::MONO } else { Shape::STEREO }))
+        .map(|(i, p)| {
+            (
+                i,
+                if p.channels == 1 {
+                    Shape::MONO
+                } else {
+                    Shape::STEREO
+                },
+            )
+        })
         .collect();
     let mut h = Harness::new(node_type, &Config::new(), &connected, 48_000.0, 256)
         .unwrap_or_else(|e| panic!("{}: {e:?}", node_type.descriptor().name));

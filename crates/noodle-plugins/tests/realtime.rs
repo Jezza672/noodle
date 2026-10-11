@@ -130,9 +130,29 @@ fn processing_blocks_with_notes_and_modulation_never_allocates() {
             }],
             _ => Vec::new(),
         };
+        // The second note port plays in the blocks between.
+        let second = match block % 4 {
+            1 => vec![Event {
+                time: 20,
+                kind: EventKind::NoteOn {
+                    note: NoteId(1_000 + block as u32),
+                    channel: 0,
+                    key: 70,
+                    velocity: 0.8,
+                },
+            }],
+            3 => vec![Event {
+                time: 5,
+                kind: EventKind::NoteOff {
+                    note: NoteId(1_000 + block as u32 - 2),
+                    velocity: 0.0,
+                },
+            }],
+            _ => Vec::new(),
+        };
         let inputs: Vec<SignalIn<'_>> = input_buffers.iter().map(|b| b.as_in(FRAMES)).collect();
         let mut outputs: Vec<SignalOut<'_>> = vec![output_buffer.as_out(FRAMES)];
-        let event_inputs: [&[Event]; 1] = [&events];
+        let event_inputs: [&[Event]; 2] = [&events, &second];
         let mut event_outputs: Vec<EventsOut<'_>> = Vec::new();
         let violations = realtime(|| {
             node.process(
@@ -238,7 +258,7 @@ fn a_flood_of_parameter_changes_and_notes_never_allocates_and_keeps_notes() {
         let block_notes: &[Event] = if block == 1 { &notes } else { &[] };
         let signals: Vec<SignalIn<'_>> = inputs.iter().map(|b| b.as_in(FRAMES)).collect();
         let mut outs: Vec<SignalOut<'_>> = vec![output.as_out(FRAMES)];
-        let event_inputs: [&[Event]; 1] = [block_notes];
+        let event_inputs: [&[Event]; 2] = [block_notes, &[]];
         let mut event_outputs: Vec<EventsOut<'_>> = Vec::new();
         let violations = realtime(|| {
             node.process(
