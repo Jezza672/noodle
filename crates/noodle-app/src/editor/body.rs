@@ -13,7 +13,7 @@ use egui::{Painter, Pos2, Rect, Stroke, Vec2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::OUTPUT_ID;
-use noodle_engine::{Level, MeterReader, ParamReading, ScopeView, Telemetry};
+use noodle_engine::{CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry};
 use noodle_nodes::{METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
@@ -70,6 +70,10 @@ pub struct Bodies {
     params: HashMap<(NodeId, String), ParamWindow>,
     /// Seconds since the first update, for the windows.
     clock: f32,
+    /// Whether CPU meters are shown, so they're only read when wanted.
+    show_cpu: bool,
+    /// Each node's share of the audio thread's time, while `show_cpu`.
+    cpu: HashMap<NodeId, CpuReading>,
 }
 
 /// How far back a wired parameter's range marks look, in seconds.
@@ -119,6 +123,10 @@ impl Bodies {
     /// time since the last update, in seconds, for the peaks' decay.
     pub fn update(&mut self, telemetry: &Telemetry, project: &Project, dt: f32) {
         let graph = project.graph();
+        self.cpu.clear();
+        if self.show_cpu {
+            self.cpu.extend(telemetry.read_all_cpu());
+        }
         // A new session brings a new hub.
         if !self.reader.as_ref().is_some_and(|r| r.reads(telemetry)) {
             self.reader = None;
@@ -201,9 +209,35 @@ impl Bodies {
         self.params.get(&(node, key.to_owned()))?.live()
     }
 
+    /// Turns the per-node CPU meters on or off.
+    pub fn set_show_cpu(&mut self, on: bool) {
+        self.show_cpu = on;
+    }
+
+    pub fn show_cpu(&self) -> bool {
+        self.show_cpu
+    }
+
+    /// How much of the block time `node` is taking, if CPU meters are on and
+    /// it has reported.
+    pub fn cpu(&self, node: NodeId) -> Option<CpuReading> {
+        self.cpu.get(&node).copied()
+    }
+
+    /// The whole graph's share of the audio thread's time, if CPU meters are
+    /// on: the nodes' loads added up (without the device and the engine's own
+    /// overhead).
+    pub fn cpu_total(&self) -> Option<f32> {
+        self.show_cpu
+            .then(|| self.cpu.values().map(|reading| reading.load).sum())
+    }
+
     /// Whether anything is shown that changes while audio plays.
     pub fn is_live(&self) -> bool {
-        !self.meters.is_empty() || !self.scopes.is_empty() || !self.params.is_empty()
+        self.show_cpu
+            || !self.meters.is_empty()
+            || !self.scopes.is_empty()
+            || !self.params.is_empty()
     }
 }
 

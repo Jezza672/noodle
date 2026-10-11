@@ -9,14 +9,16 @@ use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use noodle_core::NodeId;
 
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
+use crate::render::TAP_ID;
 use crate::{
-    Context, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io, Node, NodeError,
-    ParamInfo, ParamKind, ParamWriter, Phase, Problem, Schedule, Settings, Setup, Shape, SignalIn,
-    SignalOut, Telemetry,
+    Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource, Instance, Io,
+    MAX_LATENCY, Node, NodeError, ParamInfo, ParamKind, ParamWriter, Phase, Problem, Schedule,
+    Settings, Setup, Shape, SignalIn, SignalOut, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -51,7 +53,18 @@ pub(crate) struct PlanInfo {
     audible: Wiring,
     /// Nodes that failed to instantiate and play silence instead.
     silent: HashSet<NodeId>,
+    /// Each node's reported latency in samples, so a node that carries over
+    /// (its instance arrives later) still counts.
+    latency: HashMap<NodeId, u32>,
+    /// Every delay line inserted for compensation, by the node and input it
+    /// feeds: (slot, index in the slot's lines, delay in samples). Sorted.
+    delays: Vec<DelayRecord>,
+    /// How late the mix sounds, in samples, once everything is aligned.
+    pub(crate) output_latency: u32,
 }
+
+/// (node, input index) -> (slot, index among the slot's delay lines, delay).
+type DelayRecord = ((NodeId, usize), (usize, usize, u32));
 
 /// For each node, where each of its inputs (signal inputs, then event
 /// inputs) comes from.
@@ -96,6 +109,9 @@ pub(crate) struct Plan {
     migrations: Vec<(usize, usize)>,
     /// The same for unconnected inputs' smoothing state.
     value_migrations: Vec<(usize, usize)>,
+    /// ((slot, line) in the previous plan, (slot, line) in this one) for
+    /// delay lines whose contents carry over.
+    delay_migrations: Vec<((usize, usize), (usize, usize))>,
     max_frames: usize,
 }
 
@@ -123,6 +139,11 @@ struct PlanNode {
     is_input: bool,
     /// Reports the signals wired into parameters, by input index.
     probes: Vec<(usize, ParamWriter)>,
+    /// Reports how long the node takes, when something is watching.
+    cpu: Option<CpuWriter>,
+    /// Delay lines that hold some of this node's inputs back to line up with
+    /// the slowest one, run just before the node.
+    delays: Vec<DelayLine>,
     scratch: Scratch,
 }
 
@@ -215,7 +236,11 @@ pub(crate) fn build(
         values: HashMap::new(),
         audible: HashMap::new(),
         silent: HashSet::new(),
+        latency: HashMap::new(),
+        delays: Vec::new(),
+        output_latency: 0,
     };
+    let mut slot_info: Vec<SlotInfo> = Vec::with_capacity(schedule.nodes.len());
     let mut nodes = Vec::with_capacity(schedule.nodes.len());
     let mut values = Vec::new();
     let mut offsets_in = Vec::new();
@@ -284,6 +309,22 @@ pub(crate) fn build(
                 }
             },
         };
+
+        let latency = if input_half {
+            0
+        } else {
+            match (&instance, carried) {
+                (Some(node), _) => node.latency(),
+                (None, Some(_)) => previous
+                    .and_then(|p| p.latency.get(&id).copied())
+                    .unwrap_or(0),
+                (None, None) => 0,
+            }
+            .min(MAX_LATENCY)
+        };
+        if !input_half {
+            info.latency.insert(id, latency);
+        }
 
         let mut inputs = Vec::with_capacity(scheduled.inputs.len());
         for ((port, source), shape) in scheduled
@@ -444,6 +485,21 @@ pub(crate) fn build(
         if carries_over {
             info.nodes.insert(id, (key, slot));
         }
+        slot_info.push(SlotInfo {
+            id,
+            latency,
+            sink: (is_output && bus.is_some()) || scheduled.node_type.info().id == TAP_ID,
+            inputs: scheduled
+                .inputs
+                .iter()
+                .map(|source| match source {
+                    InputSource::Buffer(b) | InputSource::Modulated(b, _) => Some(*b),
+                    _ => None,
+                })
+                .collect(),
+            outputs: scheduled.outputs.clone(),
+            consumes: scheduled.phase != Phase::Input,
+        });
         nodes.push(PlanNode {
             instance,
             phase: scheduled.phase,
@@ -456,14 +512,27 @@ pub(crate) fn build(
             bus,
             is_input: scheduled.node_type.info().id == INPUT_ID,
             probes,
+            cpu: telemetry
+                .filter(|_| !input_half)
+                .map(|telemetry| telemetry.open_cpu(id)),
+            delays: Vec::new(),
             scratch,
         });
     }
+    let delay_migrations = compensate(
+        &mut nodes,
+        &slot_info,
+        &mut offsets_in,
+        &mut pool_len,
+        max_frames,
+        previous,
+        &mut info,
+    );
     // Forget the cells of inputs that no longer exist or are now connected.
     *cells = live_cells;
 
     info.audible = audible_wiring(&wiring, &nodes);
-    let seamless = previous.is_some_and(|p| p.audible == info.audible)
+    let seamless = previous.is_some_and(|p| p.audible == info.audible && p.delays == info.delays)
         && info.audible.keys().all(|id| {
             // A node that was silent and still is sounds the same, though
             // it's rebuilt each time.
@@ -486,6 +555,7 @@ pub(crate) fn build(
         offsets: offsets_in,
         migrations,
         value_migrations,
+        delay_migrations,
         max_frames,
     };
     (Box::new(plan), info)
@@ -583,6 +653,9 @@ impl Plan {
         for &(from, to) in &self.value_migrations {
             self.values[to].continue_from(&old.values[from]);
         }
+        for &((old_slot, old_line), (slot, line)) in &self.delay_migrations {
+            self.nodes[slot].delays[line].continue_from(&mut old.nodes[old_slot].delays[old_line]);
+        }
     }
 
     /// Clears every node's internal state, for when the transport jumps.
@@ -590,6 +663,9 @@ impl Plan {
         for node in &mut self.nodes {
             if let Some(instance) = &mut node.instance {
                 instance.reset();
+            }
+            for delay in &mut node.delays {
+                delay.clear();
             }
         }
     }
@@ -632,6 +708,12 @@ impl Plan {
             let mut event_outputs: Vec<EventsOut<'_>> =
                 recycle(mem::take(&mut node.scratch.event_outputs));
 
+            for delay in &mut node.delays {
+                // SAFETY: the source buffer is one of this node's inputs, so
+                // it holds this block's signal and nothing writes it now; the
+                // destination is private to the delay line.
+                unsafe { delay.run(pool, silent, frames, self.max_frames) };
+            }
             for input in &node.inputs {
                 if let Input::Offset(k) = *input {
                     let offset = &mut self.offsets[k];
@@ -688,6 +770,7 @@ impl Plan {
                 Some(owner) => &mut earlier[owner].instance,
                 None => &mut node.instance,
             };
+            let started = node.cpu.is_some().then(Instant::now);
             match (instance, node.phase) {
                 (Some(instance), Phase::Whole) => instance.process(ctx, io),
                 (Some(instance), Phase::Output) => instance.process_output(ctx, io),
@@ -695,6 +778,12 @@ impl Plan {
                 // Only possible if plans arrived out of order.
                 (None, Phase::Input) => {}
                 (None, _) => Silence.process(ctx, io),
+            }
+            if let (Some(cpu), Some(started)) = (&mut node.cpu, started) {
+                cpu.record(
+                    started.elapsed().as_nanos() as u64,
+                    frames as f64 * 1e9 / f64::from(ctx.sample_rate),
+                );
             }
             if node.is_input {
                 read_input(input, &mut outputs[0]);
@@ -1044,5 +1133,191 @@ impl ValueInput {
         self.step = old.step;
         self.remaining = old.remaining;
         self.settled = false;
+    }
+}
+
+/// What delay compensation needs to know about a scheduled step.
+struct SlotInfo {
+    id: NodeId,
+    latency: u32,
+    /// Where the mix is heard (an Output node that plays, or a tap), which
+    /// every such step is aligned to.
+    sink: bool,
+    /// The buffer behind each signal input, if connected.
+    inputs: Vec<Option<crate::BufferId>>,
+    outputs: Vec<crate::BufferId>,
+    /// False for the input half of a split node, which only reads its loop
+    /// input and makes no output.
+    consumes: bool,
+}
+
+/// Plugin delay compensation. A node reports how late its outputs sound
+/// ([`Node::latency`]); the signal at each buffer is that many samples later
+/// than the timeline, summed along the path to it. Where paths meet (a node
+/// with several signal inputs, or the sinks), the faster inputs get a delay
+/// line so everything lines up with the slowest. Lines read their source at
+/// the consumer's step and write a private region added to the end of the
+/// pool, so the compiler's buffer reuse is untouched.
+///
+/// Events aren't compensated, and a loop's own input never is (the loop
+/// already carries its delay). Returns the delay lines that can take over
+/// the contents of the previous plan's.
+fn compensate(
+    nodes: &mut [PlanNode],
+    slots: &[SlotInfo],
+    offsets: &mut [OffsetInput],
+    pool_len: &mut usize,
+    max_frames: usize,
+    previous: Option<&PlanInfo>,
+    info: &mut PlanInfo,
+) -> Vec<((usize, usize), (usize, usize))> {
+    if slots.iter().all(|s| s.latency == 0) {
+        return Vec::new();
+    }
+    // How late each buffer is, as of the step being looked at; buffers are
+    // reused, so this follows the schedule.
+    let mut arrival: HashMap<crate::BufferId, u32> = HashMap::new();
+    let mut input_arrival: Vec<Vec<Option<u32>>> = Vec::with_capacity(slots.len());
+    let mut sink_latency = 0;
+    for slot in slots {
+        let arrivals: Vec<Option<u32>> = slot
+            .inputs
+            .iter()
+            .map(|b| b.map(|b| arrival.get(&b).copied().unwrap_or(0)))
+            .collect();
+        let slowest = arrivals.iter().flatten().copied().max().unwrap_or(0);
+        if slot.consumes {
+            for &b in &slot.outputs {
+                arrival.insert(b, slowest + slot.latency);
+            }
+        }
+        if slot.sink {
+            sink_latency = sink_latency.max(slowest);
+        }
+        input_arrival.push(arrivals);
+    }
+    info.output_latency = sink_latency;
+
+    let mut migrations = Vec::new();
+    for (index, (slot, arrivals)) in slots.iter().zip(&input_arrival).enumerate() {
+        if !slot.consumes {
+            continue;
+        }
+        let target = if slot.sink {
+            sink_latency
+        } else {
+            arrivals.iter().flatten().copied().max().unwrap_or(0)
+        };
+        for (input, arrived) in arrivals.iter().enumerate() {
+            let Some(arrived) = *arrived else { continue };
+            if arrived >= target {
+                continue;
+            }
+            let delay = (target - arrived) as usize;
+            let source = match nodes[index].inputs[input] {
+                Input::Buffer(view) => view,
+                Input::Offset(k) => offsets[k].source,
+                _ => continue,
+            };
+            let dest = View {
+                offset: *pool_len,
+                shape: source.shape,
+            };
+            *pool_len += source.shape.lanes() * max_frames;
+            let line = DelayLine::new(source, dest, delay);
+            match nodes[index].inputs[input] {
+                Input::Buffer(_) => nodes[index].inputs[input] = Input::Buffer(dest),
+                Input::Offset(k) => offsets[k].source = dest,
+                _ => unreachable!(),
+            }
+            let id = slot.id;
+            let line_index = nodes[index].delays.len();
+            nodes[index].delays.push(line);
+            info.delays
+                .push(((id, input), (index, line_index, delay as u32)));
+            let old = previous.and_then(|p| {
+                p.delays
+                    .iter()
+                    .find(|(key, (_, _, d))| *key == (id, input) && *d == delay as u32)
+            });
+            if let Some((_, (old_slot, old_line, _))) = old {
+                migrations.push(((*old_slot, *old_line), (index, line_index)));
+            }
+        }
+    }
+    info.delays.sort_by_key(|(key, _)| *key);
+    migrations
+}
+
+/// Holds one signal back by a fixed number of samples.
+struct DelayLine {
+    source: View,
+    dest: View,
+    delay: usize,
+    /// `delay` samples for each lane, back to back.
+    ring: Box<[f32]>,
+    /// Where in each lane's ring the oldest sample is.
+    pos: usize,
+}
+
+impl DelayLine {
+    fn new(source: View, dest: View, delay: usize) -> Self {
+        Self {
+            source,
+            dest,
+            delay,
+            ring: vec![0.0; source.shape.lanes() * delay].into_boxed_slice(),
+            pos: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.ring.fill(0.0);
+    }
+
+    /// Takes over what `old` was holding, so a plan swap doesn't drop the
+    /// samples in flight.
+    fn continue_from(&mut self, old: &mut DelayLine) {
+        if self.delay == old.delay && self.ring.len() == old.ring.len() {
+            mem::swap(&mut self.ring, &mut old.ring);
+            self.pos = old.pos;
+        }
+    }
+
+    /// SAFETY: `pool` and `silent` must be the plan's, nothing may write the
+    /// source buffer meanwhile, and nothing else may touch the destination.
+    unsafe fn run(&mut self, pool: *mut f32, silent: *mut bool, frames: usize, max_frames: usize) {
+        let lanes = self.source.shape.lanes();
+        let delay = self.delay;
+        for lane in 0..lanes {
+            // SAFETY: in bounds of the pool, and the two regions are disjoint.
+            let (input, output) = unsafe {
+                (
+                    std::slice::from_raw_parts(
+                        pool.add(self.source.offset + lane * frames),
+                        frames,
+                    ),
+                    std::slice::from_raw_parts_mut(
+                        pool.add(self.dest.offset + lane * frames),
+                        frames,
+                    ),
+                )
+            };
+            let ring = &mut self.ring[lane * delay..(lane + 1) * delay];
+            let mut pos = self.pos;
+            for (out, &x) in output.iter_mut().zip(input) {
+                *out = mem::replace(&mut ring[pos], x);
+                pos += 1;
+                if pos == delay {
+                    pos = 0;
+                }
+            }
+        }
+        self.pos = (self.pos + frames) % delay;
+        // SAFETY: the destination's flags are in bounds of the silence flags.
+        unsafe {
+            std::slice::from_raw_parts_mut(silent.add(self.dest.offset / max_frames.max(1)), lanes)
+        }
+        .fill(false);
     }
 }

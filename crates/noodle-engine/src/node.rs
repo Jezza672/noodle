@@ -363,10 +363,24 @@ pub trait Node: Send + 'static {
     /// input is real, and there are no outputs.
     fn process_input(&mut self, _ctx: &Context, _io: Io<'_, '_>) {}
 
+    /// How many samples later than its inputs the node's outputs sound, as
+    /// reported by a plugin or caused by lookahead. The engine delays the
+    /// node's siblings to match (plugin delay compensation), so parallel
+    /// paths stay aligned where they meet. Read once, when the plan is
+    /// built, right after the node is created; limited to [`MAX_LATENCY`].
+    fn latency(&self) -> u32 {
+        0
+    }
+
     /// Clears internal state such as filter memory, e.g. when the transport
     /// jumps.
     fn reset(&mut self) {}
 }
+
+/// The most latency, in samples, the engine will compensate for a single
+/// node (two seconds at 96 kHz), so a plugin reporting nonsense can't cost
+/// gigabytes of delay line.
+pub const MAX_LATENCY: u32 = 192_000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Context {

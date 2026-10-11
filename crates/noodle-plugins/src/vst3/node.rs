@@ -699,6 +699,15 @@ fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
 }
 
 impl Node for Vst3Node {
+    fn latency(&self) -> u32 {
+        // Asked of the processor, which is set up by now; this runs when the
+        // plan is built, not on the audio thread.
+        self.plugin
+            .as_ref()
+            // SAFETY: a plain query on a live, set-up processor.
+            .map_or(0, |plugin| unsafe { plugin.processor.getLatencySamples() })
+    }
+
     fn process(&mut self, ctx: &Context, mut io: Io<'_, '_>) {
         let mut start = 0;
         while start < ctx.frames {
