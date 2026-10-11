@@ -1203,7 +1203,7 @@ impl Session {
     }
 
     /// The tempo map the audio thread is using, if the stream is open.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub fn tempo_in_engine(&self) -> Option<&noodle_core::TempoMap> {
         self.audio
             .as_ref()
@@ -1534,7 +1534,7 @@ impl Session {
     }
 
     /// What a track input is doing with its clips.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub fn clip_status(&self, track: NodeId) -> noodle_nodes::ClipStatus {
         self.clips.status(track)
     }
