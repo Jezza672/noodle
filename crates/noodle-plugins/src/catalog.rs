@@ -57,8 +57,12 @@ impl Catalog {
 
     /// Adds a node type for each plugin, replacing any with the same ID.
     pub fn register(&self, registry: &mut Registry) {
+        self.register_as(registry, false);
+    }
+
+    fn register_as(&self, registry: &mut Registry, patient: bool) {
         for node_type in &self.types {
-            registry.replace(Shared(Arc::clone(node_type)));
+            registry.replace(Shared(Arc::clone(node_type), patient));
         }
     }
 
@@ -66,7 +70,9 @@ impl Catalog {
     /// and background renders see the same plugins as live playback.
     pub fn extender(&self) -> ExtendRegistry {
         let catalog = self.clone();
-        Arc::new(move |registry| catalog.register(registry))
+        // Renders aren't against the clock: a plugin in a host process may
+        // take as long as it likes per block.
+        Arc::new(move |registry| catalog.register_as(registry, true))
     }
 }
 

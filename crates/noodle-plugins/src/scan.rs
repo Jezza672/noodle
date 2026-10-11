@@ -26,9 +26,12 @@ const MARKER: &str = "NOODLE-SCAN ";
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// If this program was started as the scanner (`<exe> --noodle-scan-plugin
-/// <file>`), scans the file, prints the result and exits; otherwise returns.
-/// `noodle` and the app call this first thing in `main`.
+/// <file>`), scans the file, prints the result and exits; or as a plugin host
+/// (`<exe> --noodle-plugin-host <port> <token>`, see [`crate::set_sandbox`]),
+/// runs that and exits; otherwise returns. `noodle` and the app call this
+/// first thing in `main`.
 pub fn run_scan_child_if_requested() {
+    crate::sandbox::run_host_if_requested();
     let mut args = std::env::args_os().skip(1);
     if args.next().is_some_and(|arg| arg == SCAN_ARG) {
         scan_child_main(args.next());

@@ -5,6 +5,8 @@
 //! - A [`Catalog`] turns scan results into node types, one per plugin
 //!   (`clap.<plugin id>` or `vst3.<class id>`), whose ports are the plugin's audio ports, note
 //!   ports and parameters.
+//! - [`set_sandbox`] runs plugins in separate host processes, so a crashing plugin
+//!   can't take the session with it.
 //! - [`Catalog::extender`] is for `RenderRequest::extend_registry`, so
 //!   freezes, exports and background renders see the same plugins as live
 //!   playback.
@@ -14,6 +16,7 @@ mod descriptor;
 mod editor;
 mod host;
 mod node;
+mod sandbox;
 mod scan;
 mod thread;
 mod vst3;
@@ -29,6 +32,10 @@ pub use editor::{
 };
 pub use host::{HostError, MAX_PARAMS, capture_state, describe_file};
 pub use node::{PARAM_STEP, PluginNodeType};
+pub use sandbox::{
+    HOST_ARG, SandboxCommand, SandboxStatus, host_main, sandbox_enabled, sandbox_status,
+    set_sandbox,
+};
 pub use scan::{
     SCAN_ARG, SCAN_TIMEOUT, ScanCache, ScanCommand, find_plugin_files, run_scan_child_if_requested,
     scan_child_main, scan_file, standard_dirs,

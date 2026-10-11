@@ -18,6 +18,11 @@ use noodle_nodes::{RenderRequest, profile as profile_project, render_streaming};
     about = "Command-line tools for Noodle projects"
 )]
 struct Cli {
+    /// Run each plugin in a process of its own, so a plugin that crashes or
+    /// hangs can't take the session with it (it plays silence and is
+    /// restarted). Costs a little CPU for the hand-over of each block.
+    #[arg(long, global = true)]
+    sandbox_plugins: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -135,7 +140,17 @@ fn main() -> ExitCode {
     // `noodle` is also the plugin scanner: plugins are scanned in a child
     // process, which is this program started with a hidden argument.
     noodle_plugins::run_scan_child_if_requested();
-    match run(Cli::parse().command) {
+    let cli = Cli::parse();
+    if cli.sandbox_plugins {
+        match noodle_plugins::SandboxCommand::current_exe() {
+            Ok(command) => noodle_plugins::set_sandbox(Some(command)),
+            Err(error) => {
+                eprintln!("noodle: can't start plugin hosts: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    match run(cli.command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("noodle: {message}");
@@ -366,6 +381,13 @@ fn profile(project_path: &Path, args: ProfileArgs) -> Result<(), String> {
 
 fn print_run(title: &str, profile: &noodle_engine::Profile) {
     let blocks = &profile.blocks;
+    if profile.workers > 0 {
+        let (realtime, raised) = profile.worker_priorities;
+        println!(
+            "{title}: {} of {} helper threads have real-time priority, {} raised.",
+            realtime, profile.workers, raised
+        );
+    }
     println!(
         "{title}: rendered in {:.2} s, {:.1}x real time.",
         profile.wall.as_secs_f64(),

@@ -40,7 +40,7 @@ use crate::descriptor::{
 };
 use crate::host::{Flags, Host};
 use crate::{PARAMS_KEY, STATE_KEY};
-use crate::{editor, thread, vst3};
+use crate::{editor, sandbox, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
 pub const PARAM_STEP: usize = 32;
@@ -235,6 +235,65 @@ impl NodeType for PluginNodeType {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        self.instantiate_with(setup, false)
+    }
+}
+
+impl PluginNodeType {
+    /// Builds the node in a plugin host process if sandboxing is on (see
+    /// [`crate::set_sandbox`]), else in this one. `patient` is for offline
+    /// renders, which wait for a slow plugin instead of dropping a block.
+    pub(crate) fn instantiate_with(
+        &self,
+        setup: &Setup<'_>,
+        patient: bool,
+    ) -> Result<Instance, NodeError> {
+        match sandbox::current_command() {
+            Some(command) => self.instantiate_sandboxed(setup, command, patient),
+            None => self.instantiate_local(setup),
+        }
+    }
+
+    fn instantiate_sandboxed(
+        &self,
+        setup: &Setup<'_>,
+        command: Arc<sandbox::SandboxCommand>,
+        patient: bool,
+    ) -> Result<Instance, NodeError> {
+        let layout = self.layout(setup.config)?;
+        // One shape per port (a caller that gave fewer gets mono ones).
+        let shapes = |shapes: &[Shape], ports: usize| -> Vec<(usize, usize)> {
+            (0..ports)
+                .map(|i| shapes.get(i).copied().unwrap_or(Shape::MONO))
+                .map(|s| (s.voices, s.channels))
+                .collect()
+        };
+        let params = sandbox::proxy::Params {
+            command,
+            plugin_path: self.path.clone(),
+            descriptor: self.descriptor.clone(),
+            config: setup.config.clone(),
+            node: setup.node,
+            sample_rate: setup.sample_rate,
+            seed: setup.seed,
+            position: setup.position,
+            spec: sandbox::shm::Spec {
+                max_frames: setup.max_frames,
+                inputs: shapes(setup.input_shapes, layout.inputs.len()),
+                outputs: shapes(setup.output_shapes, layout.outputs.len()),
+                event_inputs: layout.event_inputs.len(),
+                event_outputs: layout.event_outputs.len(),
+            },
+            patient,
+        };
+        let (node, shared) = sandbox::proxy::SandboxedNode::start(params)
+            .map_err(|error| NodeError::config(format!("plugin host: {error}")))?;
+        let key = sandbox::register(setup.node, &shared);
+        Ok(Instance::realtime(node.with_key(key)))
+    }
+
+    /// Loads the plugin into this process.
+    pub(crate) fn instantiate_local(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let state = match setup.config.get(STATE_KEY) {
             Some(noodle_engine::Value::Text(text)) if !text.is_empty() => Some(
                 base64::engine::general_purpose::STANDARD
@@ -292,7 +351,10 @@ impl NodeType for PluginNodeType {
 
 /// A node type shared between registries, so a render's registry and the live
 /// one build the same thing without leaking a new `NodeInfo` each time.
-pub(crate) struct Shared(pub Arc<PluginNodeType>);
+///
+/// `.1` is whether renders using it wait for a slow sandboxed plugin (see
+/// `instantiate_with`).
+pub(crate) struct Shared(pub Arc<PluginNodeType>, pub bool);
 
 impl NodeType for Shared {
     fn info(&self) -> &NodeInfo {
@@ -325,7 +387,7 @@ impl NodeType for Shared {
         self.0.output_shapes(config, layout, inputs)
     }
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        self.0.instantiate(setup)
+        self.0.instantiate_with(setup, self.1)
     }
 }
 

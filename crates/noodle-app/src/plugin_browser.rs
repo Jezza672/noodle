@@ -86,6 +86,20 @@ impl PluginBrowser {
                 session.rescan_plugins(everything);
             }
         });
+        let mut sandboxed = session.sandbox_plugins();
+        if ui
+            .checkbox(&mut sandboxed, "Run plugins in separate processes")
+            .on_hover_text(
+                "A plugin that crashes or hangs then plays silence and is started \
+                 again, instead of taking the app with it. Costs a little CPU for each \
+                 plugin. Editors of plugins in separate processes only work on Linux \
+                 so far.",
+            )
+            .changed()
+        {
+            session.set_sandbox_plugins(sandboxed);
+            crate::prefs::remember_sandbox(sandboxed);
+        }
         if session.plugin_scanning() {
             ui.horizontal(|ui| {
                 ui.spinner();
