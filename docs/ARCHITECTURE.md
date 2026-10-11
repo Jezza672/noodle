@@ -1099,7 +1099,8 @@ node.
 ### Parallel processing
 
 `engine_with_workers(settings, n, always)` starts `n` helper threads beside
-the audio thread; `Processor::start_workers` is the processor's half. Off by
+the audio thread (the processor's half, `Processor::start_workers`, is
+crate-private so the controller always compiles to match). Off by
 default (the app's audio settings, `noodle play --threads` and
 `noodle profile --threads` turn it on). The
 single-threaded path is unchanged, and a graph that can't use helpers runs
@@ -1131,8 +1132,12 @@ thread works on the block too and returns when every step is done and every
 worker has left (the block's data is on its stack). Workers spin for about
 40 µs after a block and then park; the audio thread unparks only the ones that
 are parked. Nothing locks or allocates, and a panic in a node is caught, so
-the block still finishes (that node's step is skipped). `tests/parallel.rs`
-checks this with an allocator that counts every thread.
+the block still finishes: that node's outputs are silent for the block and the
+block counts in `BlockStats::panics` (the single-threaded path still
+propagates the panic). Workers flush subnormals like the audio thread (the
+mode is per thread; `workers_flush_subnormals`). `tests/parallel.rs` checks
+the sound is bit-identical to one thread's, and counts allocations on every
+thread.
 
 **Output.** An Output node mixes into its own scratch buffer; the buffers are
 added to the device output in schedule order at the end of the block. The sum
@@ -1155,11 +1160,14 @@ voices is one step, so one fat node limits the speedup.
 clips) and prints: the render's speed against real time; per-block load
 (`BlockStats`: mean, 99th percentile, worst, and how many blocks ran over
 their budget, which are underruns on a live stream); each node's total time
-and share, with the group it sits in; and the graph's shape. `--threads N`
-renders again with helpers and prints the speedup.
+and share, with the group it sits in; and the graph's shape (always the shape a plan for workers has, even in the
+one-thread run). `--threads N` renders again with helpers, with the same
+rule `play` uses for when helpers take part (`--always` forces them), and
+prints the speedup.
 
-`Telemetry::block_writer` times every `Plan::run` (the whole block, workers
-included) into atomics, read with `Telemetry::read_blocks` (a 12-bucket
+`Telemetry::block_writer` times every `Processor::render` call (a device
+callback, workers included: the real deadline, not the chunks a loop wrap or
+fade cuts it into) into atomics, read with `Telemetry::read_blocks` (a 12-bucket
 histogram: tenths of the budget up to 1.0, then up to 1.5, then beyond) and
 cleared with `reset_blocks`; per-node totals come from `CpuWriter` through
 `read_all_cpu_totals`. With CPU meters on, the editor shows the worst block of

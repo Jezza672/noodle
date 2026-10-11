@@ -282,6 +282,7 @@ impl Telemetry {
             },
             worst: f32::from_bits(cells.worst.load(Ordering::Relaxed)),
             misses: cells.misses.load(Ordering::Relaxed),
+            panics: cells.panics.load(Ordering::Relaxed),
             histogram,
         }
     }
@@ -477,6 +478,9 @@ pub struct BlockStats {
     pub worst: f32,
     /// Blocks that took longer than their budget.
     pub misses: u64,
+    /// Blocks in which a node panicked (only caught, and its output silenced,
+    /// when the plan runs on worker threads).
+    pub panics: u64,
     /// Blocks by load: bucket `i` (below 10) holds loads from `i`/10 up to
     /// (`i` + 1)/10; bucket 10 up to 1.5, bucket 11 beyond.
     pub histogram: [u64; LOAD_BUCKETS],
@@ -516,6 +520,7 @@ struct BlockCells {
     /// bits order like the numbers.
     worst: AtomicU32,
     misses: AtomicU64,
+    panics: AtomicU64,
     histogram: [AtomicU64; LOAD_BUCKETS],
 }
 
@@ -523,6 +528,11 @@ struct BlockCells {
 pub struct BlockWriter(Arc<BlockCells>);
 
 impl BlockWriter {
+    /// Reports that a node panicked in a block.
+    pub fn note_panic(&self) {
+        self.0.panics.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Reports that a block took `used_ns` of the `budget_ns` it lasts.
     pub fn record(&self, used_ns: u64, budget_ns: f64) {
         if budget_ns <= 0.0 {

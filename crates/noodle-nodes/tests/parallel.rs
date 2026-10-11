@@ -158,14 +158,10 @@ fn workers_sound_like_one_thread_and_never_allocate() {
     for workers in [1, 3] {
         let parallel = session(workers);
         assert_eq!(serial.len(), parallel.len());
-        let worst = serial
-            .iter()
-            .zip(&parallel)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0, f32::max);
+        // One Output node, so the sums are grouped alike: identical.
         assert!(
-            worst <= 1e-6,
-            "{workers} workers differ from one thread by {worst}"
+            serial == parallel,
+            "{workers} workers differ from one thread"
         );
     }
 

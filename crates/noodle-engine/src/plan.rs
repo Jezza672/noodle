@@ -713,6 +713,18 @@ impl Plan {
         }
     }
 
+    /// Whether something is watching how long blocks take.
+    pub(crate) fn times_blocks(&self) -> bool {
+        self.blocks.is_some()
+    }
+
+    /// Reports that a callback of `frames` frames took `used_ns`.
+    pub(crate) fn record_block(&self, used_ns: u64, frames: usize, sample_rate: f32) {
+        if let Some(blocks) = &self.blocks {
+            blocks.record(used_ns, frames as f64 * 1e9 / f64::from(sample_rate));
+        }
+    }
+
     /// Renders one block into `output`, interleaved with `channels` channels,
     /// with `input` feeding Input nodes. Real-time safe. With `workers`, steps
     /// that don't depend on each other run on several threads when the plan
@@ -752,8 +764,7 @@ impl Plan {
             input,
         };
 
-        let started = self.blocks.is_some().then(Instant::now);
-        match workers.filter(|w| w.worth(&self.graph)) {
+        match workers.filter(|w| w.worth(self.graph.shape())) {
             None => {
                 for index in 0..self.nodes.len() {
                     // SAFETY: one step at a time, in schedule order.
@@ -778,11 +789,10 @@ impl Plan {
                 }
             }
         }
-        if let (Some(blocks), Some(started)) = (&self.blocks, started) {
-            blocks.record(
-                started.elapsed().as_nanos() as u64,
-                frames as f64 * 1e9 / f64::from(ctx.sample_rate),
-            );
+        if self.graph.poisoned()
+            && let Some(blocks) = &self.blocks
+        {
+            blocks.note_panic();
         }
     }
 }
@@ -817,19 +827,24 @@ impl ParallelRun<'_> {
             // SAFETY: the graph hands each step to one thread, after
             // everything it must follow.
             let mix = unsafe { (*run.frame.nodes.add(index)).bus_out.as_mut_ptr() };
-            unsafe { run_step(run.frame, index, mix, true) };
+            if unsafe { run_step(run.frame, index, mix, true) } {
+                run.graph.poison();
+            }
         });
     }
 }
 
 /// Runs one step: builds the node's views, runs it, and mixes it into
 /// `mix_out` if it is an Output node. With `fresh`, `mix_out` is a scratch
-/// buffer that starts empty; otherwise it is the device output.
+/// buffer that starts empty and a panic in the node is caught (its outputs
+/// are silent for the block and the result is true), so a block run by several
+/// threads always finishes; otherwise `mix_out` is the device output and a
+/// panic propagates.
 ///
 /// SAFETY: no other thread may touch this node, the buffers it reads or
 /// writes, its offsets or its owner's instance, and every step it must follow
 /// has finished.
-unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bool) {
+unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bool) -> bool {
     let &Frame {
         nodes,
         pool,
@@ -914,13 +929,25 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         None => &mut node.instance,
     };
     let started = node.cpu.is_some().then(Instant::now);
-    match (instance, node.phase) {
+    let phase = node.phase;
+    let call = move || match (instance, phase) {
         (Some(instance), Phase::Whole) => instance.process(ctx, io),
         (Some(instance), Phase::Output) => instance.process_output(ctx, io),
         (Some(instance), Phase::Input) => instance.process_input(ctx, io),
         // Only possible if plans arrived out of order.
         (None, Phase::Input) => {}
         (None, _) => Silence.process(ctx, io),
+    };
+    let panicked = if fresh {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).is_err()
+    } else {
+        call();
+        false
+    };
+    if panicked {
+        for output in &mut outputs {
+            output.fill(0.0);
+        }
     }
     if let (Some(cpu), Some(started)) = (&mut node.cpu, started) {
         cpu.record(
@@ -946,6 +973,7 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
     node.scratch.outputs = recycle(outputs);
     node.scratch.event_inputs = recycle(event_inputs);
     node.scratch.event_outputs = recycle(event_outputs);
+    panicked
 }
 
 /// Works out which steps must wait for which, from the buffers each reads and

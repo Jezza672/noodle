@@ -128,7 +128,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
 
 /// [`engine`] whose processor has `workers` threads helping it, and whose
 /// controller compiles plans that can use them (`always` as for
-/// [`Processor::start_workers`]). Spawns the threads, so call it off the
+/// `Processor::start_workers`). Spawns the threads, so call it off the
 /// audio thread.
 pub fn engine_with_workers(
     settings: Settings,
@@ -151,7 +151,7 @@ pub struct Controller {
     /// The last plan sent, which the next plan takes over from.
     sent: Option<PlanInfo>,
     /// Plans are compiled to run on worker threads (see [`engine_with_workers`]).
-    parallel: bool,
+    pub(crate) parallel: bool,
     next_generation: u64,
     cells: Cells,
     /// Where wired parameters report their signals, if anything reads them.
@@ -428,14 +428,20 @@ pub struct Processor {
 
 impl Processor {
     /// Starts `count` worker threads that help render plans whose steps can
-    /// overlap, replacing any already running; 0 stops them. Call it before
-    /// handing the processor to the audio thread: it spawns threads.
+    /// overlap, replacing any already running; 0 stops them. Spawns threads,
+    /// so it is only reachable through [`engine_with_workers`], which also
+    /// makes the controller compile plans that can use them.
     ///
     /// Only plans wide enough to pay for the hand-off run in parallel, unless
     /// `always` is set. Output differs from the single-threaded render at
     /// most in the last bits of a float sum.
-    pub fn start_workers(&mut self, count: usize, always: bool) {
-        self.workers = (count > 0).then(|| Workers::start(count, always));
+    pub(crate) fn start_workers(&mut self, count: usize, always: bool) {
+        self.workers = (count > 0).then(|| Workers::start(count, always, self.flush));
+    }
+
+    /// Whether the workers would take part in rendering a plan of this shape.
+    pub(crate) fn parallel_for(&self, shape: PlanShape) -> bool {
+        self.workers.as_ref().is_some_and(|w| w.worth(shape))
     }
 
     /// How many worker threads help the audio thread.
@@ -484,6 +490,13 @@ impl Processor {
         } = self.settings;
         debug_assert_eq!(output.len() % channels, 0);
         let _flush = self.flush.enable();
+        // The deadline is the whole callback, not the chunks it is cut into.
+        let started = self
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.times_blocks())
+            .then(std::time::Instant::now);
+        let callback_frames = output.len() / channels;
 
         let mut rest = output;
         let mut input_rest = input.samples;
@@ -540,6 +553,13 @@ impl Processor {
                     self.position = start;
                 }
             }
+        }
+        if let (Some(started), Some(plan)) = (started, &self.plan) {
+            plan.record_block(
+                started.elapsed().as_nanos() as u64,
+                callback_frames,
+                sample_rate,
+            );
         }
         self.control.publish(self.position);
     }

@@ -94,6 +94,38 @@ fn project(branches: usize) -> (Project, Vec<NodeId>) {
     (project, busy)
 }
 
+/// Panics every block.
+struct Boom;
+
+static BOOM_INFO: NodeInfo = NodeInfo {
+    id: "test.boom",
+    version: 1,
+    name: "Boom",
+    category: "Test",
+};
+
+impl NodeType for Boom {
+    fn info(&self) -> &NodeInfo {
+        &BOOM_INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().input("in", "In").output("out", "Out"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(BoomNode))
+    }
+}
+
+struct BoomNode;
+
+impl EngineNode for BoomNode {
+    fn process(&mut self, _ctx: &Context, _io: Io<'_, '_>) {
+        panic!("node bug (expected by the test)");
+    }
+}
+
 const FRAMES: usize = 64 * 400;
 
 #[test]
@@ -156,4 +188,38 @@ fn helper_threads_speed_up_side_by_side_branches() {
         "{:?}",
         parallel.blocks
     );
+}
+
+#[test]
+fn a_panicking_node_on_workers_is_silenced_and_counted() {
+    let mut registry = registry();
+    registry.register(Boom);
+    let (mut project, _) = project(2);
+    let mut add = |node: Node| {
+        let id = project.new_node_id();
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+        id
+    };
+    let sine = add(Node::new("noodle.osc.sine"));
+    let boom = add(Node::new("test.boom"));
+    let output = add(Node::new(OUTPUT_ID));
+    for (from, to) in [(sine, boom), (boom, output)] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, "out"),
+            to: Endpoint::new(to, "in"),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let profile = profile_project(&project, &registry, SETTINGS, FRAMES, 2, true).unwrap();
+    assert!(profile.parallel);
+    assert!(profile.blocks.panics >= 399, "{:?}", profile.blocks);
+}
+
+#[test]
+fn the_shape_shows_the_width_threads_could_use_even_on_one_thread() {
+    let (project, _) = project(4);
+    let profile = profile_project(&project, &registry(), SETTINGS, FRAMES, 0, false).unwrap();
+    assert!(profile.shape.width >= 4, "{:?}", profile.shape);
+    assert!(!profile.parallel);
 }

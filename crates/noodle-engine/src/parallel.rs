@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
+use crate::denormals::Flush;
+use crate::plan::PlanShape;
+
 /// How long an idle worker spins before parking. Short: a parked worker is
 /// woken in tens of microseconds, and spinning on a core the audio thread
 /// might want is worse than that.
@@ -112,11 +115,6 @@ impl StepGraph {
         self.width
     }
 
-    /// Whether any step can overlap another.
-    pub(crate) fn has_parallelism(&self) -> bool {
-        self.width > 1
-    }
-
     /// Gets ready for a block. The audio thread calls it before it opens one.
     pub(crate) fn reset(&self) {
         for (cell, &count) in self.pending.iter().zip(&self.initial) {
@@ -127,8 +125,21 @@ impl StepGraph {
         self.poisoned.store(false, Ordering::Relaxed);
     }
 
+    /// The graph's size, longest chain and width.
+    pub(crate) fn shape(&self) -> PlanShape {
+        PlanShape {
+            steps: self.steps(),
+            critical_path: self.critical_path,
+            width: self.width,
+        }
+    }
+
+    /// Records that a node panicked in this block.
+    pub(crate) fn poison(&self) {
+        self.poisoned.store(true, Ordering::Relaxed);
+    }
+
     /// Whether a node panicked in the last block.
-    #[cfg(test)]
     pub(crate) fn poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Relaxed)
     }
@@ -227,7 +238,7 @@ impl Workers {
     /// Starts `count` threads. With `always`, every plan with independent
     /// steps runs in parallel; otherwise only those wide enough to pay for
     /// the hand-off.
-    pub(crate) fn start(count: usize, always: bool) -> Self {
+    pub(crate) fn start(count: usize, always: bool, flush: Flush) -> Self {
         let shared = Arc::new(Shared {
             epoch: AtomicU64::new(0),
             open: AtomicBool::new(false),
@@ -241,7 +252,7 @@ impl Workers {
                 let shared = shared.clone();
                 thread::Builder::new()
                     .name(format!("noodle-worker-{index}"))
-                    .spawn(move || worker(&shared, index))
+                    .spawn(move || worker(&shared, index, flush))
                     .expect("spawning a worker thread")
             })
             .collect();
@@ -260,11 +271,11 @@ impl Workers {
     }
 
     /// Whether sharing this plan out beats running it on one thread.
-    pub(crate) fn worth(&self, graph: &StepGraph) -> bool {
-        graph.has_parallelism()
+    pub(crate) fn worth(&self, shape: PlanShape) -> bool {
+        shape.width > 1
             && (self.always
-                || (graph.steps() >= MIN_STEPS
-                    && graph.steps() as f32 >= 1.5 * graph.critical_path() as f32))
+                || (shape.steps >= MIN_STEPS
+                    && shape.steps as f32 >= 1.5 * shape.critical_path as f32))
     }
 
     /// Calls `run(data)` on this thread and every worker, until it returns
@@ -306,7 +317,10 @@ impl Drop for Workers {
     }
 }
 
-fn worker(shared: &Shared, index: usize) {
+fn worker(shared: &Shared, index: usize, flush: Flush) {
+    // The mode is per thread, and nothing else runs here: flush subnormals as
+    // the audio thread does, for good.
+    let _flush = flush.enable();
     let mut seen = 0;
     loop {
         // Wait for the next block: spin a little, then park.
@@ -360,9 +374,9 @@ mod tests {
         assert_eq!(graph.steps(), 4);
         assert_eq!(graph.critical_path(), 3);
         assert_eq!(graph.width(), 2);
-        assert!(graph.has_parallelism());
+        assert!(graph.shape().width > 1);
         let chain = StepGraph::new(&[vec![], vec![0], vec![1]]);
-        assert!(!chain.has_parallelism());
+        assert_eq!(chain.shape().width, 1);
     }
 
     #[test]
@@ -396,7 +410,7 @@ mod tests {
             previous = vec![join];
         }
         let graph = StepGraph::new(&waits);
-        let workers = Workers::start(3, true);
+        let workers = Workers::start(3, true, Flush::detect());
         let ran: Vec<AtomicUsize> = waits.iter().map(|_| AtomicUsize::new(0)).collect();
         struct Ctx<'a> {
             graph: &'a StepGraph,
@@ -426,6 +440,56 @@ mod tests {
             assert!(ran.iter().all(|c| c.load(Ordering::Relaxed) == 1));
             assert!(!graph.poisoned());
         }
+    }
+
+    /// Workers flush subnormals like the audio thread: a product that is
+    /// subnormal comes out as zero on every thread that runs a step.
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn workers_flush_subnormals() {
+        use std::hint::black_box;
+        use std::sync::atomic::AtomicBool;
+
+        struct Seen {
+            caller: thread::ThreadId,
+            flushed: AtomicBool,
+            leaked: AtomicBool,
+            graph: StepGraph,
+        }
+        unsafe fn work(data: *const ()) {
+            let seen = unsafe { &*data.cast::<Seen>() };
+            seen.graph.work(|_| {
+                let product = black_box(f32::MIN_POSITIVE) * black_box(0.25);
+                if thread::current().id() != seen.caller {
+                    if product == 0.0 {
+                        seen.flushed.store(true, Ordering::Relaxed);
+                    } else {
+                        seen.leaked.store(true, Ordering::Relaxed);
+                    }
+                }
+                // Long enough that the other threads get a share.
+                std::thread::sleep(Duration::from_micros(200));
+            });
+        }
+        let workers = Workers::start(2, true, Flush::detect());
+        let seen = Seen {
+            caller: thread::current().id(),
+            flushed: AtomicBool::new(false),
+            leaked: AtomicBool::new(false),
+            graph: StepGraph::new(&vec![vec![]; 16]),
+        };
+        for _ in 0..50 {
+            seen.graph.reset();
+            unsafe { workers.run(work, (&seen as *const Seen).cast()) };
+            if seen.flushed.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+        assert!(seen.flushed.load(Ordering::Relaxed), "no worker ran a step");
+        assert!(
+            !seen.leaked.load(Ordering::Relaxed),
+            "a worker saw a subnormal"
+        );
     }
 
     #[test]

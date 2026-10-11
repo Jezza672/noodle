@@ -20,8 +20,13 @@ pub struct Profile {
     pub wall: Duration,
     /// Threads helping the audio thread.
     pub workers: usize,
-    /// How much of the graph could run side by side.
+    /// How much of the graph could run side by side. Always compiled the way a
+    /// plan for workers is, so it shows the width threads could use even in a
+    /// one-thread run.
     pub shape: PlanShape,
+    /// Whether the helper threads took part: they do only for a plan wide
+    /// enough to pay (as in playback), unless forced.
+    pub parallel: bool,
     /// Each block's time against its budget (the time it lasts as audio).
     pub blocks: BlockStats,
     /// Each node's total time, slowest first. Group contents are the nodes
@@ -74,16 +79,19 @@ pub fn profile_project(
     workers: usize,
     always: bool,
 ) -> Result<Profile, RenderError> {
-    const CHUNK: usize = 4096;
     let telemetry = Telemetry::new();
     let (mut controller, mut processor) = engine_with_workers(settings, workers, always)?;
+    // Keep branches apart even in a one-thread run, so the shape is the
+    // parallel one and the two runs differ only in the threads.
+    controller.parallel = true;
     controller.set_telemetry(&telemetry);
     let diagnostics = controller.update_project(project, registry);
     let shape = controller.plan_shape();
-    let mut chunk = vec![0.0; CHUNK.min(frames.max(1)) * settings.channels];
+    // One device callback at a time, so a block is what a device would ask for.
+    let mut chunk = vec![0.0; settings.max_frames * settings.channels];
     // The first block installs the plan with a fade; start the clock after it
     // so the figures are the steady state.
-    processor.process(&mut chunk[..settings.max_frames.min(CHUNK) * settings.channels]);
+    processor.process(&mut chunk);
     telemetry.reset_blocks();
     let started = Instant::now();
     let mut done = 0;
@@ -111,6 +119,7 @@ pub fn profile_project(
         shape,
         blocks: telemetry.read_blocks(),
         nodes,
+        parallel: processor.parallel_for(shape),
         diagnostics,
     })
 }

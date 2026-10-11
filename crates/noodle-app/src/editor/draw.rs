@@ -385,7 +385,12 @@ pub(crate) fn cpu_label(reading: CpuReading) -> (String, Color32) {
 /// (each is an underrun on a live stream).
 pub(crate) fn block_label(stats: &BlockStats) -> (String, Color32) {
     let worst = (stats.worst * 100.0).round();
-    if stats.misses > 0 {
+    if stats.panics > 0 {
+        (
+            format!("a node panicked in {} blocks", stats.panics),
+            colors::CPU_HIGH,
+        )
+    } else if stats.misses > 0 {
         (
             format!("worst block {worst}%, {} over budget", stats.misses),
             colors::CPU_HIGH,

@@ -55,9 +55,14 @@ enum Command {
         #[arg(long, default_value_t = MAX_FRAMES)]
         block: usize,
         /// Also render with this many helper threads and compare. Use the
-        /// same number `play --threads` would.
+        /// same number as `play --threads`.
         #[arg(long, default_value_t = 0)]
         threads: usize,
+        /// With --threads, run on the helpers even when the graph is too
+        /// narrow for `play` to bother. Without it the comparison is what
+        /// playing would get.
+        #[arg(long)]
+        always: bool,
         /// How many nodes to list.
         #[arg(long, default_value_t = 15)]
         top: usize,
@@ -233,6 +238,7 @@ fn run(command: Command) -> Result<(), String> {
             channels,
             block,
             threads,
+            always,
             top,
         } => profile(
             &project,
@@ -242,6 +248,7 @@ fn run(command: Command) -> Result<(), String> {
                 channels,
                 block,
                 threads,
+                always,
                 top,
             },
         ),
@@ -255,6 +262,7 @@ struct ProfileArgs {
     channels: usize,
     block: usize,
     threads: usize,
+    always: bool,
     top: usize,
 }
 
@@ -278,7 +286,7 @@ fn profile(project_path: &Path, args: ProfileArgs) -> Result<(), String> {
         extend_registry: Some(noodle_plugins::discover().catalog.extender()),
     };
     let run = |workers: usize| {
-        profile_project(&request, workers, args.threads > 0)
+        profile_project(&request, workers, args.always)
             .map_err(|error| format!("can't profile {}: {error}", project_path.display()))
     };
     // The single-threaded run attributes time to nodes cleanly; with helpers
@@ -342,6 +350,12 @@ fn profile(project_path: &Path, args: ProfileArgs) -> Result<(), String> {
         let (parallel, _) = run(args.threads)?;
         println!();
         print_run(&format!("{} helper threads", args.threads), &parallel);
+        if !parallel.parallel {
+            println!(
+                "  This graph is too narrow for the helpers to be used (as in `play`); \
+                 --always forces them."
+            );
+        }
         println!(
             "  {:.2}x the speed of one thread.",
             serial.wall.as_secs_f64() / parallel.wall.as_secs_f64().max(1e-9)
@@ -358,12 +372,17 @@ fn print_run(title: &str, profile: &noodle_engine::Profile) {
         profile.realtime_factor()
     );
     println!(
-        "  blocks: mean {:.1}% of budget, 99% under {:.0}%, worst {:.0}%, {} over budget of {}.",
+        "  blocks: mean {:.1}% of budget, 99% under {:.0}%, worst {:.0}%, {} over budget of {}{}.",
         blocks.mean * 100.0,
         blocks.percentile(0.99) * 100.0,
         blocks.worst * 100.0,
         blocks.misses,
-        blocks.blocks
+        blocks.blocks,
+        if blocks.panics > 0 {
+            format!(", {} with a panicking node", blocks.panics)
+        } else {
+            String::new()
+        }
     );
 }
 
