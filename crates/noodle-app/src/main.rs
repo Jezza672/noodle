@@ -58,7 +58,9 @@ fn main() -> ExitCode {
         None => Session::new(Nodes::all_with_plugins()),
     };
     if let Some(path) = prefs::default_path() {
-        session.set_audio_config(prefs::init(path).audio);
+        let prefs = prefs::init(path);
+        session.set_audio_config(prefs.audio);
+        session.set_sandbox_plugins(prefs.sandbox_plugins);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.

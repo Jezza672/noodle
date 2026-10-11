@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use crate::denormals::Flush;
 use crate::plan::PlanShape;
+use crate::priority::{Priority, raise_current_thread};
 
 /// How long an idle worker spins before parking. Short: a parked worker is
 /// woken in tens of microseconds, and spinning on a core the audio thread
@@ -215,6 +216,11 @@ struct Shared {
     /// Whether each worker is (about to be) parked.
     parked: Box<[AtomicBool]>,
     job: UnsafeCell<Option<Job>>,
+    /// How many workers the system gave real-time priority, and how many a
+    /// raised one (see [`crate::raise_current_thread`]). Set as each worker
+    /// starts.
+    realtime: AtomicUsize,
+    raised: AtomicUsize,
 }
 
 // SAFETY: `job` is written only by the audio thread, while no worker is
@@ -238,7 +244,10 @@ impl Workers {
     /// Starts `count` threads. With `always`, every plan with independent
     /// steps runs in parallel; otherwise only those wide enough to pay for
     /// the hand-off.
-    pub(crate) fn start(count: usize, always: bool, flush: Flush) -> Self {
+    ///
+    /// `period` is the duration of a block, for the system's scheduler: the
+    /// workers ask for real-time priority sized by it.
+    pub(crate) fn start(count: usize, always: bool, flush: Flush, period: Duration) -> Self {
         let shared = Arc::new(Shared {
             epoch: AtomicU64::new(0),
             open: AtomicBool::new(false),
@@ -246,13 +255,15 @@ impl Workers {
             shutdown: AtomicBool::new(false),
             parked: (0..count).map(|_| AtomicBool::new(false)).collect(),
             job: UnsafeCell::new(None),
+            realtime: AtomicUsize::new(0),
+            raised: AtomicUsize::new(0),
         });
         let threads: Vec<_> = (0..count)
             .map(|index| {
                 let shared = shared.clone();
                 thread::Builder::new()
                     .name(format!("noodle-worker-{index}"))
-                    .spawn(move || worker(&shared, index, flush))
+                    .spawn(move || worker(&shared, index, flush, period))
                     .expect("spawning a worker thread")
             })
             .collect();
@@ -263,6 +274,15 @@ impl Workers {
             handles,
             always,
         }
+    }
+
+    /// How many workers have real-time priority, and how many a raised one.
+    /// Workers ask as they start, so this is settled a moment after `start`.
+    pub(crate) fn priorities(&self) -> (usize, usize) {
+        (
+            self.shared.realtime.load(Ordering::Relaxed),
+            self.shared.raised.load(Ordering::Relaxed),
+        )
     }
 
     /// How many threads help the audio thread.
@@ -317,7 +337,14 @@ impl Drop for Workers {
     }
 }
 
-fn worker(shared: &Shared, index: usize, flush: Flush) {
+fn worker(shared: &Shared, index: usize, flush: Flush, period: Duration) {
+    // A block waits for its slowest helper, so the helpers are scheduled like
+    // the audio thread when the system allows it.
+    match raise_current_thread(period) {
+        Priority::Realtime => shared.realtime.fetch_add(1, Ordering::Relaxed),
+        Priority::Raised => shared.raised.fetch_add(1, Ordering::Relaxed),
+        Priority::Normal => 0,
+    };
     // The mode is per thread, and nothing else runs here: flush subnormals as
     // the audio thread does, for good.
     let _flush = flush.enable();
@@ -410,7 +437,7 @@ mod tests {
             previous = vec![join];
         }
         let graph = StepGraph::new(&waits);
-        let workers = Workers::start(3, true, Flush::detect());
+        let workers = Workers::start(3, true, Flush::detect(), Duration::from_millis(5));
         let ran: Vec<AtomicUsize> = waits.iter().map(|_| AtomicUsize::new(0)).collect();
         struct Ctx<'a> {
             graph: &'a StepGraph,
@@ -471,7 +498,7 @@ mod tests {
                 std::thread::sleep(Duration::from_micros(200));
             });
         }
-        let workers = Workers::start(2, true, Flush::detect());
+        let workers = Workers::start(2, true, Flush::detect(), Duration::from_millis(5));
         let seen = Seen {
             caller: thread::current().id(),
             flushed: AtomicBool::new(false),

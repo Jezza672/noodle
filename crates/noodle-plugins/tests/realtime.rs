@@ -56,16 +56,41 @@ fn realtime(f: impl FnOnce()) -> usize {
 
 const FRAMES: usize = 256;
 
+/// Sandboxing is a process-wide setting: tests that build nodes take turns,
+/// so a sandboxed one doesn't catch the others.
+static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn turn() -> std::sync::MutexGuard<'static, ()> {
+    TURN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn processing_blocks_with_notes_and_modulation_never_allocates() {
+    let _turn = turn();
     let catalog = catalog();
-    never_allocates(node_type(&catalog), NodeId(0), false);
+    never_allocates(node_type(&catalog), NodeId(0), false, false);
 }
 
 #[test]
 fn a_vst3_plugin_processing_blocks_with_notes_and_modulation_never_allocates() {
+    let _turn = turn();
     let catalog = vst3_catalog();
-    never_allocates(vst3_node_type(&catalog), NodeId(0), false);
+    never_allocates(vst3_node_type(&catalog), NodeId(0), false, false);
+}
+
+/// The same through a plugin host process: the audio thread's half of the
+/// exchange (copying into shared memory, waking the host, waiting for it) never
+/// allocates or frees, with the host busy, asleep, or late.
+#[test]
+fn a_plugin_in_a_host_process_never_allocates_on_the_audio_thread() {
+    let _turn = turn();
+    noodle_plugins::set_sandbox(Some(noodle_plugins::SandboxCommand::program(env!(
+        "CARGO_BIN_EXE_noodle-plugin-scan"
+    ))));
+    let catalog = catalog();
+    never_allocates(node_type(&catalog), NodeId(0), false, true);
+    noodle_plugins::set_sandbox(None);
 }
 
 /// The editor's edits are passed to the processor on the audio thread too:
@@ -73,6 +98,7 @@ fn a_vst3_plugin_processing_blocks_with_notes_and_modulation_never_allocates() {
 /// blocks send that on.
 #[test]
 fn a_vst3_editors_edits_reaching_the_processor_never_allocate() {
+    let _turn = turn();
     struct Fake;
     impl noodle_plugins::EditorWindow for Fake {
         fn parent(&self) -> noodle_plugins::ParentWindow {
@@ -91,11 +117,16 @@ fn a_vst3_editors_edits_reaching_the_processor_never_allocate() {
     // Another test in this binary may have set the factory; any will do.
     let _ = noodle_plugins::set_window_factory(|_| Some(Box::new(Fake)));
     let catalog = vst3_catalog();
-    never_allocates(vst3_node_type(&catalog), NodeId(77), true);
+    never_allocates(vst3_node_type(&catalog), NodeId(77), true, false);
     assert!(!noodle_plugins::is_running(NodeId(77)));
 }
 
-fn never_allocates(node_type: &noodle_plugins::PluginNodeType, id: NodeId, editor: bool) {
+fn never_allocates(
+    node_type: &noodle_plugins::PluginNodeType,
+    id: NodeId,
+    editor: bool,
+    sandboxed: bool,
+) {
     let config = Config::new();
     let layout = node_type.layout(&config).unwrap();
     // Wire audio in and the gain parameter.
@@ -123,6 +154,11 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType, id: NodeId, edito
     else {
         panic!("realtime node");
     };
+    assert_eq!(
+        noodle_plugins::sandbox_status(id).is_some(),
+        sandboxed,
+        "built where it was meant to be"
+    );
 
     let mut input_buffers: Vec<_> = input_shapes
         .iter()
@@ -217,8 +253,17 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType, id: NodeId, edito
             .iter()
             .any(|&s| s != 0.0);
     }
-    // The blocks were real: the notes made sound.
-    assert!(heard);
+    // The blocks were real: the notes made sound. (A node in a host process
+    // plays silence for a block its host is late with, so on a loaded machine
+    // a short run of them can all be dropped; the guarantee tested then is
+    // that doing so doesn't allocate either.)
+    assert!(heard || sandboxed);
+    if sandboxed {
+        // At least one block went to the host and came back, so the copy in,
+        // the wake-up and the copy out were what the counter watched.
+        let status = noodle_plugins::sandbox_status(id).expect("still a sandboxed node");
+        assert!(status.dropped_blocks < 40, "{status:?}");
+    }
     if editor {
         // The plugin is still there to capture (the editor's edit itself is
         // checked in `vst3_editor.rs`).
@@ -231,11 +276,13 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType, id: NodeId, edito
 /// notes still arrive (parameter changes stop short to leave them room).
 #[test]
 fn a_flood_of_parameter_changes_and_notes_never_allocates_and_keeps_notes() {
+    let _turn = turn();
     flood(plugin_path());
 }
 
 #[test]
 fn a_vst3_flood_of_parameter_changes_and_notes_never_allocates_and_keeps_notes() {
+    let _turn = turn();
     flood(vst3_path());
 }
 

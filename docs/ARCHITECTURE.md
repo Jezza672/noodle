@@ -839,9 +839,9 @@ ports become graph ports. Plugin state is saved in the Project.
 - Plugin editors open as separate native windows: embedded in a window the host makes (macOS, Windows), or the plugin's own floating window (Linux, or when it can't embed). Both run on the plugin thread.
 - Scanning runs in a child process, so a plugin that crashes during scanning
   can't take down the app.
-- **Out-of-process hosting (M6)** runs plugins in sandbox processes that
-  exchange audio through shared memory, so a crashing plugin can't take down
-  the session.
+- **Out-of-process hosting (M6)** runs each plugin in a host process of its
+  own that exchanges audio through shared memory, so a crashing or hanging
+  plugin can't take down the session; see [Sandboxed plugins](#sandboxed-plugins).
 - **Latency:** plugins report their latency (CLAP's latency extension, VST3's
   `getLatencySamples`, both read once after activation, on the plugin thread) and the engine
   compensates for it; see [Performance (M6)](#performance-m6).
@@ -928,7 +928,7 @@ does this on macOS and Windows only; Linux plugins keep their own thread, since
 an X11 editor needs no event loop of ours. The cost is that a slow plugin
 load or editor call stalls the UI thread there, as it already did when the
 compile was waiting on it. One plugin that hangs while loading blocks the
-others until M6's out-of-process hosting.
+others, unless plugins are sandboxed (see [Sandboxed plugins](#sandboxed-plugins)).
 
 **Processing** (`node.rs`). Each block is copied into preallocated plugin
 buffers (in chunks of at most `max_frames`), parameters whose value changed
@@ -1110,11 +1110,79 @@ the audio thread.
 
 **Limits.** The transport's bar fields assume quarter-note beats and a
 meter that has not changed. A plugin that crashes while playing takes the process with it
-(until out-of-process hosting in M6); editors are separate windows (not drawn inside the app's window), Linux has no
+(unless plugins are sandboxed, below); editors are separate windows (not drawn inside the app's window), Linux has no
 embedding and no `posix-fd`, and the macOS and Windows editor windows are
 checked only by CI compiling them and by one hand test on the Mac; CLAP extensions beyond audio
 ports, note ports, parameters and state (e.g. tail, voice info, remote
 controls) are not used.
+
+### Sandboxed plugins
+
+With `noodle_plugins::set_sandbox(Some(SandboxCommand))` (the app's View >
+Plugins checkbox "Run plugins in separate processes", saved in the
+preferences, or `noodle --sandbox-plugins`) each plugin node, CLAP or VST3,
+is built in a **plugin host process** instead of in the app. The command is
+this program started with the hidden `--noodle-plugin-host` argument (handled
+by `run_scan_child_if_requested` next to the scanner's; the `noodle-plugin-scan`
+program is a host too). It applies to nodes built afterwards; the app
+compiles the graph again when the option changes. Off by default.
+
+The code is `noodle-plugins/src/sandbox/`:
+
+- **`host.rs`, the child.** It connects back to the app on a loopback socket
+  (a token on the command line proves who started it), receives a `Hello` (the
+  shared file, the plugin and its descriptor, the node's config and shapes) and builds
+  exactly the node the app would have built in-process
+  (`PluginNodeType::instantiate_local`, with the plugin thread, state restore
+  and latency as before). It replies `Ready { latency }` or `Failed`, then runs
+  blocks. A second thread serves the control socket and keeps the editor flag.
+- **`shm.rs`, the shared file.** One memory-mapped file (`/dev/shm` on Linux,
+  else the temp folder; unlinked once the host has it, or delete-on-close on
+  Windows) holds a header of atomics, the block's transport, each input's
+  samples (or, for an input that is one value for the block, just the value;
+  lane-packed by the block's frame count), silence flags, events in and out
+  (`WireEvent`, up to 4096 per note input and 1024 per output port a block),
+  and the outputs. Both sides compute the layout from the same `Spec`.
+- **`proxy.rs`, the node.** `SandboxedNode::process` copies a block in,
+  bumps `req_seq`, and waits for `done_seq`: it spins, then yields. If the host
+  is asleep (it spins only 50 µs after a block, then blocks reading its
+  stdin) one byte down that pipe wakes it. Live, it gives up when half the block's
+  duration is up (so the rest of the graph can still finish), plays silence for that block and counts it
+  (`SandboxStatus::dropped_blocks`); while the host is still on an earlier
+  block, later blocks are skipped without touching the file. Offline renders (anything built through
+  `Catalog::extender`, i.e. freeze and export) are *patient*: they wait for as
+  long as the host lives. Nothing here allocates, locks or waits on a lock
+  (`tests/realtime.rs` counts); the one syscall is the wake-up write.
+- **Restarts.** A monitor thread per node polls the child (every 20 ms). If it
+  exits, or a block has been pending for 2 s (60 s when patient; a patient node waits out a restart instead of rendering silence), it flips
+  `state` away from RUNNING, waits for the audio thread to leave (`in_audio`),
+  kills the child, and after a back-off (250 ms times the attempt) starts a new
+  one from the node's original settings, so the plugin comes back as saved
+  in the project and not as it was. After 4 failures (counted over the node's whole life, not a window) the node gives up and
+  plays silence until the graph compiles it again. The shared file is zeroed when made so its pages are
+  already in memory. `sandbox_status(node)`
+  reports `running`, `failed`, `restarts`, `dropped_blocks`, `last_error` and
+  the child's `pid`; the app polls it and says so in the status line.
+- **Editors and state.** The editor functions in `editor.rs` find a node's
+  newest instance, in-process or remote; for a remote one they send
+  `OpenEditor`, `CloseEditor` and `Capture` over the control socket and the
+  host runs them on its own plugin thread, so capturing an edited plugin back into
+  the project works as before. The host has no window factory, so only
+  Linux plugins can show their editor from a host so far (CLAP floating windows
+  and the plugin's own X11 ones); on macOS and Windows opening one is refused
+  with a message (turn the option off to edit). `editor_open` reaches the app
+  through the shared header, at most 100 ms stale.
+
+Costs and limits: a block's hand-over is a copy in and out plus two wake-ups,
+a few tens of microseconds, so a plugin in a host costs a little more CPU than
+one in-process (and more so with tiny buffers); the host and the app each hold a
+copy of the plugin's audio buffers; the host's priority is raised like a worker
+(below) but its plugin threads' aren't; a hung plugin costs a 2 s outage before
+it is replaced; plugin latency changes after load are still not followed; the
+loopback socket is protected by a token only (another local process can connect first and make
+a start fail, nothing more). The macOS and Windows
+paths are checked by CI building and running the tests (the same tests as
+Linux except the editor ones).
 
 ## Performance (M6)
 
@@ -1212,6 +1280,19 @@ mode is per thread; `workers_flush_subnormals`). `tests/parallel.rs` checks
 the sound is bit-identical to one thread's, and counts allocations on every
 thread.
 
+**Priority.** Each worker asks the system, as it starts, to schedule it better
+than an ordinary thread (`noodle_engine::raise_current_thread`, `priority.rs`; the
+period is the block's duration): on macOS a time-constraint policy, on Windows
+MMCSS "Pro Audio" (falling back to the highest ordinary priority), on Linux a
+nice value of -10 (needs `RLIMIT_NICE`). Not `SCHED_FIFO` on Linux: cpal's ALSA
+callback thread is an ordinary thread, and helpers that outrank it and spin
+while they wait could make a block later than without them. A refusal is not an
+error: `Processor::worker_priorities()` and `noodle profile --threads N` say
+how many workers got real-time priority and how many a raised one. Joining
+the output device's audio workgroup on macOS (so the scheduler places the
+workers with the I/O thread) is not done: it needs the device's workgroup
+handle from Core Audio, which cpal does not give us.
+
 **Output.** An Output node mixes into its own scratch buffer; the buffers are
 added to the device output in schedule order at the end of the block. The sum
 differs from the single-threaded one only in the last bits (a voice sum is
@@ -1221,8 +1302,7 @@ grouped differently).
 core, so unless `always` is set a plan runs on workers only if it has at least
 4 steps and 1.5 times as many steps as its longest chain. That counts every
 step as equal; `noodle profile --threads N` measures the real thing. Known
-limits: the workers are plain threads, not raised to real-time priority; a
-worker descheduled in the middle of a step stalls the block (as in any such
+limits: a worker descheduled in the middle of a step stalls the block (as in any such
 design); more workers than idle cores makes things worse; `mix` of several
 voices is one step, so one fat node limits the speedup.
 

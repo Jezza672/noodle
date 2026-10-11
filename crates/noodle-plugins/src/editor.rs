@@ -22,7 +22,7 @@ use noodle_engine::Config;
 use crate::STATE_KEY;
 use crate::descriptor::{Descriptor, exposed_params, param_key};
 use crate::host::{Flags, HostError};
-use crate::{thread, vst3};
+use crate::{sandbox, thread, vst3};
 
 struct Running {
     node: NodeId,
@@ -49,14 +49,33 @@ pub(crate) fn unregister(key: u64) {
         .retain(|r| r.key != key);
 }
 
-fn find(node: NodeId) -> Result<(u64, Arc<Flags>), HostError> {
+/// Which kind of instance a node has running.
+enum Found {
+    /// In this process, with the flags the plugin thread keeps for it.
+    Local(u64, Arc<Flags>),
+    /// In a plugin host process (see `sandbox`).
+    Remote(u64),
+}
+
+impl Found {
+    fn key(&self) -> u64 {
+        match self {
+            Self::Local(key, _) | Self::Remote(key) => *key,
+        }
+    }
+}
+
+fn find(node: NodeId) -> Result<Found, HostError> {
+    if let Some((key, _)) = sandbox::remote_for(node) {
+        return Ok(Found::Remote(key));
+    }
     RUNNING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .iter()
         .rev()
         .find(|r| r.node == node)
-        .map(|r| (r.key, Arc::clone(&r.flags)))
+        .map(|r| Found::Local(r.key, Arc::clone(&r.flags)))
         .ok_or_else(|| HostError("that plugin isn't running (is the graph playing?)".into()))
 }
 
@@ -74,8 +93,12 @@ pub struct EditorKey(u64);
 /// Opens the node's plugin editor (or brings it back if it was hidden) on its
 /// newest running instance.
 pub fn open_editor(node: NodeId) -> Result<EditorKey, HostError> {
-    let key = find(node)?.0;
-    if vst3::gui::is_key(key) {
+    let key = find(node)?.key();
+    if sandbox::is_remote_key(key) {
+        sandbox::remote(key)
+            .ok_or_else(|| HostError("that plugin isn't running".into()))?
+            .open_editor()?;
+    } else if vst3::gui::is_key(key) {
         vst3::gui::open(key)?;
     } else {
         thread::open_editor(key)?;
@@ -95,17 +118,27 @@ fn flags_of(key: EditorKey) -> Option<Arc<Flags>> {
 /// Whether the instance is still running (it is gone once the node is built
 /// again).
 pub fn editor_instance_running(key: EditorKey) -> bool {
+    if sandbox::is_remote_key(key.0) {
+        return sandbox::remote(key.0).is_some();
+    }
     flags_of(key).is_some()
 }
 
 /// Whether that instance's editor window is up.
 pub fn editor_key_is_open(key: EditorKey) -> bool {
+    if sandbox::is_remote_key(key.0) {
+        return sandbox::remote(key.0).is_some_and(|r| r.is_open());
+    }
     flags_of(key).is_some_and(|f| f.editor_open.load(std::sync::atomic::Ordering::Acquire))
 }
 
 /// Reads that instance.
 pub fn capture_key(key: EditorKey) -> Result<Captured, HostError> {
-    if vst3::gui::is_key(key.0) {
+    if sandbox::is_remote_key(key.0) {
+        sandbox::remote(key.0)
+            .ok_or_else(|| HostError("that plugin isn't running".into()))?
+            .capture()
+    } else if vst3::gui::is_key(key.0) {
         vst3::gui::capture(key.0)
     } else {
         thread::capture(key.0)
@@ -114,8 +147,13 @@ pub fn capture_key(key: EditorKey) -> Result<Captured, HostError> {
 
 /// Closes the editor, if it is open.
 pub fn close_editor(node: NodeId) {
-    if let Ok((key, _)) = find(node) {
-        if vst3::gui::is_key(key) {
+    if let Ok(found) = find(node) {
+        let key = found.key();
+        if sandbox::is_remote_key(key) {
+            if let Some(remote) = sandbox::remote(key) {
+                remote.close_editor();
+            }
+        } else if vst3::gui::is_key(key) {
             vst3::gui::close(key);
         } else {
             thread::close_editor(key);
@@ -125,7 +163,11 @@ pub fn close_editor(node: NodeId) {
 
 /// Whether the node's editor window is up. Cheap enough to ask every frame.
 pub fn editor_is_open(node: NodeId) -> bool {
-    find(node).is_ok_and(|(_, flags)| flags.editor_open.load(std::sync::atomic::Ordering::Acquire))
+    match find(node) {
+        Ok(Found::Local(_, flags)) => flags.editor_open.load(std::sync::atomic::Ordering::Acquire),
+        Ok(Found::Remote(key)) => sandbox::remote(key).is_some_and(|r| r.is_open()),
+        Err(_) => false,
+    }
 }
 
 /// A running plugin's state and parameter values at one moment.
@@ -138,7 +180,7 @@ pub struct Captured {
 
 /// Reads the node's running plugin.
 pub fn capture(node: NodeId) -> Result<Captured, HostError> {
-    capture_key(EditorKey(find(node)?.0))
+    capture_key(EditorKey(find(node)?.key()))
 }
 
 impl Captured {
