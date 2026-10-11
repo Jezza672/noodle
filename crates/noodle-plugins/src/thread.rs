@@ -8,11 +8,13 @@
 //! processor, which CLAP lets the audio thread use, and talk to the instance
 //! by sending this thread a command.
 //!
-//! This is the host's CLAP main thread but not the process's: on macOS an
-//! editor wants the application's main thread, which belongs to the UI
-//! framework. A plugin that insists on that can't open its editor from here;
-//! the editor is reported as failed to open, and everything else works.
+//! That thread is the host's CLAP main thread but not the process's, which
+//! is what a macOS editor wants (and a Windows editor needs a thread that
+//! pumps messages). An application whose UI thread should be the plugin
+//! thread calls [`adopt_current_thread`] and then [`pump`] each frame: the
+//! same code then runs on that thread instead of one of its own.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -22,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clack_extensions::gui::{GuiApiType, GuiConfiguration, PluginGui};
+use clack_extensions::gui::{GuiApiType, GuiConfiguration, GuiSize, PluginGui, Window};
 use clack_extensions::params::PluginParams;
 use clack_extensions::timer::PluginTimer;
 use clack_host::prelude::*;
@@ -32,6 +34,7 @@ use crate::host::{
     Flags, Host, HostError, LOAD_TIMEOUT, host_info, load_entry, load_state, new_instance,
     save_state_of, visible_params,
 };
+use crate::window::{self, EditorWindow, ParentWindow};
 
 /// How long the thread waits for a command when no timer is due sooner.
 const IDLE: Duration = Duration::from_millis(50);
@@ -47,6 +50,18 @@ struct Live {
     flags: Arc<Flags>,
     /// The plugin's editor exists (shown or hidden), so `destroy` is owed.
     gui: bool,
+    /// The host window an embedded editor is in, and the size it was last
+    /// given, to tell when the user has resized it.
+    window: Option<Box<dyn EditorWindow>>,
+    size: (u32, u32),
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        // However it goes, the plugin's view goes before its window and the
+        // plugin itself.
+        destroy_editor(self);
+    }
 }
 
 /// An instance, activated and ready.
@@ -106,16 +121,119 @@ enum Command {
     },
 }
 
-fn sender() -> &'static Sender<Command> {
-    static THREAD: OnceLock<Sender<Command>> = OnceLock::new();
-    THREAD.get_or_init(|| {
+/// The instances, and what the thread keeps for them.
+#[derive(Default)]
+struct Executor {
+    live: HashMap<u64, Live>,
+    next_key: u64,
+}
+
+impl Executor {
+    fn handle(&mut self, command: Command) {
+        handle(command, &mut self.live, &mut self.next_key);
+    }
+
+    /// Timers, callbacks and closed editors, for every instance.
+    fn housekeeping(&mut self) {
+        let now = Instant::now();
+        for l in self.live.values_mut() {
+            housekeeping(l, now);
+        }
+    }
+
+    /// How long until the next timer is due (at most [`IDLE`]).
+    fn next_wake(&self) -> Duration {
+        let now = Instant::now();
+        self.live
+            .values()
+            .filter_map(|l| l.flags.next_due())
+            .min()
+            .map_or(IDLE, |due| due.saturating_duration_since(now).min(IDLE))
+    }
+}
+
+/// The thread that was adopted as the plugin thread, if any: its queue and
+/// instances.
+struct Adopted {
+    receiver: Receiver<Command>,
+    executor: Executor,
+}
+
+thread_local! {
+    static ADOPTED: RefCell<Option<Adopted>> = const { RefCell::new(None) };
+}
+
+struct Queue {
+    sender: Sender<Command>,
+    /// Called after a command is queued for an adopted thread, to wake it.
+    wake: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+static QUEUE: OnceLock<Queue> = OnceLock::new();
+
+/// Makes the calling thread the plugin thread instead of starting one.
+///
+/// A plugin's editor wants the application's main thread on macOS, and a
+/// window made on a thread that doesn't pump messages is dead on Windows. An
+/// application whose UI thread is that thread calls this once at startup
+/// (before any plugin is used) and then calls [`pump`] regularly from it.
+/// Commands from other threads wait in a queue for `pump`, and `wake` is
+/// called after each is queued (to request a repaint, say). Commands from
+/// the adopted thread itself run on the spot. Returns false if the plugin
+/// thread has already started or another thread was adopted.
+pub fn adopt_current_thread(wake: impl Fn() + Send + Sync + 'static) -> bool {
+    let (sender, receiver) = mpsc::channel();
+    let queue = Queue {
+        sender,
+        wake: Some(Box::new(wake)),
+    };
+    if QUEUE.set(queue).is_err() {
+        return false;
+    }
+    // Editor windows belong to this thread too.
+    window::install_native();
+    ADOPTED.with(|a| {
+        *a.borrow_mut() = Some(Adopted {
+            receiver,
+            executor: Executor::default(),
+        });
+    });
+    true
+}
+
+/// Runs what other threads have asked of the adopted plugin thread, and its
+/// instances' timers. Returns how long until it should be called again, or
+/// `None` if nothing is running that needs it (a queued command calls the
+/// `wake` given to [`adopt_current_thread`]), or this isn't the adopted
+/// thread.
+pub fn pump() -> Option<Duration> {
+    ADOPTED.with(|a| {
+        let mut adopted = a.try_borrow_mut().ok()?;
+        let adopted = adopted.as_mut()?;
+        while let Ok(command) = adopted.receiver.try_recv() {
+            adopted.executor.handle(command);
+        }
+        adopted.executor.housekeeping();
+        (!adopted.executor.live.is_empty()).then(|| adopted.executor.next_wake())
+    })
+}
+
+fn queue() -> &'static Queue {
+    QUEUE.get_or_init(|| {
         let (sender, receiver) = mpsc::channel();
         // If the thread can't start, every command fails with "ended".
         let _ = thread::Builder::new()
             .name("noodle-plugin-main".into())
             .spawn(move || run(receiver));
-        sender
+        Queue { sender, wake: None }
     })
+}
+
+impl Command {
+    /// Whether the sender waits for an answer.
+    fn waits(&self) -> bool {
+        !matches!(self, Command::Close { .. } | Command::CloseEditor { .. })
+    }
 }
 
 fn gone() -> HostError {
@@ -123,7 +241,30 @@ fn gone() -> HostError {
 }
 
 fn send(command: Command) -> Result<(), HostError> {
-    sender().send(command).map_err(|_| gone())
+    // On the adopted thread, run the command now (waiting on it would wait
+    // for ourselves), unless a command is already running.
+    let command = ADOPTED.with(|a| match a.try_borrow_mut() {
+        Ok(mut adopted) => match adopted.as_mut() {
+            Some(adopted) => {
+                adopted.executor.handle(command);
+                Ok(None)
+            }
+            None => Ok(Some(command)),
+        },
+        // A command is running on this (the adopted) thread and a plugin has
+        // called back into us. A command that waits would wait for itself.
+        Err(_) if command.waits() => Err(HostError("the plugin thread is busy".into())),
+        Err(_) => Ok(Some(command)),
+    })?;
+    let Some(command) = command else {
+        return Ok(());
+    };
+    let queue = queue();
+    queue.sender.send(command).map_err(|_| gone())?;
+    if let Some(wake) = &queue.wake {
+        wake();
+    }
+    Ok(())
 }
 
 fn wait<T>(receiver: &Receiver<Result<T, HostError>>, timeout: Duration) -> Result<T, HostError> {
@@ -199,24 +340,14 @@ pub(crate) fn close_editor(key: u64) {
 }
 
 fn run(receiver: Receiver<Command>) {
-    let mut live: HashMap<u64, Live> = HashMap::new();
-    let mut next_key = 1;
+    let mut executor = Executor::default();
     loop {
-        let now = Instant::now();
-        let wait = live
-            .values()
-            .filter_map(|l| l.flags.next_due())
-            .min()
-            .map_or(IDLE, |due| due.saturating_duration_since(now).min(IDLE));
-        match receiver.recv_timeout(wait) {
-            Ok(command) => handle(command, &mut live, &mut next_key),
+        match receiver.recv_timeout(executor.next_wake()) {
+            Ok(command) => executor.handle(command),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        let now = Instant::now();
-        for l in live.values_mut() {
-            housekeeping(l, now);
-        }
+        executor.housekeeping();
     }
 }
 
@@ -234,8 +365,62 @@ fn housekeeping(live: &mut Live, now: Instant) {
             }
         }
     }
-    if live.flags.editor_closed.swap(false, Ordering::AcqRel) {
+    if live.flags.editor_closed.swap(false, Ordering::AcqRel)
+        || live.window.as_ref().is_some_and(|w| w.is_closed())
+    {
         destroy_editor(live);
+    }
+    resize_window(live);
+}
+
+/// Carries out a resize the plugin asked for, or the user made by dragging
+/// the window's edge.
+fn resize_window(live: &mut Live) {
+    let Some(window) = live.window.as_mut() else {
+        return;
+    };
+    let asked = live.flags.resize.swap(0, Ordering::AcqRel);
+    let handle = live.instance.plugin_handle();
+    let Some(gui) = handle.get_extension::<PluginGui>() else {
+        return;
+    };
+    if asked != 0 {
+        let size = ((asked >> 32) as u32, asked as u32);
+        window.set_size(size.0, size.1, gui.can_resize(&handle));
+        live.size = window.size();
+        let _ = gui.set_size(
+            &handle,
+            GuiSize {
+                width: live.size.0,
+                height: live.size.1,
+            },
+        );
+    } else if window.size() != live.size && window.size() != (0, 0) && gui.can_resize(&handle) {
+        // The user dragged it: the plugin may want a different size.
+        let wanted = window.size();
+        let GuiSize { width, height } = gui
+            .adjust_size(
+                &handle,
+                GuiSize {
+                    width: wanted.0,
+                    height: wanted.1,
+                },
+            )
+            .unwrap_or(GuiSize {
+                width: wanted.0,
+                height: wanted.1,
+            });
+        if (width, height) != wanted {
+            window.set_size(width, height, true);
+        }
+        live.size = window.size();
+        let _ = gui.set_size(
+            &handle,
+            GuiSize {
+                width: live.size.0,
+                height: live.size.1,
+            },
+        );
     }
 }
 
@@ -245,9 +430,15 @@ fn destroy_editor(live: &mut Live) {
     }
     live.gui = false;
     live.flags.editor_open.store(false, Ordering::Release);
+    live.flags.embedded.store(false, Ordering::Release);
+    live.flags.resize.store(0, Ordering::Release);
     let handle = live.instance.plugin_handle();
     if let Some(gui) = handle.get_extension::<PluginGui>() {
         gui.destroy(&handle);
+    }
+    // The plugin's view goes before the window it was in.
+    if let Some(mut window) = live.window.take() {
+        window.hide();
     }
 }
 
@@ -363,6 +554,8 @@ fn load(
             _entry: entry,
             flags,
             gui: false,
+            window: None,
+            size: (0, 0),
         },
         processor,
     ))
@@ -396,16 +589,33 @@ fn apis() -> &'static [GuiApiType<'static>] {
 }
 
 fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
+    if live.gui {
+        // Already up: bring it back if it was hidden.
+        let handle = live.instance.plugin_handle();
+        let gui = handle
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| HostError("this plugin has no editor".into()))?;
+        gui.show(&handle)
+            .map_err(|e| HostError(format!("can't show the editor: {e}")))?;
+        if let Some(window) = live.window.as_mut() {
+            window.show();
+        }
+        return Ok(());
+    }
+    // Embedded in a window of ours if the application makes those and the
+    // plugin can; otherwise the plugin's own floating window.
+    let embedded_error = if window::available() {
+        match open_embedded(live) {
+            Ok(()) => return Ok(()),
+            Err(error) => Some(error),
+        }
+    } else {
+        None
+    };
     let handle = live.instance.plugin_handle();
     let Some(gui) = handle.get_extension::<PluginGui>() else {
         return Err(HostError("this plugin has no editor".into()));
     };
-    if live.gui {
-        // Already up: bring it back if it was hidden.
-        return gui
-            .show(&handle)
-            .map_err(|e| HostError(format!("can't show the editor: {e}")));
-    }
     let configuration = apis()
         .iter()
         .map(|api| GuiConfiguration {
@@ -413,7 +623,11 @@ fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
             is_floating: true,
         })
         .find(|c| gui.is_api_supported(&handle, *c))
-        .ok_or_else(|| HostError("this plugin has no editor that floats on this system".into()))?;
+        .ok_or_else(|| {
+            embedded_error.unwrap_or_else(|| {
+                HostError("this plugin has no editor that floats on this system".into())
+            })
+        })?;
     gui.create(&handle, configuration)
         .map_err(|e| HostError(format!("can't create the editor: {e}")))?;
     live.gui = true;
@@ -424,5 +638,71 @@ fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
         return Err(HostError(format!("can't show the editor: {error}")));
     }
     live.flags.editor_open.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// What a plugin is given when it has no size of its own to offer.
+const DEFAULT_SIZE: (u32, u32) = (800, 600);
+
+/// Opens the editor inside a window the host makes.
+fn open_embedded(live: &mut Live) -> Result<(), HostError> {
+    let Live {
+        instance,
+        flags,
+        gui: gui_exists,
+        window: live_window,
+        size: live_size,
+        ..
+    } = live;
+    let handle = &instance.plugin_handle();
+    let gui = &handle
+        .get_extension::<PluginGui>()
+        .ok_or_else(|| HostError("this plugin has no editor".into()))?;
+    let configuration = apis()
+        .iter()
+        .map(|api| GuiConfiguration {
+            api_type: *api,
+            is_floating: false,
+        })
+        .find(|c| gui.is_api_supported(handle, *c))
+        .ok_or_else(|| HostError("this plugin has no editor that embeds on this system".into()))?;
+    let mut window = window::make("Plugin editor")
+        .ok_or_else(|| HostError("can't make a window for the editor".into()))?;
+    gui.create(handle, configuration)
+        .map_err(|e| HostError(format!("can't create the editor: {e}")))?;
+    let result = (|| {
+        let size = gui
+            .get_size(handle)
+            .map_or(DEFAULT_SIZE, |s| (s.width, s.height));
+        window.set_size(size.0, size.1, gui.can_resize(handle));
+        let parent = match window.parent() {
+            // SAFETY: the window made the handle.
+            ParentWindow::Cocoa(view) => unsafe { Window::from_cocoa_nsview(view) },
+            ParentWindow::Win32(hwnd) => unsafe { Window::from_win32_hwnd(hwnd) },
+            ParentWindow::X11(id) => Window::from_x11_handle(id),
+        };
+        // From here the plugin may ask for another size.
+        flags.embedded.store(true, Ordering::Release);
+        // SAFETY: the window stays alive in `live` until the editor is
+        // destroyed, which is when the plugin is told it is gone.
+        unsafe { gui.set_parent(handle, parent) }
+            .map_err(|e| HostError(format!("can't embed the editor: {e}")))?;
+        gui.show(handle)
+            .map_err(|e| HostError(format!("can't show the editor: {e}")))?;
+        *live_size = window.size();
+        Ok(())
+    })();
+    if let Err(error) = result {
+        flags.embedded.store(false, Ordering::Release);
+        flags.resize.store(0, Ordering::Release);
+        gui.destroy(handle);
+        return Err(error);
+    }
+    window.show();
+    *live_window = Some(window);
+    *gui_exists = true;
+    flags.embedded.store(true, Ordering::Release);
+    flags.editor_closed.store(false, Ordering::Release);
+    flags.editor_open.store(true, Ordering::Release);
     Ok(())
 }

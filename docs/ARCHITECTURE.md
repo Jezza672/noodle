@@ -767,7 +767,7 @@ ports become graph ports. Plugin state is saved in the Project.
 - **VST3** is hosted through the Rust `vst3` bindings, or through a thin C++
   shim over Steinberg's SDK (MIT-licensed since 3.8) exposed through a C ABI.
 - **AU** may come later. Most macOS plugins also ship as VST3 or CLAP.
-- Plugin editors open as separate native windows (floating, from the shared plugin thread).
+- Plugin editors open as separate native windows: embedded in a window the host makes (macOS, Windows), or the plugin's own floating window (Linux, or when it can't embed). Both run on the plugin thread.
 - Scanning runs in a child process, so a plugin that crashes during scanning
   can't take down the app.
 - **Out-of-process hosting (M6)** runs plugins in sandbox processes that
@@ -802,8 +802,8 @@ never depends on config:
 | audio inputs, one per CLAP audio input port | `in`, `in2`, ... |
 | a parameter input per non-hidden, writable CLAP parameter | `p<param id>` |
 | audio outputs | `out`, `out2`, ... |
-| note input ports (first one read) | `notes`, `notes2`, ... |
-| note output ports (first one written) | `notes_out`, ... |
+| note input ports (all are read) | `notes`, `notes2`, ... |
+| note output ports (all are written) | `notes_out`, ... |
 
 A parameter is `Offset`-modulated, with the plugin's range and default; a
 stepped CLAP parameter is a stepped one (the node rounds the value before
@@ -819,9 +819,19 @@ limit) and gets back the audio processor, which the node holds; on drop the
 node sends the processor back and the thread deactivates and destroys the
 instance. The thread also runs what CLAP gives the main thread: plugin timers
 (`timer-support`), `request_callback`, and editor creation and destruction.
-It is not the process's main thread, so a macOS plugin whose editor insists on
-that may fail to open (reported as an error, not a crash). One plugin that
-hangs while loading blocks the others until M6's out-of-process hosting.
+By default that thread is one of its own, but an editor wants the application's
+main thread on macOS (Cocoa) and a thread that pumps messages on Windows. So an
+application whose UI thread should be the plugin thread calls
+`adopt_current_thread(wake)` once at startup and `pump()` every frame:
+requests from the UI thread then run on the spot, and requests from other
+threads (a freeze render loading the plugin, say) wait in a queue for `pump`,
+which `wake` asks the UI to run. `pump` also returns when to be called next so
+plugin timers run (nothing is asked of an app with no plugin loaded). The app
+does this on macOS and Windows only; Linux plugins keep their own thread, since
+an X11 editor needs no event loop of ours. The cost is that a slow plugin
+load or editor call stalls the UI thread there, as it already did when the
+compile was waiting on it. One plugin that hangs while loading blocks the
+others until M6's out-of-process hosting.
 
 **Processing** (`node.rs`). Each block is copied into preallocated plugin
 buffers (in chunks of at most `max_frames`), parameters whose value changed
@@ -843,8 +853,18 @@ plugin refuses, is a node error rather than a crash. `capture_state` loads a
 plugin (optionally with earlier state) and returns what it saves.
 
 **Editors and capture** (`editor.rs`). Running plugin nodes register by node
-ID. `open_editor(node)` opens the plugin's floating window (CLAP `gui`; the
-platform's API, floating only, no embedding yet). Edits in the window go to
+ID. `open_editor(node)` opens the plugin's editor (CLAP `gui`). If the
+application has set a window factory (`set_window_factory`; on macOS and
+Windows `adopt_current_thread` installs one that makes an `NSWindow` or a
+top-level `HWND`, `src/window/`) and the plugin supports the platform's API
+non-floating, the editor is *embedded*: the host makes a hidden window of the
+plugin's `get_size`, gives the plugin its handle with `set_parent`, and shows
+both. The host follows the window: a size the plugin asks for
+(`request_resize`) is applied from the plugin thread's housekeeping, a size the
+user drags to goes through the plugin's `adjust_size` and `set_size`, and the
+close button closes the editor (polled: `EditorWindow::is_closed`). With no
+factory, or if embedding fails, the plugin's own floating window is used (the
+platform's API). Edits in the window go to
 the running plugin, so they are heard at once. `capture(node)` reads the live
 plugin's saved state and every parameter's value; `Captured::commands` turns
 that into one `Command::Batch`: `SetConfig state` plus a `SetParam` per
@@ -884,8 +904,10 @@ the audio thread.
 
 **Limits.** The transport's bar fields assume quarter-note beats and a
 meter that has not changed. A plugin that crashes while playing takes the process with it
-(until out-of-process hosting in M6); embedded (non-floating) editors and `posix-fd` support are missing; plugin latency is
-ignored; only the first note port is wired; CLAP extensions beyond audio
+(until out-of-process hosting in M6); editors are separate windows (not drawn inside the app's window), Linux has no
+embedding and no `posix-fd`, and the macOS and Windows editor windows are
+checked only by CI compiling them and by one hand test on the Mac; plugin latency is
+ignored; CLAP extensions beyond audio
 ports, note ports, parameters and state (e.g. tail, voice info, remote
 controls) are not used.
 

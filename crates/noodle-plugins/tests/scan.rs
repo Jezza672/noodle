@@ -21,7 +21,7 @@ fn scanning_reports_the_plugins_ports_and_parameters() {
     assert_eq!(plugin.audio_inputs.len(), 1);
     assert_eq!(plugin.audio_inputs[0].channels, 2);
     assert_eq!(plugin.audio_outputs[0].channels, 2);
-    assert_eq!((plugin.note_inputs, plugin.note_outputs), (1, 0));
+    assert_eq!((plugin.note_inputs, plugin.note_outputs), (2, 0));
     let params: Vec<_> = plugin
         .params
         .iter()
@@ -116,4 +116,15 @@ fn finding_files_looks_for_clap_files_in_folders() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names, ["a.clap", "b.clap"]);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_folder_named_clap_is_searched_for_the_file_inside() {
+    // Some packages (Debian's ProM) ship `ProM.clap/ProM.clap`.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("ProM.clap")).unwrap();
+    std::fs::write(dir.path().join("ProM.clap/ProM.clap"), b"").unwrap();
+    let found = find_plugin_files(&[dir.path().to_owned()]);
+    assert_eq!(found, [dir.path().join("ProM.clap/ProM.clap")]);
 }

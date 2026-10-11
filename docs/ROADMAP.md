@@ -509,21 +509,26 @@ export produces output identical to live playback.
 
 ## M5: Plugins
 
-**Status:** batches 1 and 2 are done. Batch 1: CLAP hosting through clack
-(`noodle-plugins`): scanning in a child process with a cache, plugin nodes
+**Status:** batches 1 to 3 are done; VST3 is next. Batch 1: CLAP hosting through
+clack (`noodle-plugins`): scanning in a child process with a cache, plugin nodes
 whose ports are the plugin's audio ports, note ports and parameters, saved
 state in the project, registration through the render hook. Batch 2: one shared
 plugin thread for every instance (timers, callbacks), floating editor windows
 opened from the properties panel, state and parameter values captured back
 into the node when the editor closes, and a plugin browser (View > Plugins)
-with search, Rescan and failed files. Not started: VST3. Owed: a real plugin
-(Surge XT, Vital) played on the Mac, including its editor.
+with search, Rescan and failed files. Batch 3: the plugin thread can be the
+app's UI thread (macOS, Windows), editors embedded in host-made windows
+(`src/window/`), every note port read and written, folders named `.clap`
+searched, and tests against real third-party plugins (`real_plugins.rs`,
+Debian's DISTRHO, Dragonfly and LSP CLAP plugins on Linux CI). Not started:
+VST3. Owed: a real plugin (Surge XT, Vital) played on the Mac, including its
+editor and the new windows.
 
 - **CLAP hosting through clack:**
   - Scanning in a child process (done).
   - Plugin nodes (done).
   - Parameters as ports (done).
-  - Editor windows (done, floating only).
+  - Editor windows (done: embedded in host windows on macOS and Windows, floating on Linux).
   - Plugin state saved in the project, captured from the editor (done).
 - Plugin browser (done).
 - VST3 hosting.

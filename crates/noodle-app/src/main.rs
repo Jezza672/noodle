@@ -28,10 +28,25 @@ use std::process::ExitCode;
 use crate::app::App;
 use crate::session::{Nodes, Session};
 
+/// The window's context, for waking the UI thread when another thread asks
+/// something of the plugins it hosts.
+static UI: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
 fn main() -> ExitCode {
     // Plugins are scanned in a child process, which is this program started
     // with a hidden argument.
     noodle_plugins::run_scan_child_if_requested();
+    // Plugin editors need the UI thread on macOS (Cocoa) and a thread that
+    // pumps messages on Windows, so there it hosts the plugins: `App::update`
+    // runs what other threads ask of them. Elsewhere they get a thread of
+    // their own.
+    if cfg!(any(target_os = "macos", windows)) {
+        noodle_plugins::adopt_current_thread(|| {
+            if let Some(ctx) = UI.get() {
+                ctx.request_repaint();
+            }
+        });
+    }
     let mut session = match std::env::args_os().nth(1) {
         Some(path) => match Session::open(Nodes::all_with_plugins(), path.as_ref()) {
             Ok(session) => session,
@@ -56,6 +71,7 @@ fn main() -> ExitCode {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
+            let _ = UI.set(cc.egui_ctx.clone());
             Ok(Box::new(App::new(session)))
         }),
     );
