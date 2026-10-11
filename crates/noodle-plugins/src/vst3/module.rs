@@ -56,6 +56,10 @@ impl Module {
             return Ok(module);
         }
         let module = Arc::new(Self::open(path)?);
+        // Stays loaded for the process on macOS, as CLAP plugins do (see
+        // `load_entry` in `host.rs` for why).
+        #[cfg(target_os = "macos")]
+        std::mem::forget(Arc::clone(&module));
         map.insert(path.to_owned(), Arc::downgrade(&module));
         Ok(module)
     }

@@ -240,8 +240,16 @@ pub(crate) fn host_info() -> Result<HostInfo, HostError> {
 pub(crate) fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
     // SAFETY: loading a plugin runs its code. That's what the user asked for
     // by choosing it; scanning does it in a child process for that reason.
-    unsafe { PluginEntry::load(path) }
-        .map_err(|error| HostError(format!("can't load {}: {error}", path.display())))
+    let entry = unsafe { PluginEntry::load(path) }
+        .map_err(|error| HostError(format!("can't load {}: {error}", path.display())))?;
+    // On macOS plugins stay loaded for the life of the process (CLAP here,
+    // VST3 in `vst3/module.rs`). A plugin's Objective-C objects can outlive
+    // its instance, still waiting in an autorelease pool the main thread
+    // drains later (Surge's editor views do). Unloading or deinitialising
+    // the plugin tears down its classes, and the drain then crashes.
+    #[cfg(target_os = "macos")]
+    std::mem::forget(entry.clone());
+    Ok(entry)
 }
 
 fn text(bytes: Option<&std::ffi::CStr>) -> String {
