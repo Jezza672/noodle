@@ -242,10 +242,11 @@ pub(crate) fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
     // by choosing it; scanning does it in a child process for that reason.
     let entry = unsafe { PluginEntry::load(path) }
         .map_err(|error| HostError(format!("can't load {}: {error}", path.display())))?;
-    // A macOS plugin's Objective-C objects can outlive its instance, still
-    // waiting in an autorelease pool the main thread drains later (Surge's
-    // editor views do). Unloading the library frees their classes, and the
-    // drain then crashes. So the library stays loaded for the process.
+    // On macOS plugins stay loaded for the life of the process (CLAP here,
+    // VST3 in `vst3/module.rs`). A plugin's Objective-C objects can outlive
+    // its instance, still waiting in an autorelease pool the main thread
+    // drains later (Surge's editor views do). Unloading or deinitialising
+    // the plugin tears down its classes, and the drain then crashes.
     #[cfg(target_os = "macos")]
     std::mem::forget(entry.clone());
     Ok(entry)
