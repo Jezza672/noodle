@@ -157,16 +157,9 @@ pub(crate) struct Remote(pub Arc<Shared>);
 
 impl Remote {
     pub fn open_editor(&self) -> Result<(), HostError> {
-        // The host has no window factory, so on macOS and Windows its
-        // editors would be floating windows of a process with no event
-        // loop. Linux plugins draw their own windows.
-        if !cfg!(target_os = "linux") {
-            return Err(HostError(
-                "editors of plugins run in a separate process aren't supported on this \
-                 system yet; turn that option off to use the editor"
-                    .into(),
-            ));
-        }
+        // The host makes the editor window itself: embedded on macOS and
+        // Windows (its main thread pumps the window events), the plugin's
+        // own on Linux.
         self.0.request(ToHost::OpenEditor).map(|_| ())
     }
 

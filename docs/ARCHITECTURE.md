@@ -1067,7 +1067,8 @@ The code is `noodle-plugins/src/sandbox/`:
   exactly the node the app would have built in-process
   (`PluginNodeType::instantiate_local`, with the plugin thread, state restore
   and latency as before). It replies `Ready { latency }` or `Failed`, then runs
-  blocks. A second thread serves the control socket and keeps the editor flag.
+  blocks. A second thread serves the control socket and keeps the editor flag; on
+  macOS and Windows the roles swap (see Editors and state).
 - **`shm.rs`, the shared file.** One memory-mapped file (`/dev/shm` on Linux,
   else the temp folder; unlinked once the host has it, or delete-on-close on
   Windows) holds a header of atomics, the block's transport, each input's
@@ -1099,10 +1100,15 @@ The code is `noodle-plugins/src/sandbox/`:
   newest instance, in-process or remote; for a remote one they send
   `OpenEditor`, `CloseEditor` and `Capture` over the control socket and the
   host runs them on its own plugin thread, so capturing an edited plugin back into
-  the project works as before. The host has no window factory, so only
-  Linux plugins can show their editor from a host so far (CLAP floating windows
-  and the plugin's own X11 ones); on macOS and Windows opening one is refused
-  with a message (turn the option off to edit). `editor_open` reaches the app
+  the project works as before. On macOS and Windows the host's **main thread is
+  its plugin thread** (`adopt_current_thread`, as in the app) and its
+  control loop pumps `pump()` and the native window events
+  (`window::pump_events`: an AppKit event drain with an Accessory activation
+  policy on macOS, `PeekMessage` on Windows) every 8 ms, while the blocks run
+  on a thread of their own; editors are then embedded in host-made windows
+  exactly as in-process. On Linux the main thread runs blocks and plugins draw
+  their own windows. `--noodle-plugin-host-pumped` runs the macOS/Windows
+  arrangement on any system (the sandbox tests use it on Linux). `editor_open` reaches the app
   through the shared header, at most 100 ms stale.
 
 Costs and limits: a block's hand-over is a copy in and out plus two wake-ups,
