@@ -46,8 +46,8 @@ enum Command {
         #[command(flatten)]
         device: DeviceArgs,
     },
-    /// List the CLAP plugins found on this machine. A plugin's node type is
-    /// `clap.<plugin id>`; its ports are the plugin's audio and note ports
+    /// List the CLAP and VST3 plugins found on this machine. A plugin's node
+    /// type is `clap.<plugin id>` or `vst3.<class id>`; its ports are the plugin's audio and note ports
     /// and parameters. New or changed plugin files are scanned (in a child
     /// process) and the results cached.
     Plugins,
@@ -126,7 +126,7 @@ fn run(command: Command) -> Result<(), String> {
             let project = load(&project_path)?;
             let settings = Settings {
                 sample_rate: sample_rate as f32,
-                max_frames: 512,
+                max_frames: 128,
                 channels,
             };
             // `as` saturates, so a huge length would quietly be truncated.
@@ -220,7 +220,7 @@ fn list_devices(host: Option<&str>) -> Result<(), String> {
 }
 
 /// Frames per block for live playback: about 11 ms at 48 kHz.
-const MAX_FRAMES: usize = 512;
+const MAX_FRAMES: usize = 128;
 /// How often to check the project file for changes.
 const POLL: Duration = Duration::from_millis(100);
 
@@ -234,8 +234,9 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     // Output nodes tied to other devices play on those too. The devices are
     // opened once, so a reload that changes them takes a restart.
     let mut devices = noodle_engine::output_devices(project.graph());
-    let (mut playback, mut controller) = noodle_io::play_with_outputs(config, &devices, MAX_FRAMES)
-        .map_err(|error| error.to_string())?;
+    let (mut playback, mut controller) =
+        noodle_io::play_with_outputs(config, &devices, MAX_FRAMES, &noodle_io::MidiBus::new())
+            .map_err(|error| error.to_string())?;
     for status in playback.outputs() {
         match &status.result {
             Ok(opened) => eprintln!(
@@ -353,7 +354,7 @@ impl Watch {
 fn list_plugins() {
     let found = noodle_plugins::discover();
     if found.files.is_empty() {
-        println!("no CLAP plugins found in the standard folders");
+        println!("no CLAP or VST3 plugins found in the standard folders");
     }
     for file in &found.files {
         if let Some(error) = &file.error {
@@ -362,8 +363,8 @@ fn list_plugins() {
         }
         for plugin in &file.plugins {
             println!(
-                "clap.{}  {} ({}): {} audio in, {} audio out, {} note in, {} params  [{}]",
-                plugin.id,
+                "{}  {} ({}): {} audio in, {} audio out, {} note in, {} params  [{}]",
+                plugin.node_id(),
                 plugin.name,
                 plugin.vendor,
                 plugin.audio_inputs.len(),

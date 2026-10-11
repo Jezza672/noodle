@@ -3,6 +3,7 @@
 use egui::epaint::{CornerRadius, CubicBezierShape, PathShape, StrokeKind};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use noodle_core::Endpoint;
+use noodle_engine::CpuReading;
 
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
 use super::view::Transform;
@@ -230,11 +231,23 @@ fn boxed(
                 Align2::RIGHT_CENTER,
             );
         }
+        let mut right = if problem { 24.0 } else { 10.0 };
+        if let Some(cpu) = bodies.cpu(node.id) {
+            let (label, color) = cpu_label(cpu);
+            let galley = painter.text(
+                header.right_center() - Vec2::new(right * z, 0.0),
+                Align2::RIGHT_CENTER,
+                label,
+                FontId::monospace(9.0 * z),
+                color,
+            );
+            right += galley.width() / z + 6.0;
+        }
         if let Some(badge) = badge {
             let (label, color) = badge_label(badge);
             if !label.is_empty() {
                 painter.text(
-                    header.right_center() - Vec2::new(if problem { 24.0 } else { 10.0 } * z, 0.0),
+                    header.right_center() - Vec2::new(right * z, 0.0),
                     Align2::RIGHT_CENTER,
                     label,
                     FontId::proportional(10.0 * z),
@@ -321,6 +334,20 @@ fn boxed(
     }
 
     if let Some(area) = node.body {
+        // What each parameter is now: a wire's live value, else the node's
+        // own, else the default.
+        let values = |key: &str| {
+            let default = node.ports.iter().find_map(|port| match &port.kind {
+                PortKind::Param(info) if port.key == key => Some(info.default),
+                _ => None,
+            });
+            bodies
+                .param_live(node.id, key)
+                .map(|live| live.value)
+                .or_else(|| graph.node(node.id)?.params.get(key).copied())
+                .or(default)
+                .unwrap_or(0.0)
+        };
         body::paint(
             painter,
             f.t.rect_to_screen(area),
@@ -328,8 +355,30 @@ fn boxed(
             node.id,
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
+            &values,
         );
     }
+}
+
+/// A node's CPU load as a percentage of the block time, coloured by how close
+/// it is to making the audio thread late.
+pub(crate) fn cpu_label(reading: CpuReading) -> (String, Color32) {
+    let percent = reading.load * 100.0;
+    let label = if percent < 0.05 {
+        "0%".to_owned()
+    } else if percent < 10.0 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{percent:.0}%")
+    };
+    let color = if reading.peak >= 0.9 || reading.load >= 0.5 {
+        colors::CPU_HIGH
+    } else if reading.load >= 0.15 {
+        colors::CPU_MEDIUM
+    } else {
+        colors::TEXT_WEAK
+    };
+    (label, color)
 }
 
 /// What a frozen or offline node says about its render, and in what colour.

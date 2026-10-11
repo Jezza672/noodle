@@ -178,6 +178,15 @@ impl EditorState {
         self.bodies.param_live(node, key)
     }
 
+    /// Whether each node shows how much of the audio thread's time it takes.
+    pub fn show_cpu(&self) -> bool {
+        self.bodies.show_cpu()
+    }
+
+    pub fn set_show_cpu(&mut self, on: bool) {
+        self.bodies.set_show_cpu(on);
+    }
+
     /// What a scope node last captured, for a view of it elsewhere.
     pub fn scope_view(&self, node: NodeId) -> Option<&noodle_engine::ScopeView> {
         self.bodies.scope_view(node)
@@ -527,6 +536,19 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         fields.show(&f, &state.bodies, node, &mut edits);
     });
     fields.finish(&mut edits);
+    if let Some(total) = state.bodies.cpu_total() {
+        let (label, color) = draw::cpu_label(noodle_engine::CpuReading {
+            load: total,
+            peak: total,
+        });
+        painter.text(
+            canvas.right_top() + Vec2::new(-12.0, 10.0),
+            egui::Align2::RIGHT_TOP,
+            format!("Graph CPU {label}"),
+            egui::FontId::monospace(12.0),
+            color,
+        );
+    }
     if let Some(p) = pointer_pos {
         draw::gesture(&painter, &f, &state.gesture, p);
     }

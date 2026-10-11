@@ -4,12 +4,53 @@
 
 use std::path::PathBuf;
 
+use noodle_engine::Config;
 use serde::{Deserialize, Serialize};
 
-/// One plugin in a file. A CLAP file can hold several.
+/// The plugin standard a file follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PluginFormat {
+    #[default]
+    Clap,
+    Vst3,
+}
+
+impl PluginFormat {
+    /// The word for it in node IDs and the plugin browser.
+    pub fn name(self) -> &'static str {
+        match self {
+            PluginFormat::Clap => "CLAP",
+            PluginFormat::Vst3 => "VST3",
+        }
+    }
+
+    /// The prefix of node type IDs of this format's plugins.
+    pub fn node_prefix(self) -> &'static str {
+        match self {
+            PluginFormat::Clap => "clap.",
+            PluginFormat::Vst3 => "vst3.",
+        }
+    }
+
+    /// The format a plugin file is in, from its extension.
+    pub fn of_path(path: &std::path::Path) -> Self {
+        if path.extension().is_some_and(|ext| ext == "vst3") {
+            PluginFormat::Vst3
+        } else {
+            PluginFormat::Clap
+        }
+    }
+}
+
+/// One plugin in a file. A CLAP file can hold several, and so can a VST3
+/// bundle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Descriptor {
-    /// The plugin's own ID, e.g. `com.u-he.diva`.
+    /// Absent in scans saved before VST3 was supported, which are all CLAP.
+    #[serde(default)]
+    pub format: PluginFormat,
+    /// The plugin's own ID, e.g. `com.u-he.diva` for CLAP; for VST3 the class
+    /// ID as 32 hex digits.
     pub id: String,
     pub name: String,
     pub vendor: String,
@@ -52,7 +93,7 @@ pub struct PluginFile {
     pub len: u64,
     pub modified: u64,
     pub plugins: Vec<Descriptor>,
-    /// Why scanning failed (the file crashed, hung or isn't a CLAP plugin).
+    /// Why scanning failed (the file crashed, hung or isn't a plugin).
     /// A failed file isn't scanned again until it changes.
     #[serde(default)]
     pub error: Option<String>,
@@ -105,12 +146,9 @@ pub fn file_stamp(path: &std::path::Path) -> Option<(u64, u64)> {
 impl Descriptor {
     /// The node type ID for this plugin.
     pub fn node_id(&self) -> String {
-        format!("{NODE_PREFIX}{}", self.id)
+        format!("{}{}", self.format.node_prefix(), self.id)
     }
 }
-
-/// Node type IDs of plugins start with this, then the plugin's own ID.
-pub const NODE_PREFIX: &str = "clap.";
 
 /// The port key of the `index`th audio input (`in`, `in2`, ...).
 pub fn input_key(index: usize) -> String {
@@ -140,4 +178,56 @@ fn numbered(base: &str, index: usize) -> String {
 /// The port key of a parameter.
 pub fn param_key(id: u32) -> String {
     format!("p{id}")
+}
+
+/// A plugin with at most this many parameters shows all of them on a new
+/// node; one with more shows none (a synth can have hundreds, which makes a
+/// node too tall to use). See [`initial_params`].
+pub const DEFAULT_EXPOSED_LIMIT: usize = 32;
+
+/// The `params` setting a newly added node of this plugin starts with, if it
+/// needs one. A node without the setting shows every parameter, which is what
+/// projects saved before the setting existed rely on.
+pub fn initial_params(descriptor: &Descriptor) -> Option<String> {
+    (descriptor.params.len() > DEFAULT_EXPOSED_LIMIT).then(|| params_text(&[]))
+}
+
+/// The ids of the parameters chosen in `config`, if the user chose any.
+/// The setting is a comma-separated list of ids; `none` means an empty choice
+/// (an empty setting means no choice yet).
+pub fn chosen_params(config: &Config) -> Option<Vec<u32>> {
+    let Some(noodle_engine::Value::Text(text)) = config.get(crate::PARAMS_KEY) else {
+        return None;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(
+        text.split(',')
+            .filter_map(|id| id.trim().parse().ok())
+            .collect(),
+    )
+}
+
+/// The parameters that get a port on the node, in the plugin's order: the
+/// chosen ones, or all of them if nothing was chosen.
+pub fn exposed_params<'a>(descriptor: &'a Descriptor, config: &Config) -> Vec<&'a ParamDesc> {
+    match chosen_params(config) {
+        Some(ids) => descriptor
+            .params
+            .iter()
+            .filter(|p| ids.contains(&p.id))
+            .collect(),
+        None => descriptor.params.iter().collect(),
+    }
+}
+
+/// The setting's text for a choice of parameter ids.
+pub fn params_text(ids: &[u32]) -> String {
+    if ids.is_empty() {
+        "none".to_owned()
+    } else {
+        ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+    }
 }

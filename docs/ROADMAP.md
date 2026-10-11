@@ -424,9 +424,15 @@ filters, unison and spread); the delay node and feedback loops.
   the `Key` and `Mono Note` nodes, test-harness support and an end-to-end
   patch).
 - MIDI input (midir), MIDI clips and a piano roll. *Done* (batch 2).
-  - **Still to do:** timestamp live MIDI inside the block, record MIDI into a
-    clip, quantise and copy/paste in the piano roll, more than one MIDI
-    port at a time. (Reopening a port that was unplugged and comes back is
+  - Live MIDI is timestamped inside the block and the app plays 128-frame
+    blocks; the computer keyboard is a MIDI source (toolbar button); Record
+    captures MIDI into a clip with an optional quantise grid and
+    output-latency compensation.
+  - The 128-frame block is a fixed choice for now (4× the per-block overhead
+    of 512); the engine block could follow the device period again.
+  - **Still to do:** quantise and copy/paste in the piano roll, more than one
+    MIDI port at a time, overdubbing into an existing clip, a count-in,
+    keeping the raw take for re-quantising. (Reopening a port that was unplugged and comes back is
     done: the session looks at the port list about once a second.)
 - Voices node: voice allocation and stealing, producing polyphonic pitch, gate
   and velocity. *Done* (batch 3).
@@ -503,32 +509,54 @@ export produces output identical to live playback.
 
 ## M5: Plugins
 
-**Status:** batch 1 is done: CLAP hosting through clack (`noodle-plugins`).
-Scanning in a child process with a cache, plugin nodes whose ports are the
-plugin's audio ports, note ports and parameters, saved state in the project,
-and plugin nodes registered through the render hook so freeze and export see
-them. Not started: editor windows, the plugin browser (plugins are in the
-add-node menu under "Plugins" for now) and VST3.
+**Status:** batches 1 to 5 are done; the Mac check with a real plugin is owed. Batch 1: CLAP hosting through
+clack (`noodle-plugins`): scanning in a child process with a cache, plugin nodes
+whose ports are the plugin's audio ports, note ports and parameters, saved
+state in the project, registration through the render hook. Batch 2: one shared
+plugin thread for every instance (timers, callbacks), floating editor windows
+opened from the properties panel, state and parameter values captured back
+into the node when the editor closes, and a plugin browser (View > Plugins)
+with search, Rescan and failed files. Batch 3: the plugin thread can be the
+app's UI thread (macOS, Windows), editors embedded in host-made windows
+(`src/window/`), every note port read and written, folders named `.clap`
+searched, and tests against real third-party plugins (`real_plugins.rs`,
+Debian's DISTRHO, Dragonfly and LSP CLAP plugins on Linux CI). Batch 4: VST3
+hosting (`src/vst3/`): scanning `.vst3` bundles in the same child process and
+cache, plugin nodes `vst3.<class id>` with parameters, audio buses, note
+buses, MIDI controllers through `IMidiMapping`, saved state, a VST3 test
+plugin (`examples/test_vst3.rs`) and tests against DISTRHO and Dragonfly's
+VST3 builds on Linux CI. Batch 5: VST3 editors (`IPlugView` embedded in the
+host-made windows, `src/vst3/gui.rs`; resize, drag, close and capture as for
+CLAP), the controller's edits passed to the processor, `IMessage` and
+`IConnectionPoint` between component and controller, and a bar position that
+follows the denominator. Not yet for VST3: an editor window on Linux (the app
+makes none). Owed: a real plugin (Surge XT, Vital) played on the Mac, including
+its editor and the new windows, a real VST3 one, and the same on Windows.
 
 - **CLAP hosting through clack:**
   - Scanning in a child process (done).
   - Plugin nodes (done).
   - Parameters as ports (done).
-  - Editor windows.
-  - Plugin state saved in the project (done; capturing state needs the
-    editor).
-- Plugin browser.
-- VST3 hosting.
+  - Editor windows (done: embedded in host windows on macOS and Windows, floating on Linux).
+  - Plugin state saved in the project, captured from the editor (done).
+- Plugin browser (done).
+- VST3 hosting (done; editors on macOS and Windows).
 
 **Done when:** common free CLAP and VST3 plugins (instruments and effects)
 load, play, save and restore on all three platforms.
 
 ## M6: Performance and robustness
 
+**Status:** batch 1 is done: plugin delay compensation and per-node CPU
+meters. Parallel graph processing and out-of-process hosting are next. A
+plugin that changes its latency after loading (restart request, latency
+`changed`) is not followed until the node is rebuilt.
+
 - Running the graph in parallel across real-time worker threads.
-- Plugin delay compensation.
+- Plugin delay compensation (done: CLAP and VST3 latency, delay lines in the
+  plan, offline renders trimmed to the timeline).
 - Out-of-process plugin hosting.
-- CPU meters per node, and profiling tools.
+- CPU meters per node (done: View > CPU meters), and profiling tools.
 
 ## Later
 

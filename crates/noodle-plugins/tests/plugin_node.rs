@@ -40,7 +40,7 @@ fn ports_come_from_the_plugin() {
     let inputs: Vec<_> = layout.inputs.iter().map(|p| p.key.to_string()).collect();
     assert_eq!(inputs, ["in", "p1", "p2"]);
     assert_eq!(keys(&layout.outputs), ["out"]);
-    assert_eq!(keys(&layout.event_inputs), ["notes"]);
+    assert_eq!(keys(&layout.event_inputs), ["notes", "notes2"]);
     assert!(layout.event_outputs.is_empty());
     // The gain's port carries the plugin's range and default.
     let noodle_engine::InputKind::Param(gain) = &layout.inputs[GAIN].kind else {
@@ -183,6 +183,41 @@ fn a_note_makes_the_plugin_sound_at_that_pitch_and_a_note_off_stops_it() {
 }
 
 #[test]
+fn every_note_input_reaches_the_plugin_in_time_order() {
+    let mut h = harness(&Config::new(), &[]);
+    // A4 on the second port (an octave up) at frame 0 and on the first at
+    // frame 100: the later port's event is the earlier in time. Same note id
+    // on both, so the notes are kept apart by port.
+    h.send_events(0, &[note_on(100, 1, 69, 1.0)]);
+    h.send_events(1, &[note_on(0, 1, 69, 1.0)]);
+    h.run(256).unwrap();
+    let out = h.output(0);
+    for (i, &s) in out.lane(0, 0).iter().enumerate().skip(1) {
+        let high = (TAU * 880.0 * i as f32 / RATE).sin() * 0.2;
+        let low = if i > 100 {
+            (TAU * 440.0 * (i - 100) as f32 / RATE).sin() * 0.2
+        } else {
+            0.0
+        };
+        assert!(
+            (s - (low + high)).abs() < 3e-3,
+            "frame {i}: {s} vs {}",
+            low + high
+        );
+    }
+    // A note-off by id on the second port stops that port's note only, though
+    // the first port's note has the same id.
+    h.send_events(0, &[]);
+    h.send_events(1, &[note_off(0, 1)]);
+    h.run(256).unwrap();
+    let out = h.output(0);
+    let expected = |i: usize| (TAU * 440.0 * (256 + i - 100) as f32 / RATE).sin() * 0.2;
+    for (i, &s) in out.lane(0, 0).iter().enumerate() {
+        assert!((s - expected(i)).abs() < 3e-3, "frame {i}");
+    }
+}
+
+#[test]
 fn a_note_starts_at_its_frame_within_the_block() {
     let mut h = harness(&Config::new(), &[]);
     h.send_events(0, &[note_on(100, 1, 69, 1.0)]);
@@ -258,7 +293,7 @@ fn state_captured_from_a_plugin_restores_to_the_same_sound() {
     let node = node_type(&catalog);
     let saved = 0.125f32.to_le_bytes();
     let captured = capture_state(node.path(), PLUGIN_ID, Some(&saved)).unwrap();
-    assert_eq!(captured, saved);
+    // The plugin's bytes come back wrapped in a length and checksum.
     let text = base64::engine::general_purpose::STANDARD.encode(&captured);
     let config = Config::new().with(STATE_KEY, Value::Text(text));
     let mut h = Harness::new(node, &config, &[], RATE, 256).unwrap();
@@ -268,6 +303,79 @@ fn state_captured_from_a_plugin_restores_to_the_same_sound() {
             .lane(0, 1)
             .iter()
             .all(|&s| (s - 0.125).abs() < 1e-6)
+    );
+}
+
+/// Gain 0.5 in state, bias 0: input 1.0 comes out as 0.5 only if the host
+/// left the gain alone (the plugin reports a default of 1.0).
+#[test]
+fn an_untouched_port_leaves_the_state_s_value_alone() {
+    let mut bytes = 0.0f32.to_le_bytes().to_vec();
+    bytes.extend(0.5f32.to_le_bytes());
+    let text = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let config = Config::new().with(STATE_KEY, Value::Text(text));
+    let mut h = harness(&config, &[(IN, Shape::new(1, 2))]);
+    fill_input(&mut h, 64, |_| 1.0);
+    h.run(64).unwrap();
+    assert!(
+        h.output(0)
+            .lane(0, 0)
+            .iter()
+            .all(|&s| (s - 0.5).abs() < 1e-6)
+    );
+}
+
+#[test]
+fn damaged_state_is_refused_before_the_plugin_sees_it() {
+    let catalog = catalog();
+    let node = node_type(&catalog);
+    let saved = 0.125f32.to_le_bytes();
+    let captured = capture_state(node.path(), PLUGIN_ID, Some(&saved)).unwrap();
+    let encode = |bytes: &[u8]| {
+        Config::new().with(
+            STATE_KEY,
+            Value::Text(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        )
+    };
+    assert!(Harness::new(node, &encode(&captured), &[], RATE, 256).is_ok());
+    // Cut short.
+    let cut = &captured[..captured.len() - 1];
+    assert!(Harness::new(node, &encode(cut), &[], RATE, 256).is_err());
+    // Edited.
+    let mut edited = captured.clone();
+    *edited.last_mut().unwrap() ^= 1;
+    assert!(Harness::new(node, &encode(&edited), &[], RATE, 256).is_err());
+}
+
+#[test]
+fn the_params_setting_chooses_which_parameters_get_ports() {
+    let catalog = catalog();
+    let node = node_type(&catalog);
+    let keys = |config: &Config| {
+        node.layout(config)
+            .unwrap()
+            .inputs
+            .iter()
+            .map(|p| p.key.to_string())
+            .collect::<Vec<_>>()
+    };
+    // Without the setting every parameter has a port, as in projects saved
+    // before it existed. A big plugin's new node starts with `none` instead.
+    assert_eq!(keys(&Config::new()), ["in", "p1", "p2"]);
+    assert_eq!(noodle_plugins::initial_params(node.descriptor()), None);
+    let only =
+        |text: &str| Config::new().with(noodle_plugins::PARAMS_KEY, Value::Text(text.into()));
+    assert_eq!(keys(&only("2")), ["in", "p2"]);
+    assert_eq!(keys(&only("none")), ["in"]);
+    // The node still builds and plays with a parameter hidden.
+    let mut h = Harness::new(node, &only("none"), &[(IN, Shape::new(1, 2))], RATE, 256).unwrap();
+    fill_input(&mut h, 64, |_| 0.5);
+    h.run(64).unwrap();
+    assert!(
+        h.output(0)
+            .lane(0, 0)
+            .iter()
+            .all(|&s| (s - 0.5).abs() < 1e-6)
     );
 }
 

@@ -1,13 +1,15 @@
 //! Rendering without an audio device, as fast as the machine allows.
 
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use noodle_core::{Endpoint, Graph, Project};
 
 use crate::{
     Cancelled, Controller, Diagnostic, Instance, Layout, NodeError, NodeInfo, NodeType, Progress,
-    Registry, Replacements, Settings, SettingsError, Setup, SignalIn, TapSpec, engine,
+    Registry, Replacements, Settings, SettingsError, Setup, Shape, SignalBuffer, SignalIn, TapSpec,
+    engine,
 };
 
 pub struct Render {
@@ -157,14 +159,21 @@ pub fn render_project_streaming_replacing<E>(
     chunk.resize(len, 0.0);
 
     let diagnostics = controller.update_project_replacing(project, registry, replacements);
+    // The mix sounds this many frames late (plugin delay compensation), so
+    // they're rendered and dropped from the front.
+    let mut skip = controller.output_latency();
     let mut done = 0;
     progress.report(0.0)?;
     while done < frames {
         let n = chunk_frames.min(frames - done);
         let samples = &mut chunk[..n * settings.channels];
         processor.process(samples);
-        sink(samples).map_err(StreamError::Sink)?;
-        done += n;
+        let dropped = skip.min(n);
+        skip -= dropped;
+        if dropped < n {
+            sink(&samples[dropped * settings.channels..]).map_err(StreamError::Sink)?;
+        }
+        done += n - dropped;
         progress.report(done as f32 / frames as f32)?;
     }
     Ok(diagnostics)
@@ -207,6 +216,7 @@ pub fn render_taps<E>(
         .ok_or_else(too_long)?;
     let mut chunk = vec![0.0; len];
 
+    let skip = Arc::new(AtomicUsize::new(0));
     let (specs, sinks): (Vec<_>, Vec<_>) = taps
         .into_iter()
         .map(|tap| {
@@ -215,6 +225,7 @@ pub fn render_taps<E>(
                 endpoint: tap.endpoint,
                 node_type: Arc::new(TapType {
                     sink: Arc::clone(&sink),
+                    skip: Arc::clone(&skip),
                 }),
             };
             (spec, sink)
@@ -222,6 +233,11 @@ pub fn render_taps<E>(
         .unzip();
     let diagnostics = controller.update_project_tapping(project, registry, replacements, &specs);
     drop(sinks);
+    // The taps sound this many frames late (plugin delay compensation), so
+    // they drop that many from the front and the render runs that much longer.
+    let latency = controller.output_latency();
+    skip.store(latency, Ordering::Relaxed);
+    let frames = frames + latency;
     let mut done = 0;
     progress.report(0.0)?;
     while done < frames {
@@ -233,7 +249,7 @@ pub fn render_taps<E>(
     Ok(diagnostics)
 }
 
-const TAP_ID: &str = "noodle.internal.tap";
+pub(crate) const TAP_ID: &str = "noodle.internal.tap";
 
 static TAP_INFO: NodeInfo = NodeInfo {
     id: TAP_ID,
@@ -245,6 +261,8 @@ static TAP_INFO: NodeInfo = NodeInfo {
 /// The sink node a tap becomes. It hands its sink to the one instance made.
 struct TapType {
     sink: Arc<Mutex<Option<TapSink>>>,
+    /// How many leading frames every tap drops; set after the first update.
+    skip: Arc<AtomicUsize>,
 }
 
 impl NodeType for TapType {
@@ -256,24 +274,59 @@ impl NodeType for TapType {
         Ok(Layout::realtime().input("in", "In"))
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let sink = self
             .sink
             .lock()
             .expect("tap lock")
             .take()
             .ok_or_else(|| NodeError::config("a tap can only be instantiated once"))?;
-        Ok(Instance::realtime(TapNode { sink }))
+        Ok(Instance::realtime(TapNode {
+            sink,
+            skip: Arc::clone(&self.skip),
+            remaining: None,
+            tail: SignalBuffer::new(
+                setup.input_shapes.first().copied().unwrap_or(Shape::MONO),
+                setup.max_frames,
+            ),
+        }))
     }
 }
 
 struct TapNode {
     sink: TapSink,
+    skip: Arc<AtomicUsize>,
+    /// Frames still to drop, read from `skip` on the first block.
+    remaining: Option<usize>,
+    /// Room for the part of a block that follows the dropped frames.
+    tail: SignalBuffer,
 }
 
 impl crate::Node for TapNode {
     fn process(&mut self, _ctx: &crate::Context, io: crate::Io<'_, '_>) {
-        (self.sink)(io.inputs[0]);
+        let input = io.inputs[0];
+        let remaining = self
+            .remaining
+            .get_or_insert_with(|| self.skip.load(Ordering::Relaxed));
+        if *remaining == 0 {
+            return (self.sink)(input);
+        }
+        let frames = input.frames();
+        let dropped = (*remaining).min(frames);
+        *remaining -= dropped;
+        if dropped == frames {
+            return;
+        }
+        let shape = input.shape();
+        let kept = frames - dropped;
+        let mut out = self.tail.as_out(kept);
+        for voice in 0..shape.voices {
+            for channel in 0..shape.channels {
+                out.lane_mut(voice, channel)
+                    .copy_from_slice(&input.lane(voice, channel)[dropped..]);
+            }
+        }
+        (self.sink)(self.tail.as_in(kept));
     }
 }
 
@@ -290,7 +343,21 @@ fn render_with(
     samples.resize(len, 0.0);
 
     let diagnostics = update(&mut controller);
-    processor.process(&mut samples);
+    let skip = controller.output_latency();
+    if skip > 0 {
+        // The mix sounds `skip` frames late (plugin delay compensation):
+        // render that much more and drop it from the front.
+        let mut rendered = Vec::new();
+        let extra = skip.checked_mul(settings.channels).ok_or(too_long)?;
+        rendered
+            .try_reserve_exact(len + extra)
+            .map_err(|_| too_long)?;
+        rendered.resize(len + extra, 0.0);
+        processor.process(&mut rendered);
+        samples.copy_from_slice(&rendered[extra..]);
+    } else {
+        processor.process(&mut samples);
+    }
     Ok(Render {
         samples,
         diagnostics,

@@ -3,17 +3,28 @@
 //! - Audio: stereo in, stereo out. The output is the input times `Gain`
 //!   (inverted if `Invert` is on), plus a sine for each held note, plus
 //!   `bias`.
-//! - Notes: one note input port; a note-on starts a sine at the note's pitch.
+//! - Notes: two note input ports; a note-on starts a sine at the note's
+//!   pitch, an octave higher if it arrives on the second port.
 //! - Parameters: `Gain` (continuous) and `Invert` (stepped).
+//! - Editor: a floating "window" that draws nothing. While it is shown, a
+//!   timer (host timer support) plays the user: the first tick turns `Gain`
+//!   down to 0.25, as if a knob had been dragged. That makes the editor, the
+//!   host's timers and capturing parameters from a live plugin testable.
 //! - State: `bias`, a number that is not a parameter and so can only come back
-//!   through saved state.
+//!   through saved state. State may carry a second number after it, the gain
+//!   (a plugin whose live value isn't the default it reports).
 
+use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, PluginAudioPorts, PluginAudioPortsImpl,
 };
+use clack_extensions::gui::{
+    GuiApiType, GuiConfiguration, GuiSize, HostGui, PluginGui, PluginGuiImpl, Window,
+};
+use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
     PluginNotePortsImpl,
@@ -23,6 +34,7 @@ use clack_extensions::params::{
     PluginMainThreadParams, PluginParams,
 };
 use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
 use clack_plugin::events::event_types::{NoteOffEvent, NoteOnEvent};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
@@ -52,7 +64,10 @@ impl Plugin for TestPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
-            .register::<PluginState>();
+            .register::<PluginState>()
+            .register::<PluginGui>()
+            .register::<PluginLatency>()
+            .register::<PluginTimer>();
     }
 }
 
@@ -73,15 +88,166 @@ impl DefaultPluginFactory for TestPlugin {
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a Shared,
     ) -> Result<MainThread<'a>, PluginError> {
-        Ok(MainThread { shared })
+        Ok(MainThread {
+            host,
+            shared,
+            gui: Cell::new(Gui::None),
+            embedded: Cell::new(false),
+            parented: Cell::new(false),
+            resized: Cell::new(false),
+            timer: Cell::new(None),
+        })
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Gui {
+    None,
+    Created,
+    Shown,
+}
+
 pub struct MainThread<'a> {
+    host: HostMainThreadHandle<'a>,
     shared: &'a Shared,
+    gui: Cell<Gui>,
+    /// Created for a window of the host's, and given its parent.
+    embedded: Cell<bool>,
+    parented: Cell<bool>,
+    /// Already asked the host for a bigger window.
+    resized: Cell<bool>,
+    timer: Cell<Option<TimerId>>,
+}
+
+impl PluginGuiImpl for MainThread<'_> {
+    fn is_api_supported(&self, configuration: GuiConfiguration) -> bool {
+        configuration.api_type == native_api()
+    }
+
+    fn get_preferred_api(&self) -> Option<GuiConfiguration<'_>> {
+        Some(GuiConfiguration {
+            api_type: native_api(),
+            is_floating: true,
+        })
+    }
+
+    fn create(&self, configuration: GuiConfiguration) -> Result<(), PluginError> {
+        self.gui.set(Gui::Created);
+        self.embedded.set(!configuration.is_floating);
+        self.parented.set(false);
+        self.resized.set(false);
+        Ok(())
+    }
+
+    fn destroy(&self) {
+        self.hide_editor();
+        self.gui.set(Gui::None);
+    }
+
+    fn set_scale(&self, _scale: f64) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn get_size(&self) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: 200,
+            height: 100,
+        })
+    }
+
+    fn set_size(&self, _size: GuiSize) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn set_parent(&self, window: Window) -> Result<(), PluginError> {
+        // The tests' window hands out this handle.
+        if !self.embedded.get() || window.as_generic_ptr() as usize != PARENT {
+            return Err(PluginError::Message("wrong parent"));
+        }
+        self.parented.set(true);
+        Ok(())
+    }
+
+    fn can_resize(&self) -> bool {
+        true
+    }
+
+    /// Sizes snap to multiples of 10.
+    fn adjust_size(&self, size: GuiSize) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: size.width / 10 * 10,
+            height: size.height / 10 * 10,
+        })
+    }
+
+    fn set_transient(&self, _window: Window) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    fn show(&self) -> Result<(), PluginError> {
+        if self.gui.get() == Gui::None {
+            return Err(PluginError::Message("not created"));
+        }
+        if self.embedded.get() && !self.parented.get() {
+            return Err(PluginError::Message("no parent"));
+        }
+        self.gui.set(Gui::Shown);
+        if self.timer.get().is_none()
+            && let Some(timer) = self.host.get_extension::<HostTimer>()
+        {
+            self.timer.set(timer.register_timer(&self.host, 20).ok());
+        }
+        Ok(())
+    }
+
+    fn hide(&self) -> Result<(), PluginError> {
+        self.hide_editor();
+        Ok(())
+    }
+}
+
+impl MainThread<'_> {
+    fn hide_editor(&self) {
+        if let (Some(id), Some(timer)) = (self.timer.take(), self.host.get_extension::<HostTimer>())
+        {
+            let _ = timer.unregister_timer(&self.host, id);
+        }
+        if self.gui.get() == Gui::Shown {
+            self.gui.set(Gui::Created);
+        }
+    }
+}
+
+impl PluginTimerImpl for MainThread<'_> {
+    fn on_timer(&self, _timer_id: TimerId) {
+        if self.gui.get() == Gui::Shown {
+            // The user drags the Gain knob.
+            self.shared.gain.store(0.25f32.to_bits(), Ordering::Relaxed);
+            // And, in a host window, asks for a bigger one.
+            if self.embedded.get()
+                && !self.resized.replace(true)
+                && let Some(gui) = self.host.get_extension::<HostGui>()
+            {
+                let _ = gui.request_resize(&self.host.shared(), 300, 150);
+            }
+        }
+    }
+}
+
+/// The parent window handle the tests' windows give out.
+const PARENT: usize = 0xED17;
+
+fn native_api() -> GuiApiType<'static> {
+    if cfg!(windows) {
+        GuiApiType::WIN32
+    } else if cfg!(target_os = "macos") {
+        GuiApiType::COCOA
+    } else {
+        GuiApiType::X11
+    }
 }
 
 impl PluginShared<'_> for Shared {}
@@ -107,16 +273,27 @@ impl PluginAudioPortsImpl for MainThread<'_> {
     }
 }
 
+/// Reports the latency in `NOODLE_TEST_PLUGIN_LATENCY` (samples), so the
+/// latency tests can ask for any; it passes audio through undelayed.
+impl PluginLatencyImpl for MainThread<'_> {
+    fn get(&self) -> u32 {
+        std::env::var("NOODLE_TEST_PLUGIN_LATENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+}
+
 impl PluginNotePortsImpl for MainThread<'_> {
     fn count(&self, is_input: bool) -> u32 {
-        u32::from(is_input)
+        if is_input { 2 } else { 0 }
     }
 
     fn get(&self, index: u32, is_input: bool, writer: &mut NotePortInfoWriter) {
-        if index == 0 && is_input {
+        if is_input && index < 2 {
             writer.set(&NotePortInfo {
-                id: ClapId::new(0),
-                name: b"notes",
+                id: ClapId::new(index),
+                name: if index == 0 { b"notes" } else { b"notes up" },
                 supported_dialects: NoteDialects::CLAP,
                 preferred_dialect: Some(NoteDialect::Clap),
             });
@@ -209,11 +386,18 @@ impl PluginStateImpl for MainThread<'_> {
         self.shared
             .bias
             .store(f32::from_le_bytes(bytes).to_bits(), Ordering::Relaxed);
+        let mut gain = [0u8; 4];
+        if input.read_exact(&mut gain).is_ok() {
+            self.shared
+                .gain
+                .store(f32::from_le_bytes(gain).to_bits(), Ordering::Relaxed);
+        }
         Ok(())
     }
 }
 
 struct Voice {
+    port: u16,
     key: u16,
     phase: f32,
     step: f32,
@@ -314,8 +498,14 @@ impl Processor<'_> {
     fn note_event(&mut self, event: &UnknownEvent) {
         if let Some(on) = event.as_event::<NoteOnEvent>() {
             let key = on.key().into_specific().unwrap_or(0);
-            let freq = 440.0 * 2f32.powf((f32::from(key) - 69.0) / 12.0);
+            let up = if on.port_index().into_specific() == Some(1) {
+                12.0
+            } else {
+                0.0
+            };
+            let freq = 440.0 * 2f32.powf((f32::from(key) + up - 69.0) / 12.0);
             let voice = Voice {
+                port: on.port_index().into_specific().unwrap_or(0),
                 key,
                 phase: 0.0,
                 step: freq / self.sample_rate,
@@ -326,8 +516,12 @@ impl Processor<'_> {
             }
         } else if let Some(off) = event.as_event::<NoteOffEvent>() {
             let key = off.key().into_specific();
+            let port = off.port_index().into_specific().unwrap_or(0);
             for slot in &mut self.voices {
-                if slot.as_ref().is_some_and(|v| Some(v.key) == key) {
+                if slot
+                    .as_ref()
+                    .is_some_and(|v| Some(v.key) == key && v.port == port)
+                {
                     *slot = None;
                 }
             }

@@ -3,16 +3,16 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use noodle_engine::Registry;
+use noodle_engine::{NodeType, Registry};
 
 use crate::descriptor::PluginFile;
-use crate::node::{ClapNodeType, Shared};
+use crate::node::{PluginNodeType, Shared};
 use crate::scan::{ScanCache, ScanCommand, find_plugin_files, standard_dirs};
 
 /// A set of scanned plugins, ready to be registered as node types.
 #[derive(Clone, Default)]
 pub struct Catalog {
-    types: Vec<Arc<ClapNodeType>>,
+    types: Vec<Arc<PluginNodeType>>,
 }
 
 /// A function that adds the catalog's node types to a registry; the type of
@@ -27,8 +27,8 @@ impl Catalog {
         let mut types = Vec::new();
         for file in files.iter().filter(|f| f.error.is_none()) {
             for plugin in &file.plugins {
-                if seen.insert(plugin.id.clone()) {
-                    types.push(Arc::new(ClapNodeType::new(
+                if seen.insert(plugin.node_id()) {
+                    types.push(Arc::new(PluginNodeType::new(
                         file.path.clone(),
                         plugin.clone(),
                     )));
@@ -46,8 +46,13 @@ impl Catalog {
         self.types.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &ClapNodeType> {
+    pub fn iter(&self) -> impl Iterator<Item = &PluginNodeType> {
         self.types.iter().map(|t| &**t)
+    }
+
+    /// The plugin whose node type is `node_type_id` (`clap.<plugin id>`).
+    pub fn get(&self, node_type_id: &str) -> Option<&PluginNodeType> {
+        self.iter().find(|t| t.info().id == node_type_id)
     }
 
     /// Adds a node type for each plugin, replacing any with the same ID.
@@ -81,7 +86,22 @@ pub fn discover_in(
     command: &ScanCommand,
     cache_path: Option<&std::path::Path>,
 ) -> Discovery {
-    let mut cache = cache_path.map(ScanCache::load).unwrap_or_default();
+    discover_in_with(dirs, command, cache_path, false)
+}
+
+/// [`discover_in`], optionally ignoring what the cache holds so every file is
+/// scanned again (a plugin that failed to scan, or was fixed in place).
+pub fn discover_in_with(
+    dirs: &[std::path::PathBuf],
+    command: &ScanCommand,
+    cache_path: Option<&std::path::Path>,
+    everything: bool,
+) -> Discovery {
+    let mut cache = if everything {
+        ScanCache::default()
+    } else {
+        cache_path.map(ScanCache::load).unwrap_or_default()
+    };
     let found = find_plugin_files(dirs);
     let scanned = cache.refresh(command, &found);
     if let (Some(path), true) = (cache_path, scanned > 0 || cache.files.is_empty()) {
@@ -100,9 +120,19 @@ pub fn discover_in(
 /// and the cache in the user's cache folder. Without a way to start the
 /// scanner, nothing new is scanned and the cache is all there is.
 pub fn discover() -> Discovery {
+    discover_with(false)
+}
+
+/// [`discover`], optionally scanning every file again.
+pub fn discover_with(everything: bool) -> Discovery {
     let cache_path = ScanCache::default_path();
     match ScanCommand::current_exe() {
-        Ok(command) => discover_in(&standard_dirs(), &command, cache_path.as_deref()),
+        Ok(command) => discover_in_with(
+            &standard_dirs(),
+            &command,
+            cache_path.as_deref(),
+            everything,
+        ),
         Err(_) => {
             let cache = cache_path
                 .as_deref()

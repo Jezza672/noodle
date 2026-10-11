@@ -11,7 +11,7 @@ use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
 use crate::session::{Edit, Session};
 use crate::widgets::format::format_value;
-use crate::widgets::{ConfigField, CurveEditor, Live, ParamField};
+use crate::widgets::{ConfigField, CurveEditor, GraphEditor, GraphKind, Live, ParamField};
 
 /// What the wired parameter `key` of a node has been doing lately, if known:
 /// the editor reads it once a frame.
@@ -35,10 +35,11 @@ pub fn show(
     problems(ui, session, id);
 
     let mut edits = Vec::new();
+    plugin_editor(ui, session, id, &mut edits);
     freezing(ui, session, id, &mut edits);
     match node_type {
         Some(node_type) => {
-            config(ui, node_type.as_ref(), id, node, &mut edits);
+            config(ui, session, node_type.as_ref(), id, node, &mut edits);
             params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }
         None => {
@@ -49,6 +50,30 @@ pub fn show(
         }
     }
     edits
+}
+
+/// A plugin node's editor button.
+fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
+    let Some(plugin) = session.plugin_of(id) else {
+        return;
+    };
+    let open = session.plugin_editor_open(id);
+    ui.horizontal(|ui| {
+        let label = if open { "Close editor" } else { "Open editor" };
+        if ui
+            .button(label)
+            .on_hover_text(format!(
+                "{}'s own window. Closing it keeps what you changed in the project.",
+                plugin.descriptor().name
+            ))
+            .clicked()
+        {
+            edits.push(Edit::PluginEditor {
+                node: id,
+                open: !open,
+            });
+        }
+    });
 }
 
 /// Whether the node is frozen, how its render is doing, and the button to
@@ -123,7 +148,14 @@ fn problems(ui: &mut Ui, session: &Session, id: NodeId) {
     }
 }
 
-fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits: &mut Vec<Edit>) {
+fn config(
+    ui: &mut Ui,
+    session: &Session,
+    node_type: &dyn NodeType,
+    id: NodeId,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
     let settings = node_type.config();
     if settings.is_empty() {
         return;
@@ -168,6 +200,12 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
             }
             continue;
         }
+        if info.key == noodle_plugins::PARAMS_KEY
+            && let Some(plugin) = session.plugin_of(id)
+        {
+            param_picker(ui, session, plugin.descriptor(), id, node, edits);
+            continue;
+        }
         let out = ConfigField::new(info, node.config.get(info.key))
             .id_salt((id, info.key))
             .show(ui);
@@ -175,6 +213,144 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
         out.response
             .on_hover_text("Changing this rebuilds the node, and may change its ports.");
     }
+}
+
+/// The most parameters the picker lists at once; narrow the search for more.
+const PICKER_ROWS: usize = 200;
+
+/// Which of a plugin's parameters get ports on its node: a searchable list
+/// with a checkbox each, grouped by the plugin's own modules.
+fn param_picker(
+    ui: &mut Ui,
+    session: &Session,
+    descriptor: &noodle_plugins::Descriptor,
+    id: NodeId,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_plugins::{exposed_params, params_text};
+
+    let chosen: Vec<u32> = exposed_params(descriptor, &node.config)
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    // A wire or automation lane into a parameter keeps its port: hiding it
+    // would leave them pointing at nothing, which fails the compile.
+    let wired = |param: u32| {
+        let target = Endpoint::new(id, noodle_plugins::param_key(param));
+        session.project().graph().source(&target).is_some()
+            || session
+                .project()
+                .lanes()
+                .any(|(_, lane)| lane.target == target && !lane.points.is_empty())
+    };
+    let search_id = ui.make_persistent_id(("param-search", id));
+    let mut query: String = ui.data(|d| d.get_temp(search_id)).unwrap_or_default();
+    egui::CollapsingHeader::new(format!(
+        "Parameters on the node ({} of {})",
+        chosen.len(),
+        descriptor.params.len()
+    ))
+    .id_salt(("param-picker", id))
+    .default_open(false)
+    .show(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search parameters"));
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let matches: Vec<&noodle_plugins::ParamDesc> = descriptor
+            .params
+            .iter()
+            .filter(|p| {
+                let text = format!("{} {}", p.module, p.name).to_lowercase();
+                words.iter().all(|w| text.contains(w))
+            })
+            .collect();
+        // Changing the setting builds the plugin again from its saved state,
+        // so what the open editor changed is kept first, in the same undo
+        // step. A parameter that leaves the node forgets its stored value, so
+        // that showing it again doesn't send a stale one.
+        let set = |ids: Vec<u32>| {
+            let mut commands = Vec::new();
+            if session.plugin_editor_open(id)
+                && let Ok(captured) = noodle_plugins::capture(id)
+            {
+                commands.push(captured.commands(id, descriptor, &node.config));
+            }
+            commands.push(Command::SetConfig {
+                node: id,
+                key: noodle_plugins::PARAMS_KEY.to_owned(),
+                value: Some(noodle_core::Value::Text(params_text(&ids))),
+            });
+            for hidden in chosen.iter().filter(|c| !ids.contains(c)) {
+                let key = noodle_plugins::param_key(*hidden);
+                if node.params.contains_key(&key) {
+                    commands.push(Command::SetParam {
+                        node: id,
+                        key,
+                        value: None,
+                    });
+                }
+            }
+            Edit::Apply(Command::Batch(commands))
+        };
+        ui.horizontal(|ui| {
+            if ui.small_button("Show matches").clicked() {
+                let mut ids = chosen.clone();
+                ids.extend(matches.iter().map(|p| p.id).filter(|p| !chosen.contains(p)));
+                edits.push(set(ids));
+            }
+            if ui.small_button("Hide matches").clicked() {
+                let ids = chosen
+                    .iter()
+                    .copied()
+                    .filter(|c| wired(*c) || !matches.iter().any(|p| p.id == *c))
+                    .collect();
+                edits.push(set(ids));
+            }
+        });
+        egui::ScrollArea::vertical()
+            .max_height(260.0)
+            .id_salt(("param-picker-list", id))
+            .show(ui, |ui| {
+                let mut module = None;
+                for param in matches.iter().take(PICKER_ROWS) {
+                    if module != Some(&param.module) {
+                        module = Some(&param.module);
+                        if !param.module.is_empty() {
+                            ui.label(RichText::new(&param.module).weak().small());
+                        }
+                    }
+                    let mut on = chosen.contains(&param.id);
+                    let locked = on && wired(param.id);
+                    let response = ui
+                        .add_enabled(!locked, egui::Checkbox::new(&mut on, &param.name))
+                        .on_disabled_hover_text("A wire goes into this parameter.");
+                    if response.changed() {
+                        let mut ids = chosen.clone();
+                        if on {
+                            ids.push(param.id);
+                        } else {
+                            ids.retain(|c| *c != param.id);
+                        }
+                        edits.push(set(ids));
+                    }
+                }
+                if matches.len() > PICKER_ROWS {
+                    ui.weak(format!(
+                        "{} more: narrow the search.",
+                        matches.len() - PICKER_ROWS
+                    ));
+                }
+            });
+        ui.label(
+            RichText::new(
+                "Only these get ports. A parameter left off keeps the value in the \
+                 plugin's saved state; one with a wire into it stays.",
+            )
+            .weak()
+            .small(),
+        );
+    });
+    ui.data_mut(|d| d.insert_temp(search_id, query));
 }
 
 fn params(
@@ -199,7 +375,11 @@ fn params(
     };
     ui.separator();
     ui.label(RichText::new("Parameters").strong());
-    for (input, info) in std::iter::once(first).chain(params) {
+    let params: Vec<_> = std::iter::once(first).chain(params).collect();
+    if let Some(kind) = GraphKind::of(&node.type_id) {
+        graph(ui, session, kind, id, node, &params, live, edits);
+    }
+    for (input, info) in params {
         let key = input.key.as_ref();
         let value = node.params.get(key).copied().unwrap_or(info.default);
         let source = session
@@ -229,6 +409,48 @@ fn params(
         });
         ui.label(RichText::new(range_text(info, reading)).weak().small());
     }
+}
+
+/// The graph of what the node does, with its points to drag. A wired
+/// parameter is drawn at the value its wire delivers, and can't be dragged.
+#[allow(clippy::too_many_arguments)]
+fn graph(
+    ui: &mut Ui,
+    session: &Session,
+    kind: GraphKind,
+    id: NodeId,
+    node: &Node,
+    params: &[(&noodle_engine::InputPort, &noodle_engine::ParamInfo)],
+    live: LiveParams<'_>,
+    edits: &mut Vec<Edit>,
+) {
+    let info_of = |key: &str| {
+        params
+            .iter()
+            .find(|(input, _)| input.key == key)
+            .map(|p| p.1)
+    };
+    let wired = |key: &str| {
+        session
+            .project()
+            .graph()
+            .source(&Endpoint::new(id, key))
+            .is_some()
+    };
+    let values = |key: &str| {
+        let own = || {
+            let default = info_of(key).map_or(0.0, |info| info.default);
+            node.params.get(key).copied().unwrap_or(default)
+        };
+        if wired(key) {
+            live(id, key).map_or_else(own, |live| live.value)
+        } else {
+            own()
+        }
+    };
+    let range = |key: &str| info_of(key).map_or((0.0, 1.0), |info| (info.min, info.max));
+    let editable = |key: &str| !wired(key);
+    edits.extend(GraphEditor::new(id, kind, &values, &range, &editable).show(ui));
 }
 
 /// What a parameter accepts, and for a wired one the range its signal has
@@ -320,6 +542,119 @@ mod tests {
     fn param(harness: &Harness<'_, State>, key: &str) -> Option<f32> {
         let graph = harness.state().session.project().graph();
         graph.node(NodeId(1))?.params.get(key).copied()
+    }
+
+    /// The ADSR's graph and the screen position of its plot at `(x, y)`.
+    fn graph_at(harness: &Harness<'_, State>) -> impl Fn(f32, f32) -> egui::Pos2 + use<> {
+        let outer = harness.get_by_label("Envelope graph").rect();
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
+        move |x, y| {
+            egui::pos2(
+                plot.left() + x * plot.width(),
+                plot.bottom() - y * plot.height(),
+            )
+        }
+    }
+
+    fn drag(harness: &mut Harness<'_, State>, from: egui::Pos2, to: egui::Pos2) {
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        harness.hover_at(to);
+        harness.run();
+        harness.drop_at(to);
+        harness.run();
+    }
+
+    #[test]
+    fn dragging_the_envelope_graph_sets_the_adsr_parameters() {
+        let mut harness = harness([Node::new("noodle.mod.adsr")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        // The defaults: 10 ms, 200 ms, 0.7, 300 ms, drawn over 0.765 s.
+        let span = (0.01 + 0.2 + 0.1275 + 0.3) * 1.2;
+        let at = graph_at(&harness);
+
+        // The decay point is where the decay ends, at the sustain level.
+        let from = at(0.21 / span, 0.7);
+        let to = at(0.51 / span, 0.3);
+        drag(&mut harness, from, to);
+        let decay = param(&harness, "decay").unwrap();
+        let sustain = param(&harness, "sustain").unwrap();
+        assert!((decay - 0.5).abs() < 0.03, "{decay}");
+        assert!((sustain - 0.3).abs() < 0.03, "{sustain}");
+
+        // The release point is the right-hand end.
+        let at = graph_at(&harness);
+        let span = (0.01 + decay + 0.25 * (0.01 + decay + 0.3) + 0.3) * 1.2;
+        let held = 0.01 + decay + 0.25 * (0.01 + decay + 0.3);
+        let from = at((held + 0.3) / span, 0.0);
+        let to = at((held + 0.6) / span, 0.0);
+        drag(&mut harness, from, to);
+        let release = param(&harness, "release").unwrap();
+        assert!((release - 0.6).abs() < 0.05, "{release}");
+
+        // A whole drag is one undo step.
+        harness.state_mut().session.undo();
+        harness.run();
+        assert_eq!(param(&harness, "release"), None);
+        assert!((param(&harness, "decay").unwrap() - decay).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_wired_parameter_is_not_changed_by_dragging_the_graph() {
+        let mut harness = harness([Node::new("noodle.mod.adsr"), Node::new("noodle.mod.lfo")]);
+        harness
+            .state_mut()
+            .session
+            .edit([Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(NodeId(2), "out"),
+                to: Endpoint::new(NodeId(1), "sustain"),
+            }))]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        let span = (0.01 + 0.2 + 0.1275 + 0.3) * 1.2;
+        let at = graph_at(&harness);
+        // Sustain has a wire, so the decay-and-sustain point moves in time
+        // only, and sustain is untouched.
+        drag(&mut harness, at(0.21 / span, 0.7), at(0.51 / span, 0.3));
+        assert!((param(&harness, "decay").unwrap() - 0.5).abs() < 0.03);
+        assert_eq!(param(&harness, "sustain"), None);
+    }
+
+    #[test]
+    fn filters_and_lfos_have_graphs_too() {
+        for (type_id, label) in [
+            ("noodle.filter.svf", "Frequency response graph"),
+            ("noodle.filter.ladder", "Frequency response graph"),
+            ("noodle.mod.lfo", "Wave graph"),
+        ] {
+            let harness = harness([Node::new(type_id)]);
+            harness.get_by_label(label);
+        }
+    }
+
+    #[test]
+    fn dragging_the_filter_point_sets_cutoff_and_resonance() {
+        let mut harness = harness([Node::new("noodle.filter.svf")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        let outer = harness.get_by_label("Frequency response graph").rect();
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
+        let at = |x: f32, y: f32| {
+            egui::pos2(
+                plot.left() + x * plot.width(),
+                plot.bottom() - y * plot.height(),
+            )
+        };
+        // At 1 kHz, no resonance: the low-pass is 6 dB down.
+        let x = (1_000.0f32 / 20.0).ln() / 1_000.0f32.ln();
+        let y = ((-6.02 + 48.0) / 84.0) as f32;
+        // Drag it up and right.
+        drag(&mut harness, at(x, y), at(x + 0.2, y + 0.3));
+        assert!(param(&harness, "cutoff").unwrap() > 2_000.0);
+        assert!(param(&harness, "resonance").unwrap() > 0.5);
     }
 
     #[test]

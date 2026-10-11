@@ -316,7 +316,7 @@ key of the signal input it reads *last*: `Delay`'s `in`, and `Voices`' `busy`.
 - **Cost of a loop.** The output half runs before this block's input exists.
   `Delay` therefore reads at least `max_frames` samples back while in a loop
   (the engine's largest block, a constant, so the delay doesn't change with
-  the size of the block in hand; about 10 ms at 512 frames); shorter times are held to that. A `Delay` that
+  the size of the block in hand; about 2.7 ms at the app's 128 frames); shorter times are held to that. A `Delay` that
   is not on a loop has no minimum.
 - **Shapes.** The output half is shaped before the loop input is known. The
   compiler assumes a mono loop input, finishes, and if the real input
@@ -391,10 +391,29 @@ restart the audio.
   program changes pass on as raw `Midi` events. All notes off and all sound
   off end the notes it still holds. Its `channel` parameter (0 for all)
   filters.
-- **Timing.** A message that arrives during a block is played at the start of
-  the next, so live playing is up to one block (about 11 ms in the app) late
-  and shares that jitter. Timestamping events within the block is a later
-  improvement.
+- **Timing.** Every message is stamped with its arrival time on a monotonic
+  clock (`noodle_io::now_micros`), under the bus's lock so stamps are in
+  queue order. Each device callback tells the bus's `AudioClock` when it ran,
+  and for each engine block inside it which span of arrivals that block
+  plays: the callback's length before the block's own place in it. A note
+  played at some point of one device period therefore sounds at the same
+  point of the next, in whichever block that falls, and what is later than
+  the block's span waits for the next. Live playing is one device period late
+  with no jitter beyond the callbacks' own, however long the period is. The
+  callback also publishes an anchor, a pair of the clock and the transport's
+  sample, that recording reads (see "MIDI takes"). Without a device the node
+  plays whatever arrived since its previous block began. The app and
+  `noodle play` use 128-frame engine blocks (about 2.7 ms), and renders do
+  too, so a render matches what was heard; that costs more per-block overhead
+  than 512 did. Events a node emits are kept in time order even if the bus
+  hands over two messages out of order.
+- **The computer keyboard.** A toolbar button (or M) turns the home row into
+  an octave of keys, as in Ableton: A W S E D F T G Y H U J K and O L P ;
+  are the notes from C3 (60), Z and X change the octave, C and V the
+  velocity. The keys are sent to the same bus as a hardware port and are
+  taken out of the frame's input, so nothing else (X to delete, say) acts on
+  them; a text field, a dialog or the window losing focus lets go of held
+  notes. It is app state, off at start, and not saved.
 - **Auditioning.** The piano roll's keyboard holds keys down on the clip's
   own track input (`ClipFeeds::audition`, a bitmask in the node's shared
   state, so no queue and no allocation), and the track input turns changes
@@ -464,6 +483,26 @@ said so), and a take with no audio adds nothing and
 deletes its file. Input that was dropped because the disk stalled is
 reported. The clip is placed at the playhead without compensating for the
 audio device's latency, so a take can sit a little late; that is still to do.
+
+**MIDI takes.** The same Record also captures MIDI. It subscribes to the
+session's MIDI bus for notes (hardware ports and the computer keyboard alike)
+and keeps each message with its arrival time. Every UI frame the take notes
+the audio thread's newest anchor with what it collected, and maps each
+message to the timeline through it, so the stream's startup delay and clock
+drift don't matter. Times are moved earlier by the output latency the device
+reported (`Playback::output_latency`), since the player was playing along to
+what they heard, and the clip starts that much before the playhead was when
+Record was pressed. Like an audio take, a MIDI clip goes on every armed track,
+whether or not it takes MIDI, so arm only the tracks that should get one. The
+take ends with one MIDI clip per armed track from the start of the take: a note still held ends where the take
+does, a note-off with no note-on is ignored, and a take with no notes adds
+no clip. The audio and MIDI clips of a take are one `Batch`. Audio is recorded
+only when an input is chosen in the audio settings; without one a take is
+MIDI alone. The Q menu in the transport sets a grid (off, 1/4, 1/8, 1/16,
+1/32, 1/8 and 1/16 triplets) that the starts of the notes snap to when the
+clip is made, keeping their lengths, shortening a note that now runs into the
+same key's next one and dropping a second note on the same tick. What is
+heard while playing is never snapped. The raw timing is not kept.
 
 ## Automation (M2)
 
@@ -725,17 +764,18 @@ A plugin is a node. Its parameters become input ports, and its audio and note
 ports become graph ports. Plugin state is saved in the Project.
 
 - **CLAP** is hosted through `clack` (`noodle-plugins`).
-- **VST3** is hosted through the Rust `vst3` bindings, or through a thin C++
-  shim over Steinberg's SDK (MIT-licensed since 3.8) exposed through a C ABI.
+- **VST3** is hosted through the Rust `vst3` bindings (raw COM, loaded with
+  `libloading`): see "VST3 hosting" below.
 - **AU** may come later. Most macOS plugins also ship as VST3 or CLAP.
-- Plugin editors open as separate native windows.
+- Plugin editors open as separate native windows: embedded in a window the host makes (macOS, Windows), or the plugin's own floating window (Linux, or when it can't embed). Both run on the plugin thread.
 - Scanning runs in a child process, so a plugin that crashes during scanning
   can't take down the app.
 - **Out-of-process hosting (M6)** runs plugins in sandbox processes that
   exchange audio through shared memory, so a crashing plugin can't take down
   the session.
-- **Latency:** plugins report their latency, and plugin delay compensation is
-  added to the plan in M6.
+- **Latency:** plugins report their latency (CLAP's latency extension, VST3's
+  `getLatencySamples`, both read once after activation, on the plugin thread) and the engine
+  compensates for it; see [Performance (M6)](#performance-m6).
 
 ### CLAP hosting
 
@@ -755,16 +795,31 @@ are `~/.clap` and `/usr/lib/clap` on Linux, `/Library/Audio/Plug-Ins/CLAP`
 
 **Node types.** A `Catalog` builds one `NodeType` per scanned plugin, with ID
 `clap.<plugin id>` and category "Plugins". Ports come from the scan alone, so
-a project's graph compiles without loading any plugin code, and the layout
-never depends on config:
+a project's graph compiles without loading any plugin code. The layout
+depends on one setting, `params`, which lists the parameters that get ports
+(below); it never depends on the plugin's code:
 
 | Port | Key |
 |---|---|
 | audio inputs, one per CLAP audio input port | `in`, `in2`, ... |
-| a parameter input per non-hidden, writable CLAP parameter | `p<param id>` |
+| a parameter input per exposed parameter (see below) | `p<param id>` |
 | audio outputs | `out`, `out2`, ... |
-| note input ports (first one read) | `notes`, `notes2`, ... |
-| note output ports (first one written) | `notes_out`, ... |
+| note input ports (all are read) | `notes`, `notes2`, ... |
+| note output ports (all are written) | `notes_out`, ... |
+
+**Exposed parameters.** A synth can have hundreds of parameters, which would
+make its node unusably tall, so only the ones listed in the node's `params`
+setting get ports (comma-separated parameter ids; `none` for no ports). That
+is config, since it changes the ports. A node without the setting shows every
+parameter, so projects saved before it existed keep their ports; the plugin
+browser adds a plugin with more than 32 parameters with `none`. The
+properties panel has a searchable picker, grouped by the plugin's modules. A
+parameter with a wire or automation lane into it can't be hidden (they would
+point at nothing). Changing the choice while the editor is open keeps the
+editor's changes in the same undo step, and a parameter that is hidden forgets
+its stored value. A hidden parameter is never sent to the plugin, so it keeps what
+the plugin's saved state gave it. The editor shows a node's note inputs before
+its audio and parameter inputs (the layout keeps them in their own list).
 
 A parameter is `Offset`-modulated, with the plugin's range and default; a
 stepped CLAP parameter is a stepped one (the node rounds the value before
@@ -772,13 +827,34 @@ sending). One instance has one voice: a polyphonic wire into a plugin is a
 compile error, so put a Voice Mix before it. A mono wire into a stereo port
 feeds both channels; any other channel mismatch is an error.
 
-**Instances.** CLAP says a plugin instance belongs to its main thread, but a
-node must be `Send`. So `instantiate` starts a thread per instance
-(`host.rs`) which loads the file, restores saved state, creates and activates
-the plugin, and hands the audio processor to the node. The node starts
-processing, and on drop gives the processor back so the plugin is deactivated
-and destroyed on its own thread. Loading and activation happen in
-`instantiate`, off the audio thread.
+**macOS keeps plugins loaded.** A plugin's Objective-C objects (an editor's
+views) can still be queued for release on the main thread when its instance is
+dropped, and releasing them after the plugin is unloaded or deinitialised
+crashes. So on macOS each plugin file, CLAP or VST3, stays loaded for the
+life of the app: the entry's `deinit` and the bundle's exit never run, and a
+plugin file replaced on disk takes effect after a restart.
+
+**Instances and the plugin thread.** CLAP says a plugin instance belongs to
+its main thread, and JUCE-based plugins expect that to be one thread for the
+whole process. So one shared plugin thread (`thread.rs`, started on first
+use) owns every live instance. `instantiate` sends it a load command (30 s
+limit) and gets back the audio processor, which the node holds; on drop the
+node sends the processor back and the thread deactivates and destroys the
+instance. The thread also runs what CLAP gives the main thread: plugin timers
+(`timer-support`), `request_callback`, and editor creation and destruction.
+By default that thread is one of its own, but an editor wants the application's
+main thread on macOS (Cocoa) and a thread that pumps messages on Windows. So an
+application whose UI thread should be the plugin thread calls
+`adopt_current_thread(wake)` once at startup and `pump()` every frame:
+requests from the UI thread then run on the spot, and requests from other
+threads (a freeze render loading the plugin, say) wait in a queue for `pump`,
+which `wake` asks the UI to run. `pump` also returns when to be called next so
+plugin timers run (nothing is asked of an app with no plugin loaded). The app
+does this on macOS and Windows only; Linux plugins keep their own thread, since
+an X11 editor needs no event loop of ours. The cost is that a slow plugin
+load or editor call stalls the UI thread there, as it already did when the
+compile was waiting on it. One plugin that hangs while loading blocks the
+others until M6's out-of-process hosting.
 
 **Processing** (`node.rs`). Each block is copied into preallocated plugin
 buffers (in chunks of at most `max_frames`), parameters whose value changed
@@ -790,15 +866,151 @@ output is copied out. A plugin's note output becomes the node's event output.
 The transport (tempo, position, signature, playing) is passed on. Nothing on
 this path allocates (`tests/realtime.rs` checks it), so events beyond 4096 per
 block are dropped. A plugin that fails in `process` gives silence for that
-block. Every parameter is sent on the first block: the port values, not the
-plugin's own, are authoritative for exposed parameters.
+block. A parameter is sent once its port value differs from the plugin's
+reported default: the first block leaves an untouched port alone, so state the
+plugin restored isn't overwritten (Surge XT reports a default of 0 for every
+parameter, and sending those silenced it).
 
 **State.** The node's `state` config setting holds the plugin's saved state as
 base64 text, so it is written to the project file with the rest of the graph.
-It is loaded into the plugin before activation. `capture_state` loads a
-plugin (optionally with earlier state) and returns what it saves; the
-editor window (not built yet) is what will change state worth capturing.
-Bad base64, or state the plugin refuses, is a node error rather than a crash.
+It is loaded into the plugin before activation. Bad base64, or state the
+plugin refuses, is a node error rather than a crash. CLAP state is wrapped on
+saving in `NCS1`, a length and a checksum, and checked before it reaches the
+plugin: some plugins crash the host on state that is cut short, and plugins run
+in our process. (State saved before the wrapper is passed on unchecked.)
+`capture_state` loads a
+plugin (optionally with earlier state) and returns what it saves.
+
+**Editors and capture** (`editor.rs`). Running plugin nodes register by node
+ID. `open_editor(node)` opens the plugin's editor (CLAP `gui`). If the
+application has set a window factory (`set_window_factory`; on macOS and
+Windows `adopt_current_thread` installs one that makes an `NSWindow` or a
+top-level `HWND`, `src/window/`) and the plugin supports the platform's API
+non-floating, the editor is *embedded*: the host makes a hidden window of the
+plugin's `get_size`, gives the plugin its handle with `set_parent`, and shows
+both. The host follows the window: a size the plugin asks for
+(`request_resize`) is applied from the plugin thread's housekeeping, a size the
+user drags to goes through the plugin's `adjust_size` and `set_size`, and the
+close button closes the editor (polled: `EditorWindow::is_closed`). With no
+factory, or if embedding fails, the plugin's own floating window is used (the
+platform's API). Edits in the window go to
+the running plugin, so they are heard at once. `capture(node)` reads the live
+plugin's saved state and every parameter's value; `Captured::commands` turns
+that into one `Command::Batch`: `SetConfig state` plus a `SetParam` per
+parameter, so the ports agree with the plugin (the ports win on the first
+block). The app opens editors from the properties panel (`Edit::PluginEditor`)
+and captures when the window closes (`Session::poll_plugin_editors`), as one
+undo step. That is a config change, so the node recompiles and its plugin is
+reloaded from the stored state. State changed while an editor is open is
+stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
+
+### VST3 hosting
+
+A VST3 plugin is the same kind of node as a CLAP one (`PluginNodeType`, the
+same `Catalog`, scan cache, browser and caching), with ID `vst3.<class id>`
+(32 hex digits; `Descriptor::format` says which standard it is, and scan
+results saved before VST3 load as CLAP). The code is in
+`noodle-plugins/src/vst3/`.
+
+- **Files.** A `.vst3` is a bundle on every system (a folder holding the
+  binary at `Contents/x86_64-linux/<name>.so`, `Contents/MacOS/<name>` or
+  `Contents/x86_64-win/<name>.vst3`) or, on Windows, a plain DLL. The scan
+  returns it as one file and doesn't search inside. Folders: `~/.vst3`,
+  `/usr/lib/vst3`, `/usr/local/lib/vst3` on Linux;
+  `/Library/Audio/Plug-Ins/VST3` (system and user) on macOS;
+  `%COMMONPROGRAMFILES%\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3` on
+  Windows; plus `VST3_PATH`.
+- **Loading** (`module.rs`). The binary is opened, its entry point is run
+  (`ModuleEntry` with the `dlopen` handle on Linux, `bundleEntry` with the
+  `CFBundle` on macOS, `InitDll` on Windows) and `GetPluginFactory` gives the
+  factory. A module is shared by everything loaded from it (the entry runs
+  once while any plugin is alive, `ModuleExit` after the last), and each plugin
+  holds an `Arc<Module>` so the code outlives it. The classes that count are
+  those in the category "Audio Module Class".
+- **Plugin** (`plugin.rs`). The component, its `IAudioProcessor` and a
+  controller: the component itself if it is also an `IEditController`,
+  otherwise the class it names, initialised on its own. Both get an
+  `IHostApplication` (the host's name, and `IMessage`/`IAttributeList` for
+  plugins that make them) and the controller an `IComponentHandler`; a separate
+  component and controller are wired through `IConnectionPoint`, so their
+  messages reach each other (on the sender's thread; disconnected before
+  teardown). Set-up follows the
+  standard's order: bus arrangements (the plugin's own), every bus activated,
+  `setupProcessing`, `setActive`, and `setProcessing` on the first block, on the
+  audio thread. Tear-down is the reverse, with the component released last.
+  The component is made, set up and dropped on the shared plugin thread (via
+  `thread::run_job`, so a macOS plugin that wants the main thread gets it where
+  the app has adopted its UI thread), processed on the audio thread.
+- **Ports.** As for CLAP. Every audio bus is a port (`in`, `in2`, ...; the
+  plugin's default channel count) and every event input bus is a note input
+  (`notes`, `notes2`, ...). Parameters come from the controller: hidden,
+  read-only and program-change ones are left out. A continuous parameter's port
+  holds its normalized value, 0 to 1 (VST3 has no host-side plain range
+  without asking the controller per value); a stepped one holds 0 to its
+  step count and is rounded.
+- **Processing** (`node.rs`). Per chunk of at most `max_frames`: the inputs
+  are copied into preallocated buses, a parameter whose value changed becomes a
+  point in its `IParamValueQueue` (at the chunk's start, then every
+  `PARAM_STEP` frames while a wire drives it), notes become `Event`s
+  (`kNoteOnEvent`, `kNoteOffEvent` with the key the note-on had, note
+  expressions, polyphonic pressure) merged in time order across the note inputs,
+  and a note output bus is read back. The queues and event lists are COM
+  objects of a fixed size made when the node is built (`classes.rs`), so
+  nothing allocates in a block (`tests/realtime.rs` checks it; points past a
+  queue's room are dropped). A port at its default is not sent, so state the
+  plugin was restored from isn't overwritten by an untouched port (the CLAP
+  node does the same: a plugin can report a default that isn't its live value). Raw MIDI controllers (modulation wheel,
+  volume, pan, expression, sustain, channel pressure, pitch bend) go through
+  the controller's `IMidiMapping` to parameters, which need no port; a
+  controller with no mapping is sent as a legacy MIDI event.
+- **State.** `Plugin::save_state` writes `NVS2`, the component's state length
+  as a little-endian `u32`, a checksum of everything after it, the component's
+  state, then the controller's (only
+  for a separate controller), through memory `IBStream`s. A bad checksum is
+  refused before the plugin sees the bytes (`NVS1`, saved without one, is still
+  read, unchecked). Loading hands the
+  component its bytes, then the controller `setComponentState` with the same
+  bytes and its own `setState`. It lives in the `state` setting like CLAP's.
+- **Editors** (`gui.rs`). VST3 has no floating windows, so an editor is
+  always an `IPlugView` embedded in a window the app makes (the window
+  factory of `window/`; macOS and Windows have one built in, Linux has none
+  yet, so there opening an editor says so). The `Gui` for each plugin lives
+  in a table on the plugin thread under a key (a VST3 key has the top bit
+  set, which is how `editor.rs` tells it from a CLAP instance's); open, close
+  and capture are jobs on that thread, and the node holds only the key. The
+  view gets an `IPlugFrame` whose `resizeView` only sets a flag, which the
+  thread's housekeeping carries out (resize the window, then `onSize`), as
+  it does the user dragging the window's edge (`checkSizeConstraint`, then
+  `onSize`) and a closed window (a resize is thus carried out up to 50 ms after
+  the plugin asks, not inside `resizeView`). Capturing a running VST3 first
+  tells the controller what the processor was given through ports and MIDI
+  (`setParamNormalized`, from a mirror of the last values sent, so a stale
+  controller value never overwrites a port), then reads the component's and
+  controller's state and each listed parameter's value (a stepped one as its
+  step number) from the plugin thread while the audio thread
+  runs, as the standard's UI-thread calls allow.
+- **Edits.** A controller reports what the user does in the editor through
+  `IComponentHandler::performEdit`; the host must pass it to the processor, or
+  a plugin with a separate controller would change its display and not its
+  sound. The handler stores the value in an `Edits` table (one atomic per
+  parameter that isn't read-only, hidden ones included, made when the plugin
+  is) and the audio thread reads it at the start of each chunk and queues a
+  parameter change, without a lock or an allocation. The port's last-sent
+  value is left alone, so an untouched port doesn't undo the edit; capturing
+  the editor then stores the edit in the port. Not mirrored the other way:
+  a wire modulating a parameter doesn't move the editor's display.
+- **Transport.** `barPositionMusic` is the start of the current bar in
+  quarter notes from the signature (6/8 is three quarters long), assuming the
+  bars from the project's start are all the current signature's length.
+- **Not yet.** A Linux window for editors, units and program lists, 64-bit
+  audio, `IProcessContextRequirements`, `IRunLoop`, and note output other than
+  note on and off. Latency is read once, when the plugin is created; a change
+  the plugin announces later is not followed.
+
+**Plugin browser** (`noodle-app/src/plugin_browser.rs`, View > Plugins). Lists
+the catalog with a search over name, vendor, ID, format and kind; Add puts the node on
+the canvas; Rescan runs the scan in the background (Shift scans every file
+again) and the files that failed are listed with why.
 
 **Caching.** Plugins are deterministic by default, so they can be frozen and
 exported from the cache. The key covers the plugin's ID, its file's size and
@@ -820,19 +1032,68 @@ sensibly drive: state is an opaque blob and `nondeterministic` is a flag.
 
 **Threads.** `instantiate` loads a plugin on its own thread (waiting up to 30
 s, then failing the node), and `start_processing` runs on the first block, on
-the audio thread. Each instance having its own "main thread" is a known
-shortcut: plugins that tie global state to one thread (JUCE-based ones) and
-editor windows (macOS wants the GUI on the process's main thread) need one
-shared plugin thread, to be settled with the editor work. The same work must
-make capturing state also write the plugin's parameter values back to the
-node's port values, because the ports win on the first block.
+the audio thread. 
 
 **Limits.** The transport's bar fields assume quarter-note beats and a
 meter that has not changed. A plugin that crashes while playing takes the process with it
-(until out-of-process hosting in M6); no editor windows yet; plugin latency is
-ignored; only the first note port is wired; CLAP extensions beyond audio
+(until out-of-process hosting in M6); editors are separate windows (not drawn inside the app's window), Linux has no
+embedding and no `posix-fd`, and the macOS and Windows editor windows are
+checked only by CI compiling them and by one hand test on the Mac; CLAP extensions beyond audio
 ports, note ports, parameters and state (e.g. tail, voice info, remote
 controls) are not used.
+
+## Performance (M6)
+
+### Delay compensation
+
+A node reports how late its outputs sound with `Node::latency` (samples; a
+plugin's reported latency, or a lookahead's). It is read once, when the plan is
+built, right after the node is created, and clamped to `MAX_LATENCY` (two
+seconds at 96 kHz). A node that carries over from the previous plan keeps the
+latency recorded in `PlanInfo`.
+
+`plan::compensate` runs after the plan's nodes are made. Walking the schedule,
+it gives every signal buffer an *arrival*: the slowest of its writer's inputs
+plus the writer's own latency. Where paths meet, the early ones get a
+`DelayLine` so everything lines up with the slowest:
+
+- a node with several signal inputs lines them up with each other;
+- every *sink* (an Output node that plays, or a tap) lines up with the
+  slowest sink, so two Output nodes on different devices stay in sync;
+- the lines read their source at the consumer's step and write a private region
+  appended to the plan's pool, so the compiler's buffer reuse is not touched,
+  and cost nothing when no node reports latency;
+- a feedback loop's own input is never compensated (the loop already carries
+  its delay), and event ports are not compensated at all (a plugin's latency is
+  in its audio, and notes arrive on time);
+- a plan swap hands each line's contents to its successor (keyed by node,
+  input and delay), and a transport jump clears them with the nodes.
+
+A plan swap is seamless when its delay lines match by node, input and delay,
+whatever their slots, so unrelated edits don't fade the output. The mix as a
+whole is then `output_latency` samples late (`Controller::output_latency`).
+Live playback just sounds that much late, as in any DAW, and recording
+subtracts it along with the device's output latency (`Session::stop_recording`, MIDI takes); offline renders (`render`, `render_project_streaming*`,
+`render_taps`, so exports and freezes) render that many extra frames and drop
+them from the front, so what they write lines up with the timeline.
+`noodle-nodes/tests/pdc.rs` covers the alignment and the trim,
+`realtime.rs` that it never allocates through plan swaps and seeks, and
+`noodle-plugins/tests/latency.rs` that CLAP and VST3 plugins report theirs
+(the test plugins read `NOODLE_TEST_PLUGIN_LATENCY`).
+
+### CPU meters
+
+When a `Telemetry` hub is set, each node's step is timed
+(`Instant::now` around its `process`, no allocation) and reported through
+`Telemetry::open_cpu`/`read_cpu`/`read_all_cpu` as a share of the block's
+time (`CpuReading`: a smoothed `load` and a slowly falling `peak`; 1.0 is the
+whole block). Without a hub nothing is timed, so offline renders pay nothing.
+The editor's View > CPU meters shows each node's load in its header, coloured
+amber from 15 % and red from 50 % (or a peak over 90 %), and the graph's total
+in the corner. A group has no step of its own (it is flattened away), so its
+header shows the sum of the nodes inside it at any depth. A split node (feedback loop) reports its output half; the input
+half's time is not counted. Time spent in delay lines is not attributed to a
+node.
 
 ## UI (`noodle-app`)
 
@@ -1048,6 +1309,28 @@ through the telemetry API.
   - The numbers come from the parameter probes described under "Wired parameters report their signal".
 - **Config fields** (`ConfigField`) only commit when a drag or typing
   finishes, because changing config recompiles the node.
+
+### Node graphs
+
+Some nodes show what they do as a graph (`widgets/graph.rs`): the ADSR its
+envelope, the State Variable and Ladder filters their frequency response, the
+LFO its wave. The graph is small on the node (a node body, `editor/body.rs`)
+and full size at the top of the properties panel's parameters
+(`GraphEditor`). Shapes are drawn from the node's current parameters by pure
+functions in `noodle-nodes` (`AdsrShape`, `svf_response`, `ladder_response`,
+`lfo_wave`), each tested against the real DSP, so the graph is the sound's
+shape and not a sketch. A wired parameter is drawn at its live value.
+
+In the panel the ADSR and the filters have points to drag, which set the
+parameters they stand for (`Edit::Drag`s, one undo step per drag): the
+attack point's time, the decay point's time and sustain level, the release
+point's time, and the filter's cutoff (along a log frequency axis) and
+resonance (the height of the peak at the cutoff). A point moves only along the axes whose
+parameters have no wire, and is greyed when neither is free. The envelope's time axis fits the
+envelope when idle and holds still during a drag, so a point follows the
+pointer; dragging past the right edge asks for longer times, and the graph
+rescales when you let go. To add a graph for a node type, add a `Kind` and
+its drawing and handles to `graph.rs`, and a height in `body::height`.
 
 ### Mixer
 

@@ -48,8 +48,8 @@ pub use flatten::flatten;
 pub use job::{Job, JobPanicked};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
 pub use node::{
-    ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, Mode, Node, NodeError,
-    NodeInfo, NodeType, Port, Setup, Transport,
+    ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, MAX_LATENCY, Mode, Node,
+    NodeError, NodeInfo, NodeType, Port, Setup, Transport,
 };
 pub use noodle_core::{Config, NodeId, Value};
 pub use noodle_macros::Ports;
@@ -67,7 +67,8 @@ pub use replace::{Replacement, Replacements, TapSpec};
 pub use runtime::{Bus, Controller, Processor, Settings, SettingsError, engine};
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use telemetry::{
-    Level, MeterReader, MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,
+    CpuReading, CpuWriter, Level, MeterReader, MeterWriter, ParamReading, ParamWriter, ScopeView,
+    ScopeWriter, Telemetry,
 };
 pub use tempo::TempoTable;
 pub use transport::TransportControl;

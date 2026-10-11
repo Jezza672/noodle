@@ -47,8 +47,10 @@ const RESONANCE: usize = LadderPorts::RESONANCE;
 const DRIVE: usize = LadderPorts::DRIVE;
 const OUT: usize = LadderPorts::OUT;
 
+pub const LADDER_ID: &str = "noodle.filter.ladder";
+
 static INFO: NodeInfo = NodeInfo {
-    id: "noodle.filter.ladder",
+    id: LADDER_ID,
     version: 1,
     name: "Ladder Filter",
     category: "Filters",
@@ -116,6 +118,30 @@ fn coefficient(cutoff: f32, sample_rate: f32) -> f32 {
     let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
     g / (1.0 + g)
 }
+
+/// The gain (linear) at `hz`, for drawing the filter's response: four
+/// one-poles in a feedback loop, treated as linear (so `drive` is ignored).
+pub fn ladder_response(cutoff: f32, resonance: f32, hz: f32, sample_rate: f32) -> f32 {
+    let warp =
+        |f: f32| (std::f32::consts::PI * f.clamp(0.0, sample_rate * 0.4999) / sample_rate).tan();
+    let cutoff = cutoff.clamp(10.0, sample_rate * 0.45);
+    let w = warp(hz) / warp(cutoff);
+    // One pole: 1 / (1 + jw), four times over.
+    let (mut re, mut im) = (1.0f32, 0.0f32);
+    let scale = 1.0 / (1.0 + w * w);
+    for _ in 0..4 {
+        let (a, b) = (scale, -w * scale);
+        (re, im) = (re * a - im * b, re * b + im * a);
+    }
+    // H = P / (1 + kP).
+    let k = resonance.clamp(0.0, 1.0) * FEEDBACK;
+    let (dr, di) = (1.0 + k * re, k * im);
+    (re * re + im * im).sqrt() / (dr * dr + di * di).sqrt().max(1e-9)
+}
+
+/// The resonance (0 to 1) at which the ladder, treated as linear, rings by
+/// itself at the cutoff: past it a drawn response has no finite peak.
+pub const LADDER_SELF_OSCILLATES: f32 = 4.0 / FEEDBACK;
 
 /// A cheap tanh: exact slope at 0, and ±1 past ±3.
 fn saturate(x: f32) -> f32 {
@@ -307,5 +333,20 @@ mod tests {
         }
         assert!(h.output(OUT).is_silent(0, 0));
         assert!(h.output(OUT).lane(0, 0).iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn the_drawn_response_matches_the_filter() {
+        for (cutoff, resonance) in [(1_000.0, 0.0), (2_000.0, 0.3), (500.0, 0.6)] {
+            for hz in [100.0f32, 400.0, 1_000.0, 2_100.0, 6_000.0] {
+                // A small signal, so the saturation is close to linear.
+                let measured = gain_at(hz, cutoff, resonance);
+                let drawn = ladder_response(cutoff, resonance, hz, RATE);
+                assert!(
+                    (measured - drawn).abs() <= 0.03 * drawn.max(0.1),
+                    "{cutoff} Hz q {resonance} at {hz}: measured {measured}, drawn {drawn}"
+                );
+            }
+        }
     }
 }

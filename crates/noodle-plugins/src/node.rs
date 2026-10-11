@@ -1,10 +1,12 @@
 //! A plugin as a node: its audio ports, note ports and parameters become the
 //! node's ports.
 //!
-//! Layout (the same for every config, so a project's wires never depend on
-//! whether the plugin could be loaded):
+//! Layout (from the scan and the config alone, so a project's wires never
+//! depend on whether the plugin could be loaded; the editor shows the note
+//! inputs first):
 //!
-//! - audio inputs `in`, `in2`, ... then one input per parameter (`p<id>`);
+//! - audio inputs `in`, `in2`, ... then one input (`p<id>`) for each
+//!   parameter the `params` setting exposes (see [`exposed_params`]);
 //! - audio outputs `out`, `out2`, ...;
 //! - note inputs `notes`, `notes2`, ... and note outputs `notes_out`, ...
 //!
@@ -32,11 +34,13 @@ use noodle_engine::{
     Unit,
 };
 
-use crate::STATE_KEY;
 use crate::descriptor::{
-    Descriptor, file_stamp, input_key, note_input_key, note_output_key, output_key, param_key,
+    Descriptor, ParamDesc, PluginFormat, exposed_params, file_stamp, input_key, note_input_key,
+    note_output_key, output_key, param_key,
 };
-use crate::host::{self, Control, Host};
+use crate::host::{Flags, Host};
+use crate::{PARAMS_KEY, STATE_KEY};
+use crate::{editor, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
 pub const PARAM_STEP: usize = 32;
@@ -62,17 +66,20 @@ const NONDETERMINISTIC: ConfigInfo = ConfigInfo::int(
     0,
 );
 
-static CONFIG: [ConfigInfo; 1] = [NONDETERMINISTIC];
+/// Which parameters get ports; see [`exposed_params`]. Chosen in the
+/// properties panel.
+const EXPOSED: ConfigInfo = ConfigInfo::text(PARAMS_KEY, "Exposed parameters");
 
-/// A node type for one plugin.
-pub struct ClapNodeType {
+static CONFIG: [ConfigInfo; 2] = [NONDETERMINISTIC, EXPOSED];
+
+/// A node type for one plugin, of either format.
+pub struct PluginNodeType {
     info: &'static NodeInfo,
     path: PathBuf,
     descriptor: Descriptor,
-    layout: Layout,
 }
 
-impl ClapNodeType {
+impl PluginNodeType {
     /// Leaks the names the node info needs; make one per plugin and share it.
     pub fn new(path: PathBuf, descriptor: Descriptor) -> Self {
         let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
@@ -82,12 +89,10 @@ impl ClapNodeType {
             name: leak(descriptor.name.clone()),
             category: "Plugins",
         }));
-        let layout = layout_of(&descriptor);
         Self {
             info,
             path,
             descriptor,
-            layout,
         }
     }
 
@@ -100,13 +105,19 @@ impl ClapNodeType {
     }
 }
 
-fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
+/// A parameter's range and default as the port has them: a plugin's own
+/// when it makes sense, else 0 to 1.
+pub(crate) fn param_range(min: f64, max: f64, default: f64) -> (f32, f32, f32) {
     let (min, max) = if min.is_finite() && max.is_finite() && max > min {
         (min as f32, max as f32)
     } else {
         (0.0, 1.0)
     };
-    let default = (default as f32).clamp(min, max);
+    (min, max, (default as f32).clamp(min, max))
+}
+
+fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
+    let (min, max, default) = param_range(min, max, default);
     let info = ParamInfo::new(min, max, default).unit(Unit::None);
     if stepped {
         ParamInfo {
@@ -118,12 +129,12 @@ fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
     }
 }
 
-fn layout_of(descriptor: &Descriptor) -> Layout {
+fn layout_of(descriptor: &Descriptor, exposed: &[&ParamDesc]) -> Layout {
     let mut layout = Layout::realtime();
     for (index, port) in descriptor.audio_inputs.iter().enumerate() {
         layout = layout.input(input_key(index), port.name.clone());
     }
-    for param in &descriptor.params {
+    for param in exposed {
         let name = if param.module.is_empty() {
             param.name.clone()
         } else {
@@ -147,7 +158,7 @@ fn layout_of(descriptor: &Descriptor) -> Layout {
     layout
 }
 
-impl NodeType for ClapNodeType {
+impl NodeType for PluginNodeType {
     fn info(&self) -> &NodeInfo {
         self.info
     }
@@ -157,7 +168,8 @@ impl NodeType for ClapNodeType {
     }
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
-        let mut layout = self.layout.clone();
+        let exposed = exposed_params(&self.descriptor, config);
+        let mut layout = layout_of(&self.descriptor, &exposed);
         // Plugins are taken to be deterministic, so freezing and export can
         // cache them; a plugin that uses randomness opts out.
         layout.deterministic = NONDETERMINISTIC.get_int(config) == 0;
@@ -224,7 +236,33 @@ impl NodeType for ClapNodeType {
             ),
             _ => None,
         };
-        let running = host::start(
+        let exposed = exposed_params(&self.descriptor, setup.config);
+        if self.descriptor.format == PluginFormat::Vst3 {
+            let loaded = vst3::load(
+                &self.path,
+                &self.descriptor.id,
+                state,
+                setup.sample_rate,
+                setup.max_frames,
+            )
+            .map_err(|error| NodeError::config(error.to_string()))?;
+            // The editor opens by the node, like a CLAP plugin's.
+            let flags = Arc::new(Flags::default());
+            let key = vst3::gui::register(&loaded.plugin, &flags);
+            editor::register(setup.node, key, flags);
+            return Ok(Instance::realtime(
+                vst3::Vst3Node::new(
+                    loaded.plugin,
+                    &self.descriptor,
+                    &exposed,
+                    &loaded.midi_assignments,
+                    Some(key),
+                    setup.max_frames,
+                )
+                .with_latency(loaded.latency),
+            ));
+        }
+        let mut loaded = thread::start(
             &self.path,
             &self.descriptor.id,
             state,
@@ -232,18 +270,22 @@ impl NodeType for ClapNodeType {
             setup.max_frames,
         )
         .map_err(|error| NodeError::config(error.to_string()))?;
-        Ok(Instance::realtime(ClapNode::new(
+        editor::register(setup.node, loaded.key, Arc::clone(&loaded.flags));
+        let mut node = ClapNode::new(
             &self.descriptor,
-            running.processor.into(),
-            running.control,
+            &exposed,
+            loaded.take_processor().into(),
+            loaded.key,
             setup.max_frames,
-        )))
+        );
+        node.latency = loaded.latency;
+        Ok(Instance::realtime(node))
     }
 }
 
 /// A node type shared between registries, so a render's registry and the live
 /// one build the same thing without leaking a new `NodeInfo` each time.
-pub(crate) struct Shared(pub Arc<ClapNodeType>);
+pub(crate) struct Shared(pub Arc<PluginNodeType>);
 
 impl NodeType for Shared {
     fn info(&self) -> &NodeInfo {
@@ -284,7 +326,7 @@ struct ParamSlot {
     min: f32,
     max: f32,
     stepped: bool,
-    /// The last value sent to the plugin. NaN until the first block.
+    /// The last value sent to the plugin (the default until one is).
     last: f32,
 }
 
@@ -301,6 +343,7 @@ impl PortBuffers {
 }
 
 struct NoteKey {
+    port: u16,
     note: u32,
     channel: u8,
     key: u8,
@@ -310,7 +353,8 @@ struct ClapNode {
     /// Started on the first block, which runs on the audio thread (CLAP's
     /// `start_processing` belongs there).
     processor: Option<PluginAudioProcessor<Host>>,
-    control: Option<Control>,
+    /// The shared plugin thread's key for this instance.
+    key: u64,
     max_frames: usize,
     audio_in: Vec<PortBuffers>,
     audio_out: Vec<PortBuffers>,
@@ -320,14 +364,19 @@ struct ClapNode {
     out_events: EventBuffer,
     params: Vec<ParamSlot>,
     notes: Vec<NoteKey>,
+    /// Where each note input's merge has got to, in `build_events`.
+    cursors: Vec<usize>,
     steady: u64,
+    /// The latency the plugin reported when it was activated, in samples.
+    latency: u32,
 }
 
 impl ClapNode {
     fn new(
         descriptor: &Descriptor,
+        exposed: &[&ParamDesc],
         processor: PluginAudioProcessor<Host>,
-        control: Control,
+        key: u64,
         max_frames: usize,
     ) -> Self {
         let audio_in: Vec<_> = descriptor
@@ -344,8 +393,7 @@ impl ClapNode {
         let in_ports = AudioPorts::with_capacity(channels(&audio_in), audio_in.len());
         let out_ports = AudioPorts::with_capacity(channels(&audio_out), audio_out.len());
         let first_param = descriptor.audio_inputs.len();
-        let params = descriptor
-            .params
+        let params = exposed
             .iter()
             .enumerate()
             .filter_map(|(index, param)| {
@@ -356,13 +404,20 @@ impl ClapNode {
                     min: info.min,
                     max: info.max,
                     stepped: param.stepped,
-                    last: f32::NAN,
+                    // Starts at the default, so a port nobody has touched
+                    // leaves the plugin's own (or restored) value alone: a
+                    // plugin can report a default that isn't its live value.
+                    last: if param.stepped {
+                        info.default.round()
+                    } else {
+                        info.default
+                    },
                 })
             })
             .collect();
         Self {
             processor: Some(processor),
-            control: Some(control),
+            key,
             max_frames,
             audio_in,
             audio_out,
@@ -372,7 +427,9 @@ impl ClapNode {
             out_events: EventBuffer::with_capacity(MAX_EVENTS),
             params,
             notes: Vec::with_capacity(MAX_NOTES),
+            cursors: vec![0; descriptor.note_inputs as usize],
             steady: 0,
+            latency: 0,
         }
     }
 
@@ -456,13 +513,30 @@ impl ClapNode {
         self.in_events.clear();
         self.sample_params(io, start, 0);
         let mut next_step = PARAM_STEP;
-        // Only the first note port is read; plugins with several are rare.
-        let events = io.event_inputs.first().copied().unwrap_or(&[]);
-        for event in events {
-            let time = event.time as usize;
-            if time < start || time >= start + n {
-                continue;
+        // Every note input is read, merged into one time-ordered stream (the
+        // plugin wants its events in order whatever port they are for).
+        self.cursors.iter_mut().for_each(|c| *c = 0);
+        loop {
+            let mut pick: Option<(usize, usize)> = None;
+            for (port, cursor) in self.cursors.iter_mut().enumerate() {
+                let events = io.event_inputs.get(port).copied().unwrap_or(&[]);
+                while let Some(event) = events.get(*cursor) {
+                    let time = event.time as usize;
+                    if time < start {
+                        *cursor += 1;
+                    } else {
+                        if time < start + n && pick.is_none_or(|(_, t)| time < t) {
+                            pick = Some((port, time));
+                        }
+                        break;
+                    }
+                }
             }
+            let Some((port, time)) = pick else {
+                break;
+            };
+            let event = &io.event_inputs[port][self.cursors[port]];
+            self.cursors[port] += 1;
             let at = time - start;
             while next_step <= at {
                 self.sample_params(io, start, next_step);
@@ -471,7 +545,7 @@ impl ClapNode {
             if self.in_events.len() as usize >= MAX_EVENTS {
                 break;
             }
-            self.push_note(event, at as u32);
+            self.push_note(port as u16, event, at as u32);
         }
         while next_step < n {
             self.sample_params(io, start, next_step);
@@ -513,7 +587,7 @@ impl ClapNode {
         }
     }
 
-    fn push_note(&mut self, event: &Event, time: u32) {
+    fn push_note(&mut self, port: u16, event: &Event, time: u32) {
         match event.kind {
             EventKind::NoteOn {
                 note,
@@ -521,27 +595,28 @@ impl ClapNode {
                 key,
                 velocity,
             } => {
-                self.notes.retain(|n| n.note != note.0);
+                self.notes.retain(|n| !(n.port == port && n.note == note.0));
                 if self.notes.len() == MAX_NOTES {
                     self.notes.remove(0);
                 }
                 self.notes.push(NoteKey {
+                    port,
                     note: note.0,
                     channel,
                     key,
                 });
                 self.in_events.push(&NoteOnEvent::new(
                     time,
-                    pckn(note.0, channel, key),
+                    pckn(port, note.0, channel, key),
                     f64::from(velocity),
                 ));
             }
             EventKind::NoteOff { note, velocity } => {
-                let (channel, key) = self.note_key(note.0);
-                self.notes.retain(|n| n.note != note.0);
+                let (channel, key) = self.note_key(port, note.0);
+                self.notes.retain(|n| !(n.port == port && n.note == note.0));
                 self.in_events.push(&NoteOffEvent::new(
                     time,
-                    pckn(note.0, channel, key),
+                    pckn(port, note.0, channel, key),
                     f64::from(velocity),
                 ));
             }
@@ -550,7 +625,7 @@ impl ClapNode {
                 expression,
                 value,
             } => {
-                let (channel, key) = self.note_key(note.0);
+                let (channel, key) = self.note_key(port, note.0);
                 let (kind, value) = match expression {
                     Expression::Pitch => (NoteExpressionType::Tuning, value),
                     Expression::Pressure => (NoteExpressionType::Pressure, value),
@@ -561,54 +636,62 @@ impl ClapNode {
                 };
                 self.in_events.push(&NoteExpressionEvent::new(
                     time,
-                    pckn(note.0, channel, key),
+                    pckn(port, note.0, channel, key),
                     kind,
                     f64::from(value),
                 ));
             }
             EventKind::Midi(data) => {
-                self.in_events.push(&MidiEvent::new(time, 0, data));
+                self.in_events.push(&MidiEvent::new(time, port, data));
             }
         }
     }
 
-    fn note_key(&self, note: u32) -> (u8, u8) {
+    fn note_key(&self, port: u16, note: u32) -> (u8, u8) {
         self.notes
             .iter()
-            .find(|n| n.note == note)
+            .find(|n| n.port == port && n.note == note)
             .map_or((0, 0), |n| (n.channel, n.key))
     }
 
     /// Passes the plugin's note output on.
     fn emit_notes(&mut self, io: &mut Io<'_, '_>, start: usize) {
-        let Some(out) = io.event_outputs.first_mut() else {
+        if io.event_outputs.is_empty() {
             return;
-        };
+        }
         for event in self.out_events.iter() {
             let time = event.header().time().saturating_add(start as u32);
-            let kind = match event.as_core_event() {
-                Some(CoreEventSpace::NoteOn(on)) => EventKind::NoteOn {
-                    note: NoteId(on.note_id().into_specific().unwrap_or(0)),
-                    channel: on.channel().into_specific().unwrap_or(0) as u8,
-                    key: on.key().into_specific().unwrap_or(0) as u8,
-                    velocity: on.velocity() as f32,
-                },
-                Some(CoreEventSpace::NoteOff(off)) => EventKind::NoteOff {
-                    note: NoteId(off.note_id().into_specific().unwrap_or(0)),
-                    velocity: off.velocity() as f32,
-                },
-                Some(CoreEventSpace::Midi(midi)) => EventKind::Midi(midi.data()),
+            let (port, kind) = match event.as_core_event() {
+                Some(CoreEventSpace::NoteOn(on)) => (
+                    on.port_index().into_specific().unwrap_or(0),
+                    EventKind::NoteOn {
+                        note: NoteId(on.note_id().into_specific().unwrap_or(0)),
+                        channel: on.channel().into_specific().unwrap_or(0) as u8,
+                        key: on.key().into_specific().unwrap_or(0) as u8,
+                        velocity: on.velocity() as f32,
+                    },
+                ),
+                Some(CoreEventSpace::NoteOff(off)) => (
+                    off.port_index().into_specific().unwrap_or(0),
+                    EventKind::NoteOff {
+                        note: NoteId(off.note_id().into_specific().unwrap_or(0)),
+                        velocity: off.velocity() as f32,
+                    },
+                ),
+                Some(CoreEventSpace::Midi(midi)) => {
+                    (midi.port_index(), EventKind::Midi(midi.data()))
+                }
                 _ => continue,
             };
-            if out.push(Event { time, kind }).is_err() {
-                break;
-            }
+            // A port the plugin didn't declare goes to the first.
+            let port = usize::from(port).min(io.event_outputs.len() - 1);
+            let _ = io.event_outputs[port].push(Event { time, kind });
         }
     }
 }
 
-fn pckn(note: u32, channel: u8, key: u8) -> Pckn {
-    Pckn::new(0u16, u16::from(channel), u16::from(key), note)
+fn pckn(port: u16, note: u32, channel: u8, key: u8) -> Pckn {
+    Pckn::new(port, u16::from(channel), u16::from(key), note)
 }
 
 /// What the transport looks like `start` frames into the block.
@@ -647,6 +730,10 @@ fn transport_event(ctx: &Context, start: usize) -> TransportEvent {
 }
 
 impl Node for ClapNode {
+    fn latency(&self) -> u32 {
+        self.latency
+    }
+
     fn process(&mut self, ctx: &Context, mut io: Io<'_, '_>) {
         let mut start = 0;
         while start < ctx.frames {
@@ -666,11 +753,12 @@ impl Node for ClapNode {
 
 impl Drop for ClapNode {
     fn drop(&mut self) {
-        if let (Some(processor), Some(control)) = (self.processor.take(), self.control.take()) {
+        editor::unregister(self.key);
+        if let Some(processor) = self.processor.take() {
             // Stopping belongs on the audio thread too, but a node is dropped
             // on the controller's thread; the plugin is deactivated right
             // after, which is what matters.
-            control.close(processor.into_stopped());
+            thread::close(self.key, processor.into_stopped());
         }
     }
 }
