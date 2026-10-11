@@ -40,8 +40,10 @@ const LOW: usize = SvfPorts::LOW;
 const BAND: usize = SvfPorts::BAND;
 const HIGH: usize = SvfPorts::HIGH;
 
+pub const SVF_ID: &str = "noodle.filter.svf";
+
 static INFO: NodeInfo = NodeInfo {
-    id: "noodle.filter.svf",
+    id: SVF_ID,
     version: 1,
     name: "State Variable Filter",
     category: "Filters",
@@ -59,6 +61,20 @@ impl NodeType for Svf {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         Ok(Instance::realtime(PerLane::new(SvfKernel, setup)))
     }
+}
+
+/// The gain (linear) of the low, band and high outputs at `hz`, for drawing
+/// the filter's response. Exact for the trapezoidal filter: the analogue
+/// response, with the frequency pre-warped as the filter itself is.
+pub fn svf_response(cutoff: f32, resonance: f32, hz: f32, sample_rate: f32) -> [f32; 3] {
+    let cutoff = cutoff.clamp(10.0, sample_rate * 0.49);
+    let k = 2.0 * (1.0 - 0.99 * resonance.clamp(0.0, 1.0));
+    let warp = |f: f32| (PI * f.clamp(0.0, sample_rate * 0.4999) / sample_rate).tan();
+    let w = warp(hz) / warp(cutoff);
+    // s = jw; the denominator s² + ks + 1 = (1 - w²) + j·kw.
+    let (re, im) = (1.0 - w * w, k * w);
+    let denominator = (re * re + im * im).sqrt().max(1e-9);
+    [1.0 / denominator, w / denominator, w * w / denominator]
 }
 
 struct SvfKernel;
@@ -252,5 +268,41 @@ mod tests {
             h.output(LOW).lane(0, 0).to_vec()
         };
         assert_eq!(run(&[]), run(&[(CUTOFF, Shape::MONO)]));
+    }
+
+    #[test]
+    fn the_drawn_response_matches_the_filter() {
+        use std::f32::consts::TAU;
+        const RATE: f32 = 48_000.0;
+        for (cutoff, resonance) in [(1_000.0, 0.0), (2_000.0, 0.7), (300.0, 0.95)] {
+            for hz in [100.0f32, 250.0, 1_000.0, 2_200.0, 6_000.0] {
+                let mut h =
+                    Harness::new(&Svf, &Config::new(), &[(IN, Shape::MONO)], RATE, 4_800).unwrap();
+                h.set(CUTOFF, cutoff);
+                h.set(RESONANCE, resonance);
+                let mut peaks = [0f32; 3];
+                for block in 0..4 {
+                    for (i, x) in h.input(IN, 4_800).lane_mut(0, 0).iter_mut().enumerate() {
+                        *x = 0.1 * (TAU * hz * (block * 4_800 + i) as f32 / RATE).sin();
+                    }
+                    h.run(4_800).unwrap();
+                }
+                for (peak, port) in peaks.iter_mut().zip([LOW, BAND, HIGH]) {
+                    // The amplitude from the RMS, because a peak sampled at
+                    // 8 points a cycle can miss the top by 8%.
+                    let out = h.output(port).lane(0, 0);
+                    let mean_square = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
+                    *peak = (2.0 * mean_square).sqrt();
+                }
+                let drawn = svf_response(cutoff, resonance, hz, RATE);
+                for (measured, drawn) in peaks.iter().zip(drawn) {
+                    let measured = measured / 0.1;
+                    assert!(
+                        (measured - drawn).abs() <= 0.02 * drawn.max(1.0),
+                        "{cutoff} Hz q {resonance} at {hz}: measured {measured}, drawn {drawn}"
+                    );
+                }
+            }
+        }
     }
 }

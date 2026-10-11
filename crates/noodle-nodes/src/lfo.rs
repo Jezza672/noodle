@@ -158,6 +158,15 @@ impl LaneKernel for LfoKernel {
     }
 }
 
+/// The wave for the `shape` parameter at `phase` (in cycles), from -1 to 1,
+/// for drawing it. The random shape has no fixed wave and gives `None`.
+pub fn lfo_wave(shape: f32, phase: f32) -> Option<f32> {
+    match Wave::from_param(shape) {
+        Wave::Random => None,
+        other => Some(wave(phase.rem_euclid(1.0), other)),
+    }
+}
+
 fn wave(phase: f32, shape: Wave) -> f32 {
     match shape {
         Wave::Sine => (phase * std::f32::consts::TAU).sin(),
@@ -261,5 +270,20 @@ mod tests {
         h.input(RATE, 8).fill(1.0);
         h.run(8).unwrap();
         assert!(h.output(OUT).lane(0, 0).iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn the_drawn_wave_matches_the_shapes() {
+        for shape in 0..4 {
+            let out = one_cycle(shape as f32);
+            for (i, &x) in out.iter().enumerate().step_by(97) {
+                let drawn = lfo_wave(shape as f32, i as f32 / out.len() as f32).unwrap();
+                assert!(
+                    (x - drawn).abs() < 1e-2,
+                    "shape {shape} at {i}: {x} vs {drawn}"
+                );
+            }
+        }
+        assert_eq!(lfo_wave(4.0, 0.3), None);
     }
 }

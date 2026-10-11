@@ -17,19 +17,21 @@ use noodle_engine::{Level, MeterReader, ParamReading, ScopeView, Telemetry};
 use noodle_nodes::{METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
-use crate::widgets::Live;
+use crate::widgets::{GraphKind, Live};
 
 /// Extra space below a node's ports, in graph units. Zero for most nodes.
 pub fn height(type_id: &str) -> f32 {
     match type_id {
         id if METERED.contains(&id) => 30.0,
         SCOPE_ID | OUTPUT_ID => 80.0,
+        id if GraphKind::of(id).is_some() => 56.0,
         _ => 0.0,
     }
 }
 
 /// Draws a node's body into `rect`, the space [`height`] reserved, in screen
-/// points. Scale anything drawn by `zoom`.
+/// points. Scale anything drawn by `zoom`. `values` gives the node's
+/// parameters, for the bodies that draw what they do.
 pub fn paint(
     painter: &Painter,
     rect: Rect,
@@ -37,6 +39,7 @@ pub fn paint(
     node: NodeId,
     type_id: &str,
     bodies: &Bodies,
+    values: &dyn Fn(&str) -> f32,
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
     match type_id {
@@ -48,7 +51,11 @@ pub fn paint(
             MeterAxis::Horizontal,
         ),
         SCOPE_ID | OUTPUT_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
-        _ => {}
+        id => {
+            if let Some(kind) = GraphKind::of(id) {
+                crate::widgets::graph::paint(painter, area, kind, zoom, values);
+            }
+        }
     }
 }
 

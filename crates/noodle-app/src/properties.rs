@@ -11,7 +11,7 @@ use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
 use crate::session::{Edit, Session};
 use crate::widgets::format::format_value;
-use crate::widgets::{ConfigField, CurveEditor, Live, ParamField};
+use crate::widgets::{ConfigField, CurveEditor, GraphEditor, GraphKind, Live, ParamField};
 
 /// What the wired parameter `key` of a node has been doing lately, if known:
 /// the editor reads it once a frame.
@@ -199,7 +199,11 @@ fn params(
     };
     ui.separator();
     ui.label(RichText::new("Parameters").strong());
-    for (input, info) in std::iter::once(first).chain(params) {
+    let params: Vec<_> = std::iter::once(first).chain(params).collect();
+    if let Some(kind) = GraphKind::of(&node.type_id) {
+        graph(ui, session, kind, id, node, &params, live, edits);
+    }
+    for (input, info) in params {
         let key = input.key.as_ref();
         let value = node.params.get(key).copied().unwrap_or(info.default);
         let source = session
@@ -229,6 +233,48 @@ fn params(
         });
         ui.label(RichText::new(range_text(info, reading)).weak().small());
     }
+}
+
+/// The graph of what the node does, with its points to drag. A wired
+/// parameter is drawn at the value its wire delivers, and can't be dragged.
+#[allow(clippy::too_many_arguments)]
+fn graph(
+    ui: &mut Ui,
+    session: &Session,
+    kind: GraphKind,
+    id: NodeId,
+    node: &Node,
+    params: &[(&noodle_engine::InputPort, &noodle_engine::ParamInfo)],
+    live: LiveParams<'_>,
+    edits: &mut Vec<Edit>,
+) {
+    let info_of = |key: &str| {
+        params
+            .iter()
+            .find(|(input, _)| input.key == key)
+            .map(|p| p.1)
+    };
+    let wired = |key: &str| {
+        session
+            .project()
+            .graph()
+            .source(&Endpoint::new(id, key))
+            .is_some()
+    };
+    let values = |key: &str| {
+        let own = || {
+            let default = info_of(key).map_or(0.0, |info| info.default);
+            node.params.get(key).copied().unwrap_or(default)
+        };
+        if wired(key) {
+            live(id, key).map_or_else(own, |live| live.value)
+        } else {
+            own()
+        }
+    };
+    let range = |key: &str| info_of(key).map_or((0.0, 1.0), |info| (info.min, info.max));
+    let editable = |key: &str| !wired(key);
+    edits.extend(GraphEditor::new(id, kind, &values, &range, &editable).show(ui));
 }
 
 /// What a parameter accepts, and for a wired one the range its signal has
@@ -320,6 +366,119 @@ mod tests {
     fn param(harness: &Harness<'_, State>, key: &str) -> Option<f32> {
         let graph = harness.state().session.project().graph();
         graph.node(NodeId(1))?.params.get(key).copied()
+    }
+
+    /// The ADSR's graph and the screen position of its plot at `(x, y)`.
+    fn graph_at(harness: &Harness<'_, State>) -> impl Fn(f32, f32) -> egui::Pos2 + use<> {
+        let outer = harness.get_by_label("Envelope graph").rect();
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
+        move |x, y| {
+            egui::pos2(
+                plot.left() + x * plot.width(),
+                plot.bottom() - y * plot.height(),
+            )
+        }
+    }
+
+    fn drag(harness: &mut Harness<'_, State>, from: egui::Pos2, to: egui::Pos2) {
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        harness.hover_at(to);
+        harness.run();
+        harness.drop_at(to);
+        harness.run();
+    }
+
+    #[test]
+    fn dragging_the_envelope_graph_sets_the_adsr_parameters() {
+        let mut harness = harness([Node::new("noodle.mod.adsr")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        // The defaults: 10 ms, 200 ms, 0.7, 300 ms, drawn over 0.765 s.
+        let span = (0.01 + 0.2 + 0.1275 + 0.3) * 1.2;
+        let at = graph_at(&harness);
+
+        // The decay point is where the decay ends, at the sustain level.
+        let from = at(0.21 / span, 0.7);
+        let to = at(0.51 / span, 0.3);
+        drag(&mut harness, from, to);
+        let decay = param(&harness, "decay").unwrap();
+        let sustain = param(&harness, "sustain").unwrap();
+        assert!((decay - 0.5).abs() < 0.03, "{decay}");
+        assert!((sustain - 0.3).abs() < 0.03, "{sustain}");
+
+        // The release point is the right-hand end.
+        let at = graph_at(&harness);
+        let span = (0.01 + decay + 0.25 * (0.01 + decay + 0.3) + 0.3) * 1.2;
+        let held = 0.01 + decay + 0.25 * (0.01 + decay + 0.3);
+        let from = at((held + 0.3) / span, 0.0);
+        let to = at((held + 0.6) / span, 0.0);
+        drag(&mut harness, from, to);
+        let release = param(&harness, "release").unwrap();
+        assert!((release - 0.6).abs() < 0.05, "{release}");
+
+        // A whole drag is one undo step.
+        harness.state_mut().session.undo();
+        harness.run();
+        assert_eq!(param(&harness, "release"), None);
+        assert!((param(&harness, "decay").unwrap() - decay).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_wired_parameter_is_not_changed_by_dragging_the_graph() {
+        let mut harness = harness([Node::new("noodle.mod.adsr"), Node::new("noodle.mod.lfo")]);
+        harness
+            .state_mut()
+            .session
+            .edit([Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(NodeId(2), "out"),
+                to: Endpoint::new(NodeId(1), "sustain"),
+            }))]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        let span = (0.01 + 0.2 + 0.1275 + 0.3) * 1.2;
+        let at = graph_at(&harness);
+        // Sustain has a wire, so the decay-and-sustain point moves in time
+        // only, and sustain is untouched.
+        drag(&mut harness, at(0.21 / span, 0.7), at(0.51 / span, 0.3));
+        assert!((param(&harness, "decay").unwrap() - 0.5).abs() < 0.03);
+        assert_eq!(param(&harness, "sustain"), None);
+    }
+
+    #[test]
+    fn filters_and_lfos_have_graphs_too() {
+        for (type_id, label) in [
+            ("noodle.filter.svf", "Frequency response graph"),
+            ("noodle.filter.ladder", "Frequency response graph"),
+            ("noodle.mod.lfo", "Wave graph"),
+        ] {
+            let harness = harness([Node::new(type_id)]);
+            harness.get_by_label(label);
+        }
+    }
+
+    #[test]
+    fn dragging_the_filter_point_sets_cutoff_and_resonance() {
+        let mut harness = harness([Node::new("noodle.filter.svf")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        let outer = harness.get_by_label("Frequency response graph").rect();
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
+        let at = |x: f32, y: f32| {
+            egui::pos2(
+                plot.left() + x * plot.width(),
+                plot.bottom() - y * plot.height(),
+            )
+        };
+        // At 1 kHz, no resonance: the low-pass is 6 dB down.
+        let x = (1_000.0f32 / 20.0).ln() / 1_000.0f32.ln();
+        let y = ((-6.02 + 48.0) / 84.0) as f32;
+        // Drag it up and right.
+        drag(&mut harness, at(x, y), at(x + 0.2, y + 0.3));
+        assert!(param(&harness, "cutoff").unwrap() > 2_000.0);
+        assert!(param(&harness, "resonance").unwrap() > 0.5);
     }
 
     #[test]
