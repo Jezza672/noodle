@@ -794,16 +794,31 @@ are `~/.clap` and `/usr/lib/clap` on Linux, `/Library/Audio/Plug-Ins/CLAP`
 
 **Node types.** A `Catalog` builds one `NodeType` per scanned plugin, with ID
 `clap.<plugin id>` and category "Plugins". Ports come from the scan alone, so
-a project's graph compiles without loading any plugin code, and the layout
-never depends on config:
+a project's graph compiles without loading any plugin code. The layout
+depends on one setting, `params`, which lists the parameters that get ports
+(below); it never depends on the plugin's code:
 
 | Port | Key |
 |---|---|
 | audio inputs, one per CLAP audio input port | `in`, `in2`, ... |
-| a parameter input per non-hidden, writable CLAP parameter | `p<param id>` |
+| a parameter input per exposed parameter (see below) | `p<param id>` |
 | audio outputs | `out`, `out2`, ... |
 | note input ports (all are read) | `notes`, `notes2`, ... |
 | note output ports (all are written) | `notes_out`, ... |
+
+**Exposed parameters.** A synth can have hundreds of parameters, which would
+make its node unusably tall, so only the ones listed in the node's `params`
+setting get ports (comma-separated parameter ids; `none` for no ports). That
+is config, since it changes the ports. A node without the setting shows every
+parameter, so projects saved before it existed keep their ports; the plugin
+browser adds a plugin with more than 32 parameters with `none`. The
+properties panel has a searchable picker, grouped by the plugin's modules. A
+parameter with a wire or automation lane into it can't be hidden (they would
+point at nothing). Changing the choice while the editor is open keeps the
+editor's changes in the same undo step, and a parameter that is hidden forgets
+its stored value. A hidden parameter is never sent to the plugin, so it keeps what
+the plugin's saved state gave it. The editor shows a node's note inputs before
+its audio and parameter inputs (the layout keeps them in their own list).
 
 A parameter is `Offset`-modulated, with the plugin's range and default; a
 stepped CLAP parameter is a stepped one (the node rounds the value before
@@ -843,13 +858,19 @@ output is copied out. A plugin's note output becomes the node's event output.
 The transport (tempo, position, signature, playing) is passed on. Nothing on
 this path allocates (`tests/realtime.rs` checks it), so events beyond 4096 per
 block are dropped. A plugin that fails in `process` gives silence for that
-block. Every parameter is sent on the first block: the port values, not the
-plugin's own, are authoritative for exposed parameters.
+block. A parameter is sent once its port value differs from the plugin's
+reported default: the first block leaves an untouched port alone, so state the
+plugin restored isn't overwritten (Surge XT reports a default of 0 for every
+parameter, and sending those silenced it).
 
 **State.** The node's `state` config setting holds the plugin's saved state as
 base64 text, so it is written to the project file with the rest of the graph.
 It is loaded into the plugin before activation. Bad base64, or state the
-plugin refuses, is a node error rather than a crash. `capture_state` loads a
+plugin refuses, is a node error rather than a crash. CLAP state is wrapped on
+saving in `NCS1`, a length and a checksum, and checked before it reaches the
+plugin: some plugins crash the host on state that is cut short, and plugins run
+in our process. (State saved before the wrapper is passed on unchecked.)
+`capture_state` loads a
 plugin (optionally with earlier state) and returns what it saves.
 
 **Editors and capture** (`editor.rs`). Running plugin nodes register by node
@@ -929,14 +950,17 @@ results saved before VST3 load as CLAP). The code is in
   objects of a fixed size made when the node is built (`classes.rs`), so
   nothing allocates in a block (`tests/realtime.rs` checks it; points past a
   queue's room are dropped). A port at its default is not sent, so state the
-  plugin was restored from isn't overwritten by an untouched port (CLAP sends
-  everything on the first block). Raw MIDI controllers (modulation wheel,
+  plugin was restored from isn't overwritten by an untouched port (the CLAP
+  node does the same: a plugin can report a default that isn't its live value). Raw MIDI controllers (modulation wheel,
   volume, pan, expression, sustain, channel pressure, pitch bend) go through
   the controller's `IMidiMapping` to parameters, which need no port; a
   controller with no mapping is sent as a legacy MIDI event.
-- **State.** `Plugin::save_state` writes `NVS1`, the component's state length
-  as a little-endian `u32`, the component's state, then the controller's (only
-  for a separate controller), through memory `IBStream`s. Loading hands the
+- **State.** `Plugin::save_state` writes `NVS2`, the component's state length
+  as a little-endian `u32`, a checksum of everything after it, the component's
+  state, then the controller's (only
+  for a separate controller), through memory `IBStream`s. A bad checksum is
+  refused before the plugin sees the bytes (`NVS1`, saved without one, is still
+  read, unchecked). Loading hands the
   component its bytes, then the controller `setComponentState` with the same
   bytes and its own `setState`. It lives in the `state` setting like CLAP's.
 - **Editors** (`gui.rs`). VST3 has no floating windows, so an editor is

@@ -181,12 +181,14 @@ fn the_editor_embeds_and_its_edits_and_messages_reach_the_processor() {
     // Captured: the processor's state has the bias that came by message, and
     // the parameters have Gain from the edit and Invert from the answer.
     let captured = capture(node).expect("capture");
-    let bias = f32::from_le_bytes(captured.state[16..20].try_into().unwrap());
+    let bias = f32::from_le_bytes(captured.state[20..24].try_into().unwrap());
     assert_eq!(bias, 0.75, "the message reached the processor");
     let value = |id| captured.params.iter().find(|(p, _)| *p == id).unwrap().1;
     assert_eq!(value(GAIN), 0.25);
     assert_eq!(value(INVERT), 1.0, "the answer reached the controller");
-    let Command::Batch(commands) = captured.commands(node, node_type.descriptor()) else {
+    let Command::Batch(commands) =
+        captured.commands(node, node_type.descriptor(), &noodle_engine::Config::new())
+    else {
         panic!("a batch");
     };
     assert!(commands.iter().any(|c| matches!(

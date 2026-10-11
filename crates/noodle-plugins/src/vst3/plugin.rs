@@ -365,7 +365,22 @@ impl Plugin {
     /// Restores what [`save_state`](Self::save_state) saved.
     pub fn load_state(&self, state: &[u8]) -> Result<(), HostError> {
         let bad = || HostError("the saved plugin state is damaged".into());
-        let rest = state.strip_prefix(STATE_MAGIC).ok_or_else(bad)?;
+        let rest = if let Some(rest) = state.strip_prefix(STATE_MAGIC) {
+            // Checked: a checksum of everything after the header, so cut-short
+            // or edited state never reaches the plugin.
+            let (len, rest) = rest.split_first_chunk::<4>().ok_or_else(bad)?;
+            let (sum, rest) = rest.split_first_chunk::<4>().ok_or_else(bad)?;
+            if crate::host::checksum(rest) != u32::from_le_bytes(*sum) {
+                return Err(bad());
+            }
+            [len.as_slice(), rest].concat()
+        } else {
+            // Saved before the checksum existed.
+            state
+                .strip_prefix(OLD_STATE_MAGIC)
+                .ok_or_else(bad)?
+                .to_vec()
+        };
         let (len, rest) = rest.split_first_chunk::<4>().ok_or_else(bad)?;
         let len = u32::from_le_bytes(*len) as usize;
         if rest.len() < len {
@@ -456,10 +471,13 @@ impl Control {
         }
         let (component, controller) = (component.bytes(), controller.bytes());
         let mut bytes = Vec::with_capacity(8 + component.len() + controller.len());
+        let mut body = Vec::with_capacity(component.len() + controller.len());
+        body.extend_from_slice(&component);
+        body.extend_from_slice(&controller);
         bytes.extend_from_slice(STATE_MAGIC);
         bytes.extend_from_slice(&(component.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&component);
-        bytes.extend_from_slice(&controller);
+        bytes.extend_from_slice(&crate::host::checksum(&body).to_le_bytes());
+        bytes.extend_from_slice(&body);
         Ok(bytes)
     }
 
@@ -533,7 +551,9 @@ fn editable_ids(controller: &ComPtr<IEditController>) -> Vec<ParamID> {
 /// volume, pan, expression, sustain, channel pressure and pitch bend.
 const MIDI_CONTROLLERS: [i16; 7] = [1, 7, 10, 11, 64, 128, 129];
 
-const STATE_MAGIC: &[u8] = b"NVS1";
+const STATE_MAGIC: &[u8] = b"NVS2";
+/// State from before it had a checksum: accepted, but unchecked.
+const OLD_STATE_MAGIC: &[u8] = b"NVS1";
 
 impl Drop for Plugin {
     fn drop(&mut self) {

@@ -602,7 +602,13 @@ impl Session {
                             })
                     });
                     if !unchanged {
-                        let command = captured.commands(node, &descriptor);
+                        let config = self
+                            .project
+                            .graph()
+                            .node(node)
+                            .map(|n| n.config.clone())
+                            .unwrap_or_default();
+                        let command = captured.commands(node, &descriptor, &config);
                         self.edit([Edit::Apply(command)]);
                         self.message = Some(format!("Kept the state of {}", descriptor.name));
                     }

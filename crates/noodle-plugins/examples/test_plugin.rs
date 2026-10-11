@@ -11,7 +11,8 @@
 //!   down to 0.25, as if a knob had been dragged. That makes the editor, the
 //!   host's timers and capturing parameters from a live plugin testable.
 //! - State: `bias`, a number that is not a parameter and so can only come back
-//!   through saved state.
+//!   through saved state. State may carry a second number after it, the gain
+//!   (a plugin whose live value isn't the default it reports).
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -372,6 +373,12 @@ impl PluginStateImpl for MainThread<'_> {
         self.shared
             .bias
             .store(f32::from_le_bytes(bytes).to_bits(), Ordering::Relaxed);
+        let mut gain = [0u8; 4];
+        if input.read_exact(&mut gain).is_ok() {
+            self.shared
+                .gain
+                .store(f32::from_le_bytes(gain).to_bits(), Ordering::Relaxed);
+        }
         Ok(())
     }
 }
