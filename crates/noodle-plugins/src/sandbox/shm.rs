@@ -394,6 +394,11 @@ impl Mapping {
         file.set_len(layout.total as u64)?;
         // SAFETY: the file is ours alone until the host opens it.
         let map = unsafe { MmapMut::map_mut(&file)? };
+        // A sparse file faults its pages in on first touch, which the audio
+        // thread must not be the one to do (and a disk-backed temp file may
+        // go to the filesystem): touch every page now.
+        let mut map = map;
+        map.fill(0);
         let mapping = Self {
             map,
             _file: file,

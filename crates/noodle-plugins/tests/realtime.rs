@@ -258,6 +258,12 @@ fn never_allocates(
     // a short run of them can all be dropped; the guarantee tested then is
     // that doing so doesn't allocate either.)
     assert!(heard || sandboxed);
+    if sandboxed {
+        // At least one block went to the host and came back, so the copy in,
+        // the wake-up and the copy out were what the counter watched.
+        let status = noodle_plugins::sandbox_status(id).expect("still a sandboxed node");
+        assert!(status.dropped_blocks < 40, "{status:?}");
+    }
     if editor {
         // The plugin is still there to capture (the editor's edit itself is
         // checked in `vst3_editor.rs`).

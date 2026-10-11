@@ -290,6 +290,10 @@ impl SandboxedNode {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
+        debug_assert!(
+            ctx.frames <= spec.max_frames,
+            "a block longer than max_frames"
+        );
         let frames = ctx.frames.min(spec.max_frames);
 
         // SAFETY (this whole block): the host is idle until `req_seq` moves,
@@ -347,9 +351,12 @@ impl SandboxedNode {
         }
 
         let started = Instant::now();
+        // Half the block's time: a late node gives up while the rest of the
+        // graph can still finish, instead of using up the device's deadline
+        // (and again for each sandboxed node in series).
         let limit = (!self.patient).then(|| {
-            Duration::from_secs_f64(frames as f64 / f64::from(self.sample_rate.max(1.0)))
-                .max(Duration::from_millis(1))
+            Duration::from_secs_f64(frames as f64 / f64::from(self.sample_rate.max(1.0)) * 0.5)
+                .max(Duration::from_micros(500))
         });
         let mut spins = 0u32;
         loop {
@@ -383,7 +390,7 @@ impl SandboxedNode {
                 let mut lane_index = 0;
                 for voice in 0..shape.voices {
                     for channel in 0..shape.channels {
-                        output.lane_mut(voice, channel).copy_from_slice(
+                        output.lane_mut(voice, channel)[..frames].copy_from_slice(
                             &floats[lane_index * frames..(lane_index + 1) * frames],
                         );
                         if silent[lane_index] != 0 {
@@ -414,9 +421,21 @@ impl SandboxedNode {
 impl Node for SandboxedNode {
     fn process(&mut self, ctx: &Context, mut io: Io<'_, '_>) {
         let this = &*self;
-        let ok = this
+        let mut ok = this
             .with_link(|link| this.exchange(link, ctx, &mut io))
             .unwrap_or(false);
+        // An offline render waits out a restart rather than render the rest
+        // of the file as silence (it isn't against the clock).
+        while !ok
+            && this.patient
+            && this.shared.state.load(Ordering::SeqCst) == DOWN
+            && !this.shared.shutdown.load(Ordering::SeqCst)
+        {
+            thread::sleep(Duration::from_millis(2));
+            ok = this
+                .with_link(|link| this.exchange(link, ctx, &mut io))
+                .unwrap_or(false);
+        }
         if !ok {
             Self::silence(&mut io);
         }
@@ -623,13 +642,6 @@ impl Monitor {
         shared.state.store(DOWN, Ordering::SeqCst);
         shared.set_error(reason);
         shared.restarts.fetch_add(1, Ordering::Relaxed);
-        // The audio thread leaves its wait as soon as it sees the state.
-        let waited = Instant::now();
-        while shared.in_audio.load(Ordering::SeqCst) != 0
-            && waited.elapsed() < Duration::from_secs(5)
-        {
-            thread::yield_now();
-        }
         *shared
             .control
             .lock()
@@ -640,9 +652,16 @@ impl Monitor {
     }
 
     fn restart(&mut self) {
+        // The audio thread leaves its wait as soon as it sees the state, but
+        // may be descheduled: the link is not ours to replace until it has
+        // left, however long that takes.
+        if self.shared.in_audio.load(Ordering::SeqCst) != 0 {
+            return;
+        }
         let attempts = self.shared.restarts.load(Ordering::Relaxed);
         if attempts > MAX_RESTARTS {
             self.shared.state.store(FAILED, Ordering::SeqCst);
+            self.shared.restarts.fetch_add(1, Ordering::Relaxed);
             return;
         }
         // Back off a little more each time, but stay ready to leave.

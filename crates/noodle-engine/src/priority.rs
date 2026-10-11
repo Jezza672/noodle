@@ -1,7 +1,7 @@
 //! Raising a thread to real-time priority.
 //!
-//! The audio device's callback thread is already real-time on most systems,
-//! but the worker threads that help it run a plan (see `parallel.rs`) are
+//! The audio device's callback thread is already real-time on macOS and
+//! Windows, but the worker threads that help it run a plan (see `parallel.rs`) are
 //! ordinary threads, and a block waits for the slowest of them: a worker that
 //! the scheduler leaves off its core for a millisecond makes the whole block
 //! late. [`raise_current_thread`] asks the system to treat the calling thread
@@ -15,9 +15,11 @@
 //!   us yet.)
 //! - **Windows:** MMCSS, the "Pro Audio" task, falling back to the highest
 //!   ordinary thread priority.
-//! - **Linux and other Unix:** `SCHED_FIFO` at a low priority, which
-//!   needs `RLIMIT_RTPRIO` or `CAP_SYS_NICE` (rtkit isn't used), falling back
-//!   to nothing: the thread stays ordinary.
+//! - **Linux:** a nice value of -10 (needs `RLIMIT_NICE` or `CAP_SYS_NICE`),
+//!   falling back to nothing. Not `SCHED_FIFO`: the device's callback thread
+//!   is an ordinary thread, and helpers that outrank it and spin while they
+//!   wait could make a block later than running without them.
+//! - **Other Unix:** nothing.
 //!
 //! It is best effort. A refusal is not an error: [`Priority`] says what the
 //! thread got, and the caller carries on.
@@ -82,7 +84,7 @@ mod imp {
                 preemptible: 1,
             };
             let result = libc::thread_policy_set(
-                libc::mach_thread_self(),
+                libc::pthread_mach_thread_np(libc::pthread_self()),
                 libc::THREAD_TIME_CONSTRAINT_POLICY as libc::thread_policy_flavor_t,
                 &policy as *const _ as libc::thread_policy_t,
                 libc::THREAD_TIME_CONSTRAINT_POLICY_COUNT,
@@ -96,23 +98,36 @@ mod imp {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::Priority;
+    use std::time::Duration;
+
+    /// A better nice value, not `SCHED_FIFO`: the device's callback thread
+    /// is an ordinary thread unless the program raised it, and helpers
+    /// that outrank (and spin for) the thread they help can make a block
+    /// later than without them. Needs `RLIMIT_NICE` (the `audio` group's
+    /// usual limits give it).
+    pub fn raise(_period: Duration) -> Priority {
+        // With a `who` of 0, `PRIO_PROCESS` on Linux means the calling
+        // thread.
+        // SAFETY: lowers the nice value of the calling thread.
+        let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -10) };
+        if result == 0 {
+            Priority::Raised
+        } else {
+            Priority::Normal
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "linux")))]
 mod imp {
     use super::Priority;
     use std::time::Duration;
 
     pub fn raise(_period: Duration) -> Priority {
-        // Below the audio callback's usual 80 to 90 or so, so a worker never
-        // starves the thread it works for.
-        let param = libc::sched_param { sched_priority: 20 };
-        // SAFETY: sets the scheduling policy of the calling thread.
-        let result =
-            unsafe { libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param) };
-        if result == 0 {
-            Priority::Realtime
-        } else {
-            Priority::Normal
-        }
+        Priority::Normal
     }
 }
 

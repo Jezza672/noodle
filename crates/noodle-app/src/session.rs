@@ -175,7 +175,7 @@ pub struct Session {
     sandbox_plugins: bool,
     /// How many restarts of each plugin host have been reported, and when
     /// the hosts were last looked at.
-    host_restarts: std::collections::BTreeMap<NodeId, u32>,
+    host_restarts: std::collections::BTreeMap<NodeId, (u32, bool)>,
     hosts_checked: Option<Instant>,
     telemetry: Telemetry,
     clips: ClipFeeds,
@@ -588,8 +588,8 @@ impl Session {
                 continue;
             };
             let seen = self.host_restarts.entry(id).or_default();
-            if status.restarts > *seen {
-                *seen = status.restarts;
+            if status.restarts > seen.0 || (status.failed && !seen.1) {
+                *seen = (status.restarts, status.failed);
                 let why = status.last_error.unwrap_or_default();
                 report = Some(if status.failed {
                     format!(

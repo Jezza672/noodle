@@ -1078,20 +1078,21 @@ The code is `noodle-plugins/src/sandbox/`:
 - **`proxy.rs`, the node.** `SandboxedNode::process` copies a block in,
   bumps `req_seq`, and waits for `done_seq`: it spins, then yields. If the host
   is asleep (it spins only 50 µs after a block, then blocks reading its
-  stdin) one byte down that pipe wakes it. Live, it gives up when the block's
-  duration is up, plays silence for that block and counts it
+  stdin) one byte down that pipe wakes it. Live, it gives up when half the block's
+  duration is up (so the rest of the graph can still finish), plays silence for that block and counts it
   (`SandboxStatus::dropped_blocks`); while the host is still on an earlier
   block, later blocks are skipped without touching the file. Offline renders (anything built through
   `Catalog::extender`, i.e. freeze and export) are *patient*: they wait for as
   long as the host lives. Nothing here allocates, locks or waits on a lock
   (`tests/realtime.rs` counts); the one syscall is the wake-up write.
 - **Restarts.** A monitor thread per node polls the child (every 20 ms). If it
-  exits, or a block has been pending for 2 s (60 s when patient), it flips
+  exits, or a block has been pending for 2 s (60 s when patient; a patient node waits out a restart instead of rendering silence), it flips
   `state` away from RUNNING, waits for the audio thread to leave (`in_audio`),
   kills the child, and after a back-off (250 ms times the attempt) starts a new
   one from the node's original settings, so the plugin comes back as saved
-  in the project and not as it was. After 4 failures the node gives up and
-  plays silence until the graph compiles it again. `sandbox_status(node)`
+  in the project and not as it was. After 4 failures (counted over the node's whole life, not a window) the node gives up and
+  plays silence until the graph compiles it again. The shared file is zeroed when made so its pages are
+  already in memory. `sandbox_status(node)`
   reports `running`, `failed`, `restarts`, `dropped_blocks`, `last_error` and
   the child's `pid`; the app polls it and says so in the status line.
 - **Editors and state.** The editor functions in `editor.rs` find a node's
@@ -1110,7 +1111,8 @@ one in-process (and more so with tiny buffers); the host and the app each hold a
 copy of the plugin's audio buffers; the host's priority is raised like a worker
 (below) but its plugin threads' aren't; a hung plugin costs a 2 s outage before
 it is replaced; plugin latency changes after load are still not followed; the
-loopback socket is protected by a token only. The macOS and Windows
+loopback socket is protected by a token only (another local process can connect first and make
+a start fail, nothing more). The macOS and Windows
 paths are checked by CI building and running the tests (the same tests as
 Linux except the editor ones).
 
@@ -1210,15 +1212,17 @@ mode is per thread; `workers_flush_subnormals`). `tests/parallel.rs` checks
 the sound is bit-identical to one thread's, and counts allocations on every
 thread.
 
-**Priority.** Each worker asks the system, as it starts, to schedule it like an
-audio thread (`noodle_engine::raise_current_thread`, `priority.rs`; the period is
-the block's duration): on macOS a time-constraint policy, on Windows MMCSS "Pro
-Audio" (falling back to the highest ordinary priority), elsewhere `SCHED_FIFO` at
-priority 20 (which needs `RLIMIT_RTPRIO` or `CAP_SYS_NICE`; without it the worker
-stays ordinary). A refusal is not an error: `Processor::worker_priorities()`
-and `noodle profile --threads N` say how many workers got real-time priority.
-Joining the output device's audio workgroup on macOS (so the scheduler places
-the workers with the I/O thread) is not done: it needs the device's workgroup
+**Priority.** Each worker asks the system, as it starts, to schedule it better
+than an ordinary thread (`noodle_engine::raise_current_thread`, `priority.rs`; the
+period is the block's duration): on macOS a time-constraint policy, on Windows
+MMCSS "Pro Audio" (falling back to the highest ordinary priority), on Linux a
+nice value of -10 (needs `RLIMIT_NICE`). Not `SCHED_FIFO` on Linux: cpal's ALSA
+callback thread is an ordinary thread, and helpers that outrank it and spin
+while they wait could make a block later than without them. A refusal is not an
+error: `Processor::worker_priorities()` and `noodle profile --threads N` say
+how many workers got real-time priority and how many a raised one. Joining
+the output device's audio workgroup on macOS (so the scheduler places the
+workers with the I/O thread) is not done: it needs the device's workgroup
 handle from Core Audio, which cpal does not give us.
 
 **Output.** An Output node mixes into its own scratch buffer; the buffers are
