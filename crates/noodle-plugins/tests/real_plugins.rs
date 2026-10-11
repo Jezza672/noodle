@@ -193,3 +193,23 @@ fn an_installed_plugins_editor_opens_and_closes_on_an_x_display() {
         eprintln!("no installed plugins to try: skipped");
     }
 }
+
+#[test]
+fn installed_plugins_save_state_that_restores_to_the_same_state() {
+    let files = scanned();
+    let mut tried = 0;
+    for file in files.iter().filter(|f| f.error.is_none()).take(12) {
+        for plugin in &file.plugins {
+            let Ok(first) = noodle_plugins::capture_state(&file.path, &plugin.id, None) else {
+                continue;
+            };
+            let again = noodle_plugins::capture_state(&file.path, &plugin.id, Some(&first))
+                .unwrap_or_else(|e| panic!("{}: {e:?}", plugin.name));
+            assert_eq!(first, again, "{}", plugin.name);
+            tried += 1;
+        }
+    }
+    if tried == 0 {
+        eprintln!("no installed plugins with state: skipped");
+    }
+}
