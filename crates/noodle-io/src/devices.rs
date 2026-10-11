@@ -171,7 +171,7 @@ pub fn virtual_output() -> DeviceInfo {
             max_channels: 2,
             default_sample_rate: Some(48_000),
             sample_rates: COMMON_SAMPLE_RATES.to_vec(),
-            buffer_sizes: Some((16, 8192)),
+            buffer_sizes: Some(crate::output::VIRTUAL_BUFFERS),
         },
     }
 }

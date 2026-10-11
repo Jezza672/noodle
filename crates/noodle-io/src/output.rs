@@ -432,6 +432,8 @@ struct VirtualClock {
 const VIRTUAL_BUFFER: u32 = 256;
 /// The sample rate of the virtual output unless the settings say.
 const VIRTUAL_RATE: u32 = 48_000;
+/// The smallest and largest buffer the virtual output takes, in frames.
+pub(crate) const VIRTUAL_BUFFERS: (u32, u32) = (16, 8192);
 /// The channels of the virtual output.
 const VIRTUAL_CHANNELS: usize = 2;
 
@@ -700,15 +702,20 @@ fn open_playback(
             // Input and the default host still come from the settings, so a
             // virtual output can be paired with a real microphone.
             let host_id = host_for(choice.host.as_deref(), None, Direction::Output)?;
+            // What `virtual_output()` advertises; a hand-edited setting
+            // outside it is refused, not trusted.
             let frames = choice.buffer_size.unwrap_or(VIRTUAL_BUFFER);
-            if frames == 0 {
+            if !(VIRTUAL_BUFFERS.0..=VIRTUAL_BUFFERS.1).contains(&frames) {
                 return Err(AudioError::UnsupportedBufferSize {
-                    frames: 0,
-                    min: 1,
-                    max: u32::MAX,
+                    frames,
+                    min: VIRTUAL_BUFFERS.0,
+                    max: VIRTUAL_BUFFERS.1,
                 });
             }
             let rate = choice.sample_rate.unwrap_or(VIRTUAL_RATE);
+            if rate == 0 {
+                return Err(AudioError::UnsupportedSampleRate(rate));
+            }
             (
                 host_id,
                 Target::Virtual { frames },
@@ -1521,13 +1528,26 @@ mod tests {
         };
         let (playback, _) = play(&config, 128).unwrap();
         assert_eq!(playback.settings().sample_rate, 44_100.0);
-        let empty = AudioConfig {
-            buffer_size: Some(0),
+        for frames in [0, 15, 8193, u32::MAX] {
+            let config = AudioConfig {
+                buffer_size: Some(frames),
+                ..virtual_config()
+            };
+            assert!(
+                matches!(
+                    play(&config, 128),
+                    Err(AudioError::UnsupportedBufferSize { .. })
+                ),
+                "{frames}"
+            );
+        }
+        let silent_clock = AudioConfig {
+            sample_rate: Some(0),
             ..virtual_config()
         };
         assert!(matches!(
-            play(&empty, 128),
-            Err(AudioError::UnsupportedBufferSize { .. })
+            play(&silent_clock, 128),
+            Err(AudioError::UnsupportedSampleRate(0))
         ));
     }
 

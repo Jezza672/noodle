@@ -96,7 +96,13 @@ impl OutputsView {
     pub fn refresh(&mut self, host: Option<&str>) {
         self.devices = Some(
             (self.list_devices)(host)
-                .map(|list| list.outputs)
+                // The virtual output runs the main engine; an Output node
+                // can't be tied to it.
+                .map(|list| {
+                    let mut outputs = list.outputs;
+                    outputs.retain(|d| d.id != noodle_io::VIRTUAL_OUTPUT);
+                    outputs
+                })
                 .map_err(|error| error.to_string()),
         );
     }
@@ -316,6 +322,27 @@ mod tests {
             }
         }
         project
+    }
+
+    #[test]
+    fn the_virtual_output_is_not_offered_to_output_nodes() {
+        let mut view =
+            OutputsView::with_lister(|_| Ok(noodle_io::devices(None).unwrap_or_default()));
+        view.refresh(None);
+        assert!(
+            view.listed()
+                .iter()
+                .all(|d| d.id != noodle_io::VIRTUAL_OUTPUT)
+        );
+        // It is in the audio settings' list, though.
+        assert!(
+            noodle_io::devices(None)
+                .map(|list| list
+                    .outputs
+                    .iter()
+                    .any(|d| d.id == noodle_io::VIRTUAL_OUTPUT))
+                .unwrap_or(true)
+        );
     }
 
     #[test]

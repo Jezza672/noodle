@@ -1454,6 +1454,13 @@ impl Session {
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
+        // The feeds forget a node that is gone, monitoring flag and all, and
+        // undoing the delete brings it back unmonitored while still armed.
+        for &track in &self.armed {
+            if self.project.graph().node(track).is_some() {
+                self.clips.set_monitoring(track, true);
+            }
+        }
     }
 
     /// The folder the project's audio files are relative to.
@@ -3542,5 +3549,27 @@ mod tests {
         session.arm(track, true);
         session.new_project();
         assert!(!session.is_armed(track));
+    }
+
+    #[test]
+    fn an_armed_track_still_sounds_after_deleting_it_and_undoing() {
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let (track, meter) = track_synth(&mut session);
+        session.start_engine();
+        session.arm(track, true);
+        session.edit([Edit::Apply(Command::RemoveNode { id: track })]);
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(10));
+            session.maintain();
+        }
+        // Another edit makes the feeds forget the node.
+        add(&mut session, Node::new("noodle.osc.sine"));
+        session.undo();
+        session.undo();
+        assert!(session.project().graph().node(track).is_some());
+        assert!(session.is_armed(track));
+        session.midi_bus().send([0x90, 69, 100]);
+        assert!(loudness(&mut session, meter, true) > 0.01);
     }
 }
