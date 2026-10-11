@@ -256,15 +256,18 @@ impl Scene {
                                         PortKind::Event,
                                     ));
                                 }
+                                // Note inputs first: they are the way into an
+                                // instrument, and a plugin can have hundreds of
+                                // parameters below them.
+                                for p in &layout.event_inputs {
+                                    ports.push(port(Side::Input, &p.key, &p.name, PortKind::Event));
+                                }
                                 for p in &layout.inputs {
                                     let kind = match &p.kind {
                                         InputKind::Audio => PortKind::Audio,
                                         InputKind::Param(info) => PortKind::Param(info.clone()),
                                     };
                                     ports.push(port(Side::Input, &p.key, &p.name, kind));
-                                }
-                                for p in &layout.event_inputs {
-                                    ports.push(port(Side::Input, &p.key, &p.name, PortKind::Event));
                                 }
                             }
                             Err(e) => error = Some(e.to_string()),
@@ -1031,6 +1034,22 @@ mod tests {
         // Named ports first, the rest in their own order. The columns are
         // separate, so only the order within a side shows.
         assert_eq!(keys, ["gain", "out", "in"]);
+    }
+
+    #[test]
+    fn note_inputs_are_listed_before_the_other_inputs() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let id = add(&mut project, &mut history, Node::new("noodle.poly.voices"));
+        let scene = Scene::build(&project, &registry(), None);
+        let inputs: Vec<_> = scene
+            .node(id)
+            .unwrap()
+            .ports
+            .iter()
+            .filter(|p| p.side == Side::Input)
+            .map(|p| p.key.as_str())
+            .collect();
+        assert_eq!(inputs, ["in", "tail", "steal_fade", "busy"]);
     }
 
     fn test_port(side: Side, key: &str) -> PortGeom {

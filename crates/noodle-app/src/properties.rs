@@ -39,7 +39,7 @@ pub fn show(
     freezing(ui, session, id, &mut edits);
     match node_type {
         Some(node_type) => {
-            config(ui, node_type.as_ref(), id, node, &mut edits);
+            config(ui, session, node_type.as_ref(), id, node, &mut edits);
             params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }
         None => {
@@ -148,7 +148,14 @@ fn problems(ui: &mut Ui, session: &Session, id: NodeId) {
     }
 }
 
-fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits: &mut Vec<Edit>) {
+fn config(
+    ui: &mut Ui,
+    session: &Session,
+    node_type: &dyn NodeType,
+    id: NodeId,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
     let settings = node_type.config();
     if settings.is_empty() {
         return;
@@ -193,6 +200,12 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
             }
             continue;
         }
+        if info.key == noodle_plugins::PARAMS_KEY
+            && let Some(plugin) = session.plugin_of(id)
+        {
+            param_picker(ui, session, plugin.descriptor(), id, node, edits);
+            continue;
+        }
         let out = ConfigField::new(info, node.config.get(info.key))
             .id_salt((id, info.key))
             .show(ui);
@@ -200,6 +213,122 @@ fn config(ui: &mut Ui, node_type: &dyn NodeType, id: NodeId, node: &Node, edits:
         out.response
             .on_hover_text("Changing this rebuilds the node, and may change its ports.");
     }
+}
+
+/// The most parameters the picker lists at once; narrow the search for more.
+const PICKER_ROWS: usize = 200;
+
+/// Which of a plugin's parameters get ports on its node: a searchable list
+/// with a checkbox each, grouped by the plugin's own modules.
+fn param_picker(
+    ui: &mut Ui,
+    session: &Session,
+    descriptor: &noodle_plugins::Descriptor,
+    id: NodeId,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_plugins::{exposed_params, params_text};
+
+    let chosen: Vec<u32> = exposed_params(descriptor, &node.config)
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    // A wire into a parameter keeps its port: hiding it would leave the wire
+    // pointing at nothing, which fails the compile.
+    let wired = |param: u32| {
+        session
+            .project()
+            .graph()
+            .source(&Endpoint::new(id, noodle_plugins::param_key(param)))
+            .is_some()
+    };
+    let search_id = ui.make_persistent_id(("param-search", id));
+    let mut query: String = ui.data(|d| d.get_temp(search_id)).unwrap_or_default();
+    egui::CollapsingHeader::new(format!(
+        "Parameters on the node ({} of {})",
+        chosen.len(),
+        descriptor.params.len()
+    ))
+    .id_salt(("param-picker", id))
+    .default_open(false)
+    .show(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search parameters"));
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let matches: Vec<&noodle_plugins::ParamDesc> = descriptor
+            .params
+            .iter()
+            .filter(|p| {
+                let text = format!("{} {}", p.module, p.name).to_lowercase();
+                words.iter().all(|w| text.contains(w))
+            })
+            .collect();
+        let set = |ids: Vec<u32>| {
+            Edit::Apply(Command::SetConfig {
+                node: id,
+                key: noodle_plugins::PARAMS_KEY.to_owned(),
+                value: Some(noodle_core::Value::Text(params_text(&ids))),
+            })
+        };
+        ui.horizontal(|ui| {
+            if ui.small_button("Show matches").clicked() {
+                let mut ids = chosen.clone();
+                ids.extend(matches.iter().map(|p| p.id).filter(|p| !chosen.contains(p)));
+                edits.push(set(ids));
+            }
+            if ui.small_button("Hide matches").clicked() {
+                let ids = chosen
+                    .iter()
+                    .copied()
+                    .filter(|c| wired(*c) || !matches.iter().any(|p| p.id == *c))
+                    .collect();
+                edits.push(set(ids));
+            }
+        });
+        egui::ScrollArea::vertical()
+            .max_height(260.0)
+            .id_salt(("param-picker-list", id))
+            .show(ui, |ui| {
+                let mut module = None;
+                for param in matches.iter().take(PICKER_ROWS) {
+                    if module != Some(&param.module) {
+                        module = Some(&param.module);
+                        if !param.module.is_empty() {
+                            ui.label(RichText::new(&param.module).weak().small());
+                        }
+                    }
+                    let mut on = chosen.contains(&param.id);
+                    let locked = on && wired(param.id);
+                    let response = ui
+                        .add_enabled(!locked, egui::Checkbox::new(&mut on, &param.name))
+                        .on_disabled_hover_text("A wire goes into this parameter.");
+                    if response.changed() {
+                        let mut ids = chosen.clone();
+                        if on {
+                            ids.push(param.id);
+                        } else {
+                            ids.retain(|c| *c != param.id);
+                        }
+                        edits.push(set(ids));
+                    }
+                }
+                if matches.len() > PICKER_ROWS {
+                    ui.weak(format!(
+                        "{} more: narrow the search.",
+                        matches.len() - PICKER_ROWS
+                    ));
+                }
+            });
+        ui.label(
+            RichText::new(
+                "Only these get ports. A parameter left off keeps the value in the \
+                 plugin's saved state; one with a wire into it stays.",
+            )
+            .weak()
+            .small(),
+        );
+    });
+    ui.data_mut(|d| d.insert_temp(search_id, query));
 }
 
 fn params(

@@ -1,10 +1,12 @@
 //! A plugin as a node: its audio ports, note ports and parameters become the
 //! node's ports.
 //!
-//! Layout (the same for every config, so a project's wires never depend on
-//! whether the plugin could be loaded):
+//! Layout (from the scan and the config alone, so a project's wires never
+//! depend on whether the plugin could be loaded; the editor shows the note
+//! inputs first):
 //!
-//! - audio inputs `in`, `in2`, ... then one input per parameter (`p<id>`);
+//! - audio inputs `in`, `in2`, ... then one input (`p<id>`) for each
+//!   parameter the `params` setting exposes (see [`exposed_params`]);
 //! - audio outputs `out`, `out2`, ...;
 //! - note inputs `notes`, `notes2`, ... and note outputs `notes_out`, ...
 //!
@@ -32,12 +34,12 @@ use noodle_engine::{
     Unit,
 };
 
-use crate::STATE_KEY;
 use crate::descriptor::{
-    Descriptor, PluginFormat, file_stamp, input_key, note_input_key, note_output_key, output_key,
-    param_key,
+    Descriptor, ParamDesc, PluginFormat, exposed_params, file_stamp, input_key, note_input_key,
+    note_output_key, output_key, param_key,
 };
 use crate::host::{Flags, Host};
+use crate::{PARAMS_KEY, STATE_KEY};
 use crate::{editor, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
@@ -64,14 +66,17 @@ const NONDETERMINISTIC: ConfigInfo = ConfigInfo::int(
     0,
 );
 
-static CONFIG: [ConfigInfo; 1] = [NONDETERMINISTIC];
+/// Which parameters get ports; see [`exposed_params`]. Chosen in the
+/// properties panel.
+const EXPOSED: ConfigInfo = ConfigInfo::text(PARAMS_KEY, "Exposed parameters");
+
+static CONFIG: [ConfigInfo; 2] = [NONDETERMINISTIC, EXPOSED];
 
 /// A node type for one plugin, of either format.
 pub struct PluginNodeType {
     info: &'static NodeInfo,
     path: PathBuf,
     descriptor: Descriptor,
-    layout: Layout,
 }
 
 impl PluginNodeType {
@@ -84,12 +89,10 @@ impl PluginNodeType {
             name: leak(descriptor.name.clone()),
             category: "Plugins",
         }));
-        let layout = layout_of(&descriptor);
         Self {
             info,
             path,
             descriptor,
-            layout,
         }
     }
 
@@ -126,12 +129,12 @@ fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
     }
 }
 
-fn layout_of(descriptor: &Descriptor) -> Layout {
+fn layout_of(descriptor: &Descriptor, exposed: &[&ParamDesc]) -> Layout {
     let mut layout = Layout::realtime();
     for (index, port) in descriptor.audio_inputs.iter().enumerate() {
         layout = layout.input(input_key(index), port.name.clone());
     }
-    for param in &descriptor.params {
+    for param in exposed {
         let name = if param.module.is_empty() {
             param.name.clone()
         } else {
@@ -165,7 +168,8 @@ impl NodeType for PluginNodeType {
     }
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
-        let mut layout = self.layout.clone();
+        let exposed = exposed_params(&self.descriptor, config);
+        let mut layout = layout_of(&self.descriptor, &exposed);
         // Plugins are taken to be deterministic, so freezing and export can
         // cache them; a plugin that uses randomness opts out.
         layout.deterministic = NONDETERMINISTIC.get_int(config) == 0;
@@ -232,6 +236,7 @@ impl NodeType for PluginNodeType {
             ),
             _ => None,
         };
+        let exposed = exposed_params(&self.descriptor, setup.config);
         if self.descriptor.format == PluginFormat::Vst3 {
             let loaded = vst3::load(
                 &self.path,
@@ -248,6 +253,7 @@ impl NodeType for PluginNodeType {
             return Ok(Instance::realtime(vst3::Vst3Node::new(
                 loaded.plugin,
                 &self.descriptor,
+                &exposed,
                 &loaded.midi_assignments,
                 Some(key),
                 setup.max_frames,
@@ -264,6 +270,7 @@ impl NodeType for PluginNodeType {
         editor::register(setup.node, loaded.key, Arc::clone(&loaded.flags));
         Ok(Instance::realtime(ClapNode::new(
             &self.descriptor,
+            &exposed,
             loaded.take_processor().into(),
             loaded.key,
             setup.max_frames,
@@ -314,7 +321,7 @@ struct ParamSlot {
     min: f32,
     max: f32,
     stepped: bool,
-    /// The last value sent to the plugin. NaN until the first block.
+    /// The last value sent to the plugin (the default until one is).
     last: f32,
 }
 
@@ -360,6 +367,7 @@ struct ClapNode {
 impl ClapNode {
     fn new(
         descriptor: &Descriptor,
+        exposed: &[&ParamDesc],
         processor: PluginAudioProcessor<Host>,
         key: u64,
         max_frames: usize,
@@ -378,8 +386,7 @@ impl ClapNode {
         let in_ports = AudioPorts::with_capacity(channels(&audio_in), audio_in.len());
         let out_ports = AudioPorts::with_capacity(channels(&audio_out), audio_out.len());
         let first_param = descriptor.audio_inputs.len();
-        let params = descriptor
-            .params
+        let params = exposed
             .iter()
             .enumerate()
             .filter_map(|(index, param)| {
@@ -390,7 +397,10 @@ impl ClapNode {
                     min: info.min,
                     max: info.max,
                     stepped: param.stepped,
-                    last: f32::NAN,
+                    // Starts at the default, so a port nobody has touched
+                    // leaves the plugin's own (or restored) value alone: a
+                    // plugin can report a default that isn't its live value.
+                    last: info.default,
                 })
             })
             .collect();

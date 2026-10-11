@@ -65,7 +65,12 @@ fn a_running_plugin_can_be_captured_and_stops_being_running_when_dropped() {
     assert!(is_running(node));
 
     let captured = capture(node).unwrap();
-    assert_eq!(captured.state, saved, "the state it was built with");
+    // The plugin's bytes, wrapped in a length and checksum.
+    assert!(captured.state.starts_with(b"NCS1"));
+    assert!(
+        captured.state.ends_with(&saved),
+        "the state it was built with"
+    );
     assert_eq!(gain(&captured), 1.0, "Gain's default");
 
     drop(instance);
@@ -94,7 +99,8 @@ fn edits_made_in_the_editor_are_captured_as_parameter_values() {
 
     // What the app stores: the state, and Gain on its port.
     let captured = capture(node).unwrap();
-    let Command::Batch(commands) = captured.commands(node, node_type.descriptor()) else {
+    let Command::Batch(commands) = captured.commands(node, node_type.descriptor(), &Config::new())
+    else {
         panic!("a batch");
     };
     assert!(commands.iter().any(|c| matches!(

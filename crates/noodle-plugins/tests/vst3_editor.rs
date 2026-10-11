@@ -186,7 +186,9 @@ fn the_editor_embeds_and_its_edits_and_messages_reach_the_processor() {
     let value = |id| captured.params.iter().find(|(p, _)| *p == id).unwrap().1;
     assert_eq!(value(GAIN), 0.25);
     assert_eq!(value(INVERT), 1.0, "the answer reached the controller");
-    let Command::Batch(commands) = captured.commands(node, node_type.descriptor()) else {
+    let Command::Batch(commands) =
+        captured.commands(node, node_type.descriptor(), &noodle_engine::Config::new())
+    else {
         panic!("a batch");
     };
     assert!(commands.iter().any(|c| matches!(

@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+use noodle_engine::Config;
 use serde::{Deserialize, Serialize};
 
 /// The plugin standard a file follows.
@@ -177,4 +178,51 @@ fn numbered(base: &str, index: usize) -> String {
 /// The port key of a parameter.
 pub fn param_key(id: u32) -> String {
     format!("p{id}")
+}
+
+/// A plugin with at most this many parameters shows all of them on its node
+/// until the user chooses; one with more shows none (a synth can have
+/// hundreds, which makes a node too tall to use).
+pub const DEFAULT_EXPOSED_LIMIT: usize = 32;
+
+/// The ids of the parameters chosen in `config`, if the user chose any.
+/// The setting is a comma-separated list of ids; `none` means an empty choice
+/// (an empty setting means no choice yet).
+pub fn chosen_params(config: &Config) -> Option<Vec<u32>> {
+    let Some(noodle_engine::Value::Text(text)) = config.get(crate::PARAMS_KEY) else {
+        return None;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(
+        text.split(',')
+            .filter_map(|id| id.trim().parse().ok())
+            .collect(),
+    )
+}
+
+/// The parameters that get a port on the node, in the plugin's order.
+pub fn exposed_params<'a>(descriptor: &'a Descriptor, config: &Config) -> Vec<&'a ParamDesc> {
+    match chosen_params(config) {
+        Some(ids) => descriptor
+            .params
+            .iter()
+            .filter(|p| ids.contains(&p.id))
+            .collect(),
+        None if descriptor.params.len() <= DEFAULT_EXPOSED_LIMIT => {
+            descriptor.params.iter().collect()
+        }
+        None => Vec::new(),
+    }
+}
+
+/// The setting's text for a choice of parameter ids.
+pub fn params_text(ids: &[u32]) -> String {
+    if ids.is_empty() {
+        "none".to_owned()
+    } else {
+        ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+    }
 }
