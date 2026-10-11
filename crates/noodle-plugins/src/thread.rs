@@ -8,11 +8,13 @@
 //! processor, which CLAP lets the audio thread use, and talk to the instance
 //! by sending this thread a command.
 //!
-//! This is the host's CLAP main thread but not the process's: on macOS an
-//! editor wants the application's main thread, which belongs to the UI
-//! framework. A plugin that insists on that can't open its editor from here;
-//! the editor is reported as failed to open, and everything else works.
+//! That thread is the host's CLAP main thread but not the process's, which
+//! is what a macOS editor wants (and a Windows editor needs a thread that
+//! pumps messages). An application whose UI thread should be the plugin
+//! thread calls [`adopt_current_thread`] and then [`pump`] each frame: the
+//! same code then runs on that thread instead of one of its own.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -106,15 +108,107 @@ enum Command {
     },
 }
 
-fn sender() -> &'static Sender<Command> {
-    static THREAD: OnceLock<Sender<Command>> = OnceLock::new();
-    THREAD.get_or_init(|| {
+/// The instances, and what the thread keeps for them.
+#[derive(Default)]
+struct Executor {
+    live: HashMap<u64, Live>,
+    next_key: u64,
+}
+
+impl Executor {
+    fn handle(&mut self, command: Command) {
+        handle(command, &mut self.live, &mut self.next_key);
+    }
+
+    /// Timers, callbacks and closed editors, for every instance.
+    fn housekeeping(&mut self) {
+        let now = Instant::now();
+        for l in self.live.values_mut() {
+            housekeeping(l, now);
+        }
+    }
+
+    /// How long until the next timer is due (at most [`IDLE`]).
+    fn next_wake(&self) -> Duration {
+        let now = Instant::now();
+        self.live
+            .values()
+            .filter_map(|l| l.flags.next_due())
+            .min()
+            .map_or(IDLE, |due| due.saturating_duration_since(now).min(IDLE))
+    }
+}
+
+/// The thread that was adopted as the plugin thread, if any: its queue and
+/// instances.
+struct Adopted {
+    receiver: Receiver<Command>,
+    executor: Executor,
+}
+
+thread_local! {
+    static ADOPTED: RefCell<Option<Adopted>> = const { RefCell::new(None) };
+}
+
+struct Queue {
+    sender: Sender<Command>,
+    /// Called after a command is queued for an adopted thread, to wake it.
+    wake: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+static QUEUE: OnceLock<Queue> = OnceLock::new();
+
+/// Makes the calling thread the plugin thread instead of starting one.
+///
+/// A plugin's editor wants the application's main thread on macOS, and a
+/// window made on a thread that doesn't pump messages is dead on Windows. An
+/// application whose UI thread is that thread calls this once at startup
+/// (before any plugin is used) and then calls [`pump`] regularly from it.
+/// Commands from other threads wait in a queue for `pump`, and `wake` is
+/// called after each is queued (to request a repaint, say). Commands from
+/// the adopted thread itself run on the spot. Returns false if the plugin
+/// thread has already started or another thread was adopted.
+pub fn adopt_current_thread(wake: impl Fn() + Send + Sync + 'static) -> bool {
+    let (sender, receiver) = mpsc::channel();
+    let queue = Queue {
+        sender,
+        wake: Some(Box::new(wake)),
+    };
+    if QUEUE.set(queue).is_err() {
+        return false;
+    }
+    ADOPTED.with(|a| {
+        *a.borrow_mut() = Some(Adopted {
+            receiver,
+            executor: Executor::default(),
+        });
+    });
+    true
+}
+
+/// Runs what other threads have asked of the adopted plugin thread, and its
+/// instances' timers. Returns how long until it next needs calling, or
+/// `None` if this isn't the adopted thread (or nothing is adopted).
+pub fn pump() -> Option<Duration> {
+    ADOPTED.with(|a| {
+        let mut adopted = a.try_borrow_mut().ok()?;
+        let adopted = adopted.as_mut()?;
+        while let Ok(command) = adopted.receiver.try_recv() {
+            adopted.executor.handle(command);
+        }
+        adopted.executor.housekeeping();
+        Some(adopted.executor.next_wake())
+    })
+}
+
+fn queue() -> &'static Queue {
+    QUEUE.get_or_init(|| {
         let (sender, receiver) = mpsc::channel();
         // If the thread can't start, every command fails with "ended".
         let _ = thread::Builder::new()
             .name("noodle-plugin-main".into())
             .spawn(move || run(receiver));
-        sender
+        Queue { sender, wake: None }
     })
 }
 
@@ -123,7 +217,27 @@ fn gone() -> HostError {
 }
 
 fn send(command: Command) -> Result<(), HostError> {
-    sender().send(command).map_err(|_| gone())
+    // On the adopted thread, run the command now (waiting on it would wait
+    // for ourselves), unless a command is already running.
+    let command = ADOPTED.with(|a| match a.try_borrow_mut() {
+        Ok(mut adopted) => match adopted.as_mut() {
+            Some(adopted) => {
+                adopted.executor.handle(command);
+                None
+            }
+            None => Some(command),
+        },
+        Err(_) => Some(command),
+    });
+    let Some(command) = command else {
+        return Ok(());
+    };
+    let queue = queue();
+    queue.sender.send(command).map_err(|_| gone())?;
+    if let Some(wake) = &queue.wake {
+        wake();
+    }
+    Ok(())
 }
 
 fn wait<T>(receiver: &Receiver<Result<T, HostError>>, timeout: Duration) -> Result<T, HostError> {
@@ -199,24 +313,14 @@ pub(crate) fn close_editor(key: u64) {
 }
 
 fn run(receiver: Receiver<Command>) {
-    let mut live: HashMap<u64, Live> = HashMap::new();
-    let mut next_key = 1;
+    let mut executor = Executor::default();
     loop {
-        let now = Instant::now();
-        let wait = live
-            .values()
-            .filter_map(|l| l.flags.next_due())
-            .min()
-            .map_or(IDLE, |due| due.saturating_duration_since(now).min(IDLE));
-        match receiver.recv_timeout(wait) {
-            Ok(command) => handle(command, &mut live, &mut next_key),
+        match receiver.recv_timeout(executor.next_wake()) {
+            Ok(command) => executor.handle(command),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        let now = Instant::now();
-        for l in live.values_mut() {
-            housekeeping(l, now);
-        }
+        executor.housekeeping();
     }
 }
 
