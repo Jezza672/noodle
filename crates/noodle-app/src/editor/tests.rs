@@ -823,17 +823,7 @@ fn frames_resize_from_the_corner_and_rename_on_double_click() {
     );
 
     let label = screen(&h, Pos2::new(40.0, 10.0));
-    h.event(Event::PointerMoved(label));
-    for pressed in [true, false, true, false] {
-        h.event(Event::PointerButton {
-            pos: label,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-    }
-    h.step();
-    h.run();
+    double_click(&mut h, label);
     assert!(h.state().editor.rename.is_some());
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.event(Event::Text("Drums".into()));

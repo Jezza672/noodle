@@ -431,6 +431,11 @@ struct VirtualClock {
 
 /// A way to hear what the virtual output would have played, for tests. It is
 /// off until [`start`](Self::start): the output discards audio otherwise.
+///
+/// A capture belongs to one run of the output. When playback restarts (a
+/// device change, an Output node tied to another device), the old handle
+/// stays valid but never fills again: fetch a new one with
+/// [`Playback::virtual_capture`].
 #[derive(Clone)]
 pub struct VirtualCapture(Arc<Mutex<Option<Vec<f32>>>>);
 
@@ -441,11 +446,18 @@ impl VirtualCapture {
         *self.0.lock().unwrap() = Some(Vec::new());
     }
 
-    /// Everything kept since [`start`](Self::start), which keeps going. The
-    /// output never waits for this: a block that finishes while it holds the
-    /// lock is missed.
-    pub fn samples(&self) -> Vec<f32> {
-        self.0.lock().unwrap().clone().unwrap_or_default()
+    /// Hands over what has been kept since [`start`](Self::start) or the last
+    /// call, and keeps going. Every block rendered since is in it, whole and
+    /// in order: the output waits for this rather than skipping a block, and
+    /// taking the buffer instead of copying it keeps that wait short however
+    /// long the capture runs.
+    pub fn take(&self) -> Vec<f32> {
+        self.0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 }
 
@@ -472,10 +484,10 @@ impl VirtualClock {
                 let mut next = Instant::now();
                 while !flag.load(Ordering::Relaxed) {
                     writer.write(&mut buffer);
-                    // Never waits: the pace matters more than a test's samples.
-                    if let Ok(mut kept) = tapped.try_lock()
-                        && let Some(kept) = kept.as_mut()
-                    {
+                    // A reader holds the lock only to swap the buffer out, so
+                    // waiting costs next to nothing and no block is lost. The
+                    // clock catches up if it ever does cost one.
+                    if let Some(kept) = tapped.lock().unwrap().as_mut() {
                         kept.extend_from_slice(&buffer);
                     }
                     next += period;
@@ -1544,16 +1556,33 @@ mod tests {
         let (playback, _controller) = play(&virtual_config(), 128).unwrap();
         let tap = playback.virtual_capture().expect("a virtual output");
         std::thread::sleep(Duration::from_millis(60));
-        assert!(tap.samples().is_empty(), "nothing is kept until asked");
+        assert!(tap.take().is_empty(), "nothing is kept until asked");
         tap.start();
         std::thread::sleep(Duration::from_millis(300));
-        let kept = tap.samples();
+        let kept = tap.take();
         // A whole number of stereo frames, and about 300 ms of them at the
         // output's pace (not flat out, not stalled).
         let rate = playback.settings().sample_rate;
         let seconds = kept.len() as f32 / 2.0 / rate;
         assert_eq!(kept.len() % 2, 0);
         assert!(seconds > 0.15 && seconds < 0.45, "{seconds}");
+    }
+
+    #[test]
+    fn polling_the_tap_never_loses_or_splits_a_block() {
+        let (playback, _controller) = play(&virtual_config(), 128).unwrap();
+        let tap = playback.virtual_capture().unwrap();
+        tap.start();
+        let mut total = 0;
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(5));
+            let chunk = tap.take();
+            // 128 frames of 2 channels per block, handed over whole.
+            assert_eq!(chunk.len() % 256, 0, "{} samples", chunk.len());
+            total += chunk.len();
+        }
+        let seconds = total as f32 / 2.0 / playback.settings().sample_rate;
+        assert!(seconds > 0.15, "{seconds}");
     }
 
     #[test]

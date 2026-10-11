@@ -22,7 +22,6 @@ Snapping the starts of a take's notes to a grid when the take is committed. Moni
 **Latency compensation**:
 Shifting a take earlier by the output device's latency, so it lines up with what the player heard.
 
-
 **Engine**:
 The audio stream that runs the graph. It starts with the app, is on by default, and a toolbar toggle turns it off. It runs whether or not the Transport does.
 

@@ -1,7 +1,7 @@
 //! The piano roll driven like a user would: pointer and keyboard events into
 //! a real [`Session`], checking the notes that result.
 
-use crate::testkit::{drag, drag_between};
+use crate::testkit::{double_click, drag, drag_between};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use noodle_core::{Clip, ClipId, Command, MidiNote, Node, NodeId, Tick};
@@ -196,24 +196,7 @@ fn arrows_transpose_and_nudge() {
 fn double_clicking_empty_space_adds_a_note() {
     let mut h = rig(&[]);
     let pos = at(&h, 1000, 65);
-    drag(&mut h, Modifiers::NONE, &[pos]);
-    drag(&mut h, Modifiers::NONE, &[pos]);
-    // Two quick clicks may not register as a double click in the harness;
-    // send the double click explicitly if they did not.
-    if notes_of(&h).is_empty() {
-        for _ in 0..2 {
-            h.event(Event::PointerMoved(pos));
-            for pressed in [true, false] {
-                h.event(Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed,
-                    modifiers: Modifiers::NONE,
-                });
-            }
-        }
-        h.run();
-    }
+    double_click(&mut h, pos);
     let notes = notes_of(&h);
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert_eq!(notes[0].key, 65);

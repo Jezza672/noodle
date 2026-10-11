@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::testkit::{drag_playing, drop_files, virtual_audio};
-use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
+use egui::{Event, Key, Modifiers, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use noodle_core::{Endpoint, NodeId, Project};
@@ -398,7 +398,6 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
     noodle_io::write_wav(&quiet, &vec![0.25; 4 * BEAT], 1, RATE as u32).unwrap();
     let path = dir.path().join("song.ron");
     std::fs::write(&path, Project::new().to_ron()).unwrap();
-    #[allow(unused_mut)]
     let mut session = open(&path);
     session.set_audio_config(virtual_audio());
     let mut h = harness(App::new(session));
@@ -452,18 +451,7 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
     };
     let row = h.state().timeline().automation().row(lane).unwrap();
     let spot = Pos2::new(row.left() + 2.0 * 60.0, row.top() + 8.0);
-    h.event(Event::PointerMoved(spot));
-    h.step();
-    for pressed in [true, false] {
-        h.event(Event::PointerButton {
-            pos: spot,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-        h.step();
-    }
-    h.run();
+    drag_playing(&mut h, &[spot]);
     let points: Vec<_> = h
         .state()
         .session()

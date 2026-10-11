@@ -37,9 +37,10 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   the engine anyway, use the virtual output: `noodle play --output virtual x.ron`,
   or `testkit::virtual_audio()` in an app test. It runs in real time and
   discards the audio; `Playback::virtual_capture()` (`Session::virtual_capture()`
-  in app tests) keeps it, so a test can assert on the sound. (The app falls back to it by itself when no real output
-  opens.) To run the real stream path, point ALSA at a null device with
-  `printf 'pcm.!default { type null }\n' > ~/.asoundrc` (and delete it after).
+  in app tests) keeps it, so a test can assert on the sound. (The app falls back
+  to it by itself when no real output opens.) To run the real stream path, point
+  ALSA at a null device with `printf 'pcm.!default { type null }\n' >
+  ~/.asoundrc` (and delete it after).
 
 ## Crates
 

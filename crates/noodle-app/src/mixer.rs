@@ -451,23 +451,7 @@ mod tests {
         let fader = harness.get_all_by_role(Role::Slider).next().unwrap();
         let from = fader.rect().center();
         let to = from + vec2(0.0, -40.0);
-        harness.event(egui::Event::PointerMoved(from));
-        let button = |pressed, pos| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        harness.event(button(true, from));
-        harness.step();
-        for i in 1..=4 {
-            harness.event(egui::Event::PointerMoved(
-                from + (to - from) * (i as f32 / 4.0),
-            ));
-            harness.step();
-        }
-        harness.event(button(false, to));
-        harness.run();
+        crate::testkit::drag_between(&mut harness, egui::Modifiers::NONE, from, to);
         let gain = param(&harness, 100, "gain1").expect("the fader moved");
         assert!(gain > 0.0, "dragged up: {gain}");
         // The whole drag is one step.
@@ -592,16 +576,12 @@ mod tests {
             ]
         );
 
-        let mut harness = Harness::new_ui_state(
-            |ui, session: &mut Session| {
+        let mut harness =
+            crate::testkit::harness(session, vec2(600.0, 600.0), |ui, session: &mut Session| {
                 let mut view = Some(NodeId(100));
                 let edits = show(ui, session.project(), &mut view, &|_, _| None);
                 session.edit(edits);
-            },
-            session,
-        );
-        harness.set_size(vec2(600.0, 600.0));
-        harness.run();
+            });
         // Solo is the track's, so a mixer view has none.
         assert!(harness.query_by_label("S").is_none());
         // Mute on the first input is the mixer's `mute1`.

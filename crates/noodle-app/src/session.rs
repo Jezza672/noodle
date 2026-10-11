@@ -1003,8 +1003,6 @@ impl Session {
         }
     }
 
-    /// Whether the engine, the audio stream that runs the graph, is open.
-    /// It runs whether or not the transport does.
     /// The tap on the virtual output when the engine plays on it, for tests
     /// that check the sound the app made.
     #[cfg(test)]
@@ -1012,6 +1010,8 @@ impl Session {
         self.audio.as_ref()?.playback.virtual_capture()
     }
 
+    /// Whether the engine, the audio stream that runs the graph, is open.
+    /// It runs whether or not the transport does.
     pub fn engine_running(&self) -> bool {
         self.audio.is_some()
     }
@@ -3512,7 +3512,7 @@ mod tests {
         tap.start();
         session.play();
         std::thread::sleep(Duration::from_millis(400));
-        let heard = tap.samples();
+        let heard = tap.take();
         assert!(heard.len() > 4_000, "{} samples", heard.len());
         assert!(heard.iter().all(|x| x.is_finite()));
         let peak = heard.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
