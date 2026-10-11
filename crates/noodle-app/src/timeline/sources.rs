@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -65,6 +66,8 @@ pub struct Sources {
     jobs: Sender<Job>,
     done: Receiver<Done>,
     retry: Duration,
+    /// Jobs sent and not yet reported, repaint included.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl Default for Sources {
@@ -72,8 +75,10 @@ impl Default for Sources {
         let (jobs, queue) = channel::<Job>();
         let (sender, done) = channel::<Done>();
         let queue = Arc::new(Mutex::new(queue));
+        let in_flight = Arc::new(AtomicUsize::new(0));
         for _ in 0..WORKERS {
             let (queue, sender) = (queue.clone(), sender.clone());
+            let in_flight = in_flight.clone();
             std::thread::spawn(move || {
                 // Ends when the `Sources` is dropped.
                 loop {
@@ -83,6 +88,7 @@ impl Default for Sources {
                     let peaks = Peaks::from_file(&job.path).ok().map(Arc::new);
                     let _ = sender.send((job.path, job.modified, peaks));
                     job.ctx.request_repaint();
+                    in_flight.fetch_sub(1, Ordering::Release);
                 }
             });
         }
@@ -91,6 +97,7 @@ impl Default for Sources {
             jobs,
             done,
             retry: RETRY,
+            in_flight,
         }
     }
 }
@@ -103,6 +110,23 @@ impl Sources {
     #[cfg(test)]
     pub fn retry_at_once(&mut self) {
         self.retry = Duration::ZERO;
+    }
+
+    /// Queues a waveform job.
+    ///
+    /// Under test the call waits for the workers to report, so the repaint a
+    /// worker asks for always lands inside the frame that queued the job and
+    /// never in the middle of a later `Harness::run`, whose step count it
+    /// would otherwise change from run to run.
+    fn submit(jobs: &Sender<Job>, in_flight: &AtomicUsize, job: Job) {
+        in_flight.fetch_add(1, Ordering::Acquire);
+        if jobs.send(job).is_err() {
+            in_flight.fetch_sub(1, Ordering::Release);
+        }
+        #[cfg(test)]
+        while in_flight.load(Ordering::Acquire) > 0 {
+            std::thread::yield_now();
+        }
     }
 
     /// The file `name`, which is relative to `directory` (the folder of the
@@ -132,7 +156,7 @@ impl Sources {
                             modified: found.modified,
                             ctx: ctx.clone(),
                         };
-                        let _ = self.jobs.send(job);
+                        Self::submit(&self.jobs, &self.in_flight, job);
                     }
                     return Some(found.loaded.clone());
                 }
@@ -162,7 +186,7 @@ impl Sources {
             modified,
             ctx: ctx.clone(),
         };
-        let _ = self.jobs.send(job);
+        Self::submit(&self.jobs, &self.in_flight, job);
         self.entries.insert(
             path,
             Entry::Found(Found {

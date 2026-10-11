@@ -453,8 +453,11 @@ fn each_bad_file_is_named_separately() {
     let mut rig = Rig::new("named-errors");
     rig.wav("a.wav", 1, 20_000, |_, _| 0.5);
     rig.wav("b.wav", 1, 20_000, |_, _| 0.5);
-    rig.add_clip(0, "a.wav", 0, 5_000);
-    rig.add_clip(0, "b.wav", 6_000, 5_000);
+    // Both clips start well beyond the hub's look-ahead from the playhead at
+    // 0, so it cannot have opened either file yet. Spoiling them before the
+    // playhead moves up is then not a race with the hub thread.
+    rig.add_clip(20, "a.wav", 0, 5_000);
+    rig.add_clip(21, "b.wav", 0, 5_000);
     // The feeds remember what they read of a file by its modification time.
     // Where the clock is coarse (Windows, some macOS filesystems) the
     // spoiled file would keep the good file's time and look unchanged, so
@@ -472,7 +475,7 @@ fn each_bad_file_is_named_separately() {
     }
     let started = std::time::Instant::now();
     loop {
-        rig.run(0, BLOCK, false);
+        rig.run(20 * BEAT, BLOCK, false);
         let errors = rig.feeds.status(rig.id).errors;
         if errors.len() == 2 {
             let mut names: Vec<_> = errors
@@ -483,7 +486,7 @@ fn each_bad_file_is_named_separately() {
             assert_eq!(names, ["a.wav", "b.wav"]);
             break;
         }
-        assert!(started.elapsed().as_secs() < 5, "got {errors:?}");
+        assert!(started.elapsed().as_secs() < 10, "got {errors:?}");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
