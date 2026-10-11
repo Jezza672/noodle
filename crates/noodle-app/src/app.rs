@@ -1254,6 +1254,33 @@ mod tests {
     }
 
     #[test]
+    fn running_plugins_in_separate_processes_is_switched_from_the_plugin_browser_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = dir.path().join("prefs.ron");
+        crate::prefs::init(prefs.clone());
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Plugins").click();
+        harness.run();
+        assert!(!harness.state().session().sandbox_plugins());
+        harness
+            .get_by_label("Run plugins in separate processes")
+            .click();
+        harness.run();
+        assert!(harness.state().session().sandbox_plugins());
+        assert!(crate::prefs::load(&prefs).unwrap().sandbox_plugins);
+        harness
+            .get_by_label("Run plugins in separate processes")
+            .click();
+        harness.run();
+        assert!(!harness.state().session().sandbox_plugins());
+        assert!(!crate::prefs::load(&prefs).unwrap().sandbox_plugins);
+        assert!(!noodle_plugins::sandbox_enabled());
+    }
+
+    #[test]
     fn cpu_meters_are_switched_on_and_off_from_the_view_menu() {
         let mut harness = harness(empty());
         harness.run();

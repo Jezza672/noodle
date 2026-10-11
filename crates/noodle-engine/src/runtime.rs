@@ -9,6 +9,7 @@
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
+use std::time::Duration;
 
 use noodle_core::{Graph, NodeId, Project, TempoMap};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
@@ -436,12 +437,23 @@ impl Processor {
     /// `always` is set. Output differs from the single-threaded render at
     /// most in the last bits of a float sum.
     pub(crate) fn start_workers(&mut self, count: usize, always: bool) {
-        self.workers = (count > 0).then(|| Workers::start(count, always, self.flush));
+        let period = Duration::from_secs_f64(
+            self.settings.max_frames as f64 / f64::from(self.settings.sample_rate),
+        );
+        self.workers = (count > 0).then(|| Workers::start(count, always, self.flush, period));
     }
 
     /// Whether the workers would take part in rendering a plan of this shape.
     pub(crate) fn parallel_for(&self, shape: PlanShape) -> bool {
         self.workers.as_ref().is_some_and(|w| w.worth(shape))
+    }
+
+    /// How many worker threads got real-time priority, and how many a raised
+    /// priority short of that (the rest are ordinary threads). The workers
+    /// ask as they start, so read it a moment after
+    /// [`engine_with_workers`].
+    pub fn worker_priorities(&self) -> (usize, usize) {
+        self.workers.as_ref().map_or((0, 0), Workers::priorities)
     }
 
     /// How many worker threads help the audio thread.

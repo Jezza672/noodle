@@ -172,6 +172,11 @@ fn workers_sound_like_one_thread_and_never_allocate() {
 
     let mut rig = Rig::new(3);
     assert_eq!(rig.processor.workers(), 3);
+    // Real-time priority is the system's to give (a CI runner usually
+    // refuses); whatever the workers got, they don't claim more than there
+    // are.
+    let (realtime, raised) = rig.processor.worker_priorities();
+    assert!(realtime + raised <= 3);
     let shape = rig.controller.plan_shape();
     assert!(shape.width >= CHAINS, "{shape:?}");
     assert!(shape.critical_path < shape.steps, "{shape:?}");

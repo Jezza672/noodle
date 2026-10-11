@@ -20,6 +20,9 @@ pub struct Profile {
     pub wall: Duration,
     /// Threads helping the audio thread.
     pub workers: usize,
+    /// How many of them got real-time priority, and how many a raised one
+    /// short of it (see [`crate::raise_current_thread`]).
+    pub worker_priorities: (usize, usize),
     /// How much of the graph could run side by side. Always compiled the way a
     /// plan for workers is, so it shows the width threads could use even in a
     /// one-thread run.
@@ -116,6 +119,7 @@ pub fn profile_project(
         sample_rate: settings.sample_rate,
         wall,
         workers,
+        worker_priorities: processor.worker_priorities(),
         shape,
         blocks: telemetry.read_blocks(),
         nodes,
