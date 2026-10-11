@@ -198,7 +198,11 @@ fn every_note_input_reaches_the_plugin_in_time_order() {
         } else {
             0.0
         };
-        assert!((s - (low + high)).abs() < 3e-3, "frame {i}: {s} vs {}", low + high);
+        assert!(
+            (s - (low + high)).abs() < 3e-3,
+            "frame {i}: {s} vs {}",
+            low + high
+        );
     }
     // A note-off on the second port by id alone stops that note only.
     h.send_events(0, &[]);
@@ -207,8 +211,8 @@ fn every_note_input_reaches_the_plugin_in_time_order() {
     let out = h.output(0);
     let tail = out.lane(0, 0);
     let expected = |i: usize| (TAU * 440.0 * (256 + i) as f32 / RATE).sin() * 0.2;
-    for i in 0..256 {
-        assert!((tail[i] - expected(i)).abs() < 3e-3, "frame {i}");
+    for (i, &s) in tail.iter().enumerate() {
+        assert!((s - expected(i)).abs() < 3e-3, "frame {i}");
     }
 }
 

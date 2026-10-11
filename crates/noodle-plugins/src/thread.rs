@@ -30,11 +30,11 @@ use clack_extensions::timer::PluginTimer;
 use clack_host::prelude::*;
 
 use crate::editor::Captured;
-use crate::window::{self, EditorWindow, ParentWindow};
 use crate::host::{
     Flags, Host, HostError, LOAD_TIMEOUT, host_info, load_entry, load_state, new_instance,
     save_state_of, visible_params,
 };
+use crate::window::{self, EditorWindow, ParentWindow};
 
 /// How long the thread waits for a command when no timer is due sooner.
 const IDLE: Duration = Duration::from_millis(50);
@@ -182,6 +182,8 @@ pub fn adopt_current_thread(wake: impl Fn() + Send + Sync + 'static) -> bool {
     if QUEUE.set(queue).is_err() {
         return false;
     }
+    // Editor windows belong to this thread too.
+    window::install_native();
     ADOPTED.with(|a| {
         *a.borrow_mut() = Some(Adopted {
             receiver,

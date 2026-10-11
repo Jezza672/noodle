@@ -43,6 +43,20 @@ type Factory = Box<dyn Fn(&str) -> Option<Box<dyn EditorWindow>> + Send + Sync>;
 
 static FACTORY: OnceLock<Factory> = OnceLock::new();
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
+
+/// Installs the factory for this system's native windows, where there is one
+/// (macOS and Windows). Does nothing if a factory is already set.
+pub(crate) fn install_native() {
+    #[cfg(target_os = "macos")]
+    let _ = set_window_factory(macos::make);
+    #[cfg(windows)]
+    let _ = set_window_factory(windows::make);
+}
+
 /// Sets how editor windows are made: given a title, a hidden window to embed
 /// an editor in (or `None` if it can't be made, and the editor floats
 /// instead). Called on the plugin thread. Returns false if one is already set.

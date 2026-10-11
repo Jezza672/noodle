@@ -118,7 +118,9 @@ fn an_editor_embeds_in_the_hosts_window_and_follows_its_size_and_closing() {
     // The plugin's timer runs, and its request for a bigger window is carried
     // out (the plugin accepted our window as its parent, or it wouldn't have
     // shown).
-    until("the window is resized", || lock().sizes.contains(&(300, 150, true)));
+    until("the window is resized", || {
+        lock().sizes.contains(&(300, 150, true))
+    });
 
     // The user dragging the window's edge asks the plugin, which snaps the
     // size to multiples of 10, and the window follows.
@@ -130,7 +132,9 @@ fn an_editor_embeds_in_the_hosts_window_and_follows_its_size_and_closing() {
 
     // Closing the window the host made closes the editor.
     lock().closed = true;
-    until("the editor notices the window closed", || !editor_is_open(node));
+    until("the editor notices the window closed", || {
+        !editor_is_open(node)
+    });
     until("the window is dropped", || lock().dropped == 1);
     assert!(!lock().shown);
 

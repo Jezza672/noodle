@@ -28,12 +28,12 @@ pub use editor::{
 };
 pub use host::{HostError, MAX_PARAMS, capture_state, describe_file};
 pub use node::{ClapNodeType, PARAM_STEP};
-pub use thread::{adopt_current_thread, pump};
-pub use window::{EditorWindow, ParentWindow, set_window_factory};
 pub use scan::{
     SCAN_ARG, SCAN_TIMEOUT, ScanCache, ScanCommand, find_plugin_files, run_scan_child_if_requested,
     scan_child_main, scan_file, standard_dirs,
 };
+pub use thread::{adopt_current_thread, pump};
+pub use window::{EditorWindow, ParentWindow, set_window_factory};
 
 /// The node setting that holds a plugin's saved state, as base64 text.
 pub const STATE_KEY: &str = "state";

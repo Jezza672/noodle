@@ -628,7 +628,9 @@ impl ClapNode {
                         velocity: off.velocity() as f32,
                     },
                 ),
-                Some(CoreEventSpace::Midi(midi)) => (midi.port_index(), EventKind::Midi(midi.data())),
+                Some(CoreEventSpace::Midi(midi)) => {
+                    (midi.port_index(), EventKind::Midi(midi.data()))
+                }
                 _ => continue,
             };
             // A port the plugin didn't declare goes to the first.
