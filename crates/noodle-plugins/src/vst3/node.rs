@@ -603,7 +603,8 @@ fn process_context(ctx: &Context, start: usize, steady: i64) -> ProcessContext {
     let beats = t.tick / 960.0 + advance / rate * t.bpm / 60.0;
     let numerator = i32::from(t.signature.numerator).max(1);
     context.state =
-        kTempoValid | kTimeSigValid | kProjectTimeMusicValid | kBarPositionValid | kContTimeValid;
+        (kTempoValid | kTimeSigValid | kProjectTimeMusicValid | kBarPositionValid | kContTimeValid)
+            as u32;
     if t.playing {
         context.state |= kPlaying as u32;
     }
