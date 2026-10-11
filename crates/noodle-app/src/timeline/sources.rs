@@ -56,6 +56,9 @@ struct Job {
     path: PathBuf,
     modified: Option<SystemTime>,
     ctx: egui::Context,
+    /// Told once the worker has reported and asked for its repaint.
+    #[cfg(test)]
+    done: Sender<()>,
 }
 
 type Done = (PathBuf, Option<SystemTime>, Option<Arc<Peaks>>);
@@ -83,6 +86,8 @@ impl Default for Sources {
                     let peaks = Peaks::from_file(&job.path).ok().map(Arc::new);
                     let _ = sender.send((job.path, job.modified, peaks));
                     job.ctx.request_repaint();
+                    #[cfg(test)]
+                    let _ = job.done.send(());
                 }
             });
         }
@@ -103,6 +108,33 @@ impl Sources {
     #[cfg(test)]
     pub fn retry_at_once(&mut self) {
         self.retry = Duration::ZERO;
+    }
+
+    /// Queues a waveform job for `path`.
+    ///
+    /// Under test the call waits for the worker to report, so the repaint it
+    /// asks for always lands inside the frame that queued the job and never in
+    /// the middle of a later `Harness::run`, whose step count it would
+    /// otherwise change from run to run. A worker that dies drops its
+    /// acknowledgement, so the wait ends instead of hanging the test.
+    fn submit(
+        jobs: &Sender<Job>,
+        path: PathBuf,
+        modified: Option<SystemTime>,
+        ctx: &egui::Context,
+    ) {
+        #[cfg(test)]
+        let (done, acked) = channel();
+        let job = Job {
+            path,
+            modified,
+            ctx: ctx.clone(),
+            #[cfg(test)]
+            done,
+        };
+        let _ = jobs.send(job);
+        #[cfg(test)]
+        let _ = acked.recv();
     }
 
     /// The file `name`, which is relative to `directory` (the folder of the
@@ -127,12 +159,7 @@ impl Sources {
                     let again = matches!(found.waveform, Waveform::Failed(at) if at.elapsed() >= self.retry);
                     if again {
                         found.waveform = Waveform::Working;
-                        let job = Job {
-                            path: path.clone(),
-                            modified: found.modified,
-                            ctx: ctx.clone(),
-                        };
-                        let _ = self.jobs.send(job);
+                        Self::submit(&self.jobs, path.clone(), found.modified, ctx);
                     }
                     return Some(found.loaded.clone());
                 }
@@ -157,12 +184,7 @@ impl Sources {
             peaks: None,
         };
         let modified = modified(&path);
-        let job = Job {
-            path: path.clone(),
-            modified,
-            ctx: ctx.clone(),
-        };
-        let _ = self.jobs.send(job);
+        Self::submit(&self.jobs, path.clone(), modified, ctx);
         self.entries.insert(
             path,
             Entry::Found(Found {

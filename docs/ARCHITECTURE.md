@@ -827,13 +827,17 @@ sending). One instance has one voice: a polyphonic wire into a plugin is a
 compile error, so put a Voice Mix before it. A mono wire into a stereo port
 feeds both channels; any other channel mismatch is an error.
 
-**macOS keeps plugins loaded.** A plugin's Objective-C objects (an editor's
-views) can still be queued for release on the main thread when its instance is
-dropped, and releasing them after the plugin is unloaded or deinitialised
-crashes. So on macOS each plugin file, CLAP or VST3, stays loaded for the
+**macOS and Linux keep plugins loaded.** A plugin's Objective-C objects (an
+editor's views) can still be queued for release on the main thread when its
+instance is dropped, and releasing them after the plugin is unloaded or
+deinitialised crashes. On Linux, a mitigation for an abort seen once in CI and
+not reproduced (`double free or corruption` as the real-plugin tests exited):
+plugins' GUI toolkits can leave global state that unloading and process exit
+both free. So on both, each plugin file, CLAP or VST3, stays loaded for the
 life of the app: the entry's `deinit` and the bundle's exit never run, and a
-plugin file replaced on disk takes effect after a restart.
-(`tests/keep_loaded.rs` checks this through the test plugins' `deinit` and module exit.)
+plugin file replaced on disk takes effect after a restart. Windows lets them
+go. (`tests/keep_loaded.rs` checks this through the test plugins' `deinit` and
+module exit.)
 
 **Instances and the plugin thread.** CLAP says a plugin instance belongs to
 its main thread, and JUCE-based plugins expect that to be one thread for the

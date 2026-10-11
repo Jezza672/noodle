@@ -1,7 +1,8 @@
-//! On macOS a plugin stays loaded for the life of the process: its Objective-C
-//! objects can outlive its instance in the main thread's autorelease pool, and
-//! releasing them after the plugin is deinitialised or unloaded crashes (the
-//! Surge XT editor crash). The test plugins record their `deinit` (CLAP) or
+//! On macOS and Linux a plugin stays loaded for the life of the process. On
+//! macOS its Objective-C objects can outlive its instance in the main thread's
+//! autorelease pool, and releasing them after the plugin is deinitialised or
+//! unloaded crashes (the Surge XT editor crash); on Linux it is a mitigation
+//! for an abort at process exit seen in CI. The test plugins record their `deinit` (CLAP) or
 //! module exit (VST3) in a file, so this can be seen even though a Rust
 //! plugin library is never unmapped.
 //!
@@ -42,7 +43,7 @@ fn deinitialised_after_drop(catalog: &Catalog, pick: fn(&Catalog) -> &PluginNode
 }
 
 #[test]
-fn macos_never_deinitialises_a_plugin_but_other_systems_do() {
+fn macos_and_linux_never_deinitialise_a_plugin_but_windows_does() {
     // Scan first: the scanner is a child process that loads and unloads the
     // plugin itself, and would write the marker if it saw the variable.
     let clap = catalog();
@@ -55,11 +56,11 @@ fn macos_never_deinitialises_a_plugin_but_other_systems_do() {
     let clap_gone = deinitialised_after_drop(&clap, node_type);
     let vst3_gone = deinitialised_after_drop(&vst3, vst3_node_type);
 
-    if cfg!(target_os = "macos") {
-        assert!(!clap_gone, "macOS keeps the CLAP plugin loaded");
-        assert!(!vst3_gone, "macOS keeps the VST3 plugin loaded");
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        assert!(!clap_gone, "macOS and Linux keep the CLAP plugin loaded");
+        assert!(!vst3_gone, "macOS and Linux keep the VST3 plugin loaded");
     } else {
-        assert!(clap_gone, "other systems let the CLAP plugin go");
-        assert!(vst3_gone, "other systems let the VST3 plugin go");
+        assert!(clap_gone, "Windows lets the CLAP plugin go");
+        assert!(vst3_gone, "Windows lets the VST3 plugin go");
     }
 }
