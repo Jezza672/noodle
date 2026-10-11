@@ -1,0 +1,417 @@
+//! The shared plugin thread.
+//!
+//! CLAP wants a plugin's "main thread" calls (creating it, saving its state,
+//! its editor, its timers) all made from one thread, and JUCE-based plugins
+//! and editors expect it to be the same thread for every plugin in the
+//! process. So there is one thread, started on first use, which owns every
+//! live instance. Nodes (which must be `Send`) hold a key and the audio
+//! processor, which CLAP lets the audio thread use, and talk to the instance
+//! by sending this thread a command.
+//!
+//! This is the host's CLAP main thread but not the process's: on macOS an
+//! editor wants the application's main thread, which belongs to the UI
+//! framework. A plugin that insists on that can't open its editor from here;
+//! the editor is reported as failed to open, and everything else works.
+
+use std::collections::HashMap;
+use std::ffi::CString;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use clack_extensions::gui::{GuiApiType, GuiConfiguration, PluginGui};
+use clack_extensions::params::PluginParams;
+use clack_extensions::timer::PluginTimer;
+use clack_host::prelude::*;
+
+use crate::editor::Captured;
+use crate::host::{
+    Flags, Host, HostError, LOAD_TIMEOUT, host_info, load_entry, load_state, new_instance,
+    save_state_of, visible_params,
+};
+
+/// How long the thread waits for a command when no timer is due sooner.
+const IDLE: Duration = Duration::from_millis(50);
+
+/// How long an editor command (open, capture) may take.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// An instance the thread holds.
+struct Live {
+    // The instance must go before the entry whose code it runs.
+    instance: PluginInstance<Host>,
+    _entry: PluginEntry,
+    flags: Arc<Flags>,
+    /// The plugin's editor exists (shown or hidden), so `destroy` is owed.
+    gui: bool,
+}
+
+/// An instance, activated and ready.
+pub(crate) struct Loaded {
+    pub key: u64,
+    pub processor: StoppedPluginAudioProcessor<Host>,
+    pub flags: Arc<Flags>,
+}
+
+enum Command {
+    Load {
+        path: PathBuf,
+        plugin_id: CString,
+        state: Option<Vec<u8>>,
+        sample_rate: f32,
+        max_frames: usize,
+        reply: Sender<Result<Loaded, HostError>>,
+    },
+    Close {
+        key: u64,
+        processor: StoppedPluginAudioProcessor<Host>,
+    },
+    Capture {
+        key: u64,
+        reply: Sender<Result<Captured, HostError>>,
+    },
+    /// Loads a plugin without activating it, only to see the state it saves.
+    CaptureFresh {
+        path: PathBuf,
+        plugin_id: CString,
+        state: Option<Vec<u8>>,
+        reply: Sender<Result<Vec<u8>, HostError>>,
+    },
+    OpenEditor {
+        key: u64,
+        reply: Sender<Result<(), HostError>>,
+    },
+    CloseEditor {
+        key: u64,
+    },
+}
+
+fn sender() -> &'static Sender<Command> {
+    static THREAD: OnceLock<Sender<Command>> = OnceLock::new();
+    THREAD.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        // If the thread can't start, every command fails with "ended".
+        let _ = thread::Builder::new()
+            .name("noodle-plugin-main".into())
+            .spawn(move || run(receiver));
+        sender
+    })
+}
+
+fn gone() -> HostError {
+    HostError("the plugin thread ended".into())
+}
+
+fn send(command: Command) -> Result<(), HostError> {
+    sender().send(command).map_err(|_| gone())
+}
+
+fn wait<T>(receiver: &Receiver<Result<T, HostError>>, timeout: Duration) -> Result<T, HostError> {
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            RecvTimeoutError::Timeout => HostError(format!(
+                "the plugin didn't answer within {timeout:?} (it may be busy or stuck)"
+            )),
+            RecvTimeoutError::Disconnected => gone(),
+        })?
+}
+
+fn cstring(id: &str) -> Result<CString, HostError> {
+    CString::new(id).map_err(|e| HostError(e.to_string()))
+}
+
+/// Loads the plugin, restores `state` into it if given, and activates it.
+pub(crate) fn start(
+    path: &Path,
+    plugin_id: &str,
+    state: Option<Vec<u8>>,
+    sample_rate: f32,
+    max_frames: usize,
+) -> Result<Loaded, HostError> {
+    let (reply, receiver) = mpsc::channel();
+    send(Command::Load {
+        path: path.to_owned(),
+        plugin_id: cstring(plugin_id)?,
+        state,
+        sample_rate,
+        max_frames,
+        reply,
+    })?;
+    wait(&receiver, LOAD_TIMEOUT)
+}
+
+/// Gives the processor back so the plugin is deactivated and destroyed on
+/// the plugin thread.
+pub(crate) fn close(key: u64, processor: StoppedPluginAudioProcessor<Host>) {
+    let _ = send(Command::Close { key, processor });
+}
+
+pub(crate) fn capture(key: u64) -> Result<Captured, HostError> {
+    let (reply, receiver) = mpsc::channel();
+    send(Command::Capture { key, reply })?;
+    wait(&receiver, COMMAND_TIMEOUT)
+}
+
+pub(crate) fn capture_fresh(
+    path: &Path,
+    plugin_id: &str,
+    state: Option<&[u8]>,
+) -> Result<Vec<u8>, HostError> {
+    let (reply, receiver) = mpsc::channel();
+    send(Command::CaptureFresh {
+        path: path.to_owned(),
+        plugin_id: cstring(plugin_id)?,
+        state: state.map(<[u8]>::to_vec),
+        reply,
+    })?;
+    wait(&receiver, LOAD_TIMEOUT)
+}
+
+pub(crate) fn open_editor(key: u64) -> Result<(), HostError> {
+    let (reply, receiver) = mpsc::channel();
+    send(Command::OpenEditor { key, reply })?;
+    wait(&receiver, COMMAND_TIMEOUT)
+}
+
+pub(crate) fn close_editor(key: u64) {
+    let _ = send(Command::CloseEditor { key });
+}
+
+fn run(receiver: Receiver<Command>) {
+    let mut live: HashMap<u64, Live> = HashMap::new();
+    let mut next_key = 1;
+    loop {
+        let now = Instant::now();
+        let wait = live
+            .values()
+            .filter_map(|l| l.flags.next_due())
+            .min()
+            .map_or(IDLE, |due| due.saturating_duration_since(now).min(IDLE));
+        match receiver.recv_timeout(wait) {
+            Ok(command) => handle(command, &mut live, &mut next_key),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        let now = Instant::now();
+        for l in live.values_mut() {
+            housekeeping(l, now);
+        }
+    }
+}
+
+/// Timers, callbacks the plugin asked for, and an editor the plugin closed.
+fn housekeeping(live: &mut Live, now: Instant) {
+    if live.flags.callback.swap(false, Ordering::AcqRel) {
+        live.instance.call_on_main_thread_callback();
+    }
+    let due = live.flags.take_due(now);
+    if !due.is_empty() {
+        let handle = live.instance.plugin_handle();
+        if let Some(timer) = handle.get_extension::<PluginTimer>() {
+            for id in due {
+                timer.on_timer(&handle, id);
+            }
+        }
+    }
+    if live.flags.editor_closed.swap(false, Ordering::AcqRel) {
+        destroy_editor(live);
+    }
+}
+
+fn destroy_editor(live: &mut Live) {
+    if !live.gui {
+        return;
+    }
+    live.gui = false;
+    live.flags.editor_open.store(false, Ordering::Release);
+    let handle = live.instance.plugin_handle();
+    if let Some(gui) = handle.get_extension::<PluginGui>() {
+        gui.destroy(&handle);
+    }
+}
+
+fn handle(command: Command, live: &mut HashMap<u64, Live>, next_key: &mut u64) {
+    match command {
+        Command::Load {
+            path,
+            plugin_id,
+            state,
+            sample_rate,
+            max_frames,
+            reply,
+        } => {
+            let result = load(&path, &plugin_id, state.as_deref(), sample_rate, max_frames);
+            match result {
+                Ok((mut instance_live, processor)) => {
+                    let key = *next_key;
+                    *next_key += 1;
+                    let flags = Arc::clone(&instance_live.flags);
+                    let loaded = Loaded {
+                        key,
+                        processor,
+                        flags,
+                    };
+                    match reply.send(Ok(loaded)) {
+                        Ok(()) => {
+                            live.insert(key, instance_live);
+                        }
+                        Err(mpsc::SendError(Ok(loaded))) => {
+                            // The node gave up waiting (see `LOAD_TIMEOUT`).
+                            instance_live.instance.deactivate(loaded.processor);
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                }
+            }
+        }
+        Command::Close { key, processor } => {
+            if let Some(mut l) = live.remove(&key) {
+                destroy_editor(&mut l);
+                l.instance.deactivate(processor);
+            }
+        }
+        Command::Capture { key, reply } => {
+            let result = match live.get_mut(&key) {
+                Some(l) => capture_live(l),
+                None => Err(HostError("the plugin is no longer running".into())),
+            };
+            let _ = reply.send(result);
+        }
+        Command::CaptureFresh {
+            path,
+            plugin_id,
+            state,
+            reply,
+        } => {
+            let result = (|| {
+                let entry = load_entry(&path)?;
+                let info = host_info()?;
+                let mut instance = new_instance(&entry, &plugin_id, &info, Arc::default())?;
+                if let Some(state) = &state {
+                    load_state(&mut instance, state)?;
+                }
+                save_state_of(&mut instance)
+            })();
+            let _ = reply.send(result);
+        }
+        Command::OpenEditor { key, reply } => {
+            let result = match live.get_mut(&key) {
+                Some(l) => open_editor_of(l),
+                None => Err(HostError("the plugin is no longer running".into())),
+            };
+            let _ = reply.send(result);
+        }
+        Command::CloseEditor { key } => {
+            if let Some(l) = live.get_mut(&key) {
+                if l.gui {
+                    let handle = l.instance.plugin_handle();
+                    if let Some(gui) = handle.get_extension::<PluginGui>() {
+                        let _ = gui.hide(&handle);
+                    }
+                }
+                destroy_editor(l);
+            }
+        }
+    }
+}
+
+fn load(
+    path: &Path,
+    plugin_id: &std::ffi::CStr,
+    state: Option<&[u8]>,
+    sample_rate: f32,
+    max_frames: usize,
+) -> Result<(Live, StoppedPluginAudioProcessor<Host>), HostError> {
+    let entry = load_entry(path)?;
+    let info = host_info()?;
+    let flags = Arc::new(Flags::default());
+    let mut instance = new_instance(&entry, plugin_id, &info, Arc::clone(&flags))?;
+    if let Some(state) = state {
+        load_state(&mut instance, state)?;
+    }
+    let processor = instance
+        .activate(
+            |_, _| (),
+            PluginAudioConfiguration {
+                sample_rate: f64::from(sample_rate),
+                min_frames_count: 1,
+                max_frames_count: max_frames as u32,
+            },
+        )
+        .map_err(|e| HostError(e.to_string()))?;
+    Ok((
+        Live {
+            instance,
+            _entry: entry,
+            flags,
+            gui: false,
+        },
+        processor,
+    ))
+}
+
+/// The state the plugin saves now, and every parameter's value now, so edits
+/// made in its editor can be kept in the project.
+fn capture_live(live: &mut Live) -> Result<Captured, HostError> {
+    let state = save_state_of(&mut live.instance)?;
+    let mut handle = live.instance.plugin_handle();
+    let mut params = Vec::new();
+    if let Some(ext) = handle.get_extension::<PluginParams>() {
+        for (id, desc) in visible_params(&mut handle) {
+            if let Some(value) = ext.get_value(&handle, id) {
+                params.push((desc.id, value));
+            }
+        }
+    }
+    Ok(Captured { state, params })
+}
+
+/// The windowing APIs to try, best first, for a floating window.
+fn apis() -> &'static [GuiApiType<'static>] {
+    if cfg!(windows) {
+        &[GuiApiType::WIN32]
+    } else if cfg!(target_os = "macos") {
+        &[GuiApiType::COCOA]
+    } else {
+        &[GuiApiType::X11, GuiApiType::WAYLAND]
+    }
+}
+
+fn open_editor_of(live: &mut Live) -> Result<(), HostError> {
+    let handle = live.instance.plugin_handle();
+    let Some(gui) = handle.get_extension::<PluginGui>() else {
+        return Err(HostError("this plugin has no editor".into()));
+    };
+    if live.gui {
+        // Already up: bring it back if it was hidden.
+        return gui
+            .show(&handle)
+            .map_err(|e| HostError(format!("can't show the editor: {e}")));
+    }
+    let configuration = apis()
+        .iter()
+        .map(|api| GuiConfiguration {
+            api_type: *api,
+            is_floating: true,
+        })
+        .find(|c| gui.is_api_supported(&handle, *c))
+        .ok_or_else(|| HostError("this plugin has no editor that floats on this system".into()))?;
+    gui.create(&handle, configuration)
+        .map_err(|e| HostError(format!("can't create the editor: {e}")))?;
+    live.gui = true;
+    live.flags.editor_closed.store(false, Ordering::Release);
+    if let Err(error) = gui.show(&handle) {
+        gui.destroy(&handle);
+        live.gui = false;
+        return Err(HostError(format!("can't show the editor: {error}")));
+    }
+    live.flags.editor_open.store(true, Ordering::Release);
+    Ok(())
+}
