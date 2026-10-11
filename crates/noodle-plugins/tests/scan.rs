@@ -117,3 +117,14 @@ fn finding_files_looks_for_clap_files_in_folders() {
         .collect();
     assert_eq!(names, ["a.clap", "b.clap"]);
 }
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_folder_named_clap_is_searched_for_the_file_inside() {
+    // Some packages (Debian's ProM) ship `ProM.clap/ProM.clap`.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("ProM.clap")).unwrap();
+    std::fs::write(dir.path().join("ProM.clap/ProM.clap"), b"").unwrap();
+    let found = find_plugin_files(&[dir.path().to_owned()]);
+    assert_eq!(found, [dir.path().join("ProM.clap/ProM.clap")]);
+}

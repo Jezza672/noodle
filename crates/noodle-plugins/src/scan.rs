@@ -192,7 +192,8 @@ pub fn standard_dirs() -> Vec<PathBuf> {
 }
 
 /// The `.clap` files under `dirs`. On macOS a `.clap` is a folder (a
-/// bundle) and is returned as one file, not searched.
+/// bundle) and is returned as one file, not searched; elsewhere a folder with
+/// that name is searched like any other.
 pub fn find_plugin_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -200,7 +201,10 @@ pub fn find_plugin_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "clap") {
+            // A `.clap` folder is a bundle on macOS; elsewhere it is just a
+            // folder (some packages put the file inside one of that name).
+            let named = path.extension().is_some_and(|ext| ext == "clap");
+            if named && (cfg!(target_os = "macos") || !path.is_dir()) {
                 found.push(path);
             } else if depth < 3 && path.is_dir() {
                 walk(&path, depth + 1, found);
