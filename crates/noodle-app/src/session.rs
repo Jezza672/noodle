@@ -17,7 +17,7 @@ pub use export::ExportChoice;
 
 use crate::filewatch::FileWatch;
 use crate::freezing::{Badge, Freezing, Look, Polled};
-use noodle_core::{Clip, Command, EditError, FrameId, History, NodeId, Project, Tick};
+use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
 use noodle_engine::{
     Controller, Diagnostic, Registry, Settings, Telemetry, TempoTable, compile_replacing,
     compile_with_lanes,
@@ -210,8 +210,10 @@ pub struct Session {
     audio_config: AudioConfig,
     audio: Option<Audio>,
     reroutes: Reroutes,
-    /// The tracks that record when the record button is pressed.
-    armed: BTreeSet<NodeId>,
+    /// The tracks that record audio when the record button is pressed.
+    armed_audio: BTreeSet<NodeId>,
+    /// The tracks that record MIDI, and play it live.
+    armed_midi: BTreeSet<NodeId>,
     /// The take being recorded, if there is one.
     recording: Option<Recording>,
     /// How the MIDI of the next take is snapped. Not saved with the project.
@@ -237,10 +239,34 @@ const FREEZE_TAIL: f32 = 4.0;
 /// The shortest render in seconds, for projects with little or no timeline.
 const FREEZE_MINIMUM: f32 = 30.0;
 
+/// Which input a track's arm button records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmKind {
+    Audio,
+    Midi,
+}
+
+/// A take being recorded, as the timeline draws it.
+pub struct TakePreview {
+    /// The tracks that get an audio clip of it, and those that get a MIDI
+    /// clip.
+    pub audio_tracks: Vec<NodeId>,
+    pub midi_tracks: Vec<NodeId>,
+    /// Where the take started and where the playhead is now.
+    pub start: Tick,
+    pub end: Tick,
+    /// Whether an audio input is being recorded.
+    pub audio: bool,
+    /// The notes played so far, as the clip they will be, and where it starts.
+    pub midi: Option<(Tick, MidiClip)>,
+}
+
 /// A take being recorded.
 struct Recording {
-    /// The tracks that get a clip of it.
-    tracks: Vec<NodeId>,
+    /// The tracks that get an audio clip of it, and those that get a MIDI
+    /// clip.
+    audio_tracks: Vec<NodeId>,
+    midi_tracks: Vec<NodeId>,
     /// Where the take starts on the timeline.
     start: Tick,
     /// The audio file, relative to the project file, when an input is being
@@ -256,6 +282,11 @@ struct Recording {
 trait TakeSink {
     fn start(&mut self, path: &Path) -> Result<(), RecordError>;
     fn stop(&mut self) -> Result<Take, RecordError>;
+    /// The take so far as peaks, if the sink can say. See
+    /// [`Recorder::live_peaks`].
+    fn live_peaks(&self, _columns: usize) -> Option<(u64, Vec<noodle_io::Peak>)> {
+        None
+    }
 }
 
 impl TakeSink for Playback {
@@ -265,6 +296,9 @@ impl TakeSink for Playback {
     fn stop(&mut self) -> Result<Take, RecordError> {
         self.stop_recording()
     }
+    fn live_peaks(&self, columns: usize) -> Option<(u64, Vec<noodle_io::Peak>)> {
+        Playback::live_peaks(self, columns)
+    }
 }
 
 impl TakeSink for Recorder {
@@ -273,6 +307,9 @@ impl TakeSink for Recorder {
     }
     fn stop(&mut self) -> Result<Take, RecordError> {
         Recorder::stop(self)
+    }
+    fn live_peaks(&self, columns: usize) -> Option<(u64, Vec<noodle_io::Peak>)> {
+        Some(Recorder::live_peaks(self, columns))
     }
 }
 
@@ -386,7 +423,8 @@ impl Session {
             audio_config: AudioConfig::default(),
             audio: None,
             reroutes: Reroutes::default(),
-            armed: BTreeSet::new(),
+            armed_audio: BTreeSet::new(),
+            armed_midi: BTreeSet::new(),
             recording: None,
             record_quantise: crate::midi_take::Quantise::default(),
             #[cfg(test)]
@@ -984,7 +1022,8 @@ impl Session {
         // The take belongs to the project it was recorded in, and so does
         // the arming: track IDs mean other tracks in the next project.
         self.stop_recording();
-        for track in std::mem::take(&mut self.armed) {
+        self.armed_audio.clear();
+        for track in std::mem::take(&mut self.armed_midi) {
             self.clips.set_monitoring(track, false);
         }
         self.saved = project.clone();
@@ -1297,20 +1336,38 @@ impl Session {
         });
     }
 
-    /// Arms or disarms a track (by its track input node) for recording. An
-    /// armed track also plays the live MIDI through its own synth, whether
-    /// or not the transport runs: see [`noodle_nodes::TrackInput::with_midi`].
-    pub fn arm(&mut self, track: NodeId, on: bool) {
+    /// Arms or disarms a track (by its track input node) for recording one
+    /// `kind` of input. A track armed for MIDI also plays the live MIDI
+    /// through its own synth, whether or not the transport runs: see
+    /// [`noodle_nodes::TrackInput::with_midi`]. Audio has no live
+    /// monitoring yet.
+    pub fn arm_kind(&mut self, track: NodeId, kind: ArmKind, on: bool) {
+        let set = match kind {
+            ArmKind::Audio => &mut self.armed_audio,
+            ArmKind::Midi => &mut self.armed_midi,
+        };
         if on {
-            self.armed.insert(track);
+            set.insert(track);
         } else {
-            self.armed.remove(&track);
+            set.remove(&track);
         }
-        self.clips.set_monitoring(track, on);
+        if kind == ArmKind::Midi {
+            self.clips.set_monitoring(track, on);
+        }
     }
 
-    pub fn is_armed(&self, track: NodeId) -> bool {
-        self.armed.contains(&track)
+    /// Arms or disarms a track for both kinds of input.
+    #[cfg(test)]
+    pub fn arm(&mut self, track: NodeId, on: bool) {
+        self.arm_kind(track, ArmKind::Audio, on);
+        self.arm_kind(track, ArmKind::Midi, on);
+    }
+
+    pub fn is_armed(&self, track: NodeId, kind: ArmKind) -> bool {
+        match kind {
+            ArmKind::Audio => self.armed_audio.contains(&track),
+            ArmKind::Midi => self.armed_midi.contains(&track),
+        }
     }
 
     /// How the MIDI of the next take is snapped to the beat.
@@ -1320,6 +1377,21 @@ impl Session {
 
     pub fn set_record_quantise(&mut self, quantise: crate::midi_take::Quantise) {
         self.record_quantise = quantise;
+    }
+
+    /// Records into a stand-in for the input stream, whose end is returned,
+    /// without opening any audio.
+    #[cfg(test)]
+    pub(crate) fn fake_recorder(&mut self) -> noodle_io::RecordTap {
+        let (tap, recorder) = noodle_io::record_path(1, 48_000.0);
+        self.fake_input = Some(Box::new(recorder));
+        tap
+    }
+
+    /// Moves the playhead without stopping a take, as playing would.
+    #[cfg(test)]
+    pub(crate) fn advance_playhead(&mut self, tick: Tick) {
+        self.parked = tick;
     }
 
     pub fn is_recording(&self) -> bool {
@@ -1345,14 +1417,16 @@ impl Session {
         if self.recording.is_some() {
             return;
         }
-        let tracks: Vec<NodeId> = self
-            .armed
-            .iter()
-            .copied()
-            .filter(|&track| self.project.graph().node(track).is_some())
-            .collect();
-        if tracks.is_empty() {
-            self.message = Some("Arm a track to record on (R on its header)".into());
+        let exist = |set: &BTreeSet<NodeId>| -> Vec<NodeId> {
+            set.iter()
+                .copied()
+                .filter(|&track| self.project.graph().node(track).is_some())
+                .collect()
+        };
+        let audio_tracks = exist(&self.armed_audio);
+        let midi_tracks = exist(&self.armed_midi);
+        if audio_tracks.is_empty() && midi_tracks.is_empty() {
+            self.message = Some("Arm a track to record on (RA or RM on its header)".into());
             return;
         }
         let Some(project_path) = self.path.clone() else {
@@ -1372,14 +1446,21 @@ impl Session {
             self.set_transport_running(true);
         }
         let start = self.playhead();
-        let (path, relative) = match next_take_path(&project_path) {
-            Ok(found) => found,
-            Err(error) => {
-                self.message = Some(format!("Couldn't make a place for the take: {error}"));
-                return;
+        // A take of MIDI alone has no file, and no folder for one.
+        let (path, relative) = if audio_tracks.is_empty() {
+            (PathBuf::new(), String::new())
+        } else {
+            match next_take_path(&project_path) {
+                Ok(found) => found,
+                Err(error) => {
+                    self.message = Some(format!("Couldn't make a place for the take: {error}"));
+                    return;
+                }
             }
         };
+        // Only tracks armed for audio need the input recorded.
         let started = match self.sink() {
+            _ if audio_tracks.is_empty() => Err(RecordError::NoInput),
             Some(sink) => sink.start(&path),
             None => Err(RecordError::NoInput),
         };
@@ -1400,7 +1481,8 @@ impl Session {
                 .sample_at(start, f64::from(FREEZE_SETTINGS.sample_rate)),
         };
         self.recording = Some(Recording {
-            tracks,
+            audio_tracks,
+            midi_tracks,
             start,
             relative,
             midi: crate::midi_take::MidiTake::start(
@@ -1411,6 +1493,64 @@ impl Session {
             quantise: self.record_quantise,
         });
         self.message = None;
+    }
+
+    /// The sample rate to place a take with, and how long after the
+    /// transport rendered something the player heard it.
+    fn take_timing(&self) -> (f64, std::time::Duration) {
+        match &self.audio {
+            Some(audio) => {
+                let rate = f64::from(audio.controller.settings().sample_rate);
+                // What the player heard was also held back by plugin delay
+                // compensation.
+                let pdc = std::time::Duration::from_secs_f64(
+                    audio.controller.output_latency() as f64 / rate,
+                );
+                (rate, audio.playback.output_latency() + pdc)
+            }
+            None => (
+                f64::from(FREEZE_SETTINGS.sample_rate),
+                std::time::Duration::ZERO,
+            ),
+        }
+    }
+
+    /// The take being recorded, as far as it goes: where it is on the
+    /// timeline and the notes played so far, for drawing it growing with the
+    /// playhead. `None` when not recording.
+    pub fn take_preview(&self) -> Option<TakePreview> {
+        let recording = self.recording.as_ref()?;
+        let (rate, latency) = self.take_timing();
+        let midi = recording.midi.clip_so_far(&crate::midi_take::Finish {
+            stop_micros: noodle_io::now_micros(),
+            output_latency_micros: latency.as_micros() as u64,
+            sample_rate: rate,
+            tempo_map: self.project.tempo_map(),
+            quantise: recording.quantise,
+            anchor: self.midi.clock().anchor(),
+        });
+        Some(TakePreview {
+            audio_tracks: recording.audio_tracks.clone(),
+            midi_tracks: recording.midi_tracks.clone(),
+            start: recording.start,
+            end: self.playhead().max(recording.start),
+            audio: recording.relative.is_some(),
+            midi,
+        })
+    }
+
+    /// The audio recorded so far as `columns` peaks over all of it, for
+    /// [`TakePreview::audio`] takes.
+    pub fn take_waveform(&self, columns: usize) -> Vec<noodle_io::Peak> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake_input {
+            return fake.live_peaks(columns).map(|(_, p)| p).unwrap_or_default();
+        }
+        self.audio
+            .as_ref()
+            .and_then(|audio| TakeSink::live_peaks(&audio.playback, columns))
+            .map(|(_, peaks)| peaks)
+            .unwrap_or_default()
     }
 
     /// Ends the take and adds it to the project: an audio clip, if an input
@@ -1439,29 +1579,18 @@ impl Session {
                 Err(error) => notices.push(format!("The recording failed: {error}")),
             }
         }
-        let (rate, latency) = match &self.audio {
-            Some(audio) => {
-                let rate = f64::from(audio.controller.settings().sample_rate);
-                // What the player heard was also held back by plugin delay
-                // compensation.
-                let pdc = std::time::Duration::from_secs_f64(
-                    audio.controller.output_latency() as f64 / rate,
-                );
-                (rate, audio.playback.output_latency() + pdc)
-            }
-            None => (
-                f64::from(FREEZE_SETTINGS.sample_rate),
-                std::time::Duration::ZERO,
-            ),
-        };
-        if let Some((start, clip)) = recording.midi.finish(&crate::midi_take::Finish {
-            stop_micros,
-            output_latency_micros: latency.as_micros() as u64,
-            sample_rate: rate,
-            tempo_map: self.project.tempo_map(),
-            quantise: recording.quantise,
-            anchor: self.midi.clock().anchor(),
-        }) {
+        let (rate, latency) = self.take_timing();
+        // Notes only matter if a track is armed to take them.
+        if !recording.midi_tracks.is_empty()
+            && let Some((start, clip)) = recording.midi.finish(&crate::midi_take::Finish {
+                stop_micros,
+                output_latency_micros: latency.as_micros() as u64,
+                sample_rate: rate,
+                tempo_map: self.project.tempo_map(),
+                quantise: recording.quantise,
+                anchor: self.midi.clock().anchor(),
+            })
+        {
             notes.push((start, clip));
         }
         if take.is_none() && notes.is_empty() {
@@ -1471,13 +1600,16 @@ impl Session {
             self.message = Some(notices.join("; "));
             return;
         }
-        let tracks: Vec<NodeId> = recording
-            .tracks
-            .iter()
-            .copied()
-            .filter(|&track| self.project.graph().node(track).is_some())
-            .collect();
-        if tracks.is_empty() {
+        let exist = |tracks: &[NodeId]| -> Vec<NodeId> {
+            tracks
+                .iter()
+                .copied()
+                .filter(|&track| self.project.graph().node(track).is_some())
+                .collect()
+        };
+        let audio_tracks = exist(&recording.audio_tracks);
+        let midi_tracks = exist(&recording.midi_tracks);
+        if audio_tracks.is_empty() && midi_tracks.is_empty() {
             // An empty batch would be an undo step that does nothing.
             notices.push(match &recording.relative {
                 Some(relative) if take.is_some() => {
@@ -1489,13 +1621,15 @@ impl Session {
             return;
         }
         let mut commands = Vec::new();
-        for &track in &tracks {
+        for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
                 commands.push(Command::AddClip {
                     id: self.project.new_clip_id(),
                     clip: Clip::audio(track, recording.start, relative.clone(), take.frames),
                 });
             }
+        }
+        for &track in &midi_tracks {
             for (start, midi) in &notes {
                 let mut clip = Clip::midi(track, *start, midi.length);
                 if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
@@ -1550,7 +1684,7 @@ impl Session {
         self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
         // The feeds forget a node that is gone, monitoring flag and all, and
         // undoing the delete brings it back unmonitored while still armed.
-        for &track in &self.armed {
+        for &track in &self.armed_midi {
             if self.project.graph().node(track).is_some() {
                 self.clips.set_monitoring(track, true);
             }
@@ -3254,6 +3388,81 @@ mod tests {
     }
 
     #[test]
+    fn audio_and_midi_arms_choose_what_each_track_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm_kind(tracks[0], ArmKind::Audio, true);
+        session.arm_kind(tracks[1], ArmKind::Midi, true);
+        session.record();
+        tap.push(&[0.5; 480]);
+        session.midi_bus().send([0x90, 64, 90]);
+        session.stop_recording();
+        // Audio on the first track alone, notes on the second alone.
+        let audio: Vec<NodeId> = session
+            .project()
+            .clips()
+            .filter(|(_, clip)| clip.as_audio().is_some())
+            .map(|(_, clip)| clip.node)
+            .collect();
+        assert_eq!(audio, [tracks[0]]);
+        let midi = midi_clips(&session);
+        assert_eq!(midi.len(), 1);
+        assert_eq!(midi[0].0, tracks[1]);
+    }
+
+    #[test]
+    fn only_a_midi_arm_monitors_and_only_an_audio_arm_records_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm_kind(tracks[0], ArmKind::Midi, true);
+        session.record();
+        // No audio file is started for a take with nothing armed for audio.
+        assert!(!session.take_preview().unwrap().audio);
+        tap.push(&[0.5; 480]);
+        session.stop_recording();
+        assert_eq!(session.project().clips().count(), 0);
+        assert!(!dir.path().join("song recordings").exists());
+    }
+
+    #[test]
+    fn the_take_in_progress_can_be_previewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        assert!(session.take_preview().is_none());
+        session.arm(tracks[1], true);
+        session.record();
+        let preview = session.take_preview().unwrap();
+        assert_eq!(preview.audio_tracks, [tracks[1]]);
+        assert_eq!(preview.midi_tracks, [tracks[1]]);
+        assert!(preview.audio);
+        assert!(preview.midi.is_none());
+        // Notes show up as they are played, a held one included.
+        session.midi_bus().send([0x90, 62, 100]);
+        session.maintain();
+        session.advance_playhead(Tick(1920));
+        let preview = session.take_preview().unwrap();
+        assert_eq!((preview.start, preview.end), (Tick(0), Tick(1920)));
+        let (_, clip) = preview.midi.unwrap();
+        assert_eq!(clip.notes.len(), 1);
+        assert_eq!(clip.notes[0].key, 62);
+        // So does the audio, up to a block behind.
+        tap.push(&[0.5; 4096]);
+        let mut peaks = Vec::new();
+        for _ in 0..500 {
+            peaks = session.take_waveform(4);
+            if peaks.iter().any(|p| p.max > 0.0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(peaks.len(), 4);
+        assert!(peaks.iter().all(|p| p.max == 0.5), "{peaks:?}");
+        // Nothing is left to draw once the take is done.
+        session.stop_recording();
+        assert!(session.take_preview().is_none());
+    }
+
+    #[test]
     fn a_take_with_neither_notes_nor_audio_adds_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
@@ -3645,7 +3854,7 @@ mod tests {
         let (track, _) = track_synth(&mut session);
         session.arm(track, true);
         session.new_project();
-        assert!(!session.is_armed(track));
+        assert!(!session.is_armed(track, ArmKind::Midi));
     }
 
     #[test]
@@ -3665,7 +3874,7 @@ mod tests {
         session.undo();
         session.undo();
         assert!(session.project().graph().node(track).is_some());
-        assert!(session.is_armed(track));
+        assert!(session.is_armed(track, ArmKind::Midi));
         session.midi_bus().send([0x90, 69, 100]);
         assert!(loudness(&mut session, meter, true) > 0.01);
     }

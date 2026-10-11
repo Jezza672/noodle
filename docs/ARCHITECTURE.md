@@ -414,7 +414,7 @@ rewind only touch the transport:
 
 ### Live monitoring
 
-An **armed** track (the R on its header, `Session::arm`) plays live MIDI
+A track **armed for MIDI** (RM on its header, `Session::arm_kind`) plays live MIDI
 through its own synth, with no `MIDI In` node and without the transport:
 `ClipFeeds::set_monitoring` switches a flag in the track input's shared state,
 and a track input built with `TrackInput::with_midi` (the library's is)
@@ -537,8 +537,11 @@ before the start, keys and velocities in range).
 
 ### Recording into the arrangement
 
-A track is armed in the session (the R on its header), which is app state and
-not saved with the project. Record needs an armed track and a saved project,
+A track is armed in the session, which is app state and not saved with the
+project. It has two arm buttons, RA for audio and RM for MIDI, each
+independent: audio clips go on the audio-armed tracks, MIDI clips on the
+MIDI-armed ones, and only RM also monitors live (audio has no live monitoring
+yet). A take with no audio-armed track starts no file. Record needs an armed track and a saved project,
 since takes are stored next to it, in a `<project name> recordings` folder as
 `take-001.wav`, `take-002.wav` and so on, and a clip's source is a path
 relative to the project file like any other. Record starts the engine and the
@@ -553,6 +556,12 @@ deletes its file. Input that was dropped because the disk stalled is
 reported. The clip is placed at the playhead without compensating for the
 audio device's latency, so a take can sit a little late; that is still to do.
 
+**The take in progress** is drawn on the arrangement as it grows: a red clip
+from the take's start to the playhead on each armed track, with the notes
+played so far (`MidiTake::clip_so_far`) and, for audio, a waveform from peaks
+the writer thread keeps while recording (`Recorder::live_peaks`, a few ms
+behind). `Session::take_preview` and `take_waveform` feed `timeline/take.rs`.
+
 **MIDI takes.** The same Record also captures MIDI. It subscribes to the
 session's MIDI bus for notes (hardware ports and the computer keyboard alike)
 and keeps each message with its arrival time. Every UI frame the take notes
@@ -561,8 +570,8 @@ message to the timeline through it, so the stream's startup delay and clock
 drift don't matter. Times are moved earlier by the output latency the device
 reported (`Playback::output_latency`), since the player was playing along to
 what they heard, and the clip starts that much before the playhead was when
-Record was pressed. Like an audio take, a MIDI clip goes on every armed track,
-whether or not it takes MIDI, so arm only the tracks that should get one. The
+Record was pressed. Like an audio take, a MIDI clip goes on every MIDI-armed track,
+whether or not it takes MIDI. The
 take ends with one MIDI clip per armed track from the start of the take: a note still held ends where the take
 does, a note-off with no note-on is ignored, and a take with no notes adds
 no clip. The audio and MIDI clips of a take are one `Batch`. Audio is recorded

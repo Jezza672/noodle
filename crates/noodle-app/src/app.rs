@@ -338,8 +338,8 @@ impl App {
                 if let Some(clip) = out.open_midi {
                     self.piano_roll.open(clip);
                 }
-                for (track, on) in out.arm {
-                    self.session.arm(track, on);
+                for (track, kind, on) in out.arm {
+                    self.session.arm_kind(track, kind, on);
                 }
             });
 
@@ -642,7 +642,7 @@ impl App {
         if ui
             .add(record)
             .on_hover_text(
-                "Record the input onto the armed tracks (R on a track header), from the playhead",
+                "Record the input onto the armed tracks (RA and RM on a track header), from the playhead",
             )
             .clicked()
         {
