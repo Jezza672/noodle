@@ -376,7 +376,7 @@ pub(crate) fn visible_params(handle: &mut PluginMainThreadHandle) -> Vec<(ClapId
 /// Marks state wrapped by [`seal_state`].
 const STATE_MAGIC: &[u8; 4] = b"NCS1";
 
-fn checksum(bytes: &[u8]) -> u32 {
+pub(crate) fn checksum(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0x811c_9dc5_u32, |hash, &byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
     })

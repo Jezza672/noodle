@@ -234,14 +234,15 @@ fn param_picker(
         .iter()
         .map(|p| p.id)
         .collect();
-    // A wire into a parameter keeps its port: hiding it would leave the wire
-    // pointing at nothing, which fails the compile.
+    // A wire or automation lane into a parameter keeps its port: hiding it
+    // would leave them pointing at nothing, which fails the compile.
     let wired = |param: u32| {
-        session
-            .project()
-            .graph()
-            .source(&Endpoint::new(id, noodle_plugins::param_key(param)))
-            .is_some()
+        let target = Endpoint::new(id, noodle_plugins::param_key(param));
+        session.project().graph().source(&target).is_some()
+            || session
+                .project()
+                .lanes()
+                .any(|(_, lane)| lane.target == target && !lane.points.is_empty())
     };
     let search_id = ui.make_persistent_id(("param-search", id));
     let mut query: String = ui.data(|d| d.get_temp(search_id)).unwrap_or_default();
@@ -263,12 +264,33 @@ fn param_picker(
                 words.iter().all(|w| text.contains(w))
             })
             .collect();
+        // Changing the setting builds the plugin again from its saved state,
+        // so what the open editor changed is kept first, in the same undo
+        // step. A parameter that leaves the node forgets its stored value, so
+        // that showing it again doesn't send a stale one.
         let set = |ids: Vec<u32>| {
-            Edit::Apply(Command::SetConfig {
+            let mut commands = Vec::new();
+            if session.plugin_editor_open(id)
+                && let Ok(captured) = noodle_plugins::capture(id)
+            {
+                commands.push(captured.commands(id, descriptor, &node.config));
+            }
+            commands.push(Command::SetConfig {
                 node: id,
                 key: noodle_plugins::PARAMS_KEY.to_owned(),
                 value: Some(noodle_core::Value::Text(params_text(&ids))),
-            })
+            });
+            for hidden in chosen.iter().filter(|c| !ids.contains(c)) {
+                let key = noodle_plugins::param_key(*hidden);
+                if node.params.contains_key(&key) {
+                    commands.push(Command::SetParam {
+                        node: id,
+                        key,
+                        value: None,
+                    });
+                }
+            }
+            Edit::Apply(Command::Batch(commands))
         };
         ui.horizontal(|ui| {
             if ui.small_button("Show matches").clicked() {

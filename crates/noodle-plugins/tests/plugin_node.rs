@@ -359,8 +359,10 @@ fn the_params_setting_chooses_which_parameters_get_ports() {
             .map(|p| p.key.to_string())
             .collect::<Vec<_>>()
     };
-    // A plugin with few parameters shows them all until told otherwise.
+    // Without the setting every parameter has a port, as in projects saved
+    // before it existed. A big plugin's new node starts with `none` instead.
     assert_eq!(keys(&Config::new()), ["in", "p1", "p2"]);
+    assert_eq!(noodle_plugins::initial_params(node.descriptor()), None);
     let only =
         |text: &str| Config::new().with(noodle_plugins::PARAMS_KEY, Value::Text(text.into()));
     assert_eq!(keys(&only("2")), ["in", "p2"]);

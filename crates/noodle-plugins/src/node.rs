@@ -400,7 +400,11 @@ impl ClapNode {
                     // Starts at the default, so a port nobody has touched
                     // leaves the plugin's own (or restored) value alone: a
                     // plugin can report a default that isn't its live value.
-                    last: info.default,
+                    last: if param.stepped {
+                        info.default.round()
+                    } else {
+                        info.default
+                    },
                 })
             })
             .collect();

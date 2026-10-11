@@ -180,10 +180,17 @@ pub fn param_key(id: u32) -> String {
     format!("p{id}")
 }
 
-/// A plugin with at most this many parameters shows all of them on its node
-/// until the user chooses; one with more shows none (a synth can have
-/// hundreds, which makes a node too tall to use).
+/// A plugin with at most this many parameters shows all of them on a new
+/// node; one with more shows none (a synth can have hundreds, which makes a
+/// node too tall to use). See [`initial_params`].
 pub const DEFAULT_EXPOSED_LIMIT: usize = 32;
+
+/// The `params` setting a newly added node of this plugin starts with, if it
+/// needs one. A node without the setting shows every parameter, which is what
+/// projects saved before the setting existed rely on.
+pub fn initial_params(descriptor: &Descriptor) -> Option<String> {
+    (descriptor.params.len() > DEFAULT_EXPOSED_LIMIT).then(|| params_text(&[]))
+}
 
 /// The ids of the parameters chosen in `config`, if the user chose any.
 /// The setting is a comma-separated list of ids; `none` means an empty choice
@@ -203,7 +210,8 @@ pub fn chosen_params(config: &Config) -> Option<Vec<u32>> {
     )
 }
 
-/// The parameters that get a port on the node, in the plugin's order.
+/// The parameters that get a port on the node, in the plugin's order: the
+/// chosen ones, or all of them if nothing was chosen.
 pub fn exposed_params<'a>(descriptor: &'a Descriptor, config: &Config) -> Vec<&'a ParamDesc> {
     match chosen_params(config) {
         Some(ids) => descriptor
@@ -211,10 +219,7 @@ pub fn exposed_params<'a>(descriptor: &'a Descriptor, config: &Config) -> Vec<&'
             .iter()
             .filter(|p| ids.contains(&p.id))
             .collect(),
-        None if descriptor.params.len() <= DEFAULT_EXPOSED_LIMIT => {
-            descriptor.params.iter().collect()
-        }
-        None => Vec::new(),
+        None => descriptor.params.iter().collect(),
     }
 }
 

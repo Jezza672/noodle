@@ -809,11 +809,14 @@ depends on one setting, `params`, which lists the parameters that get ports
 **Exposed parameters.** A synth can have hundreds of parameters, which would
 make its node unusably tall, so only the ones listed in the node's `params`
 setting get ports (comma-separated parameter ids; `none` for no ports). That
-is config, since it changes the ports. Until the user chooses, a plugin with
-32 or fewer parameters shows all of them and a bigger one shows none. The
+is config, since it changes the ports. A node without the setting shows every
+parameter, so projects saved before it existed keep their ports; the plugin
+browser adds a plugin with more than 32 parameters with `none`. The
 properties panel has a searchable picker, grouped by the plugin's modules. A
-parameter with a wire into it can't be hidden (the wire would point at
-nothing). A hidden parameter is never sent to the plugin, so it keeps what
+parameter with a wire or automation lane into it can't be hidden (they would
+point at nothing). Changing the choice while the editor is open keeps the
+editor's changes in the same undo step, and a parameter that is hidden forgets
+its stored value. A hidden parameter is never sent to the plugin, so it keeps what
 the plugin's saved state gave it. The editor shows a node's note inputs before
 its audio and parameter inputs (the layout keeps them in their own list).
 
@@ -952,9 +955,12 @@ results saved before VST3 load as CLAP). The code is in
   volume, pan, expression, sustain, channel pressure, pitch bend) go through
   the controller's `IMidiMapping` to parameters, which need no port; a
   controller with no mapping is sent as a legacy MIDI event.
-- **State.** `Plugin::save_state` writes `NVS1`, the component's state length
-  as a little-endian `u32`, the component's state, then the controller's (only
-  for a separate controller), through memory `IBStream`s. Loading hands the
+- **State.** `Plugin::save_state` writes `NVS2`, the component's state length
+  as a little-endian `u32`, a checksum of everything after it, the component's
+  state, then the controller's (only
+  for a separate controller), through memory `IBStream`s. A bad checksum is
+  refused before the plugin sees the bytes (`NVS1`, saved without one, is still
+  read, unchecked). Loading hands the
   component its bytes, then the controller `setComponentState` with the same
   bytes and its own `setState`. It lives in the `state` setting like CLAP's.
 - **Editors** (`gui.rs`). VST3 has no floating windows, so an editor is
