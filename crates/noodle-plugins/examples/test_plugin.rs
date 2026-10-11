@@ -35,6 +35,7 @@ use clack_extensions::params::{
 };
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
+use clack_plugin::entry::prelude::*;
 use clack_plugin::events::event_types::{NoteOffEvent, NoteOnEvent};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
@@ -537,4 +538,27 @@ impl PluginAudioProcessorParams for Processor<'_> {
     }
 }
 
-clack_export_entry!(SinglePluginEntry<TestPlugin>);
+/// The entry, which writes a file named by `NOODLE_TEST_DEINIT_MARKER` when
+/// the host deinitialises the plugin (dropping the entry). A test can then
+/// see whether the host unloaded it.
+struct TestEntry(SinglePluginEntry<TestPlugin>);
+
+impl Entry for TestEntry {
+    fn new(plugin_path: Option<&std::ffi::CStr>) -> Result<Self, EntryLoadError> {
+        SinglePluginEntry::new(plugin_path).map(Self)
+    }
+
+    fn declare_factories<'a>(&'a self, builder: &mut EntryFactories<'a>) {
+        self.0.declare_factories(builder);
+    }
+}
+
+impl Drop for TestEntry {
+    fn drop(&mut self) {
+        if let Some(path) = std::env::var_os("NOODLE_TEST_DEINIT_MARKER") {
+            let _ = std::fs::write(path, b"deinit");
+        }
+    }
+}
+
+clack_export_entry!(TestEntry);

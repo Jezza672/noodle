@@ -834,6 +834,7 @@ dropped, and releasing them after the plugin is unloaded or deinitialised
 crashes. So on macOS each plugin file, CLAP or VST3, stays loaded for the
 life of the app: the entry's `deinit` and the bundle's exit never run, and a
 plugin file replaced on disk takes effect after a restart.
+(`tests/keep_loaded.rs` checks this through the test plugins' `deinit` and module exit.)
 
 **Instances and the plugin thread.** CLAP says a plugin instance belongs to
 its main thread, and JUCE-based plugins expect that to be one thread for the
