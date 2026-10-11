@@ -9,6 +9,7 @@ mod editor;
 mod export_dialog;
 mod filewatch;
 mod freezing;
+mod keyboard;
 mod metronome;
 mod mixer;
 mod outputs;

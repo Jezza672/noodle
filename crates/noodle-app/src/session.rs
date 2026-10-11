@@ -408,6 +408,12 @@ impl Session {
         self.clips.audition(node, key, on);
     }
 
+    /// Where MIDI from sources other than a port, such as the computer
+    /// keyboard, is sent to reach the MIDI In nodes.
+    pub fn midi_bus(&self) -> &noodle_io::MidiBus {
+        &self.midi
+    }
+
     /// The MIDI input port that is open, if any.
     #[cfg(test)]
     pub fn midi_input(&self) -> Option<&str> {

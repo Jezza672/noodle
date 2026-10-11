@@ -30,10 +30,12 @@ const ARRANGE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key:
 /// Shown in the Edit menu. The canvas handles the key itself, with the
 /// pointer over it, so this is not in [`SHORTCUTS`].
 const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
+/// Turns the computer keyboard into a MIDI source, as in Ableton.
+const KEYBOARD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::M);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
 /// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
-const SHORTCUTS: [(KeyboardShortcut, Action); 8] = [
+const SHORTCUTS: [(KeyboardShortcut, Action); 9] = [
     (REDO, Action::Redo),
     (UNDO, Action::Undo),
     (SAVE_AS, Action::SaveAs),
@@ -42,6 +44,7 @@ const SHORTCUTS: [(KeyboardShortcut, Action); 8] = [
     (NEW, Action::New),
     (SETTINGS, Action::AudioSettings),
     (PLAY, Action::TogglePlayback),
+    (KEYBOARD, Action::ToggleKeyboard),
 ];
 
 pub struct App {
@@ -75,6 +78,8 @@ pub struct App {
     /// Whether the outputs view is showing.
     outputs_open: bool,
     outputs: OutputsView,
+    /// The computer keyboard as a MIDI source. Off at start and not saved.
+    keyboard: crate::keyboard::KeyboardMidi,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -91,6 +96,7 @@ enum Action {
     TogglePlayback,
     Rewind,
     ToggleRecord,
+    ToggleKeyboard,
     TogglePause,
     AudioSettings,
     ToggleMixer,
@@ -117,7 +123,10 @@ impl Action {
     /// others (New, Open, Save and the rest) are chords a text field has no
     /// use for; a new shortcut should ask which kind it is.
     fn yields_to_text(self) -> bool {
-        matches!(self, Self::TogglePlayback | Self::Undo | Self::Redo)
+        matches!(
+            self,
+            Self::TogglePlayback | Self::ToggleKeyboard | Self::Undo | Self::Redo
+        )
     }
 }
 
@@ -142,6 +151,7 @@ impl App {
             scope_view: None,
             outputs_open: false,
             outputs: OutputsView::default(),
+            keyboard: crate::keyboard::KeyboardMidi::default(),
         }
     }
 
@@ -239,6 +249,9 @@ impl App {
             ui.ctx()
                 .request_repaint_after(crate::session::MIDI_WATCH_INTERVAL);
         }
+        // Before the shortcuts, so the note keys are not also delete and the
+        // like.
+        self.keyboard_midi(ui.ctx());
         // Before the panels, so a focused button doesn't also see Space.
         let mut actions = self.shortcuts(ui.ctx());
 
@@ -382,6 +395,58 @@ impl App {
         }
         for action in actions {
             self.request(ui.ctx(), action);
+        }
+    }
+
+    /// Turns the keys the computer keyboard plays into MIDI on the session's
+    /// bus, and takes them from the frame's input so nothing else acts on
+    /// them. A text field, a dialog or the window losing focus lets go of
+    /// what is held instead.
+    fn keyboard_midi(&mut self, ctx: &egui::Context) {
+        if !self.keyboard.is_on() {
+            return;
+        }
+        let typing = ctx.egui_wants_keyboard_input()
+            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
+        let dialog = self.devices.is_open() || self.export.is_open() || self.confirming.is_some();
+        let focused = ctx.input(|i| i.focused);
+        let mut messages = Vec::new();
+        if typing || dialog || !focused {
+            messages.extend(self.keyboard.release_all());
+        } else {
+            let keyboard = &mut self.keyboard;
+            ctx.input_mut(|input| {
+                input.events.retain(|event| {
+                    let egui::Event::Key {
+                        key,
+                        pressed,
+                        repeat,
+                        modifiers,
+                        ..
+                    } = event
+                    else {
+                        return true;
+                    };
+                    if !crate::keyboard::is_key(*key) {
+                        return true;
+                    }
+                    if *pressed {
+                        // Chords such as Cmd+C are not notes.
+                        if modifiers.command || modifiers.ctrl || modifiers.alt {
+                            return true;
+                        }
+                        if !repeat {
+                            messages.extend(keyboard.press(*key));
+                        }
+                    } else {
+                        messages.extend(keyboard.release(*key));
+                    }
+                    false
+                });
+            });
+        }
+        for message in messages {
+            self.session.midi_bus().send(message);
         }
     }
 
@@ -568,6 +633,7 @@ impl App {
         {
             actions.push(Action::ToggleRecord);
         }
+        self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
         let at = self
             .session
@@ -576,6 +642,37 @@ impl App {
             .position(self.session.playhead());
         let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
+    }
+
+    /// The computer keyboard as a MIDI source. While on it shows the octave
+    /// and velocity the Z X C V keys set.
+    fn keyboard_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let on = self.keyboard.is_on();
+        let label = if on {
+            format!(
+                "⌨ {} · {}",
+                self.keyboard.octave_label(),
+                self.keyboard.velocity()
+            )
+        } else {
+            "⌨".to_owned()
+        };
+        let label = egui::RichText::new(label).color(if on {
+            theme::ACCENT
+        } else {
+            theme::timeline::TEXT
+        });
+        if ui
+            .add(egui::Button::new(label).selected(on))
+            .on_hover_text(
+                "Play the MIDI In nodes, and record, from the computer keyboard (M). \
+                 A W S E D F T G Y H U J K are the notes, Z and X change the octave, \
+                 C and V the velocity.",
+            )
+            .clicked()
+        {
+            actions.push(Action::ToggleKeyboard);
+        }
     }
 
     /// Lit while the bound button is on. A metronome that is missing shows
@@ -739,6 +836,11 @@ impl App {
                 }
             }
             Action::Rewind => self.session.rewind(),
+            Action::ToggleKeyboard => {
+                for message in self.keyboard.set_on(!self.keyboard.is_on()) {
+                    self.session.midi_bus().send(message);
+                }
+            }
             Action::ToggleRecord => {
                 if self.session.is_recording() {
                     self.session.stop_recording();
@@ -1318,6 +1420,77 @@ mod tests {
         assert!(!session.is_playing());
         let saved = crate::prefs::load(&prefs).unwrap();
         assert_eq!(saved.audio.buffer_size, Some(256));
+    }
+
+    #[test]
+    fn the_keyboard_button_plays_notes_and_takes_the_keys_from_everything_else() {
+        let mut app = empty();
+        let node = Node::new("noodle.osc.sine");
+        let id = noodle_core::NodeId(1);
+        app.session
+            .edit([Edit::Apply(Command::AddNode { id, node })]);
+        let mut heard = app.session.midi_bus().subscribe();
+        let mut harness = harness(app);
+        harness.run();
+
+        // Off: the keys are ordinary keys.
+        harness.key_press(Key::A);
+        harness.run();
+        assert_eq!(heard.pop(), None);
+
+        harness.key_press(Key::M);
+        harness.run();
+        assert!(harness.state().keyboard.is_on());
+        harness.key_down(Key::A);
+        harness.run();
+        assert_eq!(heard.pop(), Some([0x90, 60, 100]));
+        harness.key_up(Key::A);
+        harness.run();
+        assert_eq!(heard.pop(), Some([0x80, 60, 0]));
+
+        // X is a note-keyboard key now, not delete.
+        harness.key_press(Key::X);
+        harness.run();
+        assert_eq!(harness.state().keyboard.octave(), 4);
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            1
+        );
+
+        // Turning it off lets go of what is held.
+        harness.key_down(Key::D);
+        harness.run();
+        assert_eq!(heard.pop(), Some([0x90, 76, 100]));
+        harness.key_press(Key::M);
+        harness.run();
+        assert_eq!(heard.pop(), Some([0x80, 76, 0]));
+    }
+
+    #[test]
+    fn note_keys_are_taken_from_the_frame_so_nothing_else_acts_on_them() {
+        let mut app = empty();
+        app.keyboard.set_on(true);
+        let ctx = egui::Context::default();
+        let key = |key, pressed| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let input = egui::RawInput {
+            events: vec![key(Key::A, true), key(Key::Delete, true)],
+            ..Default::default()
+        };
+        let mut seen = (true, false);
+        let mut output = ctx.run_ui(input, |ui| {
+            app.keyboard_midi(ui.ctx());
+            seen = ui
+                .ctx()
+                .input(|i| (i.key_pressed(Key::A), i.key_pressed(Key::Delete)));
+        });
+        output.textures_delta.clear();
+        assert_eq!(seen, (false, true), "A is taken, Delete is not");
     }
 
     #[test]
