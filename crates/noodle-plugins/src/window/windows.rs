@@ -2,7 +2,6 @@
 //! plugin's parent. Made on the thread that pumps messages for it (the app's
 //! UI thread), which is where it is used.
 
-use std::ffi::c_void;
 use std::sync::Once;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -95,7 +94,7 @@ pub(super) fn make(title: &str) -> Option<Box<dyn EditorWindow>> {
 
 impl EditorWindow for WinWindow {
     fn parent(&self) -> ParentWindow {
-        ParentWindow::Win32(self.hwnd as *mut c_void)
+        ParentWindow::Win32(self.hwnd)
     }
 
     fn set_size(&mut self, width: u32, height: u32, resizable: bool) {
