@@ -881,7 +881,11 @@ make its node unusably tall, so only the ones listed in the node's `params`
 setting get ports (comma-separated parameter ids; `none` for no ports). That
 is config, since it changes the ports. A node without the setting shows every
 parameter, so projects saved before it existed keep their ports; the plugin
-browser adds a plugin with more than 32 parameters with `none`. The
+browser and the add-node search start a plugin with 5 or more parameters
+with `none`, and fewer than 5 with all of them, so the user opts in to the
+ones they want. They get that through `NodeType::initial_config`, which
+any node type can use for a setting whose first value differs from leaving
+it out. The
 properties panel has a searchable picker, grouped by the plugin's modules. A
 parameter with a wire or automation lane into it can't be hidden (they would
 point at nothing). Changing the choice while the editor is open keeps the

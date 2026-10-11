@@ -446,8 +446,9 @@ impl App {
                         return true;
                     }
                     if *pressed {
-                        // Chords such as Cmd+C are not notes.
-                        if modifiers.command || modifiers.ctrl || modifiers.alt {
+                        // Chords such as Cmd+C and Shift+A are the app's
+                        // shortcuts, not notes. Only bare keys play.
+                        if modifiers.any() {
                             return true;
                         }
                         if !repeat {
@@ -1672,6 +1673,39 @@ mod tests {
         });
         output.textures_delta.clear();
         assert_eq!(seen, (false, true), "A is taken, Delete is not");
+    }
+
+    #[test]
+    fn modified_keys_stay_shortcuts_with_the_keyboard_on() {
+        let mut app = empty();
+        app.keyboard.set_on(true);
+        let ctx = egui::Context::default();
+        let mut heard = app.session.midi_bus().subscribe();
+        for modifiers in [
+            Modifiers::SHIFT,
+            Modifiers::CTRL,
+            Modifiers::ALT,
+            Modifiers::COMMAND,
+        ] {
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::A,
+                    physical_key: Some(Key::A),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut seen = false;
+            let mut output = ctx.run_ui(input, |ui| {
+                app.keyboard_midi(ui.ctx());
+                seen = ui.ctx().input(|i| i.key_pressed(Key::A));
+            });
+            output.textures_delta.clear();
+            assert!(seen, "{modifiers:?}+A is left for the app");
+        }
+        assert_eq!(heard.pop(), None);
     }
 
     #[test]

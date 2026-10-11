@@ -2087,6 +2087,9 @@ fn popups(
                         let id = (inputs.new_node_id)();
                         let mut node = Node::new(type_id).at(at.x, at.y);
                         node.parent = state.group;
+                        if let Some(node_type) = inputs.registry.get(type_id) {
+                            node.config = node_type.initial_config();
+                        }
                         if matches!(type_id, GROUP_INPUT | GROUP_OUTPUT) {
                             node.config = noodle_core::Config::new().with(
                                 group::PORT_NAME,
