@@ -40,7 +40,7 @@ use crate::window::{self, EditorWindow, ParentWindow};
 const IDLE: Duration = Duration::from_millis(50);
 
 /// How long an editor command (open, capture) may take.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An instance the thread holds.
 struct Live {
@@ -144,6 +144,7 @@ impl Executor {
         for l in self.live.values_mut() {
             housekeeping(l, now);
         }
+        crate::vst3::gui::housekeeping();
     }
 
     /// How long until the next timer is due (at most [`IDLE`]).
@@ -219,7 +220,8 @@ pub fn pump() -> Option<Duration> {
             adopted.executor.handle(command);
         }
         adopted.executor.housekeeping();
-        (!adopted.executor.live.is_empty()).then(|| adopted.executor.next_wake())
+        (!adopted.executor.live.is_empty() || crate::vst3::gui::any())
+            .then(|| adopted.executor.next_wake())
     })
 }
 

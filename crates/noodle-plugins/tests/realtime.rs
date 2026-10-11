@@ -59,16 +59,43 @@ const FRAMES: usize = 256;
 #[test]
 fn processing_blocks_with_notes_and_modulation_never_allocates() {
     let catalog = catalog();
-    never_allocates(node_type(&catalog));
+    never_allocates(node_type(&catalog), NodeId(0), false);
 }
 
 #[test]
 fn a_vst3_plugin_processing_blocks_with_notes_and_modulation_never_allocates() {
     let catalog = vst3_catalog();
-    never_allocates(vst3_node_type(&catalog));
+    never_allocates(vst3_node_type(&catalog), NodeId(0), false);
 }
 
-fn never_allocates(node_type: &noodle_plugins::PluginNodeType) {
+/// The editor's edits are passed to the processor on the audio thread too:
+/// the test plugin's editor changes `Gain` when it is attached, and the next
+/// blocks send that on.
+#[test]
+fn a_vst3_editors_edits_reaching_the_processor_never_allocate() {
+    struct Fake;
+    impl noodle_plugins::EditorWindow for Fake {
+        fn parent(&self) -> noodle_plugins::ParentWindow {
+            noodle_plugins::ParentWindow::X11(1)
+        }
+        fn set_size(&mut self, _: u32, _: u32, _: bool) {}
+        fn size(&self) -> (u32, u32) {
+            (200, 100)
+        }
+        fn show(&mut self) {}
+        fn hide(&mut self) {}
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+    // Another test in this binary may have set the factory; any will do.
+    let _ = noodle_plugins::set_window_factory(|_| Some(Box::new(Fake)));
+    let catalog = vst3_catalog();
+    never_allocates(vst3_node_type(&catalog), NodeId(77), true);
+    assert!(!noodle_plugins::is_running(NodeId(77)));
+}
+
+fn never_allocates(node_type: &noodle_plugins::PluginNodeType, id: NodeId, editor: bool) {
     let config = Config::new();
     let layout = node_type.layout(&config).unwrap();
     // Wire audio in and the gain parameter.
@@ -83,7 +110,7 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType) {
         .unwrap();
     let Instance::Realtime(mut node) = node_type
         .instantiate(&Setup {
-            node: NodeId(0),
+            node: id,
             config: &config,
             sample_rate: 48_000.0,
             max_frames: FRAMES,
@@ -159,6 +186,11 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType) {
             }],
             _ => Vec::new(),
         };
+        if editor && block == 10 {
+            // The edit is made now, outside the counted blocks, and passed on
+            // inside them.
+            noodle_plugins::open_editor(id).expect("the editor opens");
+        }
         if block == 20 {
             // A seek resets the node on the audio thread.
             assert_eq!(realtime(|| node.reset()), 0, "reset allocated or freed");
@@ -187,6 +219,11 @@ fn never_allocates(node_type: &noodle_plugins::PluginNodeType) {
     }
     // The blocks were real: the notes made sound.
     assert!(heard);
+    if editor {
+        // The plugin is still there to capture (the editor's edit itself is
+        // checked in `vst3_editor.rs`).
+        assert!(noodle_plugins::capture(id).is_ok());
+    }
 }
 
 /// Many modulated parameters and a burst of notes in one block: more events

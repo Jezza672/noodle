@@ -11,7 +11,7 @@ use vst3::{ComPtr, ComWrapper, Interface};
 use crate::descriptor::{AudioPort, Descriptor, ParamDesc, PluginFormat};
 use crate::host::{HostError, MAX_PARAMS};
 
-use super::classes::{ComponentHandler, HostApp, Stream, raw, wstring};
+use super::classes::{ComponentHandler, Edits, HostApp, Stream, raw, wstring};
 use super::module::{ClassInfo, Module};
 
 /// What the component's buses are, for the node's ports.
@@ -34,6 +34,10 @@ pub(crate) struct Plugin {
     separate_controller: bool,
     active: bool,
     processing: bool,
+    /// The component and controller, wired to message each other.
+    connection: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
+    /// What the controller's editor changes, for the audio side to send on.
+    edits: Arc<Edits>,
     _handler: ComWrapper<ComponentHandler>,
     _host: ComWrapper<HostApp>,
     // Last: the module's code must outlive everything made from it.
@@ -101,7 +105,10 @@ impl Plugin {
     pub fn create(module: &Arc<Module>, cid: &TUID) -> Result<Plugin, HostError> {
         let fail = |what: &str| HostError(format!("{}: {what}", module.path().display()));
         let host = ComWrapper::new(HostApp);
-        let handler = ComWrapper::new(ComponentHandler);
+        let edits = Arc::new(Edits::default());
+        let handler = ComWrapper::new(ComponentHandler {
+            edits: Arc::clone(&edits),
+        });
         let host_ptr = raw::<IHostApplication, _>(&host) as *mut FUnknown;
 
         let component =
@@ -135,11 +142,35 @@ impl Plugin {
                 }
             }
         }
+        let mut connection = None;
         if let Some(controller) = &controller {
             // SAFETY: handing the controller a handler that outlives it (the
             // plugin keeps it in a field that drops after the controller is
             // terminated).
             unsafe { controller.setComponentHandler(raw::<IComponentHandler, _>(&handler)) };
+            edits.set_ids(editable_ids(controller));
+            // A component and a controller that are separate objects message
+            // each other through connection points.
+            if separate_controller
+                && let (Some(a), Some(b)) = (
+                    component.cast::<IConnectionPoint>(),
+                    controller.cast::<IConnectionPoint>(),
+                )
+            {
+                // SAFETY: both points are alive, and are disconnected before
+                // either is terminated.
+                let connected = unsafe { a.connect(b.as_ptr()) == kResultOk }
+                    && unsafe { b.connect(a.as_ptr()) == kResultOk };
+                if connected {
+                    connection = Some((a, b));
+                } else {
+                    // SAFETY: undoing what may have been connected.
+                    unsafe {
+                        a.disconnect(b.as_ptr());
+                        b.disconnect(a.as_ptr());
+                    }
+                }
+            }
         }
         Ok(Plugin {
             component,
@@ -148,6 +179,8 @@ impl Plugin {
             separate_controller,
             active: false,
             processing: false,
+            connection,
+            edits,
             _handler: handler,
             _host: host,
             _module: Arc::clone(module),
@@ -169,48 +202,54 @@ impl Plugin {
         let Some(controller) = &self.controller else {
             return Vec::new();
         };
-        // SAFETY: plain queries of the plugin.
-        let count = unsafe { controller.getParameterCount() }.max(0) as usize;
-        let mut params = Vec::new();
-        for index in 0..count {
-            if params.len() == MAX_PARAMS {
-                break;
-            }
-            let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
-            if !ok(unsafe { controller.getParameterInfo(index as i32, &mut info) }) {
-                continue;
-            }
-            let hidden = ParameterInfo_::ParameterFlags_::kIsHidden
-                | ParameterInfo_::ParameterFlags_::kIsReadOnly
-                | ParameterInfo_::ParameterFlags_::kIsProgramChange;
-            if info.flags & hidden != 0 {
-                continue;
-            }
-            let steps = info.stepCount.max(0);
-            let (max, default) = if steps > 0 {
-                (
-                    f64::from(steps),
-                    (info.defaultNormalizedValue * f64::from(steps)).round(),
-                )
-            } else {
-                (1.0, info.defaultNormalizedValue)
-            };
-            let title = wstring(&info.title);
-            params.push(ParamDesc {
-                id: info.id,
-                name: if title.is_empty() {
-                    wstring(&info.shortTitle)
+        listed_params(controller)
+            .into_iter()
+            .map(|info| {
+                let steps = info.stepCount.max(0);
+                let (max, default) = if steps > 0 {
+                    (
+                        f64::from(steps),
+                        (info.defaultNormalizedValue * f64::from(steps)).round(),
+                    )
                 } else {
-                    title
-                },
-                module: String::new(),
-                min: 0.0,
-                max,
-                default,
-                stepped: steps > 0,
-            });
+                    (1.0, info.defaultNormalizedValue)
+                };
+                let title = wstring(&info.title);
+                ParamDesc {
+                    id: info.id,
+                    name: if title.is_empty() {
+                        wstring(&info.shortTitle)
+                    } else {
+                        title
+                    },
+                    module: String::new(),
+                    min: 0.0,
+                    max,
+                    default,
+                    stepped: steps > 0,
+                }
+            })
+            .collect()
+    }
+
+    /// What the controller's editor changes, to be sent to the processor.
+    pub fn edits(&self) -> &Arc<Edits> {
+        &self.edits
+    }
+
+    /// The module the plugin's code is from, to keep loaded.
+    pub fn module(&self) -> &Arc<Module> {
+        &self._module
+    }
+
+    /// The part of the plugin the plugin thread uses (state, parameter
+    /// values, the editor), apart from the audio side.
+    pub fn control(&self) -> Control {
+        Control {
+            component: self.component.clone(),
+            controller: self.controller.clone(),
+            separate: self.separate_controller,
         }
-        params
     }
 
     /// Sets the buses up, tells the plugin the sample rate and block size and
@@ -320,25 +359,7 @@ impl Plugin {
 
     /// The component's and the controller's state, as one byte string.
     pub fn save_state(&self) -> Result<Vec<u8>, HostError> {
-        let component = Stream::new(Vec::new());
-        // SAFETY: the stream outlives the call.
-        if !ok(unsafe { self.component.getState(raw::<IBStream, _>(&component)) }) {
-            return Err(HostError("this plugin can't save state".into()));
-        }
-        let controller = Stream::new(Vec::new());
-        if self.separate_controller
-            && let Some(c) = &self.controller
-        {
-            // A controller with nothing of its own to keep is fine.
-            unsafe { c.getState(raw::<IBStream, _>(&controller)) };
-        }
-        let (component, controller) = (component.bytes(), controller.bytes());
-        let mut bytes = Vec::with_capacity(8 + component.len() + controller.len());
-        bytes.extend_from_slice(STATE_MAGIC);
-        bytes.extend_from_slice(&(component.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&component);
-        bytes.extend_from_slice(&controller);
-        Ok(bytes)
+        self.control().save_state()
     }
 
     /// Restores what [`save_state`](Self::save_state) saved.
@@ -406,6 +427,108 @@ impl Plugin {
     }
 }
 
+/// The component and controller as the plugin thread uses them: to save the
+/// plugin's state, read its parameters and open its editor, while the audio
+/// side processes. (The standard has these on the UI thread, with the audio
+/// thread free to run.)
+#[derive(Clone)]
+pub(crate) struct Control {
+    pub component: ComPtr<IComponent>,
+    pub controller: Option<ComPtr<IEditController>>,
+    /// The controller is its own object.
+    separate: bool,
+}
+
+impl Control {
+    /// The component's and the controller's state, as one byte string.
+    pub fn save_state(&self) -> Result<Vec<u8>, HostError> {
+        let component = Stream::new(Vec::new());
+        // SAFETY: the stream outlives the call.
+        if !ok(unsafe { self.component.getState(raw::<IBStream, _>(&component)) }) {
+            return Err(HostError("this plugin can't save state".into()));
+        }
+        let controller = Stream::new(Vec::new());
+        if self.separate
+            && let Some(c) = &self.controller
+        {
+            // A controller with nothing of its own to keep is fine.
+            unsafe { c.getState(raw::<IBStream, _>(&controller)) };
+        }
+        let (component, controller) = (component.bytes(), controller.bytes());
+        let mut bytes = Vec::with_capacity(8 + component.len() + controller.len());
+        bytes.extend_from_slice(STATE_MAGIC);
+        bytes.extend_from_slice(&(component.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&component);
+        bytes.extend_from_slice(&controller);
+        Ok(bytes)
+    }
+
+    /// Each listed parameter's ID and its value as its port holds it (the
+    /// step number for a stepped one).
+    pub fn values(&self) -> Vec<(u32, f64)> {
+        let Some(controller) = &self.controller else {
+            return Vec::new();
+        };
+        listed_params(controller)
+            .into_iter()
+            .map(|info| {
+                // SAFETY: a plain query of the plugin.
+                let normalized = unsafe { controller.getParamNormalized(info.id) };
+                let steps = info.stepCount.max(0);
+                let value = if steps > 0 {
+                    (normalized * f64::from(steps)).round()
+                } else {
+                    normalized
+                };
+                (info.id, value)
+            })
+            .collect()
+    }
+}
+
+/// The parameters of `controller` a user can set, up to [`MAX_PARAMS`].
+fn listed_params(controller: &ComPtr<IEditController>) -> Vec<ParameterInfo> {
+    // SAFETY: plain queries of the plugin.
+    let count = unsafe { controller.getParameterCount() }.max(0) as usize;
+    let mut found = Vec::new();
+    for index in 0..count {
+        if found.len() == MAX_PARAMS {
+            break;
+        }
+        let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
+        if !ok(unsafe { controller.getParameterInfo(index as i32, &mut info) }) {
+            continue;
+        }
+        let hidden = ParameterInfo_::ParameterFlags_::kIsHidden
+            | ParameterInfo_::ParameterFlags_::kIsReadOnly
+            | ParameterInfo_::ParameterFlags_::kIsProgramChange;
+        if info.flags & hidden == 0 {
+            found.push(info);
+        }
+    }
+    found
+}
+
+/// The most parameters edits are kept for.
+const MAX_EDITABLE: usize = 2048;
+
+/// Every parameter an editor may change: any but read-only ones, listed or
+/// not (hidden ones such as bypass and program changes included).
+fn editable_ids(controller: &ComPtr<IEditController>) -> Vec<ParamID> {
+    // SAFETY: plain queries of the plugin.
+    let count = unsafe { controller.getParameterCount() }.max(0) as usize;
+    let mut ids = Vec::new();
+    for index in 0..count.min(MAX_EDITABLE) {
+        let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
+        if ok(unsafe { controller.getParameterInfo(index as i32, &mut info) })
+            && info.flags & ParameterInfo_::ParameterFlags_::kIsReadOnly == 0
+        {
+            ids.push(info.id);
+        }
+    }
+    ids
+}
+
 /// The controllers [`Plugin::midi_assignments`] asks about: modulation wheel,
 /// volume, pan, expression, sustain, channel pressure and pitch bend.
 const MIDI_CONTROLLERS: [i16; 7] = [1, 7, 10, 11, 64, 128, 129];
@@ -421,6 +544,10 @@ impl Drop for Plugin {
             }
             if self.active {
                 self.component.setActive(0);
+            }
+            if let Some((component, controller)) = self.connection.take() {
+                component.disconnect(controller.as_ptr());
+                controller.disconnect(component.as_ptr());
             }
             if self.separate_controller
                 && let Some(controller) = &self.controller

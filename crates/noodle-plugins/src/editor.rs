@@ -21,7 +21,7 @@ use noodle_core::{Command, NodeId, Value};
 use crate::STATE_KEY;
 use crate::descriptor::{Descriptor, param_key};
 use crate::host::{Flags, HostError};
-use crate::thread;
+use crate::{thread, vst3};
 
 struct Running {
     node: NodeId,
@@ -74,7 +74,11 @@ pub struct EditorKey(u64);
 /// newest running instance.
 pub fn open_editor(node: NodeId) -> Result<EditorKey, HostError> {
     let key = find(node)?.0;
-    thread::open_editor(key)?;
+    if vst3::gui::is_key(key) {
+        vst3::gui::open(key)?;
+    } else {
+        thread::open_editor(key)?;
+    }
     Ok(EditorKey(key))
 }
 
@@ -100,13 +104,21 @@ pub fn editor_key_is_open(key: EditorKey) -> bool {
 
 /// Reads that instance.
 pub fn capture_key(key: EditorKey) -> Result<Captured, HostError> {
-    thread::capture(key.0)
+    if vst3::gui::is_key(key.0) {
+        vst3::gui::capture(key.0)
+    } else {
+        thread::capture(key.0)
+    }
 }
 
 /// Closes the editor, if it is open.
 pub fn close_editor(node: NodeId) {
     if let Ok((key, _)) = find(node) {
-        thread::close_editor(key);
+        if vst3::gui::is_key(key) {
+            vst3::gui::close(key);
+        } else {
+            thread::close_editor(key);
+        }
     }
 }
 
@@ -125,7 +137,7 @@ pub struct Captured {
 
 /// Reads the node's running plugin.
 pub fn capture(node: NodeId) -> Result<Captured, HostError> {
-    thread::capture(find(node)?.0)
+    capture_key(EditorKey(find(node)?.0))
 }
 
 impl Captured {

@@ -5,14 +5,19 @@
 //! (parameters and state). Plugins are made, set up and torn down on the
 //! shared plugin thread (see `thread.rs`), and processed on the audio thread.
 //!
-//! Not supported yet: plugin editors (`IPlugView`), `IMessage` between a
-//! component and its controller, units and program lists, and 64-bit audio.
+//! Editors (`IPlugView`) are embedded in a window the app makes (`gui.rs`).
+//! A component and controller that are separate objects are connected, so
+//! their messages reach each other, and the controller's edits reach the
+//! processor as parameter changes.
+//!
+//! Not supported yet: units and program lists, and 64-bit audio.
 
 // The VST3 enum constants are `u32` on most systems and `i32` on Windows, so
 // casts to the field types are needed on some and redundant on others.
 #![allow(clippy::unnecessary_cast)]
 
 mod classes;
+pub(crate) mod gui;
 mod module;
 mod node;
 mod plugin;

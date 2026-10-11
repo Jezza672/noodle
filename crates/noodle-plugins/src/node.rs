@@ -37,7 +37,7 @@ use crate::descriptor::{
     Descriptor, PluginFormat, file_stamp, input_key, note_input_key, note_output_key, output_key,
     param_key,
 };
-use crate::host::Host;
+use crate::host::{Flags, Host};
 use crate::{editor, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
@@ -241,10 +241,15 @@ impl NodeType for PluginNodeType {
                 setup.max_frames,
             )
             .map_err(|error| NodeError::config(error.to_string()))?;
+            // The editor opens by the node, like a CLAP plugin's.
+            let flags = Arc::new(Flags::default());
+            let key = vst3::gui::register(&loaded.plugin, &flags);
+            editor::register(setup.node, key, flags);
             return Ok(Instance::realtime(vst3::Vst3Node::new(
                 loaded.plugin,
                 &self.descriptor,
                 &loaded.midi_assignments,
+                Some(key),
                 setup.max_frames,
             )));
         }

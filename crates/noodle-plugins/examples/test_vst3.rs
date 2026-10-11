@@ -13,16 +13,26 @@
 //!
 //! The component and the controller are separate classes, as in most VST3
 //! plugins; the controller learns the component's values from its state.
+//!
+//! - Editor: an `IPlugView` that draws nothing but plays the user when it is
+//!   attached: it turns `Gain` down to 0.25 through the component handler,
+//!   asks the host for a 300 x 150 window, and sends the component a message
+//!   (`set-bias`, bias 0.75). The component answers with `bias-set`, which
+//!   makes the controller turn `Invert` on. So the editor, the edits that
+//!   reach the processor, the frame and the messages between the two halves
+//!   are all observable.
 #![allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
 #![allow(clippy::unnecessary_cast)]
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::f32::consts::TAU;
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
-use vst3::{Class, ComRef, ComWrapper, uid};
+use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface, uid};
 
 const GAIN: u32 = 1;
 const INVERT: u32 = 2;
@@ -71,17 +81,55 @@ struct State {
     voices: [Voice; 16],
 }
 
+/// No bias is waiting (a bias is never this NaN).
+const NO_BIAS: u32 = u32::MAX;
+
 struct Processor {
     state: UnsafeCell<State>,
+    /// A bias a message set, for the audio side to pick up.
+    pending_bias: AtomicU32,
+    host: RefCell<Option<ComPtr<IHostApplication>>>,
+    peer: RefCell<Option<ComPtr<IConnectionPoint>>>,
 }
 
 impl Class for Processor {
-    type Interfaces = (IComponent, IAudioProcessor);
+    type Interfaces = (IComponent, IAudioProcessor, IConnectionPoint);
+}
+
+/// A new message from the host, with `id` and a float `name` attribute.
+fn message_with(
+    host: &ComPtr<IHostApplication>,
+    id: &CStr,
+    attribute: &CStr,
+    value: f64,
+) -> Option<ComPtr<IMessage>> {
+    let mut cid: TUID = IMessage::IID.map(|b| b as c_char);
+    let mut iid = cid;
+    let mut object: *mut c_void = std::ptr::null_mut();
+    if unsafe { host.createInstance(&mut cid, &mut iid, &mut object) } != kResultOk {
+        return None;
+    }
+    let message = unsafe { ComPtr::from_raw(object as *mut IMessage) }?;
+    unsafe {
+        message.setMessageID(id.as_ptr());
+        let attributes = ComRef::from_raw(message.getAttributes())?;
+        attributes.setFloat(attribute.as_ptr(), value);
+    }
+    Some(message)
+}
+
+fn message_id(message: &ComRef<'_, IMessage>) -> String {
+    unsafe { CStr::from_ptr(message.getMessageID()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl Processor {
     fn new() -> Self {
         Self {
+            pending_bias: AtomicU32::new(NO_BIAS),
+            host: RefCell::new(None),
+            peer: RefCell::new(None),
             state: UnsafeCell::new(State {
                 gain: 1.0,
                 invert: false,
@@ -100,16 +148,62 @@ impl Processor {
 
     #[allow(clippy::mut_from_ref)]
     fn state(&self) -> &mut State {
-        // SAFETY: a host calls a plugin from one thread at a time.
-        unsafe { &mut *self.state.get() }
+        // SAFETY: a host calls a plugin from one thread at a time (a message
+        // only leaves a bias for the next call to pick up).
+        let state = unsafe { &mut *self.state.get() };
+        let pending = self.pending_bias.swap(NO_BIAS, Ordering::AcqRel);
+        if pending != NO_BIAS {
+            state.bias = f32::from_bits(pending);
+        }
+        state
+    }
+}
+
+impl IConnectionPointTrait for Processor {
+    unsafe fn connect(&self, other: *mut IConnectionPoint) -> tresult {
+        *self.peer.borrow_mut() = unsafe { ComRef::from_raw(other) }.map(|o| o.to_com_ptr());
+        kResultOk
+    }
+
+    unsafe fn disconnect(&self, _other: *mut IConnectionPoint) -> tresult {
+        *self.peer.borrow_mut() = None;
+        kResultOk
+    }
+
+    unsafe fn notify(&self, message: *mut IMessage) -> tresult {
+        let Some(message) = (unsafe { ComRef::from_raw(message) }) else {
+            return kInvalidArgument;
+        };
+        if message_id(&message) != "set-bias" {
+            return kResultFalse;
+        }
+        let mut bias = 0.0;
+        let attributes = unsafe { ComRef::from_raw(message.getAttributes()) };
+        if !attributes
+            .is_some_and(|a| unsafe { a.getFloat(c"bias".as_ptr(), &mut bias) } == kResultOk)
+        {
+            return kResultFalse;
+        }
+        self.pending_bias
+            .store((bias as f32).to_bits(), Ordering::Release);
+        // Tell the controller it arrived.
+        if let (Some(host), Some(peer)) = (&*self.host.borrow(), &*self.peer.borrow())
+            && let Some(reply) = message_with(host, c"bias-set", c"bias", bias)
+        {
+            unsafe { peer.notify(reply.as_ptr()) };
+        }
+        kResultOk
     }
 }
 
 impl IPluginBaseTrait for Processor {
-    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+    unsafe fn initialize(&self, context: *mut FUnknown) -> tresult {
+        *self.host.borrow_mut() = unsafe { ComRef::from_raw(context) }.and_then(|c| c.cast());
         kResultOk
     }
     unsafe fn terminate(&self) -> tresult {
+        *self.host.borrow_mut() = None;
+        *self.peer.borrow_mut() = None;
         kResultOk
     }
 }
@@ -369,21 +463,57 @@ thread_local! {
     static RATE: Cell<f32> = const { Cell::new(48_000.0) };
 }
 
-struct Controller {
+struct Shared {
     gain: Cell<f64>,
     invert: Cell<f64>,
     boost: Cell<f64>,
+    handler: RefCell<Option<ComPtr<IComponentHandler>>>,
+    host: RefCell<Option<ComPtr<IHostApplication>>>,
+    peer: RefCell<Option<ComPtr<IConnectionPoint>>>,
+}
+
+struct Controller {
+    shared: Rc<Shared>,
 }
 
 impl Class for Controller {
-    type Interfaces = (IEditController, IMidiMapping);
+    type Interfaces = (IEditController, IMidiMapping, IConnectionPoint);
+}
+
+impl IConnectionPointTrait for Controller {
+    unsafe fn connect(&self, other: *mut IConnectionPoint) -> tresult {
+        *self.shared.peer.borrow_mut() = unsafe { ComRef::from_raw(other) }.map(|o| o.to_com_ptr());
+        kResultOk
+    }
+
+    unsafe fn disconnect(&self, _other: *mut IConnectionPoint) -> tresult {
+        *self.shared.peer.borrow_mut() = None;
+        kResultOk
+    }
+
+    unsafe fn notify(&self, message: *mut IMessage) -> tresult {
+        let Some(message) = (unsafe { ComRef::from_raw(message) }) else {
+            return kInvalidArgument;
+        };
+        if message_id(&message) == "bias-set" {
+            self.shared.invert.set(1.0);
+            kResultOk
+        } else {
+            kResultFalse
+        }
+    }
 }
 
 impl IPluginBaseTrait for Controller {
-    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+    unsafe fn initialize(&self, context: *mut FUnknown) -> tresult {
+        *self.shared.host.borrow_mut() =
+            unsafe { ComRef::from_raw(context) }.and_then(|c| c.cast());
         kResultOk
     }
     unsafe fn terminate(&self) -> tresult {
+        *self.shared.host.borrow_mut() = None;
+        *self.shared.handler.borrow_mut() = None;
+        *self.shared.peer.borrow_mut() = None;
         kResultOk
     }
 }
@@ -399,8 +529,8 @@ impl IEditControllerTrait for Controller {
             return kResultFalse;
         }
         let f = |i: usize| f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
-        self.gain.set(f64::from(f(0)) / 2.0);
-        self.invert.set(f64::from(f(1)));
+        self.shared.gain.set(f64::from(f(0)) / 2.0);
+        self.shared.invert.set(f64::from(f(1)));
         kResultOk
     }
 
@@ -472,29 +602,40 @@ impl IEditControllerTrait for Controller {
 
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
         match id {
-            GAIN => self.gain.get(),
-            INVERT => self.invert.get(),
-            BOOST => self.boost.get(),
+            GAIN => self.shared.gain.get(),
+            INVERT => self.shared.invert.get(),
+            BOOST => self.shared.boost.get(),
             _ => 0.0,
         }
     }
 
     unsafe fn setParamNormalized(&self, id: u32, value: f64) -> tresult {
         match id {
-            GAIN => self.gain.set(value),
-            INVERT => self.invert.set(value),
-            BOOST => self.boost.set(value),
+            GAIN => self.shared.gain.set(value),
+            INVERT => self.shared.invert.set(value),
+            BOOST => self.shared.boost.set(value),
             _ => return kInvalidArgument,
         }
         kResultOk
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        *self.shared.handler.borrow_mut() =
+            unsafe { ComRef::from_raw(handler) }.map(|h| h.to_com_ptr());
         kResultOk
     }
 
-    unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
-        std::ptr::null_mut()
+    unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
+        if name.is_null() || unsafe { CStr::from_ptr(name) } != c"editor" {
+            return std::ptr::null_mut();
+        }
+        ComWrapper::new(View {
+            shared: Rc::clone(&self.shared),
+            frame: RefCell::new(None),
+            size: Cell::new((200, 100)),
+        })
+        .to_com_ptr::<IPlugView>()
+        .map_or(std::ptr::null_mut(), |view| view.into_raw())
     }
 }
 
@@ -512,6 +653,113 @@ impl IMidiMappingTrait for Controller {
         } else {
             kResultFalse
         }
+    }
+}
+
+/// The editor. It draws nothing; attaching it plays the user (see the top).
+struct View {
+    shared: Rc<Shared>,
+    frame: RefCell<Option<ComPtr<IPlugFrame>>>,
+    size: Cell<(i32, i32)>,
+}
+
+impl Class for View {
+    type Interfaces = (IPlugView,);
+}
+
+impl IPlugViewTrait for View {
+    unsafe fn isPlatformTypeSupported(&self, _type: FIDString) -> tresult {
+        kResultTrue
+    }
+
+    unsafe fn attached(&self, parent: *mut c_void, _type: FIDString) -> tresult {
+        if parent.is_null() {
+            return kInvalidArgument;
+        }
+        let shared = &self.shared;
+        // The user drags Gain to a quarter.
+        if let Some(handler) = &*shared.handler.borrow() {
+            unsafe {
+                handler.beginEdit(GAIN);
+                handler.performEdit(GAIN, 0.25);
+                handler.endEdit(GAIN);
+            }
+        }
+        shared.gain.set(0.25);
+        // The editor wants a bigger window.
+        if let Some(frame) = &*self.frame.borrow() {
+            let mut rect = ViewRect {
+                left: 0,
+                top: 0,
+                right: 300,
+                bottom: 150,
+            };
+            unsafe { frame.resizeView(std::ptr::null_mut(), &mut rect) };
+        }
+        // And tells the processor something only a message carries.
+        if let (Some(host), Some(peer)) = (&*shared.host.borrow(), &*shared.peer.borrow())
+            && let Some(message) = message_with(host, c"set-bias", c"bias", 0.75)
+        {
+            unsafe { peer.notify(message.as_ptr()) };
+        }
+        kResultOk
+    }
+
+    unsafe fn removed(&self) -> tresult {
+        kResultOk
+    }
+
+    unsafe fn onWheel(&self, _distance: f32) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn onKeyDown(&self, _key: char16, _code: int16, _modifiers: int16) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn onKeyUp(&self, _key: char16, _code: int16, _modifiers: int16) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
+        let (width, height) = self.size.get();
+        unsafe {
+            *size = ViewRect {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+        }
+        kResultOk
+    }
+
+    unsafe fn onSize(&self, new_size: *mut ViewRect) -> tresult {
+        let rect = unsafe { &*new_size };
+        self.size
+            .set((rect.right - rect.left, rect.bottom - rect.top));
+        kResultOk
+    }
+
+    unsafe fn onFocus(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+
+    unsafe fn setFrame(&self, frame: *mut IPlugFrame) -> tresult {
+        *self.frame.borrow_mut() = unsafe { ComRef::from_raw(frame) }.map(|f| f.to_com_ptr());
+        kResultOk
+    }
+
+    unsafe fn canResize(&self) -> tresult {
+        kResultTrue
+    }
+
+    /// Sizes snap to multiples of ten.
+    unsafe fn checkSizeConstraint(&self, rect: *mut ViewRect) -> tresult {
+        let rect = unsafe { &mut *rect };
+        rect.right = rect.left + (rect.right - rect.left) / 10 * 10;
+        rect.bottom = rect.top + (rect.bottom - rect.top) / 10 * 10;
+        kResultOk
     }
 }
 
@@ -562,9 +810,14 @@ impl IPluginFactoryTrait for Factory {
         let instance = match unsafe { *(cid as *const TUID) } {
             PROCESSOR_ID => ComWrapper::new(Processor::new()).to_com_ptr::<FUnknown>(),
             CONTROLLER_ID => ComWrapper::new(Controller {
-                gain: Cell::new(0.5),
-                invert: Cell::new(0.0),
-                boost: Cell::new(0.0),
+                shared: Rc::new(Shared {
+                    gain: Cell::new(0.5),
+                    invert: Cell::new(0.0),
+                    boost: Cell::new(0.0),
+                    handler: RefCell::new(None),
+                    host: RefCell::new(None),
+                    peer: RefCell::new(None),
+                }),
             })
             .to_com_ptr::<FUnknown>(),
             _ => None,
