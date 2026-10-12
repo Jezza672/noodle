@@ -301,7 +301,9 @@ impl Harness {
 /// import, over the same stretch of the file.
 fn analyse(stereo: &[f32], rate: u32) -> Analysis {
     let mono: Vec<f32> = stereo
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|f| (f[0] + f[1]) / 2.0)
         .take(rate as usize * 120)
         .collect();

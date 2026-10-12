@@ -288,7 +288,12 @@ mod tests {
         };
         assert!(crossings(5.0, 5.5) > 3 * crossings(1.0, 1.5));
         let noise = Probe::NoiseBursts.render(&map, RATE);
-        let (l, r): (Vec<f32>, Vec<f32>) = noise.chunks_exact(2).map(|f| (f[0], f[1])).unzip();
+        let (l, r): (Vec<f32>, Vec<f32>) = noise
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|f| (f[0], f[1]))
+            .unzip();
         let dot: f32 = l.iter().zip(&r).map(|(a, b)| a * b).sum();
         let norm: f32 = l.iter().map(|a| a * a).sum::<f32>().sqrt()
             * r.iter().map(|a| a * a).sum::<f32>().sqrt();
