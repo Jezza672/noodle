@@ -161,6 +161,33 @@ pub fn estimate_tempo(times: &[f64]) -> Option<f64> {
     (refined.1 / times.len() as f64 > 0.5).then_some((refined.0 * 100.0).round() / 100.0)
 }
 
+/// What the clip editor learns from a file's audio.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Analysis {
+    /// Where transients start, in seconds from the start of the file.
+    pub onsets: Vec<f64>,
+    /// The tempo they sit on the beat of, if there's a clear one.
+    pub tempo: Option<f64>,
+    /// Whether the file is long enough, with transients close enough, that
+    /// its beats are worth keeping whole when it is stretched.
+    pub percussive: bool,
+}
+
+impl Analysis {
+    pub fn of(mono: &[f32], rate: u32) -> Self {
+        let onsets: Vec<f64> = detect_onsets(mono, rate)
+            .into_iter()
+            .map(|frame| frame as f64 / f64::from(rate))
+            .collect();
+        let seconds = mono.len() as f64 / f64::from(rate);
+        Self {
+            tempo: estimate_tempo(&onsets),
+            percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
+            onsets,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
