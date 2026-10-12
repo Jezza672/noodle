@@ -701,9 +701,23 @@ grains of a segment never read past the next transient. Grain is Beats with no
 transients. The stretcher has no I/O; the worker feeds it from its own stream
 through a window of decoded frames (`StreamSource`).
 
-What is not here yet: editing in the app beyond moving a section (trims and
-fades of a warped section are ignored, and the mode can only be set in the file;
-PR 3), loop and clip tempo detection (PR 3), warp quantise and grooves (PR 4).
+**Loops.** `ClipWarp::loop_region` is a `LoopRegion` in clip-tempo beats (at
+least `MIN_LOOP_BEATS`, 1) and `AudioClip::extent` is how far the section is
+dragged out past its true length. `ClipFeeds::update` (`lay_out` in
+`schedule.rs`) expands a looped section into **pieces**: the first runs from the
+section's origin to the loop's end, then the loop repeats and the last is
+truncated at the section's end (`WarpMap::truncated`). Each piece is an ordinary
+`ScheduledClip` with a synthetic ID (`piece_id`; at most `MAX_PIECES`), so the
+hub opens streams for it a second ahead and the node needs no loop logic.
+
+**The clip editor** (`noodle-app/src/clip_editor/`, `clip_panel.rs`) edits a
+`ClipWarp` through `Project::warp_edit` commands, one undo step per drag. The
+timeline's trims, fades, split and slip of a warped section work in warped beats
+(`timeline/warped.rs`). While a marker is dragged the session turns the preview
+on (and off at the end of the drag); the node dips (declick) when it flips.
+
+What is not here yet: warp quantise and grooves (PR 4), and choosing the mode
+from analysis on import.
 
 ## Automation (M2)
 

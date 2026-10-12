@@ -262,3 +262,46 @@ fn beats_keeps_the_hits_sharp_where_grain_smears_them() {
         .fold(0.0, f32::max);
     assert!(drift > 0.05, "{drift}");
 }
+
+#[test]
+fn a_looping_stretched_section_repeats_without_a_break() {
+    let dir = folder("loop");
+    // 120 bpm tone on a 120 timeline, looping beats 1 to 3 (a whole number of
+    // cycles: 440 for the second), the section dragged out to 8 beats (4 s)
+    // from a one-second window.
+    for mode in [WarpMode::Grain, WarpMode::Beats] {
+        let mut w = warp(120.0, mode);
+        w.loop_region = Some(noodle_core::LoopRegion {
+            start: 0.0,
+            end: 2.0,
+        });
+        let mut project = project("tone.wav", w, RATE as u64);
+        let id = project.clips().next().unwrap().0;
+        let mut clip = project.clip(id).unwrap().clone();
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!()
+        };
+        audio.extent = Some(Tick(8 * 960));
+        let mut history = History::new();
+        history
+            .apply(&mut project, Command::SetClip { id, clip })
+            .unwrap();
+        let samples = render(&project, &dir, SETTINGS, 5 * RATE as usize)
+            .render
+            .samples;
+        let l = left(&samples);
+        let c = crossings(&l[2_000..4 * RATE as usize - 2_000]) as i64;
+        assert!((c - 1_723).abs() <= 12, "{mode:?}: {c} cycles");
+        // No jump at the seams (the tone moves at most 0.03 a frame).
+        let step = l[2_000..4 * RATE as usize - 2_000]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < 0.1, "{mode:?}: a step of {step}");
+        assert!(
+            l[4 * RATE as usize + 2_000..]
+                .iter()
+                .all(|x| x.abs() < 1e-6)
+        );
+    }
+}

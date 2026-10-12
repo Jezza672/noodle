@@ -6,6 +6,8 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::NodeId;
 use noodle_engine::OUTPUT_ID;
 
+use crate::clip_editor::{self, ClipEditor};
+use crate::clip_panel::{self, ClipPanel};
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::export_dialog::ExportDialog;
@@ -53,6 +55,8 @@ pub struct App {
     editor: EditorState,
     timeline: TimelineState,
     piano_roll: PianoRoll,
+    clip_editor: ClipEditor,
+    clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
     devices: DevicePicker,
@@ -148,6 +152,8 @@ impl App {
             editor: EditorState::default(),
             timeline: TimelineState::default(),
             piano_roll: PianoRoll::default(),
+            clip_editor: ClipEditor::default(),
+            clip_panel: ClipPanel::default(),
             audition_track: None,
             devices: DevicePicker::default(),
             export: ExportDialog::default(),
@@ -315,10 +321,33 @@ impl App {
                 // the next node would open it at its default width.
                 ui.set_min_width(ui.available_width());
                 ui.add_space(4.0);
+                let mut edits = Vec::new();
+                // The selected audio clip's own properties, above the node's.
+                let picked = self
+                    .clip_editor
+                    .clip()
+                    .or_else(|| self.timeline.selected_clip())
+                    .filter(|&id| {
+                        self.session
+                            .project()
+                            .clip(id)
+                            .is_some_and(|clip| clip.as_audio().is_some())
+                    });
+                if let Some(id) = picked {
+                    let loaded = self.clip_source(ui.ctx(), id);
+                    edits.extend(clip_panel::show(
+                        ui,
+                        &mut self.clip_panel,
+                        &self.session,
+                        id,
+                        loaded.as_ref(),
+                    ));
+                    ui.separator();
+                }
                 let editor = &self.editor;
-                let edits = properties::show(ui, &self.session, active, &|node, key| {
+                edits.extend(properties::show(ui, &self.session, active, &|node, key| {
                     editor.param_live(node, key)
-                });
+                }));
                 self.session.edit(edits);
             });
 
@@ -340,7 +369,12 @@ impl App {
                     self.import_audio(target);
                 }
                 if let Some(clip) = out.open_midi {
+                    self.clip_editor.close();
                     self.piano_roll.open(clip);
+                }
+                if let Some(clip) = out.open_audio {
+                    self.piano_roll.close();
+                    self.clip_editor.open(clip);
                 }
                 for (track, kind, on) in out.arm {
                     self.session.arm_kind(track, kind, on);
@@ -362,6 +396,24 @@ impl App {
                             self.session.audition(track, key, on);
                         }
                     }
+                });
+        }
+        if let Some(clip) = self.clip_editor.clip() {
+            egui::Panel::top("clip editor")
+                .resizable(true)
+                .default_size(clip_editor::DEFAULT_HEIGHT)
+                .frame(egui::Frame::NONE.fill(theme::PANEL))
+                .show(ui, |ui| {
+                    let loaded = self.clip_source(ui.ctx(), clip);
+                    let playhead = Some(self.session.playhead());
+                    let out = clip_editor::show(
+                        ui,
+                        &mut self.clip_editor,
+                        &self.session,
+                        loaded.as_ref(),
+                        playhead,
+                    );
+                    self.session.edit(out.edits);
                 });
         }
         // A key still down when the roll closed or its clip went.
@@ -1096,6 +1148,17 @@ impl App {
     }
 
     /// Asks which audio files to add, and adds them as clips at `target`.
+    /// What is known about the audio file of clip `id`.
+    fn clip_source(
+        &mut self,
+        ctx: &egui::Context,
+        id: noodle_core::ClipId,
+    ) -> Option<timeline::Loaded> {
+        let name = self.session.project().clip(id)?.as_audio()?.source.clone();
+        let directory = self.session.directory().map(std::path::Path::to_path_buf);
+        self.timeline.source(ctx, directory.as_deref(), &name)
+    }
+
     fn import_audio(&mut self, target: timeline::Target) {
         let picked = rfd::FileDialog::new()
             .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"])

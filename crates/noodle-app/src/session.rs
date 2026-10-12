@@ -451,6 +451,13 @@ impl Session {
         &self.project
     }
 
+    /// Whether warped clips are playing as cheap Repitch, because a warp is
+    /// being dragged.
+    #[cfg(test)]
+    pub fn warp_preview(&self) -> bool {
+        self.clips.preview()
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -914,10 +921,16 @@ impl Session {
                 }
                 Edit::Drag(command) => {
                     self.history.begin_group();
+                    // A warp being dragged plays as cheap Repitch: the
+                    // stretch would start over with every change.
+                    if edits_warp(&command) {
+                        self.clips.set_preview(true);
+                    }
                     command
                 }
                 Edit::EndDrag => {
                     self.history.end_group();
+                    self.clips.set_preview(false);
                     continue;
                 }
                 Edit::PluginEditor { node, open } => {
@@ -1902,6 +1915,15 @@ impl Session {
     }
 }
 
+/// Whether a command changes how a clip is warped.
+fn edits_warp(command: &Command) -> bool {
+    match command {
+        Command::SetWarp { .. } | Command::AddWarp { .. } => true,
+        Command::Batch(commands) => commands.iter().any(edits_warp),
+        _ => false,
+    }
+}
+
 /// What a command means for the engine.
 #[derive(Default, Debug, PartialEq)]
 struct Effect {
@@ -1935,9 +1957,13 @@ impl Effect {
                 key,
                 value: Some(value),
             } => self.params.push((*node, key.clone(), *value)),
+            // A warp is only read when the clips are scheduled.
             Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
+            | Command::AddWarp { .. }
+            | Command::RemoveWarp { .. }
+            | Command::SetWarp { .. }
             | Command::SetTempoMap(_) => self.clips = true,
             Command::Batch(commands) => commands.iter().for_each(|c| self.add(c)),
             // Includes resetting a parameter to its default, which needs the
