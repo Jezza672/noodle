@@ -678,6 +678,48 @@ Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
 transients to the grid, hear it follow tempo changes without dropouts, quantise
 it non-destructively, and lend its groove to a second clip.
 
+## M8: Warp evaluation
+
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Nothing built yet.
+
+A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
+shows a before and after. Four batches:
+
+1. **Metrics.** A `noodle-eval` crate (Rust) with the Roberts and Paliwal TSM
+   features (phasiness, smoothed spectral similarity, peak delta, transient
+   ratio, harmonic-percussive transient ratio) plus onset timing, pitch (f0),
+   loudness and peak, and stereo width. Alignment follows the warp map, not an
+   interpolated length. The metrics are validated against the published TSM
+   listening-test dataset (CC BY 4.0, downloaded, not committed); one that does
+   not correlate with the listeners does not gate CI.
+2. **Probes and the harness.** Short controlled signals (click trains, a held
+   chord, sweeps, noise bursts, a lone kick) and a harness that renders a
+   project natively at a target tempo or tempo map (the *native render*), warps
+   the same audio to it (headline: bare mix, detected clip tempo, automatic
+   mode; also stems and fixed Grain, Beats and Repitch), and scores both ways
+   plus the round trip A to B to A. Tempo grid: constant ratios 0.5, 0.75, 0.9,
+   1.1, 1.5 and 2, plus a ramp, a step and a wobble from fixed seeds. Output is
+   a metric table with a rank summary, diffed against a committed baseline of
+   numbers (no audio). A 15 to 20 s excerpt per song gates CI.
+3. **Songs.** Five songs of 60 to 90 s with intro, verse, chorus, breakdown and
+   drop, written as `.ron` projects through the normal commands (drums, plucks,
+   pads, bass, arpeggios; synths and triggered one-shots). Features a song needs
+   that are missing get built if the song cannot exist without them, otherwise
+   an issue is filed; the batch ends with the list of gaps found.
+4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
+   speech, solo instrument and full-mix clips (pinned checksums), a gitignored
+   `eval/local/` for any file dropped in, and a dev script that makes reference
+   stretches with Rubber Band R3, Signalsmith and SoundTouch (whichever install).
+   Scores are relative to the references' spread; hard thresholds come only from
+   the known-truth regime.
+
+Out of scope: a learned quality predictor, and the authors' MATLAB evaluation
+code.
+
+**Done when:** one command prints the scores of every song, probe and reference
+clip for each warp mode, and a change that smears drums or shifts pitch moves
+a number and fails the CI excerpt.
+
 ## Later
 
 - Spectral signal type.
