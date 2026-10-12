@@ -998,6 +998,12 @@ fn draw_window(
     }
 }
 
+/// The number a beat is labelled with on the ruler. Beats count from 1, and
+/// there is no zero: beat 0 is 1, and the beat before it is -1, as in a DAW.
+fn ruler_number(beat: i64) -> i64 {
+    if beat < 0 { beat } else { beat + 1 }
+}
+
 fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis, offset: f64) {
     painter.rect_filled(ruler, 0.0, colors::RULER);
     // The beat lines are slid from the whole beats by the clip's grid
@@ -1030,7 +1036,7 @@ fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis, offs
             painter.text(
                 Pos2::new(x + 3.0, ruler.center().y),
                 Align2::LEFT_CENTER,
-                beat.to_string(),
+                ruler_number(beat).to_string(),
                 FontId::proportional(10.0),
                 colors::TEXT_WEAK,
             );
@@ -1238,3 +1244,14 @@ fn fold_into_loop(warp: &ClipWarp, beat: f64) -> f64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ruler_tests {
+    use super::ruler_number;
+
+    #[test]
+    fn ruler_beats_count_from_one_with_no_zero() {
+        let labels: Vec<i64> = (-2..=2).map(ruler_number).collect();
+        assert_eq!(labels, [-2, -1, 1, 2, 3]);
+    }
+}

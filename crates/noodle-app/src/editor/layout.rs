@@ -219,7 +219,7 @@ impl Scene {
             let mut ports = Vec::new();
             let mut error = None;
             let (title, category) = if let Some((title, category, structural)) =
-                structure(graph, id, node)
+                structure(project, id, node)
             {
                 ports = structural;
                 (title, category)
@@ -376,7 +376,10 @@ impl Scene {
                             .lane_for(&Endpoint::new(id, p.key.clone()))
                             .is_none()
                 };
-                let rect = place_columns(origin, &mut ports, has_field);
+                // A group's input or output node labels its port, so the name
+                // is drawn where the port is and can be edited in place.
+                let labelled = matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT);
+                let rect = place_columns(origin, &mut ports, has_field, labelled);
                 let height = super::body::height(&node.type_id);
                 if height > 0.0 {
                     let top = rect.bottom() - PADDING;
@@ -537,9 +540,31 @@ pub fn group_title(graph: &Graph, id: NodeId) -> String {
     }
 }
 
+/// Whether a boundary node shows its gain and mute ports: the group's control
+/// node ([`Graph::control_node`]), which the mixer and track header drive, or
+/// any boundary node that has a value, a wire or a lane on either, so none
+/// of them is left hidden while it still affects the sound.
+fn show_controls(project: &Project, id: NodeId, node: &Node) -> bool {
+    let graph = project.graph();
+    let control = node.parent.and_then(|group| graph.control_node(group));
+    control == Some(id)
+        || node.has_gain_or_mute()
+        || [group::GAIN, group::MUTE]
+            .iter()
+            .any(|key| graph.source(&Endpoint::new(id, *key)).is_some())
+        || project.lanes().any(|(_, lane)| {
+            lane.target.node == id && matches!(lane.target.port.as_str(), group::GAIN | group::MUTE)
+        })
+}
+
 /// What a group node, or a boundary node inside one, looks like. These have
 /// no entry in the registry, because the engine flattens them away.
-fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, Vec<PortGeom>)> {
+fn structure(
+    project: &Project,
+    id: NodeId,
+    node: &Node,
+) -> Option<(String, String, Vec<PortGeom>)> {
+    let graph = project.graph();
     let port = |side, name: &str| PortGeom {
         key: name.to_owned(),
         name: name.to_owned(),
@@ -554,7 +579,9 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
     let category = "Group".to_owned();
     // A boundary node's gain and mute are parameters, so they have ports and
     // can be wired like any other. Solo is read from the project, so it has
-    // none.
+    // none. A group has one gain and mute, on its control node, so only that
+    // node shows them, plus any boundary node that has them in use.
+    let shows_controls = show_controls(project, id, node);
     let controls = || {
         [
             (
@@ -588,7 +615,9 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
             let mut input = port(Side::Output, &name);
             input.key = group::INPUT_PORT.to_owned();
             let mut ports = vec![input];
-            ports.extend(controls());
+            if shows_controls {
+                ports.extend(controls());
+            }
             Some(("Group Input".to_owned(), category, ports))
         }
         GROUP_OUTPUT => {
@@ -596,7 +625,9 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
             let mut output = port(Side::Input, &name);
             output.key = group::OUTPUT_PORT.to_owned();
             let mut ports = vec![output];
-            ports.extend(controls());
+            if shows_controls {
+                ports.extend(controls());
+            }
             Some(("Group Output".to_owned(), category, ports))
         }
         _ => None,
@@ -606,15 +637,16 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
 /// Lays out a normal node: a header, then rows with inputs down the left and
 /// outputs down the right. The two sides fill rows independently, except that
 /// an input with a field (`has_field`) takes its whole row. A side with only
-/// one port puts its socket on the header instead. Returns the node's
-/// rectangle.
+/// one port puts its socket on the header instead, unless `labelled` keeps
+/// it on a row so its name is drawn. Returns the node's rectangle.
 fn place_columns(
     origin: Pos2,
     ports: &mut [PortGeom],
     has_field: impl Fn(&PortGeom) -> bool,
+    labelled: bool,
 ) -> Rect {
     let count = |side| ports.iter().filter(|p| p.side == side).count();
-    let lone = |side, p: &PortGeom| count(side) == 1 && !has_field(p);
+    let lone = |side, p: &PortGeom| !labelled && count(side) == 1 && !has_field(p);
     // The row each port takes, or None for the header.
     let mut rows: Vec<Option<usize>> = vec![None; ports.len()];
     let mut next = 0;
@@ -965,6 +997,66 @@ mod tests {
     }
 
     #[test]
+    fn a_groups_gain_and_mute_show_on_one_boundary_node() {
+        use noodle_core::group::{GAIN, MUTE};
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let first = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_INPUT).in_group(group),
+        );
+        let second = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_INPUT).in_group(group),
+        );
+        let output = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_OUTPUT).in_group(group),
+        );
+        let shows = |scene: &Scene, id| {
+            let node = scene.node(id).unwrap();
+            node.ports.iter().any(|p| p.key == GAIN) && node.ports.iter().any(|p| p.key == MUTE)
+        };
+        let scene = Scene::build(&project, &registry(), Some(group));
+        // The group's control node is its first output, so only that shows them.
+        assert!(shows(&scene, output));
+        assert!(!shows(&scene, first) && !shows(&scene, second));
+
+        // A boundary node with gain set shows its controls too, so the value
+        // that affects the sound stays visible.
+        let set = Command::SetParam {
+            node: second,
+            key: GAIN.into(),
+            value: Some(-3.0),
+        };
+        history.apply(&mut project, set).unwrap();
+        let scene = Scene::build(&project, &registry(), Some(group));
+        assert!(shows(&scene, second));
+        assert!(!shows(&scene, first));
+    }
+
+    #[test]
+    fn a_group_input_labels_its_port_on_a_row() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let input = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_INPUT).in_group(group),
+        );
+        let scene = Scene::build(&project, &registry(), Some(group));
+        let port = scene
+            .node(input)
+            .unwrap()
+            .port(Side::Output, group::INPUT_PORT)
+            .unwrap();
+        assert!(!port.in_header, "the name is drawn on its row");
+    }
+
+    #[test]
     fn a_group_has_a_spare_input_and_output() {
         let (mut project, mut history) = (Project::new(), History::new());
         let group = add(&mut project, &mut history, Node::new(GROUP));
@@ -989,7 +1081,7 @@ mod tests {
             test_port(Side::Output, "y"),
             test_port(Side::Output, "z"),
         ];
-        let rect = place_columns(Pos2::ZERO, &mut ports, |_| false);
+        let rect = place_columns(Pos2::ZERO, &mut ports, |_| false, false);
         // Three rows, because the outputs outgrow the inputs on their own.
         assert_eq!(rect.height(), HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING);
         assert_eq!(ports[0].socket.y, ports[2].socket.y);
@@ -1007,7 +1099,7 @@ mod tests {
         ];
         // The first input has a field, so the first output goes beside the
         // second input instead.
-        let rect = place_columns(Pos2::ZERO, &mut ports, |p| p.key == "freq");
+        let rect = place_columns(Pos2::ZERO, &mut ports, |p| p.key == "freq", false);
         assert_eq!(rect.height(), HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING);
         assert_eq!(ports[2].socket.y, ports[1].socket.y);
         assert!(ports[3].socket.y > ports[1].socket.y);
