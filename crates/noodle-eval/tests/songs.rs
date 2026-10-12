@@ -17,9 +17,28 @@ fn songs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("songs")
 }
 
+/// Warping reads a clip from disk through a streaming thread, and a starved
+/// thread shows up as underruns. So the test that warps runs alone, taking this
+/// lock to write; every test that only renders takes it to read, and they
+/// run together.
+static LOAD: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+fn shared() -> std::sync::RwLockReadGuard<'static, ()> {
+    LOAD.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Runs `check` on every song, one after another, with nothing else rendering.
+fn each_song_alone(check: impl Fn(&Song)) {
+    let _alone = LOAD.write().unwrap_or_else(|e| e.into_inner());
+    for song in all() {
+        check(&song);
+    }
+}
+
 /// Runs `check` on every song at once; the renders are slow enough to want
 /// the cores.
 fn each_song(check: impl Fn(&Song) + Sync) {
+    let _load = shared();
     let songs = all();
     std::thread::scope(|scope| {
         let handles: Vec<_> = songs
@@ -192,6 +211,7 @@ fn a_song_renders_the_same_every_time_and_stays_under_full_scale() {
 
 #[test]
 fn the_native_render_puts_the_notes_where_the_tempo_map_says() {
+    let _load = shared();
     // The answer key must line up with the source through the time map, or the
     // scores of every warp are off. Kicks and hats are the timing the metric
     // reads, and they sit on the song's grid.
@@ -238,7 +258,7 @@ fn the_native_render_puts_the_notes_where_the_tempo_map_says() {
 
 #[test]
 fn every_excerpt_goes_through_the_harness() {
-    each_song(|song| {
+    each_song_alone(|song| {
         let range = song.excerpt_range();
         let h = Harness::for_song(song, range, RATE).unwrap();
         let rows = h
@@ -279,6 +299,7 @@ fn every_excerpt_goes_through_the_harness() {
 
 #[test]
 fn the_native_render_is_the_source_retimed() {
+    let _load = shared();
     // At 0.75 times the tempo the same notes take a third longer; at 1.5 times
     // they take two thirds as long. The excerpt is not silent either way.
     let song = all().into_iter().find(|s| s.name == "funk-engine").unwrap();
