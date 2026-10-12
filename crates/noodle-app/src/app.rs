@@ -167,7 +167,7 @@ impl App {
         }
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
     }
@@ -342,8 +342,8 @@ impl App {
                 if let Some(clip) = out.open_midi {
                     self.piano_roll.open(clip);
                 }
-                for (track, on) in out.arm {
-                    self.session.arm(track, on);
+                for (track, kind, on) in out.arm {
+                    self.session.arm_kind(track, kind, on);
                 }
             });
 
@@ -647,7 +647,7 @@ impl App {
         if ui
             .add(record)
             .on_hover_text(
-                "Record the input onto the armed tracks (R on a track header), from the playhead",
+                "Record the input onto the armed tracks (RA and RM on a track header), from the playhead",
             )
             .clicked()
         {
@@ -1262,12 +1262,7 @@ mod tests {
         harness.get_by_label("▶");
     }
 
-    fn virtual_output() -> noodle_io::AudioConfig {
-        noodle_io::AudioConfig {
-            output: Some(noodle_io::VIRTUAL_OUTPUT.into()),
-            ..noodle_io::AudioConfig::default()
-        }
-    }
+    use crate::testkit::virtual_audio as virtual_output;
 
     #[test]
     fn the_audio_button_turns_the_engine_on_and_off_and_play_leaves_it_alone() {

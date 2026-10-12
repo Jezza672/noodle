@@ -59,7 +59,8 @@ pub struct TrackControls {
     pub muted_by_solo: bool,
     /// Armed for recording. Session state, so `controls_for` leaves it off
     /// for the caller to set.
-    pub armed: bool,
+    pub armed_audio: bool,
+    pub armed_midi: bool,
 }
 
 /// The controls for the track whose clips `input` plays, if it sits in a group
@@ -77,7 +78,8 @@ pub fn controls_for(
         node,
         controls: graph.group_controls(group),
         muted_by_solo: muted_by_solo.contains(&group),
-        armed: false,
+        armed_audio: false,
+        armed_midi: false,
     })
 }
 
@@ -131,8 +133,9 @@ pub struct Lane {
 #[derive(Default)]
 pub struct Changes {
     pub edits: Vec<Edit>,
-    /// The record-arm button was pressed: the arm state it asks for.
-    pub arm: Option<bool>,
+    /// A record-arm button was pressed: the arm state it asks for.
+    pub arm_audio: Option<bool>,
+    pub arm_midi: Option<bool>,
     /// The header was clicked: the track is now the selected one.
     pub select: bool,
     /// The header is being dragged to a new place in the track order.
@@ -149,7 +152,8 @@ pub struct HeaderDrag {
 }
 
 /// Draws one track's header in `lane` and returns what the user changed.
-/// `armed` is whether the track is armed for recording.
+/// `armed_audio` and `armed_midi` are whether the track is armed for
+/// recording each kind of input.
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
@@ -275,22 +279,32 @@ pub fn show(
     let Some(TrackControls {
         node,
         controls,
-        armed,
+        armed_audio,
+        armed_midi,
         ..
     }) = track
     else {
         return changes;
     };
-    let arm = &mut changes.arm;
+    let (arm_audio, arm_midi) = (&mut changes.arm_audio, &mut changes.arm_midi);
     child.horizontal(|ui| {
         let button = |ui: &mut egui::Ui, text: &str, on: bool, tip: &str| {
-            let text = RichText::new(text).size(11.0);
-            ui.add_sized(vec2(20.0, 18.0), egui::Button::new(text).selected(on))
+            let text = RichText::new(text).size(10.0);
+            let width = if text.text().len() > 1 { 23.0 } else { 18.0 };
+            ui.add_sized(vec2(width, 18.0), egui::Button::new(text).selected(on))
                 .on_hover_text(tip)
                 .clicked()
         };
-        if button(ui, "R", armed, "Arm for recording") {
-            *arm = Some(!armed);
+        if button(ui, "RA", armed_audio, "Arm for recording audio") {
+            *arm_audio = Some(!armed_audio);
+        }
+        if button(
+            ui,
+            "RM",
+            armed_midi,
+            "Arm for recording MIDI, and playing it live",
+        ) {
+            *arm_midi = Some(!armed_midi);
         }
         let mute = ui
             .add_enabled_ui(!automated.mute, |ui| button(ui, "M", controls.mute, "Mute"))

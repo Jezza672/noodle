@@ -35,10 +35,12 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   cloud session, run `apt-get install -y libasound2-dev` first.
 - **No audio device in the cloud.** `noodle play` fails cleanly there. To run
   the engine anyway, use the virtual output: `noodle play --output virtual x.ron`,
-  or `AudioConfig { output: Some("virtual") }` in a test. It runs in real time and
-  discards the audio. (The app falls back to it by itself when no real output
-  opens.) To run the real stream path, point ALSA at a null device with
-  `printf 'pcm.!default { type null }\n' > ~/.asoundrc` (and delete it after).
+  or `testkit::virtual_audio()` in an app test. It runs in real time and
+  discards the audio; `Playback::virtual_capture()` (`Session::virtual_capture()`
+  in app tests) keeps it, so a test can assert on the sound. (The app falls back
+  to it by itself when no real output opens.) To run the real stream path, point
+  ALSA at a null device with `printf 'pcm.!default { type null }\n' >
+  ~/.asoundrc` (and delete it after).
 
 ## Crates
 
@@ -51,7 +53,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 | `noodle-io` | WAV files, file decoding (`decode.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`, including the virtual output's ID), WAV and FLAC export writing (`export.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
 | `noodle-plugins` | Plugins can run in host processes (`sandbox/`; `tests/sandbox.rs` kills and freezes the host; `noodle-plugin-scan` is a host too). CLAP hosting through clack and VST3 hosting through the `vst3` bindings (`vst3/`; `examples/test_vst3.rs` is its test plugin, `tests/real_vst3.rs` uses real ones; install `dpf-plugins-vst3 dragonfly-reverb-vst3` too): scanning in a child process (`scan.rs`), plugin nodes (`node.rs`, `host.rs`), the `Catalog` that registers them, the shared plugin thread (`thread.rs`) and editor windows (`window/`). `examples/test_plugin.rs` is a small CLAP plugin the tests load; `tests/real_plugins.rs` uses real ones if installed (`apt-get install dpf-plugins-clap lsp-plugins-clap dragonfly-reverb-clap xvfb`; editors need `xvfb-run`). After editing the example plugin run `cargo build -p noodle-plugins --examples`: `cargo test --test x` doesn't rebuild it. |
 | `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
-| `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`. |
+| `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`; user actions (drag, click, double click, key press, wheel, dropped files) come from `testkit.rs`, never from a per-module copy. |
 
 ## Rules the code relies on
 

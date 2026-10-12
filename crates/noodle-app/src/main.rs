@@ -20,6 +20,8 @@ mod plugin_browser;
 mod prefs;
 mod properties;
 mod session;
+#[cfg(test)]
+mod testkit;
 mod theme;
 mod timeline;
 mod widgets;

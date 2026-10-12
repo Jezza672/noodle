@@ -97,40 +97,52 @@ impl Peaks {
         end: u64,
         columns: usize,
     ) -> Vec<Peak> {
-        let mut out = vec![Peak::EMPTY; columns];
-        if columns == 0 || end <= start || self.channels == 0 {
-            return out;
-        }
-        let block = u64::from(BLOCK_FRAMES);
-        let blocks = self.data.len() / self.channels;
-        let span = u128::from(end - start);
-        let boundary = |i: usize| start + (span * i as u128 / columns as u128) as u64;
-        for (i, slot) in out.iter_mut().enumerate() {
-            let (a, b) = (boundary(i), boundary(i + 1));
-            let first = (a / block) as usize;
-            // Every column covers at least its first block.
-            let last = (b.saturating_sub(1).max(a) / block) as usize;
-            let mut peak: Option<Peak> = None;
-            for blk in first..=last.min(blocks.saturating_sub(1)) {
-                if blk >= blocks {
-                    break;
-                }
-                let row = &self.data[blk * self.channels..(blk + 1) * self.channels];
-                let chans = match channel {
-                    Some(c) => std::slice::from_ref(&row[c.min(self.channels - 1)]),
-                    None => row,
-                };
-                for &p in chans {
-                    match &mut peak {
-                        Some(acc) => acc.include(p),
-                        None => peak = Some(p),
-                    }
+        columns_of(&self.data, self.channels, channel, start, end, columns)
+    }
+}
+
+/// [`Peaks::columns`] over raw block-major `data`.
+fn columns_of(
+    data: &[Peak],
+    channels: usize,
+    channel: Option<usize>,
+    start: u64,
+    end: u64,
+    columns: usize,
+) -> Vec<Peak> {
+    let mut out = vec![Peak::EMPTY; columns];
+    if columns == 0 || end <= start || channels == 0 {
+        return out;
+    }
+    let block = u64::from(BLOCK_FRAMES);
+    let blocks = data.len() / channels;
+    let span = u128::from(end - start);
+    let boundary = |i: usize| start + (span * i as u128 / columns as u128) as u64;
+    for (i, slot) in out.iter_mut().enumerate() {
+        let (a, b) = (boundary(i), boundary(i + 1));
+        let first = (a / block) as usize;
+        // Every column covers at least its first block.
+        let last = (b.saturating_sub(1).max(a) / block) as usize;
+        let mut peak: Option<Peak> = None;
+        for blk in first..=last.min(blocks.saturating_sub(1)) {
+            if blk >= blocks {
+                break;
+            }
+            let row = &data[blk * channels..(blk + 1) * channels];
+            let chans = match channel {
+                Some(c) => std::slice::from_ref(&row[c.min(channels - 1)]),
+                None => row,
+            };
+            for &p in chans {
+                match &mut peak {
+                    Some(acc) => acc.include(p),
+                    None => peak = Some(p),
                 }
             }
-            *slot = peak.unwrap_or(Peak::EMPTY);
         }
-        out
+        *slot = peak.unwrap_or(Peak::EMPTY);
     }
+    out
 }
 
 /// Builds [`Peaks`] from interleaved samples, in as many pieces as they
@@ -183,6 +195,17 @@ impl PeaksBuilder {
                 self.in_current = 0;
             }
         }
+    }
+
+    /// Frames pushed so far.
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    /// [`Peaks::columns`] of what has been pushed so far, for drawing a file
+    /// that is still being written. The block being filled is left out.
+    pub fn columns(&self, start: u64, end: u64, columns: usize) -> Vec<Peak> {
+        columns_of(&self.data, self.channels, None, start, end, columns)
     }
 
     pub fn finish(mut self) -> Peaks {

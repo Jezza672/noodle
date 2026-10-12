@@ -14,6 +14,7 @@ pub(crate) mod header;
 pub mod import;
 mod midi_preview;
 mod sources;
+mod take;
 mod waveform;
 
 use std::collections::BTreeSet;
@@ -26,7 +27,7 @@ use egui::{
 use noodle_core::group;
 use noodle_core::{Clip, ClipId, Command, Endpoint, NodeId, Project, TempoMap, Tick};
 
-use crate::session::{Edit, Session};
+use crate::session::{ArmKind, Edit, Session};
 use crate::theme::timeline as colors;
 use clips::Source;
 use sources::Sources;
@@ -67,6 +68,8 @@ pub struct TimelineState {
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
     #[cfg(test)]
+    take_rects: HashMap<NodeId, Rect>,
+    #[cfg(test)]
     fade_handles: HashMap<(ClipId, bool), Rect>,
     /// The text drawn on the lanes last frame; painted text isn't in the
     /// accessibility tree.
@@ -94,6 +97,8 @@ impl Default for TimelineState {
             automation: automation::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
+            #[cfg(test)]
+            take_rects: HashMap::new(),
             #[cfg(test)]
             fade_handles: HashMap::new(),
             #[cfg(test)]
@@ -175,6 +180,12 @@ impl TimelineState {
     pub fn clip_rect(&self, id: ClipId) -> Option<Rect> {
         self.clip_rects.get(&id).copied()
     }
+
+    /// Where the take being recorded was drawn on a track, if it was.
+    #[cfg(test)]
+    pub fn take_rect(&self, track: NodeId) -> Option<Rect> {
+        self.take_rects.get(&track).copied()
+    }
 }
 
 /// A clip being moved or trimmed. Each frame's edit is worked out from the
@@ -251,7 +262,7 @@ pub struct Output {
     /// They asked to import audio from a file: where it should go.
     pub pick: Option<Target>,
     /// Tracks whose record-arm button was pressed, with the state asked for.
-    pub arm: Vec<(NodeId, bool)>,
+    pub arm: Vec<(NodeId, crate::session::ArmKind, bool)>,
     /// A MIDI clip they double-clicked, to open in the piano roll.
     pub open_midi: Option<ClipId>,
 }
@@ -311,6 +322,7 @@ pub fn show(
     #[cfg(test)]
     {
         state.clip_rects.clear();
+        state.take_rects.clear();
         state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
@@ -364,12 +376,35 @@ pub fn show(
     let mut open_midi = None;
     let mut hit_clip = false;
     let clips_before = state.selected.clone();
+    let take = session.take_preview();
+    // Every audio-armed track shows the same waveform: work it out once.
+    let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> = Default::default();
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
         if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
             continue;
         }
         let colour = colors::track_colour(index);
+        if let Some(take) = &take {
+            let drawn = take::draw(&painter, axis, top, take, track, |n| {
+                let mut cached = take_wave.borrow_mut();
+                match &*cached {
+                    Some((columns, peaks)) if *columns == n => peaks.clone(),
+                    _ => {
+                        let peaks = session.take_waveform(n);
+                        *cached = Some((n, peaks.clone()));
+                        peaks
+                    }
+                }
+            });
+            #[cfg(test)]
+            if let Some((rect, label)) = drawn {
+                state.take_rects.insert(track, rect);
+                state.drawn_text.push(label);
+            }
+            #[cfg(not(test))]
+            let _ = drawn;
+        }
         for (id, clip) in project.clips_on(track) {
             let audio = clip.as_audio();
             let loaded = audio.and_then(|audio| {
@@ -1162,7 +1197,7 @@ fn draw_headers(
     rows: &automation::Rows,
     session: &Session,
     state: &mut TimelineState,
-) -> (Vec<Edit>, Vec<(NodeId, bool)>) {
+) -> (Vec<Edit>, Vec<(NodeId, ArmKind, bool)>) {
     let graph = session.project().graph();
     let scroll_y = state.scroll_y;
     let column = Rect::from_min_max(
@@ -1204,7 +1239,8 @@ fn draw_headers(
             renaming_group.is_some() && graph.node(input).and_then(|n| n.parent) == renaming_group;
         let controls =
             header::controls_for(graph, input, &muted_by_solo).map(|t| header::TrackControls {
-                armed: session.is_armed(input),
+                armed_audio: session.is_armed(input, ArmKind::Audio),
+                armed_midi: session.is_armed(input, ArmKind::Midi),
                 ..t
             });
         let automated = controls.map_or_else(header::Automated::default, |t| {
@@ -1231,7 +1267,8 @@ fn draw_headers(
             &mut state.renaming,
         );
         edits.extend(changes.edits);
-        arm.extend(changes.arm.map(|on| (input, on)));
+        arm.extend(changes.arm_audio.map(|on| (input, ArmKind::Audio, on)));
+        arm.extend(changes.arm_midi.map(|on| (input, ArmKind::Midi, on)));
         if let Some(drag) = changes.drag {
             drop = Some((input, drag));
         }

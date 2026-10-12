@@ -519,16 +519,11 @@ mod tests {
             picker,
             applied: None,
         };
-        let mut harness = Harness::new_ui_state(
-            |ui, state: &mut State| {
-                if let Some(config) = state.picker.show(ui.ctx()) {
-                    state.applied = Some(config);
-                }
-            },
-            state,
-        );
-        harness.run();
-        harness
+        crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
+            if let Some(config) = state.picker.show(ui.ctx()) {
+                state.applied = Some(config);
+            }
+        })
     }
 
     /// Opens the combo box on the row called `row` and picks an item.

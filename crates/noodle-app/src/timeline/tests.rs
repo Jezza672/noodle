@@ -1,6 +1,7 @@
 //! The arrangement driven like a user would: pointer and keyboard events into
 //! a real [`Session`], checking the clips that result.
 
+use crate::testkit::{click_with, double_click, drag, drag_between, drop_files};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -8,7 +9,7 @@ use noodle_core::{Clip, ClipId, Command, Node, NodeId, Tick};
 use noodle_io::write_wav;
 
 use super::{TRACK_INPUT, TimelineState, show};
-use crate::session::{Edit, Nodes, Session};
+use crate::session::{ArmKind, Edit, Nodes, Session};
 
 struct Rig {
     session: Session,
@@ -68,8 +69,8 @@ fn rig() -> (H, ClipId) {
                 rig.notices.extend(out.notice);
                 rig.picks.extend(out.pick);
                 rig.opened.extend(out.open_midi);
-                for (track, on) in out.arm {
-                    rig.session.arm(track, on);
+                for (track, kind, on) in out.arm {
+                    rig.session.arm_kind(track, kind, on);
                 }
             },
             rig,
@@ -90,29 +91,6 @@ fn rect(h: &H, id: ClipId) -> egui::Rect {
     h.state().timeline.clip_rect(id).unwrap()
 }
 
-/// Presses at the first point, moves through the rest, releases at the last.
-fn drag(h: &mut H, modifiers: Modifiers, path: &[Pos2]) {
-    h.event(Event::ModifiersChanged(modifiers));
-    h.event(Event::PointerMoved(path[0]));
-    h.step();
-    let button = |pos, pressed| Event::PointerButton {
-        pos,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers,
-    };
-    h.event(button(path[0], true));
-    h.step();
-    for &p in &path[1..] {
-        h.event(Event::PointerMoved(p));
-        h.step();
-    }
-    h.event(button(*path.last().unwrap(), false));
-    h.step();
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
-}
-
 enum Grab {
     Body,
     Start,
@@ -127,8 +105,7 @@ fn drag_by(h: &mut H, modifiers: Modifiers, id: ClipId, at: Grab, by: Vec2) {
         Grab::Start => Pos2::new(r.left() + 2.0, r.center().y),
         Grab::End => Pos2::new(r.right() - 2.0, r.center().y),
     };
-    let path: Vec<Pos2> = (0..=6).map(|i| from + by * (i as f32 / 6.0)).collect();
-    drag(h, modifiers, &path);
+    drag_between(h, modifiers, from, from + by);
 }
 
 fn start(h: &H, id: ClipId) -> Tick {
@@ -654,20 +631,7 @@ fn double_clicking_the_gain_slider_writes_zero_db() {
     let (mut h, _) = grouped();
     set_param(&mut h, 11, "gain", -12.0);
     let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
-    h.event(Event::PointerMoved(slider.center()));
-    h.step();
-    for _ in 0..2 {
-        for pressed in [true, false] {
-            h.event(Event::PointerButton {
-                pos: slider.center(),
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            });
-        }
-        h.step();
-    }
-    h.run();
+    double_click(&mut h, slider.center());
     assert_eq!(param(&h, "gain"), Some(0.0));
 }
 
@@ -728,10 +692,7 @@ fn drag_handle(h: &mut H, id: ClipId, fade_in: bool, by: f32) {
         .fade_handle(id, fade_in)
         .unwrap()
         .center();
-    let path: Vec<Pos2> = (0..=6)
-        .map(|i| from + Vec2::new(by * i as f32 / 6.0, 0.0))
-        .collect();
-    drag(h, Modifiers::NONE, &path);
+    drag_between(h, Modifiers::NONE, from, from + Vec2::new(by, 0.0));
 }
 
 #[test]
@@ -771,32 +732,6 @@ fn a_clip_too_narrow_for_trimming_has_no_fade_handles() {
     })]);
     h.run();
     assert!(h.state().timeline.fade_handle(id, true).is_none());
-}
-
-#[derive(Debug)]
-struct Dropped(std::path::PathBuf);
-
-impl egui::DroppedFile for Dropped {
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-
-    fn bytes(&self) -> Result<Vec<u8>, String> {
-        Err("not needed".into())
-    }
-}
-
-/// Drops `files` with the pointer at `at`.
-fn drop_files(h: &mut H, at: Pos2, files: &[std::path::PathBuf]) {
-    h.event(Event::PointerMoved(at));
-    h.step();
-    for file in files {
-        h.input_mut()
-            .dropped_files
-            .push(std::sync::Arc::new(Dropped(file.clone())));
-    }
-    h.step();
-    h.run();
 }
 
 /// Writes a wav of `frames` frames next to the project and returns its path.
@@ -917,23 +852,6 @@ fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
     h.get_by_label("Import audio…").click();
     h.run();
     assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
-}
-
-fn double_click(h: &mut H, at: Pos2) {
-    h.event(Event::PointerMoved(at));
-    h.step();
-    for _ in 0..2 {
-        for pressed in [true, false] {
-            h.event(Event::PointerButton {
-                pos: at,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            });
-        }
-        h.step();
-    }
-    h.run();
 }
 
 fn type_and_press(h: &mut H, text: &str, key: Key) {
@@ -1088,13 +1006,26 @@ fn drops_find_their_track_below_an_automation_lane() {
 fn the_arm_button_arms_and_disarms_its_track() {
     let (mut h, _) = grouped();
     let first = NodeId(1);
-    assert!(!h.state().session.is_armed(first));
-    h.get_all_by_label("R").next().unwrap().click();
+    let armed = |h: &H| {
+        (
+            h.state().session.is_armed(first, ArmKind::Audio),
+            h.state().session.is_armed(first, ArmKind::Midi),
+        )
+    };
+    assert_eq!(armed(&h), (false, false));
+    // Each kind of input has its own button.
+    h.get_all_by_label("RA").next().unwrap().click();
     h.run();
-    assert!(h.state().session.is_armed(first));
-    h.get_all_by_label("R").next().unwrap().click();
+    assert_eq!(armed(&h), (true, false));
+    h.get_all_by_label("RM").next().unwrap().click();
     h.run();
-    assert!(!h.state().session.is_armed(first));
+    assert_eq!(armed(&h), (true, true));
+    h.get_all_by_label("RA").next().unwrap().click();
+    h.run();
+    assert_eq!(armed(&h), (false, true));
+    h.get_all_by_label("RM").next().unwrap().click();
+    h.run();
+    assert_eq!(armed(&h), (false, false));
 }
 
 #[test]
@@ -1228,18 +1159,7 @@ fn the_background_menu_offers_import_at_the_clicked_lane() {
     let (mut h, _) = rig();
     // Right-click empty space in the second track's lane.
     let lane = Pos2::new(700.0, 150.0);
-    h.event(Event::PointerMoved(lane));
-    h.step();
-    for pressed in [true, false] {
-        h.event(Event::PointerButton {
-            pos: lane,
-            button: PointerButton::Secondary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-        h.step();
-    }
-    h.run();
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, lane);
     h.get_all_by_label("Import audio…").last().unwrap().click();
     h.run();
     let pick = h.state().picks.last().copied().unwrap();
@@ -1317,18 +1237,7 @@ fn the_header_menu_deletes_a_track() {
     let (mut h, _) = rig();
     let (group, _, _) = add_real_track(&mut h);
     let at = third_header(&h);
-    h.event(Event::PointerMoved(at));
-    h.step();
-    for pressed in [true, false] {
-        h.event(Event::PointerButton {
-            pos: at,
-            button: PointerButton::Secondary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-        h.step();
-    }
-    h.run();
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at);
     h.get_by_label("Delete track").click();
     h.run();
     assert!(h.state().session.project().graph().node(group).is_none());
@@ -1487,32 +1396,10 @@ fn double_clicking_a_midi_clip_opens_it_and_audio_clips_do_not() {
     let (mut h, audio) = rig();
     let id = add_midi(&mut h);
     let pos = centre(&h, id);
-    for _ in 0..2 {
-        h.event(Event::PointerMoved(pos));
-        for pressed in [true, false] {
-            h.event(Event::PointerButton {
-                pos,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            });
-        }
-    }
-    h.run();
+    double_click(&mut h, pos);
     assert_eq!(h.state().opened, [id]);
     let pos = centre(&h, audio);
-    for _ in 0..2 {
-        h.event(Event::PointerMoved(pos));
-        for pressed in [true, false] {
-            h.event(Event::PointerButton {
-                pos,
-                button: PointerButton::Primary,
-                pressed,
-                modifiers: Modifiers::NONE,
-            });
-        }
-    }
-    h.run();
+    double_click(&mut h, pos);
     assert_eq!(h.state().opened, [id]);
 }
 
@@ -1522,22 +1409,7 @@ fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
     let before = h.state().session.project().clips().count();
     // Empty space on the second lane, a little after beat 3.
     let pos = Pos2::new(150.0 + 130.0, 22.0 + 64.0 + 30.0);
-    h.event(Event::PointerMoved(pos));
-    h.step();
-    h.event(Event::PointerButton {
-        pos,
-        button: PointerButton::Secondary,
-        pressed: true,
-        modifiers: Modifiers::NONE,
-    });
-    h.step();
-    h.event(Event::PointerButton {
-        pos,
-        button: PointerButton::Secondary,
-        pressed: false,
-        modifiers: Modifiers::NONE,
-    });
-    h.run();
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, pos);
     h.get_by_label("New MIDI clip").click();
     h.run();
     let project = h.state().session.project();
@@ -1629,4 +1501,91 @@ fn shift_alt_dragging_slips_the_audio_under_the_clip() {
         before.as_audio().unwrap().length
     );
     assert_eq!(after.as_audio().unwrap().offset, 24_000);
+}
+
+/// Arms the first track and starts a take on a fake input.
+fn record(h: &mut H) -> noodle_io::RecordTap {
+    h.state_mut().session.arm(NodeId(1), true);
+    let tap = h.state_mut().session.fake_recorder();
+    h.state_mut().session.record();
+    assert!(h.state().session.is_recording());
+    tap
+}
+
+#[test]
+fn a_take_in_progress_is_drawn_growing_with_the_playhead() {
+    let (mut h, _) = rig();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_none());
+    let _tap = record(&mut h);
+    // Playing for a bar: two seconds is four quarter notes.
+    h.state_mut().session.advance_playhead(Tick(3840));
+    h.run();
+    let early = h.state().timeline.take_rect(NodeId(1)).unwrap();
+    h.state_mut().session.advance_playhead(Tick(7680));
+    h.run();
+    let later = h.state().timeline.take_rect(NodeId(1)).unwrap();
+    assert_eq!(later.left(), early.left());
+    assert!(
+        (later.width() - early.width() * 2.0).abs() < 1.0,
+        "{early:?} {later:?}"
+    );
+    // On the armed track alone.
+    assert!(h.state().timeline.take_rect(NodeId(2)).is_none());
+}
+
+#[test]
+fn a_take_in_progress_shows_its_notes() {
+    let (mut h, _) = rig();
+    let _tap = record(&mut h);
+    h.state_mut().session.advance_playhead(Tick(1920));
+    h.run();
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"Recording".to_owned())
+    );
+    h.state().session.midi_bus().send([0x90, 60, 100]);
+    h.state_mut().session.maintain();
+    h.run();
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"Recording (1 note)".to_owned())
+    );
+}
+
+#[test]
+fn a_finished_take_is_no_longer_drawn_as_one() {
+    let (mut h, _) = rig();
+    let _tap = record(&mut h);
+    h.run();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_some());
+    h.state_mut().session.stop_recording();
+    h.run();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_none());
+}
+
+#[test]
+fn a_take_is_drawn_only_on_tracks_armed_for_what_it_holds() {
+    let (mut h, _) = rig();
+    h.state_mut()
+        .session
+        .arm_kind(NodeId(1), ArmKind::Audio, true);
+    h.state_mut()
+        .session
+        .arm_kind(NodeId(2), ArmKind::Midi, true);
+    let _tap = h.state_mut().session.fake_recorder();
+    h.state_mut().session.record();
+    h.state().session.midi_bus().send([0x90, 60, 100]);
+    h.state_mut().session.maintain();
+    h.state_mut().session.advance_playhead(Tick(1920));
+    h.run();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_some());
+    assert!(h.state().timeline.take_rect(NodeId(2)).is_some());
+    // The notes are on the MIDI track's take alone.
+    let text = h.state().timeline.drawn_text();
+    assert!(text.contains(&"Recording".to_owned()), "{text:?}");
+    assert!(text.contains(&"Recording (1 note)".to_owned()), "{text:?}");
 }
