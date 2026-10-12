@@ -36,18 +36,23 @@ pub struct Baseline(pub BTreeMap<String, BTreeMap<String, Option<f64>>>);
 
 impl Baseline {
     pub fn of(rows: &[Row]) -> Self {
+        Self::of_entries(rows.iter().map(|row| (row.key(), row.metrics.as_slice())))
+    }
+
+    /// A baseline from (row key, metrics) pairs, for rows that are not the
+    /// harness's.
+    pub fn of_entries<'a>(entries: impl Iterator<Item = (String, &'a [(String, f64)])>) -> Self {
         Self(
-            rows.iter()
-                .map(|row| {
-                    let metrics = row
-                        .metrics
+            entries
+                .map(|(key, metrics)| {
+                    let metrics = metrics
                         .iter()
                         .map(|(n, v)| {
                             let rounded = (v * 1e6).round() / 1e6;
                             (n.clone(), rounded.is_finite().then_some(rounded))
                         })
                         .collect();
-                    (row.key(), metrics)
+                    (key, metrics)
                 })
                 .collect(),
         )
@@ -167,7 +172,7 @@ fn ranks(values: &[Option<f64>]) -> Vec<f64> {
         .collect()
 }
 
-fn cell(v: Option<f64>) -> String {
+pub fn cell(v: Option<f64>) -> String {
     match v {
         Some(v) if v.is_finite() => format!("{v:.3}"),
         _ => "-".into(),
