@@ -1634,11 +1634,32 @@ impl Session {
             return;
         }
         let mut commands = Vec::new();
+        // The take's clip tempo is the timeline's where it was recorded. The
+        // sections on every armed track show the same clip, so they share one
+        // warp.
+        let warp = take.as_ref().filter(|_| rate > 0.0).map(|take| {
+            let seconds = take.frames as f64 / rate;
+            let warp =
+                noodle_core::ClipWarp::recorded(self.project.tempo_map(), recording.start, seconds);
+            (self.project.next_warp_id(), warp)
+        });
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
+                let mut clip = Clip::audio(track, recording.start, relative.clone(), take.frames);
+                if let (Some((id, warp)), noodle_core::ClipContent::Audio(audio)) =
+                    (&warp, &mut clip.content)
+                {
+                    if commands.is_empty() {
+                        commands.push(Command::AddWarp {
+                            id: *id,
+                            warp: warp.clone(),
+                        });
+                    }
+                    audio.warp = Some(*id);
+                }
                 commands.push(Command::AddClip {
                     id: self.project.new_clip_id(),
-                    clip: Clip::audio(track, recording.start, relative.clone(), take.frames),
+                    clip,
                 });
             }
         }
@@ -3522,6 +3543,18 @@ mod tests {
         let audio = noodle_io::read_wav(&dir.path().join(source)).unwrap();
         assert_eq!(audio.samples.len() / audio.channels, 4_800);
         assert!(session.is_dirty());
+
+        // Both sections show one clip, whose tempo is the timeline's where it
+        // was recorded; it sounds as recorded until the conversion is on.
+        let warps: Vec<_> = session
+            .project()
+            .clips()
+            .filter_map(|(id, _)| session.project().warp_of(id))
+            .collect();
+        assert_eq!(warps.len(), 2);
+        assert_eq!(warps[0].0, warps[1].0);
+        assert_eq!(warps[0].1.tempo.points()[0].bpm, 120.0);
+        assert!(warps[0].1.is_identity());
 
         session.undo();
         assert!(

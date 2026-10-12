@@ -6,8 +6,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AutomationLane, Clip, ClipId, EditError, Endpoint, Frame, FrameId, Graph, LaneId, NodeId,
-    TempoMap,
+    AutomationLane, Clip, ClipId, ClipWarp, Command, EditError, Endpoint, Frame, FrameId, Graph,
+    LaneId, NodeId, TempoMap, WarpId,
 };
 
 /// Everything that gets saved: the graph, the frames drawn around parts of
@@ -21,6 +21,10 @@ pub struct Project {
     tempo_map: TempoMap,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
+    /// The warps audio clips refer to (see [`ClipWarp`]). Sections that show
+    /// the same clip name the same one.
+    warps: BTreeMap<WarpId, ClipWarp>,
+    next_warp_id: u64,
     lanes: BTreeMap<LaneId, AutomationLane>,
     next_lane_id: u64,
     track_order: Vec<NodeId>,
@@ -38,6 +42,8 @@ impl Default for Project {
             tempo_map: TempoMap::default(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
+            warps: BTreeMap::new(),
+            next_warp_id: 1,
             lanes: BTreeMap::new(),
             next_lane_id: 1,
             track_order: Vec::new(),
@@ -54,6 +60,7 @@ impl PartialEq for Project {
             && self.frames == other.frames
             && self.tempo_map == other.tempo_map
             && self.clips == other.clips
+            && self.used_warps() == other.used_warps()
             && self.lanes == other.lanes
             && self.track_order == other.track_order
             && self.frozen == other.frozen
@@ -72,6 +79,8 @@ struct ProjectFile {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clips: BTreeMap<ClipId, Clip>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    warps: BTreeMap<WarpId, ClipWarp>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     lanes: BTreeMap<LaneId, AutomationLane>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     track_order: Vec<NodeId>,
@@ -89,7 +98,7 @@ fn is_default_tempo_map(map: &TempoMap) -> bool {
 impl Project {
     /// The current file format version. Bump it when the format changes in a
     /// way older versions can't read, and migrate older files when loading.
-    pub const FORMAT: u32 = 2;
+    pub const FORMAT: u32 = 3;
 
     pub fn new() -> Self {
         Self::default()
@@ -222,9 +231,134 @@ impl Project {
         ClipId(self.next_clip_id)
     }
 
+    pub fn warp(&self, id: WarpId) -> Option<&ClipWarp> {
+        self.warps.get(&id)
+    }
+
+    /// The warp the audio clip `id` uses, if it is an audio clip with one.
+    pub fn warp_of(&self, id: ClipId) -> Option<(WarpId, &ClipWarp)> {
+        let warp = self.clip(id)?.as_audio()?.warp?;
+        Some((warp, self.warps.get(&warp)?))
+    }
+
+    pub fn warps(&self) -> impl Iterator<Item = (WarpId, &ClipWarp)> {
+        self.warps.iter().map(|(&id, warp)| (id, warp))
+    }
+
+    /// The audio clips (sections) that use `warp`.
+    pub fn clips_using(&self, warp: WarpId) -> impl Iterator<Item = ClipId> + '_ {
+        self.clips().filter_map(move |(id, clip)| {
+            (clip.as_audio().and_then(|a| a.warp) == Some(warp)).then_some(id)
+        })
+    }
+
+    /// The warps some clip uses. A warp nothing uses is left over from an
+    /// edit that was undone or a clip that was deleted; it is not saved.
+    fn used_warps(&self) -> BTreeMap<WarpId, &ClipWarp> {
+        self.clips()
+            .filter_map(|(_, clip)| clip.as_audio()?.warp)
+            .filter_map(|id| Some((id, self.warps.get(&id)?)))
+            .collect()
+    }
+
+    /// The ID [`insert_warp`](Self::insert_warp) would expect next.
+    pub fn next_warp_id(&self) -> WarpId {
+        WarpId(self.next_warp_id)
+    }
+
+    fn check_warp(&self, id: WarpId, warp: &ClipWarp) -> Result<(), EditError> {
+        match warp.problem() {
+            Some(problem) => Err(EditError::InvalidWarp(id, problem)),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn insert_warp(&mut self, id: WarpId, warp: ClipWarp) -> Result<(), EditError> {
+        if self.warps.contains_key(&id) {
+            return Err(EditError::WarpExists(id));
+        }
+        self.check_warp(id, &warp)?;
+        self.warps.insert(id, warp);
+        self.next_warp_id = self.next_warp_id.max(id.0 + 1);
+        Ok(())
+    }
+
+    pub(crate) fn remove_warp(&mut self, id: WarpId) -> Result<ClipWarp, EditError> {
+        if self.clips_using(id).next().is_some() {
+            return Err(EditError::WarpInUse(id));
+        }
+        self.warps.remove(&id).ok_or(EditError::NoSuchWarp(id))
+    }
+
+    pub(crate) fn replace_warp(
+        &mut self,
+        id: WarpId,
+        warp: ClipWarp,
+    ) -> Result<ClipWarp, EditError> {
+        if !self.warps.contains_key(&id) {
+            return Err(EditError::NoSuchWarp(id));
+        }
+        self.check_warp(id, &warp)?;
+        Ok(std::mem::replace(
+            self.warps.get_mut(&id).expect("checked"),
+            warp,
+        ))
+    }
+
+    /// The command that changes how audio clip `clip` is warped, which
+    /// `change` does to a copy of its warp. A clip that isn't warped starts
+    /// from its file played at the tempo of the timeline where it starts, so
+    /// it sounds as it did until `change` alters it.
+    ///
+    /// Sections that show the same clip share a warp, so an edit that reaches
+    /// them all is one `SetWarp`. When this section shares its warp with
+    /// others, the edit is made on a copy that only it uses (it forks), and
+    /// the others are left as they were. Apply the command before asking for
+    /// another: it uses the next free warp ID.
+    pub fn warp_edit(
+        &self,
+        clip: ClipId,
+        change: impl FnOnce(&mut ClipWarp),
+    ) -> Result<Command, EditError> {
+        let section = self.clip(clip).ok_or(EditError::NoSuchClip(clip))?;
+        let audio = section.as_audio().ok_or(EditError::NoSuchClip(clip))?;
+        let current = audio
+            .warp
+            .and_then(|id| self.warps.get(&id).map(|w| (id, w)));
+        let mut warp = match current {
+            Some((_, warp)) => warp.clone(),
+            None => ClipWarp::at_tempo(self.tempo_map.bpm_at(section.start)),
+        };
+        change(&mut warp);
+        match current {
+            Some((id, _)) if self.clips_using(id).all(|other| other == clip) => {
+                Ok(Command::SetWarp { id, warp })
+            }
+            _ => {
+                let id = self.next_warp_id();
+                let mut forked = section.clone();
+                if let crate::ClipContent::Audio(audio) = &mut forked.content {
+                    audio.warp = Some(id);
+                }
+                Ok(Command::Batch(vec![
+                    Command::AddWarp { id, warp },
+                    Command::SetClip {
+                        id: clip,
+                        clip: forked,
+                    },
+                ]))
+            }
+        }
+    }
+
     fn check_clip(&self, id: ClipId, clip: &Clip) -> Result<(), EditError> {
         if let Some(problem) = clip.problem() {
             return Err(EditError::InvalidClip(id, problem));
+        }
+        if let Some(warp) = clip.as_audio().and_then(|a| a.warp)
+            && !self.warps.contains_key(&warp)
+        {
+            return Err(EditError::NoSuchWarp(warp));
         }
         if self.graph.node(clip.node).is_none() {
             return Err(EditError::NoSuchNode(clip.node));
@@ -363,6 +497,11 @@ impl Project {
             frames: self.frames.clone(),
             tempo_map: self.tempo_map.clone(),
             clips: self.clips.clone(),
+            warps: self
+                .used_warps()
+                .into_iter()
+                .map(|(id, warp)| (id, warp.clone()))
+                .collect(),
             lanes: self.lanes.clone(),
             // Not IDs that have gone: a later node could be handed the same ID.
             track_order: self
@@ -390,6 +529,7 @@ impl Project {
         }
         let next_frame_id = file.frames.keys().last().map_or(1, |id| id.0 + 1);
         let next_clip_id = file.clips.keys().last().map_or(1, |id| id.0 + 1);
+        let next_warp_id = file.warps.keys().last().map_or(1, |id| id.0 + 1);
         let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
         let mut clips = file.clips;
         for clip in clips.values_mut() {
@@ -402,11 +542,16 @@ impl Project {
             tempo_map: file.tempo_map,
             clips,
             next_clip_id,
+            warps: file.warps,
+            next_warp_id,
             lanes: file.lanes,
             next_lane_id,
             track_order: file.track_order,
             frozen: file.frozen,
         };
+        for (id, warp) in &project.warps {
+            project.check_warp(*id, warp).map_err(LoadError::Broken)?;
+        }
         for (id, clip) in &project.clips {
             project.check_clip(*id, clip).map_err(LoadError::Broken)?;
         }
@@ -1049,5 +1194,179 @@ mod tests {
         midi.notes[1].id = u32::MAX;
         midi.assign_note_ids();
         assert_ne!(midi.notes[0].id, midi.notes[1].id);
+    }
+
+    // Warps: shared between sections, forked when one is edited on its own.
+
+    fn warped_pair() -> (Project, History, NodeId, ClipId, ClipId, WarpId) {
+        let (mut project, mut history, player, first, _) = with_timeline();
+        let warp = project.next_warp_id();
+        let second = project.new_clip_id();
+        let mut clip = Clip::audio(player, Tick(7680), "kick.wav", 48_000);
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.warp = Some(warp);
+        let mut shared = project.clip(first).unwrap().clone();
+        let ClipContent::Audio(audio) = &mut shared.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.warp = Some(warp);
+        apply(
+            &mut project,
+            &mut history,
+            Command::Batch(vec![
+                Command::AddWarp {
+                    id: warp,
+                    warp: crate::ClipWarp::at_tempo(100.0),
+                },
+                Command::SetClip {
+                    id: first,
+                    clip: shared,
+                },
+                Command::AddClip { id: second, clip },
+            ]),
+        );
+        (project, history, player, first, second, warp)
+    }
+
+    #[test]
+    fn a_clip_can_only_name_a_warp_that_exists() {
+        let (mut project, _, player, _, _) = with_timeline();
+        let mut clip = Clip::audio(player, Tick(0), "kick.wav", 48_000);
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.warp = Some(crate::WarpId(9));
+        let id = project.new_clip_id();
+        assert!(matches!(
+            Command::AddClip { id, clip }.apply(&mut project),
+            Err(EditError::NoSuchWarp(_))
+        ));
+    }
+
+    #[test]
+    fn a_warp_in_use_cannot_be_removed_and_a_bad_one_cannot_be_added() {
+        let (mut project, _, _, _, _, warp) = warped_pair();
+        assert!(matches!(
+            Command::RemoveWarp { id: warp }.apply(&mut project),
+            Err(EditError::WarpInUse(_))
+        ));
+        let mut bad = crate::ClipWarp::at_tempo(120.0);
+        bad.markers = vec![
+            crate::WarpMarker {
+                seconds: 2.0,
+                beat: 1.0,
+            },
+            crate::WarpMarker {
+                seconds: 1.0,
+                beat: 2.0,
+            },
+        ];
+        let id = project.next_warp_id();
+        assert!(matches!(
+            Command::AddWarp {
+                id,
+                warp: bad.clone()
+            }
+            .apply(&mut project),
+            Err(EditError::InvalidWarp(..))
+        ));
+        assert!(matches!(
+            Command::SetWarp {
+                id: warp,
+                warp: bad
+            }
+            .apply(&mut project),
+            Err(EditError::InvalidWarp(..))
+        ));
+    }
+
+    #[test]
+    fn editing_a_shared_warp_forks_it_and_undo_joins_it_again() {
+        let (mut project, mut history, _, first, second, warp) = warped_pair();
+        let before = project.clone();
+        let edit = project
+            .warp_edit(second, |w| w.tempo_conversion = false)
+            .unwrap();
+        history.apply(&mut project, edit).unwrap();
+        // The second section has a warp of its own; the first is as it was.
+        let (forked, forked_warp) = project.warp_of(second).unwrap();
+        assert_ne!(forked, warp);
+        assert!(!forked_warp.tempo_conversion);
+        let (kept, kept_warp) = project.warp_of(first).unwrap();
+        assert_eq!(kept, warp);
+        assert!(kept_warp.tempo_conversion);
+        assert_eq!(project.clips_using(warp).collect::<Vec<_>>(), [first]);
+
+        // Now it is the only user of its warp, so edits change it in place.
+        let edit = project
+            .warp_edit(second, |w| w.use_markers = false)
+            .unwrap();
+        assert!(matches!(edit, Command::SetWarp { id, .. } if id == forked));
+        history.apply(&mut project, edit).unwrap();
+        assert_eq!(project.warps().count(), 2);
+
+        history.undo(&mut project).unwrap();
+        history.undo(&mut project).unwrap();
+        assert_eq!(project, before);
+        history.redo(&mut project).unwrap();
+        assert_eq!(project.warp_of(second).unwrap().0, forked);
+    }
+
+    #[test]
+    fn warping_a_clip_that_has_no_warp_starts_from_the_timeline_tempo() {
+        let (mut project, mut history, _, clip, _) = with_timeline();
+        assert!(project.warp_of(clip).is_none());
+        let edit = project.warp_edit(clip, |_| {}).unwrap();
+        history.apply(&mut project, edit).unwrap();
+        let (_, warp) = project.warp_of(clip).unwrap();
+        assert_eq!(warp.tempo.points()[0].bpm, 120.0);
+        assert!(warp.markers.is_empty());
+    }
+
+    #[test]
+    fn warps_are_saved_with_the_clips_that_use_them_and_not_without() {
+        let (mut project, mut history, _, first, second, _) = warped_pair();
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.warps().count(), 1);
+
+        // Delete both users: the warp is left over in memory but not saved,
+        // and a project without it is equal.
+        for id in [first, second] {
+            history
+                .apply(&mut project, Command::RemoveClip { id })
+                .unwrap();
+        }
+        assert_eq!(project.warps().count(), 1);
+        let text = project.to_ron();
+        assert!(!text.contains("warps"), "{text}");
+        assert_eq!(Project::from_ron(&text).unwrap(), project);
+    }
+
+    #[test]
+    fn projects_saved_before_warps_still_load() {
+        let (project, _, _, clip, _) = with_timeline();
+        let text = project.to_ron();
+        assert!(!text.contains("warp"), "{text}");
+        let older = text.replace("format: 3", "format: 2");
+        let loaded = Project::from_ron(&older).unwrap();
+        assert_eq!(loaded, project);
+        assert!(
+            loaded
+                .clip(clip)
+                .unwrap()
+                .as_audio()
+                .unwrap()
+                .warp
+                .is_none()
+        );
+        // A file that names a warp it doesn't have is refused.
+        let broken = text.replace("gain:", "warp: Some(4), gain:");
+        assert!(matches!(
+            Project::from_ron(&broken),
+            Err(LoadError::Broken(EditError::NoSuchWarp(_)))
+        ));
     }
 }

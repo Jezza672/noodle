@@ -412,6 +412,27 @@ rewind only touch the transport:
   device, CI, tests and `noodle play --output virtual`. Output nodes tied to
   other devices and audio input still open as usual around it.
 
+### Playing on several devices
+
+Output nodes tied to other devices (see "Outputs view") make the engine render
+one buffer for every device's channels: the main device's first, then each
+extra's. The main device's callback plays its channels and hands the rest to
+the extras through a queue each (`Tap` in `noodle-io/src/output.rs`), and each
+extra's own callback (`ExtraOutput`) plays from its queue. The two clocks
+drift, so an extra waits for a cushion (one main block and one of its own,
+scaled to its rate) before it plays, plays silence if it runs dry and skips
+ahead if it falls far behind, counting each as a glitch.
+
+An extra device opens at the main device's rate if it runs at it, and at its own
+default rate otherwise (`open_extra`). Then a `RateConverter` thread sits
+between the tap's queue and the extra's: it reads the engine's audio, converts
+it with a `StreamResampler` (rubato's sinc resampler, 128 input frames a time)
+and queues the result for the device. The cushion grows by what the converter
+holds back (its chunk and its timer), so a converted device is a few
+milliseconds later than a direct one; the engine doesn't
+compensate for either. Neither callback allocates or resamples; dropping the
+extra's callback stops the thread.
+
 ### Live monitoring
 
 A track **armed for MIDI** (RM on its header, `Session::arm_kind`) plays live MIDI
@@ -581,6 +602,57 @@ MIDI alone. The Q menu in the transport sets a grid (off, 1/4, 1/8, 1/16,
 clip is made, keeping their lengths, shortening a note that now runs into the
 same key's next one and dropping a second note on the same tick. What is
 heard while playing is never snapped. The raw timing is not kept.
+
+### Time warping (M7)
+
+An audio clip can be **warped** (CONTEXT.md; ADR 0002 says why it is not nodes).
+The document side is in `noodle-core/src/warp.rs`: a `ClipWarp` holds a
+`TempoCurve` (the clip's tempo along its own seconds, a step function), the
+`WarpMarker`s (each pins a moment of the clip, in source seconds, to a beat),
+the `WarpMode` (only Repitch) and the switches `tempo_conversion` and
+`use_markers`. It lives in the project's `warps` map and an audio section
+(the code's `Clip`) names it by `WarpId` in `AudioClip::warp`; sections that
+show one clip share an ID, `Project::warp_edit` forks it when a section is
+edited on its own, `AddWarp`/`SetWarp`/`RemoveWarp` are commands, and a warp
+nothing uses is left out of the saved file. The format is 3; older files load
+(`warp` and `warps` default to none).
+
+`ClipWarp::curve` is the one definition of where a moment of the clip plays: the
+clip's beat at a moment is the integral of its tempo, the markers bend clip
+beats into warped beats (straight lines between markers, the clip's own tempo
+before the first and after the last), and with the conversion on the result is
+in timeline beats, so the clip follows the tempo map. With it off the beats are
+turned back into seconds at the clip's own tempo, so the clip keeps its natural
+speed and the markers still re-time it. Markers must rise in time and beat and
+may not squeeze or stretch the clip beyond 16 times (`MIN_WARP_SPEED`). A
+section starts playing at its `offset` into the file, wherever that falls in the
+warped clip.
+
+The engine turns the curve into a `WarpMap` per section
+(`noodle-nodes/src/clip/warp.rs`, built by `ClipFeeds::update` from the
+`TempoTable`): knots of (output frame, source frame), straight between, with a
+knot at each marker, clip tempo change and timeline tempo change in range, so it
+is exact. A warp that leaves the clip at natural speed (`is_identity`) builds
+no map and plays as an unwarped clip, bit for bit. The section's length is where
+the map ends; fades are stretched through it.
+
+The track input plays a warped `ScheduledClip` from the same disk streams as
+any other, which are always at the engine's rate and in source frames.
+`play_warped` renders up to 256 output frames at a time: it works out the source
+frames they reach (plus one behind and two ahead), keeps them in a window it
+reads from the stream (carrying it over from block to block, so the stream is
+read once, in order), and interpolates each frame cubically (Repitch: pitch
+follows speed). Seeking, the loop's head streams and parking use
+`ScheduledClip::stream_start`, which gives the source frame for a clip frame.
+Ends hold their edge frame for the interpolation, so cutting a clip doesn't
+ring. Everything is preallocated at instantiation (`realtime.rs` plays warped
+clips, edits them while they play and loops over them under the counting
+allocator). The warp is in the track's cache key when it changes the sound.
+
+What is not here yet: the other modes, the worker thread that stretches ahead
+of the playhead (PR 2: Repitch needs no lookahead), editing in the app beyond
+moving a section (trims and fades of a warped section are ignored; PR 3), loop
+and clip tempo detection (PR 3), warp quantise and grooves (PR 4).
 
 ## Automation (M2)
 

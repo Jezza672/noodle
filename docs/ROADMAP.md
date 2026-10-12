@@ -297,8 +297,10 @@ and several Output nodes each tied to one device). All of this theme is done.
   (View > Outputs). The engine renders one buffer for all the devices'
   channels and the main device's callback hands the rest to the other devices'
   streams through queues; see "Playing on several devices" in
-  ARCHITECTURE.md. Still open: the extra devices follow the main device's
-  sample rate (no resampling), and their latency isn't compensated.
+  ARCHITECTURE.md. **Done:** an extra device that runs at another sample rate
+  than the main one is fed through a converter thread (sinc resampling), so
+  neither callback does the work. Still open: the extra devices' latency isn't
+  compensated.
 
 **Clips and the arrangement (M2).**
 
@@ -582,28 +584,38 @@ A plugin that changes its latency after loading (restart request, latency
 
 ## M7: Time warping
 
-**Status:** designed, not started. The decisions are in CONTEXT.md (warp, clip
-tempo, beat and warp markers, groove, section) and ADR 0002 (warping is a clip
-feature, not nodes).
+**Status:** PR 1 of 4 is done (the model and Repitch playback, below). The
+decisions are in CONTEXT.md (warp, clip tempo, beat and warp markers, groove,
+section) and ADR 0002 (warping is a clip feature, not nodes).
 
 Audio clips get a warp, applied live on playback. Four PRs:
 
-1. **The model.** A clip (the audio, its true length, loop, clip tempo curve,
-   beat and warp markers) is separate from the sections that show it on the
-   timeline. Copies share a clip until one is edited. Clip tempo comes from the
-   tempo map for takes recorded in Noodle, and from detection, tapping or typing
-   for imports, and is saved in the project. Warp markers pin a clip moment to a
-   timeline beat and snap to beat markers; a hidden tempo conversion maps clip
-   tempo to the timeline's. Tempo conversion, warp markers and warp quantise
-   are separate switches. The only mode is Repitch.
+1. **The model. Done.** A clip's warp (its clip tempo curve and warp markers,
+   `ClipWarp`) is separate from the sections that show it on the timeline, and
+   sections that show one clip share it by ID. An edit to a shared warp forks
+   it for that section (`Project::warp_edit`), so copies stay as they were.
+   Clip tempo is seeded from the tempo map for takes recorded in Noodle
+   (conversion off, so they sound as recorded) and saved in the project;
+   detection, tapping and typing arrive with the editor. Warp markers pin a clip
+   moment to a timeline beat; a hidden tempo conversion maps clip tempo to the
+   timeline's. Tempo conversion and warp markers are separate switches (warp
+   quantise is the third, in PR 4). The only mode is Repitch, played by the
+   track input with cubic interpolation, driven by a piecewise-linear map from
+   output frames to source frames. Fades stretch with the audio. Dragging trims
+   and fades on a warped section waits for the clip editor, as does the
+   **loop** (a loop region in beats, and a section extending past the true
+   length): it needs the editor's brace and the engine's gapless repeat, so it
+   moved from this PR to PR 3.
 2. **The engine.** Stretching runs on a worker thread ahead of the playhead into
    a ring buffer; the audio thread only copies. Modes: Repitch, Grain (WSOLA)
    and Beats (transient-preserving). Cheap repitch plays while a marker is
-   dragged. Benchmarks, the real-time allocation test, and golden renders.
+   dragged. Benchmarks, and golden renders. (The real-time allocation test and
+   a golden render already cover Repitch, from PR 1.)
 3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
    waveform, transient ticks, warp markers along the top and the loop brace.
    Properties (mode, switches, clip tempo, loop, gain, fades) stay in the
-   properties panel. Mode is chosen from analysis on import.
+   properties panel. Mode is chosen from analysis on import. Also loop (see
+   PR 1) and detecting, tapping and typing the clip tempo.
 4. **Warp quantise and grooves.** A live grid and amount over the unquantised
    markers, previewed with lines back to the originals, plus bake. A groove
    (timing feel apart from the algorithm) can be copied from one clip to

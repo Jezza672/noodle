@@ -35,6 +35,6 @@ pub use output::{
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};
-pub use resample::{ResampleError, resample};
+pub use resample::{ResampleError, StreamResampler, resample};
 pub use stream::{ClipStream, StreamSpec, StreamWorker, clip_frames, open_stream};
 pub use wav::{Audio, WavError, WavStreamWriter, read_wav, write_wav};

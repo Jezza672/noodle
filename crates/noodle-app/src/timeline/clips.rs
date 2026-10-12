@@ -4,7 +4,9 @@
 //! A clip starts at a tick but is as long as its audio, so its end depends on
 //! the tempo map. Trims turn the tick the user dragged to back into frames.
 
-use noodle_core::{AudioClip, Clip, ClipContent, MidiClip, TempoMap, Tick};
+use noodle_core::{
+    AudioClip, Clip, ClipContent, ClipWarp, MidiClip, TICKS_PER_QUARTER, TempoMap, Tick, WarpAxis,
+};
 
 /// What a clip needs to know about its file to be laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,11 +27,33 @@ pub fn end_tick(map: &TempoMap, start: Tick, length: u64, rate: u32) -> Tick {
 pub const MIN_MIDI_LENGTH: i64 = 120;
 
 /// The tick a clip ends on, laying audio out at `rate` when the clip's file
-/// is not known any better. MIDI clips are as long as they say.
-pub fn clip_end(map: &TempoMap, clip: &Clip, rate: u32) -> Tick {
+/// is not known any better. MIDI clips are as long as they say. `warp` is the
+/// audio clip's warp, if it has one: a warped section lasts as long as its
+/// audio takes to play once warped.
+pub fn clip_end(map: &TempoMap, clip: &Clip, rate: u32, warp: Option<&ClipWarp>) -> Tick {
     match &clip.content {
-        ClipContent::Audio(audio) => end_tick(map, clip.start, audio.length, rate),
+        ClipContent::Audio(audio) => match warp.filter(|warp| !warp.is_identity()) {
+            Some(warp) => warped_end(map, clip.start, audio, rate, warp),
+            None => end_tick(map, clip.start, audio.length, rate),
+        },
         ClipContent::Midi(midi) => Tick(clip.start.0 + midi.length.0),
+    }
+}
+
+/// Where a warped section of `audio` starting at `start` ends.
+fn warped_end(map: &TempoMap, start: Tick, audio: &AudioClip, rate: u32, warp: &ClipWarp) -> Tick {
+    let rate = f64::from(rate);
+    let origin = audio.offset as f64 / rate;
+    let curve = warp.curve();
+    let span = curve.at(origin + audio.length as f64 / rate) - curve.at(origin);
+    match curve.axis {
+        // Beats of the timeline, wherever the tempo takes them.
+        WarpAxis::Beats => Tick(start.0 + (span * TICKS_PER_QUARTER as f64).round() as i64),
+        // Seconds, at the tempo the timeline has there.
+        WarpAxis::Seconds => {
+            let end = map.sample_at(start, rate) + (span * rate).round() as u64;
+            Tick(map.tick_at_sample(end, rate).round() as i64)
+        }
     }
 }
 
@@ -49,6 +73,11 @@ pub fn trim_start(map: &TempoMap, clip: &Clip, edge: Tick, rate: u32) -> Option<
         return Some(trim_midi_start(clip, midi, edge));
     }
     let audio = clip.as_audio()?;
+    // Trims count in the file's frames, which a warp stretches. A warped
+    // section is trimmed in the clip editor.
+    if audio.warp.is_some() {
+        return None;
+    }
     let rate_f = f64::from(rate);
     let start_sample = map.sample_at(clip.start, rate_f) as i64;
     let edge_sample = map.sample_at(edge.max(Tick::ZERO), rate_f) as i64;
@@ -104,6 +133,9 @@ pub fn trim_end(
         });
     }
     let audio = clip.as_audio()?;
+    if audio.warp.is_some() {
+        return None;
+    }
     let rate_f = f64::from(rate);
     let start_sample = map.sample_at(clip.start, rate_f);
     let edge_sample = map.sample_at(edge.max(Tick::ZERO), rate_f);
@@ -154,6 +186,9 @@ fn trim_midi_start(clip: &Clip, midi: &MidiClip, edge: Tick) -> Clip {
 /// running into the fade out. Dragging left of the start removes the fade.
 pub fn set_fade_in(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<Clip> {
     let audio = clip.as_audio()?;
+    if audio.warp.is_some() {
+        return None;
+    }
     let rate = f64::from(rate);
     let wanted = map
         .sample_at(at.max(Tick::ZERO), rate)
@@ -170,6 +205,9 @@ pub fn set_fade_in(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<C
 /// without running into the fade in.
 pub fn set_fade_out(map: &TempoMap, clip: &Clip, at: Tick, rate: u32) -> Option<Clip> {
     let audio = clip.as_audio()?;
+    if audio.warp.is_some() {
+        return None;
+    }
     let rate = f64::from(rate);
     let end = map.sample_at(clip.start, rate) + audio.length;
     let wanted = end.saturating_sub(map.sample_at(at.max(Tick::ZERO), rate));
@@ -321,7 +359,7 @@ mod tests {
     #[test]
     fn a_midi_clip_ends_where_its_length_says_whatever_the_tempo() {
         let clip = midi_clip(960, 3840, &[]);
-        assert_eq!(clip_end(&map(), &clip, RATE), Tick(4800));
+        assert_eq!(clip_end(&map(), &clip, RATE, None), Tick(4800));
     }
 
     #[test]
@@ -382,5 +420,59 @@ mod tests {
         let clip = midi_clip(0, 3840, &[]);
         assert!(set_fade_in(&map(), &clip, Tick(480), RATE).is_none());
         assert!(set_fade_out(&map(), &clip, Tick(480), RATE).is_none());
+    }
+
+    fn warped(mut clip: Clip, warp: u64) -> Clip {
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.warp = Some(noodle_core::WarpId(warp));
+        clip
+    }
+
+    #[test]
+    fn a_warped_section_lasts_as_long_as_its_warped_audio() {
+        let c = warped(clip(960, 0, 96_000), 1);
+        // Two seconds of audio recorded at 60 bpm is two beats of it, which
+        // the timeline plays as two beats at any tempo.
+        let slow = ClipWarp::at_tempo(60.0);
+        assert_eq!(clip_end(&map(), &c, RATE, Some(&slow)), Tick(960 + 1920));
+        // Recorded at 120 it is four beats.
+        let same = ClipWarp::at_tempo(120.0);
+        assert_eq!(clip_end(&map(), &c, RATE, Some(&same)), Tick(960 + 3840));
+        // Without a warp, or with one that leaves it alone, it lasts two seconds.
+        let mut natural = ClipWarp::at_tempo(60.0);
+        natural.tempo_conversion = false;
+        assert_eq!(clip_end(&map(), &c, RATE, None), Tick(960 + 3840));
+        assert_eq!(clip_end(&map(), &c, RATE, Some(&natural)), Tick(960 + 3840));
+        // Markers lengthen or shorten it: the clip's second beat is moved to
+        // the fourth, so the whole is two beats longer.
+        let mut marked = ClipWarp::at_tempo(120.0);
+        marked.set_marker(noodle_core::WarpMarker {
+            seconds: 0.0,
+            beat: 0.0,
+        });
+        marked.set_marker(noodle_core::WarpMarker {
+            seconds: 1.0,
+            beat: 4.0,
+        });
+        assert_eq!(
+            clip_end(&map(), &c, RATE, Some(&marked)),
+            Tick(960 + 3840 + 2 * 960)
+        );
+        // A section showing part of the file counts only that part.
+        let part = warped(clip(0, 48_000, 48_000), 1);
+        assert_eq!(clip_end(&map(), &part, RATE, Some(&same)), Tick(1920));
+    }
+
+    #[test]
+    fn warped_sections_are_not_trimmed_or_faded_by_dragging() {
+        let c = warped(clip(0, 0, 48_000), 1);
+        assert!(trim_start(&map(), &c, Tick(480), RATE).is_none());
+        assert!(trim_end(&map(), &c, Tick(480), RATE, None).is_none());
+        assert!(set_fade_in(&map(), &c, Tick(480), RATE).is_none());
+        assert!(set_fade_out(&map(), &c, Tick(480), RATE).is_none());
+        // Moving is fine.
+        assert_eq!(moved(&c, Tick(960)).start, Tick(960));
     }
 }

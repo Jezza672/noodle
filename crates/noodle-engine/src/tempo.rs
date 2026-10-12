@@ -91,6 +91,25 @@ impl TempoTable {
         sample.round() as u64
     }
 
+    /// Like [`sample_at`](Self::sample_at), without rounding: where `tick`
+    /// falls, fractions of a sample included. Ticks before the start are 0.
+    pub fn sample_at_exact(&self, tick: f64) -> f64 {
+        if tick <= 0.0 {
+            return 0.0;
+        }
+        let i = self
+            .segments
+            .partition_point(|s| s.start_tick as f64 <= tick)
+            .saturating_sub(1);
+        let segment = &self.segments[i];
+        segment.start_sample + (tick - segment.start_tick as f64) * segment.samples_per_tick
+    }
+
+    /// The ticks where the tempo changes, after the start.
+    pub fn tempo_changes(&self) -> impl Iterator<Item = f64> + '_ {
+        self.segments.iter().skip(1).map(|s| s.start_tick as f64)
+    }
+
     /// The tempo at `tick`, in quarter notes per minute.
     pub fn bpm_at(&self, tick: f64) -> f64 {
         let i = self

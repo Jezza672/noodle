@@ -297,7 +297,7 @@ fn run(
                     rate,
                     offset: clip.source.offset,
                     length: clip.source.length,
-                    start: from.saturating_sub(clip.start),
+                    start: clip.stream_start(from.saturating_sub(clip.start)),
                     chunks: STREAM_CHUNKS,
                 };
                 match open_stream(spec) {
