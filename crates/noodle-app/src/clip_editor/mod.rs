@@ -511,8 +511,7 @@ fn hit_test(
 ) -> Option<Gesture> {
     if (flags.top()..=wave.bottom()).contains(&pos.y)
         && let Some(i) = marker_at_x(pos.x, axis, warp)
-        && (pos.y <= flags.bottom()
-            || (pos.x - axis.x(warp.marker_beat(i).unwrap_or_default())).abs() <= 3.0)
+        && (pos.y <= flags.bottom() || (pos.x - axis.x(flag_beat(warp, i))).abs() <= 3.0)
     {
         return Some(Gesture::Marker(i));
     }
@@ -533,10 +532,17 @@ fn hit_test(
     None
 }
 
+/// Where flag `index` is drawn: where its marker plays, or, for a marker warp
+/// quantise leaves out (nothing plays there), where it was put.
+fn flag_beat(warp: &ClipWarp, index: usize) -> f64 {
+    warp.marker_beat(index)
+        .unwrap_or_else(|| warp.markers[index].beat)
+}
+
 /// The flag nearest `x`, if one is within reach.
 fn marker_at_x(x: f32, axis: Axis, warp: &ClipWarp) -> Option<usize> {
     (0..warp.markers.len())
-        .filter_map(|i| Some((i, (axis.x(warp.marker_beat(i)?) - x).abs())))
+        .map(|i| (i, (axis.x(flag_beat(warp, i)) - x).abs()))
         .filter(|&(_, distance)| distance <= GRAB)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(i, _)| i)
@@ -799,11 +805,12 @@ fn draw_flags(
     selected: Option<usize>,
 ) {
     painter.rect_filled(flags, 0.0, colors::HEADER.gamma_multiply(0.8));
-    let dead = !warp.use_markers;
     for (i, marker) in warp.markers.iter().enumerate() {
+        // Switched off, or left out by warp quantise: nothing plays here.
+        let dead = !warp.use_markers || !warp.marker_plays(i);
         // Where the marker plays: with warp quantise on, that is not where
         // it is stored.
-        let played = warp.marker_beat(i).unwrap_or(marker.beat);
+        let played = flag_beat(warp, i);
         let x = axis.x(played);
         let stored = axis.x(marker.beat);
         if !(flags.left() - 8.0..=flags.right() + 8.0).contains(&x)
@@ -834,7 +841,7 @@ fn draw_flags(
         );
         // Back to where the marker was put: the original timing, which warp
         // quantise leaves alone.
-        if warp.quantise.is_some() && (stored - x).abs() > 1.0 {
+        if warp.quantise.is_some() && !dead && (stored - x).abs() > 1.0 {
             let y = flags.bottom() - 8.0;
             painter.line_segment(
                 [Pos2::new(stored, y), Pos2::new(x, y)],

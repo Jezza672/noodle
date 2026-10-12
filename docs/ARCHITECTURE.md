@@ -731,11 +731,12 @@ marker before or break the speed limits, so they always make a playable warp.
 the track input's cache key hashes them. `ClipWarp::baked` makes them the stored
 markers. A `Groove` is per-slot offsets (in beats) over a repeating pattern;
 `ClipWarp::groove` reads one from the stored markers (sixteenth slots, one bar).
-`WarpQuantise::groove_from` links to another warp: `Project::sync_grooves`
-(run when a warp is added, replaced or removed, and on load) copies that warp's
-groove into the follower, reading only the source's stored markers, so links
+`WarpQuantise::groove_from` links to another clip (not its warp, which forks when one section
+is edited): `Project::sync_grooves` (run when a warp or clip is added, replaced
+or removed, and on load) copies the groove of the warp that clip uses now into
+the follower, reading only the source's stored markers, so links
 never chain or loop. The groove is derived data and is saved with the follower,
-so a link to a warp that is not saved keeps the last groove and is dropped on
+so a link to a clip that is not saved keeps the last groove and is dropped on
 load. Warp data is not a wire (ADR 0002); a groove is lent as clip data.
 
 ## Automation (M2)

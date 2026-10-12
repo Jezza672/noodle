@@ -666,8 +666,9 @@ Audio clips get a warp, applied live on playback. Four PRs:
    quantise and a feel to read). A `Groove` is the mean distance of a clip's
    markers from the sixteenth grid over a bar (`ClipWarp::groove`); a clip
    takes another's groove **copied** or **linked**. A link is clip data, not a
-   wire (ADR 0002): `groove_from` names the other warp, and the project refreshes
-   the follower's groove whenever the source changes (`Project::sync_grooves`),
+   wire (ADR 0002): `groove_from` names the other *clip* (a warp forks when one
+   section is edited), and the project refreshes the follower's groove whenever
+   a warp or clip changes (`Project::sync_grooves`),
    so undo and redo need not record it. `examples/warp-quantise.ron` has a golden
    render.
 

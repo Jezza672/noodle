@@ -467,11 +467,7 @@ fn a_groove_can_be_copied_or_followed_from_another_clip() {
         ]))]);
         clip
     };
-    let (this, other) = {
-        let rig = h.state();
-        let project = rig.session.project();
-        (rig.clip, project.warp_of(source_clip).unwrap().0)
-    };
+    let (this, other) = (h.state().clip, source_clip);
     let sources = clip_panel::groove_sources(h.state().session.project(), this);
     assert_eq!(sources.len(), 1);
     assert_eq!(sources[0].0, other);
@@ -496,4 +492,20 @@ fn a_groove_can_be_copied_or_followed_from_another_clip() {
     let command = clip_panel::take_groove(h.state().session.project(), this, other, false);
     apply(&mut h, command);
     assert_eq!(warp(&h).quantise.unwrap().groove_from, None);
+}
+
+#[test]
+fn pinning_transients_with_quantise_on_quantises_the_new_markers() {
+    let mut h = rig(true);
+    let clip = h.state().clip;
+    let command = clip_panel::change_quantise(h.state().session.project(), clip, |q| q.grid = 4.0);
+    apply(&mut h, command);
+    let onsets = [0.0, 0.7];
+    let command = clip_panel::pin_transients(h.state().session.project(), clip, &onsets);
+    apply(&mut h, command);
+    let w = warp(&h);
+    // Stored where they play without quantise; both quantise onto the bar
+    // line, so only the first plays.
+    assert!((w.markers[1].beat - 1.4).abs() < 1e-9);
+    assert!(w.marker_plays(0) && !w.marker_plays(1));
 }

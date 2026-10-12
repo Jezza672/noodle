@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use egui::{Response, RichText, Ui};
 use noodle_core::{
     ClipContent, ClipId, ClipWarp, Command, LoopRegion, MAX_CLIP_BPM, MIN_CLIP_BPM, MIN_LOOP_BEATS,
-    Project, QUANTISE_GRIDS, TempoCurve, WarpId, WarpMarker, WarpMode, WarpQuantise,
+    Project, QUANTISE_GRIDS, TempoCurve, WarpMarker, WarpMode, WarpQuantise,
 };
 
 use crate::session::{Edit, Session};
@@ -133,9 +133,11 @@ const MAX_PINNED: usize = 256;
 const MIN_PIN_GAP: f64 = 0.04;
 
 /// The command that pins every transient of clip `id` that has no marker yet,
-/// where it plays now, so the sound does not change. Quantise has markers to
-/// move, and the clip's groove has something to be read from. `None` if there
-/// is nothing to pin.
+/// at the beat it plays at with the markers as they are stored. With quantise
+/// off the sound does not change; with it on the new markers are quantised
+/// like the rest, so the clip is re-timed. Quantise has markers to move, and
+/// the clip's groove has something to be read from. `None` if there is
+/// nothing to pin.
 pub fn pin_transients(project: &Project, id: ClipId, onsets: &[f64]) -> Option<Command> {
     let (_, warp) = project.warp_of(id)?;
     // Where things play with the markers as they are stored.
@@ -201,28 +203,33 @@ pub fn bake_quantise(project: &Project, id: ClipId) -> Option<Command> {
     project.warp_edit(id, |warp| *warp = warp.baked()).ok()
 }
 
-/// The warps clip `id` can take a groove from, by the name of a file that
-/// uses them: those other than its own that have markers to read one from.
-pub fn groove_sources(project: &Project, id: ClipId) -> Vec<(WarpId, String)> {
+/// The clips clip `id` can take a groove from, by file name: the other audio
+/// clips whose warp has markers to read one from. Clips that share `id`'s own
+/// warp are left out.
+pub fn groove_sources(project: &Project, id: ClipId) -> Vec<(ClipId, String)> {
     let own = project.warp_of(id).map(|(warp, _)| warp);
     project
-        .warps()
-        .filter(|&(warp, w)| Some(warp) != own && w.groove().is_some())
-        .filter_map(|(warp, _)| {
-            let clip = project.clips_using(warp).next()?;
-            let source = &project.clip(clip)?.as_audio()?.source;
-            let name = std::path::Path::new(source)
-                .file_name()
-                .map_or_else(|| source.clone(), |n| n.to_string_lossy().into_owned());
-            Some((warp, name))
+        .clips()
+        .filter(|&(other, _)| other != id)
+        .filter_map(|(other, clip)| {
+            let audio = clip.as_audio()?;
+            let warp = audio.warp?;
+            if Some(warp) == own || project.warp(warp)?.groove().is_none() {
+                return None;
+            }
+            let name = std::path::Path::new(&audio.source).file_name().map_or_else(
+                || audio.source.clone(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            Some((other, name))
         })
         .collect()
 }
 
-/// The command that gives clip `id` the groove of `source`: copied, or
+/// The command that gives clip `id` the groove of clip `source`: copied, or
 /// followed as it changes if `follow`.
-pub fn take_groove(project: &Project, id: ClipId, source: WarpId, follow: bool) -> Option<Command> {
-    let groove = project.warp(source)?.groove();
+pub fn take_groove(project: &Project, id: ClipId, source: ClipId, follow: bool) -> Option<Command> {
+    let groove = project.warp_of(source)?.1.groove();
     change_quantise(project, id, move |quantise| {
         quantise.groove = groove.or(quantise.groove.take());
         quantise.groove_from = follow.then_some(source);
@@ -273,7 +280,7 @@ fn quantise_section(
         }
         if ui
             .button("Pin transients")
-            .on_hover_text("Put a marker on every transient that has none, where it plays now, so there is something to quantise")
+            .on_hover_text("Put a marker on every transient that has none, where it plays now (with quantise on, they are quantised too), so there is something to quantise")
             .clicked()
         {
             edits.extend(
@@ -328,7 +335,7 @@ fn quantise_section(
                 .find(|(warp, _)| *warp == from)
                 .map_or("Linked".to_string(), |(_, name)| format!("Linked: {name}")),
         };
-        let mut chosen: Option<Option<(WarpId, bool)>> = None;
+        let mut chosen: Option<Option<(ClipId, bool)>> = None;
         egui::ComboBox::from_id_salt("clip groove")
             .selected_text(current)
             .show_ui(ui, |ui| {

@@ -14,7 +14,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{TempoMap, Tick};
+use crate::{ClipId, TempoMap, Tick};
 
 /// Identifies a [`ClipWarp`] within a project. Sections that show the same
 /// clip name the same warp, so editing it changes them all; a section that is
@@ -341,11 +341,13 @@ pub struct WarpQuantise {
     /// How much of the groove is used, 0 to 1.
     #[serde(default = "full")]
     pub groove_amount: f64,
-    /// The warp the groove follows: its [`groove`](ClipWarp::groove) is copied
-    /// into `groove` whenever it changes (the project does that). Cleared if
-    /// that warp goes away; the last groove stays.
+    /// The clip the groove follows: the [`groove`](ClipWarp::groove) of the
+    /// warp that clip uses is copied into `groove` whenever it changes (the
+    /// project does that). It names the clip, not its warp, because a warp is
+    /// forked when one section of a clip is edited. If the clip goes the last
+    /// groove stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub groove_from: Option<WarpId>,
+    pub groove_from: Option<ClipId>,
 }
 
 fn full() -> f64 {
@@ -479,36 +481,55 @@ impl ClipWarp {
         let Some(quantise) = &self.quantise else {
             return Cow::Borrowed(&self.markers);
         };
-        let mut out: Vec<WarpMarker> = Vec::with_capacity(self.markers.len());
+        Cow::Owned(
+            self.played(quantise)
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// For each stored marker, the marker it plays as, or `None` if quantise
+    /// leaves it out.
+    fn played(&self, quantise: &WarpQuantise) -> Vec<Option<WarpMarker>> {
+        let mut out = Vec::with_capacity(self.markers.len());
+        let mut previous: Option<WarpMarker> = None;
         for marker in &self.markers {
             let beat = quantise.apply(marker.beat);
-            if let Some(previous) = out.last() {
+            let fits = previous.is_none_or(|previous| {
                 let clip_beats =
                     self.tempo.beats_at(marker.seconds) - self.tempo.beats_at(previous.seconds);
                 let speed = clip_beats / (beat - previous.beat);
-                if beat <= previous.beat + 1e-9
-                    || !(MIN_WARP_SPEED..=MAX_WARP_SPEED).contains(&speed)
-                {
-                    continue;
-                }
-            }
-            out.push(WarpMarker {
+                beat > previous.beat + 1e-9 && (MIN_WARP_SPEED..=MAX_WARP_SPEED).contains(&speed)
+            });
+            let played = fits.then_some(WarpMarker {
                 seconds: marker.seconds,
                 beat,
             });
+            if played.is_some() {
+                previous = played;
+            }
+            out.push(played);
         }
-        Cow::Owned(out)
+        out
     }
 
     /// Where the stored marker `index` plays, which differs from its stored
-    /// beat while warp quantise is on.
+    /// beat while warp quantise is on. `None` if there is no such marker, or
+    /// quantise leaves it out (see [`effective_markers`](Self::effective_markers);
+    /// use [`marker_plays`](Self::marker_plays) to tell the two apart).
     pub fn marker_beat(&self, index: usize) -> Option<f64> {
         let marker = self.markers.get(index)?;
-        Some(
-            self.quantise
-                .as_ref()
-                .map_or(marker.beat, |q| q.apply(marker.beat)),
-        )
+        match &self.quantise {
+            None => Some(marker.beat),
+            Some(quantise) => self.played(quantise)[index].map(|m| m.beat),
+        }
+    }
+
+    /// Whether the stored marker `index` is one of the markers that play: not
+    /// left out by warp quantise.
+    pub fn marker_plays(&self, index: usize) -> bool {
+        self.marker_beat(index).is_some()
     }
 
     /// The feel of this clip: how far its stored markers sit from the sixteenth
@@ -1030,6 +1051,9 @@ mod tests {
         let kept = warp.effective_markers();
         assert_eq!(kept.len(), 2);
         assert_eq!((kept[0].seconds, kept[1].seconds), (0.5, 1.0));
+        // The marker left out plays nowhere.
+        assert!(warp.marker_plays(0) && !warp.marker_plays(1) && warp.marker_plays(2));
+        assert_eq!(warp.marker_beat(1), None);
         assert_eq!(warp.problem(), None);
         warp.curve();
     }
