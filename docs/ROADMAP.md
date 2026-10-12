@@ -580,6 +580,41 @@ A plugin that changes its latency after loading (restart request, latency
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
 
+## M7: Time warping
+
+**Status:** designed, not started. The decisions are in CONTEXT.md (warp, clip
+tempo, beat and warp markers, groove, section) and ADR 0002 (warping is a clip
+feature, not nodes).
+
+Audio clips get a warp, applied live on playback. Four PRs:
+
+1. **The model.** A clip (the audio, its true length, loop, clip tempo curve,
+   beat and warp markers) is separate from the sections that show it on the
+   timeline. Copies share a clip until one is edited. Clip tempo comes from the
+   tempo map for takes recorded in Noodle, and from detection, tapping or typing
+   for imports, and is saved in the project. Warp markers pin a clip moment to a
+   timeline beat and snap to beat markers; a hidden tempo conversion maps clip
+   tempo to the timeline's. Tempo conversion, warp markers and warp quantise
+   are separate switches. The only mode is Repitch.
+2. **The engine.** Stretching runs on a worker thread ahead of the playhead into
+   a ring buffer; the audio thread only copies. Modes: Repitch, Grain (WSOLA)
+   and Beats (transient-preserving). Cheap repitch plays while a marker is
+   dragged. Benchmarks, the real-time allocation test, and golden renders.
+3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
+   waveform, transient ticks, warp markers along the top and the loop brace.
+   Properties (mode, switches, clip tempo, loop, gain, fades) stay in the
+   properties panel. Mode is chosen from analysis on import.
+4. **Warp quantise and grooves.** A live grid and amount over the unquantised
+   markers, previewed with lines back to the originals, plus bake. A groove
+   (timing feel apart from the algorithm) can be copied from one clip to
+   another or linked live.
+
+Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
+
+**Done when:** you can drop a loop recorded at another tempo, pin its
+transients to the grid, hear it follow tempo changes without dropouts, quantise
+it non-destructively, and lend its groove to a second clip.
+
 ## Later
 
 - Spectral signal type.
