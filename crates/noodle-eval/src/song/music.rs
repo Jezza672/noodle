@@ -86,15 +86,18 @@ fn lay(
     mut key_of: impl FnMut(char) -> Option<(u8, f32)>,
 ) -> Vec<Note> {
     let mut notes: Vec<Note> = Vec::new();
-    let mut held_until = 0.0;
+    // Where the last note's last step ends: a `-` right after it holds it on.
+    let mut slot_end = f64::NEG_INFINITY;
     for (i, symbol) in symbols(pattern).into_iter().enumerate() {
         let at = i as f64 * step;
         if symbol == '-' {
             if let Some(last) = notes.last_mut()
-                && (held_until - at).abs() < 1e-9
+                && (slot_end - at).abs() < 1e-9
             {
+                // A held step adds a whole step, so a note keeps its gap to
+                // the next one whatever it is held for.
                 last.len += step;
-                held_until += step;
+                slot_end += step;
             }
             continue;
         }
@@ -105,11 +108,7 @@ fn lay(
                 key,
                 vel,
             });
-            held_until = at + len;
-            // A note shorter than a step is not held by a `-` after it.
-            if len + 1e-9 < step {
-                held_until = -1.0;
-            }
+            slot_end = at + step;
         }
     }
     notes
@@ -124,17 +123,28 @@ fn pick<'a>(patterns: &[&'a str], fill: Option<&'a str>, bar: &Bar) -> &'a str {
     }
 }
 
+/// The silence between one drum hit's gate and the next, in beats.
+const GATE_GAP: f64 = 0.05;
+
 /// A drum part: every hit has the same key (a drum ignores it). `len` is the
 /// gate length of a hit in beats.
 pub fn drum(patterns: &[&'static str], fill: Option<&'static str>, len: f64) -> Pattern {
     let patterns = patterns.to_vec();
     Box::new(move |bar| {
-        lay(pick(&patterns, fill, bar), 0.25, len, |c| match c {
+        let mut hits = lay(pick(&patterns, fill, bar), 0.25, len, |c| match c {
             'X' => Some((60, 1.0)),
             'x' => Some((60, 0.75)),
             'o' => Some((60, 0.45)),
             _ => None,
-        })
+        });
+        // A drum is played by a Mono Note node, whose gate stays high while
+        // any note is held, so a hit that overlaps the next would swallow it.
+        // Each ends a little before the next begins.
+        for i in 1..hits.len() {
+            let room = hits[i].beat - hits[i - 1].beat - GATE_GAP;
+            hits[i - 1].len = hits[i - 1].len.min(room);
+        }
+        hits
     })
 }
 
@@ -234,6 +244,35 @@ mod tests {
         let notes = drum(&["X...x...o..x...."], None, 0.2)(&bar());
         let at: Vec<(f64, f32)> = notes.iter().map(|n| (n.beat, n.vel)).collect();
         assert_eq!(at, [(0.0, 1.0), (1.0, 0.75), (2.0, 0.45), (2.75, 0.75)]);
+    }
+
+    #[test]
+    fn holds_extend_a_note_whatever_its_length_and_leave_its_gap() {
+        // A note shorter than a step, one longer, and one as long.
+        for (len, step) in [(0.2, 0.25), (0.6, 0.5), (0.5, 0.5)] {
+            let notes = tones(&["1---.2-.."], None, step, len, 0, 0.8)(&bar());
+            assert_eq!(notes.len(), 2, "{len}/{step}");
+            assert!(
+                (notes[0].len - (len + 3.0 * step)).abs() < 1e-9,
+                "{len}/{step}: {}",
+                notes[0].len
+            );
+            assert!((notes[1].len - (len + step)).abs() < 1e-9);
+        }
+        // A rest between breaks the hold: the dash after `.` holds nothing.
+        let notes = tones(&["1.-"], None, 0.5, 0.4, 0, 0.8)(&bar());
+        assert_eq!(notes.len(), 1);
+        assert!((notes[0].len - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn drum_hits_end_before_the_next_begins() {
+        let notes = drum(&["xxx.x..."], None, 0.5)(&bar());
+        for pair in notes.windows(2) {
+            assert!(pair[0].beat + pair[0].len < pair[1].beat);
+        }
+        // A hit with room keeps its length.
+        assert_eq!(notes[3].len, 0.5);
     }
 
     #[test]

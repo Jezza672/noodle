@@ -7,6 +7,10 @@
 //! opens the group can change anything. Nothing here is a monolithic synth
 //! node.
 //!
+//! The `cutoff` input of a tonal instrument, a hat or a clap is an *offset*
+//! along the filter's cutoff slider (it is added to the cutoff set inside),
+//! not a frequency in hertz.
+//!
 //! The group's name is its kind ("Pluck"), and the track that plays it is
 //! named after the part.
 

@@ -8,10 +8,15 @@ builds from the song's known source and target tempo maps.
 cargo run -p noodle-eval -- compare ref.wav test.wav 1.5   # JSON; 1.5 = test is 1.5x as fast
 cargo run -p noodle-eval -- validate manifest.csv
 cargo run -p noodle-eval -- probes                         # the probe grid, all methods
-cargo run -p noodle-eval -- probes --probe held-chord --tempo x1.5 --method grain
+cargo run -p noodle-eval -- probes --probe held-chord --tempo x1.5 --method grain --export wavs
 cargo run -p noodle-eval -- songs                          # the five songs' excerpts, all methods
-cargo run -p noodle-eval -- songs --song neon-drive --tempo x1.5 --full
+cargo run -p noodle-eval -- songs --song neon-drive --tempo x1.5 --full --export wavs
 ```
+
+`--export DIR` writes every render as a WAV to listen to: `<probe>_source.wav`,
+`<probe>_<tempo>_native.wav` (the answer key), and per method
+`<probe>_<tempo>_<method>_warped.wav` and `_roundtrip.wav`. The full grid is
+about 1 GB, so pick a probe or tempo.
 
 ## Metrics
 
@@ -150,10 +155,11 @@ after, not a threshold.
 
 Things to know when reading a song's numbers:
 
-- The native render keeps each sound's length in seconds and moves only where
-  it starts, as a synth does. The songs therefore use no echo or LFO, whose
-  rates are in seconds or hertz and would not follow the tempo: no stretcher
-  could reproduce them, so they would only add error to the answer key.
+- Where a note starts and how long its gate is follow the tempo; the sounds'
+  own times stay in seconds (envelope decay and release, a kick's pitch sweep),
+  as a synth's do. That difference is the irreducible error of the answer key.
+  The songs use no echo or LFO, whose time and rate would not follow the tempo
+  either: no stretcher could reproduce them (#142).
 - On dense material the timing metric pairs an onset with the nearest onset
   within its window, and a song has about eight onsets a second, so a wrong
   time map still pairs most of them (median offset about 20 ms at 1.2 times for

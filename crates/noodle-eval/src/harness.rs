@@ -38,6 +38,7 @@ use noodle_engine::{OUTPUT_ID, Registry, Settings};
 use noodle_io::{ANALYSIS_SECONDS, Analysis, write_wav};
 use noodle_nodes::{TRACK_INPUT_ID, render_project_with_clips};
 use std::cell::Cell;
+use std::path::PathBuf;
 
 /// How a clip is warped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,6 +135,10 @@ pub struct Harness {
     pub beats: f64,
     dir: tempfile::TempDir,
     files: Cell<usize>,
+    /// When set, [`run`](Self::run) also writes every render here as a WAV
+    /// to listen to: `<probe>_source.wav`, `<probe>_<case>_native.wav`, and per
+    /// method `_<method>_warped.wav` and `_<method>_roundtrip.wav`.
+    pub export: Option<PathBuf>,
 }
 
 impl Harness {
@@ -144,6 +149,7 @@ impl Harness {
             beats: BEATS,
             dir: tempfile::tempdir()?,
             files: Cell::new(0),
+            export: None,
         })
     }
 
@@ -245,6 +251,11 @@ impl Harness {
         let source_map = self.source_map(case, &target);
         let analysis = analyse(&source, rate);
         let seconds = frames as f64 / f64::from(rate);
+        // Export files are named for the piece and the tempo case, so a full
+        // run keeps one set per case.
+        let tag = format!("{name}_{}", case.name());
+        self.export_wav(&format!("{name}_source"), &source)?;
+        self.export_wav(&format!("{tag}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
             let (tempo, mode) = match method {
@@ -255,7 +266,8 @@ impl Harness {
             };
             let warped = self
                 .warp(&source, tempo, mode, &target, frames)
-                .map_err(|e| format!("{} {} {}: {e}", name, case.name(), method.name()))?;
+                .map_err(|e| format!("{name} {} {}: {e}", case.name(), method.name()))?;
+            self.export_wav(&format!("{tag}_{}_warped", method.name()), &warped)?;
             // Back to the source tempo: the clip's tempo is the target's.
             let back_tempo = TempoCurve::from_tempo_map(&target, Tick::ZERO, 0.0, seconds);
             let back = self
@@ -269,6 +281,7 @@ impl Harness {
                 .map_err(|e| {
                     format!("{} {} {} round trip: {e}", name, case.name(), method.name())
                 })?;
+            self.export_wav(&format!("{tag}_{}_roundtrip", method.name()), &back)?;
             for view in View::ALL {
                 let (reference, test, map) = match view {
                     View::Native => (&native, &warped, TimeMap::Identity),
@@ -298,6 +311,15 @@ impl Harness {
             }
         }
         Ok(rows)
+    }
+
+    fn export_wav(&self, name: &str, samples: &[f32]) -> Result<(), String> {
+        let Some(dir) = &self.export else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        write_wav(&dir.join(format!("{name}.wav")), samples, 2, self.rate)
+            .map_err(|e| format!("{name}.wav: {e}"))
     }
 
     /// Plays `samples` (stereo) as a warped clip on a timeline with the

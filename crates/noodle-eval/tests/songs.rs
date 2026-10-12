@@ -140,14 +140,51 @@ fn a_song_renders_the_same_every_time_and_stays_under_full_scale() {
                 song.name
             );
         }
-        // The excerpt is the same sound as that stretch of the song, up to
-        // the notes that began before it.
         let range = song.excerpt_range();
         let b = song.render(&steady(song.bpm), range, RATE).unwrap();
         assert_eq!(
             b,
             song.render(&steady(song.bpm), range, RATE).unwrap(),
             "{}",
+            song.name
+        );
+        // A range is the same sound as that stretch of a longer render, once
+        // what began before it has died away: from its second bar on. (Parts
+        // with noise are left out: a noise node runs on through the song, so
+        // its sequence at a given beat depends on where the render began.)
+        let steady_parts = |p: &noodle_eval::song::Part| {
+            matches!(p.instrument, noodle_eval::song::kit::Instrument::Tone(_))
+        };
+        let lead_in = Range {
+            start: range.start - 8.0,
+            ..range
+        };
+        let long = song
+            .render_of(&steady(song.bpm), lead_in, RATE, steady_parts)
+            .unwrap();
+        let short = song
+            .render_of(&steady(song.bpm), range, RATE, steady_parts)
+            .unwrap();
+        let frame = |beats: f64| (beats * 60.0 / song.bpm * f64::from(RATE)).round() as usize;
+        let (skip, lead) = (frame(4.0), frame(8.0));
+        // Oscillators run free from the start of a render, so the waveforms
+        // differ in phase: compare the loudness, a beat at a time, instead.
+        let envelope = |x: &[f32]| -> Vec<f64> {
+            x.chunks(2 * frame(1.0))
+                .map(|w| (w.iter().map(|v| f64::from(v * v)).sum::<f64>() / w.len() as f64).sqrt())
+                .collect()
+        };
+        let (a, b) = (
+            envelope(&long[2 * (lead + skip)..]),
+            envelope(&short[2 * skip..]),
+        );
+        // Not the last, partial beat, whose few samples are not a loudness.
+        let n = a.len().min(b.len()) - 1;
+        let peak = a.iter().cloned().fold(0.0, f64::max);
+        let worst = (0..n).map(|i| (a[i] - b[i]).abs()).fold(0.0, f64::max);
+        assert!(
+            worst < 0.1 * peak,
+            "{}: excerpt loudness differs by {worst} of {peak}",
             song.name
         );
     });

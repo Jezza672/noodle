@@ -8,7 +8,7 @@ use noodle_eval::probe::Probe;
 use noodle_eval::table::{self, Baseline};
 use noodle_eval::tempo::TempoCase;
 use noodle_eval::{Clip, TimeMap, evaluate, validate};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -78,16 +78,20 @@ fn run(args: &[String]) -> Result<(), String> {
 
 const PROBES_HELP: &str =
     "probes [--probe NAME] [--tempo NAME] [--method NAME] [--baseline FILE] [--update]
+       [--export DIR]
   Warps each probe signal to each target tempo with each method and scores it.
   --probe, --tempo and --method each pick one (default: all; see the names in
   the table). --baseline FILE diffs against that file (default: the committed
   crates/noodle-eval/baseline/probes.json); --update writes the rows that ran
-  into it. A diff is a before and after, never a pass or fail.";
+  into it. --export DIR also writes every render as a WAV to listen to
+  (source, native, and per method the warped and round-trip audio). A diff is
+  a before and after, never a pass or fail.";
 
 fn probes(args: &[&str]) -> Result<(), String> {
     let (mut probe, mut tempo, mut method) = (None, None, None);
     let mut baseline = Path::new(env!("CARGO_MANIFEST_DIR")).join("baseline/probes.json");
     let mut update = false;
+    let mut export = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().copied().ok_or(format!("{arg} needs a value"));
@@ -106,6 +110,7 @@ fn probes(args: &[&str]) -> Result<(), String> {
             }
             "--baseline" => baseline = value()?.into(),
             "--update" => update = true,
+            "--export" => export = Some(PathBuf::from(value()?)),
             "--help" | "-h" => {
                 println!("{PROBES_HELP}");
                 return Ok(());
@@ -116,7 +121,8 @@ fn probes(args: &[&str]) -> Result<(), String> {
     let probes = probe.map_or(Probe::ALL.to_vec(), |p| vec![p]);
     let cases = tempo.map_or(TempoCase::all(), |c| vec![c]);
     let methods = method.map_or(Method::ALL.to_vec(), |m| vec![m]);
-    let harness = Harness::new(48_000, 110.0).map_err(|e| e.to_string())?;
+    let mut harness = Harness::new(48_000, 110.0).map_err(|e| e.to_string())?;
+    harness.export = export;
     let mut rows = Vec::new();
     for &p in &probes {
         for &c in &cases {
@@ -129,13 +135,16 @@ fn probes(args: &[&str]) -> Result<(), String> {
 
 const SONGS_HELP: &str =
     "songs [--song NAME] [--tempo NAME] [--method NAME] [--full] [--baseline FILE] [--update]
+       [--export DIR]
   Warps the generated songs (crates/noodle-eval/songs) to each target tempo with
   each method and scores them. By default the 15 to 20 s excerpt that joins the
   CI gate; --full takes the whole song (rows are named NAME-full). Other options
-  as for probes; the default baseline is crates/noodle-eval/baseline/songs.json.";
+  as for probes (--export writes <song>_source.wav, <song>_<tempo>_native.wav and so on);
+  the default baseline is crates/noodle-eval/baseline/songs.json.";
 
 fn songs(args: &[&str]) -> Result<(), String> {
     let (mut song, mut tempo, mut method, mut full) = (None, None, None, false);
+    let mut export = None;
     let mut baseline = Path::new(env!("CARGO_MANIFEST_DIR")).join("baseline/songs.json");
     let mut update = false;
     let mut it = args.iter();
@@ -152,6 +161,7 @@ fn songs(args: &[&str]) -> Result<(), String> {
                 method = Some(Method::parse(v).ok_or(format!("no method {v}"))?);
             }
             "--full" => full = true,
+            "--export" => export = Some(PathBuf::from(value()?)),
             "--baseline" => baseline = value()?.into(),
             "--update" => update = true,
             "--help" | "-h" => {
@@ -175,7 +185,8 @@ fn songs(args: &[&str]) -> Result<(), String> {
         } else {
             (s.excerpt_range(), s.name.to_string())
         };
-        let harness = Harness::for_song(&s, range, 48_000).map_err(|e| e.to_string())?;
+        let mut harness = Harness::for_song(&s, range, 48_000).map_err(|e| e.to_string())?;
+        harness.export.clone_from(&export);
         for &c in &cases {
             eprintln!("{name} at {}", c.name());
             rows.extend(harness.run_song(&name, &s, range, c, &methods)?);
