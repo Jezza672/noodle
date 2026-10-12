@@ -22,6 +22,7 @@ mod plugin_browser;
 mod prefs;
 mod properties;
 mod session;
+mod tempo;
 #[cfg(test)]
 mod testkit;
 mod theme;

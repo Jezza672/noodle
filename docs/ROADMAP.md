@@ -598,7 +598,7 @@ A plugin that changes its latency after loading (restart request, latency
 
 ## M7: Time warping
 
-**Status:** All four PRs are done (the model and Repitch playback; the
+**Status:** All four PRs and a round of follow-ups are done (the model and Repitch playback; the
 engine with Grain and Beats; the clip editor; warp quantise and grooves, below). The
 decisions are in CONTEXT.md (warp, clip tempo, beat and warp markers, groove,
 section) and ADR 0002 (warping is a clip feature, not nodes).
@@ -671,6 +671,18 @@ Audio clips get a warp, applied live on playback. Four PRs:
    a warp or clip changes (`Project::sync_grooves`),
    so undo and redo need not record it. `examples/warp-quantise.ron` has a golden
    render.
+
+5. **Follow-ups. Done.** The session tempo is a field in the transport (with
+   the time signature), and View > Tempo lane shows the tempo map as an
+   optional stepped lane to add, move and remove tempo changes. In the clip
+   editor: **grid offset** (drag the waveform or the ruler, or the panel's
+   Offset) lines the beat lines up with the transients, and the clip slips with
+   them so it plays from the shifted line; **Detect** is on
+   whenever there are enough transients and also sets the offset (a weak guess
+   says so); flags can be picked as a group (Shift/Ctrl click, a box in the
+   flags' row, Ctrl+A) and moved or deleted together; each transient has a
+   handle that a double-click turns into a warp marker. Warped sections in the
+   timeline draw a waveform rendered from the warp (`timeline/warped_waves.rs`).
 
 Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
 

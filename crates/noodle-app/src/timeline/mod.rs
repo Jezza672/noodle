@@ -15,7 +15,9 @@ pub mod import;
 mod midi_preview;
 mod sources;
 mod take;
+mod tempo_lane;
 mod warped;
+mod warped_waves;
 mod waveform;
 
 use std::collections::BTreeSet;
@@ -71,7 +73,12 @@ pub struct TimelineState {
     /// A track name being typed.
     renaming: Option<header::Rename>,
     waveforms: waveform::Cache,
+    /// Sections' waveforms as they play, once warped.
+    warped_waves: warped_waves::WarpedWaves,
     automation: automation::State,
+    /// Whether the tempo lane is shown under the ruler.
+    show_tempo: bool,
+    tempo: tempo_lane::State,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
     #[cfg(test)]
@@ -101,7 +108,10 @@ impl Default for TimelineState {
             sources: Sources::default(),
             renaming: None,
             waveforms: waveform::Cache::default(),
+            warped_waves: warped_waves::WarpedWaves::default(),
             automation: automation::State::default(),
+            show_tempo: false,
+            tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
             #[cfg(test)]
@@ -128,6 +138,7 @@ impl TimelineState {
         }
         self.waveforms.retain(|id| project.clip(id).is_some());
         self.automation.retain_existing(project);
+        self.tempo.retain_existing(project.tempo_map());
         if self
             .drag
             .as_ref()
@@ -178,6 +189,20 @@ impl TimelineState {
         &self.selected
     }
 
+    /// Whether the tempo lane is shown under the ruler.
+    pub fn tempo_lane(&self) -> bool {
+        self.show_tempo
+    }
+
+    pub fn set_tempo_lane(&mut self, on: bool) {
+        self.show_tempo = on;
+    }
+
+    #[cfg(test)]
+    pub fn tempo(&self) -> &tempo_lane::State {
+        &self.tempo
+    }
+
     #[cfg(test)]
     pub fn automation(&self) -> &automation::State {
         &self.automation
@@ -186,6 +211,12 @@ impl TimelineState {
     #[cfg(test)]
     pub fn waveforms(&self) -> usize {
         self.waveforms_drawn
+    }
+
+    /// How many warped sections' renders have come back.
+    #[cfg(test)]
+    pub fn warped_renders(&self) -> usize {
+        self.warped_waves.rendered()
     }
 
     #[cfg(test)]
@@ -318,8 +349,14 @@ pub fn show(
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+    // The tempo lane, when it is shown, sits between the ruler and the tracks.
+    let lane_height = if state.show_tempo {
+        tempo_lane::HEIGHT
+    } else {
+        0.0
+    };
     let content = Rect::from_min_max(
-        rect.min + vec2(colors::HEADER_WIDTH, colors::RULER_HEIGHT),
+        rect.min + vec2(colors::HEADER_WIDTH, colors::RULER_HEIGHT + lane_height),
         rect.max,
     );
     let hovered = ui.rect_contains_pointer(rect);
@@ -617,7 +654,53 @@ pub fn show(
                                 any
                             }
                             None => {
-                                waveform::draw(&painter, &mut state.waveforms, full, visible, &wave)
+                                // A warped section shows the audio as it
+                                // plays, once that has been rendered, and the
+                                // file's waveform, evenly stretched, till then.
+                                let rendered = warp_of(project, clip)
+                                    .filter(|warp| {
+                                        !warp.is_identity() && warp.loop_region.is_none()
+                                    })
+                                    .and_then(|warp| {
+                                        let request = warped_waves::Request {
+                                            clip: id,
+                                            path: directory
+                                                .as_deref()
+                                                .unwrap_or(std::path::Path::new(""))
+                                                .join(&audio.source),
+                                            tempo: map.clone(),
+                                            start: clip.start,
+                                            warp: warp.clone(),
+                                            offset: audio.offset,
+                                            length: audio.length,
+                                            file: peaks.clone(),
+                                        };
+                                        state.warped_waves.get(ui.ctx(), &request)
+                                    });
+                                match rendered {
+                                    Some(rendered) => {
+                                        let played = waveform::Clip {
+                                            peaks: &rendered,
+                                            ..wave
+                                        };
+                                        waveform::draw_range(
+                                            &painter,
+                                            &mut state.waveforms,
+                                            (id, 3),
+                                            full,
+                                            visible,
+                                            &played,
+                                            (0, rendered.frames()),
+                                        )
+                                    }
+                                    None => waveform::draw(
+                                        &painter,
+                                        &mut state.waveforms,
+                                        full,
+                                        visible,
+                                        &wave,
+                                    ),
+                                }
                             }
                         };
                         #[cfg(test)]
@@ -688,6 +771,7 @@ pub fn show(
     if state.selected != clips_before && !state.selected.is_empty() {
         state.selected_track = None;
         state.automation.deselect();
+        state.tempo.deselect();
     }
     let point_before = state.automation.selected();
     edits.extend(automation::show(
@@ -705,6 +789,7 @@ pub fn show(
 
     if state.automation.selected().is_some() && state.automation.selected() != point_before {
         state.selected.clear();
+        state.tempo.deselect();
     }
 
     // A drag whose clip has scrolled off screen or been removed never sees
@@ -726,6 +811,7 @@ pub fn show(
     if delete_pressed
         && state.selected.is_empty()
         && state.automation.selected().is_none()
+        && state.tempo.selected().is_none()
         && let Some(group) = state
             .selected_track
             .and_then(|input| project.graph().node(input))
@@ -734,7 +820,7 @@ pub fn show(
         edits.push(Edit::Apply(header::delete_track(group)));
         state.selected_track = None;
     }
-    if delete_pressed && !state.selected.is_empty() {
+    if delete_pressed && !state.selected.is_empty() && state.tempo.selected().is_none() {
         let removals = state
             .selected
             .iter()
@@ -865,8 +951,46 @@ pub fn show(
     draw_ruler(ui, rect, axis, &lines);
     let ruler = Rect::from_min_max(
         Pos2::new(content.left(), rect.top()),
-        Pos2::new(rect.right(), content.top()),
+        Pos2::new(rect.right(), rect.top() + colors::RULER_HEIGHT),
     );
+    if state.show_tempo {
+        let row = Rect::from_min_size(
+            Pos2::new(content.left(), rect.top() + colors::RULER_HEIGHT),
+            vec2(content.width(), lane_height),
+        );
+        let header = Rect::from_min_size(
+            Pos2::new(rect.left(), row.top()),
+            vec2(colors::HEADER_WIDTH, lane_height),
+        );
+        let painter = ui.painter_at(header);
+        painter.rect_filled(header, 0.0, colors::AUTOMATION_HEADER);
+        painter.text(
+            header.left_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            "Tempo",
+            FontId::proportional(11.0),
+            colors::TEXT,
+        );
+        #[cfg(test)]
+        state.drawn_text.push("Tempo".into());
+        let visible = row.intersect(rect);
+        let tempo_before = state.tempo.selected();
+        edits.extend(tempo_lane::show(
+            ui,
+            &mut state.tempo,
+            map,
+            row,
+            visible,
+            axis,
+        ));
+        // A tempo point shares Delete with clips, automation points and
+        // tracks, so picking one lets the others go.
+        if state.tempo.selected().is_some() && state.tempo.selected() != tempo_before {
+            state.selected.clear();
+            state.selected_track = None;
+            state.automation.deselect();
+        }
+    }
     let scrub = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
     let wanted = scrub
         .interact_pointer_pos()
@@ -989,6 +1113,7 @@ pub fn show(
             };
         }
     });
+    state.warped_waves.end_frame();
     Output {
         edits,
         seek,
@@ -1469,5 +1594,7 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {
 
 #[cfg(test)]
 mod automation_tests;
+#[cfg(test)]
+mod tempo_lane_tests;
 #[cfg(test)]
 mod tests;

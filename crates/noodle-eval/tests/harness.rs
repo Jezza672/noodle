@@ -142,6 +142,7 @@ fn auto_without_a_detected_tempo_leaves_the_clip_at_the_timeline_tempo() {
     let none = noodle_io::Analysis {
         onsets: vec![],
         tempo: None,
+        grid: None,
         percussive: false,
     };
     let (tempo, _) = noodle_eval::harness::auto_choice(&none, &target);

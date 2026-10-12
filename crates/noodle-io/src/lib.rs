@@ -30,7 +30,10 @@ pub use midi::{
     AudioClock, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver,
     TimedMessage, connect_midi, midi_inputs, now_micros, parse_message, same_port,
 };
-pub use onsets::{ANALYSIS_SECONDS, Analysis, detect_bass_onsets, detect_onsets, estimate_tempo};
+pub use onsets::{
+    ANALYSIS_SECONDS, Analysis, CLEAR_TEMPO, TempoEstimate, detect_bass_onsets, detect_onsets,
+    estimate_grid, estimate_tempo,
+};
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
     Playback, Stream, VirtualCapture, is_fatal, play, play_with_outputs, play_with_outputs_stopped,

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use egui::{Key, KeyboardShortcut, Modifiers};
-use noodle_core::NodeId;
+use noodle_core::{Command, NodeId};
 use noodle_engine::OUTPUT_ID;
 
 use crate::clip_editor::{self, ClipEditor};
@@ -110,6 +110,16 @@ enum Action {
     AudioSettings,
     ToggleMixer,
     ToggleMetronome,
+    /// Sets the session tempo (in hundredths of a beat per minute) where the
+    /// playhead is. `drag`: part of a drag of the field, which ends with
+    /// [`Action::EndTempoDrag`].
+    SetTempo {
+        centi_bpm: u32,
+        drag: bool,
+    },
+    EndTempoDrag,
+    SetSignature(u8, u8),
+    ToggleTempoLane,
     /// Presses a button in the transport pill.
     PressButton(NodeId),
     /// Adds a button wired to the switch at this place in the menu's list.
@@ -617,6 +627,15 @@ impl App {
                 actions.push(Action::ToggleScope);
             }
             if ui
+                .selectable_label(self.timeline.tempo_lane(), "Tempo lane")
+                .on_hover_text(
+                    "Show the session's tempo under the ruler, to change it along the timeline",
+                )
+                .clicked()
+            {
+                actions.push(Action::ToggleTempoLane);
+            }
+            if ui
                 .selectable_label(self.mixer_open, "Mixer")
                 .on_hover_text("Gain, mute and solo for each track")
                 .clicked()
@@ -708,6 +727,7 @@ impl App {
         self.quantise_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
+        self.tempo_fields(ui, actions);
         self.extra_buttons(ui, actions);
         let at = self
             .session
@@ -716,6 +736,56 @@ impl App {
             .position(self.session.playhead());
         let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
         ui.monospace(position).on_hover_text("Bar.beat.tick");
+    }
+
+    /// The session's tempo and time signature. The tempo is the one that holds
+    /// at the playhead, so where the tempo lane has made changes, this edits
+    /// the stretch the playhead is in.
+    fn tempo_fields(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let map = self.session.project().tempo_map();
+        let mut bpm = map.bpm_at(self.session.playhead());
+        let response = ui
+            .add(
+                egui::DragValue::new(&mut bpm)
+                    .range(noodle_core::TempoMap::MIN_BPM..=noodle_core::TempoMap::MAX_BPM)
+                    .speed(0.2)
+                    .max_decimals(2)
+                    .suffix(" bpm"),
+            )
+            .on_hover_text(if map.tempos().len() > 1 {
+                "The tempo where the playhead is (the tempo lane has changes)"
+            } else {
+                "The session's tempo"
+            });
+        if response.changed() {
+            actions.push(Action::SetTempo {
+                centi_bpm: (bpm * 100.0).round() as u32,
+                drag: response.dragged(),
+            });
+        }
+        if response.drag_stopped() {
+            actions.push(Action::EndTempoDrag);
+        }
+        let current = map.signatures()[0].signature;
+        egui::ComboBox::from_id_salt("time_signature")
+            .width(44.0)
+            .selected_text(current.to_string())
+            .show_ui(ui, |ui| {
+                for (numerator, denominator) in crate::tempo::SIGNATURES {
+                    let choice = noodle_core::TimeSignature {
+                        numerator,
+                        denominator,
+                    };
+                    if ui
+                        .selectable_label(choice == current, choice.to_string())
+                        .clicked()
+                    {
+                        actions.push(Action::SetSignature(numerator, denominator));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The time signature");
     }
 
     /// How recorded MIDI is snapped to the beat. What is heard while
@@ -1054,6 +1124,34 @@ impl App {
             }
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
+            Action::SetTempo { centi_bpm, drag } => {
+                let project = self.session.project();
+                if let Some(map) = crate::tempo::with_tempo_at(
+                    project.tempo_map(),
+                    self.session.playhead(),
+                    f64::from(centi_bpm) / 100.0,
+                ) {
+                    let command = Command::SetTempoMap(map);
+                    self.session.edit([if drag {
+                        Edit::Drag(command)
+                    } else {
+                        Edit::Apply(command)
+                    }]);
+                }
+            }
+            Action::EndTempoDrag => self.session.edit([Edit::EndDrag]),
+            Action::SetSignature(numerator, denominator) => {
+                let signature = noodle_core::TimeSignature {
+                    numerator,
+                    denominator,
+                };
+                if let Some(map) =
+                    crate::tempo::with_signature(self.session.project().tempo_map(), signature)
+                {
+                    self.session.edit([Edit::Apply(Command::SetTempoMap(map))]);
+                }
+            }
+            Action::ToggleTempoLane => self.timeline.set_tempo_lane(!self.timeline.tempo_lane()),
             Action::ToggleCpu => self.editor.set_show_cpu(!self.editor.show_cpu()),
             Action::ToggleOutputs => {
                 self.outputs_open = !self.outputs_open;
@@ -1399,6 +1497,95 @@ mod tests {
                 .query_by_label("Nothing is wired into this mixer.")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn the_tempo_lane_is_switched_on_from_the_view_menu() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(!harness.state().timeline().tempo_lane());
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Tempo lane").click();
+        harness.run();
+        assert!(harness.state().timeline().tempo_lane());
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Tempo lane").click();
+        harness.run();
+        assert!(!harness.state().timeline().tempo_lane());
+    }
+
+    #[test]
+    fn the_transport_tempo_and_signature_edit_the_session() {
+        let mut harness = harness(empty());
+        harness.run();
+        let ctx = harness.ctx.clone();
+        let app = harness.state_mut();
+        app.run(
+            &ctx,
+            Action::SetTempo {
+                centi_bpm: 9050,
+                drag: false,
+            },
+        );
+        let map = app.session.project().tempo_map();
+        assert_eq!(map.tempos().len(), 1);
+        assert_eq!(map.bpm_at(noodle_core::Tick::ZERO), 90.5);
+        // A drag is one undo step, closed by its end.
+        for centi_bpm in [10000, 11000, 12500] {
+            app.run(
+                &ctx,
+                Action::SetTempo {
+                    centi_bpm,
+                    drag: true,
+                },
+            );
+        }
+        app.run(&ctx, Action::EndTempoDrag);
+        assert_eq!(
+            app.session
+                .project()
+                .tempo_map()
+                .bpm_at(noodle_core::Tick::ZERO),
+            125.0
+        );
+        app.session.undo();
+        assert_eq!(
+            app.session
+                .project()
+                .tempo_map()
+                .bpm_at(noodle_core::Tick::ZERO),
+            90.5
+        );
+        app.run(&ctx, Action::SetSignature(6, 8));
+        assert_eq!(
+            app.session.project().tempo_map().signatures()[0]
+                .signature
+                .to_string(),
+            "6/8"
+        );
+        // A change down the timeline is edited where the playhead is.
+        app.session.edit([Edit::Apply(Command::SetTempoMap(
+            crate::tempo::with_change(
+                app.session.project().tempo_map(),
+                noodle_core::Tick(3840),
+                100.0,
+            )
+            .unwrap()
+            .0,
+        ))]);
+        app.session.seek(noodle_core::Tick(4000));
+        app.run(
+            &ctx,
+            Action::SetTempo {
+                centi_bpm: 7000,
+                drag: false,
+            },
+        );
+        let map = app.session.project().tempo_map();
+        assert_eq!(map.bpm_at(noodle_core::Tick(0)), 90.5);
+        assert_eq!(map.bpm_at(noodle_core::Tick(4000)), 70.0);
     }
 
     #[test]

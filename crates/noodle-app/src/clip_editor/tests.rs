@@ -144,7 +144,7 @@ fn double_clicking_near_a_transient_pins_it_to_the_nearest_beat() {
     assert_eq!(markers.len(), 1, "{markers:?}");
     assert!((markers[0].seconds - 0.5).abs() < 0.01, "{markers:?}");
     assert_eq!(markers[0].beat, 1.0);
-    assert_eq!(h.state().editor.selected(), Some(0));
+    assert_eq!(h.state().editor.selected(), vec![0]);
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn delete_removes_the_picked_flag() {
     with_markers(&mut h, &[(1.0, 2.0), (2.0, 4.0)]);
     let at = flag(&h, 2.0);
     crate::testkit::click(&mut h, at, Modifiers::NONE);
-    assert_eq!(h.state().editor.selected(), Some(0));
+    assert_eq!(h.state().editor.selected(), vec![0]);
     press(&mut h, at, Modifiers::NONE, egui::Key::Delete);
     let markers = warp(&h).markers;
     assert_eq!(markers.len(), 1);
@@ -508,4 +508,226 @@ fn pinning_transients_with_quantise_on_quantises_the_new_markers() {
     // line, so only the first plays.
     assert!((w.markers[1].beat - 1.4).abs() < 1e-9);
     assert!(w.marker_plays(0) && !w.marker_plays(1));
+}
+
+/// A mouse press, a drag along `path` and a release, with the key `modifiers` held.
+fn offset_of(h: &H) -> f64 {
+    warp(h).grid_offset
+}
+
+#[test]
+fn dragging_the_waveform_slides_the_beat_lines_against_the_audio() {
+    let mut h = rig(true);
+    assert_eq!(offset_of(&h), 0.0);
+    let g = geometry(&h);
+    let y = g.wave.center().y;
+    // Grab the clip and pull it a quarter of a beat later: the lines go the
+    // other way.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.x(2.1), y),
+        Pos2::new(g.x(2.35), y),
+    );
+    assert!((offset_of(&h) + 0.25).abs() < 0.01, "{}", offset_of(&h));
+    assert!(warp(&h).markers.is_empty(), "no marker was added");
+    // One undo step.
+    h.state_mut().session.undo();
+    assert_eq!(offset_of(&h), 0.0);
+}
+
+#[test]
+fn dragging_the_ruler_moves_the_beat_lines_with_the_pointer() {
+    let mut h = rig(true);
+    let g = geometry(&h);
+    let y = g.ruler.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.x(2.0), y),
+        Pos2::new(g.x(2.2), y),
+    );
+    assert!((offset_of(&h) - 0.2).abs() < 0.01, "{}", offset_of(&h));
+}
+
+/// Where in the file the clip's section starts, in frames.
+fn window_start(h: &H) -> u64 {
+    let project = h.state().session.project();
+    project
+        .clip(h.state().clip)
+        .and_then(|c| c.as_audio())
+        .map(|a| a.offset)
+        .unwrap()
+}
+
+#[test]
+fn sliding_the_beat_lines_slips_what_plays() {
+    let mut h = rig(true);
+    let clip = h.state().clip;
+    let before = window_start(&h);
+    let tempo = warp(&h).tempo.points()[0].bpm;
+    let command = clip_panel::set_grid_offset(
+        h.state().session.project(),
+        clip,
+        0.5,
+        clip_panel::Span {
+            rate: RATE,
+            frames: 4 * u64::from(RATE),
+        },
+    );
+    apply(&mut h, command);
+    // Half a beat of audio.
+    let rate = f64::from(RATE);
+    let moved = (window_start(&h) as f64 - before as f64) / rate;
+    let want = 0.5 * 60.0 / tempo;
+    assert!((moved - want).abs() < 0.001, "{moved} vs {want}");
+    // Undo puts both back in one step.
+    h.state_mut().session.undo();
+    assert_eq!(window_start(&h), before);
+    assert_eq!(offset_of(&h), 0.0);
+}
+
+#[test]
+fn markers_snap_to_the_slid_beat_lines() {
+    let mut h = rig(true);
+    let clip = h.state().clip;
+    let command = clip_panel::set_grid_offset(
+        h.state().session.project(),
+        clip,
+        0.3,
+        clip_panel::Span::of(None),
+    );
+    apply(&mut h, command);
+    with_markers(&mut h, &[(2.0, 4.3)]);
+    // Pulled to about 5.1, it lands on the line at 5.05 (a quarter of a beat
+    // from 4.3, the lines being 0.3 past whole quarters), not on 5.0.
+    let (from, to) = (flag(&h, 4.3), flag(&h, 5.12));
+    drag_between(&mut h, Modifiers::NONE, from, to);
+    let beat = warp(&h).markers[0].beat;
+    let off_grid = ((beat - 0.3) / 0.25).round() * 0.25 + 0.3 - beat;
+    assert!(
+        off_grid.abs() < 1e-9 && (beat - 5.05).abs() < 1e-9,
+        "{beat}"
+    );
+}
+
+#[test]
+fn a_box_in_the_flags_row_picks_the_flags_in_it_and_they_move_together() {
+    let mut h = rig(true);
+    with_markers(&mut h, &[(0.5, 1.0), (1.0, 2.0), (1.5, 3.0), (3.0, 6.0)]);
+    let g = geometry(&h);
+    let y = g.flags.bottom() - 2.0;
+    // From just before the first flag to just after the third.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.x(0.6), y),
+        Pos2::new(g.x(3.4), y),
+    );
+    assert_eq!(h.state().editor.selected(), vec![0, 1, 2]);
+    assert_eq!(warp(&h).markers.len(), 4, "a box edits nothing");
+    // Pulling one of them takes the rest along.
+    let (a, b) = (flag(&h, 2.0), flag(&h, 2.5));
+    drag_between(&mut h, Modifiers::NONE, a, b);
+    let beats: Vec<f64> = warp(&h).markers.iter().map(|m| m.beat).collect();
+    assert_eq!(beats, vec![1.5, 2.5, 3.5, 6.0]);
+    // One undo step for the group.
+    h.state_mut().session.undo();
+    let beats: Vec<f64> = warp(&h).markers.iter().map(|m| m.beat).collect();
+    assert_eq!(beats, vec![1.0, 2.0, 3.0, 6.0]);
+    // Delete removes the group.
+    let at = flag(&h, 2.0);
+    press(&mut h, at, Modifiers::NONE, egui::Key::Delete);
+    assert_eq!(warp(&h).markers.len(), 1);
+    assert_eq!(warp(&h).markers[0].seconds, 3.0);
+}
+
+#[test]
+fn shift_click_adds_a_flag_to_the_pick_and_takes_one_out() {
+    let mut h = rig(true);
+    with_markers(&mut h, &[(0.5, 1.0), (1.0, 2.0), (1.5, 3.0)]);
+    let one = flag(&h, 1.0);
+    crate::testkit::click(&mut h, one, Modifiers::NONE);
+    let three = flag(&h, 3.0);
+    crate::testkit::click(&mut h, three, Modifiers::SHIFT);
+    assert_eq!(h.state().editor.selected(), vec![0, 2]);
+    crate::testkit::click(&mut h, one, Modifiers::SHIFT);
+    assert_eq!(h.state().editor.selected(), vec![2]);
+    // Select all picks every flag.
+    press(&mut h, one, Modifiers::COMMAND, egui::Key::A);
+    assert_eq!(h.state().editor.selected(), vec![0, 1, 2]);
+    press(&mut h, one, Modifiers::NONE, egui::Key::Escape);
+    assert!(h.state().editor.selected().is_empty());
+}
+
+#[test]
+fn double_clicking_a_transients_handle_pins_it_where_it_plays() {
+    let mut h = rig(true);
+    // Stretch the clip with a marker so a transient plays off the grid.
+    with_markers(&mut h, &[(1.0, 2.3)]);
+    let g = geometry(&h);
+    let before = warp(&h);
+    let beat = before.beat_at(1.5);
+    assert!((beat * 4.0).fract().abs() > 0.01, "{beat} is on the grid");
+    double_click(&mut h, Pos2::new(g.x(beat), g.handles.center().y));
+    let after = warp(&h);
+    assert_eq!(after.markers.len(), 2, "{:?}", after.markers);
+    let pinned = after
+        .markers
+        .iter()
+        .find(|m| (m.seconds - 1.5).abs() < 0.02);
+    let pinned = pinned.expect("a marker on the transient");
+    // Where it already played, not moved to the grid; so nothing changes.
+    assert!((pinned.beat - beat).abs() < 0.02, "{pinned:?} vs {beat}");
+    assert!((after.beat_at(3.0) - before.beat_at(3.0)).abs() < 0.05);
+    assert_eq!(h.state().editor.selected().len(), 1);
+}
+
+#[test]
+fn detect_finds_the_tempo_and_where_the_beat_falls() {
+    let mut h = rig(true);
+    // A wrong tempo and a slid grid to begin with.
+    let clip = h.state().clip;
+    let command = h
+        .state()
+        .session
+        .project()
+        .warp_edit(clip, |w| {
+            w.tempo = noodle_core::TempoCurve::constant(90.0);
+            w.grid_offset = 0.4;
+        })
+        .unwrap();
+    apply(&mut h, Some(command));
+    let mut panel = Harness::builder()
+        .with_size(Vec2::new(260.0, 500.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, rig: &mut Rig| {
+                let directory = rig.session.directory().map(std::path::Path::to_path_buf);
+                let loaded = rig
+                    .timeline
+                    .source(ui.ctx(), directory.as_deref(), "hits.wav");
+                let edits =
+                    clip_panel::show(ui, &mut rig.panel, &rig.session, rig.clip, loaded.as_ref());
+                rig.session.edit(edits);
+            },
+            std::mem::replace(h.state_mut(), blank_rig()),
+        );
+    // The analysis arrives from a background worker; Detect is on once it has.
+    for _ in 0..100 {
+        panel.run();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panel.get_by_label("Detect").click();
+    panel.run();
+    let rig = panel.state();
+    let (_, w) = rig.session.project().warp_of(rig.clip).unwrap();
+    assert!(
+        (w.tempo.points()[0].bpm - 120.0).abs() < 1.0,
+        "{:?}",
+        w.tempo
+    );
+    // The clicks start on the beat, so the lines come back to (about) whole
+    // beats.
+    assert!(w.grid_offset.abs() < 0.06, "{}", w.grid_offset);
 }
