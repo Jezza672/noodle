@@ -346,8 +346,11 @@ impl Rig {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        // Give the stream's worker a moment to fill its queue.
-        std::thread::sleep(Duration::from_millis(100));
+        // Give the stream's worker a moment to fill its queue. A blocking
+        // node waits for it itself.
+        if !self.blocking {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         self.run(position, BLOCK, false);
     }
 }
