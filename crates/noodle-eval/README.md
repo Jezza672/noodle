@@ -8,8 +8,13 @@ builds from the song's known source and target tempo maps.
 cargo run -p noodle-eval -- compare ref.wav test.wav 1.5   # JSON; 1.5 = test is 1.5x as fast
 cargo run -p noodle-eval -- validate manifest.csv
 cargo run -p noodle-eval -- probes                         # the probe grid, all methods
-cargo run -p noodle-eval -- probes --probe held-chord --tempo x1.5 --method grain
+cargo run -p noodle-eval -- probes --probe held-chord --tempo x1.5 --method grain --export wavs
 ```
+
+`--export DIR` writes every render as a WAV to listen to: `<probe>_source.wav`,
+`<probe>_<tempo>_native.wav` (the answer key), and per method
+`<probe>_<tempo>_<method>_warped.wav` and `_roundtrip.wav`. The full grid is
+about 1 GB, so pick a probe or tempo.
 
 ## Metrics
 
