@@ -438,12 +438,100 @@ fn a_looping_clip_follows_the_timeline_tempo() {
 }
 
 #[test]
-fn a_section_that_is_not_dragged_out_does_not_loop() {
+fn a_section_whose_window_passes_the_loop_end_goes_round_the_loop() {
     let dir = folder("loop-unextended");
+    // A 2 s window with beats 1 to 3 (0.5 s to 1.5 s) as the loop: it plays to
+    // the loop's end and goes round for the last half second.
     let project = section(Some(looping(1.0, 3.0)), 0, 96_000, None);
     let samples = render(&project, &dir, SETTINGS, 120_000).render.samples;
-    follows(&samples, FADE, 96_000, |f| f);
+    follows(&samples, FADE, 96_000 - 4, two_beat_loop);
     silent(&samples, 96_000 + 8, 120_000);
+}
+
+#[test]
+fn dragging_the_edge_out_never_changes_what_plays_before_it() {
+    let dir = folder("loop-continuous");
+    // The window ends at 4 beats. Whether the edge sits at the window's end,
+    // a tick past it or well past it, the first 4 beats sound the same.
+    let reference = render(
+        &section(Some(looping(1.0, 3.0)), 0, 96_000, None),
+        &dir,
+        SETTINGS,
+        96_000,
+    )
+    .render
+    .samples;
+    for ticks in [4 * 960 + 1, 6 * 960] {
+        let project = section(Some(looping(1.0, 3.0)), 0, 96_000, Some(Tick(ticks)));
+        let samples = render(&project, &dir, SETTINGS, 96_000).render.samples;
+        let worst = (0..2 * 95_990)
+            .map(|i| (samples[i] - reference[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-6, "{ticks}: {worst}");
+    }
+}
+
+#[test]
+fn a_looping_section_dragged_shorter_than_its_window_ends_there() {
+    let dir = folder("loop-shorter");
+    // 3 beats of a 4 s window, past the loop's end at beat 3? No: 2 beats,
+    // before it, so nothing repeats.
+    let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(2 * 960)));
+    let samples = render(&project, &dir, SETTINGS, 4 * 48_000).render.samples;
+    follows(&samples, FADE, 48_000 - 4, |f| f);
+    silent(&samples, 48_000 + 8, 4 * 48_000);
+}
+
+#[test]
+fn a_loop_too_short_to_keep_up_with_is_reported_and_not_repeated() {
+    let dir = folder("loop-short");
+    // 480 bpm, not following the timeline: a beat is 0.125 s, so a one-beat
+    // loop would be over faster than a stream can be opened for each round.
+    let mut warp = looping(1.0, 2.0);
+    warp.tempo = noodle_core::TempoCurve::constant(480.0);
+    warp.tempo_conversion = false;
+    let project = section(Some(warp), 0, 96_000, Some(Tick(12 * 960)));
+    let mut registry = Registry::with_builtins();
+    let rendered =
+        render_project_with_clips(&project, &mut registry, &dir, SETTINGS, 6 * 48_000).unwrap();
+    assert_eq!(rendered.problems.len(), 1, "{:?}", rendered.problems);
+    assert!(
+        rendered.problems[0].message.contains("loop"),
+        "{:?}",
+        rendered.problems
+    );
+    let samples = rendered.render.samples;
+    follows(&samples, FADE, 96_000 - 4, |f| f);
+    silent(&samples, 96_000 + 8, 6 * 48_000);
+}
+
+#[test]
+fn a_fade_out_longer_than_the_last_pass_is_held_to_it() {
+    let dir = folder("loop-fade");
+    // 8 beats (4 s): 1.5 s to the loop's end, two rounds (1 s each) and half
+    // a second of the next. A 1 s fade can only fit in that last pass.
+    let mut project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(8 * 960)));
+    let id = project.clips().next().unwrap().0;
+    let mut clip = project.clip(id).unwrap().clone();
+    let ClipContent::Audio(audio) = &mut clip.content else {
+        unreachable!()
+    };
+    audio.fade_out = 48_000;
+    let mut history = History::new();
+    history
+        .apply(&mut project, Command::SetClip { id, clip })
+        .unwrap();
+    let samples = render(&project, &dir, SETTINGS, 5 * 48_000).render.samples;
+    // Before the last pass (it starts at 3.5 s) the gain is 1.
+    for f in 6_000..168_000 - 4 {
+        let want = ramp(two_beat_loop(f as f64));
+        assert!((samples[f * 2] - want).abs() < 2e-5, "frame {f}");
+    }
+    // Inside it the gain falls to 0 by the end at 4 s.
+    let end = 4 * 48_000;
+    let early = samples[(168_000 + 1_000) * 2] / ramp(two_beat_loop(169_000.0));
+    let late = samples[(end - 1_000) * 2] / ramp(two_beat_loop((end - 1_000) as f64));
+    assert!(early > 0.9 && late < 0.2, "{early} {late}");
 }
 
 #[test]

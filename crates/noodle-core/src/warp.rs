@@ -213,6 +213,12 @@ pub struct WarpMarker {
 /// shorter than this could not be kept up with.
 pub const MIN_LOOP_BEATS: f64 = 1.0;
 
+/// The shortest a loop may be on the timeline, in seconds of playback. A beat
+/// is much shorter than that at a high clip tempo, and the hub opens a stream
+/// for each repeat about a second ahead (and holds only a few), so a faster
+/// loop is not played: the section plays once instead.
+pub const MIN_LOOP_SECONDS: f64 = 0.25;
+
 /// The part of a clip that repeats when the clip loops, in beats of the clip
 /// tempo from the start of the clip (see [`TempoCurve::beats_at`]), so it
 /// stays on the beat grid of the clip whatever the markers do.

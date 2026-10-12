@@ -222,6 +222,34 @@ fn dragging_a_flag_plays_the_warp_as_preview_until_it_is_let_go() {
 }
 
 #[test]
+fn a_drag_cut_off_by_the_clip_going_ends_and_turns_the_preview_off() {
+    use egui::{Event, PointerButton};
+    let mut h = rig(true);
+    with_markers(&mut h, &[(2.0, 4.0)]);
+    let (from, to) = (flag(&h, 4.0), flag(&h, 4.5));
+    h.event(Event::PointerMoved(from));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.event(Event::PointerMoved(to));
+    h.step();
+    assert!(h.state().session.warp_preview(), "preview is on mid-drag");
+    // The clip goes (as an undo of its creation would do) with the button
+    // still down: the flag's widget is never drawn again to end the drag.
+    let id = h.state().clip;
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::RemoveClip { id })]);
+    h.run();
+    assert!(!h.state().session.warp_preview(), "the drag was ended");
+}
+
+#[test]
 fn delete_removes_the_picked_flag() {
     let mut h = rig(true);
     with_markers(&mut h, &[(1.0, 2.0), (2.0, 4.0)]);
@@ -340,4 +368,20 @@ fn blank_rig() -> Rig {
         clip: ClipId(0),
         _dir: tempfile::tempdir().unwrap(),
     }
+}
+
+#[test]
+fn the_playhead_goes_round_inside_the_loop_brace() {
+    let mut warp = ClipWarp::at_tempo(120.0);
+    warp.loop_region = Some(LoopRegion {
+        start: 1.0,
+        end: 3.0,
+    });
+    // Before the loop's end it is where it is; after, it goes round 1 to 3.
+    assert_eq!(fold_into_loop(&warp, 2.5), 2.5);
+    assert!((fold_into_loop(&warp, 3.5) - 1.5).abs() < 1e-9);
+    assert!((fold_into_loop(&warp, 5.5) - 1.5).abs() < 1e-9);
+    assert!((fold_into_loop(&warp, 4.99) - 2.99).abs() < 1e-9);
+    warp.loop_region = None;
+    assert_eq!(fold_into_loop(&warp, 5.5), 5.5);
 }

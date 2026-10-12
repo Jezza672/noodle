@@ -818,6 +818,58 @@ mod tests {
     }
 
     #[test]
+    fn dragging_the_edge_past_the_window_does_not_change_the_audio_before_it() {
+        // The window is eight beats; the loop is its first two. It repeats
+        // up to the window's end whether or not the edge was dragged.
+        let warp = looping(ClipWarp::at_tempo(120.0), 0.0, 2.0);
+        let c = warped(clip(0, 0, 192_000), 1);
+        let before = passes(&map(), &c, RATE, Some(&warp)).unwrap();
+        let out = trim_end(&map(), &c, Tick(7_681), RATE, Some(192_000), Some(&warp)).unwrap();
+        let after = passes(&map(), &out, RATE, Some(&warp)).unwrap();
+        assert_eq!(&after[..before.len()], &before[..]);
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(after.last().unwrap().to, Tick(7_681));
+    }
+
+    #[test]
+    fn a_fade_out_is_held_to_the_last_pass_of_a_loop() {
+        let warp = looping(ClipWarp::at_tempo(120.0), 0.0, 2.0);
+        let mut c = warped(clip(0, 0, 192_000), 1);
+        let ClipContent::Audio(a) = &mut c.content else {
+            unreachable!()
+        };
+        // 6 whole rounds of the 2-beat loop (1920 ticks) after the first.
+        a.extent = Some(Tick(10_000));
+        a.fade_out = 96_000;
+        // The last pass starts at 9600 and is cut off at 10000: the fade
+        // starts there, not a pass earlier, and a drag cannot put it before.
+        assert_eq!(
+            fade_ticks(&map(), &c, RATE, Some(&warp)).unwrap().1,
+            Tick(9_600)
+        );
+        let held = set_fade_out(&map(), &c, Tick(2_000), RATE, Some(&warp)).unwrap();
+        let frames = audio(&held).fade_out;
+        assert!((9_500..=10_500).contains(&frames), "{frames}");
+        let inside = set_fade_out(&map(), &c, Tick(9_800), RATE, Some(&warp)).unwrap();
+        assert!((4_500..=5_500).contains(&audio(&inside).fade_out));
+    }
+
+    #[test]
+    fn a_loop_too_short_to_play_does_not_repeat() {
+        // 480 bpm not following the timeline: a beat lasts 0.125 s.
+        let mut warp = looping(ClipWarp::at_tempo(480.0), 0.0, 1.0);
+        warp.tempo_conversion = false;
+        let mut c = warped(clip(0, 0, 192_000), 1);
+        let ClipContent::Audio(a) = &mut c.content else {
+            unreachable!()
+        };
+        a.extent = Some(Tick(11_520));
+        assert!(passes(&map(), &c, RATE, Some(&warp)).is_none());
+        let out = trim_end(&map(), &c, Tick(15_000), RATE, Some(192_000), Some(&warp)).unwrap();
+        assert_eq!(audio(&out).extent, None);
+    }
+
+    #[test]
     fn the_repeats_of_a_loop_cant_be_split_but_the_audio_before_can() {
         let warp = looping(ClipWarp::at_tempo(120.0), 0.0, 2.0);
         let mut c = warped(clip(0, 0, 192_000), 1);

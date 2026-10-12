@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use noodle_core::{
-    ClipContent, ClipId, NodeId, Project, TICKS_PER_QUARTER, Tick, WarpAxis, WarpMode,
+    ClipContent, ClipId, MIN_LOOP_SECONDS, NodeId, Project, TICKS_PER_QUARTER, Tick, WarpAxis,
+    WarpMode,
 };
 use noodle_engine::TempoTable;
 use noodle_io::{Decoder, FileInfo, clip_frames};
@@ -181,20 +182,21 @@ fn lay_out(
     info: &FileInfo,
     table: &TempoTable,
     rate: u32,
-) -> Vec<Piece> {
+) -> (Vec<Piece>, Option<String>) {
     let source_frames = clip_frames(info, audio.offset, audio.length, rate);
     let Some(warp) = audio
         .warp
         .and_then(|id| project.warp(id))
         .filter(|warp| !warp.is_identity())
     else {
-        return vec![Piece {
+        let piece = Piece {
             offset: audio.offset,
             length: audio.length,
             from: 0,
             len: source_frames,
             warp: None,
-        }];
+        };
+        return (vec![piece], None);
     };
     let origin = audio.offset as f64 / f64::from(info.sample_rate);
     let window = source_frames as f64 / f64::from(rate);
@@ -209,28 +211,51 @@ fn lay_out(
         source_frames,
     );
     let len = (map.out_len().round() as u64).max(1);
-    let once = vec![Piece {
-        offset: audio.offset,
-        length: audio.length,
-        from: 0,
-        len,
-        warp: Some((Arc::new(map), warp.mode)),
-    }];
-    let looped = warp
-        .loop_seconds()
-        .zip(audio.extent)
-        .filter(|&((_, end), _)| origin < end - 1e-6);
-    let Some(((loop_start, loop_end), extent)) = looped else {
-        return once;
+    // How long the section lasts: the window, or as far as it was dragged
+    // when it loops.
+    let looped = warp.loop_seconds().filter(|&(_, end)| origin < end - 1e-6);
+    let total = match (looped, audio.extent) {
+        (Some(_), Some(extent)) => table
+            .sample_at_tick(Tick(clip.start.0 + extent.0))
+            .saturating_sub(table.sample_at_tick(clip.start))
+            .max(1),
+        _ => len,
     };
-    let total = table
-        .sample_at_tick(Tick(clip.start.0 + extent.0))
-        .saturating_sub(table.sample_at_tick(clip.start));
-    if total <= len {
-        return once;
-    }
+    let once = |map: WarpMap| {
+        let map = if total < len {
+            map.truncated(total as f64)
+        } else {
+            map
+        };
+        vec![Piece {
+            offset: audio.offset,
+            length: audio.length,
+            from: 0,
+            len: total.min(len),
+            warp: Some((Arc::new(map), warp.mode)),
+        }]
+    };
+    let Some((loop_start, loop_end)) = looped else {
+        return (once(map), None);
+    };
     let file_rate = f64::from(info.sample_rate);
     let engine_rate = f64::from(rate);
+    // A round of the loop that is over too quickly to open a stream for each
+    // is not played: the section plays once.
+    let round = WarpMap::build(
+        &curve,
+        table,
+        clip.start,
+        engine_rate,
+        loop_start,
+        loop_end - loop_start,
+        ((loop_end - loop_start) * engine_rate).round().max(1.0) as u64,
+    );
+    if round.out_len() / engine_rate < MIN_LOOP_SECONDS - 1e-9 {
+        let problem =
+            format!("the loop is shorter than {MIN_LOOP_SECONDS} s here, so it doesn't repeat");
+        return (once(map), Some(problem));
+    }
     let mut pieces: Vec<Piece> = Vec::new();
     let mut elapsed = 0.0f64;
     let mut tick = clip.start.0 as f64;
@@ -243,7 +268,7 @@ fn lay_out(
             break;
         }
         let begin = offset as f64 / file_rate;
-        let mut map = WarpMap::build(
+        let mut piece_map = WarpMap::build(
             &curve,
             table,
             Tick(tick.round() as i64),
@@ -253,7 +278,7 @@ fn lay_out(
             frames,
         );
         let at = elapsed.round() as u64;
-        let end = elapsed + map.out_len();
+        let end = elapsed + piece_map.out_len();
         if curve.axis == WarpAxis::Beats {
             tick += (curve.at(begin + frames as f64 / engine_rate) - curve.at(begin))
                 * TICKS_PER_QUARTER as f64;
@@ -261,11 +286,11 @@ fn lay_out(
         let mut len = (end.round() as u64 - at).max(1);
         if at + len > total {
             len = total - at;
-            map = map.truncated(len as f64);
+            piece_map = piece_map.truncated(len as f64);
         }
         let shared = match pieces.last().and_then(|p| p.warp.as_ref()) {
-            Some((last, _)) if **last == map => last.clone(),
-            _ => Arc::new(map),
+            Some((last, _)) if **last == piece_map => last.clone(),
+            _ => Arc::new(piece_map),
         };
         pieces.push(Piece {
             offset,
@@ -277,7 +302,12 @@ fn lay_out(
         elapsed = end;
         from = loop_start;
     }
-    if pieces.is_empty() { once } else { pieces }
+    if pieces.len() < 2 {
+        // The edge is inside the first time round to the loop's end: nothing
+        // repeats, and the window plays (cut off at the edge).
+        return (once(map), None);
+    }
+    (pieces, None)
 }
 
 /// A track's clips, sorted by start (then ID).
@@ -624,7 +654,10 @@ impl ClipFeeds {
                 });
                 continue;
             }
-            let pieces = lay_out(project, clip, audio, &info, table, rate);
+            let (pieces, problem) = lay_out(project, clip, audio, &info, table, rate);
+            if let Some(message) = problem {
+                problems.push(ClipProblem { clip: id, message });
+            }
             let first_start = table.sample_at_tick(clip.start);
             let last = pieces.len() - 1;
             for (k, piece) in pieces.into_iter().enumerate() {
@@ -711,7 +744,7 @@ impl ClipFeeds {
                     ClipContent::Audio(audio) => {
                         let path = base.join(&audio.source);
                         self.file_info(&path).map_or(start, |info| {
-                            let pieces = lay_out(project, clip, audio, &info, table, rate);
+                            let (pieces, _) = lay_out(project, clip, audio, &info, table, rate);
                             start + pieces.last().map_or(0, |p| p.from + p.len)
                         })
                     }

@@ -702,13 +702,18 @@ transients. The stretcher has no I/O; the worker feeds it from its own stream
 through a window of decoded frames (`StreamSource`).
 
 **Loops.** `ClipWarp::loop_region` is a `LoopRegion` in clip-tempo beats (at
-least `MIN_LOOP_BEATS`, 1) and `AudioClip::extent` is how far the section is
-dragged out past its true length. `ClipFeeds::update` (`lay_out` in
-`schedule.rs`) expands a looped section into **pieces**: the first runs from the
-section's origin to the loop's end, then the loop repeats and the last is
-truncated at the section's end (`WarpMap::truncated`). Each piece is an ordinary
-`ScheduledClip` with a synthetic ID (`piece_id`; at most `MAX_PIECES`), so the
-hub opens streams for it a second ahead and the node needs no loop logic.
+least `MIN_LOOP_BEATS`, 1, and a round of it at least `MIN_LOOP_SECONDS`, 0.25 s
+of playback, else the section plays once and `ClipFeeds::update` reports a
+problem) and `AudioClip::extent` is how far the section is dragged out; without
+one the window is the length. A section with a loop always plays origin to the
+loop's end and then the loop, up to its length. `ClipFeeds::update` (`lay_out`
+in `schedule.rs`) expands it into **pieces**: the first runs from the section's
+origin to the loop's end, then the loop repeats and the last is truncated at the
+section's end (`WarpMap::truncated`); a section that ends inside the first pass
+is the window cut off. Each piece is an ordinary `ScheduledClip` with a
+synthetic ID (`piece_id`; at most `MAX_PIECES`), so the hub opens streams for it
+a second ahead and the node needs no loop logic. The fade-in is on the first
+piece and the fade-out on the last, held to the last pass.
 
 **The clip editor** (`noodle-app/src/clip_editor/`, `clip_panel.rs`) edits a
 `ClipWarp` through `Project::warp_edit` commands, one undo step per drag. The
@@ -716,8 +721,7 @@ timeline's trims, fades, split and slip of a warped section work in warped beats
 (`timeline/warped.rs`). While a marker is dragged the session turns the preview
 on (and off at the end of the drag); the node dips (declick) when it flips.
 
-What is not here yet: warp quantise and grooves (PR 4), and choosing the mode
-from analysis on import.
+What is not here yet: warp quantise and grooves (PR 4).
 
 ## Automation (M2)
 

@@ -642,12 +642,16 @@ Audio clips get a warp, applied live on playback. Four PRs:
    or detected from the file's transients by `noodle_io::estimate_tempo`, over
    its first 120 s), loop, gain and fades. Trims, fades, split and slip work on
    warped sections again, in warped beats. **Loop:** `ClipWarp::loop_region`
-   (in clip-tempo beats, at least one beat) and `AudioClip::extent` (how far
-   the section is dragged out). The engine lays a looped section out as
-   consecutive pieces, each a normal scheduled clip, so the audio thread has no
-   loop logic and the repeats are gapless (stretched ones through the head
-   lanes). The mode is chosen by hand; picking it from the analysis on import is
-   left for later.
+   (in clip-tempo beats, at least one beat and 0.25 s of playback, or the
+   section plays once and the app says so) and `AudioClip::extent` (how far the
+   section is dragged out, cutting it short or extending it). A looping section
+   always plays from its start to the loop's end and then round the loop, up to
+   its end, so dragging the edge never changes what plays before it. A fade-out
+   is held to the last pass. The engine lays a looped section out as consecutive
+   pieces, each a normal scheduled clip, so the audio thread has no loop logic
+   and the repeats are gapless (stretched ones through the head lanes). Pressing
+   Warp on an unwarped clip picks Beats for percussive audio (from the
+   analysis) and Grain otherwise; the mode can be changed after.
 4. **Warp quantise and grooves.** A live grid and amount over the unquantised
    markers, previewed with lines back to the originals, plus bake. A groove
    (timing feel apart from the algorithm) can be copied from one clip to

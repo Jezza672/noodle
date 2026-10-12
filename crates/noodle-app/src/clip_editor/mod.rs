@@ -200,8 +200,15 @@ pub fn show(
 ) -> Output {
     let mut out = Output::default();
     let project = session.project();
+    let dragging = state.drag.is_some();
     state.retain_existing(project);
-    let Some(id) = state.clip else { return out };
+    let Some(id) = state.clip else {
+        // The clip went (an undo) mid-drag: nothing will send the drag's end.
+        if dragging {
+            out.edits.push(Edit::EndDrag);
+        }
+        return out;
+    };
     let Some(clip) = project.clip(id) else {
         return out;
     };
@@ -233,6 +240,9 @@ pub fn show(
         },
     );
     if closed {
+        if state.drag.take().is_some() {
+            out.edits.push(Edit::EndDrag);
+        }
         state.close();
         return out;
     }
@@ -863,10 +873,28 @@ fn draw_playhead(
     if curve.axis != WarpAxis::Beats {
         return;
     }
-    let beat = curve.at(offset as f64 / rate) + (at.0 - start.0) as f64 / TICKS_PER_QUARTER as f64;
+    let beat = fold_into_loop(
+        warp,
+        curve.at(offset as f64 / rate) + (at.0 - start.0) as f64 / TICKS_PER_QUARTER as f64,
+    );
     let x = axis.x(beat);
     if (wave.left()..=wave.right()).contains(&x) {
         painter.vline(x, axis.area.y_range(), Stroke::new(1.0, colors::PLAYHEAD));
+    }
+}
+
+/// Where on the editor's beat axis a looping section is at `beat` of its
+/// run: past the loop's end it goes round inside the brace.
+fn fold_into_loop(warp: &ClipWarp, beat: f64) -> f64 {
+    let curve = warp.curve();
+    let Some((from, to)) = warp.loop_seconds() else {
+        return beat;
+    };
+    let (from, to) = (curve.at(from), curve.at(to));
+    if beat > to && to > from {
+        from + (beat - to).rem_euclid(to - from)
+    } else {
+        beat
     }
 }
 
