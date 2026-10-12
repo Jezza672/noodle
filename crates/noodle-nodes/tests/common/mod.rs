@@ -275,6 +275,24 @@ impl Rig {
         (left, right)
     }
 
+    /// Like [`play`](Self::play), but each block takes as long as the audio
+    /// callback would have, for tests of the live path (a worker that renders
+    /// ahead is not outrun by a test that runs several times faster than the
+    /// sound, however slowly the machine schedules its threads).
+    pub fn play_realtime(&mut self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut at = from;
+        while at < to {
+            let n = BLOCK.min((to - at) as usize);
+            let (l, r) = self.run(at, n, true);
+            left.extend(l);
+            right.extend(r);
+            at += n as u64;
+            std::thread::sleep(Duration::from_secs_f64(n as f64 / f64::from(RATE)));
+        }
+        (left, right)
+    }
+
     /// Plays from `from` for `frames` frames, wrapping at the end of the loop
     /// the way the engine does (a block never crosses it), and returns the
     /// whole output.
@@ -328,8 +346,11 @@ impl Rig {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        // Give the stream's worker a moment to fill its queue.
-        std::thread::sleep(Duration::from_millis(100));
+        // Give the stream's worker a moment to fill its queue. A blocking
+        // node waits for it itself.
+        if !self.blocking {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         self.run(position, BLOCK, false);
     }
 }
