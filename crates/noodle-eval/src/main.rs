@@ -1,7 +1,9 @@
 //! `noodle-eval compare REF TEST [SPEED]` prints every metric as JSON;
 //! `noodle-eval validate MANIFEST` correlates them with listener scores;
 //! `noodle-eval probes` warps the probe signals and scores the result;
-//! `noodle-eval songs` does the same for the generated songs.
+//! `noodle-eval songs` does the same for the generated songs;
+//! `noodle-eval borrowed` scores them against reference stretchers on audio
+//! we cannot generate.
 
 use noodle_eval::harness::{Harness, Method};
 use noodle_eval::probe::Probe;
@@ -18,7 +20,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("noodle-eval: {e}");
             eprintln!(
-                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | probes [OPTIONS] | songs [OPTIONS]"
+                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS]"
             );
             ExitCode::FAILURE
         }
@@ -72,6 +74,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         ["probes", rest @ ..] => probes(rest),
         ["songs", rest @ ..] => songs(rest),
+        ["borrowed", rest @ ..] => borrowed(rest),
         _ => Err("bad arguments".into()),
     }
 }
@@ -196,6 +199,156 @@ fn songs(args: &[&str]) -> Result<(), String> {
         return Err("no such song".into());
     }
     report(&rows, &baseline, update)
+}
+
+const BORROWED_HELP: &str =
+    "borrowed [--clip NAME] [--probes] [--probe NAME] [--tempo NAME] [--method NAME]
+         [--seconds N] [--dir DIR] [--cache DIR] [--tool NAME] [--tables] [--export DIR]
+         [--baseline FILE] [--update] [--no-latency-compensation]
+  Scores Noodle's warps of audio we cannot generate against what reference
+  stretchers (Rubber Band R3, SoundTouch, Signalsmith; whichever are installed)
+  make of it. Clips come from eval/local (any file you drop in) and
+  eval/cache/clips (eval/fetch.sh); --clip picks one by file name, --dir adds a
+  folder, --seconds cuts each to its first N seconds (default 30). --probes
+  adds the probe signals, which also have a native render to score against.
+  --tool NAME (repeatable) limits the references; --tables prints every case
+  instead of the summary; --export writes each contender's audio. The stretches
+  are cached in --cache (default eval/cache/refs), outside git. The baseline
+  (default crates/noodle-eval/baseline/borrowed.json) is a before and after,
+  never a threshold.";
+
+fn borrowed(args: &[&str]) -> Result<(), String> {
+    use noodle_eval::borrowed::{self as b, Options};
+    use noodle_eval::refs::{RefCache, Stretcher, Tool};
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval");
+    let mut dirs = vec![repo.join("local"), repo.join("cache/clips")];
+    let mut cache = repo.join("cache/refs");
+    let mut baseline = Path::new(env!("CARGO_MANIFEST_DIR")).join("baseline/borrowed.json");
+    let (mut clip, mut probes, mut probe, mut tempo, mut method) = (None, false, None, None, None);
+    let (mut seconds, mut tables, mut update, mut compensate) =
+        (b::DEFAULT_SECONDS, false, false, true);
+    let (mut export, mut only_tools) = (None, Vec::new());
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().copied().ok_or(format!("{arg} needs a value"));
+        match *arg {
+            "--clip" => clip = Some(value()?.to_string()),
+            "--probes" => probes = true,
+            "--probe" => {
+                let v = value()?;
+                probe = Some(Probe::parse(v).ok_or(format!("no probe {v}"))?);
+                probes = true;
+            }
+            "--tempo" => {
+                let v = value()?;
+                tempo = Some(TempoCase::parse(v).ok_or(format!("no tempo case {v}"))?);
+            }
+            "--method" => {
+                let v = value()?;
+                method = Some(Method::parse(v).ok_or(format!("no method {v}"))?);
+            }
+            "--seconds" => seconds = value()?.parse().map_err(|e| format!("--seconds: {e}"))?,
+            "--dir" => dirs.push(value()?.into()),
+            "--cache" => cache = value()?.into(),
+            "--tool" => {
+                let v = value()?;
+                only_tools.push(
+                    Tool::ALL
+                        .into_iter()
+                        .find(|t| t.name() == v)
+                        .ok_or(format!("no tool {v}"))?,
+                );
+            }
+            "--tables" => tables = true,
+            "--export" => export = Some(PathBuf::from(value()?)),
+            "--baseline" => baseline = value()?.into(),
+            "--update" => update = true,
+            "--no-latency-compensation" => compensate = false,
+            "--help" | "-h" => {
+                println!("{BORROWED_HELP}");
+                return Ok(());
+            }
+            other => return Err(format!("unknown option {other}\n{BORROWED_HELP}")),
+        }
+    }
+    let bin = repo.join("cache/bin");
+    let mut references: Vec<Box<dyn Stretcher>> = Vec::new();
+    for tool in Tool::ALL {
+        if !only_tools.is_empty() && !only_tools.contains(&tool) {
+            continue;
+        }
+        match tool.find(std::slice::from_ref(&bin)) {
+            Some(found) => {
+                eprintln!("reference {}: {}", tool.name(), found.binary.display());
+                references.push(Box::new(found) as Box<dyn Stretcher>);
+            }
+            None => eprintln!(
+                "reference {} not found ({})",
+                tool.name(),
+                tool.install_hint()
+            ),
+        }
+    }
+    let mut pieces = Vec::new();
+    for path in b::find_clips(&dirs) {
+        if clip
+            .as_deref()
+            .is_some_and(|c| path.file_stem().and_then(|s| s.to_str()) != Some(c))
+        {
+            continue;
+        }
+        pieces.push(b::load_clip(&path, seconds)?);
+    }
+    if probes {
+        for p in probe.map_or(Probe::ALL.to_vec(), |p| vec![p]) {
+            pieces.push(b::Piece::probe(p));
+        }
+    }
+    if pieces.is_empty() {
+        return Err(
+            "no clips: drop audio files into eval/local, run eval/fetch.sh, or pass --probes"
+                .into(),
+        );
+    }
+    let options = Options {
+        cases: tempo.map_or(TempoCase::all(), |c| vec![c]),
+        methods: method.map_or(Method::ALL.to_vec(), |m| vec![m]),
+        references,
+        cache: RefCache::new(cache),
+        compensate_latency: compensate,
+        export,
+    };
+    let (mut rows, mut notes) = (Vec::new(), Vec::new());
+    for piece in &pieces {
+        eprintln!("{} ({:.1} s)", piece.name, piece.seconds());
+        let (r, n) = b::run(piece, &options)?;
+        rows.extend(r);
+        notes.extend(n);
+    }
+    if tables {
+        print!("{}", b::format_tables(&rows));
+        println!();
+    }
+    print!("{}", b::format_standings(&rows));
+    if tables {
+        print!("{}", b::format_delays(&notes));
+    }
+    print!("{}", b::format_notes(&notes));
+    let fresh = b::baseline(&rows);
+    let old = match std::fs::read_to_string(&baseline) {
+        Ok(text) => {
+            Baseline::from_json(&text).map_err(|e| format!("{}: {e}", baseline.display()))?
+        }
+        Err(_) => Baseline::default(),
+    };
+    println!();
+    print!("{}", table::format_changes(&table::diff(&old, &fresh)));
+    if update {
+        std::fs::write(&baseline, old.merged(fresh).to_json())
+            .map_err(|e| format!("{}: {e}", baseline.display()))?;
+        println!("wrote {}", baseline.display());
+    }
+    Ok(())
 }
 
 /// Prints the rows, their ranks and the diff against `baseline`, and writes
