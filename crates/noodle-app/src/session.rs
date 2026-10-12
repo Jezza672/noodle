@@ -278,6 +278,18 @@ struct Recording {
     quantise: crate::midi_take::Quantise,
 }
 
+/// The clip for a take of `frames` frames that began when the transport was
+/// at `start`, with its first `latency` frames cut off (they were the sound
+/// that was already on its way when the take began). Keeps at least a frame.
+fn recorded_clip(track: NodeId, start: Tick, relative: &str, frames: u64, latency: u64) -> Clip {
+    let skip = latency.min(frames.saturating_sub(1));
+    let mut clip = Clip::audio(track, start, relative, frames - skip);
+    if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+        audio.offset = skip;
+    }
+    clip
+}
+
 /// Something that can record the input to a file.
 trait TakeSink {
     fn start(&mut self, path: &Path) -> Result<(), RecordError>;
@@ -1528,6 +1540,16 @@ impl Session {
         }
     }
 
+    /// How long before the app got it the input was captured, as the driver
+    /// says.
+    fn input_latency(&self) -> std::time::Duration {
+        self.audio
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |audio| {
+                audio.playback.input_latency()
+            })
+    }
+
     /// The take being recorded, as far as it goes: where it is on the
     /// timeline and the notes played so far, for drawing it growing with the
     /// playhead. `None` when not recording.
@@ -1636,9 +1658,14 @@ impl Session {
         let mut commands = Vec::new();
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
+                // What was played arrived after the round trip through the
+                // output and back in through the input, so the file starts
+                // that much late: skip it and the take lines up with the
+                // project the player heard.
+                let round_trip = ((latency + self.input_latency()).as_secs_f64() * rate) as u64;
                 commands.push(Command::AddClip {
                     id: self.project.new_clip_id(),
-                    clip: Clip::audio(track, recording.start, relative.clone(), take.frames),
+                    clip: recorded_clip(track, recording.start, relative, take.frames, round_trip),
                 });
             }
         }
@@ -3936,5 +3963,34 @@ mod tests {
         session.arm(track, true);
         session.midi_bus().send([0x90, 69, 100]);
         assert!(loudness(&mut session, meter, true) > 0.01);
+    }
+}
+
+#[cfg(test)]
+mod recorded_clip_tests {
+    use super::*;
+
+    fn audio(clip: &Clip) -> (u64, u64) {
+        let audio = clip.as_audio().unwrap();
+        (audio.offset, audio.length)
+    }
+
+    #[test]
+    fn a_take_skips_the_round_trip_latency() {
+        let clip = recorded_clip(NodeId(1), Tick(960), "t.wav", 48_000, 1_200);
+        assert_eq!(clip.start, Tick(960));
+        assert_eq!(audio(&clip), (1_200, 46_800));
+    }
+
+    #[test]
+    fn no_latency_leaves_the_take_whole() {
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 0);
+        assert_eq!(audio(&clip), (0, 48_000));
+    }
+
+    #[test]
+    fn a_take_shorter_than_the_latency_keeps_a_frame() {
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 100, 5_000);
+        assert_eq!(audio(&clip), (99, 1));
     }
 }

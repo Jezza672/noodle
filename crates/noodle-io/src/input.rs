@@ -90,6 +90,14 @@ pub struct Capture {
 }
 
 impl Capture {
+    /// Notes how long before this callback the driver captured its input
+    /// (see [`Recorder::input_latency`]).
+    pub fn set_latency(&self, latency: std::time::Duration) {
+        if let Some(tap) = &self.tap {
+            tap.set_latency(latency);
+        }
+    }
+
     /// Queues interleaved input, in whole frames. Frames that don't fit are
     /// dropped, and counted as a glitch.
     pub fn capture<T: Sample>(&mut self, input: &[T])

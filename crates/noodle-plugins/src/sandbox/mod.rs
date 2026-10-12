@@ -27,7 +27,7 @@ pub(crate) mod proto;
 pub(crate) mod proxy;
 pub(crate) mod shm;
 
-pub use host::{HOST_ARG, host_main, run_host_if_requested};
+pub use host::{HOST_ARG, HOST_PUMPED_ARG, host_main, run_host_if_requested};
 
 use proxy::{Remote, Shared};
 
@@ -48,6 +48,15 @@ impl SandboxCommand {
             program: std::env::current_exe()?,
             args: vec![HOST_ARG.into()],
         })
+    }
+
+    /// The `noodle-plugin-scan` program at `program`, which is also a host,
+    /// run the way macOS and Windows hosts run (see [`HOST_PUMPED_ARG`]).
+    pub fn pumped_program(program: impl Into<PathBuf>) -> Self {
+        Self {
+            program: program.into(),
+            args: vec![HOST_PUMPED_ARG.into()],
+        }
     }
 
     /// The `noodle-plugin-scan` program at `program`, which is also a host.

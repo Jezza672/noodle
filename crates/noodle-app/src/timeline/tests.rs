@@ -1426,6 +1426,83 @@ fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
     assert!(h.state().timeline.selected().contains(&id));
 }
 
+#[test]
+fn s_cuts_the_selected_clip_at_the_playhead_in_one_undo_step() {
+    let (mut h, id) = rig();
+    h.state_mut().playhead = Some(Tick(1_920));
+    let c = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.key_press(Key::S);
+    h.run();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), 2);
+    assert_eq!(length(&h, id), 48_000);
+    let right = project.clips().map(|(i, _)| i).find(|&i| i != id).unwrap();
+    assert_eq!(start(&h, right), Tick(1_920));
+    assert_eq!(clip(&h, right).as_audio().unwrap().offset, 48_000);
+    assert!(h.state().timeline.selected().contains(&right));
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project().clips().count(), 1);
+    assert_eq!(length(&h, id), 96_000);
+}
+
+#[test]
+fn s_with_the_playhead_outside_the_clip_says_so() {
+    let (mut h, id) = rig();
+    h.state_mut().playhead = Some(Tick(50_000));
+    let c = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.key_press(Key::S);
+    h.run();
+    assert_eq!(h.state().session.project().clips().count(), 1);
+    assert_eq!(h.state().notices.len(), 1);
+}
+
+#[test]
+fn command_d_copies_the_selection_to_just_after_it() {
+    let (mut h, id) = rig();
+    let c = centre(&h, id);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    h.run();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), 2);
+    let copy = project.clips().map(|(i, _)| i).find(|&i| i != id).unwrap();
+    // Two seconds long at 120 bpm: four beats.
+    assert_eq!(start(&h, copy), Tick(3_840));
+    assert_eq!(length(&h, copy), 96_000);
+    assert_eq!(h.state().timeline.selected().len(), 1);
+    assert!(h.state().timeline.selected().contains(&copy));
+}
+
+#[test]
+fn shift_alt_dragging_slips_the_audio_under_the_clip() {
+    let (mut h, id) = rig();
+    // Trim to the first second so there is file left to slip over.
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        id,
+        Grab::End,
+        Vec2::new(-120.0, 0.0),
+    );
+    let before = clip(&h, id);
+    // A beat is 60 pixels here (a clip of four is 240); drag one beat left.
+    let mods = Modifiers {
+        shift: true,
+        alt: true,
+        ..Modifiers::NONE
+    };
+    drag_by(&mut h, mods, id, Grab::Body, Vec2::new(-60.0, 0.0));
+    let after = clip(&h, id);
+    assert_eq!(after.start, before.start);
+    assert_eq!(
+        after.as_audio().unwrap().length,
+        before.as_audio().unwrap().length
+    );
+    assert_eq!(after.as_audio().unwrap().offset, 24_000);
+}
+
 /// Arms the first track and starts a take on a fake input.
 fn record(h: &mut H) -> noodle_io::RecordTap {
     h.state_mut().session.arm(NodeId(1), true);

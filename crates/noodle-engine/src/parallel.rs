@@ -221,6 +221,9 @@ struct Shared {
     /// starts.
     realtime: AtomicUsize,
     raised: AtomicUsize,
+    /// How many workers have finished starting up (priority asked for,
+    /// subnormal mode set) and are about to wait for work.
+    ready: AtomicUsize,
 }
 
 // SAFETY: `job` is written only by the audio thread, while no worker is
@@ -257,6 +260,7 @@ impl Workers {
             job: UnsafeCell::new(None),
             realtime: AtomicUsize::new(0),
             raised: AtomicUsize::new(0),
+            ready: AtomicUsize::new(0),
         });
         let threads: Vec<_> = (0..count)
             .map(|index| {
@@ -268,6 +272,16 @@ impl Workers {
             })
             .collect();
         let handles = threads.iter().map(|t| t.thread().clone()).collect();
+        // Start-up (the system calls for priority, thread-local set-up) is
+        // the workers' own business and may allocate, so it must be over
+        // before the audio thread can depend on them: wait for it, here,
+        // off the audio thread. The wait is bounded so a thread the system
+        // won't schedule can't hang the caller; such a worker simply joins
+        // in later.
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while shared.ready.load(Ordering::SeqCst) < count && Instant::now() < give_up {
+            thread::sleep(Duration::from_micros(200));
+        }
         Self {
             shared,
             threads,
@@ -277,7 +291,8 @@ impl Workers {
     }
 
     /// How many workers have real-time priority, and how many a raised one.
-    /// Workers ask as they start, so this is settled a moment after `start`.
+    /// Workers ask as they start and `start` waits for them, so this is
+    /// settled once it returns.
     pub(crate) fn priorities(&self) -> (usize, usize) {
         (
             self.shared.realtime.load(Ordering::Relaxed),
@@ -348,6 +363,7 @@ fn worker(shared: &Shared, index: usize, flush: Flush, period: Duration) {
     // The mode is per thread, and nothing else runs here: flush subnormals as
     // the audio thread does, for good.
     let _flush = flush.enable();
+    shared.ready.fetch_add(1, Ordering::SeqCst);
     let mut seen = 0;
     loop {
         // Wait for the next block: spin a little, then park.
