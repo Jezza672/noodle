@@ -3,6 +3,7 @@
 use crate::clip::Clip;
 use crate::level::{self, Level};
 use crate::paper::{self, PaperFeatures};
+use crate::perceptual::{self, Perceptual};
 use crate::phasiness::phasiness;
 use crate::pitch::{self, Pitch};
 use crate::spectral::{self, Spectral};
@@ -19,6 +20,8 @@ pub struct Report {
     pub paper: PaperFeatures,
     /// Noodle's own diagnostics follow.
     pub spectral: Spectral,
+    /// Distances borrowed from the audio-quality literature, for the fit.
+    pub perceptual: Perceptual,
     /// The test's vertical phase incoherence minus the reference's.
     pub vertical_phasiness_delta: f64,
     pub transients: Transients,
@@ -56,6 +59,7 @@ pub fn evaluate(reference: Clip, test: Clip, map: &TimeMap) -> Report {
     Report {
         paper: paper::compute(&rm, &tm, reference.rate, map),
         spectral: spectral::compare(&rs, &ts, map),
+        perceptual: perceptual::compare(&rs, &ts, map),
         vertical_phasiness_delta: phasiness(&tm, test.rate) - phasiness(&rm, reference.rate),
         transients: transient::compare(&rs, &ts, &rf, &tf, map),
         timing: timing::compare(&rf, &tf, map),
@@ -63,6 +67,24 @@ pub fn evaluate(reference: Clip, test: Clip, map: &TimeMap) -> Report {
         level,
         stereo: stereo::compare(reference, test),
     }
+}
+
+/// The names [`Report::features`] gives, in order, without scoring real
+/// audio. A feature cache records them to be sure it was measured by a build
+/// with the same metrics.
+pub fn feature_names() -> Vec<&'static str> {
+    let tone: Vec<f32> = (0..48_000)
+        .map(|n| ((f64::from(n) * 440.0 * std::f64::consts::TAU / 48_000.0).sin() * 0.3) as f32)
+        .collect();
+    evaluate(
+        Clip::new(&tone, 1, 48_000),
+        Clip::new(&tone, 1, 48_000),
+        &TimeMap::Identity,
+    )
+    .features()
+    .into_iter()
+    .map(|f| f.0)
+    .collect()
 }
 
 impl Report {
@@ -111,6 +133,10 @@ impl Report {
             ("pitch_median_abs_cents", self.pitch.median_abs_cents),
             ("lufs_abs_delta", self.level.lufs_delta.abs()),
             ("peak_abs_delta_db", self.level.peak_delta_db.abs()),
+            ("mel_nsim_dist", self.perceptual.mel_nsim),
+            ("mfcc_dist", self.perceptual.mfcc),
+            ("mfcc_delta_dist", self.perceptual.mfcc_delta),
+            ("chroma_dist", self.perceptual.chroma),
             (
                 "stereo_correlation_abs_delta",
                 self.stereo.map_or(f64::NAN, |s| s.correlation_delta.abs()),
