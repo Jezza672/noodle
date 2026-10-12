@@ -54,6 +54,30 @@ pub fn samples(rows: &[Row], measured: &[Features]) -> (Vec<String>, Vec<Sample>
     (names, samples)
 }
 
+/// The samples without the named metrics, to see what a group of them adds.
+pub fn without(
+    names: &[String],
+    samples: &[Sample],
+    drop: &[&str],
+) -> Result<(Vec<String>, Vec<Sample>), String> {
+    if let Some(bad) = drop.iter().find(|d| !names.iter().any(|n| n == *d)) {
+        return Err(format!("no metric called {bad}"));
+    }
+    let keep: Vec<usize> = (0..names.len())
+        .filter(|&j| !drop.contains(&names[j].as_str()))
+        .collect();
+    Ok((
+        keep.iter().map(|&j| names[j].clone()).collect(),
+        samples
+            .iter()
+            .map(|s| Sample {
+                features: keep.iter().map(|&j| s.features[j]).collect(),
+                ..s.clone()
+            })
+            .collect(),
+    ))
+}
+
 /// Saves measured samples so a fit can be repeated without re-measuring.
 pub fn save_cache(path: &Path, names: &[String], samples: &[Sample]) -> Result<(), String> {
     let mut text = format!("group,method,mos,{}\n", names.join(","));
@@ -473,6 +497,15 @@ mod tests {
         let json = serde_json::to_string(&model).unwrap();
         let back: Model = serde_json::from_str(&json).unwrap();
         assert_eq!(back.names, model.names);
+    }
+
+    #[test]
+    fn dropping_metrics_removes_their_columns_and_rejects_typos() {
+        let (names, samples) = synthetic(false);
+        let (n, s) = without(&names, &samples, &["noise"]).unwrap();
+        assert_eq!(n, ["a", "b"]);
+        assert_eq!(s[0].features.len(), 2);
+        assert!(without(&names, &samples, &["nosie"]).is_err());
     }
 
     #[test]

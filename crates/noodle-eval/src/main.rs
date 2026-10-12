@@ -75,21 +75,23 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 }
 
-const FIT_HELP: &str = "fit MANIFEST.csv [--cache FILE] [--out MODEL.json]
+const FIT_HELP: &str = "fit MANIFEST.csv [--cache FILE] [--out MODEL.json] [--drop a,b,..]
   Fits a score from all the metrics to the listeners' scores (ridge regression)
   and reports how well it predicts pairs whose reference clip it never saw.
   --cache FILE keeps the measured metrics (slow to compute) so a rerun only
   refits; it is read if it exists and written otherwise. --out writes the
-  fitted model as JSON.";
+  fitted model as JSON. --drop leaves the named metrics out (to see what a
+  group of them adds).";
 
 fn fit(manifest: &str, args: &[&str]) -> Result<(), String> {
-    let (mut cache, mut out) = (None, None);
+    let (mut cache, mut out, mut drop) = (None, None, Vec::new());
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().copied().ok_or(format!("{arg} needs a value"));
         match *arg {
             "--cache" => cache = Some(PathBuf::from(value()?)),
             "--out" => out = Some(PathBuf::from(value()?)),
+            "--drop" => drop = value()?.split(',').collect(),
             "--help" | "-h" => {
                 println!("{FIT_HELP}");
                 return Ok(());
@@ -110,6 +112,7 @@ fn fit(manifest: &str, args: &[&str]) -> Result<(), String> {
             (names, samples)
         }
     };
+    let (names, samples) = noodle_eval::fit::without(&names, &samples, &drop)?;
     let result = noodle_eval::fit::fit(&samples, &names)?;
     print!("{}", result.format(samples.len()));
     if let Some(path) = out {
