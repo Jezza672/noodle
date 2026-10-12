@@ -302,8 +302,9 @@ and several Output nodes each tied to one device). All of this theme is done.
   ARCHITECTURE.md. A device whose samples play sooner than the main
   device's is held back by the difference so the two sound together (up to
   about a sixth of a second; a device slower than the main one can't be caught
-  up). Still open: the extra devices follow the main device's sample rate (no
-  resampling).
+  up). **Done:** an extra device that runs at another sample rate than the main
+  one is fed through a converter thread (sinc resampling), so neither callback
+  does the work.
 
 **Clips and the arrangement (M2).**
 
@@ -594,6 +595,51 @@ A plugin that changes its latency after loading (restart request, latency
   editor really embeds and gets focus from a background host).
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
+
+## M7: Time warping
+
+**Status:** PR 1 of 4 is done (the model and Repitch playback, below). The
+decisions are in CONTEXT.md (warp, clip tempo, beat and warp markers, groove,
+section) and ADR 0002 (warping is a clip feature, not nodes).
+
+Audio clips get a warp, applied live on playback. Four PRs:
+
+1. **The model. Done.** A clip's warp (its clip tempo curve and warp markers,
+   `ClipWarp`) is separate from the sections that show it on the timeline, and
+   sections that show one clip share it by ID. An edit to a shared warp forks
+   it for that section (`Project::warp_edit`), so copies stay as they were.
+   Clip tempo is seeded from the tempo map for takes recorded in Noodle
+   (conversion off, so they sound as recorded) and saved in the project;
+   detection, tapping and typing arrive with the editor. Warp markers pin a clip
+   moment to a timeline beat; a hidden tempo conversion maps clip tempo to the
+   timeline's. Tempo conversion and warp markers are separate switches (warp
+   quantise is the third, in PR 4). The only mode is Repitch, played by the
+   track input with cubic interpolation, driven by a piecewise-linear map from
+   output frames to source frames. Fades stretch with the audio. Dragging trims
+   and fades on a warped section waits for the clip editor, as does the
+   **loop** (a loop region in beats, and a section extending past the true
+   length): it needs the editor's brace and the engine's gapless repeat, so it
+   moved from this PR to PR 3.
+2. **The engine.** Stretching runs on a worker thread ahead of the playhead into
+   a ring buffer; the audio thread only copies. Modes: Repitch, Grain (WSOLA)
+   and Beats (transient-preserving). Cheap repitch plays while a marker is
+   dragged. Benchmarks, and golden renders. (The real-time allocation test and
+   a golden render already cover Repitch, from PR 1.)
+3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
+   waveform, transient ticks, warp markers along the top and the loop brace.
+   Properties (mode, switches, clip tempo, loop, gain, fades) stay in the
+   properties panel. Mode is chosen from analysis on import. Also loop (see
+   PR 1) and detecting, tapping and typing the clip tempo.
+4. **Warp quantise and grooves.** A live grid and amount over the unquantised
+   markers, previewed with lines back to the originals, plus bake. A groove
+   (timing feel apart from the algorithm) can be copied from one clip to
+   another or linked live.
+
+Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
+
+**Done when:** you can drop a loop recorded at another tempo, pin its
+transients to the grid, hear it follow tempo changes without dropouts, quantise
+it non-destructively, and lend its groove to a second clip.
 
 ## Later
 

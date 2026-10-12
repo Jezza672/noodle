@@ -39,6 +39,11 @@ pub const TRACK_INPUT: &str = "noodle.track.input";
 const EDGE: f32 = 6.0;
 /// Clips narrower than this can only be moved.
 const MIN_TRIMMABLE: f32 = 24.0;
+/// The warp of an audio clip, if it has one.
+fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::ClipWarp> {
+    project.warp(clip.as_audio()?.warp?)
+}
+
 /// The sample rate to lay a clip out at when its file can't be read.
 const FALLBACK_RATE: u32 = 48_000;
 /// A new MIDI clip is a bar of 4/4 long.
@@ -307,7 +312,7 @@ pub fn show(
                         .get(ui.ctx(), directory.as_deref(), &audio.source)
                         .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                 });
-                clips::clip_end(map, clip, rate).quarters()
+                clips::clip_end(map, clip, rate, warp_of(project, clip)).quarters()
             })
             .fold(0.0, f64::max) as f32
             + 16.0;
@@ -414,7 +419,7 @@ pub fn show(
             });
             let source = loaded.as_ref().map(|loaded| loaded.source);
             let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
-            let end = clips::clip_end(map, clip, rate);
+            let end = clips::clip_end(map, clip, rate, warp_of(project, clip));
             let full = Rect::from_min_max(
                 Pos2::new(axis.x(clip.start), top + 3.0),
                 Pos2::new(
@@ -732,7 +737,7 @@ pub fn show(
                 .unwrap_or_default();
             let last = chosen
                 .iter()
-                .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c)))
+                .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
                 .max()
                 .unwrap_or_default();
             let shift = Tick((last.0 - first.0).max(1));
@@ -773,7 +778,7 @@ pub fn show(
                                 .get(ui.ctx(), directory.as_deref(), &audio.source)
                                 .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                         });
-                        clips::clip_end(map, clip, rate)
+                        clips::clip_end(map, clip, rate, warp_of(project, clip))
                     })
                     .max(),
             };
@@ -1145,7 +1150,7 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
             }]
         }
         Mode::TrimEnd => {
-            let end = clips::clip_end(map, grabbed, rate);
+            let end = clips::clip_end(map, grabbed, rate, warp_of(project, grabbed));
             let edge = snap(Tick(end.0 + delta));
             let clip = clips::trim_end(map, grabbed, edge, rate, source.and_then(|s| s.frames))?;
             vec![Command::SetClip {

@@ -190,6 +190,13 @@ impl Rig {
         self.update();
     }
 
+    /// Changes how a clip is warped and feeds the result to the node.
+    pub fn warp_clip(&mut self, id: ClipId, change: impl FnOnce(&mut noodle_core::ClipWarp)) {
+        let command = self.project.warp_edit(id, change).unwrap();
+        self.history.apply(&mut self.project, command).unwrap();
+        self.update();
+    }
+
     /// Waits for the hub to hand the node the schedule from the last update.
     /// The hub is a background thread, so a loaded CI machine (macOS runners
     /// in particular) can take much longer than a quiet one.

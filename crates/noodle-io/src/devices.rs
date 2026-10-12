@@ -455,6 +455,11 @@ pub enum AudioError {
     Virtual {
         reason: String,
     },
+    /// The sample rate converter for an output device at another rate than
+    /// the engine's couldn't start.
+    Resample {
+        reason: String,
+    },
 }
 
 impl From<DeviceError> for AudioError {
@@ -494,6 +499,12 @@ impl fmt::Display for AudioError {
             }
             Self::Virtual { reason } => {
                 write!(f, "couldn't start the virtual output: {reason}")
+            }
+            Self::Resample { reason } => {
+                write!(
+                    f,
+                    "couldn't change the sample rate for the device: {reason}"
+                )
             }
             Self::UnsupportedBufferSize { frames, min, max } => write!(
                 f,

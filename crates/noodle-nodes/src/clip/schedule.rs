@@ -13,6 +13,7 @@ use noodle_engine::TempoTable;
 use noodle_io::{Decoder, FileInfo, clip_frames};
 
 use super::hub::Shared;
+pub use super::warp::WarpMap;
 
 /// Which part of which file a clip plays.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -41,6 +42,9 @@ pub struct ScheduledClip {
     pub fade_in: u64,
     pub fade_out: u64,
     pub source: ClipSource,
+    /// Where each frame of the clip reads from the source, if the clip is
+    /// warped. Without it, frame `n` of the clip reads source frame `n`.
+    pub warp: Option<Arc<WarpMap>>,
     key: u64,
 }
 
@@ -64,7 +68,25 @@ impl ScheduledClip {
             fade_in,
             fade_out,
             source,
+            warp: None,
             key: hasher.finish(),
+        }
+    }
+
+    /// This clip, warped by `map`. Its `length` is how long it lasts once
+    /// warped.
+    pub fn with_warp(mut self, map: Arc<WarpMap>) -> Self {
+        self.warp = Some(map);
+        self
+    }
+
+    /// The source frame a stream playing this clip from clip frame `rel` has
+    /// to be at: one before the frame being played, for the interpolation to
+    /// look back at.
+    pub fn stream_start(&self, rel: u64) -> u64 {
+        match &self.warp {
+            None => rel,
+            Some(map) => (map.source_at(rel as f64).floor().max(0.0) as u64).saturating_sub(1),
         }
     }
 
@@ -79,6 +101,41 @@ impl ScheduledClip {
     pub(super) fn stream_key(&self) -> (ClipId, u64) {
         (self.id, self.key)
     }
+}
+
+/// How long a section of an audio clip lasts in engine frames, and the map
+/// from its frames to the source's if the clip is warped. A warp that leaves
+/// the clip at its natural speed is left out, so those play as they always
+/// did.
+fn lay_out(
+    project: &Project,
+    clip: &noodle_core::Clip,
+    audio: &noodle_core::AudioClip,
+    info: &FileInfo,
+    table: &TempoTable,
+    rate: u32,
+) -> (u64, Option<Arc<WarpMap>>) {
+    let source_frames = clip_frames(info, audio.offset, audio.length, rate);
+    let Some(warp) = audio
+        .warp
+        .and_then(|id| project.warp(id))
+        .filter(|warp| !warp.is_identity())
+    else {
+        return (source_frames, None);
+    };
+    let origin = audio.offset as f64 / f64::from(info.sample_rate);
+    let window = source_frames as f64 / f64::from(rate);
+    let map = WarpMap::build(
+        &warp.curve(),
+        table,
+        clip.start,
+        f64::from(rate),
+        origin,
+        window,
+        source_frames,
+    );
+    let length = (map.out_len().round() as u64).max(1);
+    (length, Some(Arc::new(map)))
 }
 
 /// A track's clips, sorted by start (then ID).
@@ -232,6 +289,7 @@ fn same_clip_sound(x: &ScheduledClip, y: &ScheduledClip, from: u64, to: u64) -> 
         && x.length == y.length
         && x.gain == y.gain
         && x.source == y.source
+        && x.warp == y.warp
         && same_fade_in
         && same_fade_out
 }
@@ -396,31 +454,43 @@ impl ClipFeeds {
             let to_engine = |frames: u64| {
                 (frames as f64 * f64::from(rate) / f64::from(info.sample_rate)).round() as u64
             };
-            let length = clip_frames(&info, audio.offset, audio.length, rate);
-            if length == 0 {
+            if clip_frames(&info, audio.offset, audio.length, rate) == 0 {
                 problems.push(ClipProblem {
                     clip: id,
                     message: "the clip is past the end of its file".into(),
                 });
                 continue;
             }
-            by_node
-                .entry(clip.node)
-                .or_default()
-                .push(ScheduledClip::new(
-                    id,
-                    table.sample_at_tick(clip.start),
-                    length,
-                    audio.gain,
-                    to_engine(audio.fade_in).min(length),
-                    to_engine(audio.fade_out).min(length),
-                    ClipSource {
-                        stamp: std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
-                        path,
-                        offset: audio.offset,
-                        length: audio.length,
-                    },
-                ));
+            let (length, warp) = lay_out(project, clip, audio, &info, table, rate);
+            // Fades are counted in the file's frames; a warp stretches them
+            // along with the audio.
+            let (fade_in, fade_out) = match &warp {
+                None => (to_engine(audio.fade_in), to_engine(audio.fade_out)),
+                Some(map) => (
+                    map.out_at(to_engine(audio.fade_in) as f64).round() as u64,
+                    (map.out_len()
+                        - map.out_at(map.source_len() - to_engine(audio.fade_out) as f64))
+                    .round() as u64,
+                ),
+            };
+            let scheduled = ScheduledClip::new(
+                id,
+                table.sample_at_tick(clip.start),
+                length,
+                audio.gain,
+                fade_in.min(length),
+                fade_out.min(length),
+                ClipSource {
+                    stamp: std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
+                    path,
+                    offset: audio.offset,
+                    length: audio.length,
+                },
+            );
+            by_node.entry(clip.node).or_default().push(match warp {
+                Some(map) => scheduled.with_warp(map),
+                None => scheduled,
+            });
         }
         let mut hubs = self.inner.hubs.lock().expect("feeds lock");
         for node in by_node.keys().chain(notes_by_node.keys()) {
@@ -461,7 +531,7 @@ impl ClipFeeds {
                     ClipContent::Audio(audio) => {
                         let path = base.join(&audio.source);
                         self.file_info(&path).map_or(start, |info| {
-                            start + clip_frames(&info, audio.offset, audio.length, rate)
+                            start + lay_out(project, clip, audio, &info, table, rate).0
                         })
                     }
                 }

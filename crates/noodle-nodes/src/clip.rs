@@ -17,6 +17,7 @@
 
 mod hub;
 mod schedule;
+mod warp;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -33,9 +34,10 @@ use rtrb::{Consumer, Producer, PushError};
 use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
-    ScheduledNote, active_at,
+    ScheduledNote, WarpMap, active_at,
 };
 use schedule::{Segments, same_sound};
+use warp::cubic;
 
 use crate::midi_in::LiveMidi;
 
@@ -56,6 +58,12 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10);
 /// How far behind a stream may be and still catch up by reading and dropping
 /// audio, which is quicker than seeking.
 const MAX_SKIP: u64 = 8192;
+/// Source frames a warped clip keeps in hand to interpolate between: the
+/// most any one stretch of output may reach over.
+const WINDOW_FRAMES: usize = 8192;
+const MAX_SPAN: f64 = (WINDOW_FRAMES - 16) as f64;
+/// Warped clips are played in pieces of at most this many output frames.
+const WARP_CHUNK: usize = 256;
 
 static INFO: NodeInfo = NodeInfo {
     id: TRACK_INPUT_ID,
@@ -138,6 +146,25 @@ impl NodeType for TrackInput {
                         .f32(audio.gain)
                         .u64(audio.fade_in)
                         .u64(audio.fade_out);
+                    // Only a warp that changes the sound is keyed, so the
+                    // keys of clips that aren't warped stay as they were.
+                    if let Some(warp) = audio
+                        .warp
+                        .and_then(|id| env.project.warp(id))
+                        .filter(|warp| !warp.is_identity())
+                    {
+                        key.str("warp")
+                            .bool(warp.tempo_conversion)
+                            .bool(warp.use_markers)
+                            .u64(warp.tempo.points().len() as u64);
+                        for point in warp.tempo.points() {
+                            key.f64(point.seconds).f64(point.bpm);
+                        }
+                        key.u64(warp.markers.len() as u64);
+                        for marker in &warp.markers {
+                            key.f64(marker.seconds).f64(marker.beat);
+                        }
+                    }
                 }
                 noodle_core::ClipContent::Midi(midi) => {
                     key.str("midi")
@@ -179,6 +206,14 @@ struct TrackInputNode {
     scratch: Vec<f32>,
     left: Vec<f32>,
     right: Vec<f32>,
+    /// Source frames of the warped clip being played: frames
+    /// `window_start..window_end` of its stream, interleaved. The stream is
+    /// at `window_end`.
+    window: Vec<f32>,
+    window_start: u64,
+    window_end: u64,
+    /// The stream (by serial) the window was read from.
+    window_serial: Option<u64>,
     /// The declick gain, from 0 to 1.
     level: f32,
     step: f32,
@@ -228,6 +263,10 @@ impl TrackInputNode {
             scratch: vec![0.0; max_frames * MAX_CHANNELS],
             left: vec![0.0; max_frames],
             right: vec![0.0; max_frames],
+            window: vec![0.0; WINDOW_FRAMES * MAX_CHANNELS],
+            window_start: 0,
+            window_end: 0,
+            window_serial: None,
             level: 0.0,
             step: 1.0 / fade_len,
             version: 0,
@@ -467,15 +506,15 @@ impl TrackInputNode {
             return;
         };
         let key = clip.stream_key();
-        let rel = position - clip.start;
+        let at = clip.stream_start(position - clip.start);
         if let Some(prepared) = self
             .streams
             .iter_mut()
             .flatten()
             .find(|p| (p.id, p.key) == key)
-            && prepared.stream.position() != rel
+            && prepared.stream.position() != at
         {
-            prepared.stream.seek(rel);
+            prepared.stream.seek(at);
         }
     }
 
@@ -506,6 +545,10 @@ impl TrackInputNode {
         fb: usize,
         target: f32,
     ) {
+        if let Some(map) = &clip.warp {
+            self.play_warped(clip, map, schedule, a, fa, fb, target);
+            return;
+        }
         let len = fb - fa;
         let key = clip.stream_key();
         let rel = a - clip.start;
@@ -587,6 +630,203 @@ impl TrackInputNode {
             self.right[fa + i] = r * gain;
         }
         self.advance(target, len - got);
+    }
+}
+
+impl TrackInputNode {
+    /// Plays a warped `clip` over block frames `fa..fb`, which start at
+    /// timeline sample `a`. The map says where in the source each output
+    /// frame reads, and the audio there is interpolated between the source's
+    /// own frames (Repitch: the pitch follows the speed).
+    #[allow(clippy::too_many_arguments)]
+    fn play_warped(
+        &mut self,
+        clip: &ScheduledClip,
+        map: &WarpMap,
+        schedule: &[ScheduledClip],
+        a: u64,
+        fa: usize,
+        fb: usize,
+        target: f32,
+    ) {
+        let key = clip.stream_key();
+        let total = map.source_len() as u64;
+        let mut at = a;
+        let mut index = fa;
+        while index < fb {
+            let rel = at - clip.start;
+            let mut n = (fb - index).min(WARP_CHUNK);
+            let first = map.source_at(rel as f64);
+            let mut last = map.source_at((rel + n as u64) as f64);
+            if last - first > MAX_SPAN {
+                // Playing very fast: take fewer output frames at a time so the
+                // source they reach over fits in the window.
+                n = ((n as f64 * MAX_SPAN / (last - first)) as usize).max(1);
+                last = map.source_at((rel + n as u64) as f64);
+            }
+            // The cubic reads one frame before and two after.
+            let lo = (first.floor().max(1.0) as u64 - 1).min(total);
+            let hi = ((last.floor().max(0.0) as u64) + 3)
+                .clamp(lo, total.min(lo + WINDOW_FRAMES as u64));
+            if !self.ready_window(schedule, key, lo, hi, at) {
+                self.advance(target, n);
+                at += n as u64;
+                index += n;
+                continue;
+            }
+            let channels = self
+                .streams
+                .iter()
+                .flatten()
+                .find(|p| Some(p.serial) == self.window_serial)
+                .map_or(2, |p| p.stream.channels());
+            for k in 0..n {
+                let s = map.source_at((rel + k as u64) as f64);
+                let whole = s.floor();
+                let t = (s - whole) as f32;
+                let j = whole as i64;
+                let l = self.tap(j, 0, t, channels, total);
+                let r = if channels > 1 {
+                    self.tap(j, 1, t, channels, total)
+                } else {
+                    l
+                };
+                self.put(clip, rel + k as u64, index + k, l, r, target);
+            }
+            at += n as u64;
+            index += n;
+        }
+    }
+
+    /// Gets source frames `lo..hi` of `clip` into the window, from the stream
+    /// playing it. False if they can't be had yet (no stream, or it is still
+    /// catching up after a seek), in which case the caller plays silence.
+    fn ready_window(
+        &mut self,
+        schedule: &[ScheduledClip],
+        key: (ClipId, u64),
+        lo: u64,
+        hi: u64,
+        at: u64,
+    ) -> bool {
+        let blocking = self.shared.blocking;
+        // The stream the window came from, if it carries on from here.
+        let held = self.streams.iter().position(|slot| {
+            slot.as_ref().is_some_and(|p| {
+                Some(p.serial) == self.window_serial
+                    && (p.id, p.key) == key
+                    && p.stream.position() == self.window_end
+            })
+        });
+        let carry_on = held.is_some() && self.window_start <= lo && lo <= self.window_end;
+        let found = if carry_on {
+            held
+        } else if blocking {
+            self.wait_for_stream(key, lo, at, schedule)
+        } else {
+            self.pick(key, lo)
+        };
+        let Some(slot) = found else {
+            // Not opened yet: silence, and the hub is on it.
+            self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        let prepared = self.streams[slot].as_mut().expect("found above");
+        let stream = &mut prepared.stream;
+        let channels = stream.channels();
+        if carry_on {
+            // Forget the frames behind `lo`.
+            let drop = (lo - self.window_start) as usize;
+            if drop > 0 {
+                let keep = (self.window_end - lo) as usize;
+                self.window
+                    .copy_within(drop * channels..(drop + keep) * channels, 0);
+                self.window_start = lo;
+            }
+        } else {
+            // Line the stream up with `lo`, as a clip that isn't warped does
+            // with the playhead: join in by dropping audio if it is a little
+            // behind, and seek otherwise.
+            let here = stream.position();
+            if here < lo && lo - here <= MAX_SKIP {
+                while stream.position() < lo {
+                    let want = (lo - stream.position()).min((self.scratch.len() / channels) as u64);
+                    if read_frames(
+                        stream,
+                        &mut self.scratch[..want as usize * channels],
+                        blocking,
+                    ) == 0
+                    {
+                        break;
+                    }
+                }
+            } else if here != lo {
+                stream.seek(lo);
+            }
+            if stream.position() != lo {
+                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            self.window_start = lo;
+            self.window_end = lo;
+            self.window_serial = Some(prepared.serial);
+        }
+        let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
+        if hi > self.window_end {
+            let want = (hi - self.window_end) as usize;
+            let from = (self.window_end - self.window_start) as usize * channels;
+            let got = read_frames(
+                stream,
+                &mut self.window[from..from + want * channels],
+                blocking,
+            );
+            self.window_end += got as u64;
+            if got < want {
+                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                if blocking && stream.position() < stream.total_frames() {
+                    // Waited and the disk still didn't answer: stop waiting
+                    // on this clip.
+                    self.abandoned.push(key);
+                }
+            }
+        }
+        if let Some(serial) = promoted {
+            // Playing from it now, so it is an ordinary stream.
+            let _ = self.to_hub.push(Retired::Promoted(serial));
+        }
+        true
+    }
+
+    /// Source frame `j`, channel `c`, between it and the next by `t`, by
+    /// cubic interpolation. The first and last frames of the clip hold past
+    /// its ends, so the cut doesn't ring; frames the window lacks are silent.
+    fn tap(&self, j: i64, c: usize, t: f32, channels: usize, total: u64) -> f32 {
+        let at = |j: i64| -> f32 {
+            let j = (j.max(0) as u64).min(total.saturating_sub(1));
+            if j < self.window_start || j >= self.window_end {
+                return 0.0;
+            }
+            self.window[(j - self.window_start) as usize * channels + c]
+        };
+        cubic(at(j - 1), at(j), at(j + 1), at(j + 2), t)
+    }
+
+    /// Puts one frame of `clip` in the output at block index `index`, with the
+    /// clip's gain and fades (`at` is the frame's place in the clip) and the
+    /// declick level.
+    fn put(&mut self, clip: &ScheduledClip, at: u64, index: usize, l: f32, r: f32, target: f32) {
+        let mut gain = clip.gain;
+        if clip.fade_in > 0 && at < clip.fade_in {
+            gain *= (at as f32 + 0.5) / clip.fade_in as f32;
+        }
+        let left_in_clip = clip.length.saturating_sub(at);
+        if clip.fade_out > 0 && left_in_clip <= clip.fade_out {
+            gain *= (left_in_clip as f32 - 0.5) / clip.fade_out as f32;
+        }
+        self.advance(target, 1);
+        gain *= self.level;
+        self.left[index] = l * gain;
+        self.right[index] = r * gain;
     }
 }
 

@@ -1656,16 +1656,43 @@ impl Session {
             return;
         }
         let mut commands = Vec::new();
+        // What was played arrived after the round trip through the output and
+        // back in through the input, so the file starts that much late: skip
+        // it and the take lines up with the project the player heard.
+        let round_trip = ((latency + self.input_latency()).as_secs_f64() * rate) as u64;
+        // The take's clip tempo is the timeline's where it was recorded. The
+        // sections on every armed track show the same clip, so they share one
+        // warp. Its seconds count from the start of the file, which is
+        // `round_trip` frames before the sections begin.
+        let warp = take.as_ref().filter(|_| rate > 0.0).map(|take| {
+            let skip = round_trip.min(take.frames.saturating_sub(1)) as f64 / rate;
+            let seconds = take.frames as f64 / rate;
+            let warp = noodle_core::ClipWarp::recorded(
+                self.project.tempo_map(),
+                recording.start,
+                skip,
+                seconds,
+            );
+            (self.project.next_warp_id(), warp)
+        });
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
-                // What was played arrived after the round trip through the
-                // output and back in through the input, so the file starts
-                // that much late: skip it and the take lines up with the
-                // project the player heard.
-                let round_trip = ((latency + self.input_latency()).as_secs_f64() * rate) as u64;
+                let mut clip =
+                    recorded_clip(track, recording.start, relative, take.frames, round_trip);
+                if let (Some((id, warp)), noodle_core::ClipContent::Audio(audio)) =
+                    (&warp, &mut clip.content)
+                {
+                    if commands.is_empty() {
+                        commands.push(Command::AddWarp {
+                            id: *id,
+                            warp: warp.clone(),
+                        });
+                    }
+                    audio.warp = Some(*id);
+                }
                 commands.push(Command::AddClip {
                     id: self.project.new_clip_id(),
-                    clip: recorded_clip(track, recording.start, relative, take.frames, round_trip),
+                    clip,
                 });
             }
         }
@@ -3549,6 +3576,18 @@ mod tests {
         let audio = noodle_io::read_wav(&dir.path().join(source)).unwrap();
         assert_eq!(audio.samples.len() / audio.channels, 4_800);
         assert!(session.is_dirty());
+
+        // Both sections show one clip, whose tempo is the timeline's where it
+        // was recorded; it sounds as recorded until the conversion is on.
+        let warps: Vec<_> = session
+            .project()
+            .clips()
+            .filter_map(|(id, _)| session.project().warp_of(id))
+            .collect();
+        assert_eq!(warps.len(), 2);
+        assert_eq!(warps[0].0, warps[1].0);
+        assert_eq!(warps[0].1.tempo.points()[0].bpm, 120.0);
+        assert!(warps[0].1.is_identity());
 
         session.undo();
         assert!(
