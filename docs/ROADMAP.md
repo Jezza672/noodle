@@ -774,10 +774,12 @@ a number and fails the CI excerpt.
 **Status:** designed, not started. Two batches; the design is in
 `CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005.
 
-1. **Library and presets.** Node presets (parameters and config, same node
-   type, one undo step, never touching wires, lanes, mute or solo). Group
-   presets, which apply only to a group with the same topology (node types and
-   config, wires and boundary ports; IDs, names and positions ignored).
+1. **Library and presets.** Node presets (parameters and port-neutral config, same node
+   type and port layout, one undo step, never touching wires, lanes, mute or
+   solo). Group
+   presets, which apply only to a group with the same topology (node types, wires, boundary ports
+   and port layouts; IDs, labels, positions and config that does not shape
+   ports ignored).
    Group templates: unlinked copies, system ones embedded and read-only, user
    ones one `.ron` file each in the user data dir. A track is a hidden
    template, instantiated only by Add track. UI: a Presets control in the
