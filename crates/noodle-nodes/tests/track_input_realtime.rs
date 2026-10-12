@@ -299,6 +299,76 @@ fn playing_stretched_clips_and_editing_them_never_touches_the_allocator() {
 }
 
 #[test]
+fn playing_a_looping_section_across_its_seams_and_flipping_the_preview_never_touches_the_allocator()
+{
+    use noodle_core::{LoopRegion, WarpMode};
+
+    let mut rig = Rig::new("realtime-loop");
+    // A tone with a pulse, so Beats has transients to cut at.
+    rig.wav("a.wav", 2, 400_000, |c, i| {
+        let pulse = (-((i % 24_000) as f32) / 2_000.0).exp();
+        (i as f32 * 0.01 + c as f32).sin() * (0.3 + 0.7 * pulse)
+    });
+    // A section dragged out to 16 beats (8 s) from 2.5 s of audio, looping
+    // beat 1 to 2 (half a second): a new piece every half second.
+    let a = rig.add_clip(0, "a.wav", 0, 300_000);
+    rig.edit_clip(a, |clip| {
+        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.extent = Some(noodle_core::Tick(16 * 960));
+    });
+    rig.warp_clip(a, |warp| {
+        warp.loop_region = Some(LoopRegion {
+            start: 1.0,
+            end: 2.0,
+        });
+    });
+    rig.wait_ready(0, 1);
+
+    let mut violations = 0;
+    let mut loud = 0.0f32;
+    let mut at = 0u64;
+    let pause = || std::thread::sleep(Duration::from_millis(2));
+    // Repitch across the first seams, with the preview flipping on and off
+    // so the declick dips and comes back while pieces change.
+    for round in 0..6 {
+        rig.feeds.set_preview(round % 2 == 1);
+        for _ in 0..60 {
+            violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+            loud = loud.max(rig.output_peak());
+            at += BLOCK as u64;
+            pause();
+        }
+    }
+    // The same stretched, with edits to the loop while it plays.
+    rig.feeds.set_preview(false);
+    for mode in [WarpMode::Grain, WarpMode::Beats] {
+        rig.warp_clip(a, |warp| warp.mode = mode);
+        for _ in 0..80 {
+            violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+            loud = loud.max(rig.output_peak());
+            at += BLOCK as u64;
+            pause();
+        }
+    }
+    rig.warp_clip(a, |warp| {
+        warp.loop_region = Some(LoopRegion {
+            start: 1.0,
+            end: 3.0,
+        });
+    });
+    for _ in 0..80 {
+        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
+        loud = loud.max(rig.output_peak());
+        at += BLOCK as u64;
+        pause();
+    }
+    assert!(loud > 0.05, "it should have been playing: {loud}");
+    assert_eq!(violations, 0, "the audio thread allocated or freed memory");
+}
+
+#[test]
 fn playing_midi_clips_and_taking_in_edits_never_touches_the_allocator() {
     let mut rig = Rig::new("realtime-midi");
     let notes: Vec<(i64, i64, u8)> = (0..32).map(|i| (i * 240, 700, 40 + i as u8)).collect();

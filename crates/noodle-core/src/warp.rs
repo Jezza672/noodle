@@ -208,6 +208,33 @@ pub struct WarpMarker {
     pub beat: f64,
 }
 
+/// The shortest a loop may be, in beats of the clip tempo. A loop is played as
+/// one piece after another, each opened ahead of the playhead, so a loop much
+/// shorter than this could not be kept up with.
+pub const MIN_LOOP_BEATS: f64 = 1.0;
+
+/// The shortest a loop may be on the timeline, in seconds of playback. A beat
+/// is much shorter than that at a high clip tempo, and the hub opens a stream
+/// for each repeat about a second ahead (and holds only a few), so a faster
+/// loop is not played: the section plays once instead.
+pub const MIN_LOOP_SECONDS: f64 = 0.25;
+
+/// The part of a clip that repeats when the clip loops, in beats of the clip
+/// tempo from the start of the clip (see [`TempoCurve::beats_at`]), so it
+/// stays on the beat grid of the clip whatever the markers do.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoopRegion {
+    pub start: f64,
+    pub end: f64,
+}
+
+impl LoopRegion {
+    /// How many beats the region lasts.
+    pub fn beats(&self) -> f64 {
+        self.end - self.start
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -231,6 +258,12 @@ pub struct ClipWarp {
     /// Whether the warp markers apply.
     #[serde(default = "yes")]
     pub use_markers: bool,
+    /// The part of the clip that repeats, if the clip loops. A section of a
+    /// looping clip plays its window up to the end of the region and then
+    /// the region over and over, for as long as the section lasts (see
+    /// [`AudioClip::extent`](crate::AudioClip::extent)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_region: Option<LoopRegion>,
 }
 
 impl ClipWarp {
@@ -242,6 +275,7 @@ impl ClipWarp {
             mode: WarpMode::Repitch,
             tempo_conversion: true,
             use_markers: true,
+            loop_region: None,
         }
     }
 
@@ -260,9 +294,45 @@ impl ClipWarp {
     }
 
     /// Whether the clip plays at its natural speed all along, so that it
-    /// needs no warping.
+    /// needs no warping. A looping clip is never left alone: the engine lays
+    /// its repeats out.
     pub fn is_identity(&self) -> bool {
-        !self.tempo_conversion && (!self.use_markers || self.markers.is_empty())
+        !self.tempo_conversion
+            && (!self.use_markers || self.markers.is_empty())
+            && self.loop_region.is_none()
+    }
+
+    /// The loop region in source seconds, if the clip loops.
+    pub fn loop_seconds(&self) -> Option<(f64, f64)> {
+        let region = self.loop_region?;
+        Some((
+            self.tempo.seconds_at(region.start),
+            self.tempo.seconds_at(region.end),
+        ))
+    }
+
+    /// The beat of the clip (the beats warp markers are given in, with the
+    /// markers applied if they are in use) at which the moment `seconds` of
+    /// the file plays.
+    pub fn beat_at(&self, seconds: f64) -> f64 {
+        let beats = self.tempo.beats_at(seconds);
+        self.marker_map().map_or(beats, |markers| markers.at(beats))
+    }
+
+    /// The moment of the file (in seconds) that plays at `beat` of the clip.
+    /// The inverse of [`beat_at`](Self::beat_at).
+    pub fn seconds_at_beat(&self, beat: f64) -> f64 {
+        let beats = self
+            .marker_map()
+            .map_or(beat, |markers| markers.inverse(beat));
+        self.tempo.seconds_at(beats)
+    }
+
+    /// The marker at `seconds` (give or take a millisecond), if there is one.
+    pub fn marker_at(&self, seconds: f64) -> Option<usize> {
+        self.markers
+            .iter()
+            .position(|m| (m.seconds - seconds).abs() < 1e-3)
     }
 
     /// Adds a marker, keeping them in order. A marker at (nearly) the same
@@ -283,6 +353,14 @@ impl ClipWarp {
             if !m.seconds.is_finite() || !m.beat.is_finite() || m.seconds < 0.0 {
                 return Some("a warp marker is not at a real place");
             }
+        }
+        if let Some(region) = self.loop_region
+            && (!region.start.is_finite()
+                || !region.end.is_finite()
+                || region.start < 0.0
+                || region.beats() < MIN_LOOP_BEATS - 1e-9)
+        {
+            return Some("the loop is shorter than a beat or starts before the clip");
         }
         for pair in self.markers.windows(2) {
             if pair[1].seconds <= pair[0].seconds || pair[1].beat <= pair[0].beat {
@@ -464,6 +542,44 @@ mod tests {
 
     fn close(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "{a} != {b}");
+    }
+
+    #[test]
+    fn beats_of_the_clip_follow_the_markers_and_back() {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        close(warp.beat_at(1.0), 2.0);
+        close(warp.seconds_at_beat(2.0), 1.0);
+        warp.set_marker(WarpMarker {
+            seconds: 1.0,
+            beat: 3.0,
+        });
+        // The marker pulls its moment to beat 3; before it, the clip keeps
+        // its own speed.
+        close(warp.beat_at(1.0), 3.0);
+        close(warp.beat_at(0.5), 2.0);
+        close(warp.seconds_at_beat(3.0), 1.0);
+        close(warp.seconds_at_beat(2.0), 0.5);
+        // With the markers off they do nothing.
+        warp.use_markers = false;
+        close(warp.beat_at(1.0), 2.0);
+    }
+
+    #[test]
+    fn a_loop_shorter_than_a_beat_is_not_a_warp() {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        warp.loop_region = Some(LoopRegion {
+            start: 1.0,
+            end: 1.5,
+        });
+        assert!(warp.problem().is_some());
+        warp.loop_region = Some(LoopRegion {
+            start: 1.0,
+            end: 3.0,
+        });
+        assert_eq!(warp.problem(), None);
+        assert_eq!(warp.loop_seconds(), Some((0.5, 1.5)));
+        // A looping clip is never "left alone" by the engine.
+        assert!(!warp.is_identity());
     }
 
     #[test]

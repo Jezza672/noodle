@@ -112,6 +112,30 @@ impl WarpMap {
         Self { knots }
     }
 
+    /// This map cut off after `out` output frames (which must be inside it),
+    /// so a section that stops part way through a pass ends where it does.
+    pub fn truncated(&self, out: f64) -> Self {
+        if out >= self.out_len() {
+            return self.clone();
+        }
+        let out = out.max(1.0);
+        let mut knots: Vec<(f64, f64)> = self
+            .knots
+            .iter()
+            .copied()
+            .take_while(|k| k.0 < out - 1e-9)
+            .collect();
+        let end = self.source_at(out);
+        match knots.last() {
+            Some(&(_, s)) if end > s + 1e-9 => knots.push((out, end)),
+            _ => {
+                // Too short to bend; keep a straight line to the cut.
+                knots = vec![(0.0, 0.0), (out, end.max(1e-6))];
+            }
+        }
+        Self { knots }
+    }
+
     /// How many source frames the section's window has.
     pub fn source_len(&self) -> f64 {
         self.knots[self.knots.len() - 1].1

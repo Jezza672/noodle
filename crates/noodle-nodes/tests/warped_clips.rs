@@ -41,6 +41,11 @@ fn folder(name: &str) -> PathBuf {
 /// A track input wired to the output, with one clip of `length` frames of
 /// `ramp.wav` from `offset`, warped by `warp`.
 fn project(warp: Option<ClipWarp>, offset: u64, length: u64) -> Project {
+    section(warp, offset, length, None)
+}
+
+/// Like [`project`], with the section dragged out to `extent` ticks.
+fn section(warp: Option<ClipWarp>, offset: u64, length: u64, extent: Option<Tick>) -> Project {
     let mut project = Project::new();
     let mut history = History::new();
     let (track, out) = (NodeId(1), NodeId(2));
@@ -68,6 +73,7 @@ fn project(warp: Option<ClipWarp>, offset: u64, length: u64) -> Project {
         unreachable!("not an audio clip")
     };
     audio.offset = offset;
+    audio.extent = extent;
     let mut commands = Vec::new();
     if let Some(warp) = warp {
         let warp_id = project.next_warp_id();
@@ -342,4 +348,198 @@ fn fades_are_stretched_with_the_audio() {
         let want = ramp(f as f64 * 2.0) * gain / 4_800.0;
         assert!((samples[f * 2] - want).abs() < 2e-5, "frame {f}");
     }
+}
+
+fn looping(from: f64, to: f64) -> ClipWarp {
+    ClipWarp {
+        loop_region: Some(noodle_core::LoopRegion {
+            start: from,
+            end: to,
+        }),
+        ..ClipWarp::at_tempo(120.0)
+    }
+}
+
+/// Where a section that plays up to 72000, then repeats frames 24000..72000,
+/// reads at output frame `f`.
+fn two_beat_loop(f: f64) -> f64 {
+    if f < 72_000.0 {
+        f
+    } else {
+        24_000.0 + (f - 72_000.0) % 48_000.0
+    }
+}
+
+#[test]
+fn a_looping_section_repeats_the_loop_until_it_ends() {
+    let dir = folder("loop");
+    // Beats 1 to 3 repeat; the section is dragged out to 12 beats (6 s) though
+    // its audio lasts 4 s.
+    let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(12 * 960)));
+    let samples = render(&project, &dir, SETTINGS, 7 * 48_000).render.samples;
+    follows(&samples, FADE, 6 * 48_000 - 4, two_beat_loop);
+    silent(&samples, 6 * 48_000 + 8, 7 * 48_000);
+}
+
+#[test]
+fn a_looping_section_is_the_same_whatever_the_block_size() {
+    let dir = folder("loop-blocks");
+    let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(12 * 960)));
+    let small = Settings {
+        max_frames: 64,
+        ..SETTINGS
+    };
+    let a = render(&project, &dir, SETTINGS, 7 * 48_000).render.samples;
+    let b = render(&project, &dir, small, 7 * 48_000).render.samples;
+    assert_eq!(a, b);
+}
+
+#[test]
+fn a_section_starting_inside_the_loop_joins_it_at_the_end() {
+    let dir = folder("loop-inside");
+    // The section shows the file from beat 2 (1 s); it plays on to the loop's
+    // end at beat 3 and goes round from beat 1.
+    let project = section(
+        Some(looping(1.0, 3.0)),
+        48_000,
+        3 * 48_000,
+        Some(Tick(8 * 960)),
+    );
+    let samples = render(&project, &dir, SETTINGS, 5 * 48_000).render.samples;
+    follows(&samples, FADE, 4 * 48_000 - 4, |f| {
+        if f < 24_000.0 {
+            48_000.0 + f
+        } else {
+            24_000.0 + (f - 24_000.0) % 48_000.0
+        }
+    });
+    silent(&samples, 4 * 48_000 + 8, 5 * 48_000);
+}
+
+#[test]
+fn a_looping_clip_follows_the_timeline_tempo() {
+    let dir = folder("loop-tempo");
+    // Recorded at 60 bpm on a 120 timeline: twice as fast, so the 4 s of
+    // audio last 2 s and the 2-beat loop (2 s of audio) lasts 1 s.
+    let mut warp = looping(1.0, 3.0);
+    warp.tempo = noodle_core::TempoCurve::constant(60.0);
+    let project = section(Some(warp), 0, 4 * 48_000, Some(Tick(8 * 960)));
+    let samples = render(&project, &dir, SETTINGS, 5 * 48_000).render.samples;
+    // 1 s of audio from beat 1 (1 s in) to beat 3 (3 s in).
+    follows(&samples, FADE, 4 * 48_000 - 4, |f| {
+        let out = f * 2.0;
+        if out < 3.0 * 48_000.0 {
+            out
+        } else {
+            48_000.0 + (out - 3.0 * 48_000.0) % (2.0 * 48_000.0)
+        }
+    });
+    silent(&samples, 4 * 48_000 + 8, 5 * 48_000);
+}
+
+#[test]
+fn a_section_whose_window_passes_the_loop_end_goes_round_the_loop() {
+    let dir = folder("loop-unextended");
+    // A 2 s window with beats 1 to 3 (0.5 s to 1.5 s) as the loop: it plays to
+    // the loop's end and goes round for the last half second.
+    let project = section(Some(looping(1.0, 3.0)), 0, 96_000, None);
+    let samples = render(&project, &dir, SETTINGS, 120_000).render.samples;
+    follows(&samples, FADE, 96_000 - 4, two_beat_loop);
+    silent(&samples, 96_000 + 8, 120_000);
+}
+
+#[test]
+fn dragging_the_edge_out_never_changes_what_plays_before_it() {
+    let dir = folder("loop-continuous");
+    // The window ends at 4 beats. Whether the edge sits at the window's end,
+    // a tick past it or well past it, the first 4 beats sound the same.
+    let reference = render(
+        &section(Some(looping(1.0, 3.0)), 0, 96_000, None),
+        &dir,
+        SETTINGS,
+        96_000,
+    )
+    .render
+    .samples;
+    for ticks in [4 * 960 + 1, 6 * 960] {
+        let project = section(Some(looping(1.0, 3.0)), 0, 96_000, Some(Tick(ticks)));
+        let samples = render(&project, &dir, SETTINGS, 96_000).render.samples;
+        let worst = (0..2 * 95_990)
+            .map(|i| (samples[i] - reference[i]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-6, "{ticks}: {worst}");
+    }
+}
+
+#[test]
+fn a_looping_section_dragged_shorter_than_its_window_ends_there() {
+    let dir = folder("loop-shorter");
+    // 3 beats of a 4 s window, past the loop's end at beat 3? No: 2 beats,
+    // before it, so nothing repeats.
+    let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(2 * 960)));
+    let samples = render(&project, &dir, SETTINGS, 4 * 48_000).render.samples;
+    follows(&samples, FADE, 48_000 - 4, |f| f);
+    silent(&samples, 48_000 + 8, 4 * 48_000);
+}
+
+#[test]
+fn a_loop_too_short_to_keep_up_with_is_reported_and_not_repeated() {
+    let dir = folder("loop-short");
+    // 480 bpm, not following the timeline: a beat is 0.125 s, so a one-beat
+    // loop would be over faster than a stream can be opened for each round.
+    let mut warp = looping(1.0, 2.0);
+    warp.tempo = noodle_core::TempoCurve::constant(480.0);
+    warp.tempo_conversion = false;
+    let project = section(Some(warp), 0, 96_000, Some(Tick(12 * 960)));
+    let mut registry = Registry::with_builtins();
+    let rendered =
+        render_project_with_clips(&project, &mut registry, &dir, SETTINGS, 6 * 48_000).unwrap();
+    assert_eq!(rendered.problems.len(), 1, "{:?}", rendered.problems);
+    assert!(
+        rendered.problems[0].message.contains("loop"),
+        "{:?}",
+        rendered.problems
+    );
+    let samples = rendered.render.samples;
+    follows(&samples, FADE, 96_000 - 4, |f| f);
+    silent(&samples, 96_000 + 8, 6 * 48_000);
+}
+
+#[test]
+fn a_fade_out_longer_than_the_last_pass_is_held_to_it() {
+    let dir = folder("loop-fade");
+    // 8 beats (4 s): 1.5 s to the loop's end, two rounds (1 s each) and half
+    // a second of the next. A 1 s fade can only fit in that last pass.
+    let mut project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(8 * 960)));
+    let id = project.clips().next().unwrap().0;
+    let mut clip = project.clip(id).unwrap().clone();
+    let ClipContent::Audio(audio) = &mut clip.content else {
+        unreachable!()
+    };
+    audio.fade_out = 48_000;
+    let mut history = History::new();
+    history
+        .apply(&mut project, Command::SetClip { id, clip })
+        .unwrap();
+    let samples = render(&project, &dir, SETTINGS, 5 * 48_000).render.samples;
+    // Before the last pass (it starts at 3.5 s) the gain is 1.
+    for f in 6_000..168_000 - 4 {
+        let want = ramp(two_beat_loop(f as f64));
+        assert!((samples[f * 2] - want).abs() < 2e-5, "frame {f}");
+    }
+    // Inside it the gain falls to 0 by the end at 4 s.
+    let end = 4 * 48_000;
+    let early = samples[(168_000 + 1_000) * 2] / ramp(two_beat_loop(169_000.0));
+    let late = samples[(end - 1_000) * 2] / ramp(two_beat_loop((end - 1_000) as f64));
+    assert!(early > 0.9 && late < 0.2, "{early} {late}");
+}
+
+#[test]
+fn a_looping_section_ending_part_way_through_a_repeat_stops_there() {
+    let dir = folder("loop-cut");
+    // 9 beats: the 4 s of audio, then 1 s of the loop.
+    let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(9 * 960)));
+    let samples = render(&project, &dir, SETTINGS, 6 * 48_000).render.samples;
+    follows(&samples, FADE, 4 * 48_000 + 24_000 - 4, two_beat_loop);
+    silent(&samples, 4 * 48_000 + 24_000 + 8, 6 * 48_000);
 }

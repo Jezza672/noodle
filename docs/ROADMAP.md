@@ -598,8 +598,8 @@ A plugin that changes its latency after loading (restart request, latency
 
 ## M7: Time warping
 
-**Status:** PRs 1 and 2 of 4 are done (the model and Repitch playback; the
-engine with Grain and Beats, below). The
+**Status:** PRs 1 to 3 of 4 are done (the model and Repitch playback; the
+engine with Grain and Beats; the clip editor, below). The
 decisions are in CONTEXT.md (warp, clip tempo, beat and warp markers, groove,
 section) and ADR 0002 (warping is a clip feature, not nodes).
 
@@ -616,11 +616,8 @@ Audio clips get a warp, applied live on playback. Four PRs:
    timeline's. Tempo conversion and warp markers are separate switches (warp
    quantise is the third, in PR 4). The only mode is Repitch, played by the
    track input with cubic interpolation, driven by a piecewise-linear map from
-   output frames to source frames. Fades stretch with the audio. Dragging trims
-   and fades on a warped section waits for the clip editor, as does the
-   **loop** (a loop region in beats, and a section extending past the true
-   length): it needs the editor's brace and the engine's gapless repeat, so it
-   moved from this PR to PR 3.
+   output frames to source frames. Fades stretch with the audio. (Dragging trims
+   and fades, and the loop, were disabled here and arrived in PR 3.)
 2. **The engine. Done.** Grain and Beats are rendered by a worker thread
    (`noodle-warp`, one per track input) ahead of the playhead into a ring buffer
    per stretched section; the audio thread only copies out of it. Grain is
@@ -636,11 +633,25 @@ Audio clips get a warp, applied live on playback. Four PRs:
    have golden renders; `cargo bench -p noodle-nodes --bench warp` measures the
    stretcher (about 150 times real time per clip on one core). Choosing the
    mode in the app waits for the clip editor.
-3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
-   waveform, transient ticks, warp markers along the top and the loop brace.
-   Properties (mode, switches, clip tempo, loop, gain, fades) stay in the
-   properties panel. Mode is chosen from analysis on import. Also loop (see
-   PR 1) and detecting, tapping and typing the clip tempo.
+3. **The clip editor. Done.** In the piano roll's slot (double-click an audio
+   clip): the clip's own timeline with its waveform, transient ticks, warp
+   markers along the top (drag to move, double-click to add, Delete removes, snapped
+   to beats; Alt drags free) and the loop brace. Marker drags play as cheap
+   Repitch (`set_preview`), and the node now dips when that flips. The
+   properties panel has the mode, the two switches, clip tempo (typed, tapped
+   or detected from the file's transients by `noodle_io::estimate_tempo`, over
+   its first 120 s), loop, gain and fades. Trims, fades, split and slip work on
+   warped sections again, in warped beats. **Loop:** `ClipWarp::loop_region`
+   (in clip-tempo beats, at least one beat and 0.25 s of playback, or the
+   section plays once and the app says so) and `AudioClip::extent` (how far the
+   section is dragged out, cutting it short or extending it). A looping section
+   always plays from its start to the loop's end and then round the loop, up to
+   its end, so dragging the edge never changes what plays before it. A fade-out
+   is held to the last pass. The engine lays a looped section out as consecutive
+   pieces, each a normal scheduled clip, so the audio thread has no loop logic
+   and the repeats are gapless (stretched ones through the head lanes). Pressing
+   Warp on an unwarped clip picks Beats for percussive audio (from the
+   analysis) and Grain otherwise; the mode can be changed after.
 4. **Warp quantise and grooves.** A live grid and amount over the unquantised
    markers, previewed with lines back to the originals, plus bake. A groove
    (timing feel apart from the algorithm) can be copied from one clip to

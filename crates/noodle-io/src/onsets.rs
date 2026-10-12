@@ -88,11 +88,93 @@ pub fn detect_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
     onsets
 }
 
+/// The tempo (in beats per minute, 80 to 160) the onsets at `times` (seconds)
+/// most nearly sit on the beat of, if there are enough of them to tell.
+///
+/// Each candidate tempo is scored by how well the onsets line up in phase:
+/// with the beat period as the unit, onsets on the beat all land on the same
+/// phase of the cycle, and the length of the sum of their phases is the
+/// score. Onsets on the half beat still count, through a second sum on a
+/// grid of eighth notes. A tempo of half or twice the true one is kept out
+/// by the range.
+pub fn estimate_tempo(times: &[f64]) -> Option<f64> {
+    if times.len() < 4 {
+        return None;
+    }
+    // Onsets on the beat and on the half beat both count: the second sum
+    // is of the onsets' phases on a grid of eighth notes.
+    let score = |bpm: f64| {
+        let mut total = 0.0;
+        for grid in [1.0, 2.0] {
+            let (mut re, mut im) = (0.0, 0.0);
+            for &t in times {
+                let phase = std::f64::consts::TAU * t * bpm / 60.0 * grid;
+                re += phase.cos();
+                im += phase.sin();
+            }
+            total += re.hypot(im);
+        }
+        total / 2.0
+    };
+    let mut best = (80.0, 0.0);
+    let mut bpm = 80.0;
+    while bpm <= 160.0 {
+        let s = score(bpm);
+        if s > best.1 {
+            best = (bpm, s);
+        }
+        bpm += 0.1;
+    }
+    // Refine around the best.
+    let mut refined = best;
+    let mut bpm = best.0 - 0.1;
+    while bpm <= best.0 + 0.1 {
+        let s = score(bpm);
+        if s > refined.1 {
+            refined = (bpm, s);
+        }
+        bpm += 0.005;
+    }
+    // Weak agreement is no tempo at all.
+    (refined.1 / times.len() as f64 > 0.5).then_some((refined.0 * 100.0).round() / 100.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
+
+    #[test]
+    fn the_tempo_is_where_the_onsets_line_up() {
+        let beats = |bpm: f64, n: usize| -> Vec<f64> {
+            (0..n).map(|i| 0.1 + i as f64 * 60.0 / bpm).collect()
+        };
+        for bpm in [90.0, 120.0, 133.5, 150.0] {
+            let found = estimate_tempo(&beats(bpm, 16)).unwrap();
+            assert!((found - bpm).abs() < 0.3, "{found} for {bpm}");
+        }
+        // Hits on the off-beats too, and a missing beat.
+        let mut times = beats(120.0, 16);
+        times.extend((0..8).map(|i| 0.35 + i as f64));
+        times.remove(5);
+        times.sort_by(f64::total_cmp);
+        let found = estimate_tempo(&times).unwrap();
+        assert!((found - 120.0).abs() < 0.5, "{found}");
+    }
+
+    #[test]
+    fn scattered_onsets_have_no_tempo() {
+        assert_eq!(estimate_tempo(&[0.1, 0.4]), None);
+        let mut seed = 5u32;
+        let scattered: Vec<f64> = (0..20)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                i as f64 * 0.9 + (seed >> 16) as f64 / 65_536.0 * 0.7
+            })
+            .collect();
+        assert_eq!(estimate_tempo(&scattered), None);
+    }
 
     /// A decaying 200 Hz click at each of `at` (in seconds), over `seconds`.
     fn clicks(at: &[f64], seconds: f64) -> Vec<f32> {

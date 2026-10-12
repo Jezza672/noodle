@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod clip_editor;
+mod clip_panel;
 mod devices;
 mod editor;
 mod export_dialog;

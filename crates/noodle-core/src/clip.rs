@@ -157,6 +157,11 @@ pub struct AudioClip {
     /// section shows, and the warp decides how that part is laid out in time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warp: Option<WarpId>,
+    /// How long the section lasts, from its start, when its clip loops and
+    /// the section is dragged out past the end of its window. `None` (or a
+    /// clip that doesn't loop) lasts as long as the window does once warped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<Tick>,
 }
 
 impl AudioClip {
@@ -171,6 +176,7 @@ impl AudioClip {
             fade_in: 0,
             fade_out: 0,
             warp: None,
+            extent: None,
         }
     }
 }
@@ -239,6 +245,8 @@ impl AudioClip {
             Some("its gain is not a number or is negative")
         } else if self.fade_in.saturating_add(self.fade_out) > self.length {
             Some("its fades are longer than the clip")
+        } else if self.extent.is_some_and(|e| e <= Tick::ZERO) {
+            Some("its extent is empty")
         } else {
             None
         }

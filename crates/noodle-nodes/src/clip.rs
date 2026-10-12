@@ -232,6 +232,13 @@ struct TrackInputNode {
     window_end: u64,
     /// The stream (by serial) the window was read from.
     window_serial: Option<u64>,
+    /// Whether warped clips are being played as cheap Repitch (see
+    /// [`ClipFeeds::set_preview`]), as of the last time the node switched.
+    preview: bool,
+    /// The preview switch was thrown while sound was playing; the node is
+    /// dipping to silence and takes it on there, so the change of sound
+    /// doesn't click.
+    preview_dip: bool,
     /// The declick gain, from 0 to 1.
     level: f32,
     step: f32,
@@ -295,6 +302,8 @@ impl TrackInputNode {
             window_start: 0,
             window_end: 0,
             window_serial: None,
+            preview: false,
+            preview_dip: false,
             level: 0.0,
             step: 1.0 / fade_len,
             version: 0,
@@ -325,6 +334,30 @@ impl TrackInputNode {
             && let Some(old) = self.schedule.replace(next)
         {
             self.retire(Retired::Schedule(old));
+        }
+        self.preview = self.shared.preview.load(Ordering::Relaxed);
+        self.preview_dip = false;
+    }
+
+    /// Whether the node is running down to silence to take on a new schedule
+    /// or the preview switch.
+    fn dipping(&self) -> bool {
+        self.pending.is_some() || self.preview_dip
+    }
+
+    /// Notices the preview switch being thrown. While sound plays the node
+    /// dips (about 5 ms out and back in) and switches at the bottom; silent,
+    /// it switches at once.
+    fn watch_preview(&mut self) {
+        let want = self.shared.preview.load(Ordering::Relaxed);
+        if want == self.preview {
+            return;
+        }
+        if self.level > 0.0 {
+            self.preview_dip = true;
+        } else {
+            self.preview = want;
+            self.preview_dip = false;
         }
     }
 
@@ -575,7 +608,7 @@ impl TrackInputNode {
         let Some(clip) = self.schedule.as_ref().and_then(|s| active_at(s, position)) else {
             return;
         };
-        if clip.stretched() && !self.shared.preview.load(Ordering::Relaxed) {
+        if clip.stretched() && !self.preview {
             let rel = position - clip.start;
             if let Some(lane) = self
                 .lanes
@@ -629,7 +662,7 @@ impl TrackInputNode {
         target: f32,
     ) {
         if let Some(map) = &clip.warp {
-            if clip.stretched() && !self.shared.preview.load(Ordering::Relaxed) {
+            if clip.stretched() && !self.preview {
                 self.play_stretched(clip, schedule, a, fa, fb, target);
                 return;
             }
@@ -758,7 +791,9 @@ impl TrackInputNode {
             let hi = ((last.floor().max(0.0) as u64) + 3)
                 .clamp(lo, total.min(lo + WINDOW_FRAMES as u64));
             if !self.ready_window(schedule, key, lo, hi, at) {
-                self.advance(target, n);
+                // Silent until the stream delivers, and ramp in then, not
+                // behind the gap.
+                self.level = 0.0;
                 at += n as u64;
                 index += n;
                 continue;
@@ -1231,6 +1266,7 @@ impl Node for TrackInputNode {
         self.block = (transport.position, n);
         self.looping = transport.loop_range;
         self.receive(transport.position, n);
+        self.watch_preview();
         if self.shared.blocking {
             self.wait_for_schedule();
         }
@@ -1259,7 +1295,7 @@ impl Node for TrackInputNode {
         // While stopped the playhead holds still, but a fade-out still plays
         // on from it, so the streams end up a little past it. Once silent,
         // line them up with the playhead ready for the next start.
-        if !transport.playing && self.level <= 0.0 && self.pending.is_none() {
+        if !transport.playing && self.level <= 0.0 && !self.dipping() {
             self.park(transport.position);
             let out = io.outputs;
             out[AUDIO].lane_mut(0, 0).copy_from_slice(&self.left[..n]);
@@ -1268,16 +1304,16 @@ impl Node for TrackInputNode {
         }
         let mut from = 0;
         while from < n {
-            if self.pending.is_some() && self.level <= 0.0 {
+            if self.dipping() && self.level <= 0.0 {
                 self.adopt_pending();
             }
-            let target = if transport.playing && self.pending.is_none() {
+            let target = if transport.playing && !self.dipping() {
                 1.0
             } else {
                 0.0
             };
             let mut to = n;
-            if self.pending.is_some() {
+            if self.dipping() {
                 // Run the old schedule down to silence, then swap.
                 let frames = (self.level / self.step).ceil() as usize;
                 to = (from + frames.max(1)).min(n);
