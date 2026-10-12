@@ -161,6 +161,10 @@ pub fn estimate_tempo(times: &[f64]) -> Option<f64> {
     (refined.1 / times.len() as f64 > 0.5).then_some((refined.0 * 100.0).round() / 100.0)
 }
 
+/// How much of a file is listened to for transients: a long recording is
+/// analysed from its start only, to keep the work and memory bounded.
+pub const ANALYSIS_SECONDS: f64 = 120.0;
+
 /// What the clip editor learns from a file's audio.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Analysis {

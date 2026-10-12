@@ -20,7 +20,8 @@
 //!   against the source.
 //!
 //! Methods are the headline [`Method::Auto`] (tempo and mode as the app
-//! would choose them from the bare audio), the three modes at the true source
+//! would choose them from the bare audio; with no tempo detected the clip is
+//! left at the timeline's, as in the app), the three modes at the true source
 //! tempo, and Repitch as the floor, which cannot keep pitch.
 
 use crate::clip::Clip;
@@ -33,7 +34,7 @@ use noodle_core::{
     TempoCurve, TempoMap, Tick, WarpMode,
 };
 use noodle_engine::{OUTPUT_ID, Registry, Settings};
-use noodle_io::{Analysis, write_wav};
+use noodle_io::{ANALYSIS_SECONDS, Analysis, write_wav};
 use noodle_nodes::{TRACK_INPUT_ID, render_project_with_clips};
 use std::cell::Cell;
 
@@ -187,16 +188,7 @@ impl Harness {
         let mut rows = Vec::new();
         for &method in methods {
             let (tempo, mode) = match method {
-                Method::Auto => (
-                    analysis
-                        .tempo
-                        .map_or_else(TempoCurve::default, TempoCurve::constant),
-                    if analysis.percussive {
-                        WarpMode::Beats
-                    } else {
-                        WarpMode::Grain
-                    },
-                ),
+                Method::Auto => auto_choice(&analysis, &target),
                 Method::Grain => (TempoCurve::constant(self.source_bpm), WarpMode::Grain),
                 Method::Beats => (TempoCurve::constant(self.source_bpm), WarpMode::Beats),
                 Method::Repitch => (TempoCurve::constant(self.source_bpm), WarpMode::Repitch),
@@ -297,6 +289,24 @@ impl Harness {
     }
 }
 
+/// The clip tempo and mode the app gives a freshly warped clip
+/// (`clip_panel::start_warp`): the detected tempo, or when there is none the
+/// timeline's, which the new warp starts at, so the clip is not stretched;
+/// Beats for close transients and Grain for the rest.
+pub fn auto_choice(analysis: &Analysis, timeline: &TempoMap) -> (TempoCurve, WarpMode) {
+    let tempo = TempoCurve::constant(
+        analysis
+            .tempo
+            .unwrap_or_else(|| timeline.bpm_at(Tick::ZERO)),
+    );
+    let mode = if analysis.percussive {
+        WarpMode::Beats
+    } else {
+        WarpMode::Grain
+    };
+    (tempo, mode)
+}
+
 /// What the app learns from a file's audio: the same analysis it runs on
 /// import, over the same stretch of the file.
 fn analyse(stereo: &[f32], rate: u32) -> Analysis {
@@ -305,7 +315,7 @@ fn analyse(stereo: &[f32], rate: u32) -> Analysis {
         .0
         .iter()
         .map(|f| (f[0] + f[1]) / 2.0)
-        .take(rate as usize * 120)
+        .take((f64::from(rate) * ANALYSIS_SECONDS) as usize)
         .collect();
     Analysis::of(&mono, rate)
 }

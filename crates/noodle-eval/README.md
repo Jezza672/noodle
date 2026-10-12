@@ -83,10 +83,10 @@ keep their length in seconds; only where they start follows the tempo.
 | `click-train` | timing, and whether clicks stay sharp |
 | `lone-kick` | pre-echo and smearing around one attack |
 | `held-chord` | phasiness on sustained, tonal sound |
-| `sweep` | following a moving partial; pitch (one voice) |
+| `sweep` | following a moving partial; pitch (one voice). A moving partial turns timing into pitch (at 180 bpm it climbs about 1800 cents/s, so 18 ms of offset reads as about 30 cents): read its pitch with its `offset_ms` |
 | `noise-bursts` | transients in noise, and the stereo image |
 
-**Tempo grid** (`tempo.rs`): the source is steady at 120 bpm and the target is
+**Tempo grid** (`tempo.rs`): the source is steady at 110 bpm (the CLI's; the tempo detector's range is 80 to 160, and not 120 so a fallback to the default tempo cannot pass for a right answer) and the target is
 a constant ratio (`x0.5`, `x0.75`, `x0.9`, `x1.1`, `x1.5`, `x2`; target tempo
 over source tempo) or one of `ramp` (0.75 to 1.5 times), `step` (0.8 then 1.25
 times, at the middle) and `wobble` (a fixed seed). Noodle's tempo map steps, so
@@ -94,7 +94,7 @@ a ramp and a wobble are quarter-beat steps.
 
 **Methods**: `auto` is the headline: the clip tempo and mode the app would
 choose from the bare audio (`noodle_io::Analysis`: Beats for close
-transients, Grain for the rest), so wrong detection is scored. `grain`,
+transients, Grain for the rest), so wrong or missing detection is scored (with no tempo found the clip stays at the timeline's tempo, as in the app). `grain`,
 `beats` and `repitch` use the true clip tempo. Repitch is the floor, not a
 contender: it cannot keep pitch. The warp is tempo conversion alone (no warp
 markers, no quantise).

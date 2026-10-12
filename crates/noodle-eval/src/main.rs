@@ -114,7 +114,7 @@ fn probes(args: &[&str]) -> Result<(), String> {
     let probes = probe.map_or(Probe::ALL.to_vec(), |p| vec![p]);
     let cases = tempo.map_or(TempoCase::all(), |c| vec![c]);
     let methods = method.map_or(Method::ALL.to_vec(), |m| vec![m]);
-    let harness = Harness::new(48_000, 120.0).map_err(|e| e.to_string())?;
+    let harness = Harness::new(48_000, 110.0).map_err(|e| e.to_string())?;
     let mut rows = Vec::new();
     for &p in &probes {
         for &c in &cases {

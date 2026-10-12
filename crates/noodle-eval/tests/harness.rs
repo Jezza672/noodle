@@ -1,7 +1,7 @@
 //! The harness on probes: the time maps line a native render up with the
 //! source, the engine's warp comes out the length it should, and the metrics
-//! tell the floor (Repitch) from a pitch-keeping mode. None of it gates on how
-//! good Grain or Beats sound; ADR 0003 holds that back until the metrics are
+//! tell the floor (Repitch) from a pitch-keeping mode. Bounds are loose and
+//! catch only gross breakage, not how good Grain or Beats sound; ADR 0003 holds that back until the metrics are
 //! checked against listeners.
 
 use noodle_eval::harness::{Harness, Method, Row, View};
@@ -12,7 +12,7 @@ use noodle_eval::{Clip, evaluate};
 const RATE: u32 = 48_000;
 
 fn harness() -> Harness {
-    Harness::new(RATE, 120.0).unwrap()
+    Harness::new(RATE, 110.0).unwrap()
 }
 
 fn find(rows: &[Row], method: Method, view: View) -> &Row {
@@ -130,4 +130,37 @@ fn a_changing_tempo_warps_to_the_native_length_and_keeps_the_clicks_on_the_map()
         row.metrics
     );
     assert!(row.metric("median_abs_offset_ms").unwrap() < 30.0);
+}
+
+#[test]
+fn auto_without_a_detected_tempo_leaves_the_clip_at_the_timeline_tempo() {
+    // As in the app: no tempo found means the new warp starts at the
+    // timeline's tempo, so the clip is not stretched. It must not fall back to
+    // the source tempo, which would make a failed detection look right.
+    let h = harness();
+    let target = h.target(TempoCase::Ratio(1.5));
+    let none = noodle_io::Analysis {
+        onsets: vec![],
+        tempo: None,
+        percussive: false,
+    };
+    let (tempo, _) = noodle_eval::harness::auto_choice(&none, &target);
+    assert_eq!(tempo.points()[0].bpm, 165.0);
+    // And on a probe where detection fails, that shows in the score.
+    let rows = h
+        .run(
+            Probe::HeldChord,
+            TempoCase::Ratio(1.5),
+            &[Method::Auto, Method::Grain],
+        )
+        .unwrap();
+    let auto = find(&rows, Method::Auto, View::Native);
+    let grain = find(&rows, Method::Grain, View::Native);
+    assert!(auto.metric("detected_bpm").unwrap().is_nan());
+    assert!(
+        auto.metric("log_distance_db").unwrap() > 2.0 * grain.metric("log_distance_db").unwrap(),
+        "{:?} vs {:?}",
+        auto.metrics,
+        grain.metrics
+    );
 }

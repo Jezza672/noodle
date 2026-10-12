@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use noodle_io::Analysis;
-use noodle_io::{Decoder, Peaks, PeaksBuilder};
+use noodle_io::{ANALYSIS_SECONDS, Decoder, Peaks, PeaksBuilder};
 
 use super::clips::Source;
 
@@ -33,10 +33,6 @@ pub struct Loaded {
     /// The transients and tempo found along with the waveform.
     pub analysis: Option<Arc<Analysis>>,
 }
-
-/// How much of a file is listened to for transients: a long recording is
-/// analysed from its start only, to keep the work and memory bounded.
-const ANALYSIS_SECONDS: f64 = 120.0;
 
 /// Reads the whole file once for its waveform, and the start of it for its
 /// transients.
