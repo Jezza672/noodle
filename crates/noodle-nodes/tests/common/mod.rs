@@ -251,6 +251,14 @@ impl Rig {
         );
     }
 
+    /// The loudest sample of the last block run.
+    pub fn output_peak(&self) -> f32 {
+        let out = self.out.as_in(BLOCK);
+        (0..2)
+            .flat_map(|c| out.lane(0, c).iter().copied())
+            .fold(0.0, |m, x: f32| m.max(x.abs()))
+    }
+
     /// Plays from `from` to `to` in blocks and returns the whole output.
     pub fn play(&mut self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
         let (mut left, mut right) = (Vec::new(), Vec::new());

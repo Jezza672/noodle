@@ -8,6 +8,7 @@ mod export;
 mod hash;
 mod input;
 mod midi;
+mod onsets;
 mod output;
 mod peaks;
 mod record;
@@ -29,6 +30,7 @@ pub use midi::{
     AudioClock, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver,
     TimedMessage, connect_midi, midi_inputs, now_micros, parse_message, same_port,
 };
+pub use onsets::detect_onsets;
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
     Playback, Stream, VirtualCapture, is_fatal, play, play_with_outputs, play_with_outputs_stopped,
