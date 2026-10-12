@@ -298,28 +298,38 @@ fn every_excerpt_goes_through_the_harness() {
 }
 
 /// Tempo detection on full mixes (#141): the kick and bass line carry the beat
-/// under hats, plucks and arpeggios that bury it in the full-band onsets.
+/// under hats, plucks and arpeggios that bury it in the full-band onsets. Both
+/// the excerpt and the whole song, since the app analyses up to two minutes.
 #[test]
 fn the_tempo_of_a_full_mix_is_found_from_its_bass() {
     let _shared = shared();
-    let found: Vec<(&str, Option<f64>)> = all()
-        .iter()
-        .map(|song| {
-            let audio = song
-                .render(&steady(song.bpm), song.excerpt_range(), RATE)
-                .unwrap();
-            (song.name, noodle_eval::harness::analyse(&audio, RATE).tempo)
-        })
-        .collect();
-    for (song, tempo) in &found {
-        let bpm = all().into_iter().find(|s| s.name == *song).unwrap().bpm;
-        match (*song, tempo) {
-            // No drums and a bass that is one held sine: there is no beat to
-            // find, and saying so beats a wrong tempo.
-            ("glass-ambient", None) => {}
-            ("glass-ambient", Some(t)) => assert!((t - bpm).abs() / bpm < 0.01, "{t}"),
-            (_, Some(t)) => assert!((t - bpm).abs() / bpm < 0.01, "{song}: {t} for {bpm}"),
-            (_, None) => panic!("{song}: no tempo found, true tempo {bpm}"),
+    for song in all() {
+        for (what, range) in [("excerpt", song.excerpt_range()), ("whole", song.whole())] {
+            let audio = song.render(&steady(song.bpm), range, RATE).unwrap();
+            let analysis = noodle_eval::harness::analyse(&audio, RATE);
+            let label = format!("{} {what}", song.name);
+            if song.name == "glass-ambient" {
+                // No drums and a bass that is one held sine: there is no beat
+                // to find, and a wrong tempo would be worse than none.
+                assert_eq!(analysis.tempo, None, "{label}");
+                continue;
+            }
+            let tempo = analysis
+                .tempo
+                .unwrap_or_else(|| panic!("{label}: no tempo"));
+            assert!(
+                (tempo - song.bpm).abs() / song.bpm < 0.002,
+                "{label}: {tempo}"
+            );
+            // The renders start on a bar, so the beat falls on the start. A
+            // bass line that is on the off-beat as often as on it (funk) can
+            // put it half a beat off; no more than that.
+            let phase = analysis.grid.unwrap().phase;
+            let off = phase.abs().min((phase.abs() - 0.5).abs());
+            assert!(off < 0.05, "{label}: phase {phase}");
+            if song.name != "funk-engine" {
+                assert!(phase.abs() < 0.05, "{label}: phase {phase}");
+            }
         }
     }
 }
@@ -339,28 +349,20 @@ fn stems_are_scored_one_part_at_a_time() {
             &[Method::Grain],
         )
         .unwrap();
-    // Every part that plays in the excerpt, once per view, named for the part.
-    let playing: Vec<&str> = song
-        .parts
-        .iter()
-        .filter(|p| {
-            song.render_of(&steady(song.bpm), range, RATE, |q| q.name == p.name)
-                .unwrap()
-                .iter()
-                .any(|x| x.abs() > 1e-6)
-        })
-        .map(|p| p.name)
-        .collect();
-    assert!(playing.len() >= 3, "{playing:?}");
-    assert_eq!(rows.len(), playing.len() * View::ALL.len());
-    for part in &playing {
-        let name = format!("neon-drive/{part}");
+    // Parts that play in the excerpt, each once per view, named for the part.
+    let mut names: Vec<&str> = rows.iter().map(|r| r.probe.as_str()).collect();
+    names.dedup();
+    assert!(names.len() >= 3, "{names:?}");
+    for name in &names {
+        let part = name.strip_prefix("neon-drive/").unwrap();
+        assert!(song.parts.iter().any(|p| p.name == part), "{name}");
         assert_eq!(
-            rows.iter().filter(|r| r.probe == name).count(),
+            rows.iter().filter(|r| r.probe == *name).count(),
             View::ALL.len(),
             "{name}"
         );
     }
+    assert_eq!(rows.len(), names.len() * View::ALL.len());
 }
 
 #[test]

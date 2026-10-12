@@ -735,9 +735,9 @@ shows a before and after. Four batches:
    instrument is a group node of primitive nodes. Nothing the songs needed was
    missing, so nothing was built for them; the drums are synthesised, since
    there is no sampler. Gaps found, filed as issues: tempo detection found nothing in
-   any of the five mixes (#141, fixed in batch 5: it now reads the bass onsets too and finds four of the five within 1%; `glass-ambient`, with no drums, rightly stays a guess), the nodes have no tempo-synced echo or LFO
+   any of the five mixes (#141, fixed in batch 5: it now reads the bass onsets too and finds four of the five within 0.2%, on the excerpt and on the whole song; `glass-ambient`, with no drums, rightly gets none. The beat's phase is the most common position, and funk-engine's off-beat bass can put it half a beat off), the nodes have no tempo-synced echo or LFO
    (#142), and there is no sampler or drum rack (#143). The excerpts go through the harness in tests that
-   check wiring only, like the probes'. Stems are not scored yet.)
+   check wiring only, like the probes'. Stems are scored from batch 5 on, with `songs --stems`.)
 4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
    speech, solo instrument and full-mix clips (pinned checksums), a gitignored
    `eval/local/` for any file dropped in, and a `noodle-eval borrowed` command

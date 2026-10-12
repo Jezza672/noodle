@@ -222,12 +222,13 @@ pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
     if confidence < MIN_CONFIDENCE {
         return None;
     }
-    // The onsets' average position in the beat. A beat is more often hit
-    // on its own than on its half, so the first sum decides.
-    let (re, im) = sums(refined.0, 1.0);
-    let phase = im.atan2(re) / std::f64::consts::TAU;
+    // Where the beat falls, and the tempo refined on the onsets that sit on
+    // it. The phase is the most common position, not the average: a
+    // syncopated kick or an off-beat bass line would pull an average off the
+    // beat.
+    let (bpm, phase) = fit_beat(times, refined.0);
     Some(TempoEstimate {
-        bpm: (refined.0 * 100.0).round() / 100.0,
+        bpm: (bpm * 100.0).round() / 100.0,
         confidence,
         prominence: if median > 0.0 {
             refined.1 / median
@@ -237,6 +238,72 @@ pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
         onsets: times.len(),
         phase: phase - (phase + 0.5).floor(),
     })
+}
+
+/// How close to a whole beat, in beats, an onset must be to count as on it.
+const ON_BEAT: f64 = 0.06;
+
+/// The beat's phase (in `[-0.5, 0.5)`) and a tempo near `bpm` fitted to the
+/// onsets on it: the phase is the slide of the grid that puts the most
+/// onsets within [`ON_BEAT`] of a whole beat, and the tempo is a straight
+/// line fitted through the times of those onsets against their beat number,
+/// which off-beat hits can't bias.
+fn fit_beat(times: &[f64], bpm: f64) -> (f64, f64) {
+    let wrap = |x: f64| x - (x + 0.5).floor();
+    let mut bpm = bpm;
+    let mut phase = 0.0;
+    for _ in 0..3 {
+        let beats: Vec<f64> = times.iter().map(|t| t * bpm / 60.0).collect();
+        // The most onsets within a window of a slide, on a fine grid. Where
+        // a bass line sits on the off-beat as often as on the beat (funk),
+        // the two slides are close to a tie and the beat can come out half a
+        // beat off: onsets alone can't say which is the downbeat.
+        let best = (0..100)
+            .map(|k| {
+                let slide = k as f64 / 100.0 - 0.5;
+                let n = beats
+                    .iter()
+                    .filter(|b| wrap(**b - slide).abs() < ON_BEAT)
+                    .count();
+                (slide, n)
+            })
+            .max_by_key(|c| c.1)
+            .unwrap_or((0.0, 0));
+        let near: Vec<f64> = beats
+            .iter()
+            .map(|b| wrap(b - best.0))
+            .filter(|d| d.abs() < ON_BEAT)
+            .collect();
+        phase = wrap(best.0 + near.iter().sum::<f64>() / near.len().max(1) as f64);
+        // Fit the on-beat onsets: time = start + number * period.
+        let on: Vec<(f64, f64)> = times
+            .iter()
+            .zip(&beats)
+            .filter(|(_, b)| wrap(**b - phase).abs() < ON_BEAT)
+            .map(|(t, b)| ((*b - phase).round(), *t))
+            .collect();
+        if on.len() < 4 {
+            break;
+        }
+        let n = on.len() as f64;
+        let (sx, sy) = on.iter().fold((0.0, 0.0), |a, (x, y)| (a.0 + x, a.1 + y));
+        let (sxx, sxy) = on
+            .iter()
+            .fold((0.0, 0.0), |a, (x, y)| (a.0 + x * x, a.1 + x * y));
+        let spread = n * sxx - sx * sx;
+        if spread <= 0.0 {
+            break;
+        }
+        let period = (n * sxy - sx * sy) / spread;
+        let fitted = 60.0 / period;
+        // Only a small correction to what the sums found.
+        if (80.0..=160.0).contains(&fitted) && (fitted - bpm).abs() < 0.02 * bpm {
+            bpm = fitted;
+        } else {
+            break;
+        }
+    }
+    (bpm, phase)
 }
 
 /// How much of a file is listened to for transients: a long recording is
@@ -270,7 +337,12 @@ impl Analysis {
             .into_iter()
             .map(|frame| frame as f64 / f64::from(rate))
             .collect();
-        let grid = best_grid(estimate_grid(&onsets), estimate_grid(&bass));
+        // A bass line that changes note every few bars has a few onsets that
+        // fit some tempo by chance: it only speaks for the beat if it hits
+        // on at least a quarter of the beats.
+        let bass_grid =
+            estimate_grid(&bass).filter(|b| bass.len() as f64 >= 0.25 * seconds * b.bpm / 60.0);
+        let grid = best_grid(estimate_grid(&onsets), bass_grid);
         Self {
             tempo: grid.filter(TempoEstimate::is_clear).map(|g| g.bpm),
             grid,
@@ -360,6 +432,21 @@ mod tests {
         let early: Vec<f64> = (0..16).map(|i| 0.45 + i as f64 * 0.5).collect();
         let found = estimate_grid(&early).unwrap();
         assert!((found.phase + 0.1).abs() < 0.02, "{found:?}");
+    }
+
+    #[test]
+    fn the_phase_is_the_most_common_position_not_the_average() {
+        // Beats of 120 bpm on the whole beat, with a third as many hits a
+        // sixteenth early and another third on the half beat: an average of
+        // the positions would sit well off the beat.
+        let mut times: Vec<f64> = (0..24).map(|i| i as f64 * 0.5).collect();
+        times.extend((0..8).map(|i| 0.5 * (i * 3) as f64 - 0.125));
+        times.extend((0..8).map(|i| 0.5 * (i * 3 + 1) as f64 + 0.25));
+        times.retain(|t| *t >= 0.0);
+        times.sort_by(f64::total_cmp);
+        let found = estimate_grid(&times).unwrap();
+        assert!((found.bpm - 120.0).abs() < 0.2, "{found:?}");
+        assert!(found.phase.abs() < 0.03, "{found:?}");
     }
 
     #[test]
