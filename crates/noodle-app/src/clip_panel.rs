@@ -15,7 +15,7 @@ use noodle_core::{
     WarpQuantise,
 };
 
-use noodle_io::{CLEAR_TEMPO, TempoEstimate};
+use noodle_io::TempoEstimate;
 
 use crate::session::{Edit, Session};
 use crate::timeline::{Analysis, Loaded};
@@ -622,7 +622,7 @@ pub fn show(
             (Some(_), None) => {
                 "Too few clear transients to find a tempo: tap it or type it".to_owned()
             }
-            (Some(_), Some(f)) if f.confidence < CLEAR_TEMPO => format!(
+            (Some(_), Some(f)) if !f.is_clear() => format!(
                 "Find the tempo and where the beat falls from the transients (a weak guess: {:.0}% sure)",
                 f.confidence * 100.0
             ),
