@@ -647,7 +647,8 @@ impl TrackInputNode {
         let Some(slot) = found else {
             // Not opened yet: silence, and the hub is on it.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         };
         let blocking = self.shared.blocking;
@@ -677,7 +678,8 @@ impl TrackInputNode {
         if stream.position() != rel {
             // Still catching up: nothing to play yet.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         }
         let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
@@ -942,7 +944,8 @@ impl TrackInputNode {
         let Some(slot) = found else {
             // Not opened yet: silence, and the worker is on it.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         };
         let lane = self.lanes[slot].as_mut().expect("found above");
@@ -976,7 +979,13 @@ impl TrackInputNode {
             let (l, r) = (self.lane_frames[i * 2], self.lane_frames[i * 2 + 1]);
             self.put(clip, rel + i as u64, fa + i, l, r, target);
         }
-        self.advance(target, len - got);
+        if got < want {
+            // Nothing to play for the rest: stay silent until the lane
+            // delivers, and ramp in then, not behind the gap.
+            self.level = 0.0;
+        } else {
+            self.advance(target, len - got);
+        }
     }
 
     /// Finds the lane to play `key` from at section frame `rel`: one that is

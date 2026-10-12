@@ -18,8 +18,8 @@
 //! or locks.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -378,6 +378,52 @@ fn analyse(clip: &ScheduledClip, rate: u32) -> Option<Vec<u64>> {
     Some(detect_onsets(&mono, rate))
 }
 
+/// A clip's transients: still being found on a thread of their own, or known.
+/// Reading a whole file takes long enough to starve every other lane if the
+/// render loop did it.
+enum Onsets {
+    Finding(mpsc::Receiver<Option<Vec<u64>>>),
+    Known(Arc<Vec<u64>>),
+}
+
+/// The transients of `clip` if they are known, else starts finding them (once)
+/// and says `None` until then.
+fn onsets_of(
+    clip: &ScheduledClip,
+    rate: u32,
+    known: &mut HashMap<u64, Onsets>,
+) -> Option<Arc<Vec<u64>>> {
+    let key = clip.stream_key().1;
+    let entry = known.entry(key).or_insert_with(|| {
+        let (tx, rx) = mpsc::channel();
+        let clip = clip.clone();
+        thread::Builder::new()
+            .name("noodle-onsets".into())
+            .spawn(move || {
+                let _ = tx.send(analyse(&clip, rate));
+            })
+            .map_or_else(
+                |_| {
+                    let (tx, rx) = mpsc::channel();
+                    let _ = tx.send(None);
+                    Onsets::Finding(rx)
+                },
+                |_| Onsets::Finding(rx),
+            )
+    });
+    if let Onsets::Finding(rx) = entry {
+        match rx.try_recv() {
+            Ok(found) => *entry = Onsets::Known(Arc::new(found.unwrap_or_default())),
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Err(mpsc::TryRecvError::Disconnected) => *entry = Onsets::Known(Arc::default()),
+        }
+    }
+    match entry {
+        Onsets::Known(found) => Some(found.clone()),
+        Onsets::Finding(_) => None,
+    }
+}
+
 /// Opens a job for `clip`, starting at its frame `from`.
 fn open(
     clip: &ScheduledClip,
@@ -385,8 +431,8 @@ fn open(
     from: u64,
     serial: u64,
     rate: u32,
-    onsets: &mut HashMap<u64, Arc<Vec<u64>>>,
-) -> Result<(Job, Box<Lane>), String> {
+    onsets: &mut HashMap<u64, Onsets>,
+) -> Result<Option<(Job, Box<Lane>)>, String> {
     let map = clip.warp.clone().ok_or("not warped")?;
     let spec = StreamSpec {
         path: clip.source.path.clone(),
@@ -396,23 +442,19 @@ fn open(
         start: 0,
         chunks: 8,
     };
+    let transients = if clip.mode == noodle_core::WarpMode::Beats {
+        // Not found yet: try again on the next pass.
+        let Some(found) = onsets_of(clip, rate, onsets) else {
+            return Ok(None);
+        };
+        found
+    } else {
+        Arc::new(Vec::new())
+    };
     let (stream, worker) = open_stream(spec).map_err(|e| e.to_string())?;
     if stream.channels() > MAX_CHANNELS {
         return Err(format!("more than {MAX_CHANNELS} channels"));
     }
-    let transients = if clip.mode == noodle_core::WarpMode::Beats {
-        let key = clip.stream_key().1;
-        match onsets.get(&key) {
-            Some(found) => found.clone(),
-            None => {
-                let found = Arc::new(analyse(clip, rate).unwrap_or_default());
-                onsets.insert(key, found.clone());
-                found
-            }
-        }
-    } else {
-        Arc::new(Vec::new())
-    };
     let source = StreamSource::new(stream, worker);
     let mut stretcher = Stretcher::new(source, map, &transients, clip.length, rate as f32);
     let from = from.min(clip.length);
@@ -453,7 +495,7 @@ fn open(
         stale: None,
         synced: true,
     });
-    Ok((job, lane))
+    Ok(Some((job, lane)))
 }
 
 fn run(
@@ -465,7 +507,7 @@ fn run(
     let mut jobs: Vec<Job> = Vec::new();
     let mut next_serial = 0u64;
     let mut failed: HashMap<(ClipId, u64), Instant> = HashMap::new();
-    let mut onsets: HashMap<u64, Arc<Vec<u64>>> = HashMap::new();
+    let mut onsets: HashMap<u64, Onsets> = HashMap::new();
     // Lanes handed to the node and not yet taken back.
     let mut outstanding = 0usize;
     let lookahead = (f64::from(rate) * LOOKAHEAD) as u64;
@@ -508,7 +550,8 @@ fn run(
                 }
                 .saturating_sub(clip.start);
                 match open(clip, head, from, next_serial, rate, &mut onsets) {
-                    Ok((job, lane)) => {
+                    Ok(None) => busy = true,
+                    Ok(Some((job, lane))) => {
                         next_serial += 1;
                         if to_node.push(lane).is_ok() {
                             jobs.push(job);

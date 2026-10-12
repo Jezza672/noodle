@@ -73,6 +73,12 @@ fn it_picks_up_after_a_jump() {
     loop {
         let (left, _) = rig.run(at, BLOCK, true);
         at += BLOCK as u64;
+        if let Some(first) = left.iter().position(|x| x.abs() > 1e-6) {
+            // The declick ramps in from the first real frame, not from
+            // somewhere behind the gap: a click otherwise.
+            let start = &left[first..(first + 48).min(left.len())];
+            assert!(peak(start) < 0.12, "clicked in at {}", peak(start));
+        }
         if peak(&left) > 0.1 {
             break;
         }

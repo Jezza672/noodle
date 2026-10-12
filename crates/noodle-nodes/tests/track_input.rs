@@ -326,7 +326,10 @@ fn a_loop_repeats_without_a_gap() {
 
 #[test]
 fn a_loop_that_starts_inside_a_clip_repeats_the_same_audio() {
-    let mut rig = Rig::new("loop-inside");
+    // What it checks is which audio each lap plays, not whether the disk keeps
+    // up with a test that runs several times faster than real time, so the node
+    // waits for the disk instead of playing silence when it is late.
+    let mut rig = Rig::blocking("loop-inside");
     rig.wav("ramp.wav", 2, 200_000, ramp);
     rig.add_clip(0, "ramp.wav", 0, 150_000);
     rig.looping = Some((12_000, 36_000));
