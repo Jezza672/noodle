@@ -22,6 +22,7 @@ pub mod phasiness;
 pub mod pitch;
 pub mod probe;
 pub mod report;
+pub mod song;
 pub mod spectral;
 pub mod stereo;
 pub mod stft;

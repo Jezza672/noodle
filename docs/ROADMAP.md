@@ -692,7 +692,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate) and batch 2 (probes and harness, minus the CI gate) are built. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode), and the committed baseline is a before and after. Batches 3 and 4 are not started.
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate) and batch 3 (the five songs) are built. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`) are a before and after. Batch 4 is not started.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
@@ -729,7 +729,15 @@ shows a before and after. Four batches:
    pads, bass, arpeggios; synths and triggered one-shots). A 15 to 20 s excerpt
    of each joins the CI gate. Features a song needs
    that are missing get built if the song cannot exist without them, otherwise
-   an issue is filed; the batch ends with the list of gaps found.
+   an issue is filed; the batch ends with the list of gaps found. (Built: the
+   songs in `noodle-eval/src/song/`, their `.ron` projects in
+   `noodle-eval/songs/`, the `songs` command and `baseline/songs.json`. Every
+   instrument is a group node of primitive nodes. Nothing the songs needed was
+   missing, so nothing was built for them; the drums are synthesised, since
+   there is no sampler. Gaps found, filed as issues: tempo detection finds nothing in
+   any of the five mixes (#141), the nodes have no tempo-synced echo or LFO
+   (#142), and there is no sampler or drum rack (#143). The excerpts go through the harness in tests that
+   check wiring only, like the probes'. Stems are not scored yet.)
 4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
    speech, solo instrument and full-mix clips (pinned checksums), a gitignored
    `eval/local/` for any file dropped in, and a dev script that makes reference
