@@ -206,7 +206,8 @@ const BORROWED_HELP: &str =
          [--seconds N] [--dir DIR] [--cache DIR] [--tool NAME] [--tables] [--export DIR]
          [--baseline FILE] [--update] [--no-latency-compensation]
   Scores Noodle's warps of audio we cannot generate against what reference
-  stretchers (Rubber Band R3, SoundTouch, Signalsmith; whichever are installed)
+  stretchers (Rubber Band R3 and R2, SoundTouch, Signalsmith; whichever are installed;
+  R2 is the only one that follows ramp, step and wobble)
   make of it. Clips come from eval/local (any file you drop in) and
   eval/cache/clips (eval/fetch.sh); --clip picks one by file name, --dir adds a
   folder, --seconds cuts each to its first N seconds (default 30). --probes
@@ -297,7 +298,11 @@ fn borrowed(args: &[&str]) -> Result<(), String> {
         {
             continue;
         }
-        pieces.push(b::load_clip(&path, seconds)?);
+        match b::load_clip(&path, seconds) {
+            Ok(piece) => pieces.push(piece),
+            // One bad file in a drop folder should not stop the others.
+            Err(e) => eprintln!("skipped {e}"),
+        }
     }
     if probes {
         for p in probe.map_or(Probe::ALL.to_vec(), |p| vec![p]) {

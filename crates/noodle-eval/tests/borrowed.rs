@@ -350,7 +350,7 @@ fn a_clip_file_becomes_a_stereo_piece_at_the_scoring_rate() {
     assert_eq!(piece.name, "tone");
     assert_eq!(piece.source.len(), RATE as usize * 3 * 2);
     // Mono is played on both sides, rounded to what a 16-bit file holds.
-    assert!(piece.source.chunks_exact(2).all(|f| f[0] == f[1]));
+    assert!(piece.source.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]));
     assert_eq!(piece.source, noodle_eval::refs::quantise(&piece.source));
     // --seconds cuts it.
     let cut = borrowed::load_clip(&dir.path().join("tone.wav"), 2.0).unwrap();
@@ -388,4 +388,27 @@ fn a_clip_has_no_native_render_so_it_is_scored_against_the_source_alone() {
     // Twice as fast: half as long, with the clicks where the map says.
     assert!(offset_ms(&rows, "fake", "x2") < 5.0);
     assert!(offset_ms(&rows, "noodle-grain", "x2") < 25.0);
+}
+
+#[test]
+fn a_changed_plan_is_stretched_again_not_replayed_from_the_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.wav");
+    let stereo = vec![0.1f32; RATE as usize * 4 * 2];
+    write_pcm16(&input, &stereo, RATE).unwrap();
+    let fake = Fake::new("fake", 0.0);
+    let cache = RefCache::new(dir.path().join("cache"));
+    let plan = |points: Vec<(f64, f64)>| Plan {
+        rate: RATE,
+        source_seconds: 4.0,
+        output_seconds: 4.0,
+        map: TimeMap::Points(points),
+    };
+    let a = plan(vec![(0.0, 0.0), (2.0, 2.0), (4.0, 4.0)]);
+    let b = plan(vec![(0.0, 0.0), (1.0, 2.0), (4.0, 4.0)]);
+    for p in [&a, &a, &b] {
+        cache.stretched(&fake, "k", &input, "wobble", p).unwrap();
+    }
+    // The same case name and total length, but a different map.
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
 }

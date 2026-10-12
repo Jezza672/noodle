@@ -51,6 +51,10 @@ while IFS=, read -r name kind url sum license source; do
            failed=1; continue ;;
     esac
     ext=${url##*.}; ext=${ext%%\?*}
+    case "$ext" in
+        wav | flac | mp3 | ogg | m4a | aif) ;;
+        *) ext=wav ;; # no usable extension in the URL: assume WAV
+    esac
     file="$out/$name.$ext"
     if [ ! -f "$file" ]; then
         echo "fetching $name ($kind)"

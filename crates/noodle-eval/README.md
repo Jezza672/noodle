@@ -213,7 +213,8 @@ bursts from where the map puts them, and that delay is removed before scoring.
 signal is noted. `--no-latency-compensation` scores the audio as returned.
 
 **Cache.** Stretches are kept in `eval/cache/refs/`, keyed by program, a
-fingerprint of the binary, the audio and the case; delete the folder (or
+fingerprint of the binary and its arguments, the audio, the case and the plan
+(its map and lengths); delete the folder (or
 change `--cache`) to make them again. Only metric numbers are committed:
 `baseline/borrowed.json` holds the probes' rows, keyed `piece/case/contender/view`,
 and shows a before and after like the others. Its reference numbers came from

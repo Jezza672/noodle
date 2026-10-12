@@ -74,8 +74,8 @@ impl Piece {
     }
 }
 
-/// Audio files in `dirs`, by name. A file that will not decode is an error;
-/// one with an extension no decoder takes is skipped quietly.
+/// Audio files in `dirs`, by name. Files with an extension no decoder takes are
+/// left out; [`load_clip`] reports the ones that will not decode.
 pub fn find_clips(dirs: &[PathBuf]) -> Vec<PathBuf> {
     const EXTENSIONS: [&str; 6] = ["wav", "flac", "mp3", "ogg", "m4a", "aif"];
     let mut found: Vec<PathBuf> = dirs
@@ -112,7 +112,7 @@ pub fn load_clip(path: &Path, seconds: f64) -> Result<Piece, String> {
     };
     if piece.seconds() < MIN_SECONDS {
         return Err(format!(
-            "{}: {:.1} s is too short to warp (need {MIN_SECONDS} s)",
+            "{}: {:.1} s is too short to warp (need {MIN_SECONDS} s; --seconds only shortens)",
             path.display(),
             piece.seconds()
         ));
@@ -265,7 +265,7 @@ pub fn run(piece: &Piece, options: &Options) -> Result<(Vec<Row>, Vec<Note>), St
                 };
             let mut samples = to_stereo(&stretched);
             if options.compensate_latency {
-                let probe = options
+                let measured = options
                     .cache
                     .stretched(
                         stretcher.as_ref(),
@@ -274,21 +274,24 @@ pub fn run(piece: &Piece, options: &Options) -> Result<(Vec<Row>, Vec<Note>), St
                         &name,
                         &plan,
                     )
-                    .map_err(|e| format!("{} {name} {id} calibration: {e}", piece.name))?;
-                match latency(&to_stereo(&probe), RATE, &map, &calibration.times) {
-                    Some(l) => {
+                    .map(|probe| latency(&to_stereo(&probe), RATE, &map, &calibration.times));
+                let mut note = |text: String| {
+                    notes.push(Note {
+                        piece: piece.name.clone(),
+                        case: name.clone(),
+                        contender: id.clone(),
+                        text,
+                        delay_ms: None,
+                    });
+                };
+                match measured {
+                    Ok(Some(l)) => {
                         if l.spread_seconds > MAX_LATENCY_SPREAD {
-                            notes.push(Note {
-                                piece: piece.name.clone(),
-                                case: name.clone(),
-                                contender: id.clone(),
-                                text: format!(
-                                    "delay of {:.1} ms is not constant (spread {:.1} ms)",
-                                    l.seconds * 1e3,
-                                    l.spread_seconds * 1e3
-                                ),
-                                delay_ms: None,
-                            });
+                            note(format!(
+                                "delay of {:.1} ms is not constant (spread {:.1} ms)",
+                                l.seconds * 1e3,
+                                l.spread_seconds * 1e3
+                            ));
                         }
                         notes.push(Note {
                             piece: piece.name.clone(),
@@ -299,13 +302,10 @@ pub fn run(piece: &Piece, options: &Options) -> Result<(Vec<Row>, Vec<Note>), St
                         });
                         samples = align(&samples, l.seconds, RATE, frames);
                     }
-                    None => notes.push(Note {
-                        piece: piece.name.clone(),
-                        case: name.clone(),
-                        contender: id.clone(),
-                        text: "delay could not be measured; scored as returned".into(),
-                        delay_ms: None,
-                    }),
+                    Ok(None) => {
+                        note("delay could not be measured; scored as returned".into());
+                    }
+                    Err(e) => note(format!("calibration failed ({e}); scored as returned")),
                 }
             }
             samples.resize(frames * 2, 0.0);

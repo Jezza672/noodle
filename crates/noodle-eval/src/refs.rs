@@ -54,6 +54,20 @@ impl Plan {
         }
     }
 
+    /// A hash of everything in the plan, for cache names.
+    pub fn fingerprint(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut eat = |v: u64| h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+        eat(u64::from(self.rate));
+        eat(self.source_seconds.to_bits());
+        eat(self.output_seconds.to_bits());
+        for (s, o) in self.frame_pairs() {
+            eat(s);
+            eat(o);
+        }
+        h
+    }
+
     /// The map as (source frame, output frame) pairs, which is how Rubber
     /// Band's time map file reads.
     pub fn frame_pairs(&self) -> Vec<(u64, u64)> {
@@ -179,7 +193,8 @@ impl Stretcher for CommandStretcher {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_secs());
-        format!("{size:x}-{seconds:x}")
+        // Bump when the arguments `stretch` passes change.
+        format!("{size:x}-{seconds:x}-args1")
     }
 
     fn stretch(&self, input: &Path, output: &Path, plan: &Plan) -> Result<(), String> {
@@ -336,11 +351,15 @@ pub struct Latency {
 
 /// Measures the delay from the stretched calibration, `stereo`, whose bursts
 /// were at `times` in the source. `map` takes output time to source time.
-/// `None` if no burst could be found.
+/// `None` if no burst could be found. Delays must stay under about 0.45 of the
+/// bursts' spacing in the output (0.22 s at twice speed, where they are 0.5 s
+/// apart); real tools are tens of milliseconds.
 pub fn latency(stereo: &[f32], rate: u32, map: &TimeMap, times: &[f64]) -> Option<Latency> {
     let rate_f = f64::from(rate);
     let mono: Vec<f32> = stereo
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|f| (f[0] + f[1]) / 2.0)
         .collect();
     // A 5 ms moving average of the magnitude finds the burst's peak; the
@@ -349,8 +368,12 @@ pub fn latency(stereo: &[f32], rate: u32, map: &TimeMap, times: &[f64]) -> Optio
     let mut offsets = Vec::new();
     for &t in times {
         let expect = map.to_output(t);
-        let lo = ((expect - 0.3) * rate_f).max(0.0) as usize;
-        let hi = (((expect + 0.3) * rate_f) as usize).min(mono.len());
+        // Search less than half the spacing to the neighbouring bursts, so a
+        // long delay cannot lock onto the wrong one.
+        let spacing = (map.to_output(t + 1.0) - expect).abs();
+        let half = (0.45 * spacing).min(0.3);
+        let lo = ((expect - half) * rate_f).max(0.0) as usize;
+        let hi = (((expect + half) * rate_f) as usize).min(mono.len());
         if hi <= lo + 2 * smooth {
             continue;
         }
@@ -440,11 +463,13 @@ impl RefCache {
             .join(format!("{}-{}", stretcher.name(), stretcher.fingerprint()))
             .join(key);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let file = dir.join(format!("{case}.wav"));
+        // The plan is part of the name, so a changed tempo curve or map is
+        // stretched again instead of replaying the old one.
+        let file = dir.join(format!("{case}-{:016x}.wav", plan.fingerprint()));
         if !file.is_file() {
             // Written beside the final name, so an interrupted run leaves
             // nothing that a later one would take for a finished stretch.
-            let partial = dir.join(format!("{case}.partial.wav"));
+            let partial = dir.join(format!("{case}-{:016x}.partial.wav", plan.fingerprint()));
             stretcher.stretch(input, &partial, plan)?;
             std::fs::rename(&partial, &file).map_err(|e| e.to_string())?;
         }

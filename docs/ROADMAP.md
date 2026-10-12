@@ -692,7 +692,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate) batch 3 (the five songs) and batch 4 (borrowed truth) are built. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`) are a before and after.
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate), batch 3 (the five songs) and batch 4 (borrowed truth) are built. Batch 4 is open on one item: `eval/clips.csv` has no clips yet, so the speech, instrument and mix cases are untried; only the probes have run against the reference stretchers. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`, `borrowed.json`) are a before and after.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
