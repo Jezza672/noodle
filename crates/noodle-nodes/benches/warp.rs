@@ -111,13 +111,14 @@ impl StretchSource for Memory {
 
     fn read(&mut self, start: i64, out: &mut [f32]) {
         let frames = (self.0.len() / 2) as i64;
-        for (i, frame) in out.chunks_exact_mut(2).enumerate() {
+        for i in 0..out.len() / 2 {
             let at = start + i as i64;
-            if (0..frames).contains(&at) {
-                frame.copy_from_slice(&self.0[at as usize * 2..at as usize * 2 + 2]);
+            let frame = if (0..frames).contains(&at) {
+                &self.0[at as usize * 2..at as usize * 2 + 2]
             } else {
-                frame.fill(0.0);
-            }
+                &[0.0, 0.0]
+            };
+            out[i * 2..i * 2 + 2].copy_from_slice(frame);
         }
     }
 }
@@ -138,7 +139,9 @@ fn stretcher_alone() {
     for (name, beats) in [("Grain", false), ("Beats", true)] {
         let started = Instant::now();
         let onsets = if beats {
-            let mono: Vec<f32> = data.chunks_exact(2).map(|f| (f[0] + f[1]) / 2.0).collect();
+            let mono: Vec<f32> = (0..data.len() / 2)
+                .map(|i| (data[i * 2] + data[i * 2 + 1]) / 2.0)
+                .collect();
             noodle_io::detect_onsets(&mono, RATE)
         } else {
             Vec::new()
