@@ -979,9 +979,11 @@ impl TrackInputNode {
             let (l, r) = (self.lane_frames[i * 2], self.lane_frames[i * 2 + 1]);
             self.put(clip, rel + i as u64, fa + i, l, r, target);
         }
-        if got < want {
-            // Nothing to play for the rest: stay silent until the lane
-            // delivers, and ramp in then, not behind the gap.
+        if got == 0 && want > 0 {
+            // Nothing to play: stay silent until the lane delivers, and ramp
+            // in then, not behind the gap. (A block that is only short keeps
+            // its level, or a lane that runs a little behind would never get
+            // loud.)
             self.level = 0.0;
         } else {
             self.advance(target, len - got);
