@@ -27,6 +27,9 @@ pub struct Sample {
     /// What cross-validation keeps together: the reference clip.
     pub group: String,
     pub method: String,
+    /// How much the test was sped up; agreement is also reported within each
+    /// speed, because several metrics track the speed alone.
+    pub speed: f64,
     pub mos: f64,
     pub features: Vec<f64>,
 }
@@ -47,6 +50,7 @@ pub fn samples(rows: &[Row], measured: &[Features]) -> (Vec<String>, Vec<Sample>
         .map(|(row, m)| Sample {
             group: row.reference.display().to_string(),
             method: row.method.clone(),
+            speed: row.speed,
             mos: row.mos,
             features: keep.iter().map(|&j| m[j].1).collect(),
         })
@@ -60,6 +64,7 @@ pub fn without(
     samples: &[Sample],
     drop: &[&str],
 ) -> Result<(Vec<String>, Vec<Sample>), String> {
+    let drop: Vec<&str> = drop.iter().copied().filter(|d| !d.is_empty()).collect();
     if let Some(bad) = drop.iter().find(|d| !names.iter().any(|n| n == *d)) {
         return Err(format!("no metric called {bad}"));
     }
@@ -78,16 +83,40 @@ pub fn without(
     ))
 }
 
+/// What a cache was measured from. A cache is only reused when both match
+/// the current manifest and the current build's metrics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheKey {
+    /// Pairs in the manifest.
+    pub pairs: usize,
+    /// Every metric this build measures, in order.
+    pub metrics: Vec<String>,
+}
+
 /// Saves measured samples so a fit can be repeated without re-measuring.
-pub fn save_cache(path: &Path, names: &[String], samples: &[Sample]) -> Result<(), String> {
-    let mut text = format!("group,method,mos,{}\n", names.join(","));
+pub fn save_cache(
+    path: &Path,
+    key: &CacheKey,
+    names: &[String],
+    samples: &[Sample],
+) -> Result<(), String> {
+    let plain = |s: &str| !s.contains(',') && !s.contains('\n');
+    let mut text = format!("# pairs={} metrics={}\n", key.pairs, key.metrics.join(";"));
+    text += &format!("group,method,speed,mos,{}\n", names.join(","));
     for s in samples {
+        if !plain(&s.group) || !plain(&s.method) {
+            return Err(format!(
+                "cannot cache {}: commas in paths and method names are not supported",
+                s.group
+            ));
+        }
         let values: Vec<String> = s.features.iter().map(|v| format!("{v}")).collect();
         let _ = writeln!(
             text,
-            "{},{},{},{}",
+            "{},{},{},{},{}",
             s.group,
             s.method,
+            s.speed,
             s.mos,
             values.join(",")
         );
@@ -95,37 +124,48 @@ pub fn save_cache(path: &Path, names: &[String], samples: &[Sample]) -> Result<(
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub fn load_cache(path: &Path) -> Result<(Vec<String>, Vec<Sample>), String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+pub type Cache = (CacheKey, Vec<String>, Vec<Sample>);
+
+pub fn load_cache(path: &Path) -> Result<Cache, String> {
+    let bad = |what: &str| format!("{}: {what}", path.display());
+    let text = std::fs::read_to_string(path).map_err(|e| bad(&e.to_string()))?;
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let header = lines.next().ok_or("empty cache")?;
+    let first = lines.next().ok_or_else(|| bad("empty cache"))?;
+    let key = first
+        .strip_prefix("# pairs=")
+        .and_then(|rest| rest.split_once(" metrics="))
+        .and_then(|(n, m)| {
+            Some(CacheKey {
+                pairs: n.parse().ok()?,
+                metrics: m.split(';').map(String::from).collect(),
+            })
+        })
+        .ok_or_else(|| bad("not a feature cache (or one from an older build)"))?;
+    let header = lines.next().ok_or_else(|| bad("no header"))?;
     let cols: Vec<&str> = header.split(',').collect();
-    if cols.len() < 4 || cols[..3] != ["group", "method", "mos"] {
-        return Err(format!("{}: not a feature cache", path.display()));
+    if cols.len() < 5 || cols[..4] != ["group", "method", "speed", "mos"] {
+        return Err(bad("not a feature cache"));
     }
-    let names: Vec<String> = cols[3..].iter().map(|c| c.to_string()).collect();
+    let names: Vec<String> = cols[4..].iter().map(|c| c.to_string()).collect();
     let mut out = Vec::new();
     for (i, line) in lines.enumerate() {
         let f: Vec<&str> = line.split(',').collect();
         if f.len() != cols.len() {
-            return Err(format!(
-                "{}: line {}: wrong field count",
-                path.display(),
-                i + 2
-            ));
+            return Err(bad(&format!("line {}: wrong field count", i + 3)));
         }
         let num = |s: &str| {
             s.parse::<f64>()
-                .map_err(|e| format!("{}: line {}: {s}: {e}", path.display(), i + 2))
+                .map_err(|e| bad(&format!("line {}: {s}: {e}", i + 3)))
         };
         out.push(Sample {
             group: f[0].to_string(),
             method: f[1].to_string(),
-            mos: num(f[2])?,
-            features: f[3..].iter().map(|v| num(v)).collect::<Result<_, _>>()?,
+            speed: num(f[2])?,
+            mos: num(f[3])?,
+            features: f[4..].iter().map(|v| num(v)).collect::<Result<_, _>>()?,
         });
     }
-    Ok((names, out))
+    Ok((key, names, out))
 }
 
 /// A fitted score: standardise, weigh, add the intercept.
@@ -276,22 +316,46 @@ pub fn cross_validate(samples: &[Sample], names: &[String], lambda: f64, folds: 
 pub struct Agreement {
     pub pearson: f64,
     pub spearman: f64,
+    /// Spearman computed within each speed and averaged, as `validate` does:
+    /// a pooled figure can come from the speed alone.
+    pub within_speed_spearman: f64,
     pub rmse: f64,
 }
 
-pub fn agreement(predicted: &[f64], actual: &[f64]) -> Agreement {
-    let pairs: Vec<(f64, f64)> = predicted
-        .iter()
-        .copied()
-        .zip(actual.iter().copied())
-        .filter(|p| p.0.is_finite())
-        .collect();
+/// `(predicted, actual, speed)` per pair; pairs without a prediction are left
+/// out.
+pub fn agreement(points: &[(f64, f64, f64)]) -> Agreement {
+    let kept: Vec<_> = points.iter().filter(|p| p.0.is_finite()).collect();
+    let pairs: Vec<(f64, f64)> = kept.iter().map(|p| (p.0, p.1)).collect();
     let n = pairs.len().max(1) as f64;
+    let mut by_speed: BTreeMap<u64, Vec<(f64, f64)>> = BTreeMap::new();
+    for p in &kept {
+        by_speed.entry(p.2.to_bits()).or_default().push((p.0, p.1));
+    }
+    let within: Vec<f64> = by_speed
+        .values()
+        .filter(|v| v.len() >= 3)
+        .map(|v| spearman(v))
+        .filter(|c| c.is_finite())
+        .collect();
     Agreement {
         pearson: pearson(&pairs),
         spearman: spearman(&pairs),
+        within_speed_spearman: if within.is_empty() {
+            f64::NAN
+        } else {
+            within.iter().sum::<f64>() / within.len() as f64
+        },
         rmse: (pairs.iter().map(|p| (p.0 - p.1).powi(2)).sum::<f64>() / n).sqrt(),
     }
+}
+
+fn points(samples: &[Sample], predicted: &[f64]) -> Vec<(f64, f64, f64)> {
+    samples
+        .iter()
+        .zip(predicted)
+        .map(|(s, &p)| (p, s.mos, s.speed))
+        .collect()
 }
 
 pub const LAMBDAS: [f64; 6] = [0.1, 1.0, 10.0, 100.0, 1000.0, 10_000.0];
@@ -307,8 +371,9 @@ pub struct Fit {
     pub baseline_rmse: f64,
     /// (lambda, RMSE) over the grid.
     pub grid: Vec<(f64, f64)>,
-    /// Per method: pairs and Spearman of the cross-validated predictions.
-    pub per_method: Vec<(String, usize, f64)>,
+    /// Per method: pairs, and the Spearman of the cross-validated predictions
+    /// pooled and within speed.
+    pub per_method: Vec<(String, usize, f64, f64)>,
 }
 
 pub fn fit(samples: &[Sample], names: &[String]) -> Result<Fit, String> {
@@ -328,7 +393,7 @@ pub fn fit(samples: &[Sample], names: &[String]) -> Result<Fit, String> {
     let mut grid = Vec::new();
     for lambda in LAMBDAS {
         let predicted = cross_validate(samples, names, lambda, FOLDS);
-        let rmse = agreement(&predicted, &actual).rmse;
+        let rmse = agreement(&points(samples, &predicted)).rmse;
         grid.push((lambda, rmse));
         if best.as_ref().is_none_or(|b| rmse < b.2) {
             best = Some((lambda, predicted, rmse));
@@ -338,17 +403,23 @@ pub fn fit(samples: &[Sample], names: &[String]) -> Result<Fit, String> {
     let mean = actual.iter().sum::<f64>() / actual.len() as f64;
     let baseline_rmse =
         (actual.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / actual.len() as f64).sqrt();
-    let mut by_method: BTreeMap<&str, Vec<(f64, f64)>> = BTreeMap::new();
+    let mut by_method: BTreeMap<&str, Vec<(f64, f64, f64)>> = BTreeMap::new();
     for (s, p) in samples.iter().zip(&predicted) {
-        by_method.entry(&s.method).or_default().push((*p, s.mos));
+        by_method
+            .entry(&s.method)
+            .or_default()
+            .push((*p, s.mos, s.speed));
     }
     let per_method = by_method
         .into_iter()
-        .map(|(m, v)| (m.to_string(), v.len(), spearman(&v)))
+        .map(|(m, v)| {
+            let a = agreement(&v);
+            (m.to_string(), v.len(), a.spearman, a.within_speed_spearman)
+        })
         .collect();
     Ok(Fit {
         model: Model::fit(samples, names, lambda),
-        overall: agreement(&predicted, &actual),
+        overall: agreement(&points(samples, &predicted)),
         baseline_rmse,
         grid,
         per_method,
@@ -374,16 +445,24 @@ impl Fit {
         );
         let _ = writeln!(
             out,
-            "held-out agreement: Pearson {:.3}, Spearman {:.3}, RMSE {:.3} (guessing the mean: {:.3})",
-            self.overall.pearson, self.overall.spearman, self.overall.rmse, self.baseline_rmse
+            "held-out agreement: Pearson {:.3}, Spearman {:.3} (within speed {:.3}), RMSE {:.3} (guessing the mean: {:.3})",
+            self.overall.pearson,
+            self.overall.spearman,
+            self.overall.within_speed_spearman,
+            self.overall.rmse,
+            self.baseline_rmse
         );
-        let _ = writeln!(out, "\\n{:<16} {:>6} {:>9}", "method", "pairs", "Spearman");
-        for (m, n, s) in &self.per_method {
-            let _ = writeln!(out, "{m:<16} {n:>6} {s:>9.3}");
+        let _ = writeln!(
+            out,
+            "\n{:<16} {:>6} {:>9} {:>9}",
+            "method", "pairs", "Spearman", "in-speed"
+        );
+        for (m, n, s, w) in &self.per_method {
+            let _ = writeln!(out, "{m:<16} {n:>6} {s:>9.3} {w:>9.3}");
         }
         let mut w: Vec<_> = self.model.names.iter().zip(&self.model.weights).collect();
         w.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
-        let _ = writeln!(out, "\\nweights (per standard deviation of the metric):");
+        let _ = writeln!(out, "\nweights (per standard deviation of the metric):");
         for (n, w) in w {
             let _ = writeln!(out, "  {n:<32} {w:>8.3}");
         }
@@ -412,6 +491,7 @@ mod tests {
                 samples.push(Sample {
                     group: format!("clip{g}"),
                     method: if i % 2 == 0 { "x" } else { "y" }.into(),
+                    speed: 1.0 + f64::from(i % 3),
                     mos,
                     features: vec![a, if i == 3 { f64::NAN } else { b }, n],
                 });
@@ -463,19 +543,20 @@ mod tests {
             .map(|i| Sample {
                 group: format!("clip{}", i / 5),
                 method: "x".into(),
+                speed: 1.0,
                 mos: 1.0 + 4.0 * rnd(),
                 features: (0..60).map(|_| rnd()).collect(),
             })
             .collect();
         let fit = fit(&samples, &names).unwrap();
         assert!(fit.overall.pearson.abs() < 0.3, "{:?}", fit.overall);
-        let on_training = agreement(
+        let on_training = agreement(&points(
+            &samples,
             &samples
                 .iter()
                 .map(|s| fit.model.predict(&s.features))
                 .collect::<Vec<_>>(),
-            &samples.iter().map(|s| s.mos).collect::<Vec<_>>(),
-        );
+        ));
         assert!(on_training.pearson > 0.5, "{on_training:?}");
     }
 
@@ -484,8 +565,13 @@ mod tests {
         let (names, samples) = synthetic(false);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("features.csv");
-        save_cache(&path, &names, &samples).unwrap();
-        let (n2, s2) = load_cache(&path).unwrap();
+        let key = CacheKey {
+            pairs: 100,
+            metrics: vec!["a".into(), "b".into(), "noise".into()],
+        };
+        save_cache(&path, &key, &names, &samples).unwrap();
+        let (k2, n2, s2) = load_cache(&path).unwrap();
+        assert_eq!(k2, key);
         assert_eq!(n2, names);
         assert_eq!(s2.len(), samples.len());
         assert!(s2[3].features[1].is_nan());
@@ -500,12 +586,48 @@ mod tests {
     }
 
     #[test]
+    fn paths_with_commas_cannot_be_cached_and_old_caches_are_refused() {
+        let (names, mut samples) = synthetic(false);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("features.csv");
+        let key = CacheKey {
+            pairs: 1,
+            metrics: vec![],
+        };
+        samples[0].group = "a,b.wav".into();
+        assert!(save_cache(&path, &key, &names, &samples).is_err());
+        std::fs::write(&path, "group,method,mos,a\nx,y,1,2\n").unwrap();
+        assert!(load_cache(&path).is_err());
+    }
+
+    #[test]
+    fn agreement_within_speed_ignores_a_speed_only_relationship() {
+        // Predictions and scores both fall with speed but are unrelated
+        // within each speed: pooled looks strong, within-speed does not.
+        let mut pts = Vec::new();
+        let mut seed = 3u32;
+        for speed in [1.0, 2.0, 3.0] {
+            for _ in 0..30 {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let a = f64::from(seed >> 8) / f64::from(1u32 << 24);
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let b = f64::from(seed >> 8) / f64::from(1u32 << 24);
+                pts.push((5.0 - speed + 0.3 * a, 5.0 - speed + 0.3 * b, speed));
+            }
+        }
+        let a = agreement(&pts);
+        assert!(a.spearman > 0.7, "{a:?}");
+        assert!(a.within_speed_spearman.abs() < 0.4, "{a:?}");
+    }
+
+    #[test]
     fn dropping_metrics_removes_their_columns_and_rejects_typos() {
         let (names, samples) = synthetic(false);
         let (n, s) = without(&names, &samples, &["noise"]).unwrap();
         assert_eq!(n, ["a", "b"]);
         assert_eq!(s[0].features.len(), 2);
         assert!(without(&names, &samples, &["nosie"]).is_err());
+        assert_eq!(without(&names, &samples, &[""]).unwrap().0.len(), 3);
     }
 
     #[test]

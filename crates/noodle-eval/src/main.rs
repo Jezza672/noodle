@@ -99,15 +99,45 @@ fn fit(manifest: &str, args: &[&str]) -> Result<(), String> {
             other => return Err(format!("unknown option {other}\n{FIT_HELP}")),
         }
     }
-    let (names, samples) = match cache.as_ref().filter(|p| p.exists()) {
-        Some(path) => noodle_eval::fit::load_cache(path)?,
+    let rows = validate::parse_manifest(Path::new(manifest))?;
+    let key = noodle_eval::fit::CacheKey {
+        pairs: rows.len(),
+        metrics: noodle_eval::report::feature_names()
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    };
+    let cached = match cache.as_ref().filter(|p| p.exists()) {
+        Some(path) => {
+            let (found, names, samples) = noodle_eval::fit::load_cache(path)?;
+            if found != key {
+                return Err(format!(
+                    "{} was measured from {} pairs with {} metrics, but this manifest has {} pairs and this build measures {}: delete it to measure again",
+                    path.display(),
+                    found.pairs,
+                    found.metrics.len(),
+                    key.pairs,
+                    key.metrics.len()
+                ));
+            }
+            eprintln!(
+                "using cached metrics from {} ({} pairs, {} metrics)",
+                path.display(),
+                samples.len(),
+                names.len()
+            );
+            Some((names, samples))
+        }
+        None => None,
+    };
+    let (names, samples) = match cached {
+        Some(c) => c,
         None => {
-            let rows = validate::parse_manifest(Path::new(manifest))?;
             eprintln!("measuring {} pairs", rows.len());
             let measured = validate::measure(&rows)?;
             let (names, samples) = noodle_eval::fit::samples(&rows, &measured);
             if let Some(path) = &cache {
-                noodle_eval::fit::save_cache(path, &names, &samples)?;
+                noodle_eval::fit::save_cache(path, &key, &names, &samples)?;
             }
             (names, samples)
         }

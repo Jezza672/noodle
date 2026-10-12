@@ -69,6 +69,24 @@ pub fn evaluate(reference: Clip, test: Clip, map: &TimeMap) -> Report {
     }
 }
 
+/// The names [`Report::features`] gives, in order, without scoring real
+/// audio. A feature cache records them to be sure it was measured by a build
+/// with the same metrics.
+pub fn feature_names() -> Vec<&'static str> {
+    let tone: Vec<f32> = (0..48_000)
+        .map(|n| ((f64::from(n) * 440.0 * std::f64::consts::TAU / 48_000.0).sin() * 0.3) as f32)
+        .collect();
+    evaluate(
+        Clip::new(&tone, 1, 48_000),
+        Clip::new(&tone, 1, 48_000),
+        &TimeMap::Identity,
+    )
+    .features()
+    .into_iter()
+    .map(|f| f.0)
+    .collect()
+}
+
 impl Report {
     /// Every metric as one number, oriented where it helps: deviations from
     /// "unchanged" are absolute values or log ratios, so 0 is a perfect score

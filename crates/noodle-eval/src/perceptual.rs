@@ -60,6 +60,8 @@ fn mel_to_hz(mel: f64) -> f64 {
 }
 
 /// Triangular filters over the spectrogram's bins: `(first bin, weights)`.
+/// Bands narrower than a bin (at the bottom of a coarse spectrogram) would be
+/// empty, and an empty band reads as a perfect match, so they are dropped.
 fn mel_filters(s: &Spectrogram) -> Vec<(usize, Vec<f32>)> {
     let top = HIGH_HZ.min(s.hz(s.bins - 1));
     let (lo, hi) = (hz_to_mel(LOW_HZ), hz_to_mel(top));
@@ -85,6 +87,7 @@ fn mel_filters(s: &Spectrogram) -> Vec<(usize, Vec<f32>)> {
                 .collect();
             (first, weights)
         })
+        .filter(|(_, w): &(usize, Vec<f32>)| w.iter().any(|&v| v > 0.0))
         .collect()
 }
 
@@ -113,7 +116,8 @@ fn mfcc(log_mel: &[f32]) -> Vec<f64> {
                 .enumerate()
                 .map(|(n, &v)| {
                     f64::from(v)
-                        * (std::f64::consts::PI * k as f64 * (n as f64 + 0.5) / MEL_BANDS as f64)
+                        * (std::f64::consts::PI * k as f64 * (n as f64 + 0.5)
+                            / log_mel.len() as f64)
                             .cos()
                 })
                 .sum()
@@ -144,7 +148,7 @@ fn euclid(a: &[f64], b: &[f64]) -> f64 {
         .sqrt()
 }
 
-/// 12 pitch classes from 40 Hz to 5 kHz, each frame as a unit vector.
+/// Energy in each of 12 pitch classes from 40 Hz to 5 kHz.
 fn chroma(row: &[f32], s: &Spectrogram) -> [f64; 12] {
     let mut out = [0.0f64; 12];
     for (k, &m) in row.iter().enumerate().skip(1) {
@@ -155,12 +159,13 @@ fn chroma(row: &[f32], s: &Spectrogram) -> [f64; 12] {
         let class = (12.0 * (hz / 440.0).log2()).round().rem_euclid(12.0) as usize % 12;
         out[class] += f64::from(m) * f64::from(m);
     }
-    let norm = out.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if norm > 0.0 {
-        out.iter_mut().for_each(|v| *v /= norm);
-    }
     out
 }
+
+/// Chroma energies this far below the loudest frame (power) count as
+/// silence. Two silent frames match; a silent one against a sounding one does
+/// not.
+const CHROMA_SILENCE_DB: f64 = 60.0;
 
 /// Neurogram similarity of two equal-length vectors: intensity times
 /// structure, the SSIM terms without contrast.
@@ -194,7 +199,7 @@ pub fn compare(reference: &Spectrogram, test: &Spectrogram, map: &TimeMap) -> Pe
     let bins = test.bins;
     let filters = mel_filters(test);
     let mel = |row: &[f32]| {
-        let mut e = vec![0.0f32; MEL_BANDS];
+        let mut e = vec![0.0f32; filters.len()];
         mel_energies(row, &filters, &mut e);
         e
     };
@@ -223,11 +228,13 @@ pub fn compare(reference: &Spectrogram, test: &Spectrogram, map: &TimeMap) -> Pe
     let (rd, td) = (deltas(&rc), deltas(&tc));
     let mfcc_delta = mean(rd.iter().zip(&td).map(|(a, b)| euclid(a, b)).collect());
 
+    // Patches run over the valid frames, which are one stretch of consecutive
+    // test frames for the maps in use (gaps only at the ends).
     let patch = PATCH.min(frames.len());
     let (mut total, mut count) = (0.0, 0usize);
     let mut start = 0;
     loop {
-        for band in 0..MEL_BANDS {
+        for band in 0..filters.len() {
             let a: Vec<f32> = (start..start + patch).map(|t| rl[t][band]).collect();
             let b: Vec<f32> = (start..start + patch).map(|t| tl[t][band]).collect();
             total += nsim(&a, &b);
@@ -239,16 +246,42 @@ pub fn compare(reference: &Spectrogram, test: &Spectrogram, map: &TimeMap) -> Pe
         start = (start + patch / 2).min(frames.len() - patch);
     }
 
-    let chroma_distance = mean(
-        frames
-            .iter()
-            .map(|&f| {
-                let a = chroma(&rows[f * bins..(f + 1) * bins], test);
-                let b = chroma(test.row(f), test);
-                1.0 - a.iter().zip(&b).map(|(x, y)| x * y).sum::<f64>()
-            })
-            .collect(),
-    );
+    let raw: Vec<([f64; 12], [f64; 12])> = frames
+        .iter()
+        .map(|&f| {
+            (
+                chroma(&rows[f * bins..(f + 1) * bins], test),
+                chroma(test.row(f), test),
+            )
+        })
+        .collect();
+    let power = |c: &[f64; 12]| c.iter().sum::<f64>();
+    let loudest = raw
+        .iter()
+        .flat_map(|(a, b)| [power(a), power(b)])
+        .fold(0.0, f64::max);
+    let floor = loudest * 10f64.powf(-CHROMA_SILENCE_DB / 10.0);
+    let chroma_distances: Vec<f64> = raw
+        .iter()
+        .filter_map(|(a, b)| {
+            let (ea, eb) = (power(a), power(b));
+            match (ea > floor, eb > floor) {
+                (false, false) => None,
+                (true, true) => {
+                    let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+                    let norms = a.iter().map(|v| v * v).sum::<f64>().sqrt()
+                        * b.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    Some(1.0 - dot / norms)
+                }
+                _ => Some(1.0),
+            }
+        })
+        .collect();
+    let chroma_distance = if chroma_distances.is_empty() {
+        f64::NAN
+    } else {
+        mean(chroma_distances)
+    };
     Perceptual {
         mel_nsim: 1.0 - total / count as f64,
         mfcc: mfcc_distance,
@@ -292,6 +325,16 @@ mod tests {
         assert!(noisy.mel_nsim > 0.01 && noisy.mfcc > 1.0, "{noisy:?}");
         let louder_noise = score(&clean, &tone(440.0, 2.0, 0.2));
         assert!(louder_noise.mfcc > noisy.mfcc, "{louder_noise:?} {noisy:?}");
+    }
+
+    #[test]
+    fn a_clip_with_silence_matches_itself() {
+        let mut clip = tone(440.0, 2.0, 0.0);
+        clip.extend(std::iter::repeat_n(0.0, 96_000));
+        let same = score(&clip, &clip);
+        for v in [same.mel_nsim, same.mfcc, same.mfcc_delta, same.chroma] {
+            assert!(v.abs() < 1e-6, "{same:?}");
+        }
     }
 
     #[test]
