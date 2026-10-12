@@ -72,3 +72,24 @@ A clip property that repeats a loop region of the clip, in beats, gaplessly, so 
 
 **Clip editor**:
 The panel below the arrangement for the selected clip: the piano roll for MIDI, and for audio the clip's own timeline with its waveform and, along the top, its warp markers. Properties stay in the properties panel.
+
+## Warp evaluation
+
+**Warp evaluation**:
+Scoring how well Noodle's warp methods change a clip's timing without damaging its sound, by comparing the warped audio with a reference. A dev tool with a small subset that gates CI, not a feature of the app.
+
+**Native render**:
+A song rendered straight from its own synths and samples at the target tempo or tempo map, with no warping. It is the answer key for generated songs.
+_Avoid_: Ground-truth render, golden render (that one is the regression file in `golden/`)
+
+**Known truth**:
+The case where a native render exists, so a warped song is scored against what it should sound like. Only generated audio has it.
+
+**Borrowed truth**:
+The case where no native render exists (a recording, a dropped-in mp3), so the score is relative to the output of established external stretchers and to facts the warp map already tells us, such as where each onset should land and that the pitch should not move.
+
+**Probe**:
+A short, controlled signal (a click train, a held chord, a sweep, a lone kick) used to show which kind of sound a warp method fails on. Songs show how a method sounds; probes show why it fails.
+
+**Headline score**:
+The warp evaluation's main number for a song: the bare mixed audio with nothing but the file, so the detected clip tempo and the automatic mode choice are part of what is scored. Stems and a fixed mode are reported next to it as diagnostics.
