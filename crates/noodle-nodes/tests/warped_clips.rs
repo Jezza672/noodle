@@ -189,6 +189,90 @@ fn markers_stretch_the_audio_between_them() {
     silent(samples, 216_000 + 8, 5 * 48_000);
 }
 
+fn loose_markers() -> ClipWarp {
+    let mut warp = ClipWarp::at_tempo(120.0);
+    warp.set_marker(WarpMarker {
+        seconds: 1.0,
+        beat: 2.0,
+    });
+    warp.set_marker(WarpMarker {
+        seconds: 2.0,
+        beat: 4.8,
+    });
+    warp
+}
+
+#[test]
+fn warp_quantise_plays_the_markers_on_the_grid_and_baking_sounds_the_same() {
+    let dir = folder("quantise");
+    // The second marker is loose (beat 4.8); a whole-beat grid pulls it to 5,
+    // which is what `markers_stretch_the_audio_between_them` plays.
+    let mut warp = loose_markers();
+    warp.quantise = Some(noodle_core::WarpQuantise {
+        grid: 1.0,
+        ..Default::default()
+    });
+    let baked = warp.baked();
+    let quantised = render(
+        &project(Some(warp), 0, 4 * 48_000),
+        &dir,
+        SETTINGS,
+        5 * 48_000,
+    );
+    let samples = &quantised.render.samples;
+    follows(samples, FADE, 48_000, |f| f);
+    follows(samples, 48_000, 120_000, |f| {
+        48_000.0 + (f - 48_000.0) * 2.0 / 3.0
+    });
+    follows(samples, 120_000, 216_000 - 2, |f| {
+        96_000.0 + (f - 120_000.0)
+    });
+
+    let baked = render(
+        &project(Some(baked), 0, 4 * 48_000),
+        &dir,
+        SETTINGS,
+        5 * 48_000,
+    );
+    assert_eq!(baked.render.samples, quantised.render.samples);
+
+    // Without quantise the loose marker plays where it was put: it is not
+    // destroyed.
+    let loose = render(
+        &project(Some(loose_markers()), 0, 4 * 48_000),
+        &dir,
+        SETTINGS,
+        5 * 48_000,
+    );
+    assert_ne!(loose.render.samples, quantised.render.samples);
+    follows(&loose.render.samples, 48_000, 115_200, |f| {
+        48_000.0 + (f - 48_000.0) * 48_000.0 / 67_200.0
+    });
+}
+
+#[test]
+fn half_amount_quantise_lands_half_way() {
+    let dir = folder("quantise-half");
+    let mut warp = loose_markers();
+    warp.quantise = Some(noodle_core::WarpQuantise {
+        grid: 1.0,
+        amount: 0.5,
+        ..Default::default()
+    });
+    // The marker plays at beat 4.9 (2.45 s = 117_600 frames).
+    let samples = render(
+        &project(Some(warp), 0, 4 * 48_000),
+        &dir,
+        SETTINGS,
+        5 * 48_000,
+    )
+    .render
+    .samples;
+    follows(&samples, 48_000, 117_000, |f| {
+        48_000.0 + (f - 48_000.0) * 48_000.0 / 69_600.0
+    });
+}
+
 #[test]
 fn markers_that_are_switched_off_do_nothing() {
     let dir = folder("markers-off");

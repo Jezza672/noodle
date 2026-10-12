@@ -9,6 +9,7 @@
 //! Times in the clip ("source seconds") count from the start of the file.
 //! Beats are quarter notes.
 
+use std::borrow::Cow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -235,6 +236,159 @@ impl LoopRegion {
     }
 }
 
+/// The grid a groove is taken on, in beats: sixteenth notes.
+pub const GROOVE_SLOT: f64 = 0.25;
+/// How many slots a groove lasts before it repeats: one bar of four beats.
+pub const GROOVE_SLOTS: usize = 16;
+
+/// A timing feel: how far the beats of a clip sit from the straight grid, slot
+/// by slot, over a pattern that repeats. It is the part of a warp one clip can
+/// lend another (CONTEXT.md, groove), because it says nothing about the
+/// algorithm that plays the clip.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Groove {
+    /// The distance between slots, in beats.
+    pub slot: f64,
+    /// How early (negative) or late each slot sits, in beats, for the slots of
+    /// one repeat of the pattern.
+    pub offsets: Vec<f64>,
+}
+
+impl Groove {
+    /// The groove of `beats`: each is put on its nearest slot, and a slot's
+    /// offset is the mean of how far the beats on it sit from it. Slots
+    /// nothing sits on are straight. `None` if there are no beats, or the
+    /// shape is not one.
+    pub fn from_beats(
+        beats: impl IntoIterator<Item = f64>,
+        slot: f64,
+        slots: usize,
+    ) -> Option<Self> {
+        if !(slot > 0.0 && slot.is_finite()) || slots == 0 {
+            return None;
+        }
+        let mut sums = vec![0.0; slots];
+        let mut counts = vec![0u32; slots];
+        for beat in beats.into_iter().filter(|b| b.is_finite()) {
+            let index = (beat / slot).round();
+            let i = (index as i64).rem_euclid(slots as i64) as usize;
+            sums[i] += beat - index * slot;
+            counts[i] += 1;
+        }
+        if counts.iter().all(|&c| c == 0) {
+            return None;
+        }
+        let offsets = sums
+            .iter()
+            .zip(&counts)
+            .map(|(&sum, &count)| {
+                if count == 0 {
+                    0.0
+                } else {
+                    sum / f64::from(count)
+                }
+            })
+            .collect();
+        Some(Self { slot, offsets })
+    }
+
+    /// Whether every slot is straight.
+    pub fn is_flat(&self) -> bool {
+        self.offsets.iter().all(|o| o.abs() < 1e-9)
+    }
+
+    /// The offset of the slot `beat` is on, or 0 if it is not on a slot.
+    pub fn offset_at(&self, beat: f64) -> f64 {
+        if self.offsets.is_empty() || self.slot <= 0.0 || self.slot.is_nan() {
+            return 0.0;
+        }
+        let index = (beat / self.slot).round();
+        if (beat - index * self.slot).abs() > 1e-6 {
+            return 0.0;
+        }
+        self.offsets[(index as i64).rem_euclid(self.offsets.len() as i64) as usize]
+    }
+
+    fn problem(&self) -> Option<&'static str> {
+        if !(self.slot > 0.0 && self.slot.is_finite()) || self.offsets.is_empty() {
+            return Some("the groove has no slots");
+        }
+        if self
+            .offsets
+            .iter()
+            .any(|o| !o.is_finite() || o.abs() > self.slot * 4.0)
+        {
+            return Some("the groove has an offset that is out of range");
+        }
+        None
+    }
+}
+
+/// Warp quantise: the warp markers pulled toward a grid, by an amount, without
+/// touching where the markers are stored. The stored markers stay as the user
+/// put them; [`ClipWarp::effective_markers`] is what plays.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WarpQuantise {
+    /// The grid, in beats of the clip: a quarter is 1, a sixteenth 0.25.
+    pub grid: f64,
+    /// How far each marker is pulled onto its grid line: 0 not at all, 1 all
+    /// the way.
+    pub amount: f64,
+    /// A feel to put on the grid lines: where a line is a slot of the groove,
+    /// the marker goes to the line plus the slot's offset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove: Option<Groove>,
+    /// How much of the groove is used, 0 to 1.
+    #[serde(default = "full")]
+    pub groove_amount: f64,
+    /// The warp the groove follows: its [`groove`](ClipWarp::groove) is copied
+    /// into `groove` whenever it changes (the project does that). Cleared if
+    /// that warp goes away; the last groove stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove_from: Option<WarpId>,
+}
+
+fn full() -> f64 {
+    1.0
+}
+
+/// The grids warp quantise offers, in beats: bars down to thirty-second notes.
+pub const QUANTISE_GRIDS: [f64; 6] = [4.0, 1.0, 0.5, 0.25, 0.125, 0.0625];
+
+impl Default for WarpQuantise {
+    fn default() -> Self {
+        Self {
+            grid: 0.25,
+            amount: 1.0,
+            groove: None,
+            groove_amount: 1.0,
+            groove_from: None,
+        }
+    }
+}
+
+impl WarpQuantise {
+    /// Where a marker at `beat` is moved to.
+    pub fn apply(&self, beat: f64) -> f64 {
+        let line = (beat / self.grid).round() * self.grid;
+        let target = match &self.groove {
+            Some(groove) => line + groove.offset_at(line) * self.groove_amount,
+            None => line,
+        };
+        beat + (target - beat) * self.amount
+    }
+
+    fn problem(&self) -> Option<&'static str> {
+        if !(self.grid > 0.0 && self.grid.is_finite()) {
+            return Some("the quantise grid is not a length");
+        }
+        if !(0.0..=1.0).contains(&self.amount) || !(0.0..=1.0).contains(&self.groove_amount) {
+            return Some("a quantise amount is outside 0 to 1");
+        }
+        self.groove.as_ref().and_then(Groove::problem)
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -264,6 +418,11 @@ pub struct ClipWarp {
     /// [`AudioClip::extent`](crate::AudioClip::extent)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_region: Option<LoopRegion>,
+    /// Warp quantise, if on. It moves the markers that play, not the ones that
+    /// are stored (see [`effective_markers`](Self::effective_markers)), so it
+    /// can be turned off or changed and the original timing is back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantise: Option<WarpQuantise>,
 }
 
 impl ClipWarp {
@@ -276,6 +435,7 @@ impl ClipWarp {
             tempo_conversion: true,
             use_markers: true,
             loop_region: None,
+            quantise: None,
         }
     }
 
@@ -309,6 +469,67 @@ impl ClipWarp {
             self.tempo.seconds_at(region.start),
             self.tempo.seconds_at(region.end),
         ))
+    }
+
+    /// The markers as they play: the stored ones, moved by warp quantise if it
+    /// is on. A marker that would land on or before the one before it, or that
+    /// would squeeze or stretch the clip beyond the limits, is left out, so
+    /// whatever markers are stored, these always make a warp that plays.
+    pub fn effective_markers(&self) -> Cow<'_, [WarpMarker]> {
+        let Some(quantise) = &self.quantise else {
+            return Cow::Borrowed(&self.markers);
+        };
+        let mut out: Vec<WarpMarker> = Vec::with_capacity(self.markers.len());
+        for marker in &self.markers {
+            let beat = quantise.apply(marker.beat);
+            if let Some(previous) = out.last() {
+                let clip_beats =
+                    self.tempo.beats_at(marker.seconds) - self.tempo.beats_at(previous.seconds);
+                let speed = clip_beats / (beat - previous.beat);
+                if beat <= previous.beat + 1e-9
+                    || !(MIN_WARP_SPEED..=MAX_WARP_SPEED).contains(&speed)
+                {
+                    continue;
+                }
+            }
+            out.push(WarpMarker {
+                seconds: marker.seconds,
+                beat,
+            });
+        }
+        Cow::Owned(out)
+    }
+
+    /// Where the stored marker `index` plays, which differs from its stored
+    /// beat while warp quantise is on.
+    pub fn marker_beat(&self, index: usize) -> Option<f64> {
+        let marker = self.markers.get(index)?;
+        Some(
+            self.quantise
+                .as_ref()
+                .map_or(marker.beat, |q| q.apply(marker.beat)),
+        )
+    }
+
+    /// The feel of this clip: how far its stored markers sit from the sixteenth
+    /// grid, over a bar. Pin the clip's transients with markers to capture how
+    /// it swings. `None` without markers.
+    pub fn groove(&self) -> Option<Groove> {
+        Groove::from_beats(
+            self.markers.iter().map(|m| m.beat),
+            GROOVE_SLOT,
+            GROOVE_SLOTS,
+        )
+    }
+
+    /// This warp with warp quantise made permanent: the markers are the ones
+    /// that played, and quantise is off.
+    pub fn baked(&self) -> Self {
+        Self {
+            markers: self.effective_markers().into_owned(),
+            quantise: None,
+            ..self.clone()
+        }
     }
 
     /// The beat of the clip (the beats warp markers are given in, with the
@@ -354,6 +575,9 @@ impl ClipWarp {
                 return Some("a warp marker is not at a real place");
             }
         }
+        if let Some(problem) = self.quantise.as_ref().and_then(WarpQuantise::problem) {
+            return Some(problem);
+        }
         if let Some(region) = self.loop_region
             && (!region.start.is_finite()
                 || !region.end.is_finite()
@@ -381,7 +605,7 @@ impl ClipWarp {
             return None;
         }
         let knots: Vec<_> = self
-            .markers
+            .effective_markers()
             .iter()
             .map(|m| (self.tempo.beats_at(m.seconds), m.beat))
             .collect();
@@ -406,7 +630,7 @@ impl ClipWarp {
         // reaches a tempo change.
         let mut times: Vec<f64> = vec![0.0];
         times.extend(self.tempo.points.iter().map(|p| p.seconds));
-        times.extend(self.markers.iter().map(|m| m.seconds));
+        times.extend(self.effective_markers().iter().map(|m| m.seconds));
         if axis == WarpAxis::Seconds
             && let Some(markers) = &markers
         {
@@ -761,6 +985,136 @@ mod tests {
         });
         assert_eq!(warp.markers.len(), 1);
         assert_eq!(warp.markers[0].beat, 2.5);
+    }
+
+    fn marked(beats: &[(f64, f64)]) -> ClipWarp {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        for &(seconds, beat) in beats {
+            warp.set_marker(WarpMarker { seconds, beat });
+        }
+        warp
+    }
+
+    #[test]
+    fn quantise_moves_the_markers_that_play_and_leaves_the_stored_ones() {
+        let mut warp = marked(&[(0.5, 1.1), (1.0, 1.9), (1.6, 3.4)]);
+        let stored = warp.markers.clone();
+        warp.quantise = Some(WarpQuantise {
+            grid: 0.5,
+            amount: 1.0,
+            ..WarpQuantise::default()
+        });
+        let beats: Vec<f64> = warp.effective_markers().iter().map(|m| m.beat).collect();
+        assert_eq!(beats, vec![1.0, 2.0, 3.5]);
+        assert_eq!(warp.markers, stored);
+        // The curve follows the moved markers.
+        close(warp.beat_at(0.5), 1.0);
+        close(warp.beat_at(1.0), 2.0);
+        // Half the amount is half the way.
+        warp.quantise.as_mut().unwrap().amount = 0.5;
+        close(warp.marker_beat(0).unwrap(), 1.05);
+        // Off, the original timing is back.
+        warp.quantise = None;
+        close(warp.beat_at(0.5), 1.1);
+        assert_eq!(warp.problem(), None);
+    }
+
+    #[test]
+    fn quantise_never_makes_markers_that_cannot_play() {
+        // The first two both land on beat 1.
+        let mut warp = marked(&[(0.5, 0.9), (0.6, 1.1), (1.0, 1.9)]);
+        warp.quantise = Some(WarpQuantise {
+            grid: 1.0,
+            ..WarpQuantise::default()
+        });
+        let kept = warp.effective_markers();
+        assert_eq!(kept.len(), 2);
+        assert_eq!((kept[0].seconds, kept[1].seconds), (0.5, 1.0));
+        assert_eq!(warp.problem(), None);
+        warp.curve();
+    }
+
+    #[test]
+    fn baking_makes_the_quantised_markers_the_stored_ones() {
+        let mut warp = marked(&[(0.5, 1.1), (1.0, 1.9)]);
+        warp.quantise = Some(WarpQuantise {
+            grid: 1.0,
+            ..WarpQuantise::default()
+        });
+        let baked = warp.baked();
+        assert_eq!(baked.quantise, None);
+        assert_eq!(baked.markers, warp.effective_markers().into_owned());
+        for t in [0.0, 0.3, 0.5, 0.8, 1.0, 2.0] {
+            close(baked.beat_at(t), warp.beat_at(t));
+        }
+    }
+
+    #[test]
+    fn a_groove_is_the_mean_distance_of_beats_from_their_slots() {
+        // Offbeat eighths late by a 32nd; the downbeats straight.
+        let beats = [0.0, 0.5625, 1.0, 1.5625, 4.0, 4.5625];
+        let groove = Groove::from_beats(beats, 0.25, 16).unwrap();
+        close(groove.offset_at(0.5), 0.0625);
+        close(groove.offset_at(1.5), 0.0625);
+        // A bar later is the same slot.
+        close(groove.offset_at(4.5), 0.0625);
+        close(groove.offset_at(1.0), 0.0);
+        // Off the grid there is no offset.
+        close(groove.offset_at(0.6), 0.0);
+        assert!(!groove.is_flat());
+        assert!(Groove::from_beats([], 0.25, 16).is_none());
+        let straight = Groove::from_beats([0.0, 1.0, 2.0], 0.25, 16).unwrap();
+        assert!(straight.is_flat());
+    }
+
+    #[test]
+    fn a_groove_puts_its_feel_on_the_grid() {
+        let feel = marked(&[(0.0, 0.0), (0.25, 0.5625), (0.5, 1.0)]);
+        let groove = feel.groove().unwrap();
+        // Another clip with straight, slightly loose markers.
+        let mut warp = marked(&[(0.0, 0.02), (0.25, 0.49), (0.5, 1.03)]);
+        warp.quantise = Some(WarpQuantise {
+            grid: 0.5,
+            groove: Some(groove),
+            ..WarpQuantise::default()
+        });
+        let beats: Vec<f64> = warp.effective_markers().iter().map(|m| m.beat).collect();
+        assert_eq!(beats.len(), 3);
+        close(beats[0], 0.0);
+        close(beats[1], 0.5625);
+        close(beats[2], 1.0);
+        // Half the groove is half the offset.
+        warp.quantise.as_mut().unwrap().groove_amount = 0.5;
+        close(warp.marker_beat(1).unwrap(), 0.53125);
+    }
+
+    #[test]
+    fn a_bad_quantise_is_a_problem() {
+        let mut warp = marked(&[(0.5, 1.0)]);
+        warp.quantise = Some(WarpQuantise {
+            grid: 0.0,
+            ..WarpQuantise::default()
+        });
+        assert!(warp.problem().is_some());
+        warp.quantise = Some(WarpQuantise {
+            amount: 1.5,
+            ..WarpQuantise::default()
+        });
+        assert!(warp.problem().is_some());
+    }
+
+    #[test]
+    fn quantise_round_trips_through_ron() {
+        let mut warp = marked(&[(0.5, 1.0)]);
+        warp.quantise = Some(WarpQuantise {
+            groove: Groove::from_beats([0.5625], 0.25, 16),
+            ..WarpQuantise::default()
+        });
+        let text = ron::to_string(&warp).unwrap();
+        assert_eq!(ron::from_str::<ClipWarp>(&text).unwrap(), warp);
+        // Files from before quantise load.
+        let plain = ron::to_string(&marked(&[(0.5, 1.0)])).unwrap();
+        assert_eq!(ron::from_str::<ClipWarp>(&plain).unwrap().quantise, None);
     }
 
     #[test]

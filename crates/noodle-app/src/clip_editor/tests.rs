@@ -385,3 +385,115 @@ fn the_playhead_goes_round_inside_the_loop_brace() {
     warp.loop_region = None;
     assert_eq!(fold_into_loop(&warp, 5.5), 5.5);
 }
+
+fn apply(h: &mut H, command: Option<Command>) {
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(command.expect("a command"))]);
+    h.run();
+}
+
+#[test]
+fn quantise_moves_the_flag_that_plays_and_keeps_the_one_that_was_set() {
+    let mut h = rig(true);
+    with_markers(&mut h, &[(2.0, 4.1)]);
+    let clip = h.state().clip;
+    let command = clip_panel::change_quantise(h.state().session.project(), clip, |q| {
+        q.grid = 1.0;
+    });
+    apply(&mut h, command);
+    let w = warp(&h);
+    assert_eq!(w.markers[0].beat, 4.1, "the stored marker is untouched");
+    assert_eq!(w.marker_beat(0), Some(4.0));
+
+    // The flag is where it plays, so that is where it is picked up.
+    let (from, to) = (flag(&h, 4.0), flag(&h, 5.0));
+    drag_between(&mut h, Modifiers::NONE, from, to);
+    let w = warp(&h);
+    assert_eq!(w.markers[0].beat, 5.0);
+    assert!(w.quantise.is_some());
+
+    // Baking keeps what played; turning quantise off brings the stored beat.
+    let clip = h.state().clip;
+    let baked = clip_panel::bake_quantise(h.state().session.project(), clip);
+    apply(&mut h, baked);
+    let w = warp(&h);
+    assert_eq!((w.quantise.clone(), w.markers[0].beat), (None, 5.0));
+}
+
+#[test]
+fn pinning_transients_marks_each_without_changing_the_sound() {
+    let mut h = rig(true);
+    let before = warp(&h);
+    let onsets: Vec<f64> = (0..8).map(|i| i as f64 * 0.5).collect();
+    let clip = h.state().clip;
+    let command = clip_panel::pin_transients(h.state().session.project(), clip, &onsets);
+    apply(&mut h, command);
+    let after = warp(&h);
+    assert_eq!(after.markers.len(), 8);
+    for t in [0.0, 0.3, 0.77, 1.5, 3.9] {
+        assert!((after.beat_at(t) - before.beat_at(t)).abs() < 1e-9);
+    }
+    // Nothing left to pin.
+    let clip = h.state().clip;
+    assert!(clip_panel::pin_transients(h.state().session.project(), clip, &onsets).is_none());
+}
+
+#[test]
+fn a_groove_can_be_copied_or_followed_from_another_clip() {
+    let mut h = rig(true);
+    let source_clip = {
+        let rig = h.state_mut();
+        let warp = rig.session.project().next_warp_id();
+        let clip = rig.session.project().next_clip_id();
+        let mut audio = Clip::audio(NodeId(1), Tick(0), "other.wav", u64::from(RATE));
+        if let noodle_core::ClipContent::Audio(a) = &mut audio.content {
+            a.warp = Some(warp);
+        }
+        let mut swung = ClipWarp::at_tempo(120.0);
+        swung.markers = vec![WarpMarker {
+            seconds: 0.28125,
+            beat: 0.5625,
+        }];
+        rig.session.edit([Edit::Apply(Command::Batch(vec![
+            Command::AddWarp {
+                id: warp,
+                warp: swung,
+            },
+            Command::AddClip {
+                id: clip,
+                clip: audio,
+            },
+        ]))]);
+        clip
+    };
+    let (this, other) = {
+        let rig = h.state();
+        let project = rig.session.project();
+        (rig.clip, project.warp_of(source_clip).unwrap().0)
+    };
+    let sources = clip_panel::groove_sources(h.state().session.project(), this);
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].0, other);
+
+    let command = clip_panel::take_groove(h.state().session.project(), this, other, true);
+    apply(&mut h, command);
+    let q = warp(&h).quantise.unwrap();
+    assert_eq!(q.groove_from, Some(other));
+    assert!((q.groove.unwrap().offset_at(0.5) - 0.0625).abs() < 1e-9);
+
+    // The source's markers change; the follower's groove follows.
+    let command = h
+        .state()
+        .session
+        .project()
+        .warp_edit(source_clip, |w| w.markers[0].beat = 0.5);
+    apply(&mut h, command.ok());
+    let q = warp(&h).quantise.unwrap();
+    assert!(q.groove.unwrap().offset_at(0.5).abs() < 1e-9);
+
+    // A copy does not follow.
+    let command = clip_panel::take_groove(h.state().session.project(), this, other, false);
+    apply(&mut h, command);
+    assert_eq!(warp(&h).quantise.unwrap().groove_from, None);
+}

@@ -280,6 +280,7 @@ impl Project {
         self.check_warp(id, &warp)?;
         self.warps.insert(id, warp);
         self.next_warp_id = self.next_warp_id.max(id.0 + 1);
+        self.sync_grooves(id);
         Ok(())
     }
 
@@ -287,7 +288,9 @@ impl Project {
         if self.clips_using(id).next().is_some() {
             return Err(EditError::WarpInUse(id));
         }
-        self.warps.remove(&id).ok_or(EditError::NoSuchWarp(id))
+        let warp = self.warps.remove(&id).ok_or(EditError::NoSuchWarp(id))?;
+        self.sync_grooves(id);
+        Ok(warp)
     }
 
     pub(crate) fn replace_warp(
@@ -299,10 +302,55 @@ impl Project {
             return Err(EditError::NoSuchWarp(id));
         }
         self.check_warp(id, &warp)?;
-        Ok(std::mem::replace(
-            self.warps.get_mut(&id).expect("checked"),
-            warp,
-        ))
+        let old = std::mem::replace(self.warps.get_mut(&id).expect("checked"), warp);
+        self.sync_grooves(id);
+        Ok(old)
+    }
+
+    /// Brings the grooves that follow another warp up to date after warp `id`
+    /// changed: `id` takes the groove of the warp it follows, and every warp
+    /// that follows `id` takes `id`'s. The groove is derived, so undo and redo
+    /// need not record it. A warp follows only the markers of another, never
+    /// that warp's own quantise, so two that follow each other settle at once.
+    fn sync_grooves(&mut self, id: WarpId) {
+        let followers: Vec<WarpId> = self
+            .warps
+            .iter()
+            .filter(|&(&other, warp)| {
+                other == id
+                    || warp
+                        .quantise
+                        .as_ref()
+                        .is_some_and(|q| q.groove_from == Some(id))
+            })
+            .map(|(&other, _)| other)
+            .collect();
+        for follower in followers {
+            let Some(source) = self
+                .warps
+                .get(&follower)
+                .and_then(|w| w.quantise.as_ref()?.groove_from)
+            else {
+                continue;
+            };
+            let lent = if source == follower {
+                None
+            } else {
+                self.warps.get(&source).map(ClipWarp::groove)
+            };
+            let quantise = self
+                .warps
+                .get_mut(&follower)
+                .and_then(|w| w.quantise.as_mut())
+                .expect("follows a groove");
+            match lent {
+                // A source with no markers (yet) lends nothing; the last
+                // groove stays.
+                Some(groove) => quantise.groove = groove.or(quantise.groove.take()),
+                // Itself, or a warp that is gone.
+                None => quantise.groove_from = None,
+            }
+        }
     }
 
     /// The command that changes how audio clip `clip` is warped, which
@@ -558,6 +606,11 @@ impl Project {
         };
         for (id, warp) in &project.warps {
             project.check_warp(*id, warp).map_err(LoadError::Broken)?;
+        }
+        let mut project = project;
+        let ids: Vec<WarpId> = project.warps.keys().copied().collect();
+        for id in ids {
+            project.sync_grooves(id);
         }
         for (id, clip) in &project.clips {
             project.check_clip(*id, clip).map_err(LoadError::Broken)?;
@@ -1235,6 +1288,83 @@ mod tests {
             ]),
         );
         (project, history, player, first, second, warp)
+    }
+
+    #[test]
+    fn a_linked_groove_follows_the_clip_it_is_taken_from() {
+        use crate::{WarpMarker, WarpQuantise};
+        let (mut project, mut history, _, _, second, source) = warped_pair();
+        let follower = project.next_warp_id();
+        let mut warp = crate::ClipWarp::at_tempo(100.0);
+        warp.quantise = Some(WarpQuantise {
+            groove_from: Some(source),
+            ..WarpQuantise::default()
+        });
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddWarp { id: follower, warp },
+        );
+        let _ = second;
+        // The source has no markers: nothing to lend yet.
+        assert_eq!(
+            project
+                .warp(follower)
+                .unwrap()
+                .quantise
+                .as_ref()
+                .unwrap()
+                .groove,
+            None
+        );
+
+        let mut swung = project.warp(source).unwrap().clone();
+        swung.markers = vec![WarpMarker {
+            seconds: 0.5,
+            beat: 1.0625,
+        }];
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetWarp {
+                id: source,
+                warp: swung,
+            },
+        );
+        let groove = |p: &Project| {
+            p.warp(follower)
+                .unwrap()
+                .quantise
+                .as_ref()
+                .unwrap()
+                .groove
+                .clone()
+        };
+        let lent = groove(&project).expect("the groove arrived");
+        assert!((lent.offset_at(1.0) - 0.0625).abs() < 1e-9);
+
+        // Undo takes the groove back with the markers.
+        history.undo(&mut project).unwrap();
+        assert!(project.warp(source).unwrap().markers.is_empty());
+        assert_eq!(
+            project
+                .warp(follower)
+                .unwrap()
+                .quantise
+                .as_ref()
+                .unwrap()
+                .groove,
+            Some(lent.clone())
+        );
+        history.redo(&mut project).unwrap();
+        assert_eq!(groove(&project), Some(lent));
+
+        // It survives a save; and a link to a warp that is gone is dropped.
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert!(
+            loaded.warp(follower).is_none(),
+            "unused warps are not saved"
+        );
     }
 
     #[test]
