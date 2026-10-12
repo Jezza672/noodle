@@ -26,6 +26,9 @@ use crate::priority::{Priority, raise_current_thread};
 /// might want is worse than that.
 const SPIN: Duration = Duration::from_micros(40);
 
+/// What the workers' threads are named, followed by their index.
+pub const WORKER_THREAD_PREFIX: &str = "noodle-worker-";
+
 /// A step that a thread has taken.
 const CLAIMED: u32 = u32::MAX;
 
@@ -215,6 +218,9 @@ struct Shared {
     shutdown: AtomicBool,
     /// Whether each worker is (about to be) parked.
     parked: Box<[AtomicBool]>,
+    /// Whether each worker has been through a park and a wake-up at least
+    /// once, which is where a thread first touches the system's parking.
+    cycled: Box<[AtomicBool]>,
     job: UnsafeCell<Option<Job>>,
     /// How many workers the system gave real-time priority, and how many a
     /// raised one (see [`crate::raise_current_thread`]). Set as each worker
@@ -257,6 +263,7 @@ impl Workers {
             inflight: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
             parked: (0..count).map(|_| AtomicBool::new(false)).collect(),
+            cycled: (0..count).map(|_| AtomicBool::new(false)).collect(),
             job: UnsafeCell::new(None),
             realtime: AtomicUsize::new(0),
             raised: AtomicUsize::new(0),
@@ -266,7 +273,7 @@ impl Workers {
             .map(|index| {
                 let shared = shared.clone();
                 thread::Builder::new()
-                    .name(format!("noodle-worker-{index}"))
+                    .name(format!("{WORKER_THREAD_PREFIX}{index}"))
                     .spawn(move || worker(&shared, index, flush, period))
                     .expect("spawning a worker thread")
             })
@@ -298,6 +305,18 @@ impl Workers {
             self.shared.realtime.load(Ordering::Relaxed),
             self.shared.raised.load(Ordering::Relaxed),
         )
+    }
+
+    /// How many workers have parked and woken at least once. A worker's
+    /// first park is its first use of the system's parking, so a caller that
+    /// must not see it (an allocation test) waits for this to reach
+    /// [`count`](Self::count) before it starts watching.
+    pub(crate) fn cycled(&self) -> usize {
+        self.shared
+            .cycled
+            .iter()
+            .filter(|c| c.load(Ordering::Acquire))
+            .count()
     }
 
     /// How many threads help the audio thread.
@@ -386,6 +405,7 @@ fn worker(shared: &Shared, index: usize, flush: Flush, period: Duration) {
                 && !shared.shutdown.load(Ordering::SeqCst)
             {
                 thread::park();
+                shared.cycled[index].store(true, Ordering::Release);
             }
             shared.parked[index].store(false, Ordering::SeqCst);
         }

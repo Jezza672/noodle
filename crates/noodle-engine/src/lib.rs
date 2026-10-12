@@ -19,6 +19,7 @@ mod lane;
 mod node;
 mod offline;
 mod parallel;
+pub use parallel::WORKER_THREAD_PREFIX;
 mod param;
 mod plan;
 mod priority;

@@ -456,6 +456,14 @@ impl Processor {
         self.workers.as_ref().map_or((0, 0), Workers::priorities)
     }
 
+    /// How many workers have parked and woken at least once (see
+    /// [`workers`](Self::workers) for how many there are). Idle workers park
+    /// after a moment; a test that counts allocations waits until all have,
+    /// so the first use of parking is not inside what it counts.
+    pub fn workers_cycled(&self) -> usize {
+        self.workers.as_ref().map_or(0, Workers::cycled)
+    }
+
     /// How many worker threads help the audio thread.
     pub fn workers(&self) -> usize {
         self.workers.as_ref().map_or(0, Workers::count)
