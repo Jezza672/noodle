@@ -74,26 +74,58 @@ impl Correlation {
     }
 }
 
+/// The metrics of one pair, in [`Report::features`](crate::Report::features)
+/// order.
+pub type Features = Vec<(&'static str, f64)>;
+
+/// Scores every pair, spread over the available cores (decoding and the
+/// metrics dominate the time of a validation run). Results are in row order.
+pub fn measure(rows: &[Row]) -> Result<Vec<Features>, String> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(rows.len().max(1));
+    let chunk = rows.len().div_ceil(threads).max(1);
+    let parts: Vec<Result<Vec<Features>, String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = rows
+            .chunks(chunk)
+            .map(|part| scope.spawn(move || part.iter().map(measure_one).collect()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a measuring thread panicked"))
+            .collect()
+    });
+    let mut out = Vec::with_capacity(rows.len());
+    for part in parts {
+        out.extend(part?);
+    }
+    Ok(out)
+}
+
+fn measure_one(row: &Row) -> Result<Features, String> {
+    let r = noodle_io::decode_file(&row.reference)
+        .map_err(|e| format!("{}: {e}", row.reference.display()))?;
+    let t =
+        noodle_io::decode_file(&row.test).map_err(|e| format!("{}: {e}", row.test.display()))?;
+    if r.sample_rate != t.sample_rate {
+        return Err(format!(
+            "{}: sample rate differs from its reference",
+            row.test.display()
+        ));
+    }
+    Ok(evaluate(
+        Clip::from_audio(&r),
+        Clip::from_audio(&t),
+        &TimeMap::Speed(row.speed),
+    )
+    .features())
+}
+
 pub fn run(rows: &[Row]) -> Result<Vec<Correlation>, String> {
     let mut per_metric: BTreeMap<&'static str, Vec<(f64, f64, f64)>> = BTreeMap::new();
     let mut order: Vec<&'static str> = Vec::new();
-    for row in rows {
-        let r = noodle_io::decode_file(&row.reference)
-            .map_err(|e| format!("{}: {e}", row.reference.display()))?;
-        let t = noodle_io::decode_file(&row.test)
-            .map_err(|e| format!("{}: {e}", row.test.display()))?;
-        if r.sample_rate != t.sample_rate {
-            return Err(format!(
-                "{}: sample rate differs from its reference",
-                row.test.display()
-            ));
-        }
-        let report = evaluate(
-            Clip::from_audio(&r),
-            Clip::from_audio(&t),
-            &TimeMap::Speed(row.speed),
-        );
-        for (name, value) in report.features() {
+    for (row, features) in rows.iter().zip(measure(rows)?) {
+        for (name, value) in features {
             if !order.contains(&name) {
                 order.push(name);
             }

@@ -15,10 +15,12 @@
 
 pub mod borrowed;
 pub mod clip;
+pub mod fit;
 pub mod harness;
 pub mod level;
 pub mod onsets;
 pub mod paper;
+pub mod perceptual;
 pub mod phasiness;
 pub mod pitch;
 pub mod probe;
