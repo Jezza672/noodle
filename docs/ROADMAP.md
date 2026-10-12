@@ -692,7 +692,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate) and batch 3 (the five songs) are built. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`) are a before and after. Batch 4 is not started.
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate), batch 3 (the five songs) and batch 4 (borrowed truth) are built. Batch 4 is open on one item: `eval/clips.csv` has no clips yet, so the speech, instrument and mix cases are untried; only the probes have run against the reference stretchers. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`, `borrowed.json`) are a before and after.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
@@ -740,17 +740,27 @@ shows a before and after. Four batches:
    check wiring only, like the probes'. Stems are not scored yet.)
 4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
    speech, solo instrument and full-mix clips (pinned checksums), a gitignored
-   `eval/local/` for any file dropped in, and a dev script that makes reference
-   stretches with Rubber Band R3, Signalsmith and SoundTouch (whichever install),
-   each stretcher's latency measured and removed before scoring and the audio
-   cached outside git, with only metric numbers committed. There is no true time
-   map here, so the reference stretcher's own map aligns the audio. Scores are
-   relative to the references' spread, with reference-free checks beside them
-   (onsets land where the tempo map says, pitch is kept against the source,
-   loudness is kept); hard thresholds come only from the known-truth regime.
-   Open: the ramp, step and wobble cases need references that accept a time map.
-   Rubber Band does (`--timemap`); SoundTouch and Signalsmith's simple API are
-   constant-ratio, so varying tempo may have one reference and no spread.
+   `eval/local/` for any file dropped in, and a `noodle-eval borrowed` command
+   that makes reference stretches with Rubber Band R3, Signalsmith and
+   SoundTouch (whichever install), each stretcher's latency measured and
+   removed before scoring and the audio cached outside git, with only metric
+   numbers committed. There is no true time map here, so the map comes from the
+   tempo case, the same one asked of every contender. Scores are relative to the
+   references' spread, with reference-free checks beside them (onsets land where
+   the tempo map says, pitch is kept against the source, loudness is kept); hard
+   thresholds come only from the known-truth regime. The ramp, step and wobble
+   cases need references that accept a time map: Rubber Band does
+   (`--timemap`), SoundTouch and Signalsmith's simple API are constant-ratio, so
+   varying tempo has one reference and no spread. (Built: all of it, with the
+   one change that Rubber Band's R3 engine is constant-ratio only, because its
+   3.3.0 offline R3 returns the wrong length with a time map; its R2 engine is
+   the changing-tempo reference. `borrowed --probes` runs the references on the
+   probes too, where the native render is known, and `baseline/borrowed.json`
+   holds those rows: the reference numbers the CI gate will measure against.
+   Not built: the clip list in `eval/clips.csv` is empty, because the build
+   environment could not reach a host with CC0 audio to pick clips and pin
+   their checksums; add rows, run `eval/fetch.sh --pin`, and paste the
+   checksums.)
 
 Out of scope: a learned quality predictor, and the authors' MATLAB evaluation
 code.

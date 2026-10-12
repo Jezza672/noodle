@@ -258,12 +258,7 @@ impl Harness {
         self.export_wav(&format!("{tag}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
-            let (tempo, mode) = match method {
-                Method::Auto => auto_choice(&analysis, &target),
-                Method::Grain => (TempoCurve::constant(self.source_bpm), WarpMode::Grain),
-                Method::Beats => (TempoCurve::constant(self.source_bpm), WarpMode::Beats),
-                Method::Repitch => (TempoCurve::constant(self.source_bpm), WarpMode::Repitch),
-            };
+            let (tempo, mode) = self.choice(method, &analysis, &target);
             let warped = self
                 .warp(&source, tempo, mode, &target, frames)
                 .map_err(|e| format!("{name} {} {}: {e}", case.name(), method.name()))?;
@@ -311,6 +306,23 @@ impl Harness {
             }
         }
         Ok(rows)
+    }
+
+    /// The clip tempo and mode `method` gives a clip: the true source tempo
+    /// for the fixed modes, and for [`Method::Auto`] what `analysis` finds.
+    pub fn choice(
+        &self,
+        method: Method,
+        analysis: &Analysis,
+        target: &TempoMap,
+    ) -> (TempoCurve, WarpMode) {
+        let fixed = |mode| (TempoCurve::constant(self.source_bpm), mode);
+        match method {
+            Method::Auto => auto_choice(analysis, target),
+            Method::Grain => fixed(WarpMode::Grain),
+            Method::Beats => fixed(WarpMode::Beats),
+            Method::Repitch => fixed(WarpMode::Repitch),
+        }
     }
 
     fn export_wav(&self, name: &str, samples: &[f32]) -> Result<(), String> {
@@ -386,7 +398,7 @@ pub fn auto_choice(analysis: &Analysis, timeline: &TempoMap) -> (TempoCurve, War
 
 /// What the app learns from a file's audio: the same analysis it runs on
 /// import, over the same stretch of the file.
-fn analyse(stereo: &[f32], rate: u32) -> Analysis {
+pub fn analyse(stereo: &[f32], rate: u32) -> Analysis {
     let mono: Vec<f32> = stereo
         .as_chunks::<2>()
         .0

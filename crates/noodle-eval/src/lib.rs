@@ -13,6 +13,7 @@
 //! diagnostics, which say more about *what* went wrong. [`validate`] checks
 //! all of them against the authors' published listening-test dataset.
 
+pub mod borrowed;
 pub mod clip;
 pub mod harness;
 pub mod level;
@@ -21,6 +22,7 @@ pub mod paper;
 pub mod phasiness;
 pub mod pitch;
 pub mod probe;
+pub mod refs;
 pub mod report;
 pub mod song;
 pub mod spectral;
