@@ -680,7 +680,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Nothing built yet.
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate) is built; its validation against the listening-test dataset runs through `noodle-eval validate` but the dataset itself (IEEE DataPort, login to download) has not been run yet. Batches 2 to 4 are not started.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
