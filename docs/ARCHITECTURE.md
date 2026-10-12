@@ -685,11 +685,17 @@ render comes out the same every time and whatever the block size.
 the hub's streams, which is cheap enough to follow a marker being dragged;
 turning it off brings the lanes back.
 
-The **stretcher** (`stretch.rs`) is WSOLA over the section's `WarpMap`: Hann
-grains of 40 ms, hopped by 20 ms in the output, each read from the source at
-natural speed where the map puts it and moved by up to half a hop to the offset
+The **stretcher** (`stretch.rs`) is WSOLA over the section's `WarpMap`, run on
+two bands that are added at the end. A linear-phase low-pass at 150 Hz splits
+the source (`Split`, filtered a block at a time and cached); the bass goes to one
+band and the rest (source minus bass) to the other. One set of grains can't
+serve both: the shift that lines up a vocal's period is a random phase jump for
+the bass under it, which detunes and pumps a bass line. Each band has Hann
+grains read from the source at natural speed where the map puts it and moved to the offset
 that best continues the grain before (normalised correlation of the mixed-down
-audio, coarse then fine). All channels use the same offsets; the output is
+audio, coarse then fine). The upper band's grains are 40 ms (hopped by 20 ms
+in the output) and move up to 10 ms; the bass band's are 100 ms and move up to
+12.5 ms, half a period of a 40 Hz note. All channels use the same offsets; the output is
 stereo. A grain that would run past its part of the source is moved back to
 repeat the last stretch of it, so the end of the section doesn't go silent.
 After a seek it renders three hops it throws away. **Beats** cuts the section at

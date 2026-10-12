@@ -19,7 +19,7 @@
 //! (see `ahead.rs`). It allocates freely and is not real-time safe.
 
 use std::f32::consts::{FRAC_PI_2, PI};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::warp::WarpMap;
 
@@ -32,11 +32,21 @@ pub trait Source {
     fn read(&mut self, start: i64, out: &mut [f32]);
 }
 
-/// How long a grain is, in seconds. A hop is half of it.
-const GRAIN_SECONDS: f64 = 0.04;
-/// How far a grain may be moved from where the map puts it, as a fraction of
-/// the hop, to line up with the one before.
-const SEARCH: f64 = 0.5;
+/// The crossover between the two bands, in Hz.
+const SPLIT_HZ: f64 = 150.0;
+/// Taps of the linear-phase filter that splits the bands (odd).
+const SPLIT_TAPS: usize = 2047;
+/// Frames of filtered source kept at a time.
+const SPLIT_BLOCK: usize = 8192;
+/// The mids and highs: a grain this long (a hop is half of it), moved at most
+/// this far from where the map puts it, to line up with the one before.
+const HIGH_GRAIN_SECONDS: f64 = 0.04;
+const HIGH_SEARCH_SECONDS: f64 = 0.010;
+/// The bass: a grain of several periods of the lowest notes, free to move
+/// half a period of a 40 Hz note. Aligned on its own, so a bass line isn't
+/// knocked out of phase by whatever the mids need.
+const LOW_GRAIN_SECONDS: f64 = 0.1;
+const LOW_SEARCH_SECONDS: f64 = 0.0125;
 /// The correlation search first looks at every this-many-th offset (and
 /// every second sample), then refines around the best.
 const COARSE_STEP: i64 = 4;
@@ -87,7 +97,7 @@ impl Segment {
     }
 }
 
-pub struct Stretcher<S> {
+struct Band<S> {
     source: S,
     channels: usize,
     map: Arc<WarpMap>,
@@ -119,15 +129,209 @@ pub struct Stretcher<S> {
     frames: Vec<f32>,
 }
 
+/// Both bands of a clip, stretched on their own and added: the bass (below
+/// [`SPLIT_HZ`]) with long grains that line up on the bass, everything else
+/// with short ones. One set of grains can't do both: the shift that lines up
+/// a vocal's period is a random phase jump for the bass under it, which
+/// detunes and pumps the bass line.
+pub struct Stretcher<S> {
+    low: Band<LowSource<S>>,
+    high: Band<HighSource<S>>,
+    scratch: Vec<f32>,
+}
+
 impl<S: Source> Stretcher<S> {
     /// A stretcher for the section `map` describes, `total` output frames
     /// long. `onsets` are the source's transients, in source frames (Beats
     /// mode), or empty (Grain). The stretcher starts at output frame 0.
     pub fn new(source: S, map: Arc<WarpMap>, onsets: &[u64], total: u64, rate: f32) -> Self {
+        let split = Arc::new(Mutex::new(Split::new(source, rate)));
+        let low = Band::new(
+            LowSource(split.clone()),
+            map.clone(),
+            onsets,
+            total,
+            rate,
+            (LOW_GRAIN_SECONDS, LOW_SEARCH_SECONDS),
+        );
+        let high = Band::new(
+            HighSource(split),
+            map,
+            onsets,
+            total,
+            rate,
+            (HIGH_GRAIN_SECONDS, HIGH_SEARCH_SECONDS),
+        );
+        Self {
+            low,
+            high,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Moves to output frame `pos`. The grains in the few hops before it are
+    /// rendered and dropped, so that what follows has settled.
+    pub fn seek(&mut self, pos: u64) {
+        self.low.seek(pos);
+        self.high.seek(pos);
+    }
+
+    /// Fills `out` (stereo, interleaved) with the next frames and returns how
+    /// many it wrote: fewer than asked for only at the end of the clip.
+    pub fn read(&mut self, out: &mut [f32]) -> usize {
+        let n = self.low.read(out);
+        self.scratch.resize(out.len(), 0.0);
+        let m = self.high.read(&mut self.scratch);
+        debug_assert_eq!(n, m);
+        let n = n.min(m);
+        for (o, h) in out[..n * 2].iter_mut().zip(&self.scratch) {
+            *o += h;
+        }
+        n
+    }
+}
+
+/// The source and its bass, shared by the two bands. The bass is a
+/// linear-phase low-pass, filtered a block at a time and kept, since the
+/// grains read the same audio again and again.
+struct Split<S> {
+    source: S,
+    channels: usize,
+    /// Half the filter, centre first.
+    kernel: Vec<f32>,
+    /// Filtered blocks (interleaved), oldest first.
+    blocks: Vec<(i64, Vec<f32>)>,
+    raw: Vec<f32>,
+    lane: Vec<f32>,
+}
+
+impl<S: Source> Split<S> {
+    fn new(source: S, rate: f32) -> Self {
+        let channels = source.channels().max(1);
+        let half = SPLIT_TAPS / 2;
+        let cutoff = SPLIT_HZ / f64::from(rate);
+        let mut kernel: Vec<f64> = (0..=half)
+            .map(|k| {
+                let x = k as f64;
+                let sinc = if k == 0 {
+                    2.0 * cutoff
+                } else {
+                    (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
+                };
+                let t = std::f64::consts::PI * (x + half as f64) / half as f64;
+                // Blackman window.
+                sinc * (0.42 - 0.5 * t.cos() + 0.08 * (2.0 * t).cos())
+            })
+            .collect();
+        let sum = kernel[0] + 2.0 * kernel[1..].iter().sum::<f64>();
+        kernel.iter_mut().for_each(|k| *k /= sum);
+        Self {
+            source,
+            channels,
+            kernel: kernel.into_iter().map(|k| k as f32).collect(),
+            blocks: Vec::new(),
+            raw: Vec::new(),
+            lane: Vec::new(),
+        }
+    }
+
+    fn block(&mut self, index: i64) -> usize {
+        if let Some(at) = self.blocks.iter().position(|(i, _)| *i == index) {
+            return at;
+        }
+        let half = SPLIT_TAPS / 2;
+        let channels = self.channels;
+        let first = index * SPLIT_BLOCK as i64;
+        self.raw.resize((SPLIT_BLOCK + 2 * half) * channels, 0.0);
+        self.source.read(first - half as i64, &mut self.raw);
+        let mut filtered = vec![0.0f32; SPLIT_BLOCK * channels];
+        for channel in 0..channels {
+            self.lane.clear();
+            self.lane
+                .extend(self.raw.iter().skip(channel).step_by(channels));
+            for n in 0..SPLIT_BLOCK {
+                let centre = n + half;
+                let mut sum = self.kernel[0] * self.lane[centre];
+                let before = &self.lane[n..centre];
+                let after = &self.lane[centre + 1..=centre + half];
+                for ((k, b), a) in self.kernel[1..].iter().zip(before.iter().rev()).zip(after) {
+                    sum += k * (b + a);
+                }
+                filtered[n * channels + channel] = sum;
+            }
+        }
+        if self.blocks.len() >= 6 {
+            self.blocks.remove(0);
+        }
+        self.blocks.push((index, filtered));
+        self.blocks.len() - 1
+    }
+
+    fn low(&mut self, start: i64, out: &mut [f32]) {
+        let channels = self.channels;
+        let mut done = 0;
+        let frames = out.len() / channels;
+        while done < frames {
+            let at = start + done as i64;
+            let index = at.div_euclid(SPLIT_BLOCK as i64);
+            let offset = at.rem_euclid(SPLIT_BLOCK as i64) as usize;
+            let n = (SPLIT_BLOCK - offset).min(frames - done);
+            let block = self.block(index);
+            out[done * channels..(done + n) * channels]
+                .copy_from_slice(&self.blocks[block].1[offset * channels..(offset + n) * channels]);
+            done += n;
+        }
+    }
+}
+
+struct LowSource<S>(Arc<Mutex<Split<S>>>);
+struct HighSource<S>(Arc<Mutex<Split<S>>>);
+
+impl<S: Source> Source for LowSource<S> {
+    fn channels(&self) -> usize {
+        self.0.lock().unwrap().channels
+    }
+
+    fn read(&mut self, start: i64, out: &mut [f32]) {
+        self.0.lock().unwrap().low(start, out);
+    }
+}
+
+impl<S: Source> Source for HighSource<S> {
+    fn channels(&self) -> usize {
+        self.0.lock().unwrap().channels
+    }
+
+    fn read(&mut self, start: i64, out: &mut [f32]) {
+        let mut split = self.0.lock().unwrap();
+        split.source.read(start, out);
+        let mut low = std::mem::take(&mut split.lane);
+        low.resize(out.len(), 0.0);
+        split.low(start, &mut low);
+        for (o, l) in out.iter_mut().zip(&low) {
+            *o -= l;
+        }
+        split.lane = low;
+    }
+}
+
+impl<S: Source> Band<S> {
+    /// A stretcher for the section `map` describes, `total` output frames
+    /// long, with grains of `grain` seconds that may move `search` seconds.
+    /// `onsets` are the source's transients, in source frames (Beats
+    /// mode), or empty (Grain). The stretcher starts at output frame 0.
+    fn new(
+        source: S,
+        map: Arc<WarpMap>,
+        onsets: &[u64],
+        total: u64,
+        rate: f32,
+        (grain, search): (f64, f64),
+    ) -> Self {
         let rate = f64::from(rate);
-        let hop = ((GRAIN_SECONDS * rate / 2.0).round() as i64).max(8);
+        let hop = ((grain * rate / 2.0).round() as i64).max(8);
         let win = hop as usize * 2;
-        let radius = ((hop as f64 * SEARCH).round() as i64).max(1);
+        let radius = ((search * rate).round() as i64).max(1);
         let fade = ((LEAD_SECONDS * rate).round() as i64).max(2);
         let channels = source.channels().max(1);
         let total = total as i64;
@@ -166,7 +370,7 @@ impl<S: Source> Stretcher<S> {
 
     /// Moves to output frame `pos`. The grains in the few hops before it are
     /// rendered and dropped, so that what follows has settled.
-    pub fn seek(&mut self, pos: u64) {
+    fn seek(&mut self, pos: u64) {
         let pos = (pos as i64).min(self.total);
         self.ready.clear();
         self.ready_at = 0;
@@ -185,7 +389,7 @@ impl<S: Source> Stretcher<S> {
 
     /// Fills `out` (stereo, interleaved) with the next frames and returns how
     /// many it wrote: fewer than asked for only at the end of the clip.
-    pub fn read(&mut self, out: &mut [f32]) -> usize {
+    fn read(&mut self, out: &mut [f32]) -> usize {
         let want = out.len() / 2;
         let mut done = 0;
         while done < want {
@@ -695,5 +899,159 @@ mod tests {
         let cuts: Vec<i64> = segments.iter().map(|s| s.o0).collect();
         assert_eq!(cuts, vec![0, 24_000]);
         assert!(!segments[1].has_next);
+    }
+}
+
+#[cfg(test)]
+mod mix_tests {
+    use super::*;
+    use std::f32::consts::TAU;
+
+    const RATE: f32 = 48_000.0;
+
+    struct Memory(Vec<f32>);
+    impl Source for Memory {
+        fn channels(&self) -> usize {
+            1
+        }
+        fn read(&mut self, start: i64, out: &mut [f32]) {
+            for (i, x) in out.iter_mut().enumerate() {
+                let at = start + i as i64;
+                *x = if at >= 0 {
+                    self.0.get(at as usize).copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+            }
+        }
+    }
+
+    /// A full-mix stand-in: bass notes (with a second harmonic) changing every
+    /// half second under louder, harmonically rich mids with vibrato, and
+    /// noisy hats.
+    fn mix(frames: usize) -> Vec<f32> {
+        const NOTES: [f32; 4] = [46.25, 55.0, 61.74, 41.2];
+        let mut seed = 7u32;
+        let (mut bass_phase, mut mid_phase) = (0.0f32, 0.0f32);
+        (0..frames)
+            .map(|i| {
+                let t = i as f32 / RATE;
+                let note = NOTES[(i / 24_000) % NOTES.len()];
+                bass_phase = (bass_phase + TAU * note / RATE) % TAU;
+                let bass = (bass_phase.sin() + 0.4 * (2.0 * bass_phase).sin()) * 0.35;
+                let f = 310.0 * (1.0 + 0.01 * (TAU * 5.0 * t).sin());
+                mid_phase = (mid_phase + TAU * f / RATE) % TAU;
+                let mids: f32 = (1..=8)
+                    .map(|h| (mid_phase * h as f32).sin() / h as f32 * 0.25)
+                    .sum();
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1 << 23) as f32 - 1.0;
+                let hat = noise * 0.1 * if (i / 6_000) % 2 == 0 { 1.0 } else { 0.2 };
+                bass + mids + hat
+            })
+            .collect()
+    }
+
+    /// Everything above ~120 Hz taken out, leaving the bass fundamental.
+    fn low(x: &[f32]) -> Vec<f32> {
+        let a = 1.0 - (-TAU * 90.0 / RATE).exp();
+        let (mut p, mut q) = (0.0f32, 0.0f32);
+        x.iter()
+            .map(|v| {
+                p += a * (v - p);
+                q += a * (p - q);
+                q
+            })
+            .collect()
+    }
+
+    fn stretched(data: Vec<f32>, speed: f64) -> Vec<f32> {
+        let src = data.len() as u64;
+        let total = (src as f64 / speed) as u64;
+        let map = Arc::new(WarpMap::from_knots(vec![
+            (0.0, 0.0),
+            (total as f64, src as f64),
+        ]));
+        let mut s = Stretcher::new(Memory(data), map, &[], total, RATE);
+        let mut out = vec![0.0; total as usize * 2];
+        assert_eq!(s.read(&mut out), total as usize);
+        out.iter().step_by(2).copied().collect()
+    }
+
+    /// The strongest frequency within 8% of `near`, by a fine scan.
+    fn hz(x: &[f32], near: f32) -> f32 {
+        let power = |f: f32| -> f32 {
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, v) in x.iter().enumerate() {
+                let w = 0.5 - 0.5 * (TAU * i as f32 / x.len() as f32).cos();
+                let a = TAU * f * i as f32 / RATE;
+                re += v * w * a.cos();
+                im += v * w * a.sin();
+            }
+            re * re + im * im
+        };
+        (-40..=40)
+            .map(|k| near * (1.0 + k as f32 * 0.002))
+            .max_by(|a, b| power(*a).total_cmp(&power(*b)))
+            .unwrap()
+    }
+
+    /// Spread of the bass level over 25 ms windows, relative to its mean.
+    fn wobble(x: &[f32]) -> f32 {
+        let levels: Vec<f32> = x
+            .chunks(1_200)
+            .filter(|c| c.len() == 1_200)
+            .map(|c| (c.iter().map(|v| v * v).sum::<f32>() / 1_200.0).sqrt())
+            .collect();
+        let mean = levels.iter().sum::<f32>() / levels.len() as f32;
+        let var = levels.iter().map(|l| (l - mean).powi(2)).sum::<f32>() / levels.len() as f32;
+        var.sqrt() / mean
+    }
+
+    const NOTES: [f32; 4] = [46.25, 55.0, 61.74, 41.2];
+
+    /// The bass of note `n` in the output of a clip played at `speed`, away
+    /// from the note's ends.
+    fn note(bass: &[f32], n: usize, speed: f64) -> &[f32] {
+        let from = (n as f64 * 24_000.0 / speed) as usize + 3_000;
+        &bass[from..from + (24_000.0 / speed) as usize - 6_000]
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    /// Sped up or slowed down, each bass note keeps its pitch to within a few
+    /// cents and its level and steadiness, under mids that would pull a
+    /// single set of grains out of step with it.
+    #[test]
+    fn a_bass_line_under_a_full_mix_keeps_its_pitch_and_level() {
+        let input = mix(8 * 48_000);
+        let before = low(&input);
+        for speed in [0.8f64, 1.1, 1.25, 1.5] {
+            let out = stretched(input.clone(), speed);
+            let after = low(&out);
+            let notes = (after.len() as f64 * speed / 24_000.0) as usize - 2;
+            for n in 1..notes {
+                let want = NOTES[n % NOTES.len()];
+                let heard = note(&after, n, speed);
+                let cents = 1200.0 * (hz(heard, want) / want).log2();
+                assert!(
+                    cents.abs() < 6.0,
+                    "speed {speed}, note {n}: {cents:.1} cents"
+                );
+                let reference = &before[n * 24_000 + 3_000..(n + 1) * 24_000 - 3_000];
+                let level = rms(heard) / rms(reference);
+                assert!(
+                    (0.85..1.15).contains(&level),
+                    "speed {speed}, note {n}: level {level:.2}"
+                );
+                let (wobble, ideal) = (wobble(heard), wobble(reference));
+                assert!(
+                    wobble < ideal + 0.02,
+                    "speed {speed}, note {n}: wobble {wobble:.3} (source {ideal:.3})"
+                );
+            }
+        }
     }
 }
