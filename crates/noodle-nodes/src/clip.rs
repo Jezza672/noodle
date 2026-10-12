@@ -666,8 +666,8 @@ impl TrackInputNode {
             }
             // The cubic reads one frame before and two after.
             let lo = (first.floor().max(1.0) as u64 - 1).min(total);
-            let hi =
-                ((last.floor().max(0.0) as u64) + 3).clamp(lo, total.min(lo + MAX_SPAN as u64));
+            let hi = ((last.floor().max(0.0) as u64) + 3)
+                .clamp(lo, total.min(lo + WINDOW_FRAMES as u64));
             if !self.ready_window(schedule, key, lo, hi, at) {
                 self.advance(target, n);
                 at += n as u64;

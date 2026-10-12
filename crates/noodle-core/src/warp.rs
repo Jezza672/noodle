@@ -38,10 +38,17 @@ pub enum WarpMode {
 }
 
 /// The slowest and fastest a clip may play, as a multiple of natural speed,
-/// between two warp markers. Beyond these the sound is noise and the
-/// engine's work per block is unbounded.
+/// between two warp markers. Beyond these the sound is noise. The speed the
+/// engine plays at also includes tempo conversion (timeline bpm over clip
+/// bpm); [`ENGINE_MAX_SPEED`] bounds that.
 pub const MIN_WARP_SPEED: f64 = 1.0 / 16.0;
 pub const MAX_WARP_SPEED: f64 = 16.0;
+
+/// The fastest the engine reads a clip's file, as a multiple of natural
+/// speed, whatever the markers and the tempos make of it. Faster than this,
+/// the disk stream can't keep up, so the engine slows a section's fast parts
+/// down to it.
+pub const ENGINE_MAX_SPEED: f64 = 32.0;
 
 /// The tempos a clip tempo may have, in beats per minute.
 pub const MIN_CLIP_BPM: f64 = 1.0;

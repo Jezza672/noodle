@@ -10,7 +10,7 @@
 //! multiplication per frame, and it stays exact through tempo changes in the
 //! timeline because the map has a knot at each one.
 
-use noodle_core::{TICKS_PER_QUARTER, Tick, WarpAxis, WarpCurve};
+use noodle_core::{ENGINE_MAX_SPEED, TICKS_PER_QUARTER, Tick, WarpAxis, WarpCurve};
 use noodle_engine::TempoTable;
 
 /// A rising line from output frames to source frames.
@@ -93,6 +93,14 @@ impl WarpMap {
             knots[last - 1].1 = (knots[last].1 - 1.0).max(0.0);
         }
         knots[0] = (0.0, 0.0);
+        // Never read faster than the disk stream can supply: where tempo
+        // conversion and markers ask for more, play the part at the limit and
+        // fall behind (the section then ends before the file's window does).
+        let wanted: Vec<f64> = knots.iter().map(|k| k.1).collect();
+        for i in 1..knots.len() {
+            let allowed = (knots[i].0 - knots[i - 1].0) * ENGINE_MAX_SPEED;
+            knots[i].1 = knots[i - 1].1 + (wanted[i] - wanted[i - 1]).min(allowed);
+        }
         Self { knots }
     }
 
@@ -206,6 +214,19 @@ mod tests {
         let map = build(&off, &table(150.0), 0, 0.0, 6.0);
         close(map.speed_at(0.0), 1.0, 1e-9);
         close(map.out_len(), 6.0 * RATE, 1e-6);
+    }
+
+    #[test]
+    fn the_map_never_reads_faster_than_the_engine_limit() {
+        // A 2 bpm clip on a 120 bpm timeline asks for 60 times natural speed.
+        let warp = ClipWarp::at_tempo(2.0);
+        let map = build(&warp, &table(120.0), 0, 0.0, 4.0);
+        close(map.out_len(), 4.0 * RATE / 60.0, 1e-6);
+        for (a, b) in map.knots().iter().zip(map.knots().iter().skip(1)) {
+            assert!((b.1 - a.1) / (b.0 - a.0) <= noodle_core::ENGINE_MAX_SPEED + 1e-9);
+        }
+        close(map.speed_at(10.0), noodle_core::ENGINE_MAX_SPEED, 1e-9);
+        assert!(map.source_len() < 4.0 * RATE);
     }
 
     #[test]

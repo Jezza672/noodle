@@ -629,7 +629,11 @@ before the first and after the last), and with the conversion on the result is
 in timeline beats, so the clip follows the tempo map. With it off the beats are
 turned back into seconds at the clip's own tempo, so the clip keeps its natural
 speed and the markers still re-time it. Markers must rise in time and beat and
-may not squeeze or stretch the clip beyond 16 times (`MIN_WARP_SPEED`). A
+may not squeeze or stretch the clip beyond 16 times (`MIN_WARP_SPEED`,
+`MAX_WARP_SPEED`). Tempo conversion multiplies that by timeline bpm over clip
+bpm, so the engine also caps the speed it reads the file at (`ENGINE_MAX_SPEED`,
+32 times) when it builds the map: the section's fast parts play at the cap and
+fall behind, because the disk stream can't supply more. A
 section starts playing at its `offset` into the file, wherever that falls in the
 warped clip.
 

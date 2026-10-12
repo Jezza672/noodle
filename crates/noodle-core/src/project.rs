@@ -307,8 +307,12 @@ impl Project {
 
     /// The command that changes how audio clip `clip` is warped, which
     /// `change` does to a copy of its warp. A clip that isn't warped starts
-    /// from its file played at the tempo of the timeline where it starts, so
-    /// it sounds as it did until `change` alters it.
+    /// from its file at the timeline's tempo where it starts, with tempo
+    /// conversion off: it still plays at its natural speed, whatever the
+    /// tempo does under it, until `change` alters it. (The timeline tempo is
+    /// only a guess at the clip's own, for the user to correct; with
+    /// conversion on, later tempo changes inside the section would stretch a
+    /// clip that used to play unwarped.)
     ///
     /// Sections that show the same clip share a warp, so an edit that reaches
     /// them all is one `SetWarp`. When this section shares its warp with
@@ -327,7 +331,10 @@ impl Project {
             .and_then(|id| self.warps.get(&id).map(|w| (id, w)));
         let mut warp = match current {
             Some((_, warp)) => warp.clone(),
-            None => ClipWarp::at_tempo(self.tempo_map.bpm_at(section.start)),
+            None => ClipWarp {
+                tempo_conversion: false,
+                ..ClipWarp::at_tempo(self.tempo_map.bpm_at(section.start))
+            },
         };
         change(&mut warp);
         match current {
@@ -1323,6 +1330,40 @@ mod tests {
         let (_, warp) = project.warp_of(clip).unwrap();
         assert_eq!(warp.tempo.points()[0].bpm, 120.0);
         assert!(warp.markers.is_empty());
+    }
+
+    #[test]
+    fn warping_a_clip_leaves_its_sound_alone_when_the_tempo_changes_under_it() {
+        let (mut project, mut history, _, clip, _) = with_timeline();
+        // 120 bpm, then 60 from tick 1920, in the middle of the section.
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetTempoMap(
+                crate::TempoMap::new(
+                    vec![
+                        crate::TempoChange {
+                            tick: Tick(0),
+                            bpm: 120.0,
+                        },
+                        crate::TempoChange {
+                            tick: Tick(1920),
+                            bpm: 60.0,
+                        },
+                    ],
+                    vec![crate::SignatureChange {
+                        bar: 0,
+                        signature: crate::TimeSignature::COMMON,
+                    }],
+                )
+                .unwrap(),
+            ),
+        );
+        let edit = project.warp_edit(clip, |_| {}).unwrap();
+        history.apply(&mut project, edit).unwrap();
+        let (_, warp) = project.warp_of(clip).unwrap();
+        assert!(warp.is_identity());
+        assert!(!warp.tempo_conversion);
     }
 
     #[test]

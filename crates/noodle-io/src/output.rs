@@ -519,6 +519,10 @@ impl RateConverter {
 
 impl Drop for RateConverter {
     fn drop(&mut self) {
+        // Joining blocks until the thread notices `stop` (a few milliseconds).
+        // Some backends drop the stream's callback on their own audio thread,
+        // so this can run there; that only happens when the stream is torn
+        // down, never while audio is playing.
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
