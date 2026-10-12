@@ -550,11 +550,53 @@ fn dragging_the_ruler_moves_the_beat_lines_with_the_pointer() {
     assert!((offset_of(&h) - 0.2).abs() < 0.01, "{}", offset_of(&h));
 }
 
+/// Where in the file the clip's section starts, in frames.
+fn window_start(h: &H) -> u64 {
+    let project = h.state().session.project();
+    project
+        .clip(h.state().clip)
+        .and_then(|c| c.as_audio())
+        .map(|a| a.offset)
+        .unwrap()
+}
+
+#[test]
+fn sliding_the_beat_lines_slips_what_plays() {
+    let mut h = rig(true);
+    let clip = h.state().clip;
+    let before = window_start(&h);
+    let tempo = warp(&h).tempo.points()[0].bpm;
+    let command = clip_panel::set_grid_offset(
+        h.state().session.project(),
+        clip,
+        0.5,
+        clip_panel::Span {
+            rate: RATE,
+            frames: 4 * u64::from(RATE),
+        },
+    );
+    apply(&mut h, command);
+    // Half a beat of audio.
+    let rate = f64::from(RATE);
+    let moved = (window_start(&h) as f64 - before as f64) / rate;
+    let want = 0.5 * 60.0 / tempo;
+    assert!((moved - want).abs() < 0.001, "{moved} vs {want}");
+    // Undo puts both back in one step.
+    h.state_mut().session.undo();
+    assert_eq!(window_start(&h), before);
+    assert_eq!(offset_of(&h), 0.0);
+}
+
 #[test]
 fn markers_snap_to_the_slid_beat_lines() {
     let mut h = rig(true);
     let clip = h.state().clip;
-    let command = clip_panel::set_grid_offset(h.state().session.project(), clip, 0.3);
+    let command = clip_panel::set_grid_offset(
+        h.state().session.project(),
+        clip,
+        0.3,
+        clip_panel::Span::of(None),
+    );
     apply(&mut h, command);
     with_markers(&mut h, &[(2.0, 4.3)]);
     // Pulled to about 5.1, it lands on the line at 5.05 (a quarter of a beat

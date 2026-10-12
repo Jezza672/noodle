@@ -359,6 +359,19 @@ impl Project {
         clip: ClipId,
         change: impl FnOnce(&mut ClipWarp),
     ) -> Result<Command, EditError> {
+        self.section_edit(clip, |warp, _| change(warp))
+    }
+
+    /// Like [`warp_edit`](Self::warp_edit), for a change that also moves the
+    /// section itself (which part of the file it shows), such as sliding the
+    /// audio under the clip's beat lines. The section is changed in the same
+    /// command, so it is one undo step and the fork, if there is one, keeps
+    /// it.
+    pub fn section_edit(
+        &self,
+        clip: ClipId,
+        change: impl FnOnce(&mut ClipWarp, &mut crate::AudioClip),
+    ) -> Result<Command, EditError> {
         let section = self.clip(clip).ok_or(EditError::NoSuchClip(clip))?;
         let audio = section.as_audio().ok_or(EditError::NoSuchClip(clip))?;
         let current = audio
@@ -371,22 +384,35 @@ impl Project {
                 ..ClipWarp::at_tempo(self.tempo_map.bpm_at(section.start))
             },
         };
-        change(&mut warp);
+        let mut edited = section.clone();
+        if let crate::ClipContent::Audio(audio) = &mut edited.content {
+            change(&mut warp, audio);
+        }
+        let moved = edited != *section;
         match current {
             Some((id, _)) if self.clips_using(id).all(|other| other == clip) => {
-                Ok(Command::SetWarp { id, warp })
+                if moved {
+                    Ok(Command::Batch(vec![
+                        Command::SetWarp { id, warp },
+                        Command::SetClip {
+                            id: clip,
+                            clip: edited,
+                        },
+                    ]))
+                } else {
+                    Ok(Command::SetWarp { id, warp })
+                }
             }
             _ => {
                 let id = self.next_warp_id();
-                let mut forked = section.clone();
-                if let crate::ClipContent::Audio(audio) = &mut forked.content {
+                if let crate::ClipContent::Audio(audio) = &mut edited.content {
                     audio.warp = Some(id);
                 }
                 Ok(Command::Batch(vec![
                     Command::AddWarp { id, warp },
                     Command::SetClip {
                         id: clip,
-                        clip: forked,
+                        clip: edited,
                     },
                 ]))
             }
@@ -1366,6 +1392,40 @@ mod tests {
         let edit = project.warp_edit(second, swing(1.125)).unwrap();
         apply(&mut project, &mut history, edit);
         assert!(lent(&project, follower).unwrap().offset_at(1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_section_edit_moves_the_section_with_its_warp_in_one_step_even_when_forking() {
+        let (mut project, mut history, _, first, second, shared) = warped_pair();
+        let start = |p: &Project, id| p.clip(id).and_then(|c| c.as_audio()).unwrap().offset;
+        let (before, other) = (start(&project, first), start(&project, second));
+        // The warp is shared with `second`, so this forks it.
+        let edit = project
+            .section_edit(first, |warp, audio| {
+                warp.grid_offset = 0.25;
+                audio.offset += 100;
+            })
+            .unwrap();
+        apply(&mut project, &mut history, edit);
+        let (id, warp) = project.warp_of(first).unwrap();
+        assert_ne!(id, shared);
+        assert_eq!(warp.grid_offset, 0.25);
+        assert_eq!(start(&project, first), before + 100);
+        assert_eq!(project.warp_of(second).unwrap().0, shared);
+        assert_eq!(start(&project, second), other);
+        // One undo puts the warp and the section back together.
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.warp_of(first).unwrap().0, shared);
+        assert_eq!(start(&project, first), before);
+        // Not shared: the warp is changed in place.
+        let edit = project
+            .section_edit(second, |warp, audio| {
+                warp.grid_offset = 0.5;
+                audio.offset += 5;
+            })
+            .unwrap();
+        apply(&mut project, &mut history, edit);
+        assert_eq!(project.warp(shared).map(|w| w.grid_offset), Some(0.0));
     }
 
     #[test]

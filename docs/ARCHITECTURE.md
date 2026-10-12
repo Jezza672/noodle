@@ -722,12 +722,20 @@ timeline's trims, fades, split and slip of a warped section work in warped beats
 on (and off at the end of the drag); the node dips (declick) when it flips.
 
 **Grid offset and the clip editor's gestures.** `ClipWarp::grid_offset` slides a
-clip's beat lines (not its audio, markers or tempo) by a number of beats, so
-the lines can be lined up with the transients of a loop whose first beat is not
-at the start of its file. Only things that read the grid care: the editor's
-snapping and ruler, warp quantise (`WarpQuantise::apply_from`) and the groove
-(`ClipWarp::groove`); what plays is the markers and the clip tempo, so the
-cache key does not hash it. Dragging the waveform or the ruler in the clip
+clip's beat lines (not its markers or tempo) by a number of beats, so the lines
+can be lined up with the transients of a loop whose first beat is not at the
+start of its file. Things that read the grid care: the editor's snapping and
+ruler, warp quantise (`WarpQuantise::apply_from`) and the groove
+(`ClipWarp::groove`). A grid nobody hears would line nothing up, so every
+change of it also slips the section along the file by the same number of beats
+(`clip_panel::slide_grid`, through `Project::section_edit`): the section starts
+at the same place against the lines, so the audio that plays is the audio
+under the new lines, as when a waveform is dragged against the grid in
+Ableton. The warp and the section's `offset` and `length` change in one
+command (one undo step, and the warp forks first when it is shared); the
+slip stops at the ends of the file. The offset reaches the sound only through
+that slip and through markers moved by warp quantise, which the cache key
+already hashes. Dragging the waveform or the ruler in the clip
 editor sets it, as does the panel's Offset field and Detect
 (`noodle_io::estimate_grid` gives the tempo and the phase of the beat, even as
 a weak guess whose confidence is under `CLEAR_TEMPO`; Detect is enabled
@@ -1634,10 +1642,13 @@ It has these views:
     engine plays it (the same `WarpMap`, and for Grain and Beats the same
     `Stretcher` and transients) and the timeline draws its peaks. The render is
     kept under a key of everything it came from (file load, window, warp, tempo
-    map, start), forgotten when nothing asks for it, and while one is being
-    edited only the newest request is rendered. Until it is back (and for
-    looping sections, whose runs are drawn separately) the file's own waveform
-    is shown. There is no on-disk cache of it: a render is cheap next to
+    map; the start only when the tempo changes), and forgotten 30 seconds
+    after the last time a section asked for it. While one is being edited only
+    the newest request is rendered, and the section keeps drawing its previous
+    render until the next is back (a section with none, and looping sections,
+    whose runs are drawn separately, show the file's own waveform). The worker
+    keeps the last file it decoded, so the steps of an edit do not read it
+    again. There is no on-disk cache of it: a render is cheap next to
     the stretcher's speed, and the engine itself stretches live.
   - **Ticks on the x axis**, so the view doesn't stretch when the tempo
     changes. Zoom is points per quarter note.

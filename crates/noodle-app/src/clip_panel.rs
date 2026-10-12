@@ -96,29 +96,90 @@ pub fn set_tempo(project: &Project, id: ClipId, bpm: f64) -> Option<Command> {
         .ok()
 }
 
-/// The command that gives clip `id` the tempo and beat `found` in its audio:
-/// the clip tempo, and a grid slid so its lines fall on the transients.
-pub fn detect_tempo(project: &Project, id: ClipId, found: &TempoEstimate) -> Option<Command> {
-    if !(MIN_CLIP_BPM..=MAX_CLIP_BPM).contains(&found.bpm) {
-        return None;
+/// What a clip's file is, for the commands that move a section within it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub rate: u32,
+    /// How many frames the file has; the most there could be if that isn't
+    /// known yet.
+    pub frames: u64,
+}
+
+impl Span {
+    pub fn of(loaded: Option<&Loaded>) -> Self {
+        let source = loaded.map(|l| l.source);
+        Self {
+            rate: source.map_or(48_000, |s| s.sample_rate),
+            frames: source
+                .and_then(|s| s.frames)
+                .or_else(|| loaded.and_then(|l| l.peaks.as_ref()).map(|p| p.frames()))
+                .unwrap_or(u64::MAX),
+        }
     }
-    let (bpm, phase) = (found.bpm, found.phase);
+}
+
+/// The command that applies `change` to the warp of clip `id`, and, if it
+/// slides the beat lines (`grid_offset`), slips the section along with them:
+/// the section starts at the same place against the lines as before, so the
+/// audio that plays is the audio under the new lines. Sliding the grid is how
+/// a clip is lined up to the beat, and a grid nobody hears would line up
+/// nothing. The warp and the section change in one command.
+pub fn slide_grid(
+    project: &Project,
+    id: ClipId,
+    span: Span,
+    change: impl FnOnce(&mut ClipWarp),
+) -> Option<Command> {
     project
-        .warp_edit(id, move |warp| {
-            warp.tempo = TempoCurve::constant(bpm);
-            warp.grid_offset = phase;
+        .section_edit(id, |warp, audio| {
+            let before = warp.grid_offset;
+            change(warp);
+            let delta = warp.grid_offset - before;
+            if delta == 0.0 {
+                return;
+            }
+            let rate = f64::from(span.rate);
+            let start = warp.beat_at(audio.offset as f64 / rate) + delta;
+            let seconds = warp.seconds_at_beat(start).max(0.0);
+            let offset = ((seconds * rate).round() as u64).min(span.frames);
+            let end = offset.saturating_add(audio.length).min(span.frames);
+            if end <= offset {
+                // Nothing of the file would be left: the lines move alone.
+                return;
+            }
+            audio.offset = offset;
+            audio.length = end - offset;
+            audio.fade_in = audio.fade_in.min(audio.length);
+            audio.fade_out = audio.fade_out.min(audio.length - audio.fade_in);
         })
         .ok()
 }
 
-/// The command that slides the grid of clip `id` to `offset` beats.
-pub fn set_grid_offset(project: &Project, id: ClipId, offset: f64) -> Option<Command> {
+/// The command that gives clip `id` the tempo and beat `found` in its audio:
+/// the clip tempo, and a grid slid so its lines fall on the transients.
+pub fn detect_tempo(
+    project: &Project,
+    id: ClipId,
+    found: &TempoEstimate,
+    span: Span,
+) -> Option<Command> {
+    if !(MIN_CLIP_BPM..=MAX_CLIP_BPM).contains(&found.bpm) {
+        return None;
+    }
+    let (bpm, phase) = (found.bpm, found.phase);
+    slide_grid(project, id, span, move |warp| {
+        warp.tempo = TempoCurve::constant(bpm);
+        warp.grid_offset = phase;
+    })
+}
+
+/// The command that slides the grid of clip `id` to `offset` beats, and the
+/// section with it (see [`slide_grid`]).
+pub fn set_grid_offset(project: &Project, id: ClipId, offset: f64, span: Span) -> Option<Command> {
     if !offset.is_finite() || offset.abs() > MAX_GRID_OFFSET {
         return None;
     }
-    project
-        .warp_edit(id, move |warp| warp.grid_offset = offset)
-        .ok()
+    slide_grid(project, id, span, move |warp| warp.grid_offset = offset)
 }
 
 /// A loop for the part of the file section `id` shows: from the first whole
@@ -455,6 +516,7 @@ pub fn show(
         return edits;
     };
     let rate = loaded.map_or(48_000, |l| l.source.sample_rate);
+    let span = Span::of(loaded);
     let analysis = loaded.and_then(|l| l.analysis.as_deref());
     let name = std::path::Path::new(&audio.source).file_name().map_or_else(
         || audio.source.clone(),
@@ -571,7 +633,7 @@ pub fn show(
         if detect.on_hover_text(hint).clicked()
             && let Some(found) = found
         {
-            edits.extend(detect_tempo(project, id, &found).map(Edit::Apply));
+            edits.extend(detect_tempo(project, id, &found, span).map(Edit::Apply));
         }
         let tap = ui.button("Tap").on_hover_text("Tap along to set the tempo");
         if tap.clicked()
@@ -592,10 +654,10 @@ pub fn show(
                     .suffix(" beats"),
             )
             .on_hover_text(
-                "Slide the clip's beat lines against its audio, so they line up with its transients (or drag the waveform in the clip editor)",
+                "Slide the clip's beat lines against its audio, so they line up with its transients: the clip then plays from the shifted line (or drag the waveform in the clip editor)",
             );
         if response.changed() {
-            commit(&response, set_grid_offset(project, id, offset), &mut edits);
+            commit(&response, set_grid_offset(project, id, offset, span), &mut edits);
         } else {
             commit(&response, None, &mut edits);
         }
@@ -605,7 +667,7 @@ pub fn show(
                 .on_hover_text("Put the beat lines back on the whole beats")
                 .clicked()
         {
-            edits.extend(set_grid_offset(project, id, 0.0).map(Edit::Apply));
+            edits.extend(set_grid_offset(project, id, 0.0, span).map(Edit::Apply));
         }
     });
 

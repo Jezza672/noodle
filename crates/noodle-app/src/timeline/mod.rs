@@ -663,6 +663,7 @@ pub fn show(
                                     })
                                     .and_then(|warp| {
                                         let request = warped_waves::Request {
+                                            clip: id,
                                             path: directory
                                                 .as_deref()
                                                 .unwrap_or(std::path::Path::new(""))
@@ -770,6 +771,7 @@ pub fn show(
     if state.selected != clips_before && !state.selected.is_empty() {
         state.selected_track = None;
         state.automation.deselect();
+        state.tempo.deselect();
     }
     let point_before = state.automation.selected();
     edits.extend(automation::show(
@@ -787,6 +789,7 @@ pub fn show(
 
     if state.automation.selected().is_some() && state.automation.selected() != point_before {
         state.selected.clear();
+        state.tempo.deselect();
     }
 
     // A drag whose clip has scrolled off screen or been removed never sees
@@ -808,6 +811,7 @@ pub fn show(
     if delete_pressed
         && state.selected.is_empty()
         && state.automation.selected().is_none()
+        && state.tempo.selected().is_none()
         && let Some(group) = state
             .selected_track
             .and_then(|input| project.graph().node(input))
@@ -816,7 +820,7 @@ pub fn show(
         edits.push(Edit::Apply(header::delete_track(group)));
         state.selected_track = None;
     }
-    if delete_pressed && !state.selected.is_empty() {
+    if delete_pressed && !state.selected.is_empty() && state.tempo.selected().is_none() {
         let removals = state
             .selected
             .iter()
@@ -970,6 +974,7 @@ pub fn show(
         #[cfg(test)]
         state.drawn_text.push("Tempo".into());
         let visible = row.intersect(rect);
+        let tempo_before = state.tempo.selected();
         edits.extend(tempo_lane::show(
             ui,
             &mut state.tempo,
@@ -978,6 +983,13 @@ pub fn show(
             visible,
             axis,
         ));
+        // A tempo point shares Delete with clips, automation points and
+        // tracks, so picking one lets the others go.
+        if state.tempo.selected().is_some() && state.tempo.selected() != tempo_before {
+            state.selected.clear();
+            state.selected_track = None;
+            state.automation.deselect();
+        }
     }
     let scrub = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
     let wanted = scrub

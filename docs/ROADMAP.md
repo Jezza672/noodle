@@ -676,7 +676,8 @@ Audio clips get a warp, applied live on playback. Four PRs:
    the time signature), and View > Tempo lane shows the tempo map as an
    optional stepped lane to add, move and remove tempo changes. In the clip
    editor: **grid offset** (drag the waveform or the ruler, or the panel's
-   Offset) lines the beat lines up with the transients; **Detect** is on
+   Offset) lines the beat lines up with the transients, and the clip slips with
+   them so it plays from the shifted line; **Detect** is on
    whenever there are enough transients and also sets the offset (a weak guess
    says so); flags can be picked as a group (Shift/Ctrl click, a box in the
    flags' row, Ctrl+A) and moved or deleted together; each transient has a

@@ -331,6 +331,10 @@ pub fn show(
         return out;
     };
     let file_secs = file_frames as f64 / rate;
+    let span = clip_panel::Span {
+        rate: loaded.source.sample_rate,
+        frames: file_frames,
+    };
 
     let ruler = Rect::from_min_size(body.min, vec2(body.width(), RULER));
     let flags = Rect::from_min_size(
@@ -492,7 +496,7 @@ pub fn show(
                 snap_to(beat, step, origin)
             };
             if let Some(candidate) = drag_step(drag, beat, snapped, free)
-                && let Some(edit) = warp_change(project, id, &candidate, warp)
+                && let Some(edit) = warp_change(project, id, span, &candidate, warp)
             {
                 out.edits.push(Edit::Drag(edit));
             }
@@ -544,7 +548,7 @@ pub fn show(
                     .into_iter()
                     .collect();
                 out.edits
-                    .extend(warp_change(project, id, &candidate, warp).map(Edit::Apply));
+                    .extend(warp_change(project, id, span, &candidate, warp).map(Edit::Apply));
             }
         } else if (wave.top()..=wave.bottom()).contains(&pos.y) || flags.contains(pos) {
             let marker = new_marker(pos.x, axis, warp, onsets, step, free);
@@ -556,7 +560,7 @@ pub fn show(
                     .into_iter()
                     .collect();
                 out.edits
-                    .extend(warp_change(project, id, &candidate, warp).map(Edit::Apply));
+                    .extend(warp_change(project, id, span, &candidate, warp).map(Edit::Apply));
             }
         }
     }
@@ -587,7 +591,7 @@ pub fn show(
             };
             if ui.button(label).clicked() {
                 out.edits
-                    .extend(removal(project, id, warp, &picked).map(Edit::Apply));
+                    .extend(removal(project, id, span, warp, &picked).map(Edit::Apply));
                 state.selected.clear();
                 ui.close();
             }
@@ -597,13 +601,13 @@ pub fn show(
             let marker = new_marker(x, axis, warp, onsets, step, free);
             if let Some(candidate) = with_marker(warp, marker) {
                 out.edits
-                    .extend(warp_change(project, id, &candidate, warp).map(Edit::Apply));
+                    .extend(warp_change(project, id, span, &candidate, warp).map(Edit::Apply));
             }
             ui.close();
         }
         if warp.grid_offset != 0.0 && ui.button("Reset the beat lines").clicked() {
             out.edits
-                .extend(clip_panel::set_grid_offset(project, id, 0.0).map(Edit::Apply));
+                .extend(clip_panel::set_grid_offset(project, id, 0.0, span).map(Edit::Apply));
             ui.close();
         }
     });
@@ -619,7 +623,7 @@ pub fn show(
         if delete && !state.selected.is_empty() {
             let picked: Vec<usize> = state.selected.iter().copied().collect();
             out.edits
-                .extend(removal(project, id, warp, &picked).map(Edit::Apply));
+                .extend(removal(project, id, span, warp, &picked).map(Edit::Apply));
             state.selected.clear();
         } else if all {
             state.selected = (0..warp.markers.len()).collect();
@@ -802,6 +806,7 @@ fn pinned_transient(warp: &ClipWarp, seconds: f64) -> Option<ClipWarp> {
 fn warp_change(
     project: &Project,
     id: ClipId,
+    span: clip_panel::Span,
     candidate: &ClipWarp,
     now: &ClipWarp,
 ) -> Option<Command> {
@@ -816,17 +821,21 @@ fn warp_change(
         candidate.loop_region,
         candidate.grid_offset,
     );
-    project
-        .warp_edit(id, move |warp| {
-            warp.markers = markers;
-            warp.loop_region = region;
-            warp.grid_offset = offset;
-        })
-        .ok()
+    clip_panel::slide_grid(project, id, span, move |warp| {
+        warp.markers = markers;
+        warp.loop_region = region;
+        warp.grid_offset = offset;
+    })
 }
 
 /// The command that removes the markers `indices` of clip `id`.
-fn removal(project: &Project, id: ClipId, warp: &ClipWarp, indices: &[usize]) -> Option<Command> {
+fn removal(
+    project: &Project,
+    id: ClipId,
+    span: clip_panel::Span,
+    warp: &ClipWarp,
+    indices: &[usize],
+) -> Option<Command> {
     let mut candidate = warp.clone();
     let mut gone = indices.to_vec();
     gone.sort_unstable();
@@ -837,7 +846,7 @@ fn removal(project: &Project, id: ClipId, warp: &ClipWarp, indices: &[usize]) ->
     for &i in gone.iter().rev() {
         candidate.markers.remove(i);
     }
-    warp_change(project, id, &candidate, warp)
+    warp_change(project, id, span, &candidate, warp)
 }
 
 /// The grid offset, kept to what a warp allows and to the nearest thousandth

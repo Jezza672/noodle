@@ -245,6 +245,41 @@ fn the_right_edge_stops_at_the_end_of_the_file() {
 }
 
 #[test]
+fn a_picked_tempo_point_and_a_picked_clip_never_share_delete() {
+    let (mut h, id) = rig();
+    h.state_mut().timeline.set_tempo_lane(true);
+    h.run();
+    let tempos = |h: &H| h.state().session.project().tempo_map().tempos().len();
+    // Pick the clip, then add (and so pick) a tempo change: the clip lets go.
+    let c = rect(&h, id).center();
+    drag(&mut h, Modifiers::NONE, &[c]);
+    assert!(h.state().timeline.selected().contains(&id));
+    let lane = h.state().timeline.tempo().row().expect("the lane is shown");
+    let first = h.state().timeline.tempo().points()[0];
+    let spot = Pos2::new(first.x + 8.0 * h.state().timeline.ppq, lane.center().y);
+    click_with(&mut h, PointerButton::Primary, Modifiers::NONE, spot);
+    assert_eq!(tempos(&h), 2);
+    assert!(h.state().timeline.selected().is_empty());
+    assert_eq!(h.state().timeline.tempo().selected(), Some(1));
+    // Delete takes the tempo change and leaves the clip.
+    h.key_press(Key::Delete);
+    h.run();
+    assert_eq!(tempos(&h), 1);
+    assert!(h.state().session.project().clip(id).is_some());
+    // And the other way: with a point picked, picking the clip lets it go,
+    // so Delete takes the clip and leaves the point.
+    click_with(&mut h, PointerButton::Primary, Modifiers::NONE, spot);
+    assert_eq!(tempos(&h), 2);
+    let c = rect(&h, id).center();
+    drag(&mut h, Modifiers::NONE, &[c]);
+    assert_eq!(h.state().timeline.tempo().selected(), None);
+    h.key_press(Key::Delete);
+    h.run();
+    assert!(h.state().session.project().clip(id).is_none());
+    assert_eq!(tempos(&h), 2);
+}
+
+#[test]
 fn clicking_selects_and_delete_removes() {
     let (mut h, id) = rig();
     let c = rect(&h, id).center();

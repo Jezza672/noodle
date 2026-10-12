@@ -53,9 +53,13 @@ impl State {
         }
     }
 
-    #[cfg(test)]
     pub fn selected(&self) -> Option<usize> {
         self.selected
+    }
+
+    /// Lets go of the picked point.
+    pub fn deselect(&mut self) {
+        self.selected = None;
     }
 
     #[cfg(test)]
