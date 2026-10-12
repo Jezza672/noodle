@@ -155,6 +155,12 @@ rows `NAME-full`. The committed baseline is `baseline/songs.json`, the excerpts
 over the whole tempo grid and every method; like the probes' it is a before and
 after, not a threshold.
 
+`--stems` scores each part of a song (kick, bass, pads and so on) on its own
+instead of the mix, as rows `NAME/PART`: a stem is analysed alone, so its
+detected tempo is what the app would find on that instrument exported as a file.
+Run it with `--baseline` to diff against a file of your own, or `--update` to add
+the rows to the committed baseline.
+
 Things to know when reading a song's numbers:
 
 - Where a note starts and how long its gate is follow the tempo; the sounds'

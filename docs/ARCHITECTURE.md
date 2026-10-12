@@ -754,8 +754,10 @@ that slip and through markers moved by warp quantise, which the cache key
 already hashes. Dragging the waveform or the ruler in the clip
 editor sets it, as does the panel's Offset field and Detect
 (`noodle_io::estimate_grid` gives the tempo and the phase of the beat, even as
-a weak guess whose confidence is under `CLEAR_TEMPO`; Detect is enabled
-whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
+a weak guess unless `TempoEstimate::is_clear`: onsets mostly on the beat, or a
+beat standing well above every other tempo's score; `Analysis::of` scores the
+bass onsets as well as all of them, since hats and arpeggios bury the beat in a
+full mix; Detect is enabled whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
 Shift/Ctrl click, a box in the flags' row, Ctrl+A) and a picked group moves and
 is deleted as one edit. Each detected transient has a handle on the row under
 the brace; double-clicking it pins a marker where the transient plays now

@@ -222,6 +222,39 @@ impl Harness {
         self.score(name, source, native, case, methods)
     }
 
+    /// Scores `methods` on each part of `song` alone (its stems), as pieces
+    /// named `name/part`. A part with no notes in `range` is skipped. Each
+    /// stem is analysed on its own, so its detected tempo is what the app
+    /// would find on that stem exported as a file.
+    pub fn run_stems(
+        &self,
+        name: &str,
+        song: &Song,
+        range: Range,
+        case: TempoCase,
+        methods: &[Method],
+    ) -> Result<Vec<Row>, String> {
+        let source_map = steady(song.bpm);
+        let target = self.target(case);
+        let mut rows = Vec::new();
+        for part in &song.parts {
+            let only = |p: &crate::song::Part| p.name == part.name;
+            let source = song.render_of(&source_map, range, self.rate, only)?;
+            if source.iter().all(|x| x.abs() < 1e-6) {
+                continue;
+            }
+            let native = song.render_of(&target, range, self.rate, only)?;
+            rows.extend(self.score(
+                &format!("{name}/{}", part.name),
+                source,
+                native,
+                case,
+                methods,
+            )?);
+        }
+        Ok(rows)
+    }
+
     /// The source and the native render of `range` of `song` for `case`.
     pub fn song_renders(
         &self,

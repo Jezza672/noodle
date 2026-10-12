@@ -297,6 +297,72 @@ fn every_excerpt_goes_through_the_harness() {
     });
 }
 
+/// Tempo detection on full mixes (#141): the kick and bass line carry the beat
+/// under hats, plucks and arpeggios that bury it in the full-band onsets.
+#[test]
+fn the_tempo_of_a_full_mix_is_found_from_its_bass() {
+    let _shared = shared();
+    let found: Vec<(&str, Option<f64>)> = all()
+        .iter()
+        .map(|song| {
+            let audio = song
+                .render(&steady(song.bpm), song.excerpt_range(), RATE)
+                .unwrap();
+            (song.name, noodle_eval::harness::analyse(&audio, RATE).tempo)
+        })
+        .collect();
+    for (song, tempo) in &found {
+        let bpm = all().into_iter().find(|s| s.name == *song).unwrap().bpm;
+        match (*song, tempo) {
+            // No drums and a bass that is one held sine: there is no beat to
+            // find, and saying so beats a wrong tempo.
+            ("glass-ambient", None) => {}
+            ("glass-ambient", Some(t)) => assert!((t - bpm).abs() / bpm < 0.01, "{t}"),
+            (_, Some(t)) => assert!((t - bpm).abs() / bpm < 0.01, "{song}: {t} for {bpm}"),
+            (_, None) => panic!("{song}: no tempo found, true tempo {bpm}"),
+        }
+    }
+}
+
+#[test]
+fn stems_are_scored_one_part_at_a_time() {
+    let _alone = LOAD.write().unwrap_or_else(|e| e.into_inner());
+    let song = all().into_iter().find(|s| s.name == "neon-drive").unwrap();
+    let range = song.excerpt_range();
+    let h = Harness::for_song(&song, range, RATE).unwrap();
+    let rows = h
+        .run_stems(
+            "neon-drive",
+            &song,
+            range,
+            TempoCase::Ratio(0.75),
+            &[Method::Grain],
+        )
+        .unwrap();
+    // Every part that plays in the excerpt, once per view, named for the part.
+    let playing: Vec<&str> = song
+        .parts
+        .iter()
+        .filter(|p| {
+            song.render_of(&steady(song.bpm), range, RATE, |q| q.name == p.name)
+                .unwrap()
+                .iter()
+                .any(|x| x.abs() > 1e-6)
+        })
+        .map(|p| p.name)
+        .collect();
+    assert!(playing.len() >= 3, "{playing:?}");
+    assert_eq!(rows.len(), playing.len() * View::ALL.len());
+    for part in &playing {
+        let name = format!("neon-drive/{part}");
+        assert_eq!(
+            rows.iter().filter(|r| r.probe == name).count(),
+            View::ALL.len(),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn the_native_render_is_the_source_retimed() {
     let _load = shared();

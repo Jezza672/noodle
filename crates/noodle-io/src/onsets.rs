@@ -119,6 +119,13 @@ pub struct TempoEstimate {
     /// that are all exactly on the beat. Above [`CLEAR_TEMPO`] it is a clear
     /// tempo; below, a guess.
     pub confidence: f64,
+    /// How far the best tempo's score stands above the middle of the scores
+    /// of all tempos tried (the best over their median). Onsets that agree
+    /// with no tempo score about 2; a beat under a lot of off-beat hits can
+    /// have a low `confidence` and still stand out here.
+    pub prominence: f64,
+    /// How many onsets it was found from.
+    pub onsets: usize,
     /// Where the beat falls against the onsets, in beats from the start of
     /// the audio, in `[-0.5, 0.5)`: the onsets sit near the whole beats of a
     /// grid slid this far (`n + phase`).
@@ -127,6 +134,20 @@ pub struct TempoEstimate {
 
 /// The confidence from which a tempo is clear and not a guess.
 pub const CLEAR_TEMPO: f64 = 0.5;
+/// The prominence from which a tempo is clear whatever its confidence, given
+/// at least [`PROMINENT_ONSETS`] onsets.
+pub const CLEAR_PROMINENCE: f64 = 3.5;
+/// How many onsets a tempo needs to be clear by prominence alone.
+pub const PROMINENT_ONSETS: usize = 8;
+
+impl TempoEstimate {
+    /// Whether this is a clear tempo and not a guess: onsets mostly on the
+    /// beat, or a beat that stands out from every other tempo.
+    pub fn is_clear(&self) -> bool {
+        self.confidence > CLEAR_TEMPO
+            || (self.prominence >= CLEAR_PROMINENCE && self.onsets >= PROMINENT_ONSETS)
+    }
+}
 /// Below this confidence there is nothing worth guessing.
 const MIN_CONFIDENCE: f64 = 0.2;
 
@@ -141,7 +162,7 @@ const MIN_CONFIDENCE: f64 = 0.2;
 /// by the range.
 pub fn estimate_tempo(times: &[f64]) -> Option<f64> {
     estimate_grid(times)
-        .filter(|e| e.confidence > CLEAR_TEMPO)
+        .filter(TempoEstimate::is_clear)
         .map(|e| e.bpm)
 }
 
@@ -175,14 +196,18 @@ pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
             / 2.0
     };
     let mut best = (80.0, 0.0);
+    let mut scores = Vec::with_capacity(801);
     let mut bpm = 80.0;
     while bpm <= 160.0 {
         let s = score(bpm);
+        scores.push(s);
         if s > best.1 {
             best = (bpm, s);
         }
         bpm += 0.1;
     }
+    scores.sort_by(f64::total_cmp);
+    let median = scores[scores.len() / 2];
     // Refine around the best.
     let mut refined = best;
     let mut bpm = best.0 - 0.1;
@@ -204,6 +229,12 @@ pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
     Some(TempoEstimate {
         bpm: (refined.0 * 100.0).round() / 100.0,
         confidence,
+        prominence: if median > 0.0 {
+            refined.1 / median
+        } else {
+            0.0
+        },
+        onsets: times.len(),
         phase: phase - (phase + 0.5).floor(),
     })
 }
@@ -235,12 +266,32 @@ impl Analysis {
             .map(|frame| frame as f64 / f64::from(rate))
             .collect();
         let seconds = mono.len() as f64 / f64::from(rate);
+        let bass: Vec<f64> = detect_bass_onsets(mono, rate)
+            .into_iter()
+            .map(|frame| frame as f64 / f64::from(rate))
+            .collect();
+        let grid = best_grid(estimate_grid(&onsets), estimate_grid(&bass));
         Self {
-            tempo: estimate_tempo(&onsets),
-            grid: estimate_grid(&onsets),
+            tempo: grid.filter(TempoEstimate::is_clear).map(|g| g.bpm),
+            grid,
             percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
             onsets,
         }
+    }
+}
+
+/// The better of the tempos found from all onsets and from the bass onsets
+/// alone. A full mix has hats, plucks and arpeggios between the beats that
+/// bury the beat in the full-band score, while the kick and bass line keep
+/// it; so a full-band tempo is used only when its onsets mostly sit on the
+/// beat, then a clear bass one, then the rest in order of confidence.
+fn best_grid(full: Option<TempoEstimate>, bass: Option<TempoEstimate>) -> Option<TempoEstimate> {
+    match (full, bass) {
+        (Some(f), _) if f.confidence > CLEAR_TEMPO => Some(f),
+        (_, Some(b)) if b.is_clear() => Some(b),
+        (Some(f), _) if f.is_clear() => Some(f),
+        (Some(f), Some(b)) => Some(if b.confidence > f.confidence { b } else { f }),
+        (f, b) => f.or(b),
     }
 }
 
@@ -326,6 +377,42 @@ mod tests {
         assert!((guess.bpm - 100.0).abs() < 2.0, "{guess:?}");
         // Too few onsets, or nothing agreeing, is still no tempo.
         assert_eq!(estimate_grid(&[0.1, 0.4, 0.9]), None);
+    }
+
+    #[test]
+    fn a_kick_pattern_under_off_beat_hats_is_a_clear_tempo_in_the_bass() {
+        // Kicks on every beat of 126 bpm, with 3 hat-like clicks off the beat
+        // for each: the full-band onsets agree with the beat only a quarter of
+        // the time, but the bass onsets are the kicks.
+        let beat = 60.0 / 126.0;
+        let mut at: Vec<f64> = (0..32).map(|i| 0.2 + i as f64 * beat).collect();
+        let mut seed = 9u32;
+        for i in 0..32 {
+            for _ in 0..3 {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                at.push(0.2 + i as f64 * beat + 0.1 + (seed >> 16) as f64 / 65_536.0 * 0.25);
+            }
+        }
+        let mut mono =
+            vec![0.0f32; (at.len() as f64 * 0.0 + 32.0 * beat * 48_000.0) as usize + 48_000];
+        let mut put = |t: f64, hz: f32, decay: f32, gain: f32| {
+            let start = (t * 48_000.0) as usize;
+            for i in 0..4_800.min(mono.len() - start) {
+                let x = i as f32 / 48_000.0;
+                mono[start + i] +=
+                    (x * hz * std::f32::consts::TAU).sin() * (-x * decay).exp() * gain;
+            }
+        };
+        for (n, t) in at.iter().enumerate() {
+            if n < 32 {
+                put(*t, 60.0, 30.0, 0.8);
+            } else {
+                put(*t, 6000.0, 150.0, 0.5);
+            }
+        }
+        let analysis = Analysis::of(&mono, 48_000);
+        let tempo = analysis.tempo.expect("a clear tempo");
+        assert!((tempo - 126.0).abs() < 0.5, "{tempo}");
     }
 
     #[test]
