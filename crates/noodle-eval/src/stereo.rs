@@ -30,7 +30,7 @@ pub fn compare(reference: Clip, test: Clip) -> Option<Stereo> {
 /// (Pearson correlation of left and right, side-over-mid energy in dB.)
 fn image(c: Clip) -> (f64, f64) {
     let (mut ll, mut rr, mut lr, mut mm, mut ss) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
-    for f in c.samples.chunks_exact(2) {
+    for f in c.samples.as_chunks::<2>().0 {
         let (l, r) = (f64::from(f[0]), f64::from(f[1]));
         ll += l * l;
         rr += r * r;
