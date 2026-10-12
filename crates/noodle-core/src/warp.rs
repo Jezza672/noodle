@@ -29,12 +29,28 @@ impl fmt::Display for WarpId {
     }
 }
 
-/// How a warp is rendered. Only Repitch exists so far (plain resampling, so
-/// pitch follows speed); the others (Grain, Beats) arrive with the engine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// How a warp is rendered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WarpMode {
+    /// Plain resampling, so pitch follows speed. Cheap, and the mode used
+    /// while a warp marker is dragged.
     #[default]
     Repitch,
+    /// Waveform-similarity overlap-add: the pitch holds while the speed
+    /// changes. Best for tonal and sustained material.
+    Grain,
+    /// Like Grain, but each transient is kept whole: the audio is cut at the
+    /// clip's transients, each attack plays at natural speed, and only what
+    /// follows is stretched. Best for drums and plucked sounds.
+    Beats,
+}
+
+impl WarpMode {
+    /// Whether the mode keeps the pitch, which the engine renders ahead of
+    /// the playhead (Repitch is done in the audio thread).
+    pub fn keeps_pitch(self) -> bool {
+        !matches!(self, WarpMode::Repitch)
+    }
 }
 
 /// The slowest and fastest a clip may play, as a multiple of natural speed,

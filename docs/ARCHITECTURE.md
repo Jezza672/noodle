@@ -614,13 +614,14 @@ An audio clip can be **warped** (CONTEXT.md; ADR 0002 says why it is not nodes).
 The document side is in `noodle-core/src/warp.rs`: a `ClipWarp` holds a
 `TempoCurve` (the clip's tempo along its own seconds, a step function), the
 `WarpMarker`s (each pins a moment of the clip, in source seconds, to a beat),
-the `WarpMode` (only Repitch) and the switches `tempo_conversion` and
+the `WarpMode` (Repitch, Grain or Beats) and the switches `tempo_conversion` and
 `use_markers`. It lives in the project's `warps` map and an audio section
 (the code's `Clip`) names it by `WarpId` in `AudioClip::warp`; sections that
 show one clip share an ID, `Project::warp_edit` forks it when a section is
 edited on its own, `AddWarp`/`SetWarp`/`RemoveWarp` are commands, and a warp
 nothing uses is left out of the saved file. The format is 3; older files load
-(`warp` and `warps` default to none).
+(`warp` and `warps` default to none). A file that uses Grain or Beats can't be
+read by a build from before those modes existed (it doesn't know the name).
 
 `ClipWarp::curve` is the one definition of where a moment of the clip plays: the
 clip's beat at a moment is the integral of its tempo, the markers bend clip
@@ -658,10 +659,51 @@ ring. Everything is preallocated at instantiation (`realtime.rs` plays warped
 clips, edits them while they play and loops over them under the counting
 allocator). The warp is in the track's cache key when it changes the sound.
 
-What is not here yet: the other modes, the worker thread that stretches ahead
-of the playhead (PR 2: Repitch needs no lookahead), editing in the app beyond
-moving a section (trims and fades of a warped section are ignored; PR 3), loop
-and clip tempo detection (PR 3), warp quantise and grooves (PR 4).
+**Grain and Beats** keep the pitch, which needs more than the audio thread can
+do, so they are rendered ahead (`noodle-nodes/src/clip/ahead.rs` and
+`stretch.rs`). A section whose warp has one of those modes is *stretched*
+(`ScheduledClip::stretched`): the hub opens no stream for it, and a worker
+thread (`noodle-warp`, one per track input node, like the hub) opens a **lane**
+instead. A lane is a ring of stereo frames (about 340 ms) the worker fills with
+the stretched section, and a small control block; the node holds up to
+`MAX_LANES` of them, handed over and taken back through queues the way streams
+are, so nothing is allocated or freed on the audio thread. The lane is keyed by
+the clip, its source, the mode and the map (`lane_key`), so a new warp is a new
+lane.
+
+`play_stretched` asks for the frames it needs and copies them out. The node
+tracks where the lane's next frame falls in the section; when the playhead is
+somewhere else (a seek, a jump, a loop wrap, an edit) it asks the worker, through
+the control block, to restart there. The worker says how many frames it had
+pushed before restarting, and the node drops that many as stale. While the worker
+catches up the playhead plays silence and counts an underrun, and the lane drops
+the frames of the ring the playhead has passed, so it comes back on time. A
+lane opened ahead for the loop's start (a *head*, as for streams) makes the wrap
+gapless; offline (`ClipFeeds::blocking`) the node waits for the worker, so a
+render comes out the same every time and whatever the block size.
+`ClipFeeds::set_preview(true)` makes every warped section play as Repitch from
+the hub's streams, which is cheap enough to follow a marker being dragged;
+turning it off brings the lanes back.
+
+The **stretcher** (`stretch.rs`) is WSOLA over the section's `WarpMap`: Hann
+grains of 40 ms, hopped by 20 ms in the output, each read from the source at
+natural speed where the map puts it and moved by up to half a hop to the offset
+that best continues the grain before (normalised correlation of the mixed-down
+audio, coarse then fine). All channels use the same offsets; the output is
+stereo. A grain that would run past its part of the source is moved back to
+repeat the last stretch of it, so the end of the section doesn't go silent.
+After a seek it renders three hops it throws away. **Beats** cuts the section at
+the transients `detect_onsets` finds in the file (found once per source by the
+worker and kept): the map says where each lands in the output, each segment is
+rendered on its own, its first 25 ms are copied from the source at natural speed
+with the search switched off, and a 1.5 ms crossfade ends on the transient. The
+grains of a segment never read past the next transient. Grain is Beats with no
+transients. The stretcher has no I/O; the worker feeds it from its own stream
+through a window of decoded frames (`StreamSource`).
+
+What is not here yet: editing in the app beyond moving a section (trims and
+fades of a warped section are ignored, and the mode can only be set in the file;
+PR 3), loop and clip tempo detection (PR 3), warp quantise and grooves (PR 4).
 
 ## Automation (M2)
 

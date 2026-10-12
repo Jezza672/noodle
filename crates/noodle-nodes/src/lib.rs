@@ -43,7 +43,7 @@ pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
-    TRACK_INPUT_ID, TrackInput, active_at,
+    StretchSource, Stretcher, TRACK_INPUT_ID, TrackInput, WarpMap, active_at,
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};

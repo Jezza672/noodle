@@ -104,6 +104,14 @@ impl WarpMap {
         Self { knots }
     }
 
+    /// A map through `knots`, for tests and benchmarks: (output frame, source
+    /// frame), rising in both, from (0, 0).
+    pub fn from_knots(knots: Vec<(f64, f64)>) -> Self {
+        assert!(knots.len() >= 2 && knots[0] == (0.0, 0.0));
+        assert!(knots.windows(2).all(|k| k[1].0 > k[0].0 && k[1].1 > k[0].1));
+        Self { knots }
+    }
+
     /// How many source frames the section's window has.
     pub fn source_len(&self) -> f64 {
         self.knots[self.knots.len() - 1].1

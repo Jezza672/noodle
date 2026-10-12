@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use noodle_core::{ClipContent, ClipId, NodeId, Project};
+use noodle_core::{ClipContent, ClipId, NodeId, Project, WarpMode};
 use noodle_engine::TempoTable;
 use noodle_io::{Decoder, FileInfo, clip_frames};
 
@@ -45,7 +45,10 @@ pub struct ScheduledClip {
     /// Where each frame of the clip reads from the source, if the clip is
     /// warped. Without it, frame `n` of the clip reads source frame `n`.
     pub warp: Option<Arc<WarpMap>>,
+    /// How the warp is rendered.
+    pub mode: WarpMode,
     key: u64,
+    lane: u64,
 }
 
 impl ScheduledClip {
@@ -69,7 +72,9 @@ impl ScheduledClip {
             fade_out,
             source,
             warp: None,
+            mode: WarpMode::Repitch,
             key: hasher.finish(),
+            lane: 0,
         }
     }
 
@@ -77,7 +82,41 @@ impl ScheduledClip {
     /// warped.
     pub fn with_warp(mut self, map: Arc<WarpMap>) -> Self {
         self.warp = Some(map);
+        self.lane = self.lane_hash();
         self
+    }
+
+    /// This clip, with its warp rendered in `mode`.
+    pub fn with_mode(mut self, mode: WarpMode) -> Self {
+        self.mode = mode;
+        self.lane = self.lane_hash();
+        self
+    }
+
+    fn lane_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.key.hash(&mut hasher);
+        self.mode.hash(&mut hasher);
+        if let Some(map) = &self.warp {
+            for (out, source) in map.knots() {
+                out.to_bits().hash(&mut hasher);
+                source.to_bits().hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Whether the clip is played by stretching ahead of the playhead (Grain
+    /// and Beats), and not by resampling in the audio thread.
+    pub fn stretched(&self) -> bool {
+        self.warp.is_some() && self.mode.keeps_pitch()
+    }
+
+    /// Identifies the stretched audio of this clip: like
+    /// [`stream_key`](Self::stream_key), but a new warp or mode is a new
+    /// lane, because the stretch has to be done again.
+    pub(super) fn lane_key(&self) -> (ClipId, u64) {
+        (self.id, self.lane)
     }
 
     /// The source frame a stream playing this clip from clip frame `rel` has
@@ -114,7 +153,7 @@ fn lay_out(
     info: &FileInfo,
     table: &TempoTable,
     rate: u32,
-) -> (u64, Option<Arc<WarpMap>>) {
+) -> (u64, Option<(Arc<WarpMap>, WarpMode)>) {
     let source_frames = clip_frames(info, audio.offset, audio.length, rate);
     let Some(warp) = audio
         .warp
@@ -135,7 +174,7 @@ fn lay_out(
         source_frames,
     );
     let length = (map.out_len().round() as u64).max(1);
-    (length, Some(Arc::new(map)))
+    (length, Some((Arc::new(map), warp.mode)))
 }
 
 /// A track's clips, sorted by start (then ID).
@@ -290,6 +329,7 @@ fn same_clip_sound(x: &ScheduledClip, y: &ScheduledClip, from: u64, to: u64) -> 
         && x.gain == y.gain
         && x.source == y.source
         && x.warp == y.warp
+        && x.mode == y.mode
         && same_fade_in
         && same_fade_out
 }
@@ -315,6 +355,8 @@ struct Inner {
     /// See [`ClipFeeds::blocking`].
     blocking: bool,
     hubs: Mutex<HashMap<NodeId, Arc<Shared>>>,
+    /// See [`ClipFeeds::set_preview`].
+    preview: Arc<std::sync::atomic::AtomicBool>,
     files: Mutex<HashMap<PathBuf, (Option<SystemTime>, FileInfo)>>,
 }
 
@@ -352,7 +394,7 @@ impl ClipFeeds {
             .lock()
             .expect("feeds lock")
             .entry(node)
-            .or_insert_with(|| Arc::new(Shared::new(blocking)))
+            .or_insert_with(|| Arc::new(Shared::new(blocking, self.inner.preview.clone())))
             .clone()
     }
 
@@ -402,6 +444,17 @@ impl ClipFeeds {
     pub fn set_monitoring(&self, node: NodeId, on: bool) {
         self.shared(node)
             .monitoring
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// While on, warped clips play as Repitch whatever their mode: cheap
+    /// enough to follow a warp marker that is being dragged, where the
+    /// stretch would have to start over with every change. Turn it off when
+    /// the edit is done and the stretch takes over (silent for a moment while
+    /// it renders).
+    pub fn set_preview(&self, on: bool) {
+        self.inner
+            .preview
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -466,7 +519,7 @@ impl ClipFeeds {
             // along with the audio.
             let (fade_in, fade_out) = match &warp {
                 None => (to_engine(audio.fade_in), to_engine(audio.fade_out)),
-                Some(map) => (
+                Some((map, _)) => (
                     map.out_at(to_engine(audio.fade_in) as f64).round() as u64,
                     (map.out_len()
                         - map.out_at(map.source_len() - to_engine(audio.fade_out) as f64))
@@ -488,14 +541,15 @@ impl ClipFeeds {
                 },
             );
             by_node.entry(clip.node).or_default().push(match warp {
-                Some(map) => scheduled.with_warp(map),
+                Some((map, mode)) => scheduled.with_warp(map).with_mode(mode),
                 None => scheduled,
             });
         }
         let mut hubs = self.inner.hubs.lock().expect("feeds lock");
         for node in by_node.keys().chain(notes_by_node.keys()) {
-            hubs.entry(*node)
-                .or_insert_with(|| Arc::new(Shared::new(self.inner.blocking)));
+            hubs.entry(*node).or_insert_with(|| {
+                Arc::new(Shared::new(self.inner.blocking, self.inner.preview.clone()))
+            });
         }
         for (node, shared) in hubs.iter() {
             let mut schedule = by_node.remove(node).unwrap_or_default();

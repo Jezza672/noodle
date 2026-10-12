@@ -15,8 +15,10 @@
 //! and back in over about 5 ms) when an edit changes what is heard at the
 //! playhead.
 
+mod ahead;
 mod hub;
 mod schedule;
+mod stretch;
 mod warp;
 
 use std::sync::Arc;
@@ -31,12 +33,14 @@ use noodle_engine::{
 use noodle_io::{ClipStream, MidiBus};
 use rtrb::{Consumer, Producer, PushError};
 
+use ahead::{AheadLinks, Lane, MAX_LANES};
 use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
     ScheduledNote, WarpMap, active_at,
 };
 use schedule::{Segments, same_sound};
+pub use stretch::{Source as StretchSource, Stretcher};
 use warp::cubic;
 
 use crate::midi_in::LiveMidi;
@@ -153,6 +157,11 @@ impl NodeType for TrackInput {
                         .and_then(|id| env.project.warp(id))
                         .filter(|warp| !warp.is_identity())
                     {
+                        // Repitch is left out, so keys made before there
+                        // were other modes still match.
+                        if warp.mode.keeps_pitch() {
+                            key.str("mode").str(&format!("{:?}", warp.mode));
+                        }
                         key.str("warp")
                             .bool(warp.tempo_conversion)
                             .bool(warp.use_markers)
@@ -184,8 +193,11 @@ impl NodeType for TrackInput {
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let shared = self.feeds.shared(setup.node);
-        let links = hub::spawn(shared.clone(), setup.sample_rate.round() as u32);
-        let mut node = TrackInputNode::new(shared, links, setup.sample_rate, setup.max_frames);
+        let rate = setup.sample_rate.round() as u32;
+        let links = hub::spawn(shared.clone(), rate);
+        let ahead = ahead::spawn(shared.clone(), rate);
+        let mut node =
+            TrackInputNode::new(shared, links, ahead, setup.sample_rate, setup.max_frames);
         node.live = self
             .midi
             .as_ref()
@@ -202,6 +214,12 @@ struct TrackInputNode {
     /// A newer schedule waiting for the dip to reach silence.
     pending: Option<Box<Schedule>>,
     streams: Vec<Option<Box<Prepared>>>,
+    /// Stretched sections (Grain and Beats), rendered ahead by a worker.
+    lanes: Vec<Option<Box<Lane>>>,
+    new_lanes: Consumer<Box<Lane>>,
+    spent_lanes: Producer<Box<Lane>>,
+    /// Stereo frames taken from a lane for the stretch being played.
+    lane_frames: Vec<f32>,
     /// Decoded frames for the stretch being played.
     scratch: Vec<f32>,
     left: Vec<f32>,
@@ -251,7 +269,13 @@ struct Sounding {
 }
 
 impl TrackInputNode {
-    fn new(shared: Arc<Shared>, links: Links, sample_rate: f32, max_frames: usize) -> Self {
+    fn new(
+        shared: Arc<Shared>,
+        links: Links,
+        ahead: AheadLinks,
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Self {
         let fade_len = (sample_rate * FADE_SECONDS).round().max(1.0);
         Self {
             shared,
@@ -260,6 +284,10 @@ impl TrackInputNode {
             schedule: None,
             pending: None,
             streams: (0..MAX_STREAMS + MAX_HEADS).map(|_| None).collect(),
+            lanes: (0..MAX_LANES).map(|_| None).collect(),
+            new_lanes: ahead.lanes,
+            spent_lanes: ahead.returned,
+            lane_frames: vec![0.0; max_frames * 2],
             scratch: vec![0.0; max_frames * MAX_CHANNELS],
             left: vec![0.0; max_frames],
             right: vec![0.0; max_frames],
@@ -303,6 +331,7 @@ impl TrackInputNode {
     /// Takes what the hub has sent. A new schedule that changes what is heard
     /// over this block waits for the dip; any other takes over at once.
     fn receive(&mut self, position: u64, frames: usize) {
+        self.take_lanes();
         if let Some((version, next, notes)) = self.deferred.take() {
             self.take_schedule(version, next, notes, position, frames);
         }
@@ -320,6 +349,7 @@ impl TrackInputNode {
     /// schedule is in use: streams are taken in, and a schedule is kept for
     /// the start of the next block.
     fn receive_streams(&mut self) {
+        self.take_lanes();
         while let Ok(message) = self.from_hub.pop() {
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
@@ -332,6 +362,25 @@ impl TrackInputNode {
                     }
                 }
             }
+        }
+    }
+
+    /// Takes in the lanes the worker has opened. One that has no room is sent
+    /// straight back to be dropped there.
+    fn take_lanes(&mut self) {
+        while let Ok(lane) = self.new_lanes.pop() {
+            match self.lanes.iter_mut().find(|slot| slot.is_none()) {
+                Some(slot) => *slot = Some(lane),
+                None => self.retire_lane(lane),
+            }
+        }
+    }
+
+    /// Like [`retire`](Self::retire), for a lane. If the queue were ever full
+    /// the lane is leaked rather than freed on the audio thread.
+    fn retire_lane(&mut self, lane: Box<Lane>) {
+        if let Err(PushError::Full(lane)) = self.spent_lanes.push(lane) {
+            std::mem::forget(lane);
         }
     }
 
@@ -451,7 +500,28 @@ impl TrackInputNode {
                 self.retire(Retired::Stream(stream));
             }
         }
-        let bound = self.streams.iter().flatten().count();
+        for i in 0..self.lanes.len() {
+            let Some(lane) = &self.lanes[i] else { continue };
+            let wanted = |schedule: Option<&[ScheduledClip]>| {
+                schedule.is_some_and(|s| {
+                    s.iter().any(|c| {
+                        c.stretched()
+                            && c.lane_key() == (lane.id, lane.key)
+                            && if lane.head {
+                                looping.is_some_and(|(start, _)| c.end() > start)
+                            } else {
+                                c.end() > position && !(position < c.start && lane.expected() != 0)
+                            }
+                    })
+                })
+            };
+            if !(wanted(current) || wanted(self.pending.as_deref().map(Vec::as_slice)))
+                && let Some(lane) = self.lanes[i].take()
+            {
+                self.retire_lane(lane);
+            }
+        }
+        let bound = self.streams.iter().flatten().count() + self.lanes.iter().flatten().count();
         self.shared.bound.store(bound, Ordering::Relaxed);
     }
 
@@ -505,6 +575,19 @@ impl TrackInputNode {
         let Some(clip) = self.schedule.as_ref().and_then(|s| active_at(s, position)) else {
             return;
         };
+        if clip.stretched() && !self.shared.preview.load(Ordering::Relaxed) {
+            let rel = position - clip.start;
+            if let Some(lane) = self
+                .lanes
+                .iter_mut()
+                .flatten()
+                .find(|l| (l.id, l.key) == clip.lane_key() && !l.head)
+                && lane.expected() != rel
+            {
+                lane.seek(rel);
+            }
+            return;
+        }
         let key = clip.stream_key();
         let at = clip.stream_start(position - clip.start);
         if let Some(prepared) = self
@@ -546,6 +629,10 @@ impl TrackInputNode {
         target: f32,
     ) {
         if let Some(map) = &clip.warp {
+            if clip.stretched() && !self.shared.preview.load(Ordering::Relaxed) {
+                self.play_stretched(clip, schedule, a, fa, fb, target);
+                return;
+            }
             self.play_warped(clip, map, schedule, a, fa, fb, target);
             return;
         }
@@ -560,7 +647,8 @@ impl TrackInputNode {
         let Some(slot) = found else {
             // Not opened yet: silence, and the hub is on it.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         };
         let blocking = self.shared.blocking;
@@ -590,7 +678,8 @@ impl TrackInputNode {
         if stream.position() != rel {
             // Still catching up: nothing to play yet.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         }
         let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
@@ -827,6 +916,142 @@ impl TrackInputNode {
         gain *= self.level;
         self.left[index] = l * gain;
         self.right[index] = r * gain;
+    }
+}
+
+impl TrackInputNode {
+    /// Plays a stretched `clip` (Grain or Beats) over block frames `fa..fb`,
+    /// which start at timeline sample `a`, by copying out of its lane: the
+    /// worker has rendered it already.
+    fn play_stretched(
+        &mut self,
+        clip: &ScheduledClip,
+        schedule: &[ScheduledClip],
+        a: u64,
+        fa: usize,
+        fb: usize,
+        target: f32,
+    ) {
+        let len = fb - fa;
+        let key = clip.lane_key();
+        let rel = a - clip.start;
+        let blocking = self.shared.blocking;
+        let found = if blocking {
+            self.wait_for_lane(clip, rel, a, schedule)
+        } else {
+            self.pick_lane(key, rel)
+        };
+        let Some(slot) = found else {
+            // Not opened yet: silence, and the worker is on it.
+            self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
+            return;
+        };
+        let lane = self.lanes[slot].as_mut().expect("found above");
+        lane.promote();
+        if lane.expected() != rel {
+            lane.seek(rel);
+        }
+        // Offline, wait for the worker to deliver everything the clip has in
+        // this stretch; live, take what is there.
+        let want = (clip.length.saturating_sub(rel)).min(len as u64) as usize;
+        let started = Instant::now();
+        let mut got = 0;
+        loop {
+            if lane.catch_up() {
+                got += lane.read(&mut self.lane_frames[got * 2..want * 2]);
+            }
+            if got >= want || !blocking {
+                break;
+            }
+            if started.elapsed() > WAIT_LIMIT {
+                self.abandoned.push(key);
+                break;
+            }
+            std::thread::sleep(WAIT_STEP);
+        }
+        if got < want {
+            lane.miss(want - got);
+            self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+        }
+        for i in 0..got {
+            let (l, r) = (self.lane_frames[i * 2], self.lane_frames[i * 2 + 1]);
+            self.put(clip, rel + i as u64, fa + i, l, r, target);
+        }
+        if got == 0 && want > 0 {
+            // Nothing to play: stay silent until the lane delivers, and ramp
+            // in then, not behind the gap. (A block that is only short keeps
+            // its level, or a lane that runs a little behind would never get
+            // loud.)
+            self.level = 0.0;
+        } else {
+            self.advance(target, len - got);
+        }
+    }
+
+    /// Finds the lane to play `key` from at section frame `rel`: one that is
+    /// already there, else any. Once one is, lanes for the section that are
+    /// ahead of the playhead are left over from before a loop wrap and are
+    /// handed back.
+    fn pick_lane(&mut self, key: (ClipId, u64), rel: u64) -> Option<usize> {
+        let mut exact = None;
+        let (mut normal, mut head) = (None, None);
+        for (i, slot) in self.lanes.iter().enumerate() {
+            let Some(lane) = slot else { continue };
+            if (lane.id, lane.key) != key {
+                continue;
+            }
+            // A lane opened ahead for the loop's start is only for when the
+            // playhead wraps, so it is the last resort.
+            if lane.head {
+                head.get_or_insert(i);
+            } else {
+                normal.get_or_insert(i);
+            }
+            if lane.expected() == rel {
+                exact.get_or_insert(i);
+            }
+        }
+        if let Some(keep) = exact {
+            for i in 0..self.lanes.len() {
+                let stale = i != keep
+                    && self.lanes[i]
+                        .as_ref()
+                        .is_some_and(|l| (l.id, l.key) == key && !l.head && l.expected() > rel);
+                if stale && let Some(old) = self.lanes[i].take() {
+                    self.retire_lane(old);
+                }
+            }
+        }
+        exact.or(normal).or(head)
+    }
+
+    /// Offline: waits until the worker has opened the lane for `key`.
+    fn wait_for_lane(
+        &mut self,
+        clip: &ScheduledClip,
+        rel: u64,
+        at: u64,
+        current: &[ScheduledClip],
+    ) -> Option<usize> {
+        let key = clip.lane_key();
+        let started = Instant::now();
+        loop {
+            if self.abandoned.contains(&key) || self.shared.has_failed(clip.stream_key()) {
+                return None;
+            }
+            if let Some(slot) = self.pick_lane(key, rel) {
+                return Some(slot);
+            }
+            if started.elapsed() > WAIT_LIMIT {
+                self.abandoned.push(key);
+                return None;
+            }
+            std::thread::sleep(WAIT_STEP);
+            self.receive_streams();
+            self.sweep(at, self.looping, Some(current));
+        }
     }
 }
 

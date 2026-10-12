@@ -1,0 +1,41 @@
+// The same 0.6 s loop and warp as warp-grain.ron, played in Beats mode. Beats
+// keeps the pitch too, and plays each kick and hit at its natural speed, so
+// they stay sharp; only the audio after each one is stretched, to fill the room
+// up to the next. The warp is part of the project, not of the graph.
+(
+    format: 3,
+    graph: (
+        nodes: {
+            1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.io.output", position: (x: 250.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "audio"), to: (node: 2, port: "in")),
+        ],
+    ),
+    clips: {
+        1: (
+            node: 1,
+            start: 0,
+            content: Audio((
+                source: "warp-stretch.wav",
+                offset: 0,
+                length: 28800,
+                gain: 1.0,
+                fade_in: 0,
+                fade_out: 0,
+                warp: Some(1),
+            )),
+        ),
+    },
+    warps: {
+        1: (
+            tempo: (points: [(seconds: 0.0, bpm: 120.0)]),
+            markers: [
+                (seconds: 0.0, beat: 0.0),
+                (seconds: 0.16, beat: 0.5),
+            ],
+            mode: Beats,
+        ),
+    },
+)

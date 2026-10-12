@@ -598,7 +598,8 @@ A plugin that changes its latency after loading (restart request, latency
 
 ## M7: Time warping
 
-**Status:** PR 1 of 4 is done (the model and Repitch playback, below). The
+**Status:** PRs 1 and 2 of 4 are done (the model and Repitch playback; the
+engine with Grain and Beats, below). The
 decisions are in CONTEXT.md (warp, clip tempo, beat and warp markers, groove,
 section) and ADR 0002 (warping is a clip feature, not nodes).
 
@@ -620,11 +621,21 @@ Audio clips get a warp, applied live on playback. Four PRs:
    **loop** (a loop region in beats, and a section extending past the true
    length): it needs the editor's brace and the engine's gapless repeat, so it
    moved from this PR to PR 3.
-2. **The engine.** Stretching runs on a worker thread ahead of the playhead into
-   a ring buffer; the audio thread only copies. Modes: Repitch, Grain (WSOLA)
-   and Beats (transient-preserving). Cheap repitch plays while a marker is
-   dragged. Benchmarks, and golden renders. (The real-time allocation test and
-   a golden render already cover Repitch, from PR 1.)
+2. **The engine. Done.** Grain and Beats are rendered by a worker thread
+   (`noodle-warp`, one per track input) ahead of the playhead into a ring buffer
+   per stretched section; the audio thread only copies out of it. Grain is
+   waveform-similarity overlap-add (WSOLA); Beats cuts the clip at its
+   transients (`noodle_io::detect_onsets`), plays each attack at natural speed
+   and stretches only what follows. Seeks, jumps, stops and edits restart the
+   stretch at the new place, and the loop's start is rendered ahead so a wrap is
+   gapless. `ClipFeeds::set_preview` plays every warped section as cheap
+   Repitch while a marker is dragged, so the editor (PR 3) can use it. Tests
+   cover pitch, level, stereo balance, block-size independence, seeks, loops and
+   the allocation guard (`stretched_clips.rs`, `stretched_playback.rs`,
+   `track_input_realtime.rs`); `examples/warp-grain.ron` and `warp-beats.ron`
+   have golden renders; `cargo bench -p noodle-nodes --bench warp` measures the
+   stretcher (about 150 times real time per clip on one core). Choosing the
+   mode in the app waits for the clip editor.
 3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
    waveform, transient ticks, warp markers along the top and the loop brace.
    Properties (mode, switches, clip tempo, loop, gain, fades) stay in the
