@@ -2527,7 +2527,10 @@ dependencies = [
 name = "noodle-eval"
 version = "0.1.0"
 dependencies = [
+ "noodle-core",
+ "noodle-engine",
  "noodle-io",
+ "noodle-nodes",
  "realfft",
  "serde",
  "serde_json",

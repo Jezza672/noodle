@@ -692,7 +692,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate) is built; its validation against the listening-test dataset runs through `noodle-eval validate` but the dataset itself (IEEE DataPort, login to download) has not been run yet. Batches 2 to 4 are not started.
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate) and batch 2 (probes and harness, minus the CI gate) are built. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode), and the committed baseline is a before and after. Batches 3 and 4 are not started.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
@@ -718,10 +718,12 @@ shows a before and after. Four batches:
    source tempo, so 2 is twice as fast), plus a ramp, a step and a wobble from
    fixed seeds. Output is a metric table with a rank summary, diffed against a
    committed baseline of metric numbers (no audio), which shows a before and
-   after and is never a threshold. CI gates on the probes (plus one small
-   stand-in project if needed); a threshold is a distance from the reference
-   that must stay no worse than the worst reference stretcher's on the same
-   material, and is never set from Noodle's own current numbers.
+   after and is never a threshold. Once the metrics are validated, CI gates on
+   the probes (plus one small stand-in project if needed); a threshold is a
+   distance from the reference that must stay no worse than the worst reference
+   stretcher's on the same material, and is never set from Noodle's own
+   current numbers. (Built: everything above except the gate and the stems.
+   The reference stretchers it would be measured against arrive in batch 4.)
 3. **Songs.** Five songs of 60 to 90 s with intro, verse, chorus, breakdown and
    drop, written as `.ron` projects through the normal commands (drums, plucks,
    pads, bass, arpeggios; synths and triggered one-shots). A 15 to 20 s excerpt

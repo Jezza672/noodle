@@ -14,15 +14,19 @@
 //! all of them against the authors' published listening-test dataset.
 
 pub mod clip;
+pub mod harness;
 pub mod level;
 pub mod onsets;
 pub mod paper;
 pub mod phasiness;
 pub mod pitch;
+pub mod probe;
 pub mod report;
 pub mod spectral;
 pub mod stereo;
 pub mod stft;
+pub mod table;
+pub mod tempo;
 pub mod timemap;
 pub mod timing;
 pub mod transient;

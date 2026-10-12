@@ -208,6 +208,42 @@ pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
     })
 }
 
+/// How much of a file is listened to for transients: a long recording is
+/// analysed from its start only, to keep the work and memory bounded.
+pub const ANALYSIS_SECONDS: f64 = 120.0;
+
+/// What the clip editor learns from a file's audio.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Analysis {
+    /// Where transients start, in seconds from the start of the file.
+    pub onsets: Vec<f64>,
+    /// The tempo they sit on the beat of, if there's a clear one.
+    pub tempo: Option<f64>,
+    /// The tempo and where the beat falls, even when it is only a guess (see
+    /// [`TempoEstimate::confidence`]). `None` if there are too few
+    /// transients, or none agree on a tempo.
+    pub grid: Option<TempoEstimate>,
+    /// Whether the file is long enough, with transients close enough, that
+    /// its beats are worth keeping whole when it is stretched.
+    pub percussive: bool,
+}
+
+impl Analysis {
+    pub fn of(mono: &[f32], rate: u32) -> Self {
+        let onsets: Vec<f64> = detect_onsets(mono, rate)
+            .into_iter()
+            .map(|frame| frame as f64 / f64::from(rate))
+            .collect();
+        let seconds = mono.len() as f64 / f64::from(rate);
+        Self {
+            tempo: estimate_tempo(&onsets),
+            grid: estimate_grid(&onsets),
+            percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
+            onsets,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
