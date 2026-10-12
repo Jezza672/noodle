@@ -4,8 +4,8 @@
 use std::fmt;
 
 use crate::{
-    AutomationLane, Clip, ClipId, Connection, Endpoint, Frame, FrameId, LaneId, Node, NodeId,
-    Position, Project, TempoMap, Value,
+    AutomationLane, Clip, ClipId, ClipWarp, Connection, Endpoint, Frame, FrameId, LaneId, Node,
+    NodeId, Position, Project, TempoMap, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +86,21 @@ pub enum Command {
         id: ClipId,
         clip: Clip,
     },
+    /// Adds a warp for audio clips to share. Do this before the `SetClip` or
+    /// `AddClip` that uses it.
+    AddWarp {
+        id: WarpId,
+        warp: ClipWarp,
+    },
+    /// Removes a warp no clip uses.
+    RemoveWarp {
+        id: WarpId,
+    },
+    /// Replaces a warp, which changes every section that shows its clip.
+    SetWarp {
+        id: WarpId,
+        warp: ClipWarp,
+    },
     AddLane {
         id: LaneId,
         lane: AutomationLane,
@@ -162,6 +177,18 @@ impl Command {
             Command::SetClip { id, clip } => {
                 let old = project.replace_clip(id, clip)?;
                 return Ok(Command::SetClip { id, clip: old });
+            }
+            Command::AddWarp { id, warp } => {
+                project.insert_warp(id, warp)?;
+                return Ok(Command::RemoveWarp { id });
+            }
+            Command::RemoveWarp { id } => {
+                let warp = project.remove_warp(id)?;
+                return Ok(Command::AddWarp { id, warp });
+            }
+            Command::SetWarp { id, warp } => {
+                let old = project.replace_warp(id, warp)?;
+                return Ok(Command::SetWarp { id, warp: old });
             }
             Command::AddLane { id, lane } => {
                 project.insert_lane(id, lane)?;
@@ -277,6 +304,9 @@ impl Command {
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
+            | Command::AddWarp { .. }
+            | Command::RemoveWarp { .. }
+            | Command::SetWarp { .. }
             | Command::AddLane { .. }
             | Command::RemoveLane { .. }
             | Command::SetLane { .. } => unreachable!("handled above"),
@@ -292,6 +322,7 @@ enum Target<'a> {
     Frame(FrameId),
     Param(NodeId, &'a str),
     Clip(ClipId),
+    Warp(WarpId),
     Lane(LaneId),
     TempoMap,
     TrackOrder,
@@ -304,6 +335,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetFrame { id, .. } => Some(Target::Frame(*id)),
         Command::SetParam { node, key, .. } => Some(Target::Param(*node, key)),
         Command::SetClip { id, .. } => Some(Target::Clip(*id)),
+        Command::SetWarp { id, .. } => Some(Target::Warp(*id)),
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
@@ -357,6 +389,12 @@ pub enum EditError {
     BoundaryNode(NodeId),
     GroupInsideItself(NodeId),
     NoSuchClip(ClipId),
+    NoSuchWarp(WarpId),
+    WarpExists(WarpId),
+    /// A clip still uses the warp.
+    WarpInUse(WarpId),
+    /// What's wrong with the warp.
+    InvalidWarp(WarpId, &'static str),
     ClipExists(ClipId),
     /// What's wrong with the clip.
     InvalidClip(ClipId, &'static str),
@@ -389,6 +427,10 @@ impl fmt::Display for EditError {
             Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
             Self::NoSuchClip(id) => write!(f, "there's no {id}"),
             Self::ClipExists(id) => write!(f, "there's already a {id}"),
+            Self::NoSuchWarp(id) => write!(f, "there's no {id}"),
+            Self::WarpExists(id) => write!(f, "there's already a {id}"),
+            Self::WarpInUse(id) => write!(f, "a clip still uses {id}"),
+            Self::InvalidWarp(id, why) => write!(f, "the {id} can't be used: {why}"),
             Self::InvalidClip(id, why) => write!(f, "the {id} can't be used: {why}"),
             Self::NoSuchLane(id) => write!(f, "there's no {id}"),
             Self::LaneExists(id) => write!(f, "there's already a {id}"),

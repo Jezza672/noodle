@@ -73,3 +73,14 @@ pub(crate) fn make(title: &str) -> Option<Box<dyn EditorWindow>> {
 pub(crate) fn available() -> bool {
     FACTORY.get().is_some()
 }
+
+/// Handles the window-system events waiting for this thread, for a program
+/// with no event loop of its own (the plugin host process, whose main thread
+/// is the plugin thread). Without it an editor window would never redraw or
+/// take a click. Does nothing where editors float on Linux.
+pub(crate) fn pump_events() {
+    #[cfg(target_os = "macos")]
+    macos::pump_events();
+    #[cfg(windows)]
+    windows::pump_events();
+}

@@ -33,8 +33,8 @@ pub use editor::{
 pub use host::{HostError, MAX_PARAMS, capture_state, describe_file};
 pub use node::{PARAM_STEP, PluginNodeType};
 pub use sandbox::{
-    HOST_ARG, SandboxCommand, SandboxStatus, host_main, sandbox_enabled, sandbox_status,
-    set_sandbox,
+    HOST_ARG, HOST_PUMPED_ARG, SandboxCommand, SandboxStatus, host_main, sandbox_enabled,
+    sandbox_status, set_sandbox,
 };
 pub use scan::{
     SCAN_ARG, SCAN_TIMEOUT, ScanCache, ScanCommand, find_plugin_files, run_scan_child_if_requested,

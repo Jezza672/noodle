@@ -6,6 +6,8 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::NodeId;
 use noodle_engine::OUTPUT_ID;
 
+use crate::clip_editor::{self, ClipEditor};
+use crate::clip_panel::{self, ClipPanel};
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::export_dialog::ExportDialog;
@@ -14,7 +16,7 @@ use crate::piano_roll::{self, PianoRoll};
 use crate::plugin_browser::PluginBrowser;
 use crate::session::{Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
-use crate::{metronome, mixer, properties, theme};
+use crate::{metronome, mixer, pill_buttons, properties, theme};
 
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 const REDO: KeyboardShortcut =
@@ -53,6 +55,8 @@ pub struct App {
     editor: EditorState,
     timeline: TimelineState,
     piano_roll: PianoRoll,
+    clip_editor: ClipEditor,
+    clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
     devices: DevicePicker,
@@ -106,6 +110,10 @@ enum Action {
     AudioSettings,
     ToggleMixer,
     ToggleMetronome,
+    /// Presses a button in the transport pill.
+    PressButton(NodeId),
+    /// Adds a button wired to the switch at this place in the menu's list.
+    BindButton(usize),
     ToggleScope,
     ToggleOutputs,
     TogglePlugins,
@@ -144,6 +152,8 @@ impl App {
             editor: EditorState::default(),
             timeline: TimelineState::default(),
             piano_roll: PianoRoll::default(),
+            clip_editor: ClipEditor::default(),
+            clip_panel: ClipPanel::default(),
             audition_track: None,
             devices: DevicePicker::default(),
             export: ExportDialog::default(),
@@ -311,10 +321,33 @@ impl App {
                 // the next node would open it at its default width.
                 ui.set_min_width(ui.available_width());
                 ui.add_space(4.0);
+                let mut edits = Vec::new();
+                // The selected audio clip's own properties, above the node's.
+                let picked = self
+                    .clip_editor
+                    .clip()
+                    .or_else(|| self.timeline.selected_clip())
+                    .filter(|&id| {
+                        self.session
+                            .project()
+                            .clip(id)
+                            .is_some_and(|clip| clip.as_audio().is_some())
+                    });
+                if let Some(id) = picked {
+                    let loaded = self.clip_source(ui.ctx(), id);
+                    edits.extend(clip_panel::show(
+                        ui,
+                        &mut self.clip_panel,
+                        &self.session,
+                        id,
+                        loaded.as_ref(),
+                    ));
+                    ui.separator();
+                }
                 let editor = &self.editor;
-                let edits = properties::show(ui, &self.session, active, &|node, key| {
+                edits.extend(properties::show(ui, &self.session, active, &|node, key| {
                     editor.param_live(node, key)
-                });
+                }));
                 self.session.edit(edits);
             });
 
@@ -336,7 +369,12 @@ impl App {
                     self.import_audio(target);
                 }
                 if let Some(clip) = out.open_midi {
+                    self.clip_editor.close();
                     self.piano_roll.open(clip);
+                }
+                if let Some(clip) = out.open_audio {
+                    self.piano_roll.close();
+                    self.clip_editor.open(clip);
                 }
                 for (track, kind, on) in out.arm {
                     self.session.arm_kind(track, kind, on);
@@ -358,6 +396,24 @@ impl App {
                             self.session.audition(track, key, on);
                         }
                     }
+                });
+        }
+        if let Some(clip) = self.clip_editor.clip() {
+            egui::Panel::top("clip editor")
+                .resizable(true)
+                .default_size(clip_editor::DEFAULT_HEIGHT)
+                .frame(egui::Frame::NONE.fill(theme::PANEL))
+                .show(ui, |ui| {
+                    let loaded = self.clip_source(ui.ctx(), clip);
+                    let playhead = Some(self.session.playhead());
+                    let out = clip_editor::show(
+                        ui,
+                        &mut self.clip_editor,
+                        &self.session,
+                        loaded.as_ref(),
+                        playhead,
+                    );
+                    self.session.edit(out.edits);
                 });
         }
         // A key still down when the roll closed or its clip went.
@@ -652,6 +708,7 @@ impl App {
         self.quantise_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
+        self.extra_buttons(ui, actions);
         let at = self
             .session
             .project()
@@ -767,6 +824,44 @@ impl App {
         if ui.add(button).on_hover_text(tip).clicked() {
             actions.push(Action::ToggleMetronome);
         }
+    }
+
+    /// The other Button nodes, lit while on, and a menu to bind a new one
+    /// to a switch on any node.
+    fn extra_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let project = self.session.project();
+        let registry = self.session.registry();
+        for extra in pill_buttons::extras(project, registry) {
+            let colour = if extra.on {
+                theme::ACCENT
+            } else {
+                theme::timeline::TEXT
+            };
+            let tip = if extra.target.is_empty() {
+                "A button nothing is wired to".to_owned()
+            } else {
+                extra.target.clone()
+            };
+            let button =
+                egui::Button::new(egui::RichText::new("⏻").color(colour)).selected(extra.on);
+            if ui.add(button).on_hover_text(tip).clicked() {
+                actions.push(Action::PressButton(extra.button));
+            }
+        }
+        ui.menu_button("＋", |ui| {
+            let switches = pill_buttons::switches(project, registry);
+            if switches.is_empty() {
+                ui.weak("No switches to bind a button to");
+            }
+            for (n, switch) in switches.iter().enumerate() {
+                if ui.button(&switch.label).clicked() {
+                    actions.push(Action::BindButton(n));
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Add a button here that switches a node's On/Off setting");
     }
 
     fn status_bar(&self, ui: &mut egui::Ui) {
@@ -938,6 +1033,25 @@ impl App {
                     }
                 }
             }
+            Action::PressButton(button) => {
+                if let Some(command) = pill_buttons::press(self.session.project(), button) {
+                    self.session.edit([Edit::Apply(command)]);
+                }
+            }
+            Action::BindButton(n) => {
+                let switches =
+                    pill_buttons::switches(self.session.project(), self.session.registry());
+                if let Some(switch) = switches.get(n) {
+                    let button = self.session.new_node_id();
+                    let command = pill_buttons::bind(
+                        self.session.project(),
+                        self.session.registry(),
+                        switch,
+                        button,
+                    );
+                    self.session.edit([Edit::Apply(command)]);
+                }
+            }
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
             Action::ToggleCpu => self.editor.set_show_cpu(!self.editor.show_cpu()),
@@ -1034,6 +1148,17 @@ impl App {
     }
 
     /// Asks which audio files to add, and adds them as clips at `target`.
+    /// What is known about the audio file of clip `id`.
+    fn clip_source(
+        &mut self,
+        ctx: &egui::Context,
+        id: noodle_core::ClipId,
+    ) -> Option<timeline::Loaded> {
+        let name = self.session.project().clip(id)?.as_audio()?.source.clone();
+        let directory = self.session.directory().map(std::path::Path::to_path_buf);
+        self.timeline.source(ctx, directory.as_deref(), &name)
+    }
+
     fn import_audio(&mut self, target: timeline::Target) {
         let picked = rfd::FileDialog::new()
             .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"])
@@ -1937,5 +2062,29 @@ mod tests {
             metronome::binding(harness.state().session.project()),
             metronome::Binding::Bound { on: false, .. }
         ));
+    }
+
+    #[test]
+    fn the_plus_menu_binds_a_new_pill_button_that_presses_a_switch() {
+        let mut harness = harness(empty());
+        harness.run();
+        // The metronome's own button makes a metronome with a switch left.
+        harness.get_by_label("♩").click();
+        harness.run();
+        harness.get_by_label("＋").click();
+        harness.run();
+        harness.get_by_label("Metronome · Accent").click();
+        harness.run();
+        let shown = || {
+            let state = harness.state();
+            pill_buttons::extras(state.session.project(), state.session.registry())
+        };
+        assert_eq!(shown().len(), 1);
+        assert!(shown()[0].on);
+        harness.get_by_label("⏻").click();
+        harness.run();
+        let state = harness.state();
+        let extras = pill_buttons::extras(state.session.project(), state.session.registry());
+        assert!(!extras[0].on);
     }
 }

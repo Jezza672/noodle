@@ -8,6 +8,7 @@ mod export;
 mod hash;
 mod input;
 mod midi;
+mod onsets;
 mod output;
 mod peaks;
 mod record;
@@ -29,12 +30,13 @@ pub use midi::{
     AudioClock, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver,
     TimedMessage, connect_midi, midi_inputs, now_micros, parse_message, same_port,
 };
+pub use onsets::{detect_onsets, estimate_tempo};
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
     Playback, Stream, VirtualCapture, is_fatal, play, play_with_outputs, play_with_outputs_stopped,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};
-pub use resample::{ResampleError, resample};
+pub use resample::{ResampleError, StreamResampler, resample};
 pub use stream::{ClipStream, StreamSpec, StreamWorker, clip_frames, open_stream};
 pub use wav::{Audio, WavError, WavStreamWriter, read_wav, write_wav};

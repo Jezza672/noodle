@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use noodle_io::{Decoder, Peaks};
+use noodle_io::{Decoder, Peaks, PeaksBuilder, detect_onsets, estimate_tempo};
 
 use super::clips::Source;
 
@@ -29,6 +29,64 @@ pub struct Loaded {
     pub source: Source,
     /// `None` while the waveform is still being worked out.
     pub peaks: Option<Arc<Peaks>>,
+    /// The transients and tempo found along with the waveform.
+    pub analysis: Option<Arc<Analysis>>,
+}
+
+/// How much of a file is listened to for transients: a long recording is
+/// analysed from its start only, to keep the work and memory bounded.
+const ANALYSIS_SECONDS: f64 = 120.0;
+
+/// What the clip editor learns from a file's audio.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Analysis {
+    /// Where transients start, in seconds from the start of the file.
+    pub onsets: Vec<f64>,
+    /// The tempo they sit on the beat of, if there's a clear one.
+    pub tempo: Option<f64>,
+    /// Whether the file is long enough, with transients close enough, that
+    /// its beats are worth keeping whole when it is stretched.
+    pub percussive: bool,
+}
+
+impl Analysis {
+    fn of(mono: &[f32], rate: u32) -> Self {
+        let onsets: Vec<f64> = detect_onsets(mono, rate)
+            .into_iter()
+            .map(|frame| frame as f64 / f64::from(rate))
+            .collect();
+        let seconds = mono.len() as f64 / f64::from(rate);
+        Self {
+            tempo: estimate_tempo(&onsets),
+            percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
+            onsets,
+        }
+    }
+}
+
+/// Reads the whole file once for its waveform, and the start of it for its
+/// transients.
+fn analyse(path: &Path) -> Option<(Arc<Peaks>, Arc<Analysis>)> {
+    let mut decoder = Decoder::open(path).ok()?;
+    let info = decoder.info();
+    let mut builder = PeaksBuilder::new(info.channels, info.sample_rate);
+    let limit = (f64::from(info.sample_rate) * ANALYSIS_SECONDS) as usize;
+    let mut mono: Vec<f32> = Vec::new();
+    let mut chunk = Vec::new();
+    while decoder.read_chunk(&mut chunk).ok()?.is_some() {
+        builder.push(&chunk);
+        if mono.len() < limit {
+            let room = limit - mono.len();
+            mono.extend(
+                chunk
+                    .chunks_exact(info.channels.max(1))
+                    .take(room)
+                    .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32),
+            );
+        }
+    }
+    let analysis = Analysis::of(&mono, info.sample_rate);
+    Some((Arc::new(builder.finish()), Arc::new(analysis)))
 }
 
 enum Waveform {
@@ -61,7 +119,11 @@ struct Job {
     done: Sender<()>,
 }
 
-type Done = (PathBuf, Option<SystemTime>, Option<Arc<Peaks>>);
+type Done = (
+    PathBuf,
+    Option<SystemTime>,
+    Option<(Arc<Peaks>, Arc<Analysis>)>,
+);
 
 pub struct Sources {
     entries: HashMap<PathBuf, Entry>,
@@ -83,7 +145,7 @@ impl Default for Sources {
                     // Take the job first, so the lock isn't held while it runs.
                     let job = queue.lock().unwrap().recv();
                     let Ok(job) = job else { break };
-                    let peaks = Peaks::from_file(&job.path).ok().map(Arc::new);
+                    let peaks = analyse(&job.path);
                     let _ = sender.send((job.path, job.modified, peaks));
                     job.ctx.request_repaint();
                     #[cfg(test)]
@@ -182,6 +244,7 @@ impl Sources {
                 frames: info.frames,
             },
             peaks: None,
+            analysis: None,
         };
         let modified = modified(&path);
         Self::submit(&self.jobs, path.clone(), modified, ctx);
@@ -209,9 +272,10 @@ impl Sources {
                 continue;
             }
             match peaks {
-                Some(peaks) => {
+                Some((peaks, analysis)) => {
                     found.loaded.source.frames.get_or_insert(peaks.frames());
                     found.loaded.peaks = Some(peaks);
+                    found.loaded.analysis = Some(analysis);
                     found.waveform = Waveform::Ready;
                 }
                 None => found.waveform = Waveform::Failed(Instant::now()),

@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -22,6 +22,7 @@ use crate::devices::{
 use crate::input::{Capture, Feed, recordable_input_path};
 use crate::midi::{AudioClock, MidiBus, now_micros};
 use crate::record::{RecordError, Recorder, Take};
+use crate::resample::StreamResampler;
 
 pub use cpal::{Error as DeviceError, ErrorKind as DeviceErrorKind};
 
@@ -112,27 +113,49 @@ impl DeviceWriter {
 
     /// Splits the engine's channels among devices: this one plays the first
     /// `main_channels`, and each of the `extra_channels` counts that follow
-    /// gets an [`ExtraOutput`] to play on its own device. The counts must add
-    /// up to the engine's channels. Anything the devices fall behind by
-    /// counts in `glitches`.
+    /// gets an [`ExtraOutput`] to play on its own device, at the engine's
+    /// rate. The counts must add up to the engine's channels. Anything the
+    /// devices fall behind by counts in `glitches`.
     pub fn with_outputs(
-        mut self,
+        self,
         main_channels: usize,
         extra_channels: &[usize],
         glitches: &Arc<AtomicU64>,
     ) -> (Self, Vec<ExtraOutput>) {
+        let rate = self.processor.settings().sample_rate as u32;
+        let extras: Vec<_> = extra_channels.iter().map(|&c| (c, rate)).collect();
+        let (writer, outputs) = self.with_resampled_outputs(main_channels, &extras, glitches);
+        let outputs = outputs
+            .into_iter()
+            .map(|output| output.expect("same-rate outputs need no converter"))
+            .collect();
+        (writer, outputs)
+    }
+
+    /// Like [`with_outputs`](Self::with_outputs), for devices that may run at
+    /// other sample rates than the engine: each extra is `(channels, rate)`.
+    /// Audio for a device at another rate is converted by a thread of its own
+    /// (see [`ExtraOutput`]), so neither stream's callback does the work. A
+    /// device whose converter can't start gets its error in place of an
+    /// output, and its channels are dropped.
+    pub fn with_resampled_outputs(
+        mut self,
+        main_channels: usize,
+        extras: &[(usize, u32)],
+        glitches: &Arc<AtomicU64>,
+    ) -> (Self, Vec<Result<ExtraOutput, AudioError>>) {
         let rate = self.processor.settings().sample_rate;
         assert_eq!(
-            main_channels + extra_channels.iter().sum::<usize>(),
+            main_channels + extras.iter().map(|e| e.0).sum::<usize>(),
             self.processor.settings().channels,
             "the devices' channels must add up to the engine's"
         );
         self.channels = main_channels;
         let mut first = main_channels;
-        let mut outputs = Vec::with_capacity(extra_channels.len());
-        for &channels in extra_channels {
+        let mut outputs = Vec::with_capacity(extras.len());
+        for &(channels, device_rate) in extras {
             let capacity = (EXTRA_QUEUE_SECONDS * rate) as usize * channels;
-            let (queue, playing) = RingBuffer::new(capacity);
+            let (queue, tapped) = RingBuffer::new(capacity);
             self.taps.push(Tap {
                 queue,
                 first,
@@ -140,15 +163,43 @@ impl DeviceWriter {
                 overruns: Arc::clone(glitches),
                 full: false,
             });
-            outputs.push(ExtraOutput {
-                queue: playing,
-                channels,
-                main_period: Arc::clone(&self.fade),
-                filling: true,
-                glitches: Arc::clone(glitches),
-                drained: Arc::default(),
-            });
             first += channels;
+            let made = if device_rate == rate as u32 {
+                Ok(ExtraOutput::new(
+                    tapped, channels, rate, &self.fade, glitches,
+                ))
+            } else {
+                // The tap's queue goes to a converter, and the device plays
+                // what that makes, at its own rate.
+                let capacity = (EXTRA_QUEUE_SECONDS * device_rate as f32) as usize * channels;
+                let (converted, playing) = RingBuffer::new(capacity);
+                RateConverter::spawn(
+                    tapped,
+                    converted,
+                    channels,
+                    (rate as u32, device_rate),
+                    Arc::clone(glitches),
+                )
+                .map(|converter| {
+                    let mut output = ExtraOutput::new(
+                        playing,
+                        channels,
+                        device_rate as f32,
+                        &self.fade,
+                        glitches,
+                    );
+                    output.ratio = f64::from(device_rate) / f64::from(rate);
+                    // The converter works a chunk at a time and wakes on a
+                    // timer, so what it makes arrives later than the tap's
+                    // block does.
+                    output.slack = (f64::from(device_rate)
+                        * (CONVERTER_CHUNK as f64 / f64::from(rate) + CONVERTER_WAKE.as_secs_f64()))
+                    .ceil() as usize;
+                    output._converter = Some(converter);
+                    output
+                })
+            };
+            outputs.push(made);
         }
         (self, outputs)
     }
@@ -258,6 +309,14 @@ impl Tap {
     }
 }
 
+/// How many frames a device whose samples play `own` after its callback
+/// must hold back to sound with a main device that plays them `main` after
+/// its. Zero if it is the slower of the two: the main stream can't be held
+/// back by its extras.
+fn latency_gap_frames(main: Duration, own: Duration, sample_rate: f32) -> usize {
+    (main.saturating_sub(own).as_secs_f64() * f64::from(sample_rate)) as usize
+}
+
 /// How much one extra output queues, in seconds. The queue is for tolerating
 /// the gap between the two devices' callbacks, not for latency: playback
 /// starts with only as much as the callbacks need.
@@ -271,9 +330,22 @@ const EXTRA_QUEUE_SECONDS: f32 = 0.5;
 pub struct ExtraOutput {
     queue: Consumer<f32>,
     channels: usize,
+    /// The device's rate over the main stream's: how many frames this device
+    /// plays for each one the main stream renders.
+    ratio: f64,
+    /// Frames, at this device's rate, that the audio arrives late by beyond
+    /// the main stream's block: nothing when it comes straight from the main
+    /// stream, the converter's lag when it is resampled.
+    slack: usize,
+    /// Keeps the converter running (and stops it when this is dropped).
+    _converter: Option<RateConverter>,
     /// How much the main stream asks for at once, which the queue must cover
     /// to keep the two apart.
     main_period: Arc<Fade>,
+    sample_rate: f32,
+    /// How long after its callback this device says its samples play (see
+    /// [`Fill::playback_latency`]).
+    own_latency: Duration,
     /// Waiting for enough to be queued before playing.
     filling: bool,
     glitches: Arc<AtomicU64>,
@@ -283,15 +355,45 @@ pub struct ExtraOutput {
 }
 
 impl ExtraOutput {
+    /// An output playing `queue` at `sample_rate`.
+    fn new(
+        queue: Consumer<f32>,
+        channels: usize,
+        sample_rate: f32,
+        fade: &Arc<Fade>,
+        glitches: &Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            queue,
+            channels,
+            ratio: 1.0,
+            slack: 0,
+            _converter: None,
+            main_period: Arc::clone(fade),
+            sample_rate,
+            own_latency: Duration::ZERO,
+            filling: true,
+            glitches: Arc::clone(glitches),
+            drained: Arc::default(),
+        }
+    }
+
     /// Fills a device's `out`, interleaved at its channel count.
     pub fn fill<T: Sample + FromSample<f32>>(&mut self, out: &mut [T]) {
         let channels = self.channels;
         let wanted = out.len();
         let available = self.queue.slots();
         // Enough to survive until the main stream's next callback: its block,
-        // and this callback's.
-        let lead = (self.main_period.period.load(Ordering::Relaxed) as usize + wanted / channels)
-            * channels;
+        // and this callback's. Never less than the time this device gets its
+        // samples to the speakers faster than the main one does: holding the
+        // queue that deep is what makes the two sound together, and the
+        // cushion is a floor on that, not an addition to it.
+        let main_latency =
+            Duration::from_micros(self.main_period.latency_micros.load(Ordering::Relaxed));
+        let aligned = latency_gap_frames(main_latency, self.own_latency, self.sample_rate);
+        let period = self.main_period.period.load(Ordering::Relaxed) as f64;
+        let cushion = (period * self.ratio).ceil() as usize + self.slack + wanted / channels;
+        let lead = cushion.max(aligned) * channels;
         // A queue too small for that would never fill.
         let lead = lead.min(self.queue.buffer().capacity() / 3);
         if self.filling {
@@ -334,6 +436,100 @@ impl ExtraOutput {
     }
 }
 
+/// How many frames the converter takes in at a time, at the engine's rate.
+const CONVERTER_CHUNK: usize = 128;
+/// How often the converter looks for audio when there was none.
+const CONVERTER_WAKE: Duration = Duration::from_millis(1);
+
+/// Converts an extra device's audio from the engine's rate to the device's, on
+/// a thread of its own: the main stream's callback only queues the engine's
+/// audio, and the device's callback only plays what has been converted.
+/// Dropping it stops the thread.
+struct RateConverter {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RateConverter {
+    fn spawn(
+        mut input: Consumer<f32>,
+        mut output: Producer<f32>,
+        channels: usize,
+        (from, to): (u32, u32),
+        glitches: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
+        let mut resampler =
+            StreamResampler::new(from, to, channels, CONVERTER_CHUNK).map_err(|error| {
+                AudioError::Resample {
+                    reason: error.to_string(),
+                }
+            })?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let thread = thread::Builder::new()
+            .name("noodle-resample".into())
+            .spawn(move || {
+                // Whole frames, a few chunks at a time.
+                let mut block = vec![0.0f32; CONVERTER_CHUNK * 8 * channels];
+                let mut full = false;
+                while !stopped.load(Ordering::Relaxed) && !output.is_abandoned() {
+                    let frames = input.slots() / channels;
+                    if frames == 0 {
+                        if input.is_abandoned() {
+                            break;
+                        }
+                        thread::sleep(CONVERTER_WAKE);
+                        continue;
+                    }
+                    let take = frames.min(block.len() / channels) * channels;
+                    let Ok(chunk) = input.read_chunk(take) else {
+                        continue;
+                    };
+                    let (a, b) = chunk.as_slices();
+                    block[..a.len()].copy_from_slice(a);
+                    block[a.len()..take].copy_from_slice(b);
+                    chunk.commit_all();
+                    resampler.process(&block[..take], |converted| {
+                        match output.write_chunk_uninit(converted.len()) {
+                            Ok(room) => {
+                                full = false;
+                                room.fill_from_iter(converted.iter().copied());
+                            }
+                            // The device has stopped taking audio: drop it, and
+                            // count the gap once.
+                            Err(_) => {
+                                if !full {
+                                    glitches.fetch_add(1, Ordering::Relaxed);
+                                }
+                                full = true;
+                            }
+                        }
+                    });
+                }
+            })
+            .map_err(|error| AudioError::Resample {
+                reason: error.to_string(),
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for RateConverter {
+    fn drop(&mut self) {
+        // Joining blocks until the thread notices `stop` (a few milliseconds).
+        // Some backends drop the stream's callback on their own audio thread,
+        // so this can run there; that only happens when the stream is torn
+        // down, never while audio is playing.
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Something a stream's callback fills with audio.
 trait Fill: Send + 'static {
     /// How long after this callback the samples it fills will play.
@@ -354,6 +550,10 @@ impl Fill for DeviceWriter {
 }
 
 impl Fill for ExtraOutput {
+    fn playback_latency(&mut self, latency: Duration) {
+        self.own_latency = latency;
+    }
+
     fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
         ExtraOutput::fill(self, output);
     }
@@ -532,6 +732,9 @@ pub struct OutputStatus {
 pub struct OpenedOutput {
     pub name: String,
     pub channels: usize,
+    /// The sample rate the device runs at. When it is not the engine's, the
+    /// audio sent to it is converted.
+    pub rate: u32,
 }
 
 impl Playback {
@@ -559,6 +762,14 @@ impl Playback {
     /// tied to them report that they have nowhere to play.
     pub fn outputs(&self) -> &[OutputStatus] {
         &self.outputs
+    }
+
+    /// How long before the app got it the input was captured, as the driver
+    /// reports it: zero until the first callback, or without input.
+    pub fn input_latency(&self) -> Duration {
+        self.recorder
+            .as_ref()
+            .map_or(Duration::ZERO, Recorder::input_latency)
     }
 
     /// The input device's name and channel count, if input is on.
@@ -830,6 +1041,7 @@ fn open_playback(
                 let info = OpenedOutput {
                     name: opened.name.clone(),
                     channels: opened.channels,
+                    rate: opened.rate,
                 };
                 extras.push(OpenedExtra {
                     status: statuses.len(),
@@ -893,9 +1105,12 @@ fn open_playback(
         }
     };
     let writer = writer.with_midi_clock(Arc::clone(midi.clock()), controller.transport());
-    let (writer, outputs) = writer.with_outputs(
+    let (writer, outputs) = writer.with_resampled_outputs(
         main_channels,
-        &extras.iter().map(|e| e.channels).collect::<Vec<_>>(),
+        &extras
+            .iter()
+            .map(|e| (e.channels, e.rate))
+            .collect::<Vec<_>>(),
         &health.underruns,
     );
     let fade = Arc::clone(&writer.fade);
@@ -903,6 +1118,13 @@ fn open_playback(
     // but doesn't stop the rest from playing.
     let mut extra_streams = Vec::with_capacity(extras.len());
     for (opened, output) in extras.into_iter().zip(outputs) {
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                statuses[opened.status].result = Err(error);
+                continue;
+            }
+        };
         let flag = Arc::clone(&output.drained);
         let mut reporter = health.reporter(Stream::ExtraOutput);
         let on_error = move |error| reporter.report(error);
@@ -1009,25 +1231,33 @@ struct OpenedExtra {
     device: String,
     name: String,
     channels: usize,
+    /// The sample rate the device runs at.
+    rate: u32,
     device_handle: cpal::Device,
     config: StreamConfig,
     format: SampleFormat,
 }
 
-/// Finds the extra output device `id` and picks its configuration at `rate`.
+/// Finds the extra output device `id` and picks its configuration: at `rate`
+/// if the device runs at it, else at its own default rate, and the engine's
+/// audio is converted.
 fn open_extra(id: &str, rate: u32) -> Result<OpenedExtra, AudioError> {
     let host = open_host(host_for(None, Some(id), Direction::Output)?)?;
     let device = find_device(&host, Some(id), Direction::Output)?;
     let ranges: Vec<_> = device.supported_output_configs()?.collect();
     // The queue decouples the callbacks, so the device uses whatever buffer
     // size suits it.
-    let Chosen { config, format } =
-        choose_config(&ranges, device.default_output_config()?, Some(rate), None)?;
+    let default = device.default_output_config()?;
+    let Chosen { config, format } = match choose_config(&ranges, default, Some(rate), None) {
+        Err(AudioError::UnsupportedSampleRate(_)) => choose_config(&ranges, default, None, None)?,
+        chosen => chosen?,
+    };
     Ok(OpenedExtra {
         status: 0,
         device: id.to_owned(),
         name: device_name(&device),
         channels: usize::from(config.channels),
+        rate: config.sample_rate,
         device_handle: device,
         config,
         format,
@@ -1127,7 +1357,11 @@ where
 {
     device.build_input_stream(
         config,
-        move |input: &[T], _: &cpal::InputCallbackInfo| capture.capture(input),
+        move |input: &[T], info: &cpal::InputCallbackInfo| {
+            let time = info.timestamp();
+            capture.set_latency(time.callback.duration_since(time.capture));
+            capture.capture(input)
+        },
         on_error,
         None,
     )
@@ -1380,6 +1614,193 @@ mod tests {
         let (writer, mut extras) = DeviceWriter::new(processor).with_outputs(2, &[1], &glitches);
         let extra = extras.remove(0);
         (writer, extra)
+    }
+
+    /// A writer with one extra device at `device_rate` (one channel). Nothing
+    /// is rendered for it: tests queue audio with [`queue_sine`].
+    fn device_at(device_rate: u32) -> (DeviceWriter, ExtraOutput, Arc<AtomicU64>) {
+        let settings = Settings {
+            channels: 3,
+            ..SETTINGS
+        };
+        let (_controller, processor) = engine(settings).unwrap();
+        let glitches = Arc::new(AtomicU64::new(0));
+        let (writer, mut extras) =
+            DeviceWriter::new(processor).with_resampled_outputs(2, &[(1, device_rate)], &glitches);
+        let extra = extras.remove(0).unwrap();
+        (writer, extra, glitches)
+    }
+
+    /// Queues `blocks` blocks of 64 frames of a 1000 Hz sine for the extra
+    /// device, from engine frame `from`, as the main stream's callback does.
+    fn queue_sine(writer: &mut DeviceWriter, from: usize, blocks: usize) {
+        for block in 0..blocks {
+            let frames: Vec<f32> = (0..64)
+                .flat_map(|i| {
+                    let n = from + block * 64 + i;
+                    let x = (std::f32::consts::TAU * 1000.0 * n as f32 / 48_000.0).sin();
+                    [0.0, 0.0, x]
+                })
+                .collect();
+            writer.taps[0].push(&frames, 3);
+        }
+    }
+
+    /// Queues `blocks` blocks of sine, waits for the converter to catch up
+    /// with them, and takes everything it made from the device's queue.
+    fn converted(
+        writer: &mut DeviceWriter,
+        extra: &mut ExtraOutput,
+        blocks: usize,
+        at_least: usize,
+    ) -> Vec<f32> {
+        queue_sine(writer, 0, blocks);
+        let started = Instant::now();
+        while extra.queue.slots() < at_least {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "only {} of {at_least} frames arrived",
+                extra.queue.slots()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        // Let it finish the chunk it is on.
+        thread::sleep(Duration::from_millis(20));
+        let chunk = extra.queue.read_chunk(extra.queue.slots()).unwrap();
+        let (a, b) = chunk.as_slices();
+        let all: Vec<f32> = a.iter().chain(b).copied().collect();
+        chunk.commit_all();
+        all
+    }
+
+    fn crossings_per_second(samples: &[f32], rate: u32) -> f32 {
+        let rising = samples
+            .windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count();
+        rising as f32 * rate as f32 / samples.len() as f32
+    }
+
+    #[test]
+    fn a_device_at_another_rate_plays_the_same_pitch() {
+        for device_rate in [44_100u32, 96_000] {
+            let (mut writer, mut extra, glitches) = device_at(device_rate);
+            // 100 blocks of 64 frames at 48 kHz, a bit under 133 ms.
+            let expected = (6_400.0 * f64::from(device_rate) / 48_000.0) as usize;
+            let played = converted(&mut writer, &mut extra, 100, expected - 400);
+            // Everything that went in comes out, less what the converter still
+            // holds (a chunk) and the filter's delay.
+            assert!(
+                played.len() <= expected && played.len() + 700 >= expected,
+                "{} frames of {expected}",
+                played.len()
+            );
+            // Skip the start, where the filter is still filling.
+            let settled = &played[played.len() / 3..];
+            let pitch = crossings_per_second(settled, device_rate);
+            assert!(
+                (pitch - 1000.0).abs() < 25.0,
+                "{device_rate} Hz device plays {pitch} Hz"
+            );
+            let peak = settled.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            assert!(peak > 0.9 && peak <= 1.01, "peak {peak}");
+            assert_eq!(glitches.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn a_converted_device_keeps_a_bigger_cushion_than_a_direct_one() {
+        // The cushion covers the main stream's block at the device's rate and
+        // the converter's lag, so it is bigger for a faster device.
+        let (mut writer, mut extra, _) = device_at(96_000);
+        // Three blocks: enough for the converter to make a chunk.
+        queue_sine(&mut writer, 0, 3);
+        let started = Instant::now();
+        while extra.queue.slots() == 0 && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        // Barely anything has been converted: not enough to start on.
+        let mut out = vec![9.0f32; 32];
+        extra.fill(&mut out);
+        assert!(out.iter().all(|&x| x == 0.0), "{out:?}");
+        assert!(extra.filling);
+        assert_eq!(extra.glitches.load(Ordering::Relaxed), 0);
+        assert!(extra.slack > 128 && extra.ratio == 2.0);
+    }
+
+    #[test]
+    fn the_converter_stops_when_its_device_goes() {
+        let (_writer, mut extra, _) = device_at(44_100);
+        let converter = extra._converter.take().expect("a converter");
+        let stop = Arc::clone(&converter.stop);
+        drop(extra);
+        // Dropping the output left the converter running (it was taken); now
+        // dropping that stops and joins its thread.
+        assert!(!stop.load(Ordering::Relaxed));
+        drop(converter);
+        assert!(stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_device_at_the_engines_rate_needs_no_converter() {
+        let (mut writer, mut extra, _) = device_at(48_000);
+        assert!(extra._converter.is_none());
+        queue_sine(&mut writer, 0, 4);
+        let mut buffer = vec![0.0f32; 32];
+        extra.fill(&mut buffer);
+        assert!(buffer.iter().any(|&x| x != 0.0));
+    }
+
+    #[test]
+    fn a_device_that_is_quicker_than_the_main_one_is_held_back_to_match() {
+        let gap = latency_gap_frames(
+            Duration::from_millis(20),
+            Duration::from_millis(5),
+            48_000.0,
+        );
+        assert_eq!(gap, 720);
+        // The slower of the two can't be sped up.
+        assert_eq!(
+            latency_gap_frames(
+                Duration::from_millis(5),
+                Duration::from_millis(20),
+                48_000.0
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn an_extra_device_waits_for_the_main_devices_extra_latency() {
+        let (mut writer, mut extra) = two_devices();
+        let rate = SETTINGS.sample_rate;
+        // The main device plays 40 ms after its callback; this one at once.
+        writer.fade.latency_micros.store(40_000, Ordering::Relaxed);
+        let held = latency_gap_frames(Duration::from_millis(40), Duration::ZERO, rate);
+        let mut second = vec![9.0f32; 32];
+        let blocks = held.div_ceil(64);
+        // A cushion that would be enough without the latency gap.
+        for _ in 0..blocks - 2 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.0), "{second:?}");
+        // It plays once the backlog is as deep as the gap, not the gap plus
+        // the cushion (96 frames, more than the two blocks it gets).
+        for _ in 0..2 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
+        // A device that is as slow as the main one needs no gap.
+        let (mut writer, mut extra) = two_devices();
+        writer.fade.latency_micros.store(40_000, Ordering::Relaxed);
+        extra.playback_latency(Duration::from_millis(40));
+        for _ in 0..3 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
     }
 
     #[test]

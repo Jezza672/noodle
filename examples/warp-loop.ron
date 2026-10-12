@@ -1,0 +1,43 @@
+// A short loop of three blips, recorded at 120 beats per minute, on a track
+// that plays it through a warp. The warp pins the first blip to beat 0, the
+// second to beat 0.2 and the third to beat 0.5, so they land at 0 s, 0.1 s and
+// 0.25 s instead of 0 s, 0.15 s and 0.3 s: the audio between the pins is
+// squeezed, and its pitch rises with it (Repitch). The warp is part of the
+// project, not of the graph.
+(
+    format: 3,
+    graph: (
+        nodes: {
+            1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.io.output", position: (x: 250.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "audio"), to: (node: 2, port: "in")),
+        ],
+    ),
+    clips: {
+        1: (
+            node: 1,
+            start: 0,
+            content: Audio((
+                source: "warp-loop.wav",
+                offset: 0,
+                length: 12000,
+                gain: 1.0,
+                fade_in: 0,
+                fade_out: 0,
+                warp: Some(1),
+            )),
+        ),
+    },
+    warps: {
+        1: (
+            tempo: (points: [(seconds: 0.0, bpm: 120.0)]),
+            markers: [
+                (seconds: 0.0, beat: 0.0),
+                (seconds: 0.15, beat: 0.2),
+                (seconds: 0.3, beat: 0.5),
+            ],
+        ),
+    },
+)

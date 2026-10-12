@@ -8,11 +8,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use noodle_core::{ClipContent, ClipId, NodeId, Project};
+use noodle_core::{
+    ClipContent, ClipId, MIN_LOOP_SECONDS, NodeId, Project, TICKS_PER_QUARTER, Tick, WarpAxis,
+    WarpMode,
+};
 use noodle_engine::TempoTable;
 use noodle_io::{Decoder, FileInfo, clip_frames};
 
 use super::hub::Shared;
+pub use super::warp::WarpMap;
 
 /// Which part of which file a clip plays.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -41,7 +45,13 @@ pub struct ScheduledClip {
     pub fade_in: u64,
     pub fade_out: u64,
     pub source: ClipSource,
+    /// Where each frame of the clip reads from the source, if the clip is
+    /// warped. Without it, frame `n` of the clip reads source frame `n`.
+    pub warp: Option<Arc<WarpMap>>,
+    /// How the warp is rendered.
+    pub mode: WarpMode,
     key: u64,
+    lane: u64,
 }
 
 impl ScheduledClip {
@@ -64,7 +74,61 @@ impl ScheduledClip {
             fade_in,
             fade_out,
             source,
+            warp: None,
+            mode: WarpMode::Repitch,
             key: hasher.finish(),
+            lane: 0,
+        }
+    }
+
+    /// This clip, warped by `map`. Its `length` is how long it lasts once
+    /// warped.
+    pub fn with_warp(mut self, map: Arc<WarpMap>) -> Self {
+        self.warp = Some(map);
+        self.lane = self.lane_hash();
+        self
+    }
+
+    /// This clip, with its warp rendered in `mode`.
+    pub fn with_mode(mut self, mode: WarpMode) -> Self {
+        self.mode = mode;
+        self.lane = self.lane_hash();
+        self
+    }
+
+    fn lane_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.key.hash(&mut hasher);
+        self.mode.hash(&mut hasher);
+        if let Some(map) = &self.warp {
+            for (out, source) in map.knots() {
+                out.to_bits().hash(&mut hasher);
+                source.to_bits().hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Whether the clip is played by stretching ahead of the playhead (Grain
+    /// and Beats), and not by resampling in the audio thread.
+    pub fn stretched(&self) -> bool {
+        self.warp.is_some() && self.mode.keeps_pitch()
+    }
+
+    /// Identifies the stretched audio of this clip: like
+    /// [`stream_key`](Self::stream_key), but a new warp or mode is a new
+    /// lane, because the stretch has to be done again.
+    pub(super) fn lane_key(&self) -> (ClipId, u64) {
+        (self.id, self.lane)
+    }
+
+    /// The source frame a stream playing this clip from clip frame `rel` has
+    /// to be at: one before the frame being played, for the interpolation to
+    /// look back at.
+    pub fn stream_start(&self, rel: u64) -> u64 {
+        match &self.warp {
+            None => rel,
+            Some(map) => (map.source_at(rel as f64).floor().max(0.0) as u64).saturating_sub(1),
         }
     }
 
@@ -79,6 +143,171 @@ impl ScheduledClip {
     pub(super) fn stream_key(&self) -> (ClipId, u64) {
         (self.id, self.key)
     }
+}
+
+/// One stretch of a section that plays a single run of the file: a section
+/// plays as one piece, or, when its clip loops and it is longer than its
+/// window, as the window's lead-in followed by one piece per repeat of the
+/// loop. Pieces sit back to back, so a repeat is gapless without the node
+/// knowing anything about loops.
+struct Piece {
+    /// The part of the file the piece plays, in the file's frames.
+    offset: u64,
+    length: u64,
+    /// Where it starts and how long it lasts, in engine frames from the start
+    /// of the section.
+    from: u64,
+    len: u64,
+    warp: Option<(Arc<WarpMap>, WarpMode)>,
+}
+
+/// The most pieces one section is laid out as; a longer section is cut off.
+/// (A loop is at least a beat long, so this is hours of music.)
+const MAX_PIECES: usize = 20_000;
+
+/// Gives piece `k` of a section its own ID, so its stream and its stretched
+/// lane are its own. Real clip IDs are small counts, far below the bits used.
+fn piece_id(id: ClipId, k: usize) -> ClipId {
+    ClipId(id.0 | (k as u64) << 40)
+}
+
+/// How a section of an audio clip is laid out in engine frames: the pieces it
+/// plays, each with the map from its frames to the source's if it is warped.
+/// A warp that leaves the clip at its natural speed is left out, so those
+/// play as they always did.
+fn lay_out(
+    project: &Project,
+    clip: &noodle_core::Clip,
+    audio: &noodle_core::AudioClip,
+    info: &FileInfo,
+    table: &TempoTable,
+    rate: u32,
+) -> (Vec<Piece>, Option<String>) {
+    let source_frames = clip_frames(info, audio.offset, audio.length, rate);
+    let Some(warp) = audio
+        .warp
+        .and_then(|id| project.warp(id))
+        .filter(|warp| !warp.is_identity())
+    else {
+        let piece = Piece {
+            offset: audio.offset,
+            length: audio.length,
+            from: 0,
+            len: source_frames,
+            warp: None,
+        };
+        return (vec![piece], None);
+    };
+    let origin = audio.offset as f64 / f64::from(info.sample_rate);
+    let window = source_frames as f64 / f64::from(rate);
+    let curve = warp.curve();
+    let map = WarpMap::build(
+        &curve,
+        table,
+        clip.start,
+        f64::from(rate),
+        origin,
+        window,
+        source_frames,
+    );
+    let len = (map.out_len().round() as u64).max(1);
+    // How long the section lasts: the window, or as far as it was dragged
+    // when it loops.
+    let looped = warp.loop_seconds().filter(|&(_, end)| origin < end - 1e-6);
+    let total = match (looped, audio.extent) {
+        (Some(_), Some(extent)) => table
+            .sample_at_tick(Tick(clip.start.0 + extent.0))
+            .saturating_sub(table.sample_at_tick(clip.start))
+            .max(1),
+        _ => len,
+    };
+    let once = |map: WarpMap| {
+        let map = if total < len {
+            map.truncated(total as f64)
+        } else {
+            map
+        };
+        vec![Piece {
+            offset: audio.offset,
+            length: audio.length,
+            from: 0,
+            len: total.min(len),
+            warp: Some((Arc::new(map), warp.mode)),
+        }]
+    };
+    let Some((loop_start, loop_end)) = looped else {
+        return (once(map), None);
+    };
+    let file_rate = f64::from(info.sample_rate);
+    let engine_rate = f64::from(rate);
+    // A round of the loop that is over too quickly to open a stream for each
+    // is not played: the section plays once.
+    let round = WarpMap::build(
+        &curve,
+        table,
+        clip.start,
+        engine_rate,
+        loop_start,
+        loop_end - loop_start,
+        ((loop_end - loop_start) * engine_rate).round().max(1.0) as u64,
+    );
+    if round.out_len() / engine_rate < MIN_LOOP_SECONDS - 1e-9 {
+        let problem =
+            format!("the loop is shorter than {MIN_LOOP_SECONDS} s here, so it doesn't repeat");
+        return (once(map), Some(problem));
+    }
+    let mut pieces: Vec<Piece> = Vec::new();
+    let mut elapsed = 0.0f64;
+    let mut tick = clip.start.0 as f64;
+    let mut from = origin;
+    while (elapsed.round() as u64) < total && pieces.len() < MAX_PIECES {
+        let offset = (from * file_rate).round() as u64;
+        let length = (((loop_end - from) * file_rate).round() as u64).max(1);
+        let frames = clip_frames(info, offset, length, rate);
+        if frames == 0 {
+            break;
+        }
+        let begin = offset as f64 / file_rate;
+        let mut piece_map = WarpMap::build(
+            &curve,
+            table,
+            Tick(tick.round() as i64),
+            engine_rate,
+            begin,
+            frames as f64 / engine_rate,
+            frames,
+        );
+        let at = elapsed.round() as u64;
+        let end = elapsed + piece_map.out_len();
+        if curve.axis == WarpAxis::Beats {
+            tick += (curve.at(begin + frames as f64 / engine_rate) - curve.at(begin))
+                * TICKS_PER_QUARTER as f64;
+        }
+        let mut len = (end.round() as u64 - at).max(1);
+        if at + len > total {
+            len = total - at;
+            piece_map = piece_map.truncated(len as f64);
+        }
+        let shared = match pieces.last().and_then(|p| p.warp.as_ref()) {
+            Some((last, _)) if **last == piece_map => last.clone(),
+            _ => Arc::new(piece_map),
+        };
+        pieces.push(Piece {
+            offset,
+            length,
+            from: at,
+            len,
+            warp: Some((shared, warp.mode)),
+        });
+        elapsed = end;
+        from = loop_start;
+    }
+    if pieces.len() < 2 {
+        // The edge is inside the first time round to the loop's end: nothing
+        // repeats, and the window plays (cut off at the edge).
+        return (once(map), None);
+    }
+    (pieces, None)
 }
 
 /// A track's clips, sorted by start (then ID).
@@ -232,6 +461,8 @@ fn same_clip_sound(x: &ScheduledClip, y: &ScheduledClip, from: u64, to: u64) -> 
         && x.length == y.length
         && x.gain == y.gain
         && x.source == y.source
+        && x.warp == y.warp
+        && x.mode == y.mode
         && same_fade_in
         && same_fade_out
 }
@@ -257,6 +488,8 @@ struct Inner {
     /// See [`ClipFeeds::blocking`].
     blocking: bool,
     hubs: Mutex<HashMap<NodeId, Arc<Shared>>>,
+    /// See [`ClipFeeds::set_preview`].
+    preview: Arc<std::sync::atomic::AtomicBool>,
     files: Mutex<HashMap<PathBuf, (Option<SystemTime>, FileInfo)>>,
 }
 
@@ -294,7 +527,7 @@ impl ClipFeeds {
             .lock()
             .expect("feeds lock")
             .entry(node)
-            .or_insert_with(|| Arc::new(Shared::new(blocking)))
+            .or_insert_with(|| Arc::new(Shared::new(blocking, self.inner.preview.clone())))
             .clone()
     }
 
@@ -347,6 +580,24 @@ impl ClipFeeds {
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// While on, warped clips play as Repitch whatever their mode: cheap
+    /// enough to follow a warp marker that is being dragged, where the
+    /// stretch would have to start over with every change. Turn it off when
+    /// the edit is done and the stretch takes over (silent for a moment while
+    /// it renders).
+    pub fn set_preview(&self, on: bool) {
+        self.inner
+            .preview
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the preview is on (see [`set_preview`](Self::set_preview)).
+    pub fn preview(&self) -> bool {
+        self.inner
+            .preview
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// How many nodes the feeds are keeping a schedule for.
     pub fn tracked(&self) -> usize {
         self.inner.hubs.lock().expect("feeds lock").len()
@@ -396,36 +647,68 @@ impl ClipFeeds {
             let to_engine = |frames: u64| {
                 (frames as f64 * f64::from(rate) / f64::from(info.sample_rate)).round() as u64
             };
-            let length = clip_frames(&info, audio.offset, audio.length, rate);
-            if length == 0 {
+            if clip_frames(&info, audio.offset, audio.length, rate) == 0 {
                 problems.push(ClipProblem {
                     clip: id,
                     message: "the clip is past the end of its file".into(),
                 });
                 continue;
             }
-            by_node
-                .entry(clip.node)
-                .or_default()
-                .push(ScheduledClip::new(
-                    id,
-                    table.sample_at_tick(clip.start),
-                    length,
+            let (pieces, problem) = lay_out(project, clip, audio, &info, table, rate);
+            if let Some(message) = problem {
+                problems.push(ClipProblem { clip: id, message });
+            }
+            let first_start = table.sample_at_tick(clip.start);
+            let last = pieces.len() - 1;
+            for (k, piece) in pieces.into_iter().enumerate() {
+                // Fades are counted in the file's frames; a warp stretches
+                // them along with the audio. A section fades in over its
+                // first piece and out over its last.
+                let (mut fade_in, mut fade_out) = (0, 0);
+                match &piece.warp {
+                    None => {
+                        fade_in = to_engine(audio.fade_in);
+                        fade_out = to_engine(audio.fade_out);
+                    }
+                    Some((map, _)) => {
+                        if k == 0 {
+                            fade_in = map.out_at(to_engine(audio.fade_in) as f64).round() as u64;
+                        }
+                        if k == last {
+                            fade_out = (map.out_len()
+                                - map.out_at(map.source_len() - to_engine(audio.fade_out) as f64))
+                            .round() as u64;
+                        }
+                    }
+                }
+                let scheduled = ScheduledClip::new(
+                    piece_id(id, k),
+                    first_start + piece.from,
+                    piece.len,
                     audio.gain,
-                    to_engine(audio.fade_in).min(length),
-                    to_engine(audio.fade_out).min(length),
+                    fade_in.min(piece.len),
+                    fade_out.min(piece.len),
                     ClipSource {
                         stamp: std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
-                        path,
-                        offset: audio.offset,
-                        length: audio.length,
+                        path: path.clone(),
+                        offset: piece.offset,
+                        length: piece.length,
                     },
-                ));
+                );
+                by_node
+                    .entry(clip.node)
+                    .or_default()
+                    .push(match piece.warp {
+                        Some((map, mode)) => scheduled.with_warp(map).with_mode(mode),
+                        None => scheduled,
+                    });
+            }
         }
         let mut hubs = self.inner.hubs.lock().expect("feeds lock");
         for node in by_node.keys().chain(notes_by_node.keys()) {
-            hubs.entry(*node)
-                .or_insert_with(|| Arc::new(Shared::new(self.inner.blocking)));
+            hubs.entry(*node).or_insert_with(|| {
+                Arc::new(Shared::new(self.inner.blocking, self.inner.preview.clone()))
+            });
         }
         for (node, shared) in hubs.iter() {
             let mut schedule = by_node.remove(node).unwrap_or_default();
@@ -461,7 +744,8 @@ impl ClipFeeds {
                     ClipContent::Audio(audio) => {
                         let path = base.join(&audio.source);
                         self.file_info(&path).map_or(start, |info| {
-                            start + clip_frames(&info, audio.offset, audio.length, rate)
+                            let (pieces, _) = lay_out(project, clip, audio, &info, table, rate);
+                            start + pieces.last().map_or(0, |p| p.from + p.len)
                         })
                     }
                 }

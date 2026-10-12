@@ -190,6 +190,13 @@ impl Rig {
         self.update();
     }
 
+    /// Changes how a clip is warped and feeds the result to the node.
+    pub fn warp_clip(&mut self, id: ClipId, change: impl FnOnce(&mut noodle_core::ClipWarp)) {
+        let command = self.project.warp_edit(id, change).unwrap();
+        self.history.apply(&mut self.project, command).unwrap();
+        self.update();
+    }
+
     /// Waits for the hub to hand the node the schedule from the last update.
     /// The hub is a background thread, so a loaded CI machine (macOS runners
     /// in particular) can take much longer than a quiet one.
@@ -244,6 +251,14 @@ impl Rig {
         );
     }
 
+    /// The loudest sample of the last block run.
+    pub fn output_peak(&self) -> f32 {
+        let out = self.out.as_in(BLOCK);
+        (0..2)
+            .flat_map(|c| out.lane(0, c).iter().copied())
+            .fold(0.0, |m, x: f32| m.max(x.abs()))
+    }
+
     /// Plays from `from` to `to` in blocks and returns the whole output.
     pub fn play(&mut self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
         let (mut left, mut right) = (Vec::new(), Vec::new());
@@ -264,6 +279,23 @@ impl Rig {
     /// the way the engine does (a block never crosses it), and returns the
     /// whole output.
     pub fn play_looping(&mut self, from: u64, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        self.looping_at_speed(from, frames, None)
+    }
+
+    /// Like [`play_looping`](Self::play_looping), but each block takes as long
+    /// as the audio callback would have: a worker that renders ahead is not
+    /// outrun by a test that runs ten times faster than the sound, however
+    /// slowly the machine schedules its threads.
+    pub fn play_looping_realtime(&mut self, from: u64, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        self.looping_at_speed(from, frames, Some(48_000.0))
+    }
+
+    fn looping_at_speed(
+        &mut self,
+        from: u64,
+        frames: usize,
+        rate: Option<f64>,
+    ) -> (Vec<f32>, Vec<f32>) {
         let (start, end) = self.looping.expect("set `looping` first");
         let (mut left, mut right) = (Vec::new(), Vec::new());
         let mut at = from;
@@ -276,7 +308,10 @@ impl Rig {
             if at == end {
                 at = start;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(match rate {
+                Some(rate) => Duration::from_secs_f64(n as f64 / rate),
+                None => Duration::from_millis(1),
+            });
         }
         (left, right)
     }

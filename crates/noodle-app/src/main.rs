@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod clip_editor;
+mod clip_panel;
 mod devices;
 mod editor;
 mod export_dialog;
@@ -15,6 +17,7 @@ mod midi_take;
 mod mixer;
 mod outputs;
 mod piano_roll;
+mod pill_buttons;
 mod plugin_browser;
 mod prefs;
 mod properties;

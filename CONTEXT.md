@@ -62,7 +62,7 @@ The timing feel of a warp, apart from the warp algorithm: how far a clip's beats
 Pulling a clip's warp markers toward a grid by an amount, without destroying the original positions. Not the same as Quantise (recording), which snaps note starts of a take.
 
 **Section**:
-What sits on the timeline: a window onto a clip. A later section on the same track cuts an earlier one where it starts, and the earlier one's tail stays hidden until the later one moves.
+What sits on the timeline: a window onto a clip. A later section on the same track cuts an earlier one where it starts, and the earlier one's tail stays hidden until the later one moves. (In the code a section is still a `Clip`, and what sections share is a `ClipWarp`, named by `WarpId`.)
 
 **True length**:
 How long the clip really is after warping. A section shows no more than this unless the clip loops.

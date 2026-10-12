@@ -1,0 +1,50 @@
+// The 0.6 s loop of warp-stretch.wav, with its two kicks pinned loosely (the
+// second at beat 0.45, the first at 0.03) and warp quantise on: a grid of
+// eighth notes pulls both onto the grid, and a copied groove then lays the
+// swing of the second slot (a 16th late) over the line, so the second kick
+// plays at beat 0.5625. The markers stored in the file are the loose ones;
+// turn quantise off and they play as they were put. Repitch mode, so the
+// result is the plain resampling of the warp. The warp is part of the project,
+// not of the graph.
+(
+    format: 3,
+    graph: (
+        nodes: {
+            1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.io.output", position: (x: 250.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "audio"), to: (node: 2, port: "in")),
+        ],
+    ),
+    clips: {
+        1: (
+            node: 1,
+            start: 0,
+            content: Audio((
+                source: "warp-stretch.wav",
+                offset: 0,
+                length: 28800,
+                gain: 1.0,
+                fade_in: 0,
+                fade_out: 0,
+                warp: Some(1),
+            )),
+        ),
+    },
+    warps: {
+        1: (
+            tempo: (points: [(seconds: 0.0, bpm: 120.0)]),
+            markers: [
+                (seconds: 0.0, beat: 0.03),
+                (seconds: 0.16, beat: 0.45),
+            ],
+            quantise: Some((
+                grid: 0.5,
+                amount: 1.0,
+                groove: Some((slot: 0.25, offsets: [0.0, 0.0, 0.0625, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])),
+                groove_amount: 1.0,
+            )),
+        ),
+    },
+)

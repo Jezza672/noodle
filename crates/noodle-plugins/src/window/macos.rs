@@ -4,8 +4,13 @@
 use std::ffi::c_void;
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSView,
+    NSWindow, NSWindowStyleMask,
+};
+use objc2_foundation::{
+    MainThreadMarker, NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString,
+};
 
 use super::{EditorWindow, ParentWindow};
 
@@ -15,6 +20,39 @@ pub(super) struct MacWindow {
     mtm: MainThreadMarker,
     /// Shown by us: until then, not being on screen isn't the user closing it.
     shown: bool,
+}
+
+/// Sets the application up the first time (a plugin host has no `NSApp`
+/// run loop, and no Dock icon to show), then hands every waiting event to
+/// AppKit. Main thread only; does nothing elsewhere.
+pub(super) fn pump_events() {
+    use std::sync::Once;
+    static SETUP: Once = Once::new();
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    SETUP.call_once(|| {
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        // SAFETY: once, on the main thread, before the first event.
+        unsafe { app.finishLaunching() };
+    });
+    // A burst is bounded so a flood of events can't starve the control loop.
+    for _ in 0..256 {
+        // SAFETY: the main thread, the default mode, and an expiry already
+        // past so it never blocks.
+        let event = unsafe {
+            app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(&NSDate::distantPast()),
+                NSDefaultRunLoopMode,
+                true,
+            )
+        };
+        let Some(event) = event else { break };
+        // SAFETY: an event AppKit just gave us.
+        unsafe { app.sendEvent(&event) };
+    }
 }
 
 pub(super) fn make(title: &str) -> Option<Box<dyn EditorWindow>> {
@@ -68,6 +106,11 @@ impl EditorWindow for MacWindow {
     }
 
     fn show(&mut self) {
+        // A plugin host runs as a background application, so ask for focus,
+        // or the editor shows but takes no keys.
+        // `activate` needs macOS 14; this works on all we support.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm).activateIgnoringOtherApps(true);
         self.window.makeKeyAndOrderFront(None);
         self.shown = true;
     }

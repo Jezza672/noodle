@@ -550,6 +550,7 @@ impl Processor {
                             tick,
                             bpm: self.table.bpm_at(tick),
                             signature: self.table.signature_at(tick),
+                            signature_start: self.table.signature_start_at(tick),
                         },
                     };
                     plan.run(&ctx, input_chunk, chunk, channels, self.workers.as_ref());

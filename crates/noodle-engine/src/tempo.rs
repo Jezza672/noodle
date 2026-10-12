@@ -91,6 +91,25 @@ impl TempoTable {
         sample.round() as u64
     }
 
+    /// Like [`sample_at`](Self::sample_at), without rounding: where `tick`
+    /// falls, fractions of a sample included. Ticks before the start are 0.
+    pub fn sample_at_exact(&self, tick: f64) -> f64 {
+        if tick <= 0.0 {
+            return 0.0;
+        }
+        let i = self
+            .segments
+            .partition_point(|s| s.start_tick as f64 <= tick)
+            .saturating_sub(1);
+        let segment = &self.segments[i];
+        segment.start_sample + (tick - segment.start_tick as f64) * segment.samples_per_tick
+    }
+
+    /// The ticks where the tempo changes, after the start.
+    pub fn tempo_changes(&self) -> impl Iterator<Item = f64> + '_ {
+        self.segments.iter().skip(1).map(|s| s.start_tick as f64)
+    }
+
     /// The tempo at `tick`, in quarter notes per minute.
     pub fn bpm_at(&self, tick: f64) -> f64 {
         let i = self
@@ -101,11 +120,20 @@ impl TempoTable {
     }
 
     pub fn signature_at(&self, tick: f64) -> TimeSignature {
+        self.meter_at(tick).signature
+    }
+
+    /// The tick the time signature in force at `tick` began on.
+    pub fn signature_start_at(&self, tick: f64) -> f64 {
+        self.meter_at(tick).start_tick as f64
+    }
+
+    fn meter_at(&self, tick: f64) -> &Meter {
         let i = self
             .meters
             .partition_point(|m| m.start_tick as f64 <= tick)
             .saturating_sub(1);
-        self.meters[i].signature
+        &self.meters[i]
     }
 
     /// The sample position of a project tick.
@@ -187,6 +215,9 @@ mod tests {
         // Two bars of 4/4 are 7680 ticks.
         assert_eq!(table.signature_at(7679.0), TimeSignature::COMMON);
         assert_eq!(table.signature_at(7680.0).numerator, 6);
+        // And the second signature began there.
+        assert_eq!(table.signature_start_at(7679.0), 0.0);
+        assert_eq!(table.signature_start_at(9000.0), 7680.0);
     }
 
     #[test]

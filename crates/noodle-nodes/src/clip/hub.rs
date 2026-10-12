@@ -28,7 +28,7 @@ pub(super) const MAX_HEADS: usize = 4;
 /// The most channels a file can have and still play.
 pub(super) const MAX_CHANNELS: usize = 8;
 /// How far ahead of the playhead streams are opened, in seconds.
-const LOOKAHEAD: f64 = 1.0;
+pub(super) const LOOKAHEAD: f64 = 1.0;
 /// How often the hub looks while the playhead moves, and while it doesn't.
 const POLL: Duration = Duration::from_millis(4);
 const IDLE_POLL: Duration = Duration::from_millis(25);
@@ -62,12 +62,17 @@ pub(super) struct Shared {
     pub audition: [AtomicU64; 2],
     /// Whether live MIDI is played through the track.
     pub monitoring: AtomicBool,
+    /// Whether warped clips play as Repitch whatever their mode, because a
+    /// warp is being edited and the stretch would have to start over with
+    /// every change. Shared by all the nodes of one set of feeds.
+    pub preview: Arc<AtomicBool>,
 }
 
 impl Shared {
-    pub fn new(blocking: bool) -> Self {
+    pub fn new(blocking: bool, preview: Arc<AtomicBool>) -> Self {
         Self {
             blocking,
+            preview,
             latest: Mutex::new((0, Arc::new(Vec::new()), Arc::new(Vec::new()))),
             failed: Mutex::new(Vec::new()),
             position: AtomicU64::new(0),
@@ -89,6 +94,11 @@ impl Shared {
         } else {
             word.fetch_and(!bit, Ordering::Relaxed);
         }
+    }
+
+    /// The newest schedule set.
+    pub fn schedule(&self) -> Arc<Schedule> {
+        self.latest.lock().expect("schedule lock").1.clone()
     }
 
     /// The version of the newest schedule set.
@@ -130,7 +140,7 @@ impl Shared {
     }
 
     /// Notes that a clip's file failed; the newest message for a clip wins.
-    fn fail(&self, key: (ClipId, u64), error: FileError) {
+    pub(super) fn fail(&self, key: (ClipId, u64), error: FileError) {
         let mut failed = self.failed.lock().expect("failed lock");
         match failed.iter_mut().find(|(k, _)| *k == key) {
             Some(entry) => entry.1 = error,
@@ -271,7 +281,13 @@ fn run(
                 );
                 (start < end).then_some((start, end))
             };
+            let preview = shared.preview.load(Ordering::Relaxed);
             for (clip, head) in wanted(&schedule, position, lookahead, looping) {
+                // A stretched section is played from its own lane (see
+                // `ahead.rs`), unless it is being edited.
+                if clip.stretched() && !preview {
+                    continue;
+                }
                 let key = clip.stream_key();
                 if live.iter().any(|l| l.key == key && l.head == head) {
                     continue;
@@ -297,7 +313,7 @@ fn run(
                     rate,
                     offset: clip.source.offset,
                     length: clip.source.length,
-                    start: from.saturating_sub(clip.start),
+                    start: clip.stream_start(from.saturating_sub(clip.start)),
                     chunks: STREAM_CHUNKS,
                 };
                 match open_stream(spec) {
@@ -360,7 +376,7 @@ fn run(
 /// the loop, including the one already playing there, each with a stream
 /// opened at the loop's start, so the audio is ready before the playhead
 /// wraps.
-fn wanted(
+pub(super) fn wanted(
     schedule: &[ScheduledClip],
     position: u64,
     lookahead: u64,

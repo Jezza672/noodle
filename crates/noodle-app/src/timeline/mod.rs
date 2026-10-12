@@ -15,6 +15,7 @@ pub mod import;
 mod midi_preview;
 mod sources;
 mod take;
+mod warped;
 mod waveform;
 
 use std::collections::BTreeSet;
@@ -31,6 +32,7 @@ use crate::session::{ArmKind, Edit, Session};
 use crate::theme::timeline as colors;
 use clips::Source;
 use sources::Sources;
+pub use sources::{Analysis, Loaded};
 
 /// The type of the node inside a track's group that plays its clips.
 pub const TRACK_INPUT: &str = "noodle.track.input";
@@ -39,6 +41,11 @@ pub const TRACK_INPUT: &str = "noodle.track.input";
 const EDGE: f32 = 6.0;
 /// Clips narrower than this can only be moved.
 const MIN_TRIMMABLE: f32 = 24.0;
+/// The warp of an audio clip, if it has one.
+fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::ClipWarp> {
+    project.warp(clip.as_audio()?.warp?)
+}
+
 /// The sample rate to lay a clip out at when its file can't be read.
 const FALLBACK_RATE: u32 = 48_000;
 /// A new MIDI clip is a bar of 4/4 long.
@@ -146,6 +153,26 @@ impl TimelineState {
         })
     }
 
+    /// The clip that is selected, if exactly one is.
+    pub fn selected_clip(&self) -> Option<ClipId> {
+        let mut selected = self.selected.iter();
+        match (selected.next(), selected.next()) {
+            (Some(&id), None) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// What is known about the audio file `name` (relative to `directory`),
+    /// reading it in the background if this is the first time it's asked for.
+    pub fn source(
+        &mut self,
+        ctx: &egui::Context,
+        directory: Option<&std::path::Path>,
+        name: &str,
+    ) -> Option<Loaded> {
+        self.sources.get(ctx, directory, name)
+    }
+
     #[cfg(test)]
     pub fn selected(&self) -> &BTreeSet<ClipId> {
         &self.selected
@@ -203,6 +230,8 @@ enum Mode {
     Move,
     TrimStart,
     TrimEnd,
+    /// Sliding an audio clip's contents under its window (Shift+Alt).
+    Slip,
     /// Dragging a fade handle; worked out where the handle is drawn.
     FadeIn,
     FadeOut,
@@ -263,6 +292,8 @@ pub struct Output {
     pub arm: Vec<(NodeId, crate::session::ArmKind, bool)>,
     /// A MIDI clip they double-clicked, to open in the piano roll.
     pub open_midi: Option<ClipId>,
+    /// An audio clip they double-clicked, to open in the clip editor.
+    pub open_audio: Option<ClipId>,
 }
 
 /// Where imported audio goes when it isn't dropped on a lane.
@@ -305,7 +336,7 @@ pub fn show(
                         .get(ui.ctx(), directory.as_deref(), &audio.source)
                         .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                 });
-                clips::clip_end(map, clip, rate).quarters()
+                clips::clip_end(map, clip, rate, warp_of(project, clip)).quarters()
             })
             .fold(0.0, f64::max) as f32
             + 16.0;
@@ -372,6 +403,7 @@ pub fn show(
     }
 
     let mut open_midi = None;
+    let mut open_audio = None;
     let mut hit_clip = false;
     let clips_before = state.selected.clone();
     let take = session.take_preview();
@@ -412,7 +444,7 @@ pub fn show(
             });
             let source = loaded.as_ref().map(|loaded| loaded.source);
             let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
-            let end = clips::clip_end(map, clip, rate);
+            let end = clips::clip_end(map, clip, rate, warp_of(project, clip));
             let full = Rect::from_min_max(
                 Pos2::new(axis.x(clip.start), top + 3.0),
                 Pos2::new(
@@ -446,7 +478,13 @@ pub fn show(
                     state.selected = BTreeSet::from([id]);
                 }
                 state.selected.insert(id);
-                let mode = mode_at(press.x);
+                let slipping =
+                    clip.as_audio().is_some() && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
+                let mode = if slipping {
+                    Mode::Slip
+                } else {
+                    mode_at(press.x)
+                };
                 let copying = mode == Mode::Move && ui.input(|i| i.modifiers.command);
                 let mut grabbed = id;
                 let originals = if copying {
@@ -489,6 +527,9 @@ pub fn show(
             } else if response.double_clicked() && clip.as_midi().is_some() {
                 state.selected = BTreeSet::from([id]);
                 open_midi = Some(id);
+            } else if response.double_clicked() && clip.as_audio().is_some() {
+                state.selected = BTreeSet::from([id]);
+                open_audio = Some(id);
             } else if response.clicked() {
                 if ui.input(|i| i.modifiers.shift) {
                     if !state.selected.remove(&id) {
@@ -531,18 +572,54 @@ pub fn show(
             let label = match (audio, clip.as_midi()) {
                 (Some(audio), _) => {
                     if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
-                        let drawn = waveform::draw(
-                            &painter,
-                            &mut state.waveforms,
-                            full,
-                            visible,
-                            &waveform::Clip {
-                                id,
-                                peaks,
-                                audio,
-                                colour,
-                            },
-                        );
+                        let wave = waveform::Clip {
+                            id,
+                            peaks,
+                            audio,
+                            colour,
+                        };
+                        let runs = clips::passes(map, clip, rate, warp_of(project, clip));
+                        let drawn = match runs {
+                            // A looping section shows its audio up to the
+                            // loop's end and then the loop, run by run.
+                            Some(runs) => {
+                                let mut any = false;
+                                let last = runs.len().saturating_sub(1);
+                                for (n, run) in runs.iter().enumerate() {
+                                    let rect = Rect::from_min_max(
+                                        Pos2::new(axis.x(run.from), full.top()),
+                                        Pos2::new(axis.x(run.to), full.bottom()),
+                                    );
+                                    if rect.right() < visible.left()
+                                        || rect.left() > visible.right()
+                                    {
+                                        continue;
+                                    }
+                                    // The first run, the whole runs and the
+                                    // cut-off last have their own cache slots.
+                                    let slot = if n == 0 {
+                                        0
+                                    } else if n == last {
+                                        2
+                                    } else {
+                                        1
+                                    };
+                                    any |= waveform::draw_range(
+                                        &painter,
+                                        &mut state.waveforms,
+                                        (id, slot),
+                                        rect,
+                                        rect.intersect(visible),
+                                        &wave,
+                                        run.frames,
+                                    );
+                                }
+                                any
+                            }
+                            None => {
+                                waveform::draw(&painter, &mut state.waveforms, full, visible, &wave)
+                            }
+                        };
                         #[cfg(test)]
                         {
                             state.waveforms_drawn += usize::from(drawn);
@@ -666,6 +743,86 @@ pub fn show(
         edits.push(Edit::Apply(Command::Batch(removals)));
     }
 
+    let mut notice: Option<String> = None;
+    // S cuts the selected clips (every clip, if none is selected) at the
+    // playhead; Cmd+D copies them to just after themselves.
+    if hovered && !ui.ctx().egui_wants_keyboard_input() {
+        let split_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::S));
+        let copy_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::D));
+        let rate_of = |state: &mut TimelineState, clip: &Clip| {
+            clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                state
+                    .sources
+                    .get(ui.ctx(), directory.as_deref(), &audio.source)
+                    .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+            })
+        };
+        if split_key && let Some(at) = playhead {
+            let wanted: Vec<ClipId> = if state.selected.is_empty() {
+                project.clips().map(|(id, _)| id).collect()
+            } else {
+                state.selected.iter().copied().collect()
+            };
+            let mut commands = Vec::new();
+            let mut right_halves = BTreeSet::new();
+            let mut next = project.next_clip_id();
+            for id in wanted {
+                let Some(clip) = project.clip(id) else {
+                    continue;
+                };
+                let rate = rate_of(state, clip);
+                if let Some((first, second)) =
+                    clips::split(map, clip, at, rate, warp_of(project, clip))
+                {
+                    commands.push(Command::SetClip { id, clip: first });
+                    commands.push(Command::AddClip {
+                        id: next,
+                        clip: second,
+                    });
+                    right_halves.insert(next);
+                    next.0 += 1;
+                }
+            }
+            if commands.is_empty() {
+                notice = Some("Move the playhead inside a clip to cut it".to_string());
+            } else {
+                state.selected = right_halves;
+                edits.push(Edit::Apply(Command::Batch(commands)));
+            }
+        }
+        if copy_key && !state.selected.is_empty() {
+            let chosen: Vec<(ClipId, Clip)> = state
+                .selected
+                .iter()
+                .filter_map(|&id| Some((id, project.clip(id)?.clone())))
+                .collect();
+            let first = chosen
+                .iter()
+                .map(|(_, c)| c.start)
+                .min()
+                .unwrap_or_default();
+            let last = chosen
+                .iter()
+                .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
+                .max()
+                .unwrap_or_default();
+            let shift = Tick((last.0 - first.0).max(1));
+            let mut next = project.next_clip_id();
+            let mut commands = Vec::new();
+            let mut copies = BTreeSet::new();
+            for (_, clip) in chosen {
+                commands.push(Command::AddClip {
+                    id: next,
+                    clip: clips::moved(&clip, Tick(clip.start.0 + shift.0)),
+                });
+                copies.insert(next);
+                next.0 += 1;
+            }
+            state.selected = copies;
+            edits.push(Edit::Apply(Command::Batch(commands)));
+        }
+    }
+
     // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
     // clips, and scroll to keep it in view.
     let mut jump = None;
@@ -687,7 +844,7 @@ pub fn show(
                                 .get(ui.ctx(), directory.as_deref(), &audio.source)
                                 .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                         });
-                        clips::clip_end(map, clip, rate)
+                        clips::clip_end(map, clip, rate, warp_of(project, clip))
                     })
                     .max(),
             };
@@ -737,7 +894,6 @@ pub fn show(
             .vline(x, rect.y_range(), Stroke::new(1.5, colors::PLAYHEAD));
         }
     }
-    let mut notice = None;
     let dropped: Vec<std::path::PathBuf> = ui.input(|i| {
         let files = i.raw.dropped_files.iter();
         files.map(|file| file.path().to_path_buf()).collect()
@@ -840,6 +996,7 @@ pub fn show(
         pick,
         arm,
         open_midi,
+        open_audio,
     }
 }
 
@@ -897,11 +1054,12 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
     let Some(audio) = clip.as_audio() else {
         return edits;
     };
-    let rate_f = f64::from(rate);
-    let start = map.sample_at(clip.start, rate_f);
-    let x_of = |sample: u64| axis.x(Tick(map.tick_at_sample(sample, rate_f).round() as i64));
-    let fade_in_x = x_of(start + audio.fade_in);
-    let fade_out_x = x_of(start + audio.length - audio.fade_out);
+    let Some((fade_in_tick, fade_out_tick)) =
+        clips::fade_ticks(map, clip, rate, warp_of(project, clip))
+    else {
+        return edits;
+    };
+    let (fade_in_x, fade_out_x) = (axis.x(fade_in_tick), axis.x(fade_out_tick));
     let half = HANDLE / 2.0;
     let painter = ui.painter_at(visible);
     let shade = Color32::BLACK.gamma_multiply(0.35);
@@ -960,8 +1118,10 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
         {
             let at = axis.tick(pos.x);
             let changed = match mode {
-                Mode::FadeIn => clips::set_fade_in(map, current, at, rate),
-                _ => clips::set_fade_out(map, current, at, rate),
+                Mode::FadeIn => {
+                    clips::set_fade_in(map, current, at, rate, warp_of(project, current))
+                }
+                _ => clips::set_fade_out(map, current, at, rate, warp_of(project, current)),
             };
             if let Some(changed) = changed
                 && &changed != current
@@ -1045,17 +1205,29 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
         }
         Mode::TrimStart => {
             let edge = snap(Tick(grabbed.start.0 + delta));
-            let clip = clips::trim_start(map, grabbed, edge, rate)?;
+            let warp = warp_of(project, grabbed);
+            let clip = clips::trim_start(map, grabbed, edge, rate, warp)?;
             vec![Command::SetClip {
                 id: drag.grabbed,
                 clip,
             }]
         }
         Mode::FadeIn | Mode::FadeOut => return None,
+        Mode::Slip => {
+            let warp = warp_of(project, grabbed);
+            let frames = source.and_then(|s| s.frames);
+            let clip = clips::slip(map, grabbed, delta, rate, frames, warp)?;
+            vec![Command::SetClip {
+                id: drag.grabbed,
+                clip,
+            }]
+        }
         Mode::TrimEnd => {
-            let end = clips::clip_end(map, grabbed, rate);
+            let end = clips::clip_end(map, grabbed, rate, warp_of(project, grabbed));
             let edge = snap(Tick(end.0 + delta));
-            let clip = clips::trim_end(map, grabbed, edge, rate, source.and_then(|s| s.frames))?;
+            let warp = warp_of(project, grabbed);
+            let frames = source.and_then(|s| s.frames);
+            let clip = clips::trim_end(map, grabbed, edge, rate, frames, warp)?;
             vec![Command::SetClip {
                 id: drag.grabbed,
                 clip,

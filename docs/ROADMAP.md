@@ -187,8 +187,9 @@ device (checking that every clip streams).
 - Nothing has been listened to on a real device. CI now runs Linux, macOS
   and Windows on every PR, so the remaining check is a short `noodle play`
   on the Mac.
-- Recording has no latency compensation for takes yet, and hasn't been tried
-  with a real microphone.
+- Audio takes skip the measured round trip (output latency, plugin delay
+  compensation and the input's capture latency, as the driver reports them),
+  but this hasn't been tried with a real microphone.
 - The follow-ups below (group ports, track order and delete, mixer
   nodes, several outputs, clip copying) are the rest of the milestone's
   planned work.
@@ -205,7 +206,8 @@ device (checking that every clip streams).
 - **Arrangement view:** tracks, and moving, trimming and fading clips.
 - Mixer view over the track groups.
 - Automation lanes.
-- Recording audio input to clips (done, apart from latency compensation).
+- Recording audio input to clips (done, with latency compensation; a real
+  microphone is still to be tried).
 
 **Done when:** you can arrange several audio clips on tracks, process them
 through node graphs, automate a parameter, and mix them down live.
@@ -297,13 +299,21 @@ and several Output nodes each tied to one device). All of this theme is done.
   (View > Outputs). The engine renders one buffer for all the devices'
   channels and the main device's callback hands the rest to the other devices'
   streams through queues; see "Playing on several devices" in
-  ARCHITECTURE.md. Still open: the extra devices follow the main device's
-  sample rate (no resampling), and their latency isn't compensated.
+  ARCHITECTURE.md. A device whose samples play sooner than the main
+  device's is held back by the difference so the two sound together (up to
+  about a sixth of a second; a device slower than the main one can't be caught
+  up). **Done:** an extra device that runs at another sample rate than the main
+  one is fed through a converter thread (sinc resampling), so neither callback
+  does the work.
 
 **Clips and the arrangement (M2).**
 
-- **Done.** Ctrl or Cmd-drag a clip to copy it to the new place (17). More clip
-  editing (split, duplicate, slip) is expected after this.
+- **Done.** Ctrl or Cmd-drag a clip to copy it to the new place (17). **Done:**
+  S cuts the selected clips (every clip, if none is selected) at the
+  playhead into two clips that play the same samples; Cmd/Ctrl+D copies the
+  selection to just after itself; Shift+Alt-drag slips an audio clip's
+  contents under its window. A MIDI note spanning a cut is shortened in the
+  first half and sounds again at the start of the second.
 - **Done.** Import audio moves to the File menu, and the timeline's right-click menu
   offers it too (21). **Now.**
 - **Done.** With a clip selected, Ctrl or Cmd+Left and Right move the playhead to the
@@ -364,12 +374,14 @@ Metronome node and the metronome button.
 - **Done.** A button shows a distinct state when its node is missing (dimmed;
   pressing adds one) or broken (red, with the reason on hover), and what it's
   bound to can be edited (24) by rewiring in the node editor.
-- **Still to do:** a way to add other buttons to the pill, and binding a
-  button to a chosen node or parameter from the pill itself. The metronome
-  has no accent or sound settings beyond `level` yet. A signature change
-  inside the project counts beats from tick 0 (each beat a multiple of the
-  current beat length), so after one the clicks and the bar accent can land
-  off the new meter's grid. Fixing it needs the meter's start tick on `Transport`.
+- **Done.** Other buttons in the pill: every top-level Button node except the
+  metronome's shows as a ⏻ button (lit while on, tooltip naming what it
+  drives), and the ＋ menu adds one wired to any unwired two-valued
+  (Off/On) parameter of a top-level node, as one undo step.
+- **Done.** The metronome has `pitch` and `accent` parameters, and counts
+  beats from the start of the time signature in force (`Transport::signature_start`),
+  so the clicks and the bar accent stay on the meter's grid after a change
+  of meter (from the next block, like a tempo change).
 
 ## M3: Events and polyphony
 
@@ -576,56 +588,91 @@ A plugin that changes its latency after loading (restart request, latency
   plan, offline renders trimmed to the timeline).
 - Out-of-process plugin hosting (done: a host process per plugin node,
   audio through shared memory, silence and a restart when it dies or hangs;
-  editors only on Linux so far).
+  editors of sandboxed plugins embed in host-made windows on macOS and
+  Windows as in the app, with the host's main thread as its plugin thread;
+  only checked by CI compiling them and by the Linux emulation of that
+  arrangement, so the Mac and Windows hand check is owed, including that the
+  editor really embeds and gets focus from a background host).
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
 
 ## M7: Time warping
 
-**Status:** designed, not started. The decisions are in CONTEXT.md (warp, clip
-tempo, beat and warp markers, groove, section) and ADR 0002 (warping is a clip
-feature, not nodes).
+**Status:** All four PRs are done (the model and Repitch playback; the
+engine with Grain and Beats; the clip editor; warp quantise and grooves, below). The
+decisions are in CONTEXT.md (warp, clip tempo, beat and warp markers, groove,
+section) and ADR 0002 (warping is a clip feature, not nodes).
 
 Audio clips get a warp, applied live on playback. Four PRs:
 
-1. **The model.** A clip (the audio, its true length, loop, clip tempo curve,
-   beat and warp markers) is separate from the sections that show it on the
-   timeline. Copies share a clip until one is edited. Existing project files
-   load as unwarped clips with one section each and play as they do today.
-   Clip tempo is saved in the project and comes from the tempo map for takes
-   recorded in Noodle, or is typed in for imports (detection and tapping come
-   with the editor, in PR 3). Warp markers pin a clip moment to a
-   timeline beat and snap to beat markers; a hidden tempo conversion maps clip
-   tempo to the timeline's. Tempo conversion, warp markers and warp quantise
-   are separate switches. The only mode is Repitch. Warp data (markers, clip tempo, mode, switches,
-   groove link) goes into the Merkle cache key, so an edit invalidates frozen
-   and cached renders downstream. Nothing changes the sound of existing clips,
-   so golden renders and `DSP_GENERATION` stay as they are until PR 2 adds
-   modes.
-2. **The engine.** Stretching runs on a worker thread ahead of the playhead into
-   a ring buffer; the audio thread only copies. Modes: Repitch, Grain (WSOLA)
-   and Beats (transient-preserving). Cheap repitch plays while a marker is
-   dragged. Offline renders and export run the same stretch synchronously
-   instead of through the ring buffer, so export stays identical to live
-   playback. Benchmarks, the real-time allocation test, and golden renders.
-3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
-   waveform, transient ticks, beat markers, warp markers along the top and the
-   loop brace. Gestures: click a transient tick to pin a marker and drag it
-   (only that marker moves, so the audio either side stretches or squeezes);
-   dragging snaps to beats and the grid, with a modifier for free movement;
-   double-click deletes; markers can't cross; dragging in the strip above the
-   waveform pins at the pointer. Properties (mode, switches, clip tempo, loop,
-   gain, fades) stay in the properties panel. Analysis comes with the editor:
-   beat detection and tapping for clip tempo, transient detection, and the mode
-   chosen on import (percussive material gets Beats, the rest Grain). The loop
-   region defaults to the whole clip.
-4. **Warp quantise and grooves.** A live grid and amount over the unquantised
-   markers, previewed with lines back to the originals, plus bake. A groove
-   (timing feel apart from the algorithm) can be copied from one clip to
-   another or linked live.
+1. **The model. Done.** A clip's warp (its clip tempo curve and warp markers,
+   `ClipWarp`) is separate from the sections that show it on the timeline, and
+   sections that show one clip share it by ID. An edit to a shared warp forks
+   it for that section (`Project::warp_edit`), so copies stay as they were.
+   Clip tempo is seeded from the tempo map for takes recorded in Noodle
+   (conversion off, so they sound as recorded) and saved in the project;
+   detection, tapping and typing arrive with the editor. Warp markers pin a clip
+   moment to a timeline beat; a hidden tempo conversion maps clip tempo to the
+   timeline's. Tempo conversion and warp markers are separate switches (warp
+   quantise is the third, in PR 4). The only mode is Repitch, played by the
+   track input with cubic interpolation, driven by a piecewise-linear map from
+   output frames to source frames. Fades stretch with the audio. (Dragging trims
+   and fades, and the loop, were disabled here and arrived in PR 3.)
+2. **The engine. Done.** Grain and Beats are rendered by a worker thread
+   (`noodle-warp`, one per track input) ahead of the playhead into a ring buffer
+   per stretched section; the audio thread only copies out of it. Grain is
+   waveform-similarity overlap-add (WSOLA); Beats cuts the clip at its
+   transients (`noodle_io::detect_onsets`), plays each attack at natural speed
+   and stretches only what follows. Seeks, jumps, stops and edits restart the
+   stretch at the new place, and the loop's start is rendered ahead so a wrap is
+   gapless. `ClipFeeds::set_preview` plays every warped section as cheap
+   Repitch while a marker is dragged, so the editor (PR 3) can use it. Tests
+   cover pitch, level, stereo balance, block-size independence, seeks, loops and
+   the allocation guard (`stretched_clips.rs`, `stretched_playback.rs`,
+   `track_input_realtime.rs`); `examples/warp-grain.ron` and `warp-beats.ron`
+   have golden renders; `cargo bench -p noodle-nodes --bench warp` measures the
+   stretcher (about 150 times real time per clip on one core). Choosing the
+   mode in the app waits for the clip editor.
+3. **The clip editor. Done.** In the piano roll's slot (double-click an audio
+   clip): the clip's own timeline with its waveform, transient ticks, warp
+   markers along the top (drag to move, double-click to add, Delete removes, snapped
+   to beats; Alt drags free) and the loop brace. Marker drags play as cheap
+   Repitch (`set_preview`), and the node now dips when that flips. The
+   properties panel has the mode, the two switches, clip tempo (typed, tapped
+   or detected from the file's transients by `noodle_io::estimate_tempo`, over
+   its first 120 s), loop, gain and fades. Trims, fades, split and slip work on
+   warped sections again, in warped beats. **Loop:** `ClipWarp::loop_region`
+   (in clip-tempo beats, at least one beat and 0.25 s of playback, or the
+   section plays once and the app says so) and `AudioClip::extent` (how far the
+   section is dragged out, cutting it short or extending it). A looping section
+   always plays from its start to the loop's end and then round the loop, up to
+   its end, so dragging the edge never changes what plays before it. A fade-out
+   is held to the last pass. The engine lays a looped section out as consecutive
+   pieces, each a normal scheduled clip, so the audio thread has no loop logic
+   and the repeats are gapless (stretched ones through the head lanes). Pressing
+   Warp on an unwarped clip picks Beats for percussive audio (from the
+   analysis) and Grain otherwise; the mode can be changed after.
+4. **Warp quantise and grooves. Done.** `ClipWarp::quantise` (`WarpQuantise`:
+   grid in beats, amount 0 to 1, an optional groove and how much of it) moves
+   the markers that *play* (`ClipWarp::effective_markers`) and never the stored
+   ones, so turning it off brings the original timing back; the curve, the
+   engine and the render cache key all read the effective markers, and a marker
+   that would land on or before its neighbour, or squeeze the clip past the
+   speed limits, is left out of them. In the clip editor each flag sits where
+   it plays, with a line and a ring back to where it was put; the properties
+   panel has Quantise, Grid, Amount, Groove and Bake (makes the quantised
+   markers the markers, `ClipWarp::baked`), and Pin transients (a marker on
+   every detected transient where it plays now, so there is something to
+   quantise and a feel to read). A `Groove` is the mean distance of a clip's
+   markers from the sixteenth grid over a bar (`ClipWarp::groove`); a clip
+   takes another's groove **copied** or **linked**. A link is clip data, not a
+   wire (ADR 0002): `groove_from` names the other *clip* (a warp forks when one
+   section is edited), and the project refreshes the follower's groove whenever
+   a warp or clip changes (`Project::sync_grooves`),
+   so undo and redo need not record it. `examples/warp-quantise.ron` has a golden
+   render.
 
-Out of scope for now (listed under Later): pitch shifting, warping MIDI
-clips, a spectral mode.
+Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
 
 **Done when:** you can drop a loop recorded at another tempo, pin its
 transients to the grid, hear it follow tempo changes without dropouts, quantise
@@ -633,8 +680,6 @@ it non-destructively, and lend its groove to a second clip.
 
 ## Later
 
-- Pitch shifting for warped clips, warping MIDI clips, and a spectral warp
-  mode (from M7).
 - Spectral signal type.
 - AU hosting.
 - A scripting or expression node.

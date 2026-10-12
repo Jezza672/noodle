@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NodeId, Tick};
+use crate::{NodeId, Tick, WarpId};
 
 /// Identifies a clip within a project. Like node IDs, clip IDs aren't reused
 /// within a session.
@@ -152,6 +152,16 @@ pub struct AudioClip {
     /// Fades at either end, in sample frames of the file, inside `length`.
     pub fade_in: u64,
     pub fade_out: u64,
+    /// How the clip is warped, if it is. Sections of the same clip name the
+    /// same warp; `offset` and `length` still pick the part of the file this
+    /// section shows, and the warp decides how that part is laid out in time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp: Option<WarpId>,
+    /// How long the section lasts, from its start, when its clip loops and
+    /// the section is dragged out past the end of its window. `None` (or a
+    /// clip that doesn't loop) lasts as long as the window does once warped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<Tick>,
 }
 
 impl AudioClip {
@@ -165,6 +175,8 @@ impl AudioClip {
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            warp: None,
+            extent: None,
         }
     }
 }
@@ -233,6 +245,8 @@ impl AudioClip {
             Some("its gain is not a number or is negative")
         } else if self.fade_in.saturating_add(self.fade_out) > self.length {
             Some("its fades are longer than the clip")
+        } else if self.extent.is_some_and(|e| e <= Tick::ZERO) {
+            Some("its extent is empty")
         } else {
             None
         }

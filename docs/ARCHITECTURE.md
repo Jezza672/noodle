@@ -412,6 +412,27 @@ rewind only touch the transport:
   device, CI, tests and `noodle play --output virtual`. Output nodes tied to
   other devices and audio input still open as usual around it.
 
+### Playing on several devices
+
+Output nodes tied to other devices (see "Outputs view") make the engine render
+one buffer for every device's channels: the main device's first, then each
+extra's. The main device's callback plays its channels and hands the rest to
+the extras through a queue each (`Tap` in `noodle-io/src/output.rs`), and each
+extra's own callback (`ExtraOutput`) plays from its queue. The two clocks
+drift, so an extra waits for a cushion (one main block and one of its own,
+scaled to its rate) before it plays, plays silence if it runs dry and skips
+ahead if it falls far behind, counting each as a glitch.
+
+An extra device opens at the main device's rate if it runs at it, and at its own
+default rate otherwise (`open_extra`). Then a `RateConverter` thread sits
+between the tap's queue and the extra's: it reads the engine's audio, converts
+it with a `StreamResampler` (rubato's sinc resampler, 128 input frames a time)
+and queues the result for the device. The cushion grows by what the converter
+holds back (its chunk and its timer), so a converted device is a few
+milliseconds later than a direct one; the engine doesn't
+compensate for either. Neither callback allocates or resamples; dropping the
+extra's callback stops the thread.
+
 ### Live monitoring
 
 A track **armed for MIDI** (RM on its header, `Session::arm_kind`) plays live MIDI
@@ -553,8 +574,13 @@ track as a single `Batch`, so one undo removes the take. An armed track that
 was deleted meanwhile gets no clip (if all were deleted, the file is kept and
 said so), and a take with no audio adds nothing and
 deletes its file. Input that was dropped because the disk stalled is
-reported. The clip is placed at the playhead without compensating for the
-audio device's latency, so a take can sit a little late; that is still to do.
+reported. What the player played arrived after a round trip: the output
+latency they heard the project through (the driver's `playback - callback`
+time plus plugin delay compensation) and the input's own
+(`callback - capture`, kept by the input callback in `Recorder::input_latency`).
+The clip starts at the playhead but skips that many frames of the file
+(`recorded_clip`), so the take lines up with the project as heard. MIDI takes
+subtract the output side only.
 
 **The take in progress** is drawn on the arrangement as it grows: a red clip
 from the take's start to the playhead on each armed track, with the notes
@@ -581,6 +607,137 @@ MIDI alone. The Q menu in the transport sets a grid (off, 1/4, 1/8, 1/16,
 clip is made, keeping their lengths, shortening a note that now runs into the
 same key's next one and dropping a second note on the same tick. What is
 heard while playing is never snapped. The raw timing is not kept.
+
+### Time warping (M7)
+
+An audio clip can be **warped** (CONTEXT.md; ADR 0002 says why it is not nodes).
+The document side is in `noodle-core/src/warp.rs`: a `ClipWarp` holds a
+`TempoCurve` (the clip's tempo along its own seconds, a step function), the
+`WarpMarker`s (each pins a moment of the clip, in source seconds, to a beat),
+the `WarpMode` (Repitch, Grain or Beats) and the switches `tempo_conversion` and
+`use_markers`. It lives in the project's `warps` map and an audio section
+(the code's `Clip`) names it by `WarpId` in `AudioClip::warp`; sections that
+show one clip share an ID, `Project::warp_edit` forks it when a section is
+edited on its own, `AddWarp`/`SetWarp`/`RemoveWarp` are commands, and a warp
+nothing uses is left out of the saved file. The format is 3; older files load
+(`warp` and `warps` default to none). A file that uses Grain or Beats can't be
+read by a build from before those modes existed (it doesn't know the name).
+
+`ClipWarp::curve` is the one definition of where a moment of the clip plays: the
+clip's beat at a moment is the integral of its tempo, the markers bend clip
+beats into warped beats (straight lines between markers, the clip's own tempo
+before the first and after the last), and with the conversion on the result is
+in timeline beats, so the clip follows the tempo map. With it off the beats are
+turned back into seconds at the clip's own tempo, so the clip keeps its natural
+speed and the markers still re-time it. Markers must rise in time and beat and
+may not squeeze or stretch the clip beyond 16 times (`MIN_WARP_SPEED`,
+`MAX_WARP_SPEED`). Tempo conversion multiplies that by timeline bpm over clip
+bpm, so the engine also caps the speed it reads the file at (`ENGINE_MAX_SPEED`,
+32 times) when it builds the map: the section's fast parts play at the cap and
+fall behind, because the disk stream can't supply more. A
+section starts playing at its `offset` into the file, wherever that falls in the
+warped clip.
+
+The engine turns the curve into a `WarpMap` per section
+(`noodle-nodes/src/clip/warp.rs`, built by `ClipFeeds::update` from the
+`TempoTable`): knots of (output frame, source frame), straight between, with a
+knot at each marker, clip tempo change and timeline tempo change in range, so it
+is exact. A warp that leaves the clip at natural speed (`is_identity`) builds
+no map and plays as an unwarped clip, bit for bit. The section's length is where
+the map ends; fades are stretched through it.
+
+The track input plays a warped `ScheduledClip` from the same disk streams as
+any other, which are always at the engine's rate and in source frames.
+`play_warped` renders up to 256 output frames at a time: it works out the source
+frames they reach (plus one behind and two ahead), keeps them in a window it
+reads from the stream (carrying it over from block to block, so the stream is
+read once, in order), and interpolates each frame cubically (Repitch: pitch
+follows speed). Seeking, the loop's head streams and parking use
+`ScheduledClip::stream_start`, which gives the source frame for a clip frame.
+Ends hold their edge frame for the interpolation, so cutting a clip doesn't
+ring. Everything is preallocated at instantiation (`realtime.rs` plays warped
+clips, edits them while they play and loops over them under the counting
+allocator). The warp is in the track's cache key when it changes the sound.
+
+**Grain and Beats** keep the pitch, which needs more than the audio thread can
+do, so they are rendered ahead (`noodle-nodes/src/clip/ahead.rs` and
+`stretch.rs`). A section whose warp has one of those modes is *stretched*
+(`ScheduledClip::stretched`): the hub opens no stream for it, and a worker
+thread (`noodle-warp`, one per track input node, like the hub) opens a **lane**
+instead. A lane is a ring of stereo frames (about 340 ms) the worker fills with
+the stretched section, and a small control block; the node holds up to
+`MAX_LANES` of them, handed over and taken back through queues the way streams
+are, so nothing is allocated or freed on the audio thread. The lane is keyed by
+the clip, its source, the mode and the map (`lane_key`), so a new warp is a new
+lane.
+
+`play_stretched` asks for the frames it needs and copies them out. The node
+tracks where the lane's next frame falls in the section; when the playhead is
+somewhere else (a seek, a jump, a loop wrap, an edit) it asks the worker, through
+the control block, to restart there. The worker says how many frames it had
+pushed before restarting, and the node drops that many as stale. While the worker
+catches up the playhead plays silence and counts an underrun, and the lane drops
+the frames of the ring the playhead has passed, so it comes back on time. A
+lane opened ahead for the loop's start (a *head*, as for streams) makes the wrap
+gapless; offline (`ClipFeeds::blocking`) the node waits for the worker, so a
+render comes out the same every time and whatever the block size.
+`ClipFeeds::set_preview(true)` makes every warped section play as Repitch from
+the hub's streams, which is cheap enough to follow a marker being dragged;
+turning it off brings the lanes back.
+
+The **stretcher** (`stretch.rs`) is WSOLA over the section's `WarpMap`: Hann
+grains of 40 ms, hopped by 20 ms in the output, each read from the source at
+natural speed where the map puts it and moved by up to half a hop to the offset
+that best continues the grain before (normalised correlation of the mixed-down
+audio, coarse then fine). All channels use the same offsets; the output is
+stereo. A grain that would run past its part of the source is moved back to
+repeat the last stretch of it, so the end of the section doesn't go silent.
+After a seek it renders three hops it throws away. **Beats** cuts the section at
+the transients `detect_onsets` finds in the file (found once per source by the
+worker and kept): the map says where each lands in the output, each segment is
+rendered on its own, its first 25 ms are copied from the source at natural speed
+with the search switched off, and a 1.5 ms crossfade ends on the transient. The
+grains of a segment never read past the next transient. Grain is Beats with no
+transients. The stretcher has no I/O; the worker feeds it from its own stream
+through a window of decoded frames (`StreamSource`).
+
+**Loops.** `ClipWarp::loop_region` is a `LoopRegion` in clip-tempo beats (at
+least `MIN_LOOP_BEATS`, 1, and a round of it at least `MIN_LOOP_SECONDS`, 0.25 s
+of playback, else the section plays once and `ClipFeeds::update` reports a
+problem) and `AudioClip::extent` is how far the section is dragged out; without
+one the window is the length. A section with a loop always plays origin to the
+loop's end and then the loop, up to its length. `ClipFeeds::update` (`lay_out`
+in `schedule.rs`) expands it into **pieces**: the first runs from the section's
+origin to the loop's end, then the loop repeats and the last is truncated at the
+section's end (`WarpMap::truncated`); a section that ends inside the first pass
+is the window cut off. Each piece is an ordinary `ScheduledClip` with a
+synthetic ID (`piece_id`; at most `MAX_PIECES`), so the hub opens streams for it
+a second ahead and the node needs no loop logic. The fade-in is on the first
+piece and the fade-out on the last, held to the last pass.
+
+**The clip editor** (`noodle-app/src/clip_editor/`, `clip_panel.rs`) edits a
+`ClipWarp` through `Project::warp_edit` commands, one undo step per drag. The
+timeline's trims, fades, split and slip of a warped section work in warped beats
+(`timeline/warped.rs`). While a marker is dragged the session turns the preview
+on (and off at the end of the drag); the node dips (declick) when it flips.
+
+**Warp quantise and grooves.** `ClipWarp::quantise` is a `WarpQuantise` (grid
+in clip beats, amount, optional `Groove` and groove amount). The stored
+`markers` are never changed by it: `ClipWarp::effective_markers` gives the ones
+that play (each beat moved toward its grid line by the amount, plus the
+groove's offset for that line), dropping any that would land on or before the
+marker before or break the speed limits, so they always make a playable warp.
+`marker_map`, `curve`, and so the engine and the app's layout, read them, and
+the track input's cache key hashes them. `ClipWarp::baked` makes them the stored
+markers. A `Groove` is per-slot offsets (in beats) over a repeating pattern;
+`ClipWarp::groove` reads one from the stored markers (sixteenth slots, one bar).
+`WarpQuantise::groove_from` links to another clip (not its warp, which forks when one section
+is edited): `Project::sync_grooves` (run when a warp or clip is added, replaced
+or removed, and on load) copies the groove of the warp that clip uses now into
+the follower, reading only the source's stored markers, so links
+never chain or loop. The groove is derived data and is saved with the follower,
+so a link to a clip that is not saved keeps the last groove and is dropped on
+load. Warp data is not a wire (ADR 0002); a groove is lent as clip data.
 
 ## Automation (M2)
 
@@ -950,7 +1107,7 @@ frames while a wire drives them, so audio-rate modulation is stepped), notes
 are converted to CLAP note events (a note-off is given the key and channel its
 note-on had, since Noodle's note-off carries only the id), and the plugin's
 output is copied out. A plugin's note output becomes the node's event output.
-The transport (tempo, position, signature, playing) is passed on. Nothing on
+The transport (tempo, position, signature and where it began, playing) is passed on. Nothing on
 this path allocates (`tests/realtime.rs` checks it), so events beyond 4096 per
 block are dropped. A plugin that fails in `process` gives silence for that
 block. A parameter is sent once its port value differs from the plugin's
@@ -1148,7 +1305,8 @@ The code is `noodle-plugins/src/sandbox/`:
   exactly the node the app would have built in-process
   (`PluginNodeType::instantiate_local`, with the plugin thread, state restore
   and latency as before). It replies `Ready { latency }` or `Failed`, then runs
-  blocks. A second thread serves the control socket and keeps the editor flag.
+  blocks. A second thread serves the control socket and keeps the editor flag; on
+  macOS and Windows the roles swap (see Editors and state).
 - **`shm.rs`, the shared file.** One memory-mapped file (`/dev/shm` on Linux,
   else the temp folder; unlinked once the host has it, or delete-on-close on
   Windows) holds a header of atomics, the block's transport, each input's
@@ -1180,10 +1338,24 @@ The code is `noodle-plugins/src/sandbox/`:
   newest instance, in-process or remote; for a remote one they send
   `OpenEditor`, `CloseEditor` and `Capture` over the control socket and the
   host runs them on its own plugin thread, so capturing an edited plugin back into
-  the project works as before. The host has no window factory, so only
-  Linux plugins can show their editor from a host so far (CLAP floating windows
-  and the plugin's own X11 ones); on macOS and Windows opening one is refused
-  with a message (turn the option off to edit). `editor_open` reaches the app
+  the project works as before. On macOS and Windows the host's **main thread is
+  its plugin thread** (`adopt_current_thread`, as in the app) and its
+  control loop pumps `pump()` and the native window events
+  (`window::pump_events`: an AppKit event drain with an Accessory activation
+  policy on macOS, `PeekMessage` on Windows) every 8 ms, while the blocks run
+  on a thread of their own; editors are then embedded in host-made windows
+  exactly as in-process. On Linux the main thread runs blocks and plugins draw
+  their own windows. `--noodle-plugin-host-pumped` runs the macOS/Windows
+  arrangement on any system (the sandbox tests use it on Linux). Limits: the
+  test plugin only embeds in the tests' fake parent, so CI on macOS and Windows
+  covers the pump and threading but not embedding in a real NSView/HWND (that
+  is the hand check with a real plugin); a nested modal loop inside
+  `sendEvent`/`DispatchMessageW` (live resize, a menu, a window drag) stalls
+  the control loop, so plugin timers and state captures wait until it ends; and
+  a background host may not get focus (Windows refuses `SetForegroundWindow`
+  without `AllowSetForegroundWindow` from the app; macOS 14+ activation is
+  cooperative: the app should `yieldActivation(to:)` the host) which the hand
+  check will show. `editor_open` reaches the app
   through the shared header, at most 100 ms stale.
 
 Costs and limits: a block's hand-over is a copy in and out plus two wake-ups,

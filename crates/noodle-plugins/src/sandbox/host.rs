@@ -6,8 +6,13 @@
 //! have built in-process (the same code, `PluginNodeType::instantiate_local`)
 //! and runs it block by block on the signals in the shared file.
 //!
-//! Two threads: the main one runs blocks, and `control` serves the
-//! main-thread requests (editor, state capture) that arrive on the socket.
+//! Two threads: one runs blocks, and `control` serves the main-thread
+//! requests (editor, state capture) that arrive on the socket. On macOS and
+//! Windows `control` is the process's main thread, which is also the plugin
+//! thread (see [`crate::adopt_current_thread`]) and pumps the window events
+//! of the plugin's editor; the blocks run on a thread of their own. Elsewhere
+//! the main thread runs blocks, and `control` is a helper (editors there draw
+//! their own windows).
 
 use std::io::Read;
 use std::net::TcpStream;
@@ -17,8 +22,7 @@ use std::time::{Duration, Instant};
 
 use noodle_core::NodeId;
 use noodle_engine::{
-    Context, Event, EventsOut, Instance, Io, Node, Priority, Setup, SignalIn, SignalOut,
-    raise_current_thread,
+    Context, Event, EventsOut, Instance, Io, Node, Setup, SignalIn, SignalOut, raise_current_thread,
 };
 
 use super::proto::{Channel, FromHost, Hello, ToHost, encode};
@@ -30,17 +34,27 @@ use crate::node::PluginNodeType;
 /// the port to connect to and a token proving who started it.
 pub const HOST_ARG: &str = "--noodle-plugin-host";
 
+/// Like [`HOST_ARG`], but the host behaves as it does on macOS and Windows
+/// (its main thread is the plugin thread and pumps window events) on any
+/// system. For testing that arrangement on Linux.
+pub const HOST_PUMPED_ARG: &str = "--noodle-plugin-host-pumped";
+
 /// If this program was started as a plugin host, runs it and never returns.
 pub fn run_host_if_requested() {
     let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == HOST_ARG) {
+    let pumped = match args.next() {
+        Some(arg) if arg == HOST_ARG => cfg!(any(target_os = "macos", windows)),
+        Some(arg) if arg == HOST_PUMPED_ARG => true,
+        _ => return,
+    };
+    {
         let port = args.next().and_then(|a| a.to_str()?.parse().ok());
         let token = args.next().and_then(|a| a.into_string().ok());
         let (Some(port), Some(token)) = (port, token) else {
             eprintln!("usage: {HOST_ARG} <port> <token>");
             std::process::exit(2);
         };
-        host_main(port, &token);
+        run_host(port, &token, pumped);
     }
 }
 
@@ -51,7 +65,11 @@ const SPIN: Duration = Duration::from_micros(50);
 
 /// Runs the host; exits the process when done.
 pub fn host_main(port: u16, token: &str) -> ! {
-    let code = match run(port, token) {
+    run_host(port, token, cfg!(any(target_os = "macos", windows)))
+}
+
+fn run_host(port: u16, token: &str, pumped: bool) -> ! {
+    let code = match run(port, token, pumped) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("noodle plugin host: {error}");
@@ -61,7 +79,7 @@ pub fn host_main(port: u16, token: &str) -> ! {
     std::process::exit(code)
 }
 
-fn run(port: u16, token: &str) -> Result<(), String> {
+fn run(port: u16, token: &str, pumped: bool) -> Result<(), String> {
     let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
     let mut channel = Channel::new(stream).map_err(|e| e.to_string())?;
     channel.send_line(token).map_err(|e| e.to_string())?;
@@ -69,6 +87,11 @@ fn run(port: u16, token: &str) -> Result<(), String> {
         Ok(Some(ToHost::Hello(hello))) => hello,
         other => return Err(format!("expected a hello, got {other:?}")),
     };
+    // Editors need a thread that pumps window events and (on macOS) is the
+    // process's main thread, so that is the plugin thread, as in the app.
+    if pumped {
+        crate::adopt_current_thread(|| {});
+    }
     let (mapping, mut node, latency) = match start(&hello) {
         Ok(started) => started,
         Err(error) => {
@@ -83,19 +106,30 @@ fn run(port: u16, token: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let node_id = NodeId(hello.node);
-    let control_mapping = Arc::clone(&mapping);
-    std::thread::Builder::new()
-        .name("noodle-host-control".into())
-        .spawn(move || control(channel, node_id, &control_mapping))
-        .map_err(|e| e.to_string())?;
-
     let period = Duration::from_secs_f64(
         hello.spec.max_frames as f64 / f64::from(hello.sample_rate.max(1.0)),
     );
-    if raise_current_thread(period) == Priority::Normal {
-        // Common in a sandbox; the plugin still runs.
+    let sample_rate = hello.sample_rate;
+    let control_mapping = Arc::clone(&mapping);
+    if pumped {
+        std::thread::Builder::new()
+            .name("noodle-host-audio".into())
+            .spawn(move || {
+                raise_current_thread(period);
+                audio_loop(&mapping, node.as_mut(), sample_rate);
+                // The app went away; so does the host.
+                std::process::exit(0);
+            })
+            .map_err(|e| e.to_string())?;
+        control(channel, node_id, &control_mapping, true);
     }
-    audio_loop(&mapping, node.as_mut(), hello.sample_rate);
+    std::thread::Builder::new()
+        .name("noodle-host-control".into())
+        .spawn(move || control(channel, node_id, &control_mapping, false))
+        .map_err(|e| e.to_string())?;
+    // Raising can fail in a sandbox; the plugin still runs.
+    raise_current_thread(period);
+    audio_loop(&mapping, node.as_mut(), sample_rate);
     Ok(())
 }
 
@@ -135,9 +169,14 @@ fn start(hello: &Hello) -> Result<Started, String> {
 
 /// Serves the requests that arrive after the handshake, and keeps the
 /// header's `editor_open` flag current. Exits the process when the app goes.
-fn control(mut channel: Channel, node: NodeId, mapping: &Mapping) {
-    channel.set_timeout(Some(Duration::from_millis(100)));
+fn control(mut channel: Channel, node: NodeId, mapping: &Mapping, pumped: bool) -> ! {
+    // Pumping windows and plugin timers needs a turn every few milliseconds.
+    channel.set_timeout(Some(Duration::from_millis(if pumped { 8 } else { 100 })));
     loop {
+        if pumped {
+            crate::window::pump_events();
+            crate::pump();
+        }
         let message = channel.receive::<ToHost>();
         mapping
             .header()

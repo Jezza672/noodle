@@ -278,6 +278,18 @@ struct Recording {
     quantise: crate::midi_take::Quantise,
 }
 
+/// The clip for a take of `frames` frames that began when the transport was
+/// at `start`, with its first `latency` frames cut off (they were the sound
+/// that was already on its way when the take began). Keeps at least a frame.
+fn recorded_clip(track: NodeId, start: Tick, relative: &str, frames: u64, latency: u64) -> Clip {
+    let skip = latency.min(frames.saturating_sub(1));
+    let mut clip = Clip::audio(track, start, relative, frames - skip);
+    if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+        audio.offset = skip;
+    }
+    clip
+}
+
 /// Something that can record the input to a file.
 trait TakeSink {
     fn start(&mut self, path: &Path) -> Result<(), RecordError>;
@@ -437,6 +449,13 @@ impl Session {
 
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// Whether warped clips are playing as cheap Repitch, because a warp is
+    /// being dragged.
+    #[cfg(test)]
+    pub fn warp_preview(&self) -> bool {
+        self.clips.preview()
     }
 
     pub fn registry(&self) -> &Registry {
@@ -902,10 +921,16 @@ impl Session {
                 }
                 Edit::Drag(command) => {
                     self.history.begin_group();
+                    // A warp being dragged plays as cheap Repitch: the
+                    // stretch would start over with every change.
+                    if edits_warp(&command) {
+                        self.clips.set_preview(true);
+                    }
                     command
                 }
                 Edit::EndDrag => {
                     self.history.end_group();
+                    self.clips.set_preview(false);
                     continue;
                 }
                 Edit::PluginEditor { node, open } => {
@@ -1528,6 +1553,16 @@ impl Session {
         }
     }
 
+    /// How long before the app got it the input was captured, as the driver
+    /// says.
+    fn input_latency(&self) -> std::time::Duration {
+        self.audio
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |audio| {
+                audio.playback.input_latency()
+            })
+    }
+
     /// The take being recorded, as far as it goes: where it is on the
     /// timeline and the notes played so far, for drawing it growing with the
     /// playhead. `None` when not recording.
@@ -1634,11 +1669,43 @@ impl Session {
             return;
         }
         let mut commands = Vec::new();
+        // What was played arrived after the round trip through the output and
+        // back in through the input, so the file starts that much late: skip
+        // it and the take lines up with the project the player heard.
+        let round_trip = ((latency + self.input_latency()).as_secs_f64() * rate) as u64;
+        // The take's clip tempo is the timeline's where it was recorded. The
+        // sections on every armed track show the same clip, so they share one
+        // warp. Its seconds count from the start of the file, which is
+        // `round_trip` frames before the sections begin.
+        let warp = take.as_ref().filter(|_| rate > 0.0).map(|take| {
+            let skip = round_trip.min(take.frames.saturating_sub(1)) as f64 / rate;
+            let seconds = take.frames as f64 / rate;
+            let warp = noodle_core::ClipWarp::recorded(
+                self.project.tempo_map(),
+                recording.start,
+                skip,
+                seconds,
+            );
+            (self.project.next_warp_id(), warp)
+        });
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
+                let mut clip =
+                    recorded_clip(track, recording.start, relative, take.frames, round_trip);
+                if let (Some((id, warp)), noodle_core::ClipContent::Audio(audio)) =
+                    (&warp, &mut clip.content)
+                {
+                    if commands.is_empty() {
+                        commands.push(Command::AddWarp {
+                            id: *id,
+                            warp: warp.clone(),
+                        });
+                    }
+                    audio.warp = Some(*id);
+                }
                 commands.push(Command::AddClip {
                     id: self.project.new_clip_id(),
-                    clip: Clip::audio(track, recording.start, relative.clone(), take.frames),
+                    clip,
                 });
             }
         }
@@ -1848,6 +1915,15 @@ impl Session {
     }
 }
 
+/// Whether a command changes how a clip is warped.
+fn edits_warp(command: &Command) -> bool {
+    match command {
+        Command::SetWarp { .. } | Command::AddWarp { .. } => true,
+        Command::Batch(commands) => commands.iter().any(edits_warp),
+        _ => false,
+    }
+}
+
 /// What a command means for the engine.
 #[derive(Default, Debug, PartialEq)]
 struct Effect {
@@ -1881,9 +1957,13 @@ impl Effect {
                 key,
                 value: Some(value),
             } => self.params.push((*node, key.clone(), *value)),
+            // A warp is only read when the clips are scheduled.
             Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
+            | Command::AddWarp { .. }
+            | Command::RemoveWarp { .. }
+            | Command::SetWarp { .. }
             | Command::SetTempoMap(_) => self.clips = true,
             Command::Batch(commands) => commands.iter().for_each(|c| self.add(c)),
             // Includes resetting a parameter to its default, which needs the
@@ -3523,6 +3603,18 @@ mod tests {
         assert_eq!(audio.samples.len() / audio.channels, 4_800);
         assert!(session.is_dirty());
 
+        // Both sections show one clip, whose tempo is the timeline's where it
+        // was recorded; it sounds as recorded until the conversion is on.
+        let warps: Vec<_> = session
+            .project()
+            .clips()
+            .filter_map(|(id, _)| session.project().warp_of(id))
+            .collect();
+        assert_eq!(warps.len(), 2);
+        assert_eq!(warps[0].0, warps[1].0);
+        assert_eq!(warps[0].1.tempo.points()[0].bpm, 120.0);
+        assert!(warps[0].1.is_identity());
+
         session.undo();
         assert!(
             clips(&session).is_empty(),
@@ -3936,5 +4028,34 @@ mod tests {
         session.arm(track, true);
         session.midi_bus().send([0x90, 69, 100]);
         assert!(loudness(&mut session, meter, true) > 0.01);
+    }
+}
+
+#[cfg(test)]
+mod recorded_clip_tests {
+    use super::*;
+
+    fn audio(clip: &Clip) -> (u64, u64) {
+        let audio = clip.as_audio().unwrap();
+        (audio.offset, audio.length)
+    }
+
+    #[test]
+    fn a_take_skips_the_round_trip_latency() {
+        let clip = recorded_clip(NodeId(1), Tick(960), "t.wav", 48_000, 1_200);
+        assert_eq!(clip.start, Tick(960));
+        assert_eq!(audio(&clip), (1_200, 46_800));
+    }
+
+    #[test]
+    fn no_latency_leaves_the_take_whole() {
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 0);
+        assert_eq!(audio(&clip), (0, 48_000));
+    }
+
+    #[test]
+    fn a_take_shorter_than_the_latency_keeps_a_frame() {
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 100, 5_000);
+        assert_eq!(audio(&clip), (99, 1));
     }
 }
