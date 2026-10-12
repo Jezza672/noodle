@@ -347,16 +347,19 @@ enum StrokeAction {
 }
 
 /// What is being renamed in place.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum RenameTarget {
     Frame(FrameId),
     /// A group: its name is its `name` config, which a track shares.
     Group(NodeId),
-    /// A group's port, named by the boundary node inside; `shown_on` is the
-    /// node the box opens over.
+    /// A group's port, named by the boundary node inside. The box opens over
+    /// the port's row on `shown_on`, the group or the boundary node itself,
+    /// where the port is drawn.
     Port {
         boundary: NodeId,
         shown_on: NodeId,
+        side: Side,
+        key: String,
     },
     /// A group's input or output node, whose name is its port's.
     Boundary(NodeId),
@@ -843,6 +846,17 @@ fn pointer(
                     None => state.enter(Some(id), None),
                 }
             }
+            // A group's input or output node: its port's row renames the port.
+            Hit::Node(id) if is_boundary(f.project, id) => {
+                let port = f
+                    .scene
+                    .node(id)
+                    .and_then(|node| port_row_at(node, f.t.to_graph(p)))
+                    .filter(|port| !matches!(port.kind, PortKind::Param(_)));
+                if let Some(port) = port {
+                    start_boundary_rename(state, id, port);
+                }
+            }
             // Mixers, scopes and outputs (which have a scope) have a view of
             // their own.
             Hit::Node(id)
@@ -881,6 +895,14 @@ fn wire_at<'a>(f: &'a Frame_<'_>, p: Pos2) -> Option<&'a layout::WireGeom> {
 
 fn is_group(project: &Project, id: NodeId) -> bool {
     project.graph().node(id).is_some_and(|n| n.type_id == GROUP)
+}
+
+/// Whether `id` is a group's input or output node.
+fn is_boundary(project: &Project, id: NodeId) -> bool {
+    project
+        .graph()
+        .node(id)
+        .is_some_and(|n| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT))
 }
 
 fn start_primary_drag(
@@ -2060,11 +2082,28 @@ fn start_port_rename(
             target: RenameTarget::Port {
                 boundary: found.node,
                 shown_on: group,
+                side: port.side,
+                key: port.key.clone(),
             },
             label: found.name.clone(),
             focused: false,
         });
     }
+}
+
+/// Starts renaming the port of a group's input or output node, which is
+/// drawn on that node.
+fn start_boundary_rename(state: &mut EditorState, boundary: NodeId, port: &layout::PortGeom) {
+    state.rename = Some(Rename {
+        target: RenameTarget::Port {
+            boundary,
+            shown_on: boundary,
+            side: port.side,
+            key: port.key.clone(),
+        },
+        label: port.name.clone(),
+        focused: false,
+    });
 }
 
 /// The add-node search and the frame-renaming box.
@@ -2126,16 +2165,27 @@ fn popups(
         return;
     };
     // Where the box opens, and the width it gets.
-    let anchor = match rename.target {
+    let anchor = match rename.target.clone() {
         RenameTarget::Frame(id) => f.project.frame(id).map(|frame| {
             Rect::from_min_size(
                 Pos2::new(frame.position.x, frame.position.y),
                 Vec2::new(frame.width, FRAME_HEADER_HEIGHT),
             )
         }),
-        RenameTarget::Group(id)
-        | RenameTarget::Boundary(id)
-        | RenameTarget::Port { shown_on: id, .. } => f.scene.node(id).map(|n| n.header()),
+        RenameTarget::Group(id) | RenameTarget::Boundary(id) => {
+            f.scene.node(id).map(|n| n.header())
+        }
+        // The port's own row, so the box sits where the label is.
+        RenameTarget::Port {
+            shown_on,
+            side,
+            key,
+            ..
+        } => f
+            .scene
+            .node(shown_on)
+            .and_then(|n| n.port(side, &key))
+            .map(|port| port.row.shrink2(Vec2::new(8.0, 0.0))),
     };
     let Some(anchor) = anchor else {
         state.rename = None;
@@ -2167,7 +2217,7 @@ fn popups(
         state.rename = None;
     } else if done {
         let label = std::mem::take(&mut rename.label);
-        let target = rename.target;
+        let target = rename.target.clone();
         state.rename = None;
         edits.extend(rename_edit(f.project, target, label));
     }
