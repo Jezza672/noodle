@@ -793,6 +793,14 @@ a number and fails the CI excerpt.
    Arpeggiator. Drum rack, multi-zone instruments and Compressor, Limiter and
    Gate are groups or presets, never monolithic nodes. Each node ships with
    presets.
+3. **Warp evaluation songs.** Once the new nodes exist, the generated songs in
+   `noodle-eval/src/song/` use them: the drums become a drum rack (a Note
+   Split in front of Samplers, closing the sampler gap filed as #143), and the
+   instruments and mixes gain Dynamics, EQ and Reverb. The songs' `.ron`
+   projects and `baseline/songs.json` are regenerated, and the native renders
+   and scores are checked so the warp evaluation sees sampled drums, compressed
+   mixes and reverb tails, which the synthesised drums and dry mixes do not
+   test.
 
 ## Later
 
