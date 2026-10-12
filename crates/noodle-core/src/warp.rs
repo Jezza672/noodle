@@ -67,6 +67,9 @@ pub const MAX_WARP_SPEED: f64 = 16.0;
 /// down to it.
 pub const ENGINE_MAX_SPEED: f64 = 32.0;
 
+/// The furthest, in beats, the grid may be slid either way.
+pub const MAX_GRID_OFFSET: f64 = 64.0;
+
 /// The tempos a clip tempo may have, in beats per minute.
 pub const MIN_CLIP_BPM: f64 = 1.0;
 pub const MAX_CLIP_BPM: f64 = 1000.0;
@@ -370,14 +373,20 @@ impl Default for WarpQuantise {
 }
 
 impl WarpQuantise {
-    /// Where a marker at `beat` is moved to.
+    /// Where a marker at `beat` is moved to, on a grid that starts at beat 0.
     pub fn apply(&self, beat: f64) -> f64 {
-        let line = (beat / self.grid).round() * self.grid;
+        self.apply_from(beat, 0.0)
+    }
+
+    /// Where a marker at `beat` is moved to, on a grid whose lines are slid
+    /// `origin` beats from the whole ones (see [`ClipWarp::grid_offset`]).
+    pub fn apply_from(&self, beat: f64, origin: f64) -> f64 {
+        let line = ((beat - origin) / self.grid).round() * self.grid;
         let target = match &self.groove {
             Some(groove) => line + groove.offset_at(line) * self.groove_amount,
             None => line,
         };
-        beat + (target - beat) * self.amount
+        beat + (target + origin - beat) * self.amount
     }
 
     fn problem(&self) -> Option<&'static str> {
@@ -425,6 +434,17 @@ pub struct ClipWarp {
     /// can be turned off or changed and the original timing is back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quantise: Option<WarpQuantise>,
+    /// How far, in beats, the clip's grid lines are slid from the whole beats:
+    /// the clip's beat `n` sits at `n + grid_offset`. Setting it lines the
+    /// beat lines up with the audio (a loop whose first beat is not at the
+    /// start of its file). Only things that read the grid care: snapping, warp
+    /// quantise and the groove. What plays is the markers and the clip tempo.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub grid_offset: f64,
+}
+
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
 }
 
 impl ClipWarp {
@@ -438,6 +458,7 @@ impl ClipWarp {
             use_markers: true,
             loop_region: None,
             quantise: None,
+            grid_offset: 0.0,
         }
     }
 
@@ -495,7 +516,7 @@ impl ClipWarp {
         let mut out = Vec::with_capacity(self.markers.len());
         let mut previous: Option<WarpMarker> = None;
         for marker in &self.markers {
-            let beat = quantise.apply(marker.beat);
+            let beat = quantise.apply_from(marker.beat, self.grid_offset);
             let fits = previous.is_none_or(|previous| {
                 let clip_beats =
                     self.tempo.beats_at(marker.seconds) - self.tempo.beats_at(previous.seconds);
@@ -537,7 +558,7 @@ impl ClipWarp {
     /// it swings. `None` without markers.
     pub fn groove(&self) -> Option<Groove> {
         Groove::from_beats(
-            self.markers.iter().map(|m| m.beat),
+            self.markers.iter().map(|m| m.beat - self.grid_offset),
             GROOVE_SLOT,
             GROOVE_SLOTS,
         )
@@ -595,6 +616,9 @@ impl ClipWarp {
             if !m.seconds.is_finite() || !m.beat.is_finite() || m.seconds < 0.0 {
                 return Some("a warp marker is not at a real place");
             }
+        }
+        if !self.grid_offset.is_finite() || self.grid_offset.abs() > MAX_GRID_OFFSET {
+            return Some("the grid offset is out of range");
         }
         if let Some(problem) = self.quantise.as_ref().and_then(WarpQuantise::problem) {
             return Some(problem);
@@ -1038,6 +1062,59 @@ mod tests {
         warp.quantise = None;
         close(warp.beat_at(0.5), 1.1);
         assert_eq!(warp.problem(), None);
+    }
+
+    #[test]
+    fn a_slid_grid_moves_where_quantise_snaps_to() {
+        // The grid's lines are at 0.3, 0.8, 1.3 ...: these three markers
+        // already sit near them.
+        let mut warp = marked(&[(0.5, 0.35), (1.0, 0.75), (1.6, 1.4)]);
+        warp.quantise = Some(WarpQuantise {
+            grid: 0.5,
+            amount: 1.0,
+            ..WarpQuantise::default()
+        });
+        let beats = |warp: &ClipWarp| -> Vec<f64> {
+            warp.effective_markers().iter().map(|m| m.beat).collect()
+        };
+        // On the whole-beat grid they would snap to 0.5, 1.0, 1.5.
+        assert_eq!(beats(&warp), vec![0.5, 1.0, 1.5]);
+        warp.grid_offset = 0.3;
+        let slid = beats(&warp);
+        for (got, want) in slid.iter().zip([0.3, 0.8, 1.3]) {
+            close(*got, want);
+        }
+        // Stored markers are untouched, and 0 is the old behaviour.
+        assert_eq!(warp.markers[0].beat, 0.35);
+        warp.grid_offset = 0.0;
+        assert_eq!(beats(&warp), vec![0.5, 1.0, 1.5]);
+    }
+
+    #[test]
+    fn the_groove_is_read_against_the_slid_grid() {
+        let mut warp = marked(&[(0.5, 0.3), (1.0, 0.8)]);
+        let straight = warp.groove().unwrap();
+        assert!(!straight.is_flat());
+        warp.grid_offset = 0.3;
+        // Both markers are on the slid grid's lines now: a straight feel.
+        assert!(warp.groove().unwrap().is_flat());
+    }
+
+    #[test]
+    fn a_grid_offset_that_is_not_a_number_is_a_problem() {
+        let mut warp = ClipWarp {
+            grid_offset: f64::NAN,
+            ..ClipWarp::default()
+        };
+        assert!(warp.problem().is_some());
+        warp.grid_offset = MAX_GRID_OFFSET + 1.0;
+        assert!(warp.problem().is_some());
+        warp.grid_offset = -0.25;
+        assert_eq!(warp.problem(), None);
+        let text = ron::to_string(&ClipWarp::default()).unwrap();
+        assert!(!text.contains("grid_offset"), "{text}");
+        let back: ClipWarp = ron::from_str(&ron::to_string(&warp).unwrap()).unwrap();
+        assert_eq!(back.grid_offset, -0.25);
     }
 
     #[test]
