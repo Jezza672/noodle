@@ -280,6 +280,7 @@ impl Project {
         self.check_warp(id, &warp)?;
         self.warps.insert(id, warp);
         self.next_warp_id = self.next_warp_id.max(id.0 + 1);
+        self.sync_grooves();
         Ok(())
     }
 
@@ -287,7 +288,9 @@ impl Project {
         if self.clips_using(id).next().is_some() {
             return Err(EditError::WarpInUse(id));
         }
-        self.warps.remove(&id).ok_or(EditError::NoSuchWarp(id))
+        let warp = self.warps.remove(&id).ok_or(EditError::NoSuchWarp(id))?;
+        self.sync_grooves();
+        Ok(warp)
     }
 
     pub(crate) fn replace_warp(
@@ -299,10 +302,42 @@ impl Project {
             return Err(EditError::NoSuchWarp(id));
         }
         self.check_warp(id, &warp)?;
-        Ok(std::mem::replace(
-            self.warps.get_mut(&id).expect("checked"),
-            warp,
-        ))
+        let old = std::mem::replace(self.warps.get_mut(&id).expect("checked"), warp);
+        self.sync_grooves();
+        Ok(old)
+    }
+
+    /// Brings every groove that follows a clip up to date: a follower takes
+    /// the groove of the warp its source clip uses *now*, so a link survives
+    /// the source being split and one of its sections forking its warp. The
+    /// groove is derived, so undo and redo need not record it. A clip lends
+    /// only the markers it stores, never its own quantise, so two clips that
+    /// follow each other settle at once. A source that has gone, or has no
+    /// markers, lends nothing and the last groove stays (the link is kept, so
+    /// undoing the removal picks it up again; see [`from_ron`](Self::from_ron)
+    /// for what a file does with one).
+    fn sync_grooves(&mut self) {
+        let followers: Vec<(WarpId, crate::ClipId)> = self
+            .warps
+            .iter()
+            .filter_map(|(&id, w)| Some((id, w.quantise.as_ref()?.groove_from?)))
+            .collect();
+        for (follower, source) in followers {
+            let lent = self
+                .clips
+                .get(&source)
+                .and_then(|c| c.as_audio()?.warp)
+                .filter(|&warp| warp != follower)
+                .and_then(|warp| self.warps.get(&warp)?.groove());
+            if let Some(groove) = lent
+                && let Some(quantise) = self
+                    .warps
+                    .get_mut(&follower)
+                    .and_then(|w| w.quantise.as_mut())
+            {
+                quantise.groove = Some(groove);
+            }
+        }
     }
 
     /// The command that changes how audio clip `clip` is warped, which
@@ -381,11 +416,14 @@ impl Project {
         self.check_clip(id, &clip)?;
         self.clips.insert(id, clip);
         self.next_clip_id = self.next_clip_id.max(id.0 + 1);
+        self.sync_grooves();
         Ok(())
     }
 
     pub(crate) fn remove_clip(&mut self, id: ClipId) -> Result<Clip, EditError> {
-        self.clips.remove(&id).ok_or(EditError::NoSuchClip(id))
+        let clip = self.clips.remove(&id).ok_or(EditError::NoSuchClip(id))?;
+        self.sync_grooves();
+        Ok(clip)
     }
 
     pub(crate) fn replace_clip(&mut self, id: ClipId, mut clip: Clip) -> Result<Clip, EditError> {
@@ -394,10 +432,9 @@ impl Project {
             return Err(EditError::NoSuchClip(id));
         }
         self.check_clip(id, &clip)?;
-        Ok(std::mem::replace(
-            self.clips.get_mut(&id).expect("checked"),
-            clip,
-        ))
+        let old = std::mem::replace(self.clips.get_mut(&id).expect("checked"), clip);
+        self.sync_grooves();
+        Ok(old)
     }
 
     pub fn lane(&self, id: LaneId) -> Option<&AutomationLane> {
@@ -558,6 +595,17 @@ impl Project {
         };
         for (id, warp) in &project.warps {
             project.check_warp(*id, warp).map_err(LoadError::Broken)?;
+        }
+        let mut project = project;
+        project.sync_grooves();
+        // A link to a clip that is not in the file keeps its groove and goes.
+        let clips: Vec<_> = project.clips.keys().copied().collect();
+        for warp in project.warps.values_mut() {
+            if let Some(quantise) = &mut warp.quantise
+                && quantise.groove_from.is_some_and(|c| !clips.contains(&c))
+            {
+                quantise.groove_from = None;
+            }
         }
         for (id, clip) in &project.clips {
             project.check_clip(*id, clip).map_err(LoadError::Broken)?;
@@ -1235,6 +1283,114 @@ mod tests {
             ]),
         );
         (project, history, player, first, second, warp)
+    }
+
+    /// A clip whose warp quantises with a groove linked to `source`.
+    fn follower(
+        project: &mut Project,
+        history: &mut History,
+        player: NodeId,
+        source: ClipId,
+    ) -> (ClipId, WarpId) {
+        let (id, warp) = (project.new_clip_id(), project.next_warp_id());
+        let mut clip = Clip::audio(player, Tick(15_360), "snare.wav", 48_000);
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.warp = Some(warp);
+        let mut quantised = crate::ClipWarp::at_tempo(100.0);
+        quantised.quantise = Some(crate::WarpQuantise {
+            groove_from: Some(source),
+            ..crate::WarpQuantise::default()
+        });
+        apply(
+            project,
+            history,
+            Command::Batch(vec![
+                Command::AddWarp {
+                    id: warp,
+                    warp: quantised,
+                },
+                Command::AddClip { id, clip },
+            ]),
+        );
+        (id, warp)
+    }
+
+    fn lent(project: &Project, warp: WarpId) -> Option<crate::Groove> {
+        project.warp(warp)?.quantise.as_ref()?.groove.clone()
+    }
+
+    fn swing(beat: f64) -> impl FnOnce(&mut crate::ClipWarp) {
+        move |warp| warp.markers = vec![crate::WarpMarker { seconds: 0.5, beat }]
+    }
+
+    #[test]
+    fn a_linked_groove_follows_the_clip_it_is_taken_from() {
+        let (mut project, mut history, player, first, _, _) = warped_pair();
+        let (_, follower) = follower(&mut project, &mut history, player, first);
+        // The source has no markers: nothing to lend yet.
+        assert_eq!(lent(&project, follower), None);
+
+        let edit = project.warp_edit(first, swing(1.0625)).unwrap();
+        apply(&mut project, &mut history, edit);
+        let groove = lent(&project, follower).expect("the groove arrived");
+        assert!((groove.offset_at(1.0) - 0.0625).abs() < 1e-9);
+
+        // Undoing the source's edit takes the markers back; the follower keeps
+        // the last groove, and redo brings the same one.
+        history.undo(&mut project).unwrap();
+        assert_eq!(lent(&project, follower), Some(groove.clone()));
+        history.redo(&mut project).unwrap();
+        assert_eq!(lent(&project, follower), Some(groove));
+    }
+
+    #[test]
+    fn a_link_survives_the_source_clip_forking_its_warp() {
+        // The source is one of two sections that share a warp; editing it
+        // forks the warp, and the follower must follow the section, not the
+        // warp it used to have.
+        let (mut project, mut history, player, first, second, shared) = warped_pair();
+        let (_, follower) = follower(&mut project, &mut history, player, first);
+        let edit = project.warp_edit(first, swing(1.0625)).unwrap();
+        apply(&mut project, &mut history, edit);
+        assert_ne!(project.warp_of(first).unwrap().0, shared, "forked");
+        assert_eq!(project.warp_of(second).unwrap().0, shared);
+
+        let edit = project.warp_edit(first, swing(1.0)).unwrap();
+        apply(&mut project, &mut history, edit);
+        let groove = lent(&project, follower).unwrap();
+        assert!(groove.offset_at(1.0).abs() < 1e-9, "{groove:?}");
+
+        // The other section's own edits are not the follower's business.
+        let edit = project.warp_edit(second, swing(1.125)).unwrap();
+        apply(&mut project, &mut history, edit);
+        assert!(lent(&project, follower).unwrap().offset_at(1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_link_to_a_clip_that_is_not_in_the_file_is_dropped_on_load() {
+        let (mut project, mut history, player, first, _, _) = warped_pair();
+        let (_, follower) = follower(&mut project, &mut history, player, first);
+        let edit = project.warp_edit(first, swing(1.0625)).unwrap();
+        apply(&mut project, &mut history, edit);
+        let groove = lent(&project, follower).unwrap();
+
+        // Saved with the source, the link is still there.
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        let q = |p: &Project| p.warp(follower).unwrap().quantise.clone().unwrap();
+        assert_eq!(q(&loaded).groove_from, Some(first));
+
+        // Without it, the follower keeps what it was lent and stops following.
+        apply(
+            &mut project,
+            &mut history,
+            Command::RemoveClip { id: first },
+        );
+        assert_eq!(q(&project).groove_from, Some(first), "kept for undo");
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(q(&loaded).groove_from, None);
+        assert_eq!(q(&loaded).groove, Some(groove));
     }
 
     #[test]

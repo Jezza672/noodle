@@ -87,9 +87,22 @@ fn it_picks_up_after_a_jump() {
     }
     // And from the first sound it is the new tone, with nothing left over from
     // the old place.
-    let (left, _) = rig.play(at, at + 10_000);
+    // The worker renders far faster than real time but only once it is awake
+    // again; pace the blocks as the audio callback would, so a slow machine
+    // can't be outrun by the test.
+    let mut left = Vec::new();
+    for _ in 0..(10_000 / BLOCK) {
+        let (l, _) = rig.run(at, BLOCK, true);
+        left.extend(l);
+        at += BLOCK as u64;
+        std::thread::sleep(Duration::from_secs_f64(BLOCK as f64 / 48_000.0));
+    }
     let c = crossings(&left) as i64;
-    assert!((c - 183).abs() <= 6, "{c} cycles");
+    let expected = left.len() as f64 * 880.0 / 48_000.0;
+    assert!(
+        (c as f64 - expected).abs() <= 6.0,
+        "{c} cycles, wanted {expected}"
+    );
     assert!(peak(&left) > 0.4);
 }
 
@@ -98,7 +111,7 @@ fn a_loop_wraps_without_a_gap() {
     let mut rig = rig("loop", WarpMode::Grain);
     rig.looping = Some((20_000, 60_000));
     rig.node.reset();
-    let (left, _) = rig.play_looping(20_000, 5 * 40_000);
+    let (left, _) = rig.play_looping_realtime(20_000, 5 * 40_000);
     // The tone is steady, so every block of it is loud, including the ones
     // just after each wrap.
     let loud: Vec<bool> = left.chunks(BLOCK).map(|b| peak(b) >= 0.3).collect();

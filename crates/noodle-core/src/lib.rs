@@ -28,7 +28,8 @@ pub use timeline::{
     Tick, TimeSignature,
 };
 pub use warp::{
-    ClipWarp, ENGINE_MAX_SPEED, LoopRegion, MAX_CLIP_BPM, MAX_WARP_SPEED, MIN_CLIP_BPM,
-    MIN_LOOP_BEATS, MIN_LOOP_SECONDS, MIN_WARP_SPEED, PiecewiseLinear, TempoCurve, TempoPoint,
-    WarpAxis, WarpCurve, WarpId, WarpMarker, WarpMode,
+    ClipWarp, ENGINE_MAX_SPEED, GROOVE_SLOT, GROOVE_SLOTS, Groove, LoopRegion, MAX_CLIP_BPM,
+    MAX_WARP_SPEED, MIN_CLIP_BPM, MIN_LOOP_BEATS, MIN_LOOP_SECONDS, MIN_WARP_SPEED,
+    PiecewiseLinear, QUANTISE_GRIDS, TempoCurve, TempoPoint, WarpAxis, WarpCurve, WarpId,
+    WarpMarker, WarpMode, WarpQuantise,
 };

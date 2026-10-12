@@ -721,7 +721,23 @@ timeline's trims, fades, split and slip of a warped section work in warped beats
 (`timeline/warped.rs`). While a marker is dragged the session turns the preview
 on (and off at the end of the drag); the node dips (declick) when it flips.
 
-What is not here yet: warp quantise and grooves (PR 4).
+**Warp quantise and grooves.** `ClipWarp::quantise` is a `WarpQuantise` (grid
+in clip beats, amount, optional `Groove` and groove amount). The stored
+`markers` are never changed by it: `ClipWarp::effective_markers` gives the ones
+that play (each beat moved toward its grid line by the amount, plus the
+groove's offset for that line), dropping any that would land on or before the
+marker before or break the speed limits, so they always make a playable warp.
+`marker_map`, `curve`, and so the engine and the app's layout, read them, and
+the track input's cache key hashes them. `ClipWarp::baked` makes them the stored
+markers. A `Groove` is per-slot offsets (in beats) over a repeating pattern;
+`ClipWarp::groove` reads one from the stored markers (sixteenth slots, one bar).
+`WarpQuantise::groove_from` links to another clip (not its warp, which forks when one section
+is edited): `Project::sync_grooves` (run when a warp or clip is added, replaced
+or removed, and on load) copies the groove of the warp that clip uses now into
+the follower, reading only the source's stored markers, so links
+never chain or loop. The groove is derived data and is saved with the follower,
+so a link to a clip that is not saved keeps the last groove and is dropped on
+load. Warp data is not a wire (ADR 0002); a groove is lent as clip data.
 
 ## Automation (M2)
 

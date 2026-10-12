@@ -169,8 +169,11 @@ impl NodeType for TrackInput {
                         for point in warp.tempo.points() {
                             key.f64(point.seconds).f64(point.bpm);
                         }
-                        key.u64(warp.markers.len() as u64);
-                        for marker in &warp.markers {
+                        // The markers as they play, so warp quantise (and the
+                        // groove it follows) is in the key.
+                        let markers = warp.effective_markers();
+                        key.u64(markers.len() as u64);
+                        for marker in markers.iter() {
                             key.f64(marker.seconds).f64(marker.beat);
                         }
                     }
