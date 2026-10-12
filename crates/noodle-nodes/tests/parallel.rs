@@ -180,8 +180,18 @@ fn workers_sound_like_one_thread_and_never_allocate() {
     let shape = rig.controller.plan_shape();
     assert!(shape.width >= CHAINS, "{shape:?}");
     assert!(shape.critical_path < shape.steps, "{shape:?}");
+    // `engine_with_workers` returns once the workers have started, so their
+    // start-up allocations are over; a few blocks take them through spinning
+    // and parking for the first time before anything is counted.
     rig.render(1000);
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for _ in 0..20 {
+        rig.processor.process(&mut out);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    for _ in 0..5 {
+        rig.processor.process(&mut out);
+    }
     WATCH.store(true, Ordering::SeqCst);
     for _ in 0..50 {
         rig.processor.process(&mut out);
