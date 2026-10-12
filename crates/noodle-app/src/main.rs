@@ -15,6 +15,7 @@ mod midi_take;
 mod mixer;
 mod outputs;
 mod piano_roll;
+mod pill_buttons;
 mod plugin_browser;
 mod prefs;
 mod properties;

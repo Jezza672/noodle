@@ -91,6 +91,7 @@ pub(crate) struct BlockParams {
     pub loop_end: u64,
     pub tick: f64,
     pub bpm: f64,
+    pub signature_start: f64,
 }
 
 impl BlockParams {
@@ -108,6 +109,7 @@ impl BlockParams {
             loop_end,
             tick: transport.tick,
             bpm: transport.bpm,
+            signature_start: transport.signature_start,
         }
     }
 
@@ -122,6 +124,7 @@ impl BlockParams {
                 numerator: self.numerator as u8,
                 denominator: self.denominator as u8,
             },
+            signature_start: self.signature_start,
         }
     }
 }

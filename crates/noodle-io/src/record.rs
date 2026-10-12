@@ -91,9 +91,19 @@ pub struct RecordTap {
     armed: Arc<AtomicBool>,
     /// Samples that didn't fit.
     dropped: Arc<AtomicU64>,
+    /// How long ago the driver captured the block being delivered, in
+    /// microseconds (see [`Recorder::input_latency`]).
+    latency_micros: Arc<AtomicU64>,
 }
 
 impl RecordTap {
+    /// Notes how long before this callback the driver captured its input.
+    /// Real-time safe.
+    pub fn set_latency(&self, latency: Duration) {
+        self.latency_micros
+            .store(latency.as_micros() as u64, Ordering::Relaxed);
+    }
+
     /// Queues interleaved input, in whole frames, if recording is on. Real-time
     /// safe, like [`Capture::capture`](crate::Capture::capture).
     pub fn push<T: Sample>(&mut self, input: &[T])
@@ -143,6 +153,7 @@ struct Written {
 pub struct Recorder {
     armed: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
+    latency_micros: Arc<AtomicU64>,
     channels: usize,
     sample_rate: u32,
     flush_every: usize,
@@ -171,15 +182,18 @@ fn record_path_with(
     let (producer, consumer) = RingBuffer::new(ring_frames * channels);
     let armed = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicU64::new(0));
+    let latency_micros = Arc::new(AtomicU64::new(0));
     let tap = RecordTap {
         producer,
         channels,
         armed: Arc::clone(&armed),
         dropped: Arc::clone(&dropped),
+        latency_micros: Arc::clone(&latency_micros),
     };
     let recorder = Recorder {
         armed,
         dropped,
+        latency_micros,
         channels,
         sample_rate: sample_rate as u32,
         flush_every: (flush_frames * channels).max(1),
@@ -191,6 +205,14 @@ fn record_path_with(
 }
 
 impl Recorder {
+    /// How long before it reached the app the driver captured the input, as
+    /// far as the driver says: zero until the first callback. A recording is
+    /// this much later than the sound that made it, on top of the output
+    /// latency the player heard the project through.
+    pub fn input_latency(&self) -> Duration {
+        Duration::from_micros(self.latency_micros.load(Ordering::Relaxed))
+    }
+
     /// Whether a recording is running. It stops being true if the writer
     /// fails, and [`stop`](Self::stop) then says why.
     pub fn is_recording(&self) -> bool {
@@ -376,6 +398,14 @@ mod tests {
     }
 
     #[test]
+    fn the_input_latency_is_what_the_callback_last_reported() {
+        let (tap, recorder) = record_path(1, RATE);
+        assert_eq!(recorder.input_latency(), Duration::ZERO);
+        tap.set_latency(Duration::from_micros(12_500));
+        assert_eq!(recorder.input_latency(), Duration::from_micros(12_500));
+    }
+
+    #[test]
     fn a_recording_is_what_the_input_delivered() {
         let path = temp("recorded.wav");
         let (mut tap, mut recorder) = record_path(2, RATE);
@@ -440,6 +470,7 @@ mod tests {
             channels: 2,
             armed,
             dropped: Arc::new(AtomicU64::new(0)),
+            latency_micros: Arc::new(AtomicU64::new(0)),
         };
         tap.push(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         assert_eq!(consumer.slots(), 6);

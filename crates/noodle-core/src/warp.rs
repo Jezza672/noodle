@@ -86,15 +86,18 @@ impl TempoCurve {
     }
 
     /// The tempo `map` has over `seconds` from `start`: what a clip recorded
-    /// there was played at, tempo changes included.
-    pub fn from_tempo_map(map: &TempoMap, start: Tick, seconds: f64) -> Self {
+    /// there was played at, tempo changes included. The clip's own seconds
+    /// begin `lead` seconds before `start`, so a clip whose first moments are
+    /// not used (a take trimmed for latency) lines up; the first tempo holds
+    /// back to the clip's start.
+    pub fn from_tempo_map(map: &TempoMap, start: Tick, lead: f64, seconds: f64) -> Self {
         let began = map.seconds_at(start);
         let mut points = vec![TempoPoint {
             seconds: 0.0,
             bpm: map.bpm_at(start),
         }];
         for change in map.tempos().iter().filter(|c| c.tick > start) {
-            let at = map.seconds_at(change.tick) - began;
+            let at = map.seconds_at(change.tick) - began + lead;
             if at < seconds {
                 points.push(TempoPoint {
                     seconds: at,
@@ -219,13 +222,15 @@ impl ClipWarp {
         }
     }
 
-    /// The warp of a clip recorded in Noodle from `start` for `seconds`: its
+    /// The warp of a clip recorded in Noodle from `start` for `seconds` (of
+    /// which the first `lead` seconds are not played; see
+    /// [`TempoCurve::from_tempo_map`]): its
     /// tempo is the timeline's there, so its beats are exact. Tempo
     /// conversion is off, so the take sounds as recorded until it is turned
     /// on to follow later tempo changes.
-    pub fn recorded(map: &TempoMap, start: Tick, seconds: f64) -> Self {
+    pub fn recorded(map: &TempoMap, start: Tick, lead: f64, seconds: f64) -> Self {
         Self {
-            tempo: TempoCurve::from_tempo_map(map, start, seconds),
+            tempo: TempoCurve::from_tempo_map(map, start, lead, seconds),
             tempo_conversion: false,
             ..Self::default()
         }
@@ -488,7 +493,7 @@ mod tests {
         .unwrap();
         // From beat 2 for five seconds: 2 s of 120 bpm are left in the first
         // stretch, then 90 bpm. The change to 60 is further than that.
-        let warp = ClipWarp::recorded(&map, Tick(2 * 960), 5.0);
+        let warp = ClipWarp::recorded(&map, Tick(2 * 960), 0.0, 5.0);
         assert_eq!(warp.problem(), None);
         let points = warp.tempo.points();
         assert_eq!(points.len(), 2);
@@ -497,8 +502,12 @@ mod tests {
         assert_eq!(points[1].bpm, 90.0);
         // It sounds as recorded until the conversion is turned on.
         assert!(warp.is_identity());
+        // A take whose first half second is dropped for latency: the change
+        // comes that much later in the file.
+        let trimmed = ClipWarp::recorded(&map, Tick(2 * 960), 0.5, 5.0);
+        assert!((trimmed.tempo.points()[1].seconds - 1.5).abs() < 1e-9);
         // Starting past a change takes the tempo there.
-        let late = TempoCurve::from_tempo_map(&map, Tick(20 * 960), 10.0);
+        let late = TempoCurve::from_tempo_map(&map, Tick(20 * 960), 0.0, 10.0);
         assert_eq!(late.points().len(), 1);
         assert_eq!(late.points()[0].bpm, 60.0);
     }

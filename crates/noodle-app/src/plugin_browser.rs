@@ -92,8 +92,7 @@ impl PluginBrowser {
             .on_hover_text(
                 "A plugin that crashes or hangs then plays silence and is started \
                  again, instead of taking the app with it. Costs a little CPU for each \
-                 plugin. Editors of plugins in separate processes only work on Linux \
-                 so far.",
+                 plugin. Editors open as before.",
             )
             .changed()
         {

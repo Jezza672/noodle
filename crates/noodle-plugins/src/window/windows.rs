@@ -8,11 +8,12 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{COLOR_WINDOW, HBRUSH};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_STYLE, GetClientRect,
-    GetWindowLongPtrW, IDC_ARROW, IsIconic, IsWindowVisible, LoadCursorW, RegisterClassW, SW_HIDE,
-    SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSW, WS_CLIPCHILDREN,
-    WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
+    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GWL_STYLE, GetClientRect, GetWindowLongPtrW, IDC_ARROW, IsIconic, IsWindowVisible, LoadCursorW,
+    MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TranslateMessage, WM_CLOSE, WNDCLASSW, WS_CLIPCHILDREN, WS_MAXIMIZEBOX,
+    WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
 };
 
 use super::{EditorWindow, ParentWindow};
@@ -61,6 +62,23 @@ fn register_class() {
             RegisterClassW(&class);
         }
     });
+}
+
+/// Dispatches the messages waiting for this thread's windows, for a program
+/// with no message loop of its own (the plugin host process).
+pub(super) fn pump_events() {
+    // SAFETY: a message record on the stack, the thread's own queue; a burst
+    // is bounded so a flood of messages can't starve the caller.
+    unsafe {
+        let mut message: MSG = std::mem::zeroed();
+        for _ in 0..256 {
+            if PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) == 0 {
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
 }
 
 pub(super) struct WinWindow {

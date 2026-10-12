@@ -30,6 +30,16 @@ fn sandboxed() -> Sandboxed {
     Sandboxed { _turn: turn }
 }
 
+/// Hosts that run as they do on macOS and Windows: the main thread is the
+/// plugin thread and pumps window events.
+fn sandboxed_pumped() -> Sandboxed {
+    let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
+    set_sandbox(Some(SandboxCommand::pumped_program(env!(
+        "CARGO_BIN_EXE_noodle-plugin-scan"
+    ))));
+    Sandboxed { _turn: turn }
+}
+
 impl Drop for Sandboxed {
     fn drop(&mut self) {
         set_sandbox(None);
@@ -240,7 +250,15 @@ fn a_host_that_keeps_dying_is_given_up_on() {
 
 #[test]
 fn the_state_and_editor_of_a_sandboxed_plugin_can_be_reached() {
-    let _sandbox = sandboxed();
+    state_and_editor(sandboxed());
+}
+
+#[test]
+fn the_editor_of_a_host_whose_main_thread_is_the_plugin_thread_works_too() {
+    state_and_editor(sandboxed_pumped());
+}
+
+fn state_and_editor(_sandbox: Sandboxed) {
     let catalog = catalog();
     let node = NodeId(9_100);
     let node_type = node_type(&catalog);
@@ -261,26 +279,22 @@ fn the_state_and_editor_of_a_sandboxed_plugin_can_be_reached() {
     assert!(!captured.state.is_empty());
     assert!(captured.params.iter().any(|(id, _)| *id == 1));
 
-    if cfg!(target_os = "linux") {
-        noodle_plugins::open_editor(node).expect("open the editor");
-        until("the editor shows", Duration::from_secs(10), || {
-            noodle_plugins::editor_is_open(node)
-        });
-        // The test plugin's editor turns the gain down once its timer ticks.
-        until("the editor's edit lands", Duration::from_secs(10), || {
-            noodle_plugins::capture(node).is_ok_and(|c| {
-                c.params
-                    .iter()
-                    .any(|(id, v)| *id == 1 && (*v - 0.25).abs() < 1e-6)
-            })
-        });
-        noodle_plugins::close_editor(node);
-        until("the editor closes", Duration::from_secs(10), || {
-            !noodle_plugins::editor_is_open(node)
-        });
-    } else {
-        assert!(noodle_plugins::open_editor(node).is_err());
-    }
+    noodle_plugins::open_editor(node).expect("open the editor");
+    until("the editor shows", Duration::from_secs(10), || {
+        noodle_plugins::editor_is_open(node)
+    });
+    // The test plugin's editor turns the gain down once its timer ticks.
+    until("the editor's edit lands", Duration::from_secs(10), || {
+        noodle_plugins::capture(node).is_ok_and(|c| {
+            c.params
+                .iter()
+                .any(|(id, v)| *id == 1 && (*v - 0.25).abs() < 1e-6)
+        })
+    });
+    noodle_plugins::close_editor(node);
+    until("the editor closes", Duration::from_secs(10), || {
+        !noodle_plugins::editor_is_open(node)
+    });
 
     drop(instance);
     until("the node is forgotten", Duration::from_secs(5), || {

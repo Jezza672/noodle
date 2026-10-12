@@ -208,6 +208,8 @@ enum Mode {
     Move,
     TrimStart,
     TrimEnd,
+    /// Sliding an audio clip's contents under its window (Shift+Alt).
+    Slip,
     /// Dragging a fade handle; worked out where the handle is drawn.
     FadeIn,
     FadeOut,
@@ -451,7 +453,13 @@ pub fn show(
                     state.selected = BTreeSet::from([id]);
                 }
                 state.selected.insert(id);
-                let mode = mode_at(press.x);
+                let slipping =
+                    clip.as_audio().is_some() && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
+                let mode = if slipping {
+                    Mode::Slip
+                } else {
+                    mode_at(press.x)
+                };
                 let copying = mode == Mode::Move && ui.input(|i| i.modifiers.command);
                 let mut grabbed = id;
                 let originals = if copying {
@@ -671,6 +679,84 @@ pub fn show(
         edits.push(Edit::Apply(Command::Batch(removals)));
     }
 
+    let mut notice: Option<String> = None;
+    // S cuts the selected clips (every clip, if none is selected) at the
+    // playhead; Cmd+D copies them to just after themselves.
+    if hovered && !ui.ctx().egui_wants_keyboard_input() {
+        let split_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::S));
+        let copy_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::D));
+        let rate_of = |state: &mut TimelineState, clip: &Clip| {
+            clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                state
+                    .sources
+                    .get(ui.ctx(), directory.as_deref(), &audio.source)
+                    .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+            })
+        };
+        if split_key && let Some(at) = playhead {
+            let wanted: Vec<ClipId> = if state.selected.is_empty() {
+                project.clips().map(|(id, _)| id).collect()
+            } else {
+                state.selected.iter().copied().collect()
+            };
+            let mut commands = Vec::new();
+            let mut right_halves = BTreeSet::new();
+            let mut next = project.next_clip_id();
+            for id in wanted {
+                let Some(clip) = project.clip(id) else {
+                    continue;
+                };
+                let rate = rate_of(state, clip);
+                if let Some((first, second)) = clips::split(map, clip, at, rate) {
+                    commands.push(Command::SetClip { id, clip: first });
+                    commands.push(Command::AddClip {
+                        id: next,
+                        clip: second,
+                    });
+                    right_halves.insert(next);
+                    next.0 += 1;
+                }
+            }
+            if commands.is_empty() {
+                notice = Some("Move the playhead inside a clip to cut it".to_string());
+            } else {
+                state.selected = right_halves;
+                edits.push(Edit::Apply(Command::Batch(commands)));
+            }
+        }
+        if copy_key && !state.selected.is_empty() {
+            let chosen: Vec<(ClipId, Clip)> = state
+                .selected
+                .iter()
+                .filter_map(|&id| Some((id, project.clip(id)?.clone())))
+                .collect();
+            let first = chosen
+                .iter()
+                .map(|(_, c)| c.start)
+                .min()
+                .unwrap_or_default();
+            let last = chosen
+                .iter()
+                .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
+                .max()
+                .unwrap_or_default();
+            let shift = Tick((last.0 - first.0).max(1));
+            let mut next = project.next_clip_id();
+            let mut commands = Vec::new();
+            let mut copies = BTreeSet::new();
+            for (_, clip) in chosen {
+                commands.push(Command::AddClip {
+                    id: next,
+                    clip: clips::moved(&clip, Tick(clip.start.0 + shift.0)),
+                });
+                copies.insert(next);
+                next.0 += 1;
+            }
+            state.selected = copies;
+            edits.push(Edit::Apply(Command::Batch(commands)));
+        }
+    }
+
     // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
     // clips, and scroll to keep it in view.
     let mut jump = None;
@@ -742,7 +828,6 @@ pub fn show(
             .vline(x, rect.y_range(), Stroke::new(1.5, colors::PLAYHEAD));
         }
     }
-    let mut notice = None;
     let dropped: Vec<std::path::PathBuf> = ui.input(|i| {
         let files = i.raw.dropped_files.iter();
         files.map(|file| file.path().to_path_buf()).collect()
@@ -1057,6 +1142,13 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
             }]
         }
         Mode::FadeIn | Mode::FadeOut => return None,
+        Mode::Slip => {
+            let clip = clips::slip(map, grabbed, delta, rate, source.and_then(|s| s.frames))?;
+            vec![Command::SetClip {
+                id: drag.grabbed,
+                clip,
+            }]
+        }
         Mode::TrimEnd => {
             let end = clips::clip_end(map, grabbed, rate, warp_of(project, grabbed));
             let edge = snap(Tick(end.0 + delta));

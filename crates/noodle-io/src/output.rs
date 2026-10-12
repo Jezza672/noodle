@@ -165,7 +165,9 @@ impl DeviceWriter {
             });
             first += channels;
             let made = if device_rate == rate as u32 {
-                Ok(ExtraOutput::new(tapped, channels, &self.fade, glitches))
+                Ok(ExtraOutput::new(
+                    tapped, channels, rate, &self.fade, glitches,
+                ))
             } else {
                 // The tap's queue goes to a converter, and the device plays
                 // what that makes, at its own rate.
@@ -179,7 +181,13 @@ impl DeviceWriter {
                     Arc::clone(glitches),
                 )
                 .map(|converter| {
-                    let mut output = ExtraOutput::new(playing, channels, &self.fade, glitches);
+                    let mut output = ExtraOutput::new(
+                        playing,
+                        channels,
+                        device_rate as f32,
+                        &self.fade,
+                        glitches,
+                    );
                     output.ratio = f64::from(device_rate) / f64::from(rate);
                     // The converter works a chunk at a time and wakes on a
                     // timer, so what it makes arrives later than the tap's
@@ -301,6 +309,14 @@ impl Tap {
     }
 }
 
+/// How many frames a device whose samples play `own` after its callback
+/// must hold back to sound with a main device that plays them `main` after
+/// its. Zero if it is the slower of the two: the main stream can't be held
+/// back by its extras.
+fn latency_gap_frames(main: Duration, own: Duration, sample_rate: f32) -> usize {
+    (main.saturating_sub(own).as_secs_f64() * f64::from(sample_rate)) as usize
+}
+
 /// How much one extra output queues, in seconds. The queue is for tolerating
 /// the gap between the two devices' callbacks, not for latency: playback
 /// starts with only as much as the callbacks need.
@@ -326,6 +342,10 @@ pub struct ExtraOutput {
     /// How much the main stream asks for at once, which the queue must cover
     /// to keep the two apart.
     main_period: Arc<Fade>,
+    sample_rate: f32,
+    /// How long after its callback this device says its samples play (see
+    /// [`Fill::playback_latency`]).
+    own_latency: Duration,
     /// Waiting for enough to be queued before playing.
     filling: bool,
     glitches: Arc<AtomicU64>,
@@ -335,9 +355,11 @@ pub struct ExtraOutput {
 }
 
 impl ExtraOutput {
+    /// An output playing `queue` at `sample_rate`.
     fn new(
         queue: Consumer<f32>,
         channels: usize,
+        sample_rate: f32,
         fade: &Arc<Fade>,
         glitches: &Arc<AtomicU64>,
     ) -> Self {
@@ -348,6 +370,8 @@ impl ExtraOutput {
             slack: 0,
             _converter: None,
             main_period: Arc::clone(fade),
+            sample_rate,
+            own_latency: Duration::ZERO,
             filling: true,
             glitches: Arc::clone(glitches),
             drained: Arc::default(),
@@ -360,10 +384,16 @@ impl ExtraOutput {
         let wanted = out.len();
         let available = self.queue.slots();
         // Enough to survive until the main stream's next callback: its block,
-        // and this callback's.
+        // and this callback's. Never less than the time this device gets its
+        // samples to the speakers faster than the main one does: holding the
+        // queue that deep is what makes the two sound together, and the
+        // cushion is a floor on that, not an addition to it.
+        let main_latency =
+            Duration::from_micros(self.main_period.latency_micros.load(Ordering::Relaxed));
+        let aligned = latency_gap_frames(main_latency, self.own_latency, self.sample_rate);
         let period = self.main_period.period.load(Ordering::Relaxed) as f64;
-        let lead =
-            ((period * self.ratio).ceil() as usize + self.slack + wanted / channels) * channels;
+        let cushion = (period * self.ratio).ceil() as usize + self.slack + wanted / channels;
+        let lead = cushion.max(aligned) * channels;
         // A queue too small for that would never fill.
         let lead = lead.min(self.queue.buffer().capacity() / 3);
         if self.filling {
@@ -516,6 +546,10 @@ impl Fill for DeviceWriter {
 }
 
 impl Fill for ExtraOutput {
+    fn playback_latency(&mut self, latency: Duration) {
+        self.own_latency = latency;
+    }
+
     fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
         ExtraOutput::fill(self, output);
     }
@@ -724,6 +758,14 @@ impl Playback {
     /// tied to them report that they have nowhere to play.
     pub fn outputs(&self) -> &[OutputStatus] {
         &self.outputs
+    }
+
+    /// How long before the app got it the input was captured, as the driver
+    /// reports it: zero until the first callback, or without input.
+    pub fn input_latency(&self) -> Duration {
+        self.recorder
+            .as_ref()
+            .map_or(Duration::ZERO, Recorder::input_latency)
     }
 
     /// The input device's name and channel count, if input is on.
@@ -1311,7 +1353,11 @@ where
 {
     device.build_input_stream(
         config,
-        move |input: &[T], _: &cpal::InputCallbackInfo| capture.capture(input),
+        move |input: &[T], info: &cpal::InputCallbackInfo| {
+            let time = info.timestamp();
+            capture.set_latency(time.callback.duration_since(time.capture));
+            capture.capture(input)
+        },
         on_error,
         None,
     )
@@ -1699,6 +1745,58 @@ mod tests {
         let mut buffer = vec![0.0f32; 32];
         extra.fill(&mut buffer);
         assert!(buffer.iter().any(|&x| x != 0.0));
+    }
+
+    #[test]
+    fn a_device_that_is_quicker_than_the_main_one_is_held_back_to_match() {
+        let gap = latency_gap_frames(
+            Duration::from_millis(20),
+            Duration::from_millis(5),
+            48_000.0,
+        );
+        assert_eq!(gap, 720);
+        // The slower of the two can't be sped up.
+        assert_eq!(
+            latency_gap_frames(
+                Duration::from_millis(5),
+                Duration::from_millis(20),
+                48_000.0
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn an_extra_device_waits_for_the_main_devices_extra_latency() {
+        let (mut writer, mut extra) = two_devices();
+        let rate = SETTINGS.sample_rate;
+        // The main device plays 40 ms after its callback; this one at once.
+        writer.fade.latency_micros.store(40_000, Ordering::Relaxed);
+        let held = latency_gap_frames(Duration::from_millis(40), Duration::ZERO, rate);
+        let mut second = vec![9.0f32; 32];
+        let blocks = held.div_ceil(64);
+        // A cushion that would be enough without the latency gap.
+        for _ in 0..blocks - 2 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.0), "{second:?}");
+        // It plays once the backlog is as deep as the gap, not the gap plus
+        // the cushion (96 frames, more than the two blocks it gets).
+        for _ in 0..2 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
+        // A device that is as slow as the main one needs no gap.
+        let (mut writer, mut extra) = two_devices();
+        writer.fade.latency_micros.store(40_000, Ordering::Relaxed);
+        extra.playback_latency(Duration::from_millis(40));
+        for _ in 0..3 {
+            writer.write(&mut vec![0.0f32; 64 * 2]);
+        }
+        extra.fill(&mut second);
+        assert!(second.iter().all(|&x| x == 0.5), "{second:?}");
     }
 
     #[test]
