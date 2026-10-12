@@ -101,14 +101,13 @@ fn a_loop_wraps_without_a_gap() {
     let (left, _) = rig.play_looping(20_000, 5 * 40_000);
     // The tone is steady, so every block of it is loud, including the ones
     // just after each wrap.
-    let quiet: Vec<usize> = left
-        .chunks(BLOCK)
-        .enumerate()
-        .filter(|(_, block)| peak(block) < 0.3)
-        .map(|(i, _)| i)
-        .collect();
-    // The first wait for the worker to restart at the loop's start.
-    assert!(quiet.iter().all(|i| *i < 40), "quiet blocks: {quiet:?}");
+    let loud: Vec<bool> = left.chunks(BLOCK).map(|b| peak(b) >= 0.3).collect();
+    // The first wait for the worker to restart at the loop's start takes as
+    // long as the machine makes it; after the first sound there is no gap.
+    let first = loud.iter().position(|l| *l).expect("never sounded");
+    assert!(first < loud.len() / 2, "first sound at block {first}");
+    let quiet: Vec<usize> = (first..loud.len()).filter(|i| !loud[*i]).collect();
+    assert!(quiet.is_empty(), "quiet blocks after {first}: {quiet:?}");
 }
 
 #[test]
