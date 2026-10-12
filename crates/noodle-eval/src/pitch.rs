@@ -17,15 +17,20 @@ const THRESHOLD: f32 = 0.15;
 pub struct Pitch {
     /// Median absolute difference in cents, over frames voiced in both.
     pub median_abs_cents: f64,
-    /// Mean signed difference in cents (positive means the test is higher).
-    pub mean_cents: f64,
+    /// Median signed difference in cents (positive means the test is higher).
+    /// A median, because frames that straddle a note change in one signal but
+    /// not the other are far off and would drag a mean.
+    pub median_cents: f64,
     /// Frames voiced in both over frames voiced in either.
     pub agreement: f64,
 }
 
 /// F0 in hertz per hop of `HOP` decimated samples, `None` where unvoiced.
-/// Returns the f0s and the hop in seconds.
+/// Returns the f0s and the hop in seconds; frame `i` is centred on
+/// `i * hop + WINDOW / 2` decimated samples (see [`centre`]).
 pub fn track(x: &[f32], rate: u32) -> (Vec<Option<f64>>, f64) {
+    // A plain average before dropping samples is a weak anti-alias filter;
+    // YIN only needs the low harmonics, so it is enough.
     let factor = ((f64::from(rate) / TARGET_RATE).round() as usize).max(1);
     let d: Vec<f32> = x
         .chunks_exact(factor)
@@ -80,13 +85,19 @@ fn yin(x: &[f32], lo: usize, hi: usize) -> Option<f64> {
     None
 }
 
+/// Seconds at which frame `i` of [`track`] is centred.
+fn centre(i: f64, hop: f64, rate: u32) -> f64 {
+    let factor = ((f64::from(rate) / TARGET_RATE).round()).max(1.0);
+    i * hop + (WINDOW as f64 / 2.0) * factor / f64::from(rate)
+}
+
 pub fn compare(reference: &[f32], test: &[f32], rate: u32, map: &TimeMap) -> Pitch {
     let (rt, rhop) = track(reference, rate);
     let (tt, thop) = track(test, rate);
     let (mut diffs, mut either) = (Vec::new(), 0usize);
     for (i, tf) in tt.iter().enumerate() {
-        let src = map.to_source(i as f64 * thop);
-        let j = (src / rhop).round();
+        let src = map.to_source(centre(i as f64, thop, rate));
+        let j = ((src - centre(0.0, rhop, rate)) / rhop).round();
         let rf = if j >= 0.0 {
             rt.get(j as usize).copied().flatten()
         } else {
@@ -102,16 +113,17 @@ pub fn compare(reference: &[f32], test: &[f32], rate: u32, map: &TimeMap) -> Pit
     if diffs.is_empty() {
         return Pitch {
             median_abs_cents: f64::NAN,
-            mean_cents: f64::NAN,
+            median_cents: f64::NAN,
             agreement: 0.0,
         };
     }
-    let mean = diffs.iter().sum::<f64>() / diffs.len() as f64;
+    let mut signed = diffs.clone();
+    signed.sort_by(f64::total_cmp);
     let mut abs: Vec<f64> = diffs.iter().map(|d| d.abs()).collect();
     abs.sort_by(f64::total_cmp);
     Pitch {
         median_abs_cents: abs[abs.len() / 2],
-        mean_cents: mean,
+        median_cents: signed[signed.len() / 2],
         agreement: diffs.len() as f64 / either as f64,
     }
 }

@@ -19,8 +19,9 @@ pub struct Spectral {
     /// signals have, in decibels. Full resolution, so sensitive to fine
     /// structure such as smearing.
     pub log_distance_db: f64,
-    /// The same on the signals' band levels (a third of an octave wide)
-    /// smoothed over about 60 ms: how far the tonal balance moves over time.
+    /// Mean absolute difference of the signals' band levels (a third of an
+    /// octave wide) smoothed over about 60 ms, in decibels: how far the tonal
+    /// balance moves over time.
     pub smoothed_band_distance_db: f64,
     /// Frobenius norm of the magnitude error over that of the reference.
     pub convergence: f64,

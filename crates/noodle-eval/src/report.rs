@@ -2,6 +2,7 @@
 
 use crate::clip::Clip;
 use crate::level::{self, Level};
+use crate::paper::{self, PaperFeatures};
 use crate::phasiness::phasiness;
 use crate::pitch::{self, Pitch};
 use crate::spectral::{self, Spectral};
@@ -14,9 +15,12 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Report {
+    /// The Roberts and Paliwal features, as the paper defines them.
+    pub paper: PaperFeatures,
+    /// Noodle's own diagnostics follow.
     pub spectral: Spectral,
-    /// The test's phasiness minus the reference's.
-    pub phasiness_delta: f64,
+    /// The test's vertical phase incoherence minus the reference's.
+    pub vertical_phasiness_delta: f64,
     pub transients: Transients,
     pub timing: Timing,
     pub pitch: Pitch,
@@ -26,12 +30,21 @@ pub struct Report {
 
 /// Scores `test` against `reference`, which must share a sample rate. `map`
 /// says which reference time plays at each test time.
+///
+/// Level is reported by [`Report::level`] alone: before every other measure
+/// the test is gain-matched to the reference by integrated loudness, so a
+/// pure gain change moves nothing else.
 pub fn evaluate(reference: Clip, test: Clip, map: &TimeMap) -> Report {
     assert_eq!(
         reference.rate, test.rate,
         "the clips must share a sample rate"
     );
-    let (rm, tm) = (reference.mono(), test.mono());
+    let (rm, mut tm) = (reference.mono(), test.mono());
+    let level = level::compare(reference, test);
+    if level.lufs_delta.is_finite() {
+        let gain = 10f32.powf(-(level.lufs_delta as f32) / 20.0);
+        tm.iter_mut().for_each(|s| *s *= gain);
+    }
     let (rs, ts) = (
         Spectrogram::standard(&rm, reference.rate),
         Spectrogram::standard(&tm, test.rate),
@@ -41,12 +54,13 @@ pub fn evaluate(reference: Clip, test: Clip, map: &TimeMap) -> Report {
         Spectrogram::for_onsets(&tm, test.rate),
     );
     Report {
+        paper: paper::compute(&rm, &tm, reference.rate, map),
         spectral: spectral::compare(&rs, &ts, map),
-        phasiness_delta: phasiness(&tm, test.rate) - phasiness(&rm, reference.rate),
+        vertical_phasiness_delta: phasiness(&tm, test.rate) - phasiness(&rm, reference.rate),
         transients: transient::compare(&rs, &ts, &rf, &tf, map),
         timing: timing::compare(&rf, &tf, map),
         pitch: pitch::compare(&rm, &tm, reference.rate, map),
-        level: level::compare(reference, test),
+        level,
         stereo: stereo::compare(reference, test),
     }
 }
@@ -62,7 +76,17 @@ impl Report {
         } else {
             f64::NAN
         };
+        let p = &self.paper;
         vec![
+            ("MPhMW", p.mph_mw),
+            ("SPhMW", p.sph_mw),
+            ("MPhNW", p.mph_nw),
+            ("SPhNW", p.sph_nw),
+            ("SSMAD", p.ssmad),
+            ("SSMD_abs", p.ssmd.abs()),
+            ("DeltaP_abs", p.delta_p.abs()),
+            ("TrRat_abs_ln", p.tr_rat.ln().abs()),
+            ("HPSTrRat_abs_ln", p.hps_tr_rat.ln().abs()),
             ("log_distance_db", self.spectral.log_distance_db),
             (
                 "smoothed_band_distance_db",
@@ -70,16 +94,16 @@ impl Report {
             ),
             ("convergence", self.spectral.convergence),
             // Signed: positive is more phasey.
-            ("phasiness_delta", self.phasiness_delta),
+            ("vertical_phasiness_delta", self.vertical_phasiness_delta),
             // Signed: negative is blunter attacks.
-            ("peak_delta", self.transients.peak_delta),
+            ("flux_peak_change", self.transients.flux_peak_change),
             (
-                "transient_ratio_abs_ln",
-                self.transients.transient_ratio.ln().abs(),
+                "flux_peakiness_abs_ln",
+                self.transients.flux_peakiness_ratio.ln().abs(),
             ),
             (
-                "hp_transient_ratio_abs_ln",
-                self.transients.hp_transient_ratio.ln().abs(),
+                "percussive_share_abs_ln",
+                self.transients.percussive_share_ratio.ln().abs(),
             ),
             ("median_abs_offset_ms", self.timing.median_abs_offset_ms),
             ("missed_onsets", miss),

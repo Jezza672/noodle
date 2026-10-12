@@ -143,4 +143,34 @@ mod tests {
         assert!((d.lufs_delta + 6.02).abs() < 0.05, "{d:?}");
         assert!((d.peak_delta_db + 6.02).abs() < 0.05, "{d:?}");
     }
+
+    #[test]
+    fn silence_and_quiet_stretches_are_gated_out() {
+        let tone = sine(0.5, 3.0);
+        let alone = integrated_lufs(Clip::new(&tone, 1, 48_000));
+        // Silence (absolute gate) and a stretch 30 dB down (relative gate)
+        // must not pull the loudness down; without gating this reads 3 or more
+        // LU quieter.
+        let mut padded = tone.clone();
+        padded.extend(std::iter::repeat_n(0.0, 48_000 * 3));
+        let with_silence = integrated_lufs(Clip::new(&padded, 1, 48_000));
+        assert!(
+            (with_silence - alone).abs() < 0.5,
+            "{with_silence} vs {alone}"
+        );
+        let mut with_quiet = tone;
+        with_quiet.extend(sine(0.5 * 0.0316, 3.0));
+        let l = integrated_lufs(Clip::new(&with_quiet, 1, 48_000));
+        assert!((l - alone).abs() < 0.5, "{l} vs {alone}");
+    }
+
+    #[test]
+    fn the_high_pass_stage_discounts_deep_bass() {
+        let bass: Vec<f32> = (0..48_000 * 5)
+            .map(|n| (2.0 * std::f32::consts::PI * 20.0 * n as f32 / 48_000.0).sin())
+            .collect();
+        // Without the 38 Hz high-pass a 20 Hz tone reads about -3.7 LUFS.
+        let l = integrated_lufs(Clip::new(&bass, 1, 48_000));
+        assert!(l < -8.0, "{l}");
+    }
 }

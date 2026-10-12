@@ -7,16 +7,16 @@
 //! supplies from the song's known source and target tempo maps; the maps are
 //! never guessed from the audio, and never Noodle's own warp map.
 //!
-//! The spectral, phasiness and transient measures follow the features of
-//! Roberts and Paliwal ("An Objective Measure of Quality for Time-Scale
-//! Modification of Audio", JASA 2021), implemented from the paper's
-//! descriptions; where the paper leaves a detail open the choice is noted on
-//! the function. [`validate`] checks them against the authors' published
-//! listening-test dataset.
+//! [`paper`] holds the features of Roberts and Paliwal ("An Objective Measure
+//! of Quality for Time-Scale Modification of Audio", JASA 2021) as the paper
+//! defines them, under its names. The other modules are Noodle's own
+//! diagnostics, which say more about *what* went wrong. [`validate`] checks
+//! all of them against the authors' published listening-test dataset.
 
 pub mod clip;
 pub mod level;
 pub mod onsets;
+pub mod paper;
 pub mod phasiness;
 pub mod pitch;
 pub mod report;

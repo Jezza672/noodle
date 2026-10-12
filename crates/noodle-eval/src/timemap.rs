@@ -47,6 +47,7 @@ fn interp(points: &[(f64, f64)], x: f64, by_source: bool) -> f64 {
             let i = points.partition_point(|p| key(p) <= x).clamp(1, n - 1);
             let (a, b) = (&points[i - 1], &points[i]);
             let span = key(b) - key(a);
+            debug_assert!(span > 0.0, "tempo map points must increase in both times");
             let slope = if span > 0.0 {
                 (val(b) - val(a)) / span
             } else {

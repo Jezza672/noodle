@@ -25,9 +25,12 @@ pub struct Timing {
     /// Mean signed offset in ms; positive means late.
     pub mean_offset_ms: f64,
     pub max_abs_offset_ms: f64,
-    /// The largest lag, in ms, of any 2 s stretch of the test's onset
-    /// envelope against the reference's mapped onto it. Catches slow drift
-    /// that never exceeds the match window.
+    /// How much the lag changes over the piece, in ms: the spread (largest
+    /// minus smallest) of the lags of its 2 s stretches, each found by
+    /// cross-correlating the test's onset envelope with the reference's
+    /// mapped onto it. A constant delay is 0 here (see `mean_offset_ms`); slow
+    /// drift that never leaves the match window shows. `NaN` when fewer than
+    /// two stretches have anything to correlate.
     pub drift_ms: f64,
 }
 
@@ -63,6 +66,12 @@ pub fn compare(reference: &Spectrogram, test: &Spectrogram, map: &TimeMap) -> Ti
     let inside: Vec<Onset> = ref_onsets
         .into_iter()
         .filter(|o| map.to_output(o.time) < test_len - MATCH_WINDOW)
+        .collect();
+    // The reference filter above leaves out the last window of the test, so
+    // the test's onsets there are not "extra" either.
+    let test_onsets: Vec<Onset> = test_onsets
+        .into_iter()
+        .filter(|o| o.time < test_len - MATCH_WINDOW)
         .collect();
     let pairs = pair(&inside, &test_onsets, map);
     let mut abs: Vec<f64> = pairs.iter().map(|p| p.2.abs() * 1000.0).collect();
@@ -101,7 +110,7 @@ fn drift(reference: &Spectrogram, test: &Spectrogram, map: &TimeMap) -> f64 {
         .collect();
     let seg = (DRIFT_SEGMENT / hop) as usize;
     let max_lag = (MAX_LAG / hop) as usize;
-    let mut worst = 0.0f64;
+    let mut lags: Vec<f64> = Vec::new();
     let mut start = 0;
     while start + seg <= test.frames {
         let a = &warped[start..start + seg];
@@ -120,9 +129,15 @@ fn drift(reference: &Spectrogram, test: &Spectrogram, map: &TimeMap) -> f64 {
                     best = (s, lag);
                 }
             }
-            worst = worst.max((best.1 as f64 * hop * 1000.0).abs());
+            lags.push(best.1 as f64 * hop * 1000.0);
         }
         start += seg;
     }
-    worst
+    if lags.len() < 2 {
+        return f64::NAN;
+    }
+    let (lo, hi) = lags
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
+    hi - lo
 }

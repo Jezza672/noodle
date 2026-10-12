@@ -1,3 +1,5 @@
+//! Noodle's own transient diagnostics (the paper's are in [`crate::paper`]).
+//!
 //! Transient preservation: whether attacks stay as sharp and as numerous as
 //! in the reference. Each measure is a ratio or change relative to the
 //! reference, so 1 (or 0 for the delta) is a perfect match; smeared attacks
@@ -16,14 +18,14 @@ const HPSS_HALF: usize = 8;
 pub struct Transients {
     /// Mean relative change in the flux peak of matched onsets: -0.5 means
     /// attacks are half as sharp as in the reference.
-    pub peak_delta: f64,
+    pub flux_peak_change: f64,
     /// How concentrated the test's spectral growth is (mean square of the
     /// flux over its mean) over the reference's: below 1 means attacks are
     /// spread out.
-    pub transient_ratio: f64,
+    pub flux_peakiness_ratio: f64,
     /// The test's percussive share of energy, after harmonic-percussive
     /// separation by median filtering, over the reference's.
-    pub hp_transient_ratio: f64,
+    pub percussive_share_ratio: f64,
 }
 
 /// `*_fine` are the onset spectrograms ([`Spectrogram::for_onsets`]), which
@@ -40,7 +42,7 @@ pub fn compare(
     let ro = onsets::pick(&rf, reference_fine.hop_seconds);
     let to = onsets::pick(&tf, test_fine.hop_seconds);
     let pairs = timing::pair(&ro, &to, map);
-    let peak_delta = if pairs.is_empty() {
+    let flux_peak_change = if pairs.is_empty() {
         f64::NAN
     } else {
         pairs
@@ -50,9 +52,9 @@ pub fn compare(
             / pairs.len() as f64
     };
     Transients {
-        peak_delta,
-        transient_ratio: peakiness(&tf) / peakiness(&rf),
-        hp_transient_ratio: percussive_share(test) / percussive_share(reference),
+        flux_peak_change,
+        flux_peakiness_ratio: peakiness(&tf) / peakiness(&rf),
+        percussive_share_ratio: percussive_share(test) / percussive_share(reference),
     }
 }
 
@@ -69,12 +71,11 @@ fn median(buf: &mut [f32]) -> f32 {
     *buf.select_nth_unstable_by(mid, f32::total_cmp).1
 }
 
-/// Fraction of the energy that a soft percussive mask keeps (Fitzgerald's
-/// median-filter separation).
-pub fn percussive_share(s: &Spectrogram) -> f64 {
+/// The harmonic-smoothed and percussive-smoothed magnitudes (median filters
+/// along time and along frequency).
+fn medians(s: &Spectrogram) -> (Vec<f32>, Vec<f32>) {
     let (frames, bins) = (s.frames, s.bins);
     let mut buf = Vec::with_capacity(2 * HPSS_HALF + 1);
-    // Harmonic: smooth along time. Percussive: smooth along frequency.
     let mut harmonic = vec![0.0f32; s.mag.len()];
     for k in 0..bins {
         for f in 0..frames {
@@ -84,21 +85,55 @@ pub fn percussive_share(s: &Spectrogram) -> f64 {
             harmonic[f * bins + k] = median(&mut buf);
         }
     }
-    let (mut kept, mut total) = (0.0f64, 0.0f64);
+    let mut percussive = vec![0.0f32; s.mag.len()];
     for f in 0..frames {
         let row = s.row(f);
         for k in 0..bins {
             buf.clear();
             let (lo, hi) = (k.saturating_sub(HPSS_HALF), (k + HPSS_HALF).min(bins - 1));
             buf.extend_from_slice(&row[lo..=hi]);
-            let p = f64::from(median(&mut buf)).powi(2);
-            let h = f64::from(harmonic[f * bins + k]).powi(2);
-            let e = f64::from(row[k]).powi(2);
-            total += e;
-            if p + h > 0.0 {
-                kept += e * p / (p + h);
-            }
+            percussive[f * bins + k] = median(&mut buf);
+        }
+    }
+    (harmonic, percussive)
+}
+
+/// Fraction of the energy that a soft percussive mask keeps (Fitzgerald's
+/// median-filter separation).
+pub fn percussive_share(s: &Spectrogram) -> f64 {
+    let (harmonic, percussive) = medians(s);
+    let (mut kept, mut total) = (0.0f64, 0.0f64);
+    for (i, &m) in s.mag.iter().enumerate() {
+        let (p, h) = (
+            f64::from(percussive[i]).powi(2),
+            f64::from(harmonic[i]).powi(2),
+        );
+        let e = f64::from(m).powi(2);
+        total += e;
+        if p + h > 0.0 {
+            kept += e * p / (p + h);
         }
     }
     kept / total.max(1e-30)
+}
+
+/// The separation factor of the binary masks: a cell is transient when its
+/// percussive median beats the harmonic one by this factor.
+const SEPARATION: f32 = 2.0;
+
+/// Root-mean-square level of the transient component after Driedger's
+/// median-filter separation with binary masks: the square root of the mean,
+/// over frames, of the energy in cells the percussive mask keeps. (By
+/// Parseval this is proportional to the RMS of the resynthesised signal, and
+/// the constant cancels in the ratio the paper uses.)
+pub fn transient_rms(s: &Spectrogram) -> f64 {
+    let (harmonic, percussive) = medians(s);
+    let kept: f64 = s
+        .mag
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| percussive[i] > SEPARATION * harmonic[i])
+        .map(|(_, &m)| f64::from(m).powi(2))
+        .sum();
+    (kept / s.frames as f64).sqrt()
 }

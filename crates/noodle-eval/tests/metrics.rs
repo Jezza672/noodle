@@ -53,10 +53,21 @@ fn a_signal_scores_perfectly_against_itself() {
     assert!(r.timing.expected >= 7);
     assert_eq!(r.timing.max_abs_offset_ms, 0.0);
     assert_eq!(r.timing.drift_ms, 0.0);
-    assert_eq!(r.phasiness_delta, 0.0);
-    assert!((r.transients.transient_ratio - 1.0).abs() < 1e-9);
-    assert!((r.transients.hp_transient_ratio - 1.0).abs() < 1e-9);
-    assert!(r.transients.peak_delta.abs() < 1e-9);
+    assert_eq!(r.vertical_phasiness_delta, 0.0);
+    assert!((r.transients.flux_peakiness_ratio - 1.0).abs() < 1e-9);
+    assert!((r.transients.percussive_share_ratio - 1.0).abs() < 1e-9);
+    assert!(r.transients.flux_peak_change.abs() < 1e-9);
+    let p = r.paper;
+    assert!(
+        p.mph_mw < 1e-9 && p.sph_mw < 1e-9 && p.mph_nw < 1e-9,
+        "{p:?}"
+    );
+    assert!(p.ssmad < 1e-9 && p.ssmd.abs() < 1e-9, "{p:?}");
+    assert_eq!(p.delta_p, 0.0);
+    assert!(
+        (p.tr_rat - 1.0).abs() < 1e-9 && (p.hps_tr_rat - 1.0).abs() < 1e-9,
+        "{p:?}"
+    );
     assert_eq!(r.level.lufs_delta, 0.0);
     assert!(r.stereo.is_none());
 }
@@ -100,7 +111,7 @@ fn the_time_map_decides_where_onsets_should_land() {
 }
 
 #[test]
-fn a_tempo_ramp_is_followed_with_a_points_map() {
+fn a_tempo_step_is_followed_with_a_points_map() {
     // Source hits every 0.5 s; the first two seconds are played at half speed.
     let source = grid(0.5, 8);
     let out: Vec<f64> = source
@@ -116,20 +127,97 @@ fn a_tempo_ramp_is_followed_with_a_points_map() {
 }
 
 #[test]
+fn a_tempo_ramp_is_followed_with_a_densely_sampled_points_map() {
+    // Output time runs ahead of source time quadratically: a smooth slowdown.
+    let out_of = |s: f64| s + 0.05 * s * s;
+    let source = grid(0.5, 8);
+    let reference = hits(&source, 5.0);
+    let test = hits(
+        &source.iter().map(|&s| out_of(s)).collect::<Vec<_>>(),
+        out_of(5.0) + 0.5,
+    );
+    let points: Vec<(f64, f64)> = (0..=110)
+        .map(|i| (out_of(f64::from(i) * 0.05), f64::from(i) * 0.05))
+        .collect();
+    let r = evaluate(clip(&reference), clip(&test), &TimeMap::Points(points));
+    assert_eq!(r.timing.matched, r.timing.expected, "{:?}", r.timing);
+    assert!(r.timing.max_abs_offset_ms < 15.0, "{:?}", r.timing);
+}
+
+#[test]
 fn slow_drift_shows_even_when_every_hit_still_matches() {
-    // Each hit lands 3% later than the last: never beyond the match window.
+    // Each hit lands 1% later in the piece than it should: the last one is
+    // 60 ms late, inside the match window, so only the drift shows it.
     let reference = hits(&grid(0.5, 12), 7.0);
-    let drifted: Vec<f64> = grid(0.5, 12).iter().map(|t| t * 1.03).collect();
+    let drifted: Vec<f64> = grid(0.5, 12).iter().map(|t| t * 1.01).collect();
     let test = hits(&drifted, 7.0);
     let r = evaluate(clip(&reference), clip(&test), &TimeMap::Identity);
-    assert!(r.timing.drift_ms > 40.0, "{:?}", r.timing);
+    assert_eq!(r.timing.matched, r.timing.expected, "{:?}", r.timing);
+    assert!(r.timing.drift_ms > 25.0, "{:?}", r.timing);
+}
+
+#[test]
+fn a_constant_delay_is_not_drift() {
+    let reference = hits(&grid(0.5, 12), 7.0);
+    let test = hits(
+        &grid(0.5, 12).iter().map(|t| t + 0.04).collect::<Vec<_>>(),
+        7.0,
+    );
+    let r = evaluate(clip(&reference), clip(&test), &TimeMap::Identity);
+    assert!(r.timing.drift_ms < 12.0, "{:?}", r.timing);
+    assert!(r.timing.mean_offset_ms > 25.0, "{:?}", r.timing);
+}
+
+#[test]
+fn a_clip_too_short_to_measure_drift_says_so() {
+    let x = hits(&[0.3], 1.5);
+    let r = evaluate(clip(&x), clip(&x), &TimeMap::Identity);
+    assert!(r.timing.drift_ms.is_nan());
+}
+
+#[test]
+fn a_pure_gain_change_moves_nothing_but_the_level() {
+    let reference = hits(&grid(0.5, 8), 5.0);
+    let quiet: Vec<f32> = reference.iter().map(|s| s * 0.25).collect(); // -12 dB
+    let r = evaluate(clip(&reference), clip(&quiet), &TimeMap::Identity);
+    assert!((r.level.lufs_delta + 12.04).abs() < 0.1, "{:?}", r.level);
+    assert!(r.spectral.log_distance_db < 0.5, "{:?}", r.spectral);
+    assert!(
+        r.spectral.smoothed_band_distance_db < 0.5,
+        "{:?}",
+        r.spectral
+    );
+    assert!(r.spectral.convergence < 0.06, "{:?}", r.spectral);
+    assert!(
+        r.transients.flux_peak_change.abs() < 0.05,
+        "{:?}",
+        r.transients
+    );
+    assert!(
+        (r.transients.flux_peakiness_ratio - 1.0).abs() < 0.05,
+        "{:?}",
+        r.transients
+    );
+    assert!(
+        (r.transients.percussive_share_ratio - 1.0).abs() < 0.05,
+        "{:?}",
+        r.transients
+    );
+    assert_eq!(r.timing.matched, r.timing.expected);
+    let p = r.paper;
+    assert!(p.ssmad < 0.01 && p.ssmd.abs() < 0.01, "{p:?}");
+    assert!(p.delta_p.abs() < 0.3, "{p:?}");
+    assert!(
+        (p.tr_rat - 1.0).abs() < 0.05 && (p.hps_tr_rat - 1.0).abs() < 0.05,
+        "{p:?}"
+    );
 }
 
 #[test]
 fn smeared_attacks_lose_sharpness() {
     let reference = hits(&grid(0.5, 8), 5.0);
     // Averaging the signal with its own delayed copies blurs each attack.
-    let blur = 600;
+    let blur = 4000;
     let test: Vec<f32> = (0..reference.len())
         .map(|i| {
             (0..blur)
@@ -140,8 +228,21 @@ fn smeared_attacks_lose_sharpness() {
         })
         .collect();
     let r = evaluate(clip(&reference), clip(&test), &TimeMap::Identity);
-    assert!(r.transients.peak_delta < -0.2, "{:?}", r.transients);
-    assert!(r.transients.transient_ratio < 0.9, "{:?}", r.transients);
+    assert!(r.transients.flux_peak_change < -0.2, "{:?}", r.transients);
+    assert!(
+        r.transients.flux_peakiness_ratio < 0.9,
+        "{:?}",
+        r.transients
+    );
+    assert!(
+        r.transients.percussive_share_ratio < 0.9,
+        "{:?}",
+        r.transients
+    );
+    // The paper's measures: the reference's attacks are taller and its
+    // transient signal louder than the smeared test's (ratios above 1).
+    assert!(r.paper.tr_rat > 1.1, "{:?}", r.paper);
+    assert!(r.paper.hps_tr_rat > 1.1, "{:?}", r.paper);
 }
 
 #[test]
@@ -149,7 +250,7 @@ fn a_pitch_shift_is_measured_in_cents() {
     let reference = tone(440.0, 3.0);
     let test = tone(440.0 * 2f64.powf(1.0 / 12.0), 3.0);
     let r = evaluate(clip(&reference), clip(&test), &TimeMap::Identity);
-    assert!((r.pitch.mean_cents - 100.0).abs() < 15.0, "{:?}", r.pitch);
+    assert!((r.pitch.median_cents - 100.0).abs() < 15.0, "{:?}", r.pitch);
     assert!(r.pitch.agreement > 0.9, "{:?}", r.pitch);
     let same = evaluate(clip(&reference), clip(&reference), &TimeMap::Identity);
     assert!(same.pitch.median_abs_cents < 1.0, "{:?}", same.pitch);
@@ -231,4 +332,38 @@ fn collapsing_the_stereo_image_shows() {
     let s = rep.stereo.unwrap();
     assert!(s.correlation_delta > 0.9, "{s:?}");
     assert!(s.width_delta_db < -20.0, "{s:?}");
+}
+
+#[test]
+fn the_papers_phasiness_rises_when_a_stretch_loses_phase_continuity() {
+    // A steady tone stretched to twice the length is the ideal result; the
+    // same with a random phase jump every 300 samples is a bad one.
+    let reference = tone(1000.0, 2.0);
+    let ideal = tone(1000.0, 4.0);
+    let mut seed = 9;
+    let mut jumpy = Vec::new();
+    while jumpy.len() < ideal.len() {
+        let phase = f64::from(noise(1, &mut seed)[0]) * std::f64::consts::PI;
+        let n0 = jumpy.len();
+        jumpy.extend((0..300).map(|n| {
+            (2.0 * std::f64::consts::PI * 1000.0 * (n0 + n) as f64 / f64::from(RATE) + phase).sin()
+                as f32
+                * 0.5
+        }));
+    }
+    jumpy.truncate(ideal.len());
+    let good = evaluate(clip(&reference), clip(&ideal), &TimeMap::Speed(0.5)).paper;
+    let bad = evaluate(clip(&reference), clip(&jumpy), &TimeMap::Speed(0.5)).paper;
+    assert!(bad.mph_nw > 2.0 * good.mph_nw, "{good:?} {bad:?}");
+    assert!(bad.mph_mw > 2.0 * good.mph_mw, "{good:?} {bad:?}");
+}
+
+#[test]
+fn peak_delta_counts_hits_the_test_added_or_lost() {
+    let sparse = hits(&grid(0.5, 8), 5.0);
+    let dense = hits(&grid(0.25, 16), 5.0);
+    let more = evaluate(clip(&sparse), clip(&dense), &TimeMap::Identity).paper;
+    let fewer = evaluate(clip(&dense), clip(&sparse), &TimeMap::Identity).paper;
+    assert!(more.delta_p > 1.0, "{more:?}");
+    assert!(fewer.delta_p < -1.0, "{fewer:?}");
 }
