@@ -14,7 +14,7 @@ Anything that produces live MIDI: a hardware port or the computer keyboard.
 A track that Record writes a take to.
 
 **Take**:
-What one press of Record captures. It becomes a new clip on each armed track, undone as one step.
+What one press of Record captures. It becomes a new clip and section on each armed track, undone as one step.
 
 **Quantise (recording)**:
 Snapping the starts of a take's notes to a grid when the take is committed. Monitoring while recording is never quantised.
@@ -37,6 +37,9 @@ An output device that plays to nowhere. It is the last fallback when no real out
 **User action (in tests)**:
 One gesture a person makes, sent to the app as the pointer and keyboard events it would see: a drag, click, double click, key press, wheel turn or file drop. All tests perform them through one shared set of helpers.
 
+**Clip**:
+The thing a section shows: the audio, its clip tempo, beat and warp markers, loop and true length. Copies share one clip until one is modified, and then that one gets its own.
+
 **Warp**:
 Re-mapping an audio clip's time so its beats land where the user or the timeline wants them, applied live on playback. A clip's warp can be switched off, which plays it at its natural speed.
 
@@ -47,7 +50,7 @@ The tempo an unwarped audio clip naturally has: the tempo it was recorded at, or
 A point in a clip's own time where the clip tempo says a beat falls.
 
 **Warp marker**:
-A pin a user (or a warp quantise) puts on a clip, tying one moment in the clip, usually a transient, to a beat. Warp markers snap to beat markers.
+A pin a user (or a warp quantise) puts on a clip, tying one moment in the clip, usually a transient, to a timeline beat, so it moves with tempo changes. Warp markers snap to beat markers.
 
 **Tempo conversion**:
 The second, automatic warp that carries a clip's beat markers from the clip tempo onto the timeline's tempo at that point. It can be switched off per clip.
@@ -58,9 +61,6 @@ The timing feel of a warp, apart from the warp algorithm: how far a clip's beats
 **Warp quantise**:
 Pulling a clip's warp markers toward a grid by an amount, without destroying the original positions. Not the same as Quantise (recording), which snaps note starts of a take.
 
-**Clip (underlying)**:
-The thing a section shows: the audio, its clip tempo, beat and warp markers, loop and true length. Copies share one clip until one is modified, and then that one gets its own.
-
 **Section**:
 What sits on the timeline: a window onto a clip. A later section on the same track cuts an earlier one where it starts, and the earlier one's tail stays hidden until the later one moves.
 
@@ -68,7 +68,7 @@ What sits on the timeline: a window onto a clip. A later section on the same tra
 How long the clip really is after warping. A section shows no more than this unless the clip loops.
 
 **Loop (clip)**:
-A clip property that repeats a loop region of the clip, in beats, gaplessly, so a section can be dragged past the true length. Switched on from the right-click menu or the properties panel.
+A clip property that repeats a loop region of the clip, in beats, gaplessly, so a section can be dragged past the true length. The region defaults to the whole clip, and the part before it plays once. Switched on from the right-click menu or the properties panel.
 
 **Clip editor**:
 The panel below the arrangement for the selected clip: the piano roll for MIDI, and for audio the clip's own timeline with its waveform and, along the top, its warp markers. Properties stay in the properties panel.

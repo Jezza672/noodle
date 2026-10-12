@@ -590,26 +590,42 @@ Audio clips get a warp, applied live on playback. Four PRs:
 
 1. **The model.** A clip (the audio, its true length, loop, clip tempo curve,
    beat and warp markers) is separate from the sections that show it on the
-   timeline. Copies share a clip until one is edited. Clip tempo comes from the
-   tempo map for takes recorded in Noodle, and from detection, tapping or typing
-   for imports, and is saved in the project. Warp markers pin a clip moment to a
+   timeline. Copies share a clip until one is edited. Existing project files
+   load as unwarped clips with one section each and play as they do today.
+   Clip tempo is saved in the project and comes from the tempo map for takes
+   recorded in Noodle, or is typed in for imports (detection and tapping come
+   with the editor, in PR 3). Warp markers pin a clip moment to a
    timeline beat and snap to beat markers; a hidden tempo conversion maps clip
    tempo to the timeline's. Tempo conversion, warp markers and warp quantise
-   are separate switches. The only mode is Repitch.
+   are separate switches. The only mode is Repitch. Warp data (markers, clip tempo, mode, switches,
+   groove link) goes into the Merkle cache key, so an edit invalidates frozen
+   and cached renders downstream. Nothing changes the sound of existing clips,
+   so golden renders and `DSP_GENERATION` stay as they are until PR 2 adds
+   modes.
 2. **The engine.** Stretching runs on a worker thread ahead of the playhead into
    a ring buffer; the audio thread only copies. Modes: Repitch, Grain (WSOLA)
    and Beats (transient-preserving). Cheap repitch plays while a marker is
-   dragged. Benchmarks, the real-time allocation test, and golden renders.
+   dragged. Offline renders and export run the same stretch synchronously
+   instead of through the ring buffer, so export stays identical to live
+   playback. Benchmarks, the real-time allocation test, and golden renders.
 3. **The clip editor.** In the piano roll's slot: the clip's own timeline, its
-   waveform, transient ticks, warp markers along the top and the loop brace.
-   Properties (mode, switches, clip tempo, loop, gain, fades) stay in the
-   properties panel. Mode is chosen from analysis on import.
+   waveform, transient ticks, beat markers, warp markers along the top and the
+   loop brace. Gestures: click a transient tick to pin a marker and drag it
+   (only that marker moves, so the audio either side stretches or squeezes);
+   dragging snaps to beats and the grid, with a modifier for free movement;
+   double-click deletes; markers can't cross; dragging in the strip above the
+   waveform pins at the pointer. Properties (mode, switches, clip tempo, loop,
+   gain, fades) stay in the properties panel. Analysis comes with the editor:
+   beat detection and tapping for clip tempo, transient detection, and the mode
+   chosen on import (percussive material gets Beats, the rest Grain). The loop
+   region defaults to the whole clip.
 4. **Warp quantise and grooves.** A live grid and amount over the unquantised
    markers, previewed with lines back to the originals, plus bake. A groove
    (timing feel apart from the algorithm) can be copied from one clip to
    another or linked live.
 
-Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
+Out of scope for now (listed under Later): pitch shifting, warping MIDI
+clips, a spectral mode.
 
 **Done when:** you can drop a loop recorded at another tempo, pin its
 transients to the grid, hear it follow tempo changes without dropouts, quantise
@@ -617,6 +633,8 @@ it non-destructively, and lend its groove to a second clip.
 
 ## Later
 
+- Pitch shifting for warped clips, warping MIDI clips, and a spectral warp
+  mode (from M7).
 - Spectral signal type.
 - AU hosting.
 - A scripting or expression node.
