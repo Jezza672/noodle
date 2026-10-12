@@ -4,8 +4,6 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use common::{BLOCK, Rig};
 use noodle_core::WarpMode;
 
@@ -33,7 +31,17 @@ fn peak(signal: &[f32]) -> f32 {
 /// A rig playing 200 000 frames of a 440 Hz tone recorded at 60 bpm in `mode`
 /// on the 120 bpm timeline: twice as fast, 100 000 frames long.
 fn rig(name: &str, mode: WarpMode) -> Rig {
-    let mut rig = Rig::new(name);
+    rig_in(Rig::new(name), mode)
+}
+
+/// Like [`rig`], for a rig whose node waits for the worker (see
+/// [`Rig::blocking`]), so what it plays doesn't depend on how fast the
+/// machine schedules the worker.
+fn blocking_rig(name: &str, mode: WarpMode) -> Rig {
+    rig_in(Rig::blocking(name), mode)
+}
+
+fn rig_in(mut rig: Rig, mode: WarpMode) -> Rig {
     rig.wav("tone.wav", 2, 200_000, tone);
     let id = rig.add_clip(0, "tone.wav", 0, 200_000);
     rig.warp_clip(id, |warp| {
@@ -49,7 +57,7 @@ fn rig(name: &str, mode: WarpMode) -> Rig {
 fn it_plays_from_the_start_at_the_original_pitch() {
     for mode in [WarpMode::Grain, WarpMode::Beats] {
         let mut rig = rig("play", mode);
-        let (left, _) = rig.play(0, 40_000);
+        let (left, _) = rig.play_realtime(0, 40_000);
         let c = crossings(&left[2_000..38_000]) as i64;
         // 36 000 frames of 440 Hz.
         assert!((c - 330).abs() <= 4, "{mode:?}: {c} cycles");
@@ -59,43 +67,29 @@ fn it_plays_from_the_start_at_the_original_pitch() {
 
 #[test]
 fn it_picks_up_after_a_jump() {
-    let mut rig = rig("jump", WarpMode::Grain);
+    let mut rig = blocking_rig("jump", WarpMode::Grain);
     rig.play(0, 10_000);
     // Stop, and jump a long way into the clip.
     for _ in 0..4 {
         rig.run(10_000, BLOCK, false);
     }
     rig.node.reset();
-    // Output frame 70 000 is source frame 140 000, in the octave up. Silent
-    // for a moment while the worker restarts there.
+    // Output frame 70 000 is source frame 140 000, in the octave up. The node
+    // waits for the worker to restart there, so the first block already
+    // sounds.
     let mut at = 70_000;
-    let started = Instant::now();
-    loop {
-        let (left, _) = rig.run(at, BLOCK, true);
-        at += BLOCK as u64;
-        if let Some(first) = left.iter().position(|x| x.abs() > 1e-6) {
-            // The declick ramps in from the first real frame, not from
-            // somewhere behind the gap: a click otherwise.
-            let start = &left[first..(first + 48).min(left.len())];
-            assert!(peak(start) < 0.12, "clicked in at {}", peak(start));
-        }
-        if peak(&left) > 0.1 {
-            break;
-        }
-        assert!(started.elapsed() < Duration::from_secs(5), "never sounded");
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let (first, _) = rig.run(at, BLOCK, true);
+    at += BLOCK as u64;
+    // The declick ramps in from the first real frame, not from somewhere
+    // behind the gap: a click otherwise.
+    assert!(peak(&first[..48]) < 0.12, "clicked in at {}", peak(&first));
     // And from the first sound it is the new tone, with nothing left over from
     // the old place.
-    // The worker renders far faster than real time but only once it is awake
-    // again; pace the blocks as the audio callback would, so a slow machine
-    // can't be outrun by the test.
-    let mut left = Vec::new();
+    let mut left = first;
     for _ in 0..(10_000 / BLOCK) {
         let (l, _) = rig.run(at, BLOCK, true);
         left.extend(l);
         at += BLOCK as u64;
-        std::thread::sleep(Duration::from_secs_f64(BLOCK as f64 / 48_000.0));
     }
     let c = crossings(&left) as i64;
     let expected = left.len() as f64 * 880.0 / 48_000.0;
@@ -126,11 +120,11 @@ fn a_loop_wraps_without_a_gap() {
 #[test]
 fn stopping_and_starting_again_resumes_the_clip() {
     let mut rig = rig("stop", WarpMode::Beats);
-    rig.play(0, 30_000);
+    rig.play_realtime(0, 30_000);
     for _ in 0..8 {
         rig.run(30_000, BLOCK, false);
     }
     rig.node.reset();
-    let (left, _) = rig.play(30_000, 50_000);
+    let (left, _) = rig.play_realtime(30_000, 50_000);
     assert!(peak(&left[8_000..]) > 0.4);
 }

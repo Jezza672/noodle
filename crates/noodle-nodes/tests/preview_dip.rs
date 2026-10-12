@@ -4,20 +4,18 @@
 
 mod common;
 
-use std::time::Duration;
-
 use common::{BLOCK, Rig};
 use noodle_core::WarpMode;
 
-/// Plays on from `at` for `blocks`, pausing so the hub and the stretch
-/// worker keep up, and returns what came out (left channel) and where it got.
+/// Plays on from `at` for `blocks` and returns what came out (left channel)
+/// and where it got. The rig is blocking, so the node waits for the hub and
+/// the stretch worker itself and there is nothing to pace.
 fn play(rig: &mut Rig, mut at: u64, blocks: usize) -> (Vec<f32>, u64) {
     let mut out = Vec::new();
     for _ in 0..blocks {
         let (left, _) = rig.run(at, BLOCK, true);
         out.extend(left);
         at += BLOCK as u64;
-        std::thread::sleep(Duration::from_millis(2));
     }
     (out, at)
 }
@@ -31,7 +29,7 @@ fn biggest_step(signal: &[f32]) -> f32 {
 
 #[test]
 fn throwing_the_preview_switch_dips_instead_of_cutting() {
-    let mut rig = Rig::new("preview-dip");
+    let mut rig = Rig::blocking("preview-dip");
     // A tone riding on a steady 0.5, so any dip to silence stands out, and
     // it moves at most 0.02 a frame.
     rig.wav("tone.wav", 2, 400_000, |_, i| {
