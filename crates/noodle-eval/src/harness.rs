@@ -37,6 +37,7 @@ use noodle_engine::{OUTPUT_ID, Registry, Settings};
 use noodle_io::{ANALYSIS_SECONDS, Analysis, write_wav};
 use noodle_nodes::{TRACK_INPUT_ID, render_project_with_clips};
 use std::cell::Cell;
+use std::path::PathBuf;
 
 /// How a clip is warped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -130,6 +131,10 @@ pub struct Harness {
     pub source_bpm: f64,
     dir: tempfile::TempDir,
     files: Cell<usize>,
+    /// When set, [`run`](Self::run) also writes every render here as a WAV
+    /// to listen to: `<probe>_<case>_source.wav`, `_native.wav`, and per
+    /// method `_<method>_warped.wav` and `_<method>_roundtrip.wav`.
+    pub export: Option<PathBuf>,
 }
 
 impl Harness {
@@ -139,6 +144,7 @@ impl Harness {
             source_bpm,
             dir: tempfile::tempdir()?,
             files: Cell::new(0),
+            export: None,
         })
     }
 
@@ -185,6 +191,9 @@ impl Harness {
         let source_map = self.source_map(case, &target);
         let analysis = analyse(&source, rate);
         let seconds = frames as f64 / f64::from(rate);
+        let name = format!("{}_{}", probe.name(), case.name());
+        self.export_wav(&format!("{name}_source"), &source)?;
+        self.export_wav(&format!("{name}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
             let (tempo, mode) = match method {
@@ -214,6 +223,9 @@ impl Harness {
                         method.name()
                     )
                 })?;
+            let m = method.name();
+            self.export_wav(&format!("{name}_{m}_warped"), &warped)?;
+            self.export_wav(&format!("{name}_{m}_roundtrip"), &back)?;
             for view in View::ALL {
                 let (reference, test, map) = match view {
                     View::Native => (&native, &warped, TimeMap::Identity),
@@ -243,6 +255,15 @@ impl Harness {
             }
         }
         Ok(rows)
+    }
+
+    fn export_wav(&self, name: &str, samples: &[f32]) -> Result<(), String> {
+        let Some(dir) = &self.export else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        write_wav(&dir.join(format!("{name}.wav")), samples, 2, self.rate)
+            .map_err(|e| format!("{name}.wav: {e}"))
     }
 
     /// Plays `samples` (stereo) as a warped clip on a timeline with the
