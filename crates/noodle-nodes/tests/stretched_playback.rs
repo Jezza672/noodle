@@ -111,7 +111,7 @@ fn a_loop_wraps_without_a_gap() {
     let mut rig = rig("loop", WarpMode::Grain);
     rig.looping = Some((20_000, 60_000));
     rig.node.reset();
-    let (left, _) = rig.play_looping(20_000, 5 * 40_000);
+    let (left, _) = rig.play_looping_realtime(20_000, 5 * 40_000);
     // The tone is steady, so every block of it is loud, including the ones
     // just after each wrap.
     let loud: Vec<bool> = left.chunks(BLOCK).map(|b| peak(b) >= 0.3).collect();
