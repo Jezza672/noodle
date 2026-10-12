@@ -11,6 +11,28 @@ const MIN_RISE_DB: f32 = 5.0;
 /// whatever it rose from.
 const FLOOR_DB: f32 = -60.0;
 
+/// The frames at which a transient starts in the bass of `mono` (below about
+/// 150 Hz): kicks and the start of bass notes, which a hi-hat over a held bass
+/// note doesn't count as.
+pub fn detect_bass_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
+    let a = 1.0 - (-std::f32::consts::TAU * 150.0 / rate as f32).exp();
+    let (mut p, mut q) = (0.0f32, 0.0f32);
+    // The level of the bass, rising at once and falling over 40 ms: the swing
+    // of a 40 Hz tone would otherwise look like an attack every cycle.
+    let release = (-1.0 / (0.04 * rate as f32)).exp();
+    let mut level = 0.0f32;
+    let bass: Vec<f32> = mono
+        .iter()
+        .map(|x| {
+            p += a * (x - p);
+            q += a * (p - q);
+            level = q.abs().max(level * release);
+            level
+        })
+        .collect();
+    detect_onsets(&bass, rate)
+}
+
 /// The frames at which a transient starts in `mono`, at `rate`, in order.
 ///
 /// An onset is where the short-time level jumps by at least 5 dB over the
@@ -191,6 +213,35 @@ mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
+
+    #[test]
+    fn bass_onsets_are_kicks_not_hats_or_the_swing_of_a_low_tone() {
+        let tau = std::f32::consts::TAU;
+        let mut seed = 3u32;
+        let mut x: Vec<f32> = (0..4 * RATE as usize)
+            .map(|i| {
+                // A held 45 Hz note under a stream of hats.
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let hat = ((seed >> 8) as f32 / (1 << 23) as f32 - 1.0)
+                    * if (i / 6_000) % 2 == 0 { 0.2 } else { 0.0 };
+                (tau * 45.0 * i as f32 / RATE as f32).sin() * 0.1 + hat
+            })
+            .collect();
+        for start in [RATE as usize, 3 * RATE as usize] {
+            for i in 0..12_000 {
+                let t = i as f32 / 12_000.0;
+                x[start + i] +=
+                    (tau * 60.0 * i as f32 / RATE as f32).sin() * 0.9 * (-t * 6.0).exp();
+            }
+        }
+        let mut found = detect_bass_onsets(&x, RATE);
+        // The note itself starts from silence.
+        found.retain(|f| *f > 1_000);
+        assert_eq!(found.len(), 2, "{found:?}");
+        for (f, want) in found.iter().zip([RATE as u64, 3 * RATE as u64]) {
+            assert!(f.abs_diff(want) < 600, "{f} for {want}");
+        }
+    }
 
     #[test]
     fn the_tempo_is_where_the_onsets_line_up() {

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use noodle_core::{ClipId, ClipWarp, TempoMap, Tick, WarpMode};
 use noodle_engine::TempoTable;
-use noodle_io::{Audio, Peaks, PeaksBuilder, decode_file, detect_onsets};
+use noodle_io::{Audio, Peaks, PeaksBuilder, decode_file, detect_bass_onsets, detect_onsets};
 use noodle_nodes::{StretchSource, Stretcher, WarpMap};
 
 /// A file longer than this (seconds) is left to the stretched file waveform.
@@ -389,13 +389,16 @@ fn render_audio(request: &Request, audio: &Arc<Audio>) -> Option<Peaks> {
             }
         }
         WarpMode::Grain | WarpMode::Beats => {
-            let onsets = if request.warp.mode == WarpMode::Beats {
-                let from = request.offset as usize;
-                let window: Vec<f32> = audio.samples
-                    [from * channels..(from + length as usize) * channels]
-                    .chunks_exact(channels)
-                    .map(|f| f.iter().sum::<f32>() / channels as f32)
-                    .collect();
+            // As the engine finds them: the bass transients for both modes,
+            // those of the whole mix for Beats only.
+            let from = request.offset as usize;
+            let window: Vec<f32> = audio.samples
+                [from * channels..(from + length as usize) * channels]
+                .chunks_exact(channels)
+                .map(|f| f.iter().sum::<f32>() / channels as f32)
+                .collect();
+            let bass = detect_bass_onsets(&window, rate);
+            let all = if request.warp.mode == WarpMode::Beats {
                 detect_onsets(&window, rate)
             } else {
                 Vec::new()
@@ -405,7 +408,8 @@ fn render_audio(request: &Request, audio: &Arc<Audio>) -> Option<Peaks> {
                 channels,
                 offset: request.offset as i64,
             };
-            let mut stretcher = Stretcher::new(source, Arc::new(map), &onsets, total, rate as f32);
+            let mut stretcher =
+                Stretcher::new(source, Arc::new(map), (&all, &bass), total, rate as f32);
             let mut buffer = vec![0.0f32; CHUNK * 2];
             loop {
                 let n = stretcher.read(&mut buffer);

@@ -690,6 +690,65 @@ Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
 transients to the grid, hear it follow tempo changes without dropouts, quantise
 it non-destructively, and lend its groove to a second clip.
 
+## M8: Warp evaluation
+
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate) is built; its validation against the listening-test dataset runs through `noodle-eval validate` but the dataset itself (IEEE DataPort, login to download) has not been run yet. Batches 2 to 4 are not started.
+
+A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
+shows a before and after. Four batches:
+
+1. **Metrics.** A `noodle-eval` crate (Rust) with the Roberts and Paliwal TSM
+   features (phasiness, smoothed spectral similarity, peak delta, transient
+   ratio, harmonic-percussive transient ratio) plus onset timing, pitch (f0),
+   loudness and peak, and stereo width. Alignment uses the song's known source
+   and target tempo maps, never Noodle's own warp map (which may come from a
+   wrong detected tempo and would hide that error) and never an interpolated
+   length. The metrics are validated against the published TSM
+   listening-test dataset (CC BY 4.0, downloaded, not committed); one that does
+   not correlate with the listeners does not gate CI.
+2. **Probes and the harness.** Short controlled signals (click trains, a held
+   chord, sweeps, noise bursts, a lone kick) and a harness that renders a
+   project natively at a target tempo or tempo map (the *native render*), warps
+   the same audio to it (headline: bare mix, detected clip tempo, automatic
+   mode; also stems and fixed Grain and Beats), and scores both ways plus the
+   round trip A to B to A. The warp under test is tempo conversion only, with no
+   warp markers (no pinned transients, no quantise). Repitch is reported as the
+   floor, not scored as a contender, because it cannot keep pitch. Tempo grid:
+   constant ratios 0.5, 0.75, 0.9, 1.1, 1.5 and 2 (target tempo divided by
+   source tempo, so 2 is twice as fast), plus a ramp, a step and a wobble from
+   fixed seeds. Output is a metric table with a rank summary, diffed against a
+   committed baseline of metric numbers (no audio), which shows a before and
+   after and is never a threshold. CI gates on the probes (plus one small
+   stand-in project if needed); a threshold is a distance from the reference
+   that must stay no worse than the worst reference stretcher's on the same
+   material, and is never set from Noodle's own current numbers.
+3. **Songs.** Five songs of 60 to 90 s with intro, verse, chorus, breakdown and
+   drop, written as `.ron` projects through the normal commands (drums, plucks,
+   pads, bass, arpeggios; synths and triggered one-shots). A 15 to 20 s excerpt
+   of each joins the CI gate. Features a song needs
+   that are missing get built if the song cannot exist without them, otherwise
+   an issue is filed; the batch ends with the list of gaps found.
+4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
+   speech, solo instrument and full-mix clips (pinned checksums), a gitignored
+   `eval/local/` for any file dropped in, and a dev script that makes reference
+   stretches with Rubber Band R3, Signalsmith and SoundTouch (whichever install),
+   each stretcher's latency measured and removed before scoring and the audio
+   cached outside git, with only metric numbers committed. There is no true time
+   map here, so the reference stretcher's own map aligns the audio. Scores are
+   relative to the references' spread, with reference-free checks beside them
+   (onsets land where the tempo map says, pitch is kept against the source,
+   loudness is kept); hard thresholds come only from the known-truth regime.
+   Open: the ramp, step and wobble cases need references that accept a time map.
+   Rubber Band does (`--timemap`); SoundTouch and Signalsmith's simple API are
+   constant-ratio, so varying tempo may have one reference and no spread.
+
+Out of scope: a learned quality predictor, and the authors' MATLAB evaluation
+code.
+
+**Done when:** one command prints the scores of every song, probe and reference
+clip for each warp mode, and a change that smears drums or shifts pitch moves
+a number and fails the CI excerpt.
+
 ## Later
 
 - Spectral signal type.

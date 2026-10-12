@@ -1,4 +1,9 @@
 //! The track input node plays clips where the project puts them.
+//!
+//! A test about what is played uses a blocking rig, so the node waits for the
+//! hub and the disk instead of playing silence when they are late, and the
+//! result doesn't depend on how busy the machine is. Tests about the hub and
+//! the disk themselves poll for the state they wait on.
 
 mod common;
 
@@ -19,7 +24,7 @@ fn assert_close(got: &[f32], want: impl Fn(usize) -> f32, what: &str) {
 
 #[test]
 fn a_clip_plays_from_its_offset_at_its_start() {
-    let mut rig = Rig::new("plays");
+    let mut rig = Rig::blocking("plays");
     rig.wav("ramp.wav", 2, 60_000, ramp);
     rig.add_clip(1, "ramp.wav", 2_000, 10_000);
     assert!(rig.problems.is_empty(), "{:?}", rig.problems);
@@ -40,7 +45,7 @@ fn a_clip_plays_from_its_offset_at_its_start() {
 
 #[test]
 fn mono_files_play_in_both_channels() {
-    let mut rig = Rig::new("mono");
+    let mut rig = Rig::blocking("mono");
     rig.wav("mono.wav", 1, 20_000, |_, i| i as f32 / 100_000.0);
     rig.add_clip(0, "mono.wav", 0, 5_000);
     rig.wait_ready(0, 1);
@@ -51,7 +56,7 @@ fn mono_files_play_in_both_channels() {
 
 #[test]
 fn gain_and_fades_shape_the_clip() {
-    let mut rig = Rig::new("fades");
+    let mut rig = Rig::blocking("fades");
     rig.wav("one.wav", 1, 30_000, |_, _| 1.0);
     let id = rig.add_clip(0, "one.wav", 0, 8_000);
     rig.edit_clip(id, |clip| {
@@ -81,7 +86,7 @@ fn gain_and_fades_shape_the_clip() {
 
 #[test]
 fn a_later_clip_cuts_an_earlier_one_which_does_not_resume() {
-    let mut rig = Rig::new("overlap");
+    let mut rig = Rig::blocking("overlap");
     rig.wav("a.wav", 1, 60_000, |_, _| 0.25);
     rig.wav("b.wav", 1, 60_000, |_, _| 0.75);
     rig.add_clip(0, "a.wav", 0, 40_000);
@@ -99,7 +104,7 @@ fn a_later_clip_cuts_an_earlier_one_which_does_not_resume() {
 
 #[test]
 fn stopping_fades_out_and_starting_again_picks_up_in_place() {
-    let mut rig = Rig::new("stop");
+    let mut rig = Rig::blocking("stop");
     rig.wav("ramp.wav", 1, 60_000, |_, i| 0.2 + i as f32 / 100_000.0);
     rig.add_clip(0, "ramp.wav", 0, 50_000);
     rig.wait_ready(0, 1);
@@ -122,8 +127,7 @@ fn stopping_fades_out_and_starting_again_picks_up_in_place() {
     assert!(biggest_step < 0.01, "stopping jumped by {biggest_step}");
     assert!(stopped[300..].iter().all(|&s| s == 0.0), "stays silent");
 
-    // Start again from the same place, once the stream has had time to line up.
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Start again from the same place; the node waits for the stream to line up.
     rig.run(5_000, BLOCK, false);
     let (resumed, _) = rig.play(5_000, 6_000);
     // Sound from the first frame, rising over the node's 240-frame fade.
@@ -136,7 +140,7 @@ fn stopping_fades_out_and_starting_again_picks_up_in_place() {
 
 #[test]
 fn a_seek_resumes_at_the_new_place() {
-    let mut rig = Rig::new("seek");
+    let mut rig = Rig::blocking("seek");
     rig.wav("ramp.wav", 1, 60_000, |_, i| i as f32 / 100_000.0);
     rig.add_clip(0, "ramp.wav", 0, 50_000);
     rig.wait_ready(0, 1);
@@ -145,7 +149,6 @@ fn a_seek_resumes_at_the_new_place() {
     rig.run(3_000, BLOCK, false);
     rig.node.reset();
     rig.run(20_000, BLOCK, false);
-    std::thread::sleep(std::time::Duration::from_millis(150));
     rig.run(20_000, BLOCK, false);
     let (left, _) = rig.play(20_000, 21_000);
     assert_close(
@@ -200,7 +203,7 @@ fn a_file_replaced_on_disk_plays_its_new_contents() {
 
 #[test]
 fn an_edit_far_from_the_playhead_is_not_heard() {
-    let mut rig = Rig::new("far-edit");
+    let mut rig = Rig::blocking("far-edit");
     rig.wav("ramp.wav", 1, 60_000, |_, i| 0.1 + i as f32 / 200_000.0);
     rig.add_clip(0, "ramp.wav", 0, 50_000);
     rig.wait_ready(0, 1);
@@ -215,7 +218,7 @@ fn an_edit_far_from_the_playhead_is_not_heard() {
 
 #[test]
 fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
-    let mut rig = Rig::new("dip");
+    let mut rig = Rig::blocking("dip");
     rig.wav("one.wav", 1, 60_000, |_, _| 1.0);
     let id = rig.add_clip(0, "one.wav", 0, 50_000);
     rig.wait_ready(0, 1);
@@ -241,7 +244,7 @@ fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
 
 #[test]
 fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
-    let mut rig = Rig::new("fade-drag");
+    let mut rig = Rig::blocking("fade-drag");
     rig.wav("one.wav", 1, 60_000, |_, _| 1.0);
     let id = rig.add_clip(0, "one.wav", 0, 50_000);
     rig.wait_ready(0, 1);
@@ -278,7 +281,7 @@ fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
 
 #[test]
 fn a_clip_whose_file_is_missing_is_reported_and_the_rest_play() {
-    let mut rig = Rig::new("missing");
+    let mut rig = Rig::blocking("missing");
     rig.wav("here.wav", 1, 20_000, |_, _| 0.5);
     let missing = rig.add_clip(0, "gone.wav", 0, 5_000);
     let here = rig.add_clip(1, "here.wav", 0, 5_000);
@@ -310,7 +313,7 @@ fn laps(rig: &mut Rig, laps: usize) -> Vec<Vec<f32>> {
 
 #[test]
 fn a_loop_repeats_without_a_gap() {
-    let mut rig = Rig::new("loop-gapless");
+    let mut rig = Rig::blocking("loop-gapless");
     rig.wav("one.wav", 2, 200_000, |_, _| 1.0);
     rig.add_clip(0, "one.wav", 0, 150_000);
     rig.looping = Some((0, BEAT));
@@ -342,7 +345,7 @@ fn a_loop_that_starts_inside_a_clip_repeats_the_same_audio() {
 
 #[test]
 fn clips_that_start_inside_a_loop_are_ready_for_every_lap() {
-    let mut rig = Rig::new("loop-clips");
+    let mut rig = Rig::blocking("loop-clips");
     rig.wav("ramp.wav", 2, 200_000, ramp);
     // The loop is longer than the hub looks ahead, so each clip's stream is
     // opened when the playhead gets near, in time for the lap. One clip
@@ -369,7 +372,7 @@ fn clips_that_start_inside_a_loop_are_ready_for_every_lap() {
 
 #[test]
 fn a_clip_cut_off_by_the_wrap_starts_afresh_next_lap() {
-    let mut rig = Rig::new("loop-cut");
+    let mut rig = Rig::blocking("loop-cut");
     rig.wav("ramp.wav", 2, 200_000, ramp);
     // Starts half way round the loop and would run on past the end.
     rig.add_clip(2, "ramp.wav", 0, 100_000);

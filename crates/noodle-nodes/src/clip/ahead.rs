@@ -24,7 +24,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
-use noodle_io::{ClipStream, StreamSpec, StreamWorker, detect_onsets, open_stream};
+use noodle_io::{
+    ClipStream, StreamSpec, StreamWorker, detect_bass_onsets, detect_onsets, open_stream,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::hub::{LOOKAHEAD, MAX_CHANNELS, Shared, wanted};
@@ -351,7 +353,7 @@ impl Source for StreamSource {
 
 /// Where the transients of a clip's audio are, in frames of the clip's own
 /// stream, found by reading the whole clip once.
-fn analyse(clip: &ScheduledClip, rate: u32) -> Option<Vec<u64>> {
+fn analyse(clip: &ScheduledClip, rate: u32) -> Option<Transients> {
     let spec = StreamSpec {
         path: clip.source.path.clone(),
         rate,
@@ -375,15 +377,26 @@ fn analyse(clip: &ScheduledClip, rate: u32) -> Option<Vec<u64>> {
             break;
         }
     }
-    Some(detect_onsets(&mono, rate))
+    Some(Transients {
+        all: detect_onsets(&mono, rate),
+        bass: detect_bass_onsets(&mono, rate),
+    })
+}
+
+/// Where a clip's transients are: in the whole mix (Beats) and in its bass
+/// (the bass band of both modes, and Grain's cuts).
+#[derive(Default)]
+struct Transients {
+    all: Vec<u64>,
+    bass: Vec<u64>,
 }
 
 /// A clip's transients: still being found on a thread of their own, or known.
 /// Reading a whole file takes long enough to starve every other lane if the
 /// render loop did it.
 enum Onsets {
-    Finding(mpsc::Receiver<Option<Vec<u64>>>),
-    Known(Arc<Vec<u64>>),
+    Finding(mpsc::Receiver<Option<Transients>>),
+    Known(Arc<Transients>),
 }
 
 /// The transients of `clip` if they are known, else starts finding them (once)
@@ -392,7 +405,7 @@ fn onsets_of(
     clip: &ScheduledClip,
     rate: u32,
     known: &mut HashMap<u64, Onsets>,
-) -> Option<Arc<Vec<u64>>> {
+) -> Option<Arc<Transients>> {
     let key = clip.stream_key().1;
     let entry = known.entry(key).or_insert_with(|| {
         let (tx, rx) = mpsc::channel();
@@ -442,21 +455,29 @@ fn open(
         start: 0,
         chunks: 8,
     };
-    let transients = if clip.mode == noodle_core::WarpMode::Beats {
-        // Not found yet: try again on the next pass.
-        let Some(found) = onsets_of(clip, rate, onsets) else {
-            return Ok(None);
-        };
-        found
+    // Not found yet: try again on the next pass.
+    let Some(transients) = onsets_of(clip, rate, onsets) else {
+        return Ok(None);
+    };
+    // Beats cuts the mix at every transient; Grain only where the bass has
+    // one, so that a kick's body and its click stay together.
+    let cuts = if clip.mode == noodle_core::WarpMode::Beats {
+        &transients.all
     } else {
-        Arc::new(Vec::new())
+        &transients.bass
     };
     let (stream, worker) = open_stream(spec).map_err(|e| e.to_string())?;
     if stream.channels() > MAX_CHANNELS {
         return Err(format!("more than {MAX_CHANNELS} channels"));
     }
     let source = StreamSource::new(stream, worker);
-    let mut stretcher = Stretcher::new(source, map, &transients, clip.length, rate as f32);
+    let mut stretcher = Stretcher::new(
+        source,
+        map,
+        (cuts, &transients.bass),
+        clip.length,
+        rate as f32,
+    );
     let from = from.min(clip.length);
     stretcher.seek(from);
     let (ring, consumer) = RingBuffer::new(RING_FRAMES * 2);

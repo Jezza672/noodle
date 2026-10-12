@@ -337,10 +337,13 @@ fn the_same_mix_plays_live() {
         controller.maintain();
         std::thread::sleep(Duration::from_millis(5));
     }
-    // Give the others their lookahead too.
+    // Give the others their lookahead too. Blocks take as long as the audio
+    // callback would give them, so a disk worker is never outrun by a test
+    // that runs faster than the sound.
+    let pace = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
     for _ in 0..40 {
         processor.process(&mut block);
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(pace);
     }
     transport.play();
 
@@ -349,7 +352,7 @@ fn the_same_mix_plays_live() {
         processor.process(&mut block);
         samples.extend_from_slice(&block);
         controller.maintain();
-        std::thread::sleep(Duration::from_millis(3));
+        std::thread::sleep(pace);
     }
     check_mix(&samples, expect_level);
     // Right levels by luck would still be a disk that fell behind.
