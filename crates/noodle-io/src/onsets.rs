@@ -88,6 +88,26 @@ pub fn detect_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
     onsets
 }
 
+/// What the onsets of a clip say about its beat.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TempoEstimate {
+    /// Beats per minute, 80 to 160.
+    pub bpm: f64,
+    /// How well the onsets agree with it: 0 for no agreement, 1 for onsets
+    /// that are all exactly on the beat. Above [`CLEAR_TEMPO`] it is a clear
+    /// tempo; below, a guess.
+    pub confidence: f64,
+    /// Where the beat falls against the onsets, in beats from the start of
+    /// the audio, in `[-0.5, 0.5)`: the onsets sit near the whole beats of a
+    /// grid slid this far (`n + phase`).
+    pub phase: f64,
+}
+
+/// The confidence from which a tempo is clear and not a guess.
+pub const CLEAR_TEMPO: f64 = 0.5;
+/// Below this confidence there is nothing worth guessing.
+const MIN_CONFIDENCE: f64 = 0.2;
+
 /// The tempo (in beats per minute, 80 to 160) the onsets at `times` (seconds)
 /// most nearly sit on the beat of, if there are enough of them to tell.
 ///
@@ -98,23 +118,39 @@ pub fn detect_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
 /// grid of eighth notes. A tempo of half or twice the true one is kept out
 /// by the range.
 pub fn estimate_tempo(times: &[f64]) -> Option<f64> {
+    estimate_grid(times)
+        .filter(|e| e.confidence > CLEAR_TEMPO)
+        .map(|e| e.bpm)
+}
+
+/// Like [`estimate_tempo`], but also says where the beat falls, and gives a
+/// weak guess where [`estimate_tempo`] would find nothing (its
+/// [`confidence`](TempoEstimate::confidence) says which). `None` only if
+/// there are too few onsets or they agree with no tempo at all.
+pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
     if times.len() < 4 {
         return None;
     }
     // Onsets on the beat and on the half beat both count: the second sum
     // is of the onsets' phases on a grid of eighth notes.
-    let score = |bpm: f64| {
-        let mut total = 0.0;
-        for grid in [1.0, 2.0] {
-            let (mut re, mut im) = (0.0, 0.0);
-            for &t in times {
-                let phase = std::f64::consts::TAU * t * bpm / 60.0 * grid;
-                re += phase.cos();
-                im += phase.sin();
-            }
-            total += re.hypot(im);
+    let sums = |bpm: f64, grid: f64| {
+        let (mut re, mut im) = (0.0, 0.0);
+        for &t in times {
+            let phase = std::f64::consts::TAU * t * bpm / 60.0 * grid;
+            re += phase.cos();
+            im += phase.sin();
         }
-        total / 2.0
+        (re, im)
+    };
+    let score = |bpm: f64| {
+        [1.0, 2.0]
+            .into_iter()
+            .map(|grid| {
+                let (re, im) = sums(bpm, grid);
+                re.hypot(im)
+            })
+            .sum::<f64>()
+            / 2.0
     };
     let mut best = (80.0, 0.0);
     let mut bpm = 80.0;
@@ -135,8 +171,19 @@ pub fn estimate_tempo(times: &[f64]) -> Option<f64> {
         }
         bpm += 0.005;
     }
-    // Weak agreement is no tempo at all.
-    (refined.1 / times.len() as f64 > 0.5).then_some((refined.0 * 100.0).round() / 100.0)
+    let confidence = refined.1 / times.len() as f64;
+    if confidence < MIN_CONFIDENCE {
+        return None;
+    }
+    // The onsets' average position in the beat. A beat is more often hit
+    // on its own than on its half, so the first sum decides.
+    let (re, im) = sums(refined.0, 1.0);
+    let phase = im.atan2(re) / std::f64::consts::TAU;
+    Some(TempoEstimate {
+        bpm: (refined.0 * 100.0).round() / 100.0,
+        confidence,
+        phase: phase - (phase + 0.5).floor(),
+    })
 }
 
 #[cfg(test)]
@@ -161,6 +208,37 @@ mod tests {
         times.sort_by(f64::total_cmp);
         let found = estimate_tempo(&times).unwrap();
         assert!((found - 120.0).abs() < 0.5, "{found}");
+    }
+
+    #[test]
+    fn the_grid_phase_says_where_the_beat_falls() {
+        // Beats of 120 bpm starting 0.1 s in: a fifth of a beat after 0.
+        let times: Vec<f64> = (0..16).map(|i| 0.1 + i as f64 * 0.5).collect();
+        let found = estimate_grid(&times).unwrap();
+        assert!((found.bpm - 120.0).abs() < 0.3, "{found:?}");
+        assert!(found.confidence > CLEAR_TEMPO);
+        assert!((found.phase - 0.2).abs() < 0.02, "{found:?}");
+        // Starting just before a beat is a small negative phase.
+        let early: Vec<f64> = (0..16).map(|i| 0.45 + i as f64 * 0.5).collect();
+        let found = estimate_grid(&early).unwrap();
+        assert!((found.phase + 0.1).abs() < 0.02, "{found:?}");
+    }
+
+    #[test]
+    fn loose_onsets_still_give_a_guess_that_says_it_is_one() {
+        // A steady 100 bpm with every onset up to 0.12 s off.
+        let mut seed = 11u32;
+        let times: Vec<f64> = (0..24)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let jitter = ((seed >> 16) as f64 / 65_536.0 - 0.5) * 0.24;
+                0.3 + i as f64 * 0.6 + jitter
+            })
+            .collect();
+        let guess = estimate_grid(&times).expect("a guess");
+        assert!((guess.bpm - 100.0).abs() < 2.0, "{guess:?}");
+        // Too few onsets, or nothing agreeing, is still no tempo.
+        assert_eq!(estimate_grid(&[0.1, 0.4, 0.9]), None);
     }
 
     #[test]

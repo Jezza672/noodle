@@ -46,6 +46,9 @@ The tempo an unwarped audio clip naturally has: the tempo it was recorded at, or
 **Beat marker**:
 A point in a clip's own time where the clip tempo says a beat falls.
 
+**Grid offset**:
+How far a clip's beat lines are slid from the whole beats, in beats, to line them up with the clip's transients. It moves the grid the editor snaps to and warp quantise pulls toward, not the audio.
+
 **Warp marker**:
 A pin a user (or a warp quantise) puts on a clip, tying one moment in the clip, usually a transient, to a beat. Warp markers snap to beat markers.
 

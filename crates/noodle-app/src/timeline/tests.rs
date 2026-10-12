@@ -1589,3 +1589,49 @@ fn a_take_is_drawn_only_on_tracks_armed_for_what_it_holds() {
     assert!(text.contains(&"Recording".to_owned()), "{text:?}");
     assert!(text.contains(&"Recording (1 note)".to_owned()), "{text:?}");
 }
+
+/// Warps clip `id` by `warp`.
+fn warp_clip(h: &mut H, id: ClipId, warp: noodle_core::ClipWarp) {
+    let warp_id = h.state().session.project().next_warp_id();
+    let mut audio = clip(h, id);
+    if let noodle_core::ClipContent::Audio(a) = &mut audio.content {
+        a.warp = Some(warp_id);
+    }
+    h.state_mut().session.edit([Edit::Apply(Command::Batch(vec![
+        Command::AddWarp { id: warp_id, warp },
+        Command::RemoveClip { id },
+        Command::AddClip { id, clip: audio },
+    ]))]);
+    h.run();
+}
+
+#[test]
+fn a_warped_section_shows_its_waveform_at_once_and_then_the_rendered_one() {
+    let (mut h, id) = rig();
+    warp_clip(&mut h, id, noodle_core::ClipWarp::at_tempo(60.0));
+    // The file's waveform stretched evenly, until the render is back.
+    wait_for_waveforms(&mut h, 1);
+    assert_eq!(h.state().timeline.waveforms(), 1);
+    for _ in 0..300 {
+        h.step();
+        if h.state().timeline.warped_renders() > 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(h.state().timeline.warped_renders(), 1);
+    h.run_steps(3);
+    assert_eq!(
+        h.state().timeline.waveforms(),
+        1,
+        "the rendered one is drawn"
+    );
+}
+
+#[test]
+fn an_unwarped_section_needs_no_render() {
+    let (mut h, _) = rig();
+    wait_for_waveforms(&mut h, 1);
+    h.run_steps(5);
+    assert_eq!(h.state().timeline.warped_renders(), 0);
+}

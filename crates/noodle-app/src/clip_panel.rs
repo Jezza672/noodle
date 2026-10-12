@@ -10,9 +10,12 @@ use std::time::{Duration, Instant};
 
 use egui::{Response, RichText, Ui};
 use noodle_core::{
-    ClipContent, ClipId, ClipWarp, Command, LoopRegion, MAX_CLIP_BPM, MIN_CLIP_BPM, MIN_LOOP_BEATS,
-    Project, QUANTISE_GRIDS, TempoCurve, WarpMarker, WarpMode, WarpQuantise,
+    ClipContent, ClipId, ClipWarp, Command, LoopRegion, MAX_CLIP_BPM, MAX_GRID_OFFSET,
+    MIN_CLIP_BPM, MIN_LOOP_BEATS, Project, QUANTISE_GRIDS, TempoCurve, WarpMarker, WarpMode,
+    WarpQuantise,
 };
+
+use noodle_io::{CLEAR_TEMPO, TempoEstimate};
 
 use crate::session::{Edit, Session};
 use crate::timeline::{Analysis, Loaded};
@@ -90,6 +93,31 @@ pub fn set_tempo(project: &Project, id: ClipId, bpm: f64) -> Option<Command> {
     }
     project
         .warp_edit(id, |warp| warp.tempo = TempoCurve::constant(bpm))
+        .ok()
+}
+
+/// The command that gives clip `id` the tempo and beat `found` in its audio:
+/// the clip tempo, and a grid slid so its lines fall on the transients.
+pub fn detect_tempo(project: &Project, id: ClipId, found: &TempoEstimate) -> Option<Command> {
+    if !(MIN_CLIP_BPM..=MAX_CLIP_BPM).contains(&found.bpm) {
+        return None;
+    }
+    let (bpm, phase) = (found.bpm, found.phase);
+    project
+        .warp_edit(id, move |warp| {
+            warp.tempo = TempoCurve::constant(bpm);
+            warp.grid_offset = phase;
+        })
+        .ok()
+}
+
+/// The command that slides the grid of clip `id` to `offset` beats.
+pub fn set_grid_offset(project: &Project, id: ClipId, offset: f64) -> Option<Command> {
+    if !offset.is_finite() || offset.abs() > MAX_GRID_OFFSET {
+        return None;
+    }
+    project
+        .warp_edit(id, move |warp| warp.grid_offset = offset)
         .ok()
 }
 
@@ -525,22 +553,59 @@ pub fn show(
         }
     });
     ui.horizontal(|ui| {
-        let detect = ui.add_enabled(
-            analysis.and_then(|a| a.tempo).is_some(),
-            egui::Button::new("Detect"),
-        );
-        if detect
-            .on_hover_text("Find the tempo from the transients")
-            .clicked()
-            && let Some(bpm) = analysis.and_then(|a| a.tempo)
+        let found = analysis.and_then(|a| a.grid);
+        let detect = ui.add_enabled(found.is_some(), egui::Button::new("Detect"));
+        let hint = match (analysis, found) {
+            (None, _) => "Still reading the file".to_owned(),
+            (Some(_), None) => {
+                "Too few clear transients to find a tempo: tap it or type it".to_owned()
+            }
+            (Some(_), Some(f)) if f.confidence < CLEAR_TEMPO => format!(
+                "Find the tempo and where the beat falls from the transients (a weak guess: {:.0}% sure)",
+                f.confidence * 100.0
+            ),
+            (Some(_), Some(_)) => {
+                "Find the tempo and where the beat falls from the transients".to_owned()
+            }
+        };
+        if detect.on_hover_text(hint).clicked()
+            && let Some(found) = found
         {
-            edits.extend(set_tempo(project, id, bpm).map(Edit::Apply));
+            edits.extend(detect_tempo(project, id, &found).map(Edit::Apply));
         }
         let tap = ui.button("Tap").on_hover_text("Tap along to set the tempo");
         if tap.clicked()
             && let Some(bpm) = state.tap(Instant::now())
         {
             edits.extend(set_tempo(project, id, bpm).map(Edit::Apply));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Offset");
+        let mut offset = warp.grid_offset;
+        let response = ui
+            .add(
+                egui::DragValue::new(&mut offset)
+                    .range(-MAX_GRID_OFFSET..=MAX_GRID_OFFSET)
+                    .speed(0.005)
+                    .max_decimals(3)
+                    .suffix(" beats"),
+            )
+            .on_hover_text(
+                "Slide the clip's beat lines against its audio, so they line up with its transients (or drag the waveform in the clip editor)",
+            );
+        if response.changed() {
+            commit(&response, set_grid_offset(project, id, offset), &mut edits);
+        } else {
+            commit(&response, None, &mut edits);
+        }
+        if warp.grid_offset != 0.0
+            && ui
+                .small_button("Reset")
+                .on_hover_text("Put the beat lines back on the whole beats")
+                .clicked()
+        {
+            edits.extend(set_grid_offset(project, id, 0.0).map(Edit::Apply));
         }
     });
 
@@ -643,11 +708,13 @@ mod tests {
         let tonal = Analysis {
             onsets: vec![0.0],
             tempo: None,
+            grid: None,
             percussive: false,
         };
         let drums = Analysis {
             onsets: vec![0.0, 0.5, 1.0],
             tempo: Some(120.0),
+            grid: None,
             percussive: true,
         };
         assert_eq!(suggested_mode(Some(&tonal)), WarpMode::Grain);

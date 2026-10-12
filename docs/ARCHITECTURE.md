@@ -721,6 +721,22 @@ timeline's trims, fades, split and slip of a warped section work in warped beats
 (`timeline/warped.rs`). While a marker is dragged the session turns the preview
 on (and off at the end of the drag); the node dips (declick) when it flips.
 
+**Grid offset and the clip editor's gestures.** `ClipWarp::grid_offset` slides a
+clip's beat lines (not its audio, markers or tempo) by a number of beats, so
+the lines can be lined up with the transients of a loop whose first beat is not
+at the start of its file. Only things that read the grid care: the editor's
+snapping and ruler, warp quantise (`WarpQuantise::apply_from`) and the groove
+(`ClipWarp::groove`); what plays is the markers and the clip tempo, so the
+cache key does not hash it. Dragging the waveform or the ruler in the clip
+editor sets it, as does the panel's Offset field and Detect
+(`noodle_io::estimate_grid` gives the tempo and the phase of the beat, even as
+a weak guess whose confidence is under `CLEAR_TEMPO`; Detect is enabled
+whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
+Shift/Ctrl click, a box in the flags' row, Ctrl+A) and a picked group moves and
+is deleted as one edit. Each detected transient has a handle on the row under
+the brace; double-clicking it pins a marker where the transient plays now
+(`pinned_transient`), so nothing changes until it is moved or quantised.
+
 **Warp quantise and grooves.** `ClipWarp::quantise` is a `WarpQuantise` (grid
 in clip beats, amount, optional `Groove` and groove amount). The stored
 `markers` are never changed by it: `ClipWarp::effective_markers` gives the ones
@@ -1605,6 +1621,24 @@ It has these views:
 - **Timeline** (`noodle-app/src/timeline`, the arrangement above the node
   editor): a lane per track input node, a ruler of bars and beats from the
   tempo map, and clips as wide as their audio at that tempo.
+  - **Tempo.** The session's tempo and time signature are fields in the
+    transport (`app.rs`, `tempo.rs`): the tempo field edits the stretch of the
+    tempo map the playhead is in. View > Tempo lane shows the map as an
+    optional stepped lane under the ruler (`timeline/tempo_lane.rs`): click to
+    add a change on the beat, drag a point to move it and set its tempo, and
+    right-click or Delete removes it (the first change stays at the start).
+    Every edit is a `SetTempoMap` command, so undo and the engine's table follow
+    as for any tempo change.
+  - **Warped sections' waveforms** (`timeline/warped_waves.rs`) are not the
+    file's peaks stretched evenly: a worker thread renders the section as the
+    engine plays it (the same `WarpMap`, and for Grain and Beats the same
+    `Stretcher` and transients) and the timeline draws its peaks. The render is
+    kept under a key of everything it came from (file load, window, warp, tempo
+    map, start), forgotten when nothing asks for it, and while one is being
+    edited only the newest request is rendered. Until it is back (and for
+    looping sections, whose runs are drawn separately) the file's own waveform
+    is shown. There is no on-disk cache of it: a render is cheap next to
+    the stretcher's speed, and the engine itself stretches live.
   - **Ticks on the x axis**, so the view doesn't stretch when the tempo
     changes. Zoom is points per quarter note.
   - **Moving and trimming** are `SetClip` commands, one undo step per drag.

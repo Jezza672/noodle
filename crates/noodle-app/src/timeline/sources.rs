@@ -12,7 +12,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use noodle_io::{Decoder, Peaks, PeaksBuilder, detect_onsets, estimate_tempo};
+use noodle_io::{
+    Decoder, Peaks, PeaksBuilder, TempoEstimate, detect_onsets, estimate_grid, estimate_tempo,
+};
 
 use super::clips::Source;
 
@@ -44,6 +46,10 @@ pub struct Analysis {
     pub onsets: Vec<f64>,
     /// The tempo they sit on the beat of, if there's a clear one.
     pub tempo: Option<f64>,
+    /// The tempo and where the beat falls, even when it is only a guess (see
+    /// [`TempoEstimate::confidence`]). `None` if there are too few
+    /// transients, or none agree on a tempo.
+    pub grid: Option<TempoEstimate>,
     /// Whether the file is long enough, with transients close enough, that
     /// its beats are worth keeping whole when it is stretched.
     pub percussive: bool,
@@ -58,6 +64,7 @@ impl Analysis {
         let seconds = mono.len() as f64 / f64::from(rate);
         Self {
             tempo: estimate_tempo(&onsets),
+            grid: estimate_grid(&onsets),
             percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
             onsets,
         }

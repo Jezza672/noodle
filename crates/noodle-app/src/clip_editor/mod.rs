@@ -5,17 +5,24 @@
 //! are given in), so the waveform is drawn as warped: pulling a marker to a
 //! later beat stretches the audio before it and squeezes the audio after. Along
 //! the top are the beat ruler, the warp markers as flags, and the loop's brace.
-//! Transients found in the audio are drawn as thin lines, for markers to snap to.
+//! Transients found in the audio are drawn as thin lines, for markers to snap
+//! to, each with a handle on the row under the brace: double-click it to make
+//! the transient a marker. Flags are picked one at a time (Shift or Ctrl adds
+//! to the pick), by a box dragged in the flags' row, or all at once with
+//! Ctrl+A, and a picked group moves and is deleted together. Dragging the
+//! waveform (or the ruler) slides the clip's beat lines against its audio.
 //!
 //! Every change is an [`Edit`] made with [`Project::warp_edit`], so a warp that
 //! other sections share is forked for this one. Dragging a flag or the brace
 //! is one undo step, played as cheap Repitch while it lasts (the session does
 //! that for any warp being dragged).
 
+use std::collections::BTreeSet;
+
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 use noodle_core::{
-    ClipId, ClipWarp, Command, LoopRegion, MIN_LOOP_BEATS, Project, TICKS_PER_QUARTER, Tick,
-    WarpAxis, WarpMarker,
+    ClipId, ClipWarp, Command, LoopRegion, MAX_GRID_OFFSET, MIN_LOOP_BEATS, Project,
+    TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
 };
 
 use crate::clip_panel;
@@ -27,8 +34,12 @@ const TOOLBAR: f32 = 26.0;
 const RULER: f32 = 18.0;
 const FLAGS: f32 = 22.0;
 const BRACE: f32 = 14.0;
+/// The row of handles on the detected transients.
+const HANDLES: f32 = 12.0;
 /// How close, in points, a press is to a flag or a brace end to take it.
 const GRAB: f32 = 7.0;
+/// How close, in points, a press is to a transient's handle to take it.
+const GRAB_HANDLE: f32 = 5.0;
 /// How close, in points, a transient has to be to pull a new marker onto it.
 const SNAP_TO_TRANSIENT: f32 = 10.0;
 const MIN_PPB: f32 = 4.0;
@@ -48,12 +59,40 @@ enum Gesture {
     Loop {
         grab: f64,
     },
+    /// A detected transient's handle, by its place among the transients.
+    Transient(usize),
+    /// The waveform, grabbed at `from` (beats): sliding it slides the clip
+    /// against the beat lines.
+    Clip {
+        from: f64,
+    },
+    /// The beat ruler, grabbed at `from` (beats): sliding it slides the beat
+    /// lines against the clip.
+    Grid {
+        from: f64,
+    },
+    /// A box dragged out in the flags' row from `from` (screen x) to pick
+    /// the flags in it.
+    Marquee {
+        from: f32,
+    },
 }
 
 struct Drag {
     gesture: Gesture,
     /// The warp when the gesture began; every step is worked out from it.
     original: ClipWarp,
+    /// The flags that were picked when it began.
+    picked: BTreeSet<usize>,
+}
+
+/// The rows the editor is made of, top to bottom.
+struct Rows {
+    ruler: Rect,
+    flags: Rect,
+    brace: Rect,
+    handles: Rect,
+    wave: Rect,
 }
 
 pub struct ClipEditor {
@@ -63,8 +102,10 @@ pub struct ClipEditor {
     scroll_x: f32,
     /// Fit the clip to the width on the next frame.
     focus: bool,
-    /// The flag last pressed, by its place among the markers.
-    selected: Option<usize>,
+    /// The flags picked, by their places among the markers.
+    selected: BTreeSet<usize>,
+    /// The box being dragged out in the flags' row, in screen x.
+    marquee: Option<(f32, f32)>,
     drag: Option<Drag>,
     /// Where the editor was last right-clicked, in beats.
     menu_at: Option<f64>,
@@ -78,6 +119,8 @@ pub struct ClipEditor {
 pub struct Geometry {
     pub flags: Rect,
     pub brace: Rect,
+    pub handles: Rect,
+    pub ruler: Rect,
     pub wave: Rect,
     origin: f32,
     ppb: f32,
@@ -97,7 +140,8 @@ impl Default for ClipEditor {
             ppb: 60.0,
             scroll_x: 0.0,
             focus: false,
-            selected: None,
+            selected: BTreeSet::new(),
+            marquee: None,
             drag: None,
             menu_at: None,
             #[cfg(test)]
@@ -111,7 +155,8 @@ impl ClipEditor {
     pub fn open(&mut self, clip: ClipId) {
         if self.clip != Some(clip) {
             self.clip = Some(clip);
-            self.selected = None;
+            self.selected.clear();
+            self.marquee = None;
             self.drag = None;
             self.focus = true;
         }
@@ -120,7 +165,8 @@ impl ClipEditor {
     pub fn close(&mut self) {
         self.clip = None;
         self.drag = None;
-        self.selected = None;
+        self.marquee = None;
+        self.selected.clear();
     }
 
     /// The clip being edited, if the editor is open.
@@ -139,8 +185,8 @@ impl ClipEditor {
     }
 
     #[cfg(test)]
-    pub fn selected(&self) -> Option<usize> {
-        self.selected
+    pub fn selected(&self) -> Vec<usize> {
+        self.selected.iter().copied().collect()
     }
 
     #[cfg(test)]
@@ -184,8 +230,9 @@ fn grid(ppb: f32) -> f64 {
     }
 }
 
-fn snap(beat: f64, step: f64) -> f64 {
-    (beat / step).round() * step
+/// `beat` on the grid of lines every `step` beats, slid `origin` beats.
+fn snap_to(beat: f64, step: f64, origin: f64) -> f64 {
+    ((beat - origin) / step).round() * step + origin
 }
 
 /// Draws the clip editor for the open clip into `ui` and returns what the
@@ -230,7 +277,7 @@ pub fn show(
             ui.horizontal_centered(|ui| {
                 ui.label(format!("Clip editor · {name}"));
                 ui.separator();
-                ui.weak("Double-click to add a marker · drag a flag to move it · Delete removes · Alt: no snap");
+                ui.weak("Double-click to add a marker, or a transient's handle to pin it · drag a flag to move it (Shift or a dragged box picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
                         closed = true;
@@ -294,8 +341,19 @@ pub fn show(
         Pos2::new(body.left(), flags.bottom()),
         vec2(body.width(), BRACE),
     );
-    let wave = Rect::from_min_max(Pos2::new(body.left(), brace.bottom()), body.max);
+    let handles = Rect::from_min_size(
+        Pos2::new(body.left(), brace.bottom()),
+        vec2(body.width(), HANDLES),
+    );
+    let wave = Rect::from_min_max(Pos2::new(body.left(), handles.bottom()), body.max);
     let area = Rect::from_min_max(ruler.min, body.max);
+    let rows = Rows {
+        ruler,
+        flags,
+        brace,
+        handles,
+        wave,
+    };
 
     let (first, last) = (warp.beat_at(0.0).min(0.0), warp.beat_at(file_secs));
     if state.focus {
@@ -317,29 +375,31 @@ pub fn show(
         state.geometry = Some(Geometry {
             flags,
             brace,
+            handles,
+            ruler,
             wave,
             origin: axis.origin,
             ppb: axis.ppb,
         });
     }
+    let onsets: &[f64] = loaded.analysis.as_ref().map_or(&[], |a| &a.onsets);
 
     draw_waveform(&painter, wave, axis, warp, loaded, rate, file_secs);
     draw_window(&painter, wave, axis, warp, audio.offset, audio.length, rate);
-    draw_ruler(&painter, ruler, wave, axis);
-    if let Some(analysis) = &loaded.analysis {
-        for &onset in &analysis.onsets {
-            let x = axis.x(warp.beat_at(onset));
-            if (area.left()..=area.right()).contains(&x) {
-                painter.vline(
-                    x,
-                    wave.y_range(),
-                    Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.22)),
-                );
-            }
-        }
-    }
+    draw_ruler(&painter, ruler, wave, axis, warp.grid_offset);
+    draw_handles(&painter, handles, wave, axis, warp, onsets);
     draw_loop(&painter, brace, wave, axis, warp);
-    draw_flags(&painter, flags, wave, axis, warp, state.selected);
+    draw_flags(&painter, flags, wave, axis, warp, &state.selected);
+    if let Some((a, b)) = state.marquee {
+        let band = Rect::from_x_y_ranges(a.min(b)..=a.max(b), flags.top()..=wave.bottom());
+        painter.rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.12));
+        painter.rect_stroke(
+            band,
+            0.0,
+            Stroke::new(1.0, colors::SELECTED.gamma_multiply(0.6)),
+            StrokeKind::Inside,
+        );
+    }
     draw_playhead(
         &painter,
         wave,
@@ -351,84 +411,153 @@ pub fn show(
         rate,
     );
 
-    // A flag that has gone (after an undo) can't stay picked.
-    if state.selected.is_some_and(|i| i >= warp.markers.len()) {
-        state.selected = None;
-    }
+    // Flags that have gone (after an undo) can't stay picked.
+    state.selected.retain(|&i| i < warp.markers.len());
 
     // Gestures.
     let response = ui.interact(area, ui.id().with("clip editor"), Sense::click_and_drag());
-    let free = ui.input(|i| i.modifiers.alt);
+    let (free, additive) =
+        ui.input(|i| (i.modifiers.alt, i.modifiers.shift || i.modifiers.command));
     let step = grid(state.ppb);
-    let onsets: &[f64] = loaded.analysis.as_ref().map_or(&[], |a| &a.onsets);
-    let hit = |pos: Pos2| hit_test(pos, flags, brace, wave, axis, warp);
+    let hit = |pos: Pos2| hit_test(pos, &rows, axis, warp, onsets);
     if let Some(pos) = response.hover_pos() {
         ui.ctx().set_cursor_icon(match hit(pos) {
             Some(Gesture::Marker(_) | Gesture::LoopStart | Gesture::LoopEnd) => {
                 CursorIcon::ResizeHorizontal
             }
             Some(Gesture::Loop { .. }) => CursorIcon::Grab,
-            None => CursorIcon::Default,
+            Some(Gesture::Transient(_)) => CursorIcon::PointingHand,
+            Some(Gesture::Clip { .. } | Gesture::Grid { .. }) => CursorIcon::ResizeHorizontal,
+            Some(Gesture::Marquee { .. }) | None => CursorIcon::Default,
         });
     }
     if response.drag_started()
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
         && let Some(gesture) = hit(press)
     {
+        let at = axis.beat(press.x);
         let gesture = match gesture {
             Gesture::Loop { .. } => {
                 let start = loop_beats(warp).map_or(0.0, |(start, _)| start);
-                Gesture::Loop {
-                    grab: axis.beat(press.x) - start,
-                }
+                Gesture::Loop { grab: at - start }
             }
+            Gesture::Clip { .. } => Gesture::Clip { from: at },
+            Gesture::Grid { .. } => Gesture::Grid { from: at },
+            Gesture::Marquee { .. } => Gesture::Marquee { from: press.x },
             other => other,
         };
-        if let Gesture::Marker(i) = gesture {
-            state.selected = Some(i);
+        match gesture {
+            Gesture::Marker(i) => {
+                // Pulling a flag that is not picked picks it alone; one that
+                // is picked takes the others with it.
+                if !state.selected.contains(&i) {
+                    if !additive {
+                        state.selected.clear();
+                    }
+                    state.selected.insert(i);
+                }
+            }
+            Gesture::Marquee { .. } if !additive => state.selected.clear(),
+            _ => {}
+        }
+        if let Gesture::Marquee { from } = gesture {
+            state.marquee = Some((from, from));
         }
         state.drag = Some(Drag {
             gesture,
             original: warp.clone(),
+            picked: state.selected.clone(),
         });
     }
     if response.dragged()
         && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
     {
         let beat = axis.beat(pos.x);
-        let snapped = if free { beat } else { snap(beat, step) };
-        if let Some(candidate) = drag_step(drag, beat, snapped, free)
-            && let Some(edit) = warp_change(project, id, &candidate, warp)
-        {
-            out.edits.push(Edit::Drag(edit));
+        if let Gesture::Marquee { from } = drag.gesture {
+            state.marquee = Some((from, pos.x));
+            let (lo, hi) = (from.min(pos.x), from.max(pos.x));
+            let inside: BTreeSet<usize> = (0..warp.markers.len())
+                .filter(|&i| (lo..=hi).contains(&axis.x(flag_beat(warp, i))))
+                .collect();
+            state.selected = if additive {
+                drag.picked.union(&inside).copied().collect()
+            } else {
+                inside
+            };
+        } else {
+            let origin = drag.original.grid_offset;
+            let snapped = if free {
+                beat
+            } else {
+                snap_to(beat, step, origin)
+            };
+            if let Some(candidate) = drag_step(drag, beat, snapped, free)
+                && let Some(edit) = warp_change(project, id, &candidate, warp)
+            {
+                out.edits.push(Edit::Drag(edit));
+            }
         }
     }
     if response.drag_stopped() {
+        let marquee = state.marquee.take().is_some();
         state.drag = None;
-        out.edits.push(Edit::EndDrag);
+        // A box is not an edit: there is no step to close.
+        if !marquee {
+            out.edits.push(Edit::EndDrag);
+        }
     }
-    // Clicking picks a flag; clicking elsewhere lets go.
+    // Clicking picks a flag (with Shift or Ctrl, adds it to or takes it out
+    // of the pick); clicking elsewhere lets go.
     if response.clicked()
         && let Some(pos) = response.interact_pointer_pos()
     {
-        state.selected = match hit(pos) {
+        let target = match hit(pos) {
             Some(Gesture::Marker(i)) => Some(i),
+            Some(Gesture::Transient(t)) => warp.marker_at(onsets[t]),
             _ => None,
         };
+        match target {
+            Some(i) if additive => {
+                if !state.selected.remove(&i) {
+                    state.selected.insert(i);
+                }
+            }
+            Some(i) => state.selected = BTreeSet::from([i]),
+            None if additive => {}
+            None => state.selected.clear(),
+        }
     }
-    // Double-click adds a marker.
+    // Double-click adds a marker, or makes a transient's handle one.
     if response.double_clicked()
         && let Some(pos) = response.interact_pointer_pos()
         && !matches!(hit(pos), Some(Gesture::Marker(_)))
     {
-        let marker = new_marker(pos.x, axis, warp, onsets, step, free);
-        if let Some(candidate) = with_marker(warp, marker) {
-            state.selected = candidate
-                .markers
-                .iter()
-                .position(|m| m.seconds == marker.seconds);
-            out.edits
-                .extend(warp_change(project, id, &candidate, warp).map(Edit::Apply));
+        if let Some(Gesture::Transient(t)) = hit(pos) {
+            let seconds = onsets[t];
+            if let Some(i) = warp.marker_at(seconds) {
+                state.selected = BTreeSet::from([i]);
+            } else if let Some(candidate) = pinned_transient(warp, seconds) {
+                state.selected = candidate
+                    .markers
+                    .iter()
+                    .position(|m| m.seconds == seconds)
+                    .into_iter()
+                    .collect();
+                out.edits
+                    .extend(warp_change(project, id, &candidate, warp).map(Edit::Apply));
+            }
+        } else if (wave.top()..=wave.bottom()).contains(&pos.y) || flags.contains(pos) {
+            let marker = new_marker(pos.x, axis, warp, onsets, step, free);
+            if let Some(candidate) = with_marker(warp, marker) {
+                state.selected = candidate
+                    .markers
+                    .iter()
+                    .position(|m| m.seconds == marker.seconds)
+                    .into_iter()
+                    .collect();
+                out.edits
+                    .extend(warp_change(project, id, &candidate, warp).map(Edit::Apply));
+            }
         }
     }
     // The right-click menu.
@@ -436,18 +565,30 @@ pub fn show(
         && let Some(pos) = response.interact_pointer_pos()
     {
         state.menu_at = Some(axis.beat(pos.x));
-        if let Some(Gesture::Marker(i)) = hit(pos) {
-            state.selected = Some(i);
+        if let Some(Gesture::Marker(i)) = hit(pos)
+            && !state.selected.contains(&i)
+        {
+            state.selected = BTreeSet::from([i]);
         }
     }
     let menu_x = state.menu_at.map(|beat| axis.x(beat));
     let on_marker = menu_x.and_then(|x| marker_at_x(x, axis, warp));
     response.context_menu(|ui| {
         if let Some(i) = on_marker {
-            if ui.button("Delete marker").clicked() {
+            let picked: Vec<usize> = if state.selected.contains(&i) {
+                state.selected.iter().copied().collect()
+            } else {
+                vec![i]
+            };
+            let label = if picked.len() > 1 {
+                format!("Delete {} markers", picked.len())
+            } else {
+                "Delete marker".to_owned()
+            };
+            if ui.button(label).clicked() {
                 out.edits
-                    .extend(removal(project, id, warp, i).map(Edit::Apply));
-                state.selected = None;
+                    .extend(removal(project, id, warp, &picked).map(Edit::Apply));
+                state.selected.clear();
                 ui.close();
             }
         } else if let Some(x) = menu_x
@@ -460,16 +601,31 @@ pub fn show(
             }
             ui.close();
         }
+        if warp.grid_offset != 0.0 && ui.button("Reset the beat lines").clicked() {
+            out.edits
+                .extend(clip_panel::set_grid_offset(project, id, 0.0).map(Edit::Apply));
+            ui.close();
+        }
     });
-    // Delete removes the picked flag.
-    if ui.rect_contains_pointer(area)
-        && !ui.ctx().egui_wants_keyboard_input()
-        && ui.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
-        && let Some(i) = state.selected
-    {
-        out.edits
-            .extend(removal(project, id, warp, i).map(Edit::Apply));
-        state.selected = None;
+    // Keys act on the flags while the pointer is over the editor.
+    if ui.rect_contains_pointer(area) && !ui.ctx().egui_wants_keyboard_input() {
+        let (delete, all, none) = ui.input(|i| {
+            (
+                i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
+                i.key_pressed(Key::A) && i.modifiers.command,
+                i.key_pressed(Key::Escape),
+            )
+        });
+        if delete && !state.selected.is_empty() {
+            let picked: Vec<usize> = state.selected.iter().copied().collect();
+            out.edits
+                .extend(removal(project, id, warp, &picked).map(Edit::Apply));
+            state.selected.clear();
+        } else if all {
+            state.selected = (0..warp.markers.len()).collect();
+        } else if none {
+            state.selected.clear();
+        }
     }
     out
 }
@@ -500,15 +656,22 @@ fn loop_beats(warp: &ClipWarp) -> Option<(f64, f64)> {
     Some((warp.beat_at(from), warp.beat_at(to)))
 }
 
-/// What is under `pos`: a flag, a brace end or the brace.
+/// What is under `pos`: a flag, a brace end, the brace, a transient's handle,
+/// the ruler, empty room in the flags' row, or the waveform.
 fn hit_test(
     pos: Pos2,
-    flags: Rect,
-    brace: Rect,
-    wave: Rect,
+    rows: &Rows,
     axis: Axis,
     warp: &ClipWarp,
+    onsets: &[f64],
 ) -> Option<Gesture> {
+    let Rows {
+        ruler,
+        flags,
+        brace,
+        handles,
+        wave,
+    } = *rows;
     if (flags.top()..=wave.bottom()).contains(&pos.y)
         && let Some(i) = marker_at_x(pos.x, axis, warp)
         && (pos.y <= flags.bottom() || (pos.x - axis.x(flag_beat(warp, i))).abs() <= 3.0)
@@ -529,7 +692,32 @@ fn hit_test(
             return Some(Gesture::Loop { grab: 0.0 });
         }
     }
+    if handles.y_range().contains(pos.y)
+        && let Some(t) = transient_at_x(pos.x, axis, warp, onsets)
+    {
+        return Some(Gesture::Transient(t));
+    }
+    if ruler.y_range().contains(pos.y) {
+        return Some(Gesture::Grid { from: 0.0 });
+    }
+    if flags.y_range().contains(pos.y) {
+        return Some(Gesture::Marquee { from: pos.x });
+    }
+    if wave.y_range().contains(pos.y) {
+        return Some(Gesture::Clip { from: 0.0 });
+    }
     None
+}
+
+/// The transient whose handle is nearest `x`, if one is within reach.
+fn transient_at_x(x: f32, axis: Axis, warp: &ClipWarp, onsets: &[f64]) -> Option<usize> {
+    onsets
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| (i, (axis.x(warp.beat_at(t)) - x).abs()))
+        .filter(|&(_, distance)| distance <= GRAB_HANDLE)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
 }
 
 /// Where flag `index` is drawn: where its marker plays, or, for a marker warp
@@ -569,7 +757,11 @@ fn new_marker(
             let on_grid = warp.beat_at(seconds);
             WarpMarker {
                 seconds,
-                beat: if free { on_grid } else { snap(on_grid, step) },
+                beat: if free {
+                    on_grid
+                } else {
+                    snap_to(on_grid, step, warp.grid_offset)
+                },
             }
         }
         None => WarpMarker {
@@ -586,32 +778,72 @@ fn with_marker(warp: &ClipWarp, marker: WarpMarker) -> Option<ClipWarp> {
     candidate.problem().is_none().then_some(candidate)
 }
 
-/// The command that gives clip `id` the markers and loop of `candidate`,
-/// if that is a change.
+/// The warp with a marker on the transient at `seconds`, where that moment
+/// plays now (so pinning it changes nothing until it is moved or
+/// quantised), if that leaves a warp that can play.
+fn pinned_transient(warp: &ClipWarp, seconds: f64) -> Option<ClipWarp> {
+    // Where it plays with the markers as they are stored, not as warp
+    // quantise moves them.
+    let plain = ClipWarp {
+        quantise: None,
+        ..warp.clone()
+    };
+    with_marker(
+        warp,
+        WarpMarker {
+            seconds,
+            beat: plain.beat_at(seconds),
+        },
+    )
+}
+
+/// The command that gives clip `id` the markers, loop and grid offset of
+/// `candidate`, if that is a change.
 fn warp_change(
     project: &Project,
     id: ClipId,
     candidate: &ClipWarp,
     now: &ClipWarp,
 ) -> Option<Command> {
-    if candidate.markers == now.markers && candidate.loop_region == now.loop_region {
+    if candidate.markers == now.markers
+        && candidate.loop_region == now.loop_region
+        && candidate.grid_offset == now.grid_offset
+    {
         return None;
     }
-    let (markers, region) = (candidate.markers.clone(), candidate.loop_region);
+    let (markers, region, offset) = (
+        candidate.markers.clone(),
+        candidate.loop_region,
+        candidate.grid_offset,
+    );
     project
         .warp_edit(id, move |warp| {
             warp.markers = markers;
             warp.loop_region = region;
+            warp.grid_offset = offset;
         })
         .ok()
 }
 
-/// The command that removes marker `index` of clip `id`.
-fn removal(project: &Project, id: ClipId, warp: &ClipWarp, index: usize) -> Option<Command> {
+/// The command that removes the markers `indices` of clip `id`.
+fn removal(project: &Project, id: ClipId, warp: &ClipWarp, indices: &[usize]) -> Option<Command> {
     let mut candidate = warp.clone();
-    candidate.markers.get(index)?;
-    candidate.markers.remove(index);
+    let mut gone = indices.to_vec();
+    gone.sort_unstable();
+    gone.dedup();
+    if gone.is_empty() || gone.iter().any(|&i| i >= candidate.markers.len()) {
+        return None;
+    }
+    for &i in gone.iter().rev() {
+        candidate.markers.remove(i);
+    }
     warp_change(project, id, &candidate, warp)
+}
+
+/// The grid offset, kept to what a warp allows and to the nearest thousandth
+/// of a beat so a drag does not leave a long tail of decimals in the file.
+fn clamp_offset(offset: f64) -> f64 {
+    ((offset * 1000.0).round() / 1000.0).clamp(-MAX_GRID_OFFSET, MAX_GRID_OFFSET)
 }
 
 /// The warp a drag has made by the time the pointer is at `beat` (`snapped`
@@ -620,14 +852,36 @@ fn drag_step(drag: &Drag, beat: f64, snapped: f64, free: bool) -> Option<ClipWar
     let mut warp = drag.original.clone();
     match drag.gesture {
         Gesture::Marker(i) => {
-            warp.markers.get_mut(i)?.beat = snapped;
+            // The flag under the pointer goes to the snapped beat, and the
+            // other picked flags keep their distance from it.
+            let delta = snapped - warp.markers.get(i)?.beat;
+            if drag.picked.len() > 1 && drag.picked.contains(&i) {
+                for &j in &drag.picked {
+                    warp.markers.get_mut(j)?.beat += delta;
+                }
+            } else {
+                warp.markers.get_mut(i)?.beat = snapped;
+            }
         }
+        Gesture::Clip { from } => {
+            // The audio follows the pointer, so the beat lines go the other
+            // way.
+            warp.grid_offset = clamp_offset(drag.original.grid_offset - (beat - from));
+        }
+        Gesture::Grid { from } => {
+            warp.grid_offset = clamp_offset(drag.original.grid_offset + (beat - from));
+        }
+        Gesture::Transient(_) | Gesture::Marquee { .. } => return None,
         Gesture::LoopStart | Gesture::LoopEnd | Gesture::Loop { .. } => {
             warp.loop_region?;
             let (from, to) = loop_beats(&warp)?;
             // Whole beats of the clip, unless snapping is off.
             let whole = |b: f64| {
-                if free { b } else { snap(b, 1.0) }
+                if free {
+                    b
+                } else {
+                    snap_to(b, 1.0, warp.grid_offset)
+                }
             };
             let (new_from, new_to) = match drag.gesture {
                 Gesture::LoopStart => (whole(beat), to),
@@ -636,7 +890,7 @@ fn drag_step(drag: &Drag, beat: f64, snapped: f64, free: bool) -> Option<ClipWar
                     let start = whole(beat - grab);
                     (start, start + (to - from))
                 }
-                Gesture::Marker(_) => unreachable!(),
+                _ => unreachable!(),
             };
             let to_clip = |warped: f64| warp.tempo.beats_at(warp.seconds_at_beat(warped));
             let moved = LoopRegion {
@@ -735,11 +989,13 @@ fn draw_window(
     }
 }
 
-fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis) {
+fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis, offset: f64) {
     painter.rect_filled(ruler, 0.0, colors::RULER);
+    // The beat lines are slid from the whole beats by the clip's grid
+    // offset; the numbers still count its beats.
     let (first, last) = (
-        axis.beat(ruler.left()).floor() as i64,
-        axis.beat(ruler.right()).ceil() as i64,
+        (axis.beat(ruler.left()) - offset).floor() as i64,
+        (axis.beat(ruler.right()) - offset).ceil() as i64,
     );
     // Label every beat that has room.
     let every = [1, 2, 4, 8, 16, 32]
@@ -747,7 +1003,7 @@ fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis) {
         .find(|n| *n as f32 * axis.ppb >= 28.0)
         .unwrap_or(64);
     for beat in first..=last {
-        let x = axis.x(beat as f64);
+        let x = axis.x(beat as f64 + offset);
         if !(ruler.left()..=ruler.right()).contains(&x) {
             continue;
         }
@@ -770,6 +1026,48 @@ fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis) {
                 colors::TEXT_WEAK,
             );
         }
+    }
+}
+
+/// The detected transients: a thin line down the waveform, and a handle on
+/// the row above it to double-click to make the transient a warp marker. A
+/// transient that has a marker already has a filled handle.
+fn draw_handles(
+    painter: &egui::Painter,
+    handles: Rect,
+    wave: Rect,
+    axis: Axis,
+    warp: &ClipWarp,
+    onsets: &[f64],
+) {
+    painter.rect_filled(handles, 0.0, colors::HEADER.gamma_multiply(0.5));
+    for &onset in onsets {
+        let x = axis.x(warp.beat_at(onset));
+        if !(handles.left() - 6.0..=handles.right() + 6.0).contains(&x) {
+            continue;
+        }
+        painter.vline(
+            x,
+            wave.y_range(),
+            Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.22)),
+        );
+        let pinned = warp.marker_at(onset).is_some();
+        let tip = Pos2::new(x, handles.bottom() - 1.0);
+        let triangle = vec![
+            tip,
+            Pos2::new(x - 4.0, handles.top() + 2.0),
+            Pos2::new(x + 4.0, handles.top() + 2.0),
+        ];
+        let colour = if pinned {
+            theme::ACCENT
+        } else {
+            Color32::WHITE.gamma_multiply(0.55)
+        };
+        painter.add(egui::Shape::convex_polygon(
+            triangle,
+            if pinned { colour } else { Color32::TRANSPARENT },
+            Stroke::new(1.0, colour),
+        ));
     }
 }
 
@@ -802,7 +1100,7 @@ fn draw_flags(
     wave: Rect,
     axis: Axis,
     warp: &ClipWarp,
-    selected: Option<usize>,
+    selected: &BTreeSet<usize>,
 ) {
     painter.rect_filled(flags, 0.0, colors::HEADER.gamma_multiply(0.8));
     for (i, marker) in warp.markers.iter().enumerate() {
@@ -820,7 +1118,7 @@ fn draw_flags(
         }
         let colour = if dead {
             colors::TEXT_WEAK
-        } else if selected == Some(i) {
+        } else if selected.contains(&i) {
             colors::SELECTED
         } else {
             theme::ACCENT
