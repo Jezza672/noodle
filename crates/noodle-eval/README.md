@@ -76,6 +76,27 @@ metric's Spearman correlation with `mos`, pooled and averaged within each
 speed (a pooled figure can come from the speed alone), and marks the metrics
 whose absolute correlation is at least 0.5 both ways as usable for gating.
 
+## Fitting a score
+
+On the dataset no single metric clears the gate above (the paper itself finds
+none that tracks listeners alone), so the metrics are combined as the paper
+does. `features` scores every pair once, on all cores, and caches the values;
+`fit` then fits a ridge regression of the listeners' score on them and
+cross-validates it with whole reference clips held out:
+
+```sh
+cargo run --release -p noodle-eval -- features manifest.csv features.csv
+cargo run --release -p noodle-eval -- fit features.csv --out model.json
+```
+
+It compares speed alone, the paper's nine features, those plus the
+perceptual ones in `extra.rs` (Bark loudness, noise to mask, MFCC, chroma and
+so on: PEAQ-style, which the paper's best predictor also uses), and
+everything. On the 5,280 training-set pairs the held-out Pearson correlation
+was 0.59 for speed alone, 0.69 for the paper's nine, 0.715 with the
+perceptual features added and 0.71 for all of them; within a speed it was
+0.17, 0.24 and 0.27. `model.json` holds the medians, scales and weights.
+
 ## Probes and the harness
 
 `probes` warps short controlled signals (`probe.rs`) through the real engine

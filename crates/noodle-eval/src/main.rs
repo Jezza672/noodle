@@ -1,10 +1,14 @@
 //! `noodle-eval compare REF TEST [SPEED]` prints every metric as JSON;
 //! `noodle-eval validate MANIFEST` correlates them with listener scores;
+//! `noodle-eval features MANIFEST OUT` caches every feature of every pair
+//! (parallel), and `noodle-eval fit FEATURES [--out MODEL.json]` fits and
+//! cross-validates a score from them;
 //! `noodle-eval probes` warps the probe signals and scores the result;
 //! `noodle-eval songs` does the same for the generated songs;
 //! `noodle-eval borrowed` scores them against reference stretchers on audio
 //! we cannot generate.
 
+use noodle_eval::fit;
 use noodle_eval::harness::{Harness, Method};
 use noodle_eval::probe::Probe;
 use noodle_eval::table::{self, Baseline};
@@ -20,7 +24,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("noodle-eval: {e}");
             eprintln!(
-                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS]"
+                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | features MANIFEST.csv OUT.csv | fit FEATURES.csv [--out MODEL.json] | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS]"
             );
             ExitCode::FAILURE
         }
@@ -72,6 +76,13 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        ["features", manifest, out] => {
+            let rows = validate::parse_manifest(Path::new(manifest))?;
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+            eprintln!("{} pairs on {threads} threads", rows.len());
+            fit::extract(&rows, threads)?.write_csv(Path::new(out))
+        }
+        ["fit", features, rest @ ..] => fit_model(features, rest),
         ["probes", rest @ ..] => probes(rest),
         ["songs", rest @ ..] => songs(rest),
         ["borrowed", rest @ ..] => borrowed(rest),
@@ -379,6 +390,73 @@ fn report(rows: &[noodle_eval::harness::Row], baseline: &Path, update: bool) -> 
         std::fs::write(baseline, merged.to_json())
             .map_err(|e| format!("{}: {e}", baseline.display()))?;
         println!("wrote {}", baseline.display());
+    }
+    Ok(())
+}
+
+fn fit_model(features: &str, args: &[&str]) -> Result<(), String> {
+    let out = match args {
+        [] => None,
+        ["--out", p] => Some(PathBuf::from(p)),
+        _ => return Err("fit FEATURES.csv [--out MODEL.json]".into()),
+    };
+    let table = fit::Table::read_csv(Path::new(features))?;
+    println!(
+        "{} pairs, {} features; held out by reference clip, {} folds",
+        table.rows.len(),
+        table.names.len(),
+        fit::FOLDS
+    );
+    println!(
+        "always guessing the mean: rmse {:.3}",
+        fit::baseline_rmse(&table)
+    );
+    let names = |keep: &dyn Fn(&str) -> bool| -> Vec<&str> {
+        table
+            .names
+            .iter()
+            .map(String::as_str)
+            .filter(|n| keep(n))
+            .collect()
+    };
+    let speed = |n: &str| n == fit::SPEED_FEATURE;
+    let paper = names(&|n| fit::PAPER.contains(&n) || speed(n));
+    let paper_extra = names(&|n| fit::PAPER.contains(&n) || fit::EXTRA.contains(&n) || speed(n));
+    let ours_no_extra = names(&|n| !fit::EXTRA.contains(&n));
+    let scores = [
+        fit::cv(&table, "speed only", Some(&[fit::SPEED_FEATURE])),
+        fit::cv(&table, "paper's 9 + speed", Some(&paper)),
+        fit::cv(&table, "paper's 9 + extra", Some(&paper_extra)),
+        fit::cv(&table, "all but extra", Some(&ours_no_extra)),
+        fit::cv(&table, "all", None),
+    ];
+    println!(
+        "\n{:<22} {:>7} {:>8} {:>9} {:>8} {:>7}",
+        "model", "lambda", "pearson", "spearman", "in-speed", "rmse"
+    );
+    for s in &scores {
+        println!(
+            "{:<22} {:>7} {:>8.3} {:>9.3} {:>8.3} {:>7.3}",
+            s.label, s.lambda, s.pearson, s.spearman, s.in_speed_spearman, s.rmse
+        );
+    }
+    let best = &scores[4];
+    println!("\nper method (spearman of the held-out predictions, features and speed):");
+    for (m, c) in &best.by_method {
+        println!("  {m:<12} {c:>6.3}");
+    }
+    let rows: Vec<&fit::TableRow> = table.rows.iter().collect();
+    let model = fit::Model::fit(&table.names, &rows, best.lambda, None);
+    println!("\nweights on the standardised features (more negative: worse sound):");
+    let mut cols = model.columns.clone();
+    cols.sort_by(|a, b| b.weight.abs().total_cmp(&a.weight.abs()));
+    for c in &cols {
+        println!("  {:<30} {:>8.3}", c.name, c.weight);
+    }
+    if let Some(out) = out {
+        let json = serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?;
+        std::fs::write(&out, json).map_err(|e| format!("{}: {e}", out.display()))?;
+        println!("wrote {}", out.display());
     }
     Ok(())
 }

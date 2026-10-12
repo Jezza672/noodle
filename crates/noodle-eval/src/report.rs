@@ -1,6 +1,7 @@
 //! All the metrics for one reference and test pair.
 
 use crate::clip::Clip;
+use crate::extra::{self, Extra};
 use crate::level::{self, Level};
 use crate::paper::{self, PaperFeatures};
 use crate::phasiness::phasiness;
@@ -26,6 +27,8 @@ pub struct Report {
     pub pitch: Pitch,
     pub level: Level,
     pub stereo: Option<Stereo>,
+    /// Perceptual features for fitting a score; see [`crate::extra`].
+    pub extra: Extra,
 }
 
 /// Scores `test` against `reference`, which must share a sample rate. `map`
@@ -62,6 +65,7 @@ pub fn evaluate(reference: Clip, test: Clip, map: &TimeMap) -> Report {
         pitch: pitch::compare(&rm, &tm, reference.rate, map),
         level,
         stereo: stereo::compare(reference, test),
+        extra: extra::compare(&rs, &ts, map),
     }
 }
 
