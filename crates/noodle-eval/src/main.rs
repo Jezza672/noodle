@@ -1,6 +1,7 @@
 //! `noodle-eval compare REF TEST [SPEED]` prints every metric as JSON;
 //! `noodle-eval validate MANIFEST` correlates them with listener scores;
-//! `noodle-eval probes` warps the probe signals and scores the result.
+//! `noodle-eval probes` warps the probe signals and scores the result;
+//! `noodle-eval songs` does the same for the generated songs.
 
 use noodle_eval::harness::{Harness, Method};
 use noodle_eval::probe::Probe;
@@ -17,7 +18,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("noodle-eval: {e}");
             eprintln!(
-                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | probes [OPTIONS]"
+                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | probes [OPTIONS] | songs [OPTIONS]"
             );
             ExitCode::FAILURE
         }
@@ -70,6 +71,7 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         ["probes", rest @ ..] => probes(rest),
+        ["songs", rest @ ..] => songs(rest),
         _ => Err("bad arguments".into()),
     }
 }
@@ -122,11 +124,77 @@ fn probes(args: &[&str]) -> Result<(), String> {
             rows.extend(harness.run(p, c, &methods)?);
         }
     }
-    print!("{}", table::format_rows(&rows));
+    report(&rows, &baseline, update)
+}
+
+const SONGS_HELP: &str =
+    "songs [--song NAME] [--tempo NAME] [--method NAME] [--full] [--baseline FILE] [--update]
+  Warps the generated songs (crates/noodle-eval/songs) to each target tempo with
+  each method and scores them. By default the 15 to 20 s excerpt that joins the
+  CI gate; --full takes the whole song (rows are named NAME-full). Other options
+  as for probes; the default baseline is crates/noodle-eval/baseline/songs.json.";
+
+fn songs(args: &[&str]) -> Result<(), String> {
+    let (mut song, mut tempo, mut method, mut full) = (None, None, None, false);
+    let mut baseline = Path::new(env!("CARGO_MANIFEST_DIR")).join("baseline/songs.json");
+    let mut update = false;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().copied().ok_or(format!("{arg} needs a value"));
+        match *arg {
+            "--song" => song = Some(value()?.to_string()),
+            "--tempo" => {
+                let v = value()?;
+                tempo = Some(TempoCase::parse(v).ok_or(format!("no tempo case {v}"))?);
+            }
+            "--method" => {
+                let v = value()?;
+                method = Some(Method::parse(v).ok_or(format!("no method {v}"))?);
+            }
+            "--full" => full = true,
+            "--baseline" => baseline = value()?.into(),
+            "--update" => update = true,
+            "--help" | "-h" => {
+                println!("{SONGS_HELP}");
+                return Ok(());
+            }
+            other => return Err(format!("unknown option {other}\n{SONGS_HELP}")),
+        }
+    }
+    let cases = tempo.map_or(TempoCase::all(), |c| vec![c]);
+    let methods = method.map_or(Method::ALL.to_vec(), |m| vec![m]);
+    let mut rows = Vec::new();
+    let mut found = false;
+    for s in noodle_eval::song::all() {
+        if song.as_deref().is_some_and(|n| n != s.name) {
+            continue;
+        }
+        found = true;
+        let (range, name) = if full {
+            (s.whole(), format!("{}-full", s.name))
+        } else {
+            (s.excerpt_range(), s.name.to_string())
+        };
+        let harness = Harness::for_song(&s, range, 48_000).map_err(|e| e.to_string())?;
+        for &c in &cases {
+            eprintln!("{name} at {}", c.name());
+            rows.extend(harness.run_song(&name, &s, range, c, &methods)?);
+        }
+    }
+    if !found {
+        return Err("no such song".into());
+    }
+    report(&rows, &baseline, update)
+}
+
+/// Prints the rows, their ranks and the diff against `baseline`, and writes
+/// them into it when `update`.
+fn report(rows: &[noodle_eval::harness::Row], baseline: &Path, update: bool) -> Result<(), String> {
+    print!("{}", table::format_rows(rows));
     println!();
-    print!("{}", table::format_ranks(&table::mean_ranks(&rows)));
-    let fresh = Baseline::of(&rows);
-    let old = match std::fs::read_to_string(&baseline) {
+    print!("{}", table::format_ranks(&table::mean_ranks(rows)));
+    let fresh = Baseline::of(rows);
+    let old = match std::fs::read_to_string(baseline) {
         Ok(text) => {
             Baseline::from_json(&text).map_err(|e| format!("{}: {e}", baseline.display()))?
         }
@@ -139,7 +207,7 @@ fn probes(args: &[&str]) -> Result<(), String> {
         if let Some(dir) = baseline.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&baseline, merged.to_json())
+        std::fs::write(baseline, merged.to_json())
             .map_err(|e| format!("{}: {e}", baseline.display()))?;
         println!("wrote {}", baseline.display());
     }

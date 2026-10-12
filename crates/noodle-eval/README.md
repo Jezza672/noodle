@@ -9,6 +9,8 @@ cargo run -p noodle-eval -- compare ref.wav test.wav 1.5   # JSON; 1.5 = test is
 cargo run -p noodle-eval -- validate manifest.csv
 cargo run -p noodle-eval -- probes                         # the probe grid, all methods
 cargo run -p noodle-eval -- probes --probe held-chord --tempo x1.5 --method grain
+cargo run -p noodle-eval -- songs                          # the five songs' excerpts, all methods
+cargo run -p noodle-eval -- songs --song neon-drive --tempo x1.5 --full
 ```
 
 ## Metrics
@@ -113,3 +115,48 @@ metric counts once, so read it as "better on the whole", not "better on what
 matters"), and a diff against `baseline/probes.json`. `--update` writes the
 rows that ran into the baseline (numbers only, no audio, rounded to 6
 places); a metric that moved by more than 1% shows in the diff.
+
+## Songs
+
+`songs` does for the generated songs what `probes` does for probe signals:
+the song at its own tempo is the source, the same notes rendered at the target
+tempo map by the engine are the native render (known truth), and every method
+is scored in the same three views. The warp is tempo conversion alone, as for
+probes, and `auto` is still the headline.
+
+| Song | bpm | Length | What it is for |
+|---|---|---|---|
+| `neon-drive` | 126 | 69 s | Four on the floor: steady kick and offbeat hats, saw plucks, arpeggio, pad and lead |
+| `rainy-lofi` | 88 | 87 s | Sparse, soft drums with ghost notes, round bass and keys, mellow pad |
+| `breakbeat-run` | 138 | 70 s | Dense syncopated breakbeat, sixteenth hats, growling bass, stabs |
+| `glass-ambient` | 100 | 86 s | Almost no drums: bell plucks, long pads, a deep sine bass |
+| `funk-engine` | 110 | 70 s | Syncopated plucked bass, ghosted snares, clav stabs |
+
+Each has an intro, verse, chorus, breakdown and drop. They are written in
+`src/song/` as parts and patterns in beats (`music.rs` documents the little
+pattern language), then built into a project through the normal commands: a
+track per part, and each instrument (`kit.rs`) a group node made of oscillators,
+noise, filters, envelopes, VCAs and Math, with its controls as group inputs and
+everything editable. `songs/*.ron` are those projects at the song's own tempo
+(`noodle render songs/neon-drive.ron out.wav` plays one; `UPDATE_SONGS=1 cargo
+test -p noodle-eval --test songs` rewrites them after a change to the songs, and
+the test fails while they are stale).
+
+The default run takes each song's **excerpt** (15 to 20 s, the busiest stretch,
+which is what joins the CI tests); `--full` takes the whole song and names its
+rows `NAME-full`. The committed baseline is `baseline/songs.json`, the excerpts
+over the whole tempo grid and every method; like the probes' it is a before and
+after, not a threshold.
+
+Things to know when reading a song's numbers:
+
+- The native render keeps each sound's length in seconds and moves only where
+  it starts, as a synth does. The songs therefore use no echo or LFO, whose
+  rates are in seconds or hertz and would not follow the tempo: no stretcher
+  could reproduce them, so they would only add error to the answer key.
+- On dense material the timing metric pairs an onset with the nearest onset
+  within its window, and a song has about eight onsets a second, so a wrong
+  time map still pairs most of them (median offset about 20 ms at 1.2 times for
+  a true 1.5). Read it next to `drift_ms`; probes show timing sharply.
+- Pitch is meaningless on a full mix (`agreement` is low), as the metric docs
+  say, and shows only for single voices.

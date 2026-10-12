@@ -91,6 +91,9 @@ The case where a native render exists, so a warped song is scored against what i
 **Borrowed truth**:
 The case where no native render exists (a recording, a dropped-in mp3), so the score is relative to the output of established external stretchers and to facts the warp map already tells us, such as where each onset should land and that the pitch should not move.
 
+**Excerpt**:
+The 15 to 20 s stretch of a generated song, whole bars of its busiest part, that stands in for the song in tests. The whole song is for the dev command.
+
 **Probe**:
 A short, controlled signal (a click train, a held chord, a sweep, a lone kick) used to show which kind of sound a warp method fails on. Songs show how a method sounds; probes show why it fails.
 

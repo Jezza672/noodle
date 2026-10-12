@@ -27,6 +27,7 @@
 use crate::clip::Clip;
 use crate::probe::{BEATS, Probe};
 use crate::report::evaluate;
+use crate::song::{Range, Song};
 use crate::tempo::{TempoCase, steady};
 use crate::timemap::TimeMap;
 use noodle_core::{
@@ -128,6 +129,9 @@ impl Row {
 pub struct Harness {
     pub rate: u32,
     pub source_bpm: f64,
+    /// How long the piece is, in quarter notes: what a ramp, a step and a
+    /// wobble stretch over, and where the source map ends.
+    pub beats: f64,
     dir: tempfile::TempDir,
     files: Cell<usize>,
 }
@@ -137,9 +141,17 @@ impl Harness {
         Ok(Self {
             rate,
             source_bpm,
+            beats: BEATS,
             dir: tempfile::tempdir()?,
             files: Cell::new(0),
         })
+    }
+
+    /// The same harness for a piece of `beats` quarter notes (a probe's
+    /// [`BEATS`] by default).
+    pub fn with_beats(mut self, beats: f64) -> Self {
+        self.beats = beats;
+        self
     }
 
     /// The probe at the source tempo.
@@ -149,7 +161,7 @@ impl Harness {
 
     /// The target tempo map of `case`.
     pub fn target(&self, case: TempoCase) -> TempoMap {
-        case.map(self.source_bpm, BEATS)
+        case.map(self.source_bpm, self.beats)
     }
 
     /// Where target time falls in the source, for [`View::Source`].
@@ -158,7 +170,7 @@ impl Harness {
             return TimeMap::Speed(ratio);
         }
         let seconds_per_beat = 60.0 / self.source_bpm;
-        let end = Tick::from_quarters(BEATS);
+        let end = Tick::from_quarters(self.beats);
         let mut points: Vec<(f64, f64)> = target
             .tempos()
             .iter()
@@ -177,10 +189,58 @@ impl Harness {
         case: TempoCase,
         methods: &[Method],
     ) -> Result<Vec<Row>, String> {
-        let rate = self.rate;
-        let source = self.source(probe);
         let target = self.target(case);
-        let native = probe.render(&target, rate);
+        let native = probe.render(&target, self.rate);
+        self.score(probe.name(), self.source(probe), native, case, methods)
+    }
+
+    /// A harness for `range` of `song`: at the song's own tempo, as long as
+    /// the range.
+    pub fn for_song(song: &Song, range: Range, rate: u32) -> std::io::Result<Self> {
+        Ok(Self::new(rate, song.bpm)?.with_beats(range.beats()))
+    }
+
+    /// Scores `methods` on `range` of `song` at one target tempo, in every
+    /// view, under `name`. The source is the song rendered at its own tempo;
+    /// the native render is the same notes rendered at the target tempo map
+    /// (known truth).
+    pub fn run_song(
+        &self,
+        name: &str,
+        song: &Song,
+        range: Range,
+        case: TempoCase,
+        methods: &[Method],
+    ) -> Result<Vec<Row>, String> {
+        let (source, native) = self.song_renders(song, range, case)?;
+        self.score(name, source, native, case, methods)
+    }
+
+    /// The source and the native render of `range` of `song` for `case`.
+    pub fn song_renders(
+        &self,
+        song: &Song,
+        range: Range,
+        case: TempoCase,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let source = song.render(&steady(song.bpm), range, self.rate)?;
+        let native = song.render(&self.target(case), range, self.rate)?;
+        Ok((source, native))
+    }
+
+    /// Scores `methods` on a piece whose source (at the source tempo) and
+    /// native render (at the `case`'s target tempo) the caller has made:
+    /// both stereo, `self.beats` long.
+    pub fn score(
+        &self,
+        name: &str,
+        source: Vec<f32>,
+        native: Vec<f32>,
+        case: TempoCase,
+        methods: &[Method],
+    ) -> Result<Vec<Row>, String> {
+        let rate = self.rate;
+        let target = self.target(case);
         let frames = native.len() / 2;
         let source_map = self.source_map(case, &target);
         let analysis = analyse(&source, rate);
@@ -195,7 +255,7 @@ impl Harness {
             };
             let warped = self
                 .warp(&source, tempo, mode, &target, frames)
-                .map_err(|e| format!("{} {} {}: {e}", probe.name(), case.name(), method.name()))?;
+                .map_err(|e| format!("{} {} {}: {e}", name, case.name(), method.name()))?;
             // Back to the source tempo: the clip's tempo is the target's.
             let back_tempo = TempoCurve::from_tempo_map(&target, Tick::ZERO, 0.0, seconds);
             let back = self
@@ -207,12 +267,7 @@ impl Harness {
                     source.len() / 2,
                 )
                 .map_err(|e| {
-                    format!(
-                        "{} {} {} round trip: {e}",
-                        probe.name(),
-                        case.name(),
-                        method.name()
-                    )
+                    format!("{} {} {} round trip: {e}", name, case.name(), method.name())
                 })?;
             for view in View::ALL {
                 let (reference, test, map) = match view {
@@ -234,7 +289,7 @@ impl Harness {
                     metrics.push(("detected_bpm".into(), analysis.tempo.unwrap_or(f64::NAN)));
                 }
                 rows.push(Row {
-                    probe: probe.name().into(),
+                    probe: name.into(),
                     case: case.name(),
                     method,
                     view,
