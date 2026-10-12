@@ -686,26 +686,36 @@ the hub's streams, which is cheap enough to follow a marker being dragged;
 turning it off brings the lanes back.
 
 The **stretcher** (`stretch.rs`) is WSOLA over the section's `WarpMap`, run on
-two bands that are added at the end. A linear-phase low-pass at 150 Hz splits
-the source (`Split`, filtered a block at a time and cached); the bass goes to one
-band and the rest (source minus bass) to the other. One set of grains can't
-serve both: the shift that lines up a vocal's period is a random phase jump for
-the bass under it, which detunes and pumps a bass line. Each band has Hann
-grains read from the source at natural speed where the map puts it and moved to the offset
-that best continues the grain before (normalised correlation of the mixed-down
-audio, coarse then fine). The upper band's grains are 40 ms (hopped by 20 ms
-in the output) and move up to 10 ms; the bass band's are 100 ms and move up to
-12.5 ms, half a period of a 40 Hz note. All channels use the same offsets; the output is
+two bands that are added at the end. The source is split by a linear-phase
+low-pass at 150 Hz (`Split`: a triangular anti-alias filter, every eighth
+sample, a 511-tap FIR at that rate and cubic interpolation back up, a block at a
+time and cached); the bass goes to one band and the rest (source minus bass) to
+the other. One set of grains can't serve both: the shift that lines up a
+vocal's period is a random phase jump for the bass under it, which detunes and
+pumps a bass line. Each band has Hann grains read from the source at natural
+speed where the map puts it and moved to the offset that best continues the
+grain before (normalised correlation of the mixed-down audio, coarse then
+fine). The upper band's grains are 40 ms (hopped by 20 ms in the output) and
+move up to 10 ms; the bass band's are 100 ms and move up to 12.5 ms, half a
+period of a 40 Hz note. All channels use the same offsets; the output is
 stereo. A grain that would run past its part of the source is moved back to
 repeat the last stretch of it, so the end of the section doesn't go silent.
-After a seek it renders three hops it throws away. **Beats** cuts the section at
-the transients `detect_onsets` finds in the file (found once per source by the
-worker and kept): the map says where each lands in the output, each segment is
-rendered on its own, its first 25 ms are copied from the source at natural speed
-with the search switched off, and a 1.5 ms crossfade ends on the transient. The
-grains of a segment never read past the next transient. Grain is Beats with no
-transients. The stretcher has no I/O; the worker feeds it from its own stream
-through a window of decoded frames (`StreamSource`).
+After a seek it renders three hops it throws away.
+
+Each band is **cut at transients**, and what is cut at differs. The worker finds
+two lists once per source and keeps them: the transients of the whole mix
+(`detect_onsets`) and those of its bass (`detect_bass_onsets`: the level of the
+low-passed audio, rising at once and falling over 40 ms, so that a low tone's
+swing isn't an attack). **Beats** cuts the mids and highs at the first list and
+the bass at the second; **Grain** cuts both at the bass's, so that a kick's body
+and the click on top of it stay together and land where the map says, and a
+sustained note isn't cut. The map says where each transient lands in the output
+and each segment is rendered on its own: its first 25 ms are copied from the
+source at natural speed with the search switched off, and a 1.5 ms crossfade
+ends on the transient. A segment's source is cut to the segment before the bass
+is filtered, so the next hit's bass can't leak in ahead of it. The stretcher has
+no I/O; the worker feeds it from its own stream through a window of decoded
+frames (`StreamSource`).
 
 **Loops.** `ClipWarp::loop_region` is a `LoopRegion` in clip-tempo beats (at
 least `MIN_LOOP_BEATS`, 1, and a round of it at least `MIN_LOOP_SECONDS`, 0.25 s

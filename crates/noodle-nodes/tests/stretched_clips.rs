@@ -239,12 +239,14 @@ fn beats_keeps_the_hits_sharp_where_grain_smears_them() {
     assert_eq!(onsets.len(), 7, "{onsets:?}");
     for (hit, onset) in onsets.iter().enumerate().take(6) {
         // The cut falls on the transient the detector found, which lands
-        // twice as late; from there the attack is the source's, to the frame.
+        // twice as late; from there the attack is the source's to within the
+        // sliver of it below 150 Hz, which is cut only at the bass's own
+        // transients.
         let at = *onset as usize * 2;
         for i in 0..1_000 {
             let (got, want) = (b[at + i], source[*onset as usize + i]);
             assert!(
-                (got - want).abs() < 2e-3,
+                (got - want).abs() < 3e-2,
                 "hit {hit}, frame {i}: {got} vs {want}"
             );
         }

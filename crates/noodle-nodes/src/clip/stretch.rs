@@ -30,12 +30,21 @@ pub trait Source {
     /// Fills `out` (whole frames, interleaved) with the source's frames from
     /// `start`. Frames before the first and after the last are silent.
     fn read(&mut self, start: i64, out: &mut [f32]);
+
+    /// Audio outside `from..to` is to read as silence from now on, before any
+    /// filtering, so that nothing of it leaks in.
+    fn limit(&mut self, _from: i64, _to: i64) {}
 }
 
 /// The crossover between the two bands, in Hz.
 const SPLIT_HZ: f64 = 150.0;
-/// Taps of the linear-phase filter that splits the bands (odd).
-const SPLIT_TAPS: usize = 2047;
+/// The bass is filtered at a rate of about `SPLIT_RATE` Hz (the whole rate
+/// divided by a whole number, so the crossover's width doesn't depend on it), which is
+/// what makes a filter this sharp cheap: a triangular low-pass, every
+/// decimated sample, a linear-phase FIR of `SPLIT_TAPS` taps (odd),
+/// and cubic interpolation back up.
+const SPLIT_RATE: f64 = 6000.0;
+const SPLIT_TAPS: usize = 511;
 /// Frames of filtered source kept at a time.
 const SPLIT_BLOCK: usize = 8192;
 /// The mids and highs: a grain this long (a hop is half of it), moved at most
@@ -142,22 +151,29 @@ pub struct Stretcher<S> {
 
 impl<S: Source> Stretcher<S> {
     /// A stretcher for the section `map` describes, `total` output frames
-    /// long. `onsets` are the source's transients, in source frames (Beats
-    /// mode), or empty (Grain). The stretcher starts at output frame 0.
-    pub fn new(source: S, map: Arc<WarpMap>, onsets: &[u64], total: u64, rate: f32) -> Self {
+    /// long. `cuts` are the source's transients, in source frames, that the
+    /// mids and highs are cut at, and `bass` those the bass is cut at. The
+    /// stretcher starts at output frame 0.
+    pub fn new(
+        source: S,
+        map: Arc<WarpMap>,
+        (cuts, bass): (&[u64], &[u64]),
+        total: u64,
+        rate: f32,
+    ) -> Self {
         let split = Arc::new(Mutex::new(Split::new(source, rate)));
         let low = Band::new(
-            LowSource(split.clone()),
+            LowSource(split.clone(), OPEN),
             map.clone(),
-            onsets,
+            bass,
             total,
             rate,
             (LOW_GRAIN_SECONDS, LOW_SEARCH_SECONDS),
         );
         let high = Band::new(
-            HighSource(split),
+            HighSource(split, OPEN),
             map,
-            onsets,
+            cuts,
             total,
             rate,
             (HIGH_GRAIN_SECONDS, HIGH_SEARCH_SECONDS),
@@ -191,16 +207,22 @@ impl<S: Source> Stretcher<S> {
     }
 }
 
+/// Which filtered block it is, and the limits the source was cut to first.
+type Key = (i64, (i64, i64));
+
 /// The source and its bass, shared by the two bands. The bass is a
 /// linear-phase low-pass, filtered a block at a time and kept, since the
 /// grains read the same audio again and again.
 struct Split<S> {
     source: S,
     channels: usize,
-    /// Half the filter, centre first.
+    /// Half the low-rate filter, centre first.
     kernel: Vec<f32>,
+    /// The anti-alias filter before decimating.
+    triangle: Vec<f32>,
+    decimation: usize,
     /// Filtered blocks (interleaved), oldest first.
-    blocks: Vec<(i64, Vec<f32>)>,
+    blocks: Vec<(Key, Vec<f32>)>,
     raw: Vec<f32>,
     lane: Vec<f32>,
 }
@@ -208,8 +230,9 @@ struct Split<S> {
 impl<S: Source> Split<S> {
     fn new(source: S, rate: f32) -> Self {
         let channels = source.channels().max(1);
+        let decimation = ((f64::from(rate) / SPLIT_RATE).round() as usize).max(1);
         let half = SPLIT_TAPS / 2;
-        let cutoff = SPLIT_HZ / f64::from(rate);
+        let cutoff = SPLIT_HZ * decimation as f64 / f64::from(rate);
         let mut kernel: Vec<f64> = (0..=half)
             .map(|k| {
                 let x = k as f64;
@@ -225,49 +248,93 @@ impl<S: Source> Split<S> {
             .collect();
         let sum = kernel[0] + 2.0 * kernel[1..].iter().sum::<f64>();
         kernel.iter_mut().for_each(|k| *k /= sum);
+        // Two boxes of one decimation step each.
+        let n = decimation;
+        let triangle: Vec<f32> = (0..2 * n - 1)
+            .map(|i| (n - i.abs_diff(n - 1)) as f32 / (n * n) as f32)
+            .collect();
         Self {
             source,
             channels,
             kernel: kernel.into_iter().map(|k| k as f32).collect(),
+            triangle,
+            decimation,
             blocks: Vec::new(),
             raw: Vec::new(),
             lane: Vec::new(),
         }
     }
 
-    fn block(&mut self, index: i64) -> usize {
-        if let Some(at) = self.blocks.iter().position(|(i, _)| *i == index) {
+    fn block(&mut self, index: i64, gate: (i64, i64)) -> usize {
+        let key = (index, gate);
+        if let Some(at) = self.blocks.iter().position(|(k, _)| *k == key) {
             return at;
         }
-        let half = SPLIT_TAPS / 2;
+        let (d, half) = (self.decimation as i64, SPLIT_TAPS / 2);
         let channels = self.channels;
         let first = index * SPLIT_BLOCK as i64;
-        self.raw.resize((SPLIT_BLOCK + 2 * half) * channels, 0.0);
-        self.source.read(first - half as i64, &mut self.raw);
+        // The low-rate samples the interpolation reads, and those the FIR
+        // needs to make them.
+        let ka = first.div_euclid(d) - 1;
+        let kb = (first + SPLIT_BLOCK as i64 - 1).div_euclid(d) + 2;
+        let outputs = (kb - ka + 1) as usize;
+        let inputs = outputs + 2 * half;
+        let k0 = ka - half as i64;
+        let reach = self.decimation - 1;
+        let frames = (inputs - 1) * self.decimation + 2 * reach + 1;
+        self.raw.resize(frames * channels, 0.0);
+        let from = k0 * d - reach as i64;
+        self.source.read(from, &mut self.raw);
+        for (i, frame) in self.raw.chunks_exact_mut(channels).enumerate() {
+            let at = from + i as i64;
+            if at < gate.0 || at >= gate.1 {
+                frame.fill(0.0);
+            }
+        }
         let mut filtered = vec![0.0f32; SPLIT_BLOCK * channels];
+        let mut coarse = vec![0.0f32; inputs];
+        let mut smooth = vec![0.0f32; outputs];
         for channel in 0..channels {
             self.lane.clear();
             self.lane
                 .extend(self.raw.iter().skip(channel).step_by(channels));
-            for n in 0..SPLIT_BLOCK {
-                let centre = n + half;
-                let mut sum = self.kernel[0] * self.lane[centre];
-                let before = &self.lane[n..centre];
-                let after = &self.lane[centre + 1..=centre + half];
+            for (k, slot) in coarse.iter_mut().enumerate() {
+                let window = &self.lane[k * self.decimation..][..2 * reach + 1];
+                *slot = window.iter().zip(&self.triangle).map(|(x, w)| x * w).sum();
+            }
+            for (i, slot) in smooth.iter_mut().enumerate() {
+                let centre = i + half;
+                let mut sum = self.kernel[0] * coarse[centre];
+                let before = &coarse[i..centre];
+                let after = &coarse[centre + 1..=centre + half];
                 for ((k, b), a) in self.kernel[1..].iter().zip(before.iter().rev()).zip(after) {
                     sum += k * (b + a);
                 }
-                filtered[n * channels + channel] = sum;
+                *slot = sum;
+            }
+            for n in 0..SPLIT_BLOCK {
+                let at = first + n as i64;
+                let k = at.div_euclid(d);
+                let t = at.rem_euclid(d) as f32 / self.decimation as f32;
+                let i = (k - ka) as usize;
+                let (p0, p1, p2, p3) = (smooth[i - 1], smooth[i], smooth[i + 1], smooth[i + 2]);
+                // Catmull-Rom.
+                filtered[n * channels + channel] = p1
+                    + 0.5
+                        * t
+                        * (p2 - p0
+                            + t * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3
+                                + t * (3.0 * (p1 - p2) + p3 - p0)));
             }
         }
-        if self.blocks.len() >= 6 {
+        if self.blocks.len() >= 10 {
             self.blocks.remove(0);
         }
-        self.blocks.push((index, filtered));
+        self.blocks.push((key, filtered));
         self.blocks.len() - 1
     }
 
-    fn low(&mut self, start: i64, out: &mut [f32]) {
+    fn low(&mut self, start: i64, gate: (i64, i64), out: &mut [f32]) {
         let channels = self.channels;
         let mut done = 0;
         let frames = out.len() / channels;
@@ -276,7 +343,7 @@ impl<S: Source> Split<S> {
             let index = at.div_euclid(SPLIT_BLOCK as i64);
             let offset = at.rem_euclid(SPLIT_BLOCK as i64) as usize;
             let n = (SPLIT_BLOCK - offset).min(frames - done);
-            let block = self.block(index);
+            let block = self.block(index, gate);
             out[done * channels..(done + n) * channels]
                 .copy_from_slice(&self.blocks[block].1[offset * channels..(offset + n) * channels]);
             done += n;
@@ -284,8 +351,10 @@ impl<S: Source> Split<S> {
     }
 }
 
-struct LowSource<S>(Arc<Mutex<Split<S>>>);
-struct HighSource<S>(Arc<Mutex<Split<S>>>);
+const OPEN: (i64, i64) = (i64::MIN, i64::MAX);
+
+struct LowSource<S>(Arc<Mutex<Split<S>>>, (i64, i64));
+struct HighSource<S>(Arc<Mutex<Split<S>>>, (i64, i64));
 
 impl<S: Source> Source for LowSource<S> {
     fn channels(&self) -> usize {
@@ -293,7 +362,11 @@ impl<S: Source> Source for LowSource<S> {
     }
 
     fn read(&mut self, start: i64, out: &mut [f32]) {
-        self.0.lock().unwrap().low(start, out);
+        self.0.lock().unwrap().low(start, self.1, out);
+    }
+
+    fn limit(&mut self, from: i64, to: i64) {
+        self.1 = (from, to);
     }
 }
 
@@ -305,13 +378,24 @@ impl<S: Source> Source for HighSource<S> {
     fn read(&mut self, start: i64, out: &mut [f32]) {
         let mut split = self.0.lock().unwrap();
         split.source.read(start, out);
+        let gate = self.1;
+        for (i, frame) in out.chunks_exact_mut(split.channels).enumerate() {
+            let at = start + i as i64;
+            if at < gate.0 || at >= gate.1 {
+                frame.fill(0.0);
+            }
+        }
         let mut low = std::mem::take(&mut split.lane);
         low.resize(out.len(), 0.0);
-        split.low(start, &mut low);
+        split.low(start, gate, &mut low);
         for (o, l) in out.iter_mut().zip(&low) {
             *o -= l;
         }
         split.lane = low;
+    }
+
+    fn limit(&mut self, from: i64, to: i64) {
+        self.1 = (from, to);
     }
 }
 
@@ -456,6 +540,11 @@ impl<S: Source> Band<S> {
         let channels = self.channels;
         let win = self.win;
         let hop = self.hop as usize;
+        // Nothing of the neighbouring hits may leak in, filtered or not.
+        self.source.limit(
+            seg.s0 as i64 - 2 * self.fade * (seg.lead > 0) as i64,
+            seg.s1,
+        );
         let mut nominal = self.source_at(&seg, a).round() as i64;
         if a >= seg.o0 + seg.attack {
             // Slowed down, the grains would run past the end of their part of
@@ -693,7 +782,13 @@ mod tests {
 
     fn render(data: Vec<f32>, channels: usize, map: Arc<WarpMap>, onsets: &[u64]) -> Vec<f32> {
         let total = map.out_len().round() as u64;
-        let mut stretcher = Stretcher::new(Memory { data, channels }, map, onsets, total, RATE);
+        let mut stretcher = Stretcher::new(
+            Memory { data, channels },
+            map,
+            (onsets, onsets),
+            total,
+            RATE,
+        );
         let mut out = vec![0.0; total as usize * 2];
         assert_eq!(stretcher.read(&mut out), total as usize);
         out
@@ -779,7 +874,8 @@ mod tests {
     fn a_seek_lands_on_steady_audio() {
         let data = sine(440.0, 96_000);
         let map = steady(96_000, 192_000);
-        let mut stretcher = Stretcher::new(Memory { data, channels: 1 }, map, &[], 192_000, RATE);
+        let mut stretcher =
+            Stretcher::new(Memory { data, channels: 1 }, map, (&[], &[]), 192_000, RATE);
         stretcher.seek(100_000);
         let mut out = vec![0.0; 24_000];
         assert_eq!(stretcher.read(&mut out), 12_000);
@@ -810,7 +906,8 @@ mod tests {
             })
             .collect();
         let map = steady(96_000, 192_000);
-        let mut stretcher = Stretcher::new(Memory { data, channels: 1 }, map, &[], 192_000, RATE);
+        let mut stretcher =
+            Stretcher::new(Memory { data, channels: 1 }, map, (&[], &[]), 192_000, RATE);
         // Output frame 70 000 is source frame 35 000: still 440 Hz. Output
         // frame 150 000 is source 75 000: 880 Hz.
         for (pos, hz) in [(150_000, 880), (70_000, 440), (150_000, 880)] {
@@ -966,13 +1063,14 @@ mod mix_tests {
     }
 
     fn stretched(data: Vec<f32>, speed: f64) -> Vec<f32> {
+        let bass_hits = noodle_io::detect_bass_onsets(&data, 48_000);
         let src = data.len() as u64;
         let total = (src as f64 / speed) as u64;
         let map = Arc::new(WarpMap::from_knots(vec![
             (0.0, 0.0),
             (total as f64, src as f64),
         ]));
-        let mut s = Stretcher::new(Memory(data), map, &[], total, RATE);
+        let mut s = Stretcher::new(Memory(data), map, (&bass_hits, &bass_hits), total, RATE);
         let mut out = vec![0.0; total as usize * 2];
         assert_eq!(s.read(&mut out), total as usize);
         out.iter().step_by(2).copied().collect()
@@ -1050,6 +1148,117 @@ mod mix_tests {
                 assert!(
                     wobble < ideal + 0.02,
                     "speed {speed}, note {n}: wobble {wobble:.3} (source {ideal:.3})"
+                );
+            }
+        }
+    }
+
+    /// A kick (a falling sine, 130 to 45 Hz, over 0.3 s) with a click on top
+    /// every half second, silence between.
+    fn drums(frames: usize) -> (Vec<f32>, Vec<u64>) {
+        let mut out = vec![0.0f32; frames];
+        let mut seed = 5u32;
+        let mut onsets = vec![];
+        for start in (12_000..frames - 24_000).step_by(24_000) {
+            onsets.push(start as u64);
+            let mut phase = 0.0f32;
+            for i in 0..14_400 {
+                let t = i as f32 / 14_400.0;
+                phase += TAU * (45.0 + 85.0 * (-t * 12.0).exp()) / RATE;
+                out[start + i] += phase.sin() * 0.8 * (-t * 5.0).exp();
+                if i < 150 {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    out[start + i] += ((seed >> 8) as f32 / (1 << 23) as f32 - 1.0) * 0.5;
+                }
+            }
+        }
+        (out, onsets)
+    }
+
+    fn beats(data: Vec<f32>, onsets: &[u64], speed: f64) -> Vec<f32> {
+        let src = data.len() as u64;
+        let total = (src as f64 / speed) as u64;
+        let map = Arc::new(WarpMap::from_knots(vec![
+            (0.0, 0.0),
+            (total as f64, src as f64),
+        ]));
+        let mut s = Stretcher::new(Memory(data), map, (onsets, onsets), total, RATE);
+        let mut out = vec![0.0; total as usize * 2];
+        assert_eq!(s.read(&mut out), total as usize);
+        out.iter().step_by(2).copied().collect()
+    }
+
+    /// How far the kick's body trails its click, per hit, in frames: the
+    /// bass's first half-peak against the click's loudest sample.
+    fn body_lags(out: &[f32], hits: &[usize]) -> Vec<i64> {
+        let bass = low(out);
+        hits.iter()
+            .map(|&at| {
+                let from = at.saturating_sub(1_200);
+                let click = (from..from + 2_400)
+                    .max_by(|&a, &b| {
+                        (out[a] - bass[a])
+                            .abs()
+                            .total_cmp(&(out[b] - bass[b]).abs())
+                    })
+                    .unwrap();
+                let body = bass[from..from + 6_000]
+                    .iter()
+                    .fold(0.0f32, |m, x| m.max(x.abs()));
+                let half = (from..from + 6_000)
+                    .find(|&i| bass[i].abs() > 0.5 * body)
+                    .unwrap();
+                half as i64 - click as i64
+            })
+            .collect()
+    }
+
+    /// Grain cuts at the bass's transients, so a kick's body doesn't drift
+    /// from the click on top of it (the bands align on their own).
+    #[test]
+    fn grain_keeps_a_kick_and_its_click_together() {
+        let (data, onsets) = drums(8 * 48_000);
+        let hits: Vec<usize> = onsets.iter().map(|&o| o as usize).collect();
+        let ideal = body_lags(&data, &hits);
+        let bass_hits = noodle_io::detect_bass_onsets(&data, 48_000);
+        for speed in [0.8f64, 1.25] {
+            let out = beats(data.clone(), &bass_hits, speed);
+            let at: Vec<usize> = onsets
+                .iter()
+                .map(|&o| (o as f64 / speed) as usize)
+                .collect();
+            for (n, (heard, want)) in body_lags(&out, &at).iter().zip(&ideal).enumerate() {
+                assert!(
+                    (heard - want).abs() <= 8,
+                    "speed {speed}, hit {n}: body trails the click by {heard} frames, not {want}"
+                );
+            }
+        }
+    }
+
+    /// Beats filters each hit's bass on its own: the next hit's bass isn't
+    /// heard before the hit, and at natural speed the source comes back.
+    #[test]
+    fn beats_keeps_the_next_hits_bass_out_and_the_source_whole() {
+        let (data, onsets) = drums(8 * 48_000);
+        let out = beats(data.clone(), &onsets, 1.0);
+        let error = data
+            .iter()
+            .zip(&out)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>();
+        let error = (error / data.len() as f32).sqrt();
+        assert!(error < 0.0005, "{error}");
+        for speed in [0.5f64, 0.7] {
+            let out = beats(data.clone(), &onsets, speed);
+            for o in &onsets[1..] {
+                let at = (*o as f64 / speed) as usize;
+                let before = out[at - 2_400..at - 100]
+                    .iter()
+                    .fold(0.0f32, |m, x| m.max(x.abs()));
+                assert!(
+                    before < 0.01,
+                    "speed {speed}: {before} before the hit at {at}"
                 );
             }
         }
