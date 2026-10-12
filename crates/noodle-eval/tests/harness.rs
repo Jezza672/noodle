@@ -165,3 +165,25 @@ fn auto_without_a_detected_tempo_leaves_the_clip_at_the_timeline_tempo() {
         grain.metrics
     );
 }
+
+#[test]
+fn export_writes_the_source_native_warped_and_round_trip_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness();
+    h.export = Some(dir.path().to_path_buf());
+    h.run(
+        Probe::ClickTrain,
+        TempoCase::parse("x1.5").unwrap(),
+        &[Method::Grain],
+    )
+    .unwrap();
+    for name in [
+        "click-train_source",
+        "click-train_x1.5_native",
+        "click-train_x1.5_grain_warped",
+        "click-train_x1.5_grain_roundtrip",
+    ] {
+        let audio = noodle_io::decode_file(&dir.path().join(format!("{name}.wav"))).unwrap();
+        assert!(!audio.samples.is_empty(), "{name} is empty");
+    }
+}

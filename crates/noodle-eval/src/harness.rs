@@ -132,7 +132,7 @@ pub struct Harness {
     dir: tempfile::TempDir,
     files: Cell<usize>,
     /// When set, [`run`](Self::run) also writes every render here as a WAV
-    /// to listen to: `<probe>_<case>_source.wav`, `_native.wav`, and per
+    /// to listen to: `<probe>_source.wav`, `<probe>_<case>_native.wav`, and per
     /// method `_<method>_warped.wav` and `_<method>_roundtrip.wav`.
     pub export: Option<PathBuf>,
 }
@@ -192,7 +192,7 @@ impl Harness {
         let analysis = analyse(&source, rate);
         let seconds = frames as f64 / f64::from(rate);
         let name = format!("{}_{}", probe.name(), case.name());
-        self.export_wav(&format!("{name}_source"), &source)?;
+        self.export_wav(&format!("{}_source", probe.name()), &source)?;
         self.export_wav(&format!("{name}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
@@ -205,6 +205,7 @@ impl Harness {
             let warped = self
                 .warp(&source, tempo, mode, &target, frames)
                 .map_err(|e| format!("{} {} {}: {e}", probe.name(), case.name(), method.name()))?;
+            self.export_wav(&format!("{name}_{}_warped", method.name()), &warped)?;
             // Back to the source tempo: the clip's tempo is the target's.
             let back_tempo = TempoCurve::from_tempo_map(&target, Tick::ZERO, 0.0, seconds);
             let back = self
@@ -223,9 +224,7 @@ impl Harness {
                         method.name()
                     )
                 })?;
-            let m = method.name();
-            self.export_wav(&format!("{name}_{m}_warped"), &warped)?;
-            self.export_wav(&format!("{name}_{m}_roundtrip"), &back)?;
+            self.export_wav(&format!("{name}_{}_roundtrip", method.name()), &back)?;
             for view in View::ALL {
                 let (reference, test, map) = match view {
                     View::Native => (&native, &warped, TimeMap::Identity),
