@@ -137,6 +137,8 @@ impl EngineNode for BoomNode {
 }
 
 const FRAMES: usize = 64 * 400;
+/// Runs of each configuration whose fastest counts in the speed-up test.
+const RUNS: usize = 4;
 
 #[test]
 fn a_profile_reports_each_nodes_share_and_the_blocks() {
@@ -214,9 +216,6 @@ fn helper_threads_speed_up_side_by_side_branches() {
         parallel.blocks
     );
 }
-
-/// Runs of each configuration whose fastest counts in the speed-up test.
-const RUNS: usize = 4;
 
 #[test]
 fn a_panicking_node_on_workers_is_silenced_and_counted() {
