@@ -9,7 +9,7 @@ use noodle_core::{Clip, ClipId, Command, Node, NodeId, Tick};
 use noodle_io::write_wav;
 
 use super::{TRACK_INPUT, TimelineState, show};
-use crate::session::{Edit, Nodes, Session};
+use crate::session::{ArmKind, Edit, Nodes, Session};
 
 struct Rig {
     session: Session,
@@ -69,8 +69,8 @@ fn rig() -> (H, ClipId) {
                 rig.notices.extend(out.notice);
                 rig.picks.extend(out.pick);
                 rig.opened.extend(out.open_midi);
-                for (track, on) in out.arm {
-                    rig.session.arm(track, on);
+                for (track, kind, on) in out.arm {
+                    rig.session.arm_kind(track, kind, on);
                 }
             },
             rig,
@@ -1006,13 +1006,26 @@ fn drops_find_their_track_below_an_automation_lane() {
 fn the_arm_button_arms_and_disarms_its_track() {
     let (mut h, _) = grouped();
     let first = NodeId(1);
-    assert!(!h.state().session.is_armed(first));
-    h.get_all_by_label("R").next().unwrap().click();
+    let armed = |h: &H| {
+        (
+            h.state().session.is_armed(first, ArmKind::Audio),
+            h.state().session.is_armed(first, ArmKind::Midi),
+        )
+    };
+    assert_eq!(armed(&h), (false, false));
+    // Each kind of input has its own button.
+    h.get_all_by_label("RA").next().unwrap().click();
     h.run();
-    assert!(h.state().session.is_armed(first));
-    h.get_all_by_label("R").next().unwrap().click();
+    assert_eq!(armed(&h), (true, false));
+    h.get_all_by_label("RM").next().unwrap().click();
     h.run();
-    assert!(!h.state().session.is_armed(first));
+    assert_eq!(armed(&h), (true, true));
+    h.get_all_by_label("RA").next().unwrap().click();
+    h.run();
+    assert_eq!(armed(&h), (false, true));
+    h.get_all_by_label("RM").next().unwrap().click();
+    h.run();
+    assert_eq!(armed(&h), (false, false));
 }
 
 #[test]
@@ -1411,4 +1424,91 @@ fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
     assert_eq!(made.as_midi().unwrap().length, Tick(3840));
     assert_eq!(h.state().opened, [id]);
     assert!(h.state().timeline.selected().contains(&id));
+}
+
+/// Arms the first track and starts a take on a fake input.
+fn record(h: &mut H) -> noodle_io::RecordTap {
+    h.state_mut().session.arm(NodeId(1), true);
+    let tap = h.state_mut().session.fake_recorder();
+    h.state_mut().session.record();
+    assert!(h.state().session.is_recording());
+    tap
+}
+
+#[test]
+fn a_take_in_progress_is_drawn_growing_with_the_playhead() {
+    let (mut h, _) = rig();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_none());
+    let _tap = record(&mut h);
+    // Playing for a bar: two seconds is four quarter notes.
+    h.state_mut().session.advance_playhead(Tick(3840));
+    h.run();
+    let early = h.state().timeline.take_rect(NodeId(1)).unwrap();
+    h.state_mut().session.advance_playhead(Tick(7680));
+    h.run();
+    let later = h.state().timeline.take_rect(NodeId(1)).unwrap();
+    assert_eq!(later.left(), early.left());
+    assert!(
+        (later.width() - early.width() * 2.0).abs() < 1.0,
+        "{early:?} {later:?}"
+    );
+    // On the armed track alone.
+    assert!(h.state().timeline.take_rect(NodeId(2)).is_none());
+}
+
+#[test]
+fn a_take_in_progress_shows_its_notes() {
+    let (mut h, _) = rig();
+    let _tap = record(&mut h);
+    h.state_mut().session.advance_playhead(Tick(1920));
+    h.run();
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"Recording".to_owned())
+    );
+    h.state().session.midi_bus().send([0x90, 60, 100]);
+    h.state_mut().session.maintain();
+    h.run();
+    assert!(
+        h.state()
+            .timeline
+            .drawn_text()
+            .contains(&"Recording (1 note)".to_owned())
+    );
+}
+
+#[test]
+fn a_finished_take_is_no_longer_drawn_as_one() {
+    let (mut h, _) = rig();
+    let _tap = record(&mut h);
+    h.run();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_some());
+    h.state_mut().session.stop_recording();
+    h.run();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_none());
+}
+
+#[test]
+fn a_take_is_drawn_only_on_tracks_armed_for_what_it_holds() {
+    let (mut h, _) = rig();
+    h.state_mut()
+        .session
+        .arm_kind(NodeId(1), ArmKind::Audio, true);
+    h.state_mut()
+        .session
+        .arm_kind(NodeId(2), ArmKind::Midi, true);
+    let _tap = h.state_mut().session.fake_recorder();
+    h.state_mut().session.record();
+    h.state().session.midi_bus().send([0x90, 60, 100]);
+    h.state_mut().session.maintain();
+    h.state_mut().session.advance_playhead(Tick(1920));
+    h.run();
+    assert!(h.state().timeline.take_rect(NodeId(1)).is_some());
+    assert!(h.state().timeline.take_rect(NodeId(2)).is_some());
+    // The notes are on the MIDI track's take alone.
+    let text = h.state().timeline.drawn_text();
+    assert!(text.contains(&"Recording".to_owned()), "{text:?}");
+    assert!(text.contains(&"Recording (1 note)".to_owned()), "{text:?}");
 }

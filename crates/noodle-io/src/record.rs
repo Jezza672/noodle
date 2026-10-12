@@ -17,8 +17,8 @@ use std::fmt;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ use cpal::{FromSample, Sample};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::WavError;
+use crate::{Peak, PeaksBuilder, WavError};
 
 /// How much the ring holds, in seconds. The writer drains it every few
 /// milliseconds, so this only fills if the disk stalls.
@@ -107,7 +107,8 @@ impl RecordTap {
             input.len().is_multiple_of(self.channels),
             "input is whole frames"
         );
-        let fits = input.len().min(self.producer.slots());
+        // Whole frames only, or the channels would swap after a drop.
+        let fits = input.len().min(self.producer.slots()) / self.channels * self.channels;
         if fits < input.len() {
             self.dropped
                 .fetch_add((input.len() - fits) as u64, Ordering::Relaxed);
@@ -145,6 +146,9 @@ pub struct Recorder {
     channels: usize,
     sample_rate: u32,
     flush_every: usize,
+    /// The waveform of the recording so far, which the writer keeps up to
+    /// date for drawing it while it runs.
+    live: Arc<Mutex<PeaksBuilder>>,
     /// The ring's reading end, while no writer has it.
     idle: Option<Consumer<f32>>,
     active: Option<Active>,
@@ -179,6 +183,7 @@ fn record_path_with(
         channels,
         sample_rate: sample_rate as u32,
         flush_every: (flush_frames * channels).max(1),
+        live: Arc::new(Mutex::new(PeaksBuilder::new(channels, sample_rate as u32))),
         idle: Some(consumer),
         active: None,
     };
@@ -218,11 +223,14 @@ impl Recorder {
         self.dropped.store(0, Ordering::Relaxed);
         let stop = Arc::new(AtomicBool::new(false));
         let flush_every = self.flush_every;
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) =
+            PeaksBuilder::new(self.channels, self.sample_rate);
+        let live = Arc::clone(&self.live);
         let thread = std::thread::Builder::new()
             .name("noodle-record".into())
             .spawn({
                 let stop = Arc::clone(&stop);
-                move || write_out(writer, consumer, &stop, flush_every)
+                move || write_out(writer, consumer, &stop, flush_every, &live)
             })
             .map_err(WavError::IoError)?;
         self.active = Some(Active {
@@ -232,6 +240,16 @@ impl Recorder {
         });
         self.armed.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// The recording so far as `columns` peaks spread over all of it, and
+    /// its length in frames, for drawing it as it grows. Only complete
+    /// blocks of [`BLOCK_FRAMES`](crate::BLOCK_FRAMES) frames count, so it
+    /// trails the input by a few milliseconds.
+    pub fn live_peaks(&self, columns: usize) -> (u64, Vec<Peak>) {
+        let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        let frames = live.frames();
+        (frames, live.columns(0, frames, columns))
     }
 
     /// Stops recording and finishes the file.
@@ -273,6 +291,7 @@ fn write_out(
     mut consumer: Consumer<f32>,
     stop: &AtomicBool,
     flush_every: usize,
+    live: &Mutex<PeaksBuilder>,
 ) -> Written {
     let mut samples = 0u64;
     let mut since_flush = 0usize;
@@ -288,6 +307,11 @@ fn write_out(
         let (first, second) = chunk.as_slices();
         for &sample in first.iter().chain(second) {
             writer.write_sample(sample)?;
+        }
+        {
+            let mut live = live.lock().unwrap_or_else(|e| e.into_inner());
+            live.push(first);
+            live.push(second);
         }
         samples += available as u64;
         since_flush += available;
@@ -372,6 +396,24 @@ mod tests {
     }
 
     #[test]
+    fn the_waveform_is_available_while_recording() {
+        let (mut tap, mut recorder) = record_path(1, RATE);
+        recorder.start(&temp("live.wav")).unwrap();
+        let mut block = vec![0.0f32; crate::BLOCK_FRAMES as usize];
+        block[3] = 0.75;
+        tap.push(&block);
+        eventually(|| recorder.live_peaks(1).0 == crate::BLOCK_FRAMES.into());
+        let (frames, peaks) = recorder.live_peaks(2);
+        assert_eq!(frames, u64::from(crate::BLOCK_FRAMES));
+        assert_eq!(peaks.iter().map(|p| p.max).fold(0.0, f32::max), 0.75);
+        recorder.stop().unwrap();
+        // A new recording starts with a clean waveform.
+        recorder.start(&temp("live2.wav")).unwrap();
+        assert_eq!(recorder.live_peaks(1).0, 0);
+        recorder.stop().unwrap();
+    }
+
+    #[test]
     fn nothing_is_recorded_outside_a_recording() {
         let path = temp("outside.wav");
         let (mut tap, mut recorder) = record_path(1, RATE);
@@ -385,6 +427,23 @@ mod tests {
         tap.push(&[5.0f32]);
         recorder.stop().unwrap();
         assert_eq!(read_wav(&path).unwrap().samples, [5.0]);
+    }
+
+    #[test]
+    fn a_full_ring_drops_whole_frames_and_the_recording_survives() {
+        // Three frames of room in a stereo ring: a four frame block fits
+        // only three, and not 6.5 of them.
+        let (producer, consumer) = RingBuffer::new(7);
+        let armed = Arc::new(AtomicBool::new(true));
+        let mut tap = RecordTap {
+            producer,
+            channels: 2,
+            armed,
+            dropped: Arc::new(AtomicU64::new(0)),
+        };
+        tap.push(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(consumer.slots(), 6);
+        assert_eq!(tap.dropped.load(Ordering::Relaxed), 2);
     }
 
     #[test]

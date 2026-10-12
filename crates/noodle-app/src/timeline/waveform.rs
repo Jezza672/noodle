@@ -8,7 +8,7 @@ use noodle_core::{AudioClip, ClipId};
 use noodle_io::{Peak, Peaks};
 
 /// The strip along the top of a clip that its name goes in.
-const LABEL: f32 = 15.0;
+pub(super) const LABEL: f32 = 15.0;
 /// At most this many columns, however wide the clip is zoomed.
 const MAX_COLUMNS: usize = 4096;
 
@@ -86,7 +86,7 @@ impl Cache {
 }
 
 /// The waveform's colour on a clip of `clip_colour`.
-fn ink(clip_colour: Color32) -> Color32 {
+pub(super) fn ink(clip_colour: Color32) -> Color32 {
     clip_colour.gamma_multiply(0.45)
 }
 

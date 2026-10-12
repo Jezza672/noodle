@@ -594,6 +594,12 @@ impl Playback {
             .stop()
     }
 
+    /// The recording so far as peaks, for drawing it while it runs. See
+    /// [`Recorder::live_peaks`].
+    pub fn live_peaks(&self, columns: usize) -> Option<(u64, Vec<crate::Peak>)> {
+        self.recorder.as_ref().map(|r| r.live_peaks(columns))
+    }
+
     /// Whether a recording is running. A recording that failed (the disk
     /// filled up, say) stops being one; [`stop_recording`](Self::stop_recording)
     /// says why.
