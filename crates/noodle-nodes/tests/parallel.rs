@@ -5,6 +5,8 @@
 //! One test function, because it counts allocations on every thread.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
@@ -15,23 +17,78 @@ static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
 
-fn note() {
-    if WATCH.load(Ordering::Relaxed) {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+/// Who allocated, for the failure message: the thread's name and the size.
+static CULPRITS: Mutex<Vec<([u8; 32], usize)>> = Mutex::new(Vec::new());
+
+/// Whether a thread is on the audio path (this test's thread, or one of the
+/// engine's workers) and so must not allocate; foreign threads are not.
+#[derive(Clone, Copy, PartialEq)]
+enum Role {
+    Unknown,
+    Audio,
+    Foreign,
+}
+
+thread_local! {
+    static ROLE: Cell<Role> = const { Cell::new(Role::Unknown) };
+    static NAME: Cell<[u8; 32]> = const { Cell::new([0; 32]) };
+    static DECIDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The role of the calling thread: workers by name (the engine names them),
+/// anything else, such as the test harness's own threads or the system's,
+/// is none of the audio path's business. The test marks its own thread.
+fn role() -> Role {
+    let known = ROLE.get();
+    if known != Role::Unknown {
+        return known;
+    }
+    // Asking for the current thread may allocate (a thread that Rust did not
+    // start gets a handle on first use): not recursively.
+    if DECIDING.replace(true) {
+        return Role::Foreign;
+    }
+    let current = std::thread::current();
+    let bytes = current.name().unwrap_or("").as_bytes();
+    let audio = bytes.starts_with(b"noodle-worker-");
+    let mut name = [0u8; 32];
+    let n = bytes.len().min(32);
+    name[..n].copy_from_slice(&bytes[..n]);
+    NAME.set(name);
+    drop(current);
+    DECIDING.set(false);
+    let role = if audio { Role::Audio } else { Role::Foreign };
+    ROLE.set(role);
+    role
+}
+
+fn note(size: usize) {
+    if !WATCH.load(Ordering::Relaxed) {
+        return;
+    }
+    if role() != Role::Audio {
+        return;
+    }
+    ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut culprits) = CULPRITS.try_lock() {
+        // Reserved up front, so this does not allocate.
+        if culprits.len() < culprits.capacity() {
+            culprits.push((NAME.get(), size));
+        }
     }
 }
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        note();
+        note(layout.size());
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        note();
+        note(layout.size());
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        note();
+        note(new_size);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -150,6 +207,8 @@ fn session(workers: usize) -> Vec<f32> {
 
 #[test]
 fn workers_sound_like_one_thread_and_never_allocate() {
+    ROLE.set(Role::Audio);
+    CULPRITS.lock().unwrap().reserve_exact(16);
     let serial = session(0);
     assert!(
         serial.iter().any(|&x| x.abs() > 0.05),
@@ -197,9 +256,18 @@ fn workers_sound_like_one_thread_and_never_allocate() {
         rig.processor.process(&mut out);
     }
     WATCH.store(false, Ordering::SeqCst);
+    let culprits: Vec<_> = CULPRITS
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(name, size)| {
+            let end = name.iter().position(|&b| b == 0).unwrap_or(32);
+            (String::from_utf8_lossy(&name[..end]).into_owned(), *size)
+        })
+        .collect();
     assert_eq!(
         ALLOCATIONS.load(Ordering::SeqCst),
         0,
-        "allocated while rendering on workers"
+        "allocated while rendering on workers: {culprits:?}"
     );
 }
