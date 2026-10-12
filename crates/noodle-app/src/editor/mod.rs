@@ -53,7 +53,7 @@ use noodle_nodes::{REROUTE_ID, SCOPE_ID};
 
 use crate::freezing::Badge;
 use crate::session::{Edit, Session};
-use crate::theme;
+use crate::theme::{self, editor as colors};
 use layout::{FRAME_HEADER_HEIGHT, PortKind, REROUTE_SIZE, Scene, Side};
 use search::{Choice, Search};
 use view::Transform;
@@ -361,8 +361,6 @@ enum RenameTarget {
         side: Side,
         key: String,
     },
-    /// A group's input or output node, whose name is its port's.
-    Boundary(NodeId),
 }
 
 /// Renaming in place.
@@ -2055,7 +2053,21 @@ fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
     let Some(node) = graph.node(id) else { return };
     let (target, label) = match node.type_id.as_str() {
         GROUP => (RenameTarget::Group(id), layout::group_title(graph, id)),
-        GROUP_INPUT | GROUP_OUTPUT => (RenameTarget::Boundary(id), group::port_name(id, node)),
+        // A boundary node's port is its only one, so F2 names that port.
+        GROUP_INPUT | GROUP_OUTPUT => {
+            let (side, key) = if node.type_id == GROUP_INPUT {
+                (Side::Output, group::INPUT_PORT)
+            } else {
+                (Side::Input, group::OUTPUT_PORT)
+            };
+            let target = RenameTarget::Port {
+                boundary: id,
+                shown_on: id,
+                side,
+                key: key.to_owned(),
+            };
+            (target, group::port_name(id, node))
+        }
         _ => return,
     };
     state.rename = Some(Rename {
@@ -2172,9 +2184,7 @@ fn popups(
                 Vec2::new(frame.width, FRAME_HEADER_HEIGHT),
             )
         }),
-        RenameTarget::Group(id) | RenameTarget::Boundary(id) => {
-            f.scene.node(id).map(|n| n.header())
-        }
+        RenameTarget::Group(id) => f.scene.node(id).map(|n| n.header()),
         // The port's own row, so the box sits where the label is.
         RenameTarget::Port {
             shown_on,
@@ -2195,14 +2205,43 @@ fn popups(
     let id = egui::Id::new("noodle-editor-rename");
     let mut done = false;
     let mut cancelled = false;
+    // A port is renamed where its label is: an unframed field over the label,
+    // in the label's font and colour. Other targets open a box over the header.
+    let port_side = match rename.target {
+        RenameTarget::Port { side, .. } => Some(side),
+        _ => None,
+    };
+    let z = f.t.zoom;
+    let font = egui::FontId::proportional(12.0 * z);
+    let (pos, width) = match port_side {
+        Some(side) => {
+            let text =
+                ui.painter()
+                    .layout_no_wrap(rename.label.clone(), font.clone(), colors::TEXT);
+            let width = text.size().x.max(40.0 * z) + 8.0 * z;
+            let x = match side {
+                Side::Input => header.left() + 10.0 * z,
+                Side::Output => header.right() - 10.0 * z - width,
+            };
+            (Pos2::new(x, header.center().y - 9.0 * z), width)
+        }
+        None => (
+            header.min + Vec2::new(4.0, 2.0),
+            (header.width() - 8.0).max(60.0),
+        ),
+    };
     egui::Area::new(id)
-        .fixed_pos(header.min + Vec2::new(4.0, 2.0))
+        .fixed_pos(pos)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut rename.label)
-                    .desired_width((header.width() - 8.0).max(60.0)),
-            );
+            let mut field = egui::TextEdit::singleline(&mut rename.label).desired_width(width);
+            if port_side.is_some() {
+                field = field
+                    .frame(egui::Frame::NONE.fill(colors::NODE))
+                    .font(font.clone())
+                    .text_color(colors::TEXT);
+            }
+            let edit = ui.add(field);
             if !rename.focused {
                 edit.request_focus();
                 rename.focused = true;
@@ -2248,9 +2287,7 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
                 value: (!label.is_empty()).then_some(noodle_core::Value::Text(label)),
             }
         }
-        RenameTarget::Boundary(id) | RenameTarget::Port { boundary: id, .. } => {
-            spare::rename_group_port(project, id, &label)?
-        }
+        RenameTarget::Port { boundary: id, .. } => spare::rename_group_port(project, id, &label)?,
     };
     Some(Edit::Apply(command))
 }
