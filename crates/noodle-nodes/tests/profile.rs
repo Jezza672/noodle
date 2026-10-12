@@ -137,6 +137,8 @@ impl EngineNode for BoomNode {
 }
 
 const FRAMES: usize = 64 * 400;
+/// Runs of each configuration whose fastest counts in the speed-up test.
+const RUNS: usize = 4;
 
 #[test]
 fn a_profile_reports_each_nodes_share_and_the_blocks() {
@@ -187,8 +189,20 @@ fn helper_threads_speed_up_side_by_side_branches() {
         return;
     }
     let (project, _) = project(4);
-    let serial = profile_project(&project, &registry(), SETTINGS, FRAMES, 0, false).unwrap();
-    let parallel = profile_project(&project, &registry(), SETTINGS, FRAMES, 3, false).unwrap();
+    // A shared CI machine only ever makes a run slower (a busy node spins on
+    // the wall clock, so a thread that loses its core still burns its time,
+    // and a helper that is late falls back to the caller doing its work). The
+    // fastest of a few runs is the one the machine disturbed least; a single
+    // run was seen to flake on Windows runners (parallel took 86% of serial).
+    let best = |threads: usize| {
+        (0..RUNS)
+            .map(|_| profile_project(&project, &registry(), SETTINGS, FRAMES, threads, false))
+            .map(Result::unwrap)
+            .min_by_key(|profile| profile.wall)
+            .unwrap()
+    };
+    let serial = best(0);
+    let parallel = best(3);
     assert!(parallel.shape.width >= 4, "{:?}", parallel.shape);
     assert!(
         parallel.wall < serial.wall.mul_f64(0.85),
