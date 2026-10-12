@@ -149,7 +149,7 @@ fn stretcher_alone() {
         let mut stretcher = Stretcher::new(
             Memory(data.clone()),
             map.clone(),
-            &onsets,
+            (&onsets, &onsets),
             out_len as u64,
             RATE as f32,
         );
