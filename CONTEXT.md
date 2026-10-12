@@ -99,3 +99,28 @@ A short, controlled signal (a click train, a held chord, a sweep, a lone kick) u
 
 **Headline score**:
 The warp evaluation's main number for a song: the bare mixed audio with nothing but the file, so the detected clip tempo and the automatic mode choice are part of what is scored. Stems and a fixed mode are reported next to it as diagnostics.
+
+## Presets and the group library
+
+**Preset**:
+A named snapshot of one node's parameter values and config, applied back to a node of the same type as one undo step. It never changes wires, automation lanes, mute or solo.
+
+**Group preset**:
+A preset for a group: the parameter values and config of every node inside it. It applies only to a group with the same topology; on any other group it is not offered.
+_Avoid_: Patch, snapshot
+
+**Topology (of a group)**:
+What makes two groups "the same" for presets: the same node types and config, the same wires between them, and the same boundary ports. Node IDs, names and editor positions do not count.
+
+**Group template**:
+A saved group in the library. Using one puts an unlinked copy in the project, which stays freely editable and remembers which template it came from.
+_Avoid_: Linked instance, prefab
+
+**Library**:
+Everything saved for reuse: group templates and presets. System entries ship with the app and are read-only; user entries are the person's own files, shareable by copying them.
+
+**Note split**:
+One node that routes MIDI notes to its outputs by note range and velocity range. With one output it is a note filter; with several, a splitter. A drum rack is a note split in front of samplers.
+
+**Hidden template**:
+A group template that the library does not list and the Add menu does not offer; the app instantiates it itself. A track is one, made only by Add track.

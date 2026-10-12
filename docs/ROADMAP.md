@@ -769,6 +769,31 @@ code.
 clip for each warp mode, and a change that smears drums or shifts pitch moves
 a number and fails the CI excerpt.
 
+## M9: Library, presets and more nodes
+
+**Status:** designed, not started. Two batches; the design is in
+`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005.
+
+1. **Library and presets.** Node presets (parameters and config, same node
+   type, one undo step, never touching wires, lanes, mute or solo). Group
+   presets, which apply only to a group with the same topology (node types and
+   config, wires and boundary ports; IDs, names and positions ignored).
+   Group templates: unlinked copies, system ones embedded and read-only, user
+   ones one `.ron` file each in the user data dir. A track is a hidden
+   template, instantiated only by Add track. UI: a Presets control in the
+   properties panel, a searchable Groups section in the Add menu, and "Save
+   group to library". Samples are stored by content hash. The existing
+   instrument examples ship as the first system templates.
+2. **New nodes.** `Note Split` (one output is a note filter; per-output note
+   and velocity ranges, `transpose`, optional `rest` output), `Sampler` (one
+   sample, root key, loop, one-shot or gate), `Dynamics` (compressor, limiter,
+   gate and expander as a `mode`; sidechain; gain-reduction output; lookahead
+   reported to plugin delay compensation; a transfer-curve graph with
+   draggable points and an attack and release plot), Parametric EQ, Reverb and
+   Arpeggiator. Drum rack, multi-zone instruments and Compressor, Limiter and
+   Gate are groups or presets, never monolithic nodes. Each node ships with
+   presets.
+
 ## Later
 
 - Spectral signal type.
