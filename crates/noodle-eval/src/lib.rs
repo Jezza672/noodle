@@ -14,6 +14,7 @@
 //! all of them against the authors' published listening-test dataset.
 
 pub mod clip;
+pub mod fit;
 pub mod harness;
 pub mod level;
 pub mod onsets;

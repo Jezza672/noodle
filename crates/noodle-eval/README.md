@@ -7,6 +7,7 @@ builds from the song's known source and target tempo maps.
 ```sh
 cargo run -p noodle-eval -- compare ref.wav test.wav 1.5   # JSON; 1.5 = test is 1.5x as fast
 cargo run -p noodle-eval -- validate manifest.csv
+cargo run -p noodle-eval -- fit manifest.csv --cache f.csv # a score fitted to listeners from all the metrics
 cargo run -p noodle-eval -- probes                         # the probe grid, all methods
 cargo run -p noodle-eval -- probes --probe held-chord --tempo x1.5 --method grain --export wavs
 ```
@@ -71,6 +72,18 @@ them. Paths are relative to the CSV. `validate` prints each
 metric's Spearman correlation with `mos`, pooled and averaged within each
 speed (a pooled figure can come from the speed alone), and marks the metrics
 whose absolute correlation is at least 0.5 both ways as usable for gating.
+
+## Fitting a score
+
+No single metric tracks listeners closely (on the dataset every one sat below
+|r| 0.4 within a speed, and the paper itself reports no per-feature figure and
+notes the lack of individually correlated features). Its predictor combines
+many features. `fit` does the same on the same manifest: a ridge regression
+over every metric, checked on pairs whose *reference clip* the model never
+saw (5-fold, grouped by clip), reported as held-out Pearson, Spearman and RMSE
+against guessing the mean, per method, with the weights. `--cache FILE` keeps
+the measured metrics (the slow part, which now uses every core) so a rerun only
+refits; `--out MODEL.json` saves the model.
 
 ## Probes and the harness
 

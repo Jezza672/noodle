@@ -17,7 +17,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("noodle-eval: {e}");
             eprintln!(
-                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | probes [OPTIONS]"
+                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | fit MANIFEST.csv [--cache F] [--out MODEL.json] | probes [OPTIONS]"
             );
             ExitCode::FAILURE
         }
@@ -69,9 +69,55 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        ["fit", manifest, rest @ ..] => fit(manifest, rest),
         ["probes", rest @ ..] => probes(rest),
         _ => Err("bad arguments".into()),
     }
+}
+
+const FIT_HELP: &str = "fit MANIFEST.csv [--cache FILE] [--out MODEL.json]
+  Fits a score from all the metrics to the listeners' scores (ridge regression)
+  and reports how well it predicts pairs whose reference clip it never saw.
+  --cache FILE keeps the measured metrics (slow to compute) so a rerun only
+  refits; it is read if it exists and written otherwise. --out writes the
+  fitted model as JSON.";
+
+fn fit(manifest: &str, args: &[&str]) -> Result<(), String> {
+    let (mut cache, mut out) = (None, None);
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().copied().ok_or(format!("{arg} needs a value"));
+        match *arg {
+            "--cache" => cache = Some(PathBuf::from(value()?)),
+            "--out" => out = Some(PathBuf::from(value()?)),
+            "--help" | "-h" => {
+                println!("{FIT_HELP}");
+                return Ok(());
+            }
+            other => return Err(format!("unknown option {other}\n{FIT_HELP}")),
+        }
+    }
+    let (names, samples) = match cache.as_ref().filter(|p| p.exists()) {
+        Some(path) => noodle_eval::fit::load_cache(path)?,
+        None => {
+            let rows = validate::parse_manifest(Path::new(manifest))?;
+            eprintln!("measuring {} pairs", rows.len());
+            let measured = validate::measure(&rows)?;
+            let (names, samples) = noodle_eval::fit::samples(&rows, &measured);
+            if let Some(path) = &cache {
+                noodle_eval::fit::save_cache(path, &names, &samples)?;
+            }
+            (names, samples)
+        }
+    };
+    let result = noodle_eval::fit::fit(&samples, &names)?;
+    print!("{}", result.format(samples.len()));
+    if let Some(path) = out {
+        let json = serde_json::to_string_pretty(&result.model).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json).map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
+    Ok(())
 }
 
 const PROBES_HELP: &str =
