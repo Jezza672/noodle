@@ -1,6 +1,9 @@
 //! Automation lanes in the arrangement: under each track, a row for every
-//! lane that drives one of its group's boundary nodes (gain and mute), with
-//! the lane's points drawn as a curve.
+//! lane that drives one of its group's boundary nodes (gain and mute) or one
+//! of its group's Automation nodes, with the lane's points drawn as a curve.
+//! Lanes on an Automation node outside any track's group get rows of their
+//! own after the last track: free automation tracks, whose node's output is
+//! wired wherever the signal is wanted.
 //!
 //! Click an empty spot to add a point, drag a point to move it, and
 //! right-click it (or press Delete with it selected) to remove it. Each is
@@ -99,8 +102,18 @@ impl State {
     }
 }
 
-/// The lanes that belong to a track: those driving a boundary node of the
-/// group its track input sits in. Empty for a track outside any group.
+/// Whether `node` is an Automation node: a free control signal drawn on the
+/// timeline.
+fn is_automation_node(project: &Project, node: NodeId) -> bool {
+    project
+        .graph()
+        .node(node)
+        .is_some_and(|n| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+}
+
+/// The lanes that belong to a track: those driving a boundary node or an
+/// Automation node of the group its track input sits in. Empty for a track
+/// outside any group.
 pub fn lanes_for(project: &Project, input: NodeId) -> Vec<LaneId> {
     let graph = project.graph();
     let Some(group) = graph.node(input).and_then(|node| node.parent) else {
@@ -113,7 +126,7 @@ pub fn lanes_for(project: &Project, input: NodeId) -> Vec<LaneId> {
                 node.parent == Some(group)
                     && matches!(
                         node.type_id.as_str(),
-                        group::GROUP_INPUT | group::GROUP_OUTPUT
+                        group::GROUP_INPUT | group::GROUP_OUTPUT | noodle_nodes::AUTOMATION_NODE_ID
                     )
             })
         })
@@ -126,6 +139,9 @@ pub fn lanes_for(project: &Project, input: NodeId) -> Vec<LaneId> {
 pub struct Rows {
     tops: Vec<f32>,
     lanes: Vec<Vec<LaneId>>,
+    /// Lanes on Automation nodes that no track claims, after the last track.
+    free: Vec<LaneId>,
+    free_top: f32,
     total: f32,
 }
 
@@ -140,11 +156,50 @@ impl Rows {
             at += colors::LANE_HEIGHT + own.len() as f32 * HEIGHT;
             lanes.push(own);
         }
+        let claimed: std::collections::BTreeSet<LaneId> = lanes.iter().flatten().copied().collect();
+        let free: Vec<LaneId> = project
+            .lanes()
+            .filter(|(id, lane)| {
+                !claimed.contains(id) && is_automation_node(project, lane.target.node)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let free_top = at;
+        at += free.len() as f32 * HEIGHT;
         Self {
             tops,
             lanes,
+            free,
+            free_top,
             total: at,
         }
+    }
+
+    /// The free automation lanes, top to bottom.
+    pub fn free_lanes(&self) -> &[LaneId] {
+        &self.free
+    }
+
+    /// Where the row for the `k`th free automation lane begins.
+    pub fn free_lane_top(&self, k: usize) -> f32 {
+        self.free_top + k as f32 * HEIGHT
+    }
+
+    /// Every lane row with the point it begins at, top to bottom.
+    fn placed(&self) -> Vec<(LaneId, f32)> {
+        let mut placed = Vec::new();
+        for (index, lanes) in self.lanes.iter().enumerate() {
+            for (k, &id) in lanes.iter().enumerate() {
+                placed.push((id, self.lane_top(index, k)));
+            }
+        }
+        placed.extend(
+            self.free
+                .iter()
+                .enumerate()
+                .map(|(k, &id)| (id, self.free_lane_top(k))),
+        );
+        placed
     }
 
     /// Where track `index`'s block begins.
@@ -198,9 +253,10 @@ fn range(key: &str) -> (f32, f32) {
     }
 }
 
-/// Switches (mute, solo) hold their value and snap to off or on; gain slides.
+/// Switches (mute, solo) hold their value and snap to off or on; gain and
+/// an Automation node's value slide.
 fn is_switch(key: &str) -> bool {
-    control_of(key) != group::GAIN
+    matches!(control_of(key), group::MUTE | group::SOLO)
 }
 
 fn name(key: &str) -> &str {
@@ -208,8 +264,24 @@ fn name(key: &str) -> &str {
         group::GAIN => "Gain",
         group::MUTE => "Mute",
         group::SOLO => "Solo",
+        noodle_nodes::AUTOMATION_VALUE => "Automation",
         other => other,
     }
+}
+
+/// What a lane's header calls it: an Automation node's lane is numbered by
+/// the order of the Automation nodes, so two of them can be told apart.
+pub fn label(project: &Project, lane: &AutomationLane) -> String {
+    if !is_automation_node(project, lane.target.node) {
+        return format!("{} lane", name(&lane.target.port));
+    }
+    let number = project
+        .graph()
+        .nodes()
+        .filter(|(_, node)| node.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+        .position(|(id, _)| id == lane.target.node)
+        .map_or(0, |i| i + 1);
+    format!("Automation {number}")
 }
 
 fn y_of(row: Rect, key: &str, value: f32) -> f32 {
@@ -239,7 +311,6 @@ pub fn refused(lane: &AutomationLane) -> bool {
 pub struct View<'a> {
     pub project: &'a Project,
     pub rows: &'a Rows,
-    pub tracks: &'a [NodeId],
     /// The area the lanes are drawn in.
     pub content: Rect,
     pub scroll_y: f32,
@@ -256,12 +327,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
         state.texts.clear();
     }
     let map = view.project.tempo_map();
-    for index in 0..view.tracks.len() {
-        for (k, &id) in view.rows.lanes(index).iter().enumerate() {
+    {
+        for (id, lane_top) in view.rows.placed() {
             let Some(lane) = view.project.lane(id) else {
                 continue;
             };
-            let top = view.content.top() - view.scroll_y + view.rows.lane_top(index, k);
+            let top = view.content.top() - view.scroll_y + lane_top;
             let row = Rect::from_min_size(
                 Pos2::new(view.content.left(), top),
                 vec2(view.content.width(), HEIGHT),
@@ -490,13 +561,7 @@ fn moved_point(
 }
 
 /// A lane's header: its name and a button to remove it.
-pub fn header(
-    ui: &mut egui::Ui,
-    rect: Rect,
-    id: LaneId,
-    lane: &AutomationLane,
-    refused: bool,
-) -> Vec<Edit> {
+pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: bool) -> Vec<Edit> {
     let mut edits = Vec::new();
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, colors::AUTOMATION_HEADER);
@@ -505,7 +570,6 @@ pub fn header(
         rect.bottom() - 0.5,
         Stroke::new(1.0, colors::LANE_EVEN),
     );
-    let label = format!("{} lane", name(&lane.target.port));
     painter.text(
         Pos2::new(rect.left() + 16.0, rect.center().y),
         Align2::LEFT_CENTER,

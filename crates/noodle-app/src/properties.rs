@@ -11,7 +11,9 @@ use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
 use crate::session::{Edit, Session};
 use crate::widgets::format::format_value;
-use crate::widgets::{ConfigField, CurveEditor, GraphEditor, GraphKind, Live, ParamField};
+use crate::widgets::{
+    ConfigField, CurveEditor, EnvelopeEditor, GraphEditor, GraphKind, Live, ParamField,
+};
 
 /// What the wired parameter `key` of a node has been doing lately, if known:
 /// the editor reads it once a frame.
@@ -251,6 +253,31 @@ fn config(
                 .small(),
             );
             if ui.small_button("Reset to straight line").clicked() {
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: id,
+                    key: info.key.to_owned(),
+                    value: None,
+                }));
+            }
+            continue;
+        }
+        if node_type.info().id == noodle_nodes::ENVELOPE_ID
+            && info.key == noodle_nodes::ENVELOPE_CURVE_KEY
+        {
+            let text = info.get_text(&node.config);
+            ui.label(info.name);
+            let curve = noodle_nodes::EnvelopeCurve::from_text(&text);
+            edits.extend(EnvelopeEditor::new(id, info.key, &curve).show(ui));
+            ui.label(
+                RichText::new(
+                    "Left to right is the Length, bottom to top the height. Drag a point to \
+                     move it, drag the line between two points to bend it, and click the \
+                     line to add a point.",
+                )
+                .weak()
+                .small(),
+            );
+            if ui.small_button("Reset to the default shape").clicked() {
                 edits.push(Edit::Apply(Command::SetConfig {
                     node: id,
                     key: info.key.to_owned(),
@@ -934,6 +961,77 @@ mod tests {
         harness.run();
         harness.run();
         assert_eq!(curve_of(&harness), noodle_nodes::Curve::linear());
+    }
+
+    fn envelope_of(harness: &Harness<'_, State>) -> noodle_nodes::EnvelopeCurve {
+        let graph = harness.state().session.project().graph();
+        let config = &graph.node(NodeId(1)).unwrap().config;
+        match config.get("curve") {
+            Some(Value::Text(text)) => noodle_nodes::EnvelopeCurve::from_text(text),
+            _ => noodle_nodes::EnvelopeCurve::default(),
+        }
+    }
+
+    #[test]
+    fn the_envelope_curve_is_drawn_with_the_mouse() {
+        let mut harness = harness([Node::new("noodle.mod.envelope")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        // The editor is `width` wide and 120 high, under the "Curve" label.
+        let label = harness.get_by_label("Curve").rect();
+        let width = 320.0f32.min(300.0 - 2.0 * label.min.x);
+        let at = |x: f32, y: f32| {
+            egui::pos2(
+                label.min.x + x * width,
+                label.max.y + 4.0 + 120.0 * (1.0 - y),
+            )
+        };
+        let before = envelope_of(&harness);
+        assert_eq!(before.points().len(), 3);
+
+        // Drag the peak to the right and down: one undo step.
+        let peak = before.points()[1];
+        let from = at(peak.x, peak.y);
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        harness.hover_at(at(0.4, 0.6));
+        harness.run();
+        harness.drop_at(at(0.4, 0.6));
+        harness.run();
+        let moved = envelope_of(&harness).points()[1];
+        assert!(
+            (moved.x - 0.4).abs() < 0.05 && (moved.y - 0.6).abs() < 0.05,
+            "{moved:?}"
+        );
+        harness.state_mut().session.undo();
+        harness.run();
+        assert_eq!(envelope_of(&harness), before);
+
+        // Drag the falling stretch upward: it bends instead of moving.
+        let x = 0.7;
+        let on_line = at(x, before.eval(x));
+        harness.hover_at(on_line);
+        harness.run();
+        harness.drag_at(on_line);
+        harness.run();
+        harness.hover_at(at(x, 0.9));
+        harness.run();
+        harness.drop_at(at(x, 0.9));
+        harness.run();
+        let bent = envelope_of(&harness);
+        assert_eq!(bent.points().len(), 3);
+        assert_ne!(bent.points()[1].bend, before.points()[1].bend);
+
+        // The button puts the default shape back.
+        harness.get_by_label("Reset to the default shape").click();
+        harness.run();
+        harness.run();
+        assert_eq!(
+            envelope_of(&harness),
+            noodle_nodes::EnvelopeCurve::default()
+        );
     }
 
     /// Replaces the text in the focused field.
