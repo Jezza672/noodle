@@ -1769,8 +1769,11 @@ It has these views:
     keeps the last file it decoded, so the steps of an edit do not read it
     again. There is no on-disk cache of it: a render is cheap next to
     the stretcher's speed, and the engine itself stretches live.
-  - **Ticks on the x axis**, so the view doesn't stretch when the tempo
-    changes. Zoom is points per quarter note.
+  - **Seconds on the x axis**: time is linear, so a clip is as wide as its
+    audio is long. In a slower section a bar lasts longer, so its bar lines
+    sit further apart. Every tick/x conversion (clips, automation, tempo
+    lane, playhead, ruler, snapping, drags) goes through `Axis`, which
+    follows the tempo map. Zoom is points per second.
   - **Moving and trimming** are `SetClip` commands, one undo step per drag.
     Each frame's edit is worked out from the clips as they were when the
     drag began, so snapping can't accumulate error. Moves and the grabbed

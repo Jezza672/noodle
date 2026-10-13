@@ -12,7 +12,7 @@ use crate::session::TakePreview;
 /// Says what it drew, for tests.
 pub fn draw(
     painter: &Painter,
-    axis: Axis,
+    axis: Axis<'_>,
     top: f32,
     take: &TakePreview,
     track: NodeId,

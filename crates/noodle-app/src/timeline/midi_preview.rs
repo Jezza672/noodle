@@ -11,7 +11,7 @@ const LABEL: f32 = 15.0;
 /// The fewest keys the preview spans, so one note doesn't fill the block.
 const MIN_SPAN: u8 = 12;
 
-pub fn draw(painter: &Painter, axis: Axis, full: Rect, start: Tick, midi: &MidiClip) {
+pub fn draw(painter: &Painter, axis: Axis<'_>, full: Rect, start: Tick, midi: &MidiClip) {
     let (Some(low), Some(high)) = (
         midi.notes.iter().map(|n| n.key).min(),
         midi.notes.iter().map(|n| n.key).max(),
