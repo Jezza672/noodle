@@ -11,7 +11,7 @@ use noodle_engine::{
 /// on the beat, or through a Math node to cut a held sound into rhythm.
 ///
 /// It reads the timeline's position, so it stays in time through tempo
-/// changes, seeks and loops (a tempo change reaches it at the next block, as
+/// changes, seeks and loops, to the resolution of a block (a tempo change or loop wrap inside a block reaches it at the next, as
 /// for the Metronome), and it is silent while the transport is stopped.
 /// Divisions are of the whole note (four beats, so `1/1` is a bar of 4/4): `1/4` is a beat, `1/8` an eighth
 /// note, and a `T` is a triplet, three to the length of two.

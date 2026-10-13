@@ -82,10 +82,10 @@ impl LaneKernel for HoldKernel {
                 state.held = input[i];
             }
             state.gate = high;
+            if !state.held.is_finite() {
+                state.held = 0.0;
+            }
             out[i] = state.held;
-        }
-        if !state.held.is_finite() {
-            state.held = 0.0;
         }
     }
 }

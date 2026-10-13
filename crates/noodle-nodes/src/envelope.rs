@@ -206,10 +206,12 @@ impl LaneKernel for EnvelopeKernel {
         Skip::AnySilent(&[TRIGGER])
     }
 
-    /// Resting at 0 with nothing playing; a curve that rests above 0 is
+    /// Resting at 0 with nothing playing and the gate low (a skipped lane
+    /// never sees the gate fall, so a stale high gate would swallow the next
+    /// note's rising edge); a curve that rests above 0 is
     /// never skipped, since its output is not silence.
     fn is_idle(&self, state: &EnvelopeState) -> bool {
-        !state.runner.running && self.rest == 0.0
+        !state.runner.running && !state.gate && self.rest == 0.0
     }
 
     fn process_lane(&mut self, state: &mut EnvelopeState, ctx: &Context, mut lane: Lane<'_, '_>) {
@@ -552,6 +554,31 @@ mod tests {
         // The trigger was only 10 samples long, and the curve still played.
         assert_eq!(active[1_000], 1.0);
         assert!(out[frames - 1] < 1e-2 && active[frames - 1] == 0.0);
+    }
+
+    #[test]
+    fn a_gate_released_on_a_block_edge_does_not_swallow_the_next_note() {
+        let frames = 512;
+        let mut h = Harness::new(
+            &Envelope,
+            &config(&triangle(), false),
+            &[(TRIGGER, Shape::MONO)],
+            RATE,
+            frames,
+        )
+        .unwrap();
+        h.set(LENGTH, 0.005);
+        // Held for a whole block, longer than the curve: it finishes with the
+        // gate still high.
+        run(&mut h, &vec![1.0; frames]);
+        // Released exactly on the block edge, with the block flagged silent.
+        let mut quiet = h.input(TRIGGER, frames);
+        quiet.fill(0.0);
+        quiet.set_silent(0, 0);
+        h.run(frames).unwrap();
+        // The next note still starts.
+        let (out, _) = run(&mut h, &vec![1.0; frames]);
+        assert!(out.iter().any(|&x| x > 0.9), "the envelope never started");
     }
 
     #[test]

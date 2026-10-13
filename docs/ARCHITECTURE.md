@@ -379,7 +379,7 @@ These are primitives; instruments and racks built from them are groups.
   as is) and Comparator (`noodle.mod.comparator`, a Schmitt trigger) turn
   signals into control signals and gates. Clock (`noodle.generator.clock`)
   pulses on a note division of the transport's tick grid (silent while
-  stopped), so it stays in time through tempo changes, seeks and loops.
+  stopped), so it stays in time through tempo changes, seeks and loops, to the resolution of a block (a tempo change or loop wrap inside a block lands at the next).
 
 ### Feedback loops
 

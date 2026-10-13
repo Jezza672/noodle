@@ -1238,7 +1238,7 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
 }
 
 #[test]
-fn the_m10_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
+fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
     use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
 
     // A square LFO (4 Hz) and a clock both trigger envelopes (one per voice,
