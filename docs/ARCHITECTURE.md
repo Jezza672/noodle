@@ -148,7 +148,10 @@ The **Project** is the single source of truth. It holds one global graph:
     remove the parameter, or the stage goes and the fade comes back. Boundary
     nodes show `gain` and `mute` as parameter ports in the editor (solo has
     none; it is read from the project), so they can be wired like any other
-    parameter. A wire into either keeps the stage, and flatten joins the
+    parameter. A group has one gain and one mute, so only its control node
+    (`Graph::control_node`, the one the mixer drives) shows them. Another
+    boundary node shows them too once its gain or mute is set, wired or
+    driven by a lane, so nothing that affects the sound is hidden. A wire into either keeps the stage, and flatten joins the
     wire's source to the stage's port. The wire replaces the value set on
     the node, and wins over a lane on the same port (the lane gets the usual
     "overridden" diagnostic). The mixer strip and the track header grey out
@@ -754,8 +757,10 @@ that slip and through markers moved by warp quantise, which the cache key
 already hashes. Dragging the waveform or the ruler in the clip
 editor sets it, as does the panel's Offset field and Detect
 (`noodle_io::estimate_grid` gives the tempo and the phase of the beat, even as
-a weak guess whose confidence is under `CLEAR_TEMPO`; Detect is enabled
-whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
+a weak guess unless `TempoEstimate::is_clear`: onsets mostly on the beat, or a
+beat standing well above every other tempo's score; `Analysis::of` scores the
+bass onsets as well as all of them, since hats and arpeggios bury the beat in a
+full mix; Detect is enabled whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
 Shift/Ctrl click, a box in the flags' row, Ctrl+A) and a picked group moves and
 is deleted as one edit. Each detected transient has a handle on the row under
 the brace; double-clicking it pins a marker where the transient plays now
@@ -1612,8 +1617,10 @@ It has these views:
     user's behalf goes through `spare::wire`, which replaces whatever fed the
     input, never removes a node, and leaves wires leaving an output alone.
   - **Names.** F2 on a selected group, group input or group output renames it,
-    and double-clicking a port row of a group node renames that port (a
-    double-click elsewhere on a group enters it). A group's name is its
+    and double-clicking a port row of a group node, or of a group input or
+    output node, renames that port in place: the box opens over the port's
+    row, where its label is drawn (a double-click elsewhere on a group enters
+    it). A group input or output node always labels its port on a row. A group's name is its
     `name` config, which a track shares, and the track input inside shows its
     group's name as its title. A port's name is its key, so `rename_group_port`
     moves the wires on it in the same step, and refuses an empty name or one

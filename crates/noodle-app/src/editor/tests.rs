@@ -2409,3 +2409,108 @@ fn cpu_labels_round_by_size_and_warn_as_the_load_grows() {
     // A single bad block shows even when the average is low.
     assert_eq!(at(0.05, 0.95).1, colors::CPU_HIGH);
 }
+
+/// A group with one wired input, the node wired into it, and the group input
+/// node inside it.
+fn group_with_wired_input(h: &mut H) -> (NodeId, NodeId, NodeId) {
+    use noodle_core::group::{GROUP, GROUP_INPUT};
+    let group = add(h, Node::new(GROUP).at(400.0, 0.0));
+    let src = add(h, Node::new("noodle.osc.sine").at(-100.0, 300.0));
+    h.run();
+    let from = socket(h, src, Side::Output, "out");
+    let spare = socket(h, group, Side::Input, "in1");
+    link(h, from, spare);
+    h.run();
+    let input = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .children(Some(group))
+        .find(|(_, n)| n.type_id == GROUP_INPUT)
+        .map(|(id, _)| id)
+        .unwrap();
+    (group, input, src)
+}
+
+fn boundary_name(h: &H, node: NodeId) -> Option<String> {
+    match h
+        .state()
+        .session
+        .project()
+        .graph()
+        .node(node)?
+        .config
+        .get("name")
+    {
+        Some(noodle_core::Value::Text(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_group_input_name_follows_the_group_port_both_ways() {
+    let mut h = rig();
+    let (group, input, src) = group_with_wired_input(&mut h);
+    // Outside: double-click the group's port row and type a new name.
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "in1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    type_name(&mut h, "feed");
+    assert_eq!(boundary_name(&h, input).as_deref(), Some("feed"));
+    assert_eq!(source(&h, group, "feed"), Some(Endpoint::new(src, "out")));
+
+    // Inside: F2 on the group input renames the port outside too.
+    h.state_mut().editor.enter(Some(group), None);
+    h.run();
+    let at = title(&h, input);
+    click(&mut h, at, Modifiers::NONE);
+    press(&mut h, at, Modifiers::NONE, Key::F2);
+    type_name(&mut h, "inside");
+    assert_eq!(boundary_name(&h, input).as_deref(), Some("inside"));
+    h.state_mut().editor.enter(None, None);
+    h.run();
+    assert!(
+        h.state()
+            .session
+            .project()
+            .graph()
+            .group_ports(group)
+            .input("inside")
+            .is_some()
+    );
+    assert!(h.state().session.diagnostics().is_empty());
+}
+
+#[test]
+fn double_clicking_a_group_inputs_own_port_row_renames_it_in_place() {
+    let mut h = rig();
+    let (group, input, _) = group_with_wired_input(&mut h);
+    h.state_mut().editor.enter(Some(group), None);
+    h.run();
+    let row = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "out")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(40.0, 0.0));
+    double_click(&mut h, at);
+    let rename = h
+        .state()
+        .editor
+        .rename
+        .as_ref()
+        .expect("the port's box opened");
+    assert!(matches!(rename.target, super::RenameTarget::Port { .. }));
+    type_name(&mut h, "kick");
+    assert_eq!(boundary_name(&h, input).as_deref(), Some("kick"));
+    assert!(h.state().session.diagnostics().is_empty());
+}

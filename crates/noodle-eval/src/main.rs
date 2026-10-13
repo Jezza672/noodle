@@ -216,16 +216,19 @@ fn probes(args: &[&str]) -> Result<(), String> {
 }
 
 const SONGS_HELP: &str =
-    "songs [--song NAME] [--tempo NAME] [--method NAME] [--full] [--baseline FILE] [--update]
-       [--export DIR]
+    "songs [--song NAME] [--tempo NAME] [--method NAME] [--full] [--stems] [--baseline FILE]
+       [--update] [--export DIR]
   Warps the generated songs (crates/noodle-eval/songs) to each target tempo with
   each method and scores them. By default the 15 to 20 s excerpt that joins the
-  CI gate; --full takes the whole song (rows are named NAME-full). Other options
+  CI gate; --full takes the whole song (rows are named NAME-full). --stems scores each
+  part (instrument) of the song on its own instead of the mix, as NAME/PART, without
+  touching the committed baseline unless --update is given. Other options
   as for probes (--export writes <song>_source.wav, <song>_<tempo>_native.wav and so on);
   the default baseline is crates/noodle-eval/baseline/songs.json.";
 
 fn songs(args: &[&str]) -> Result<(), String> {
     let (mut song, mut tempo, mut method, mut full) = (None, None, None, false);
+    let mut stems = false;
     let mut export = None;
     let mut baseline = Path::new(env!("CARGO_MANIFEST_DIR")).join("baseline/songs.json");
     let mut update = false;
@@ -243,6 +246,7 @@ fn songs(args: &[&str]) -> Result<(), String> {
                 method = Some(Method::parse(v).ok_or(format!("no method {v}"))?);
             }
             "--full" => full = true,
+            "--stems" => stems = true,
             "--export" => export = Some(PathBuf::from(value()?)),
             "--baseline" => baseline = value()?.into(),
             "--update" => update = true,
@@ -271,7 +275,11 @@ fn songs(args: &[&str]) -> Result<(), String> {
         harness.export.clone_from(&export);
         for &c in &cases {
             eprintln!("{name} at {}", c.name());
-            rows.extend(harness.run_song(&name, &s, range, c, &methods)?);
+            rows.extend(if stems {
+                harness.run_stems(&name, &s, range, c, &methods)?
+            } else {
+                harness.run_song(&name, &s, range, c, &methods)?
+            });
         }
     }
     if !found {
