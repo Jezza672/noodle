@@ -47,6 +47,8 @@ pub enum Unit {
     Decibels,
     Seconds,
     Semitones,
+    /// Hundredths of a semitone.
+    Cents,
     Percent,
 }
 
@@ -86,6 +88,12 @@ impl ParamInfo {
             kind: ParamKind::Stepped { labels },
             ..Self::new(0.0, 0.0, 0.0)
         }
+    }
+
+    /// Starts the parameter at `default` instead of its minimum, which is
+    /// where a choice starts.
+    pub fn default_to(self, default: f32) -> Self {
+        Self { default, ..self }
     }
 
     pub fn log(self) -> Self {

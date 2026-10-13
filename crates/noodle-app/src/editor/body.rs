@@ -183,6 +183,15 @@ impl Bodies {
             .connections()
             .map(|c| (c.to.node, c.to.port))
             .collect();
+        // A Dynamics node reports its level and reduction whether or not
+        // anything is wired, for the dot on its graph.
+        let mut wired = wired;
+        for (id, node) in graph.nodes() {
+            if node.type_id == noodle_nodes::DYNAMICS_ID {
+                wired.insert((id, "level".to_owned()));
+                wired.insert((id, "reduction".to_owned()));
+            }
+        }
         self.params.retain(|key, _| wired.contains(key));
         for (node, key) in wired {
             if let Some(reading) = telemetry.read_param(node, &key) {

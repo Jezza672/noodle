@@ -78,6 +78,8 @@ pub struct Nodes {
     pub clips: ClipFeeds,
     /// Where the MIDI In nodes get their messages.
     pub midi: noodle_io::MidiBus,
+    /// Where the Sampler nodes get their samples, by hash.
+    pub samples: noodle_nodes::SampleStore,
     /// The plugins whose node types are in `registry`. Renders (freeze,
     /// export) add the same ones to their own registries.
     pub plugins: noodle_plugins::Catalog,
@@ -95,12 +97,14 @@ impl Nodes {
             telemetry,
             clips,
             midi,
+            samples,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
             telemetry,
             clips,
             midi,
+            samples,
             plugins: noodle_plugins::Catalog::default(),
             plugin_scan: None,
             plugin_files: Vec::new(),
@@ -188,6 +192,8 @@ pub struct Session {
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
     midi: noodle_io::MidiBus,
+    /// The samples the Samplers play, kept in `samples` beside the project.
+    samples: noodle_nodes::SampleStore,
     /// The open MIDI input port, if one is chosen and opened.
     midi_connection: Option<noodle_io::MidiConnection>,
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
@@ -408,6 +414,7 @@ impl Session {
             telemetry,
             clips,
             midi,
+            samples,
             plugins,
             plugin_scan,
             plugin_files,
@@ -428,6 +435,7 @@ impl Session {
             telemetry,
             clips,
             midi,
+            samples,
             midi_connection: None,
             midi_watch: MidiWatch::default(),
             file_watch: FileWatch::default(),
@@ -1021,6 +1029,7 @@ impl Session {
             Ok(()) => {
                 // Relative clip paths resolve against the file's directory.
                 self.path = Some(path.to_owned());
+                self.save_samples();
                 self.feed_clips();
                 self.saved = self.project.clone();
                 self.dirty = false;
@@ -1030,6 +1039,31 @@ impl Session {
             Err(error) => {
                 self.message = Some(format!("Couldn't save {}: {error}", path.display()));
                 false
+            }
+        }
+    }
+
+    /// Points the store at `samples` beside the file and writes every sample
+    /// a Sampler names into it, so a project saved anywhere takes its sounds
+    /// along.
+    fn save_samples(&mut self) {
+        self.samples.set_dir(self.base().join("samples"));
+        let hashes: std::collections::BTreeSet<String> = self
+            .project
+            .graph()
+            .nodes()
+            .filter(|(_, node)| node.type_id == noodle_nodes::SAMPLER_ID)
+            .filter_map(|(_, node)| match node.config.get("sample") {
+                Some(noodle_core::Value::Text(hash)) if !hash.is_empty() => Some(hash.clone()),
+                _ => None,
+            })
+            .collect();
+        for hash in hashes {
+            if let Err(error) = self.samples.save(&hash) {
+                self.message = Some(format!(
+                    "Couldn't save sample {}: {error}",
+                    &hash[..8.min(hash.len())]
+                ));
             }
         }
     }
@@ -1783,6 +1817,11 @@ impl Session {
         }
     }
 
+    /// The samples the Sampler nodes play, by hash.
+    pub fn samples(&self) -> &noodle_nodes::SampleStore {
+        &self.samples
+    }
+
     /// The folder the project's audio files are relative to.
     fn base(&self) -> &Path {
         self.path
@@ -1881,6 +1920,11 @@ impl Session {
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
+        // Samplers read their samples from beside the project file.
+        // An unsaved project has no folder yet: its samples stay in memory
+        // until the first save writes them.
+        let dir = self.path.is_some().then(|| self.base().join("samples"));
+        self.samples.set_dir_option(dir);
         // Devices are fixed for a stream's lifetime, so an Output node tied
         // to another one means playing afresh. `play` compiles.
         let wanted = noodle_engine::output_devices(self.project.graph());
@@ -2265,6 +2309,45 @@ mod tests {
         .unwrap();
         session.edit([Edit::Apply(command)]);
         (group, osc)
+    }
+
+    #[test]
+    fn samples_go_with_the_project_when_it_is_saved_elsewhere() {
+        let mut session = Session::new(Nodes::all());
+        let hash = session.samples().insert(&noodle_io::Audio {
+            samples: (0..2_000).map(|i| (i as f32 * 0.05).sin()).collect(),
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let sampler = session.new_node_id();
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: sampler,
+                node: Node::new(noodle_nodes::SAMPLER_ID),
+            }),
+            Edit::Apply(Command::SetConfig {
+                node: sampler,
+                key: "sample".into(),
+                value: Some(noodle_core::Value::Text(hash.clone())),
+            }),
+        ]);
+        // Not saved yet: nothing is written anywhere.
+        assert_eq!(session.samples().dir(), None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("music").join("song.ron");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(session.save_as(&path));
+        assert!(
+            dir.path()
+                .join("music/samples")
+                .join(format!("{hash}.wav"))
+                .exists()
+        );
+
+        // A fresh session that opens the file finds the sample.
+        let mut fresh = Session::new(Nodes::all());
+        assert!(fresh.load(&path));
+        assert!(fresh.samples().get(&hash).is_some());
     }
 
     /// Runs the housekeeping until `done` holds, or fails after a while.

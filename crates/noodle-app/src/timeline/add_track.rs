@@ -3,8 +3,12 @@
 
 use noodle_core::group::create_track;
 use noodle_core::spare::{self, MIXER};
-use noodle_core::{Command, Config, Endpoint, Graph, Node, NodeId, Position, Value};
+use noodle_core::{
+    AutomationLane, AutomationPoint, Command, Config, Curve, Endpoint, Graph, LaneId, Node, NodeId,
+    Position, Tick, Value,
+};
 use noodle_engine::OUTPUT_ID;
+use noodle_nodes::{AUTOMATION_NODE_ID, AUTOMATION_VALUE};
 
 /// How far below the lowest node in the graph a new track goes, so its nodes
 /// don't land on top of another track's.
@@ -68,6 +72,28 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
         Endpoint::new(mixer, key),
     ));
     Command::Batch(commands)
+}
+
+/// The Add automation button's command: an Automation node below everything
+/// in the graph, and a lane on its value that holds 0 until points are drawn.
+/// Its output is wired by hand to whatever the signal should drive.
+pub fn automation_command(graph: &Graph, node: NodeId, lane: LaneId) -> Command {
+    let below = graph.nodes().map(|(_, n)| n.position.y).fold(0.0, f32::max);
+    let point = AutomationPoint {
+        tick: Tick::ZERO,
+        value: 0.0,
+        curve: Curve::Linear,
+    };
+    Command::Batch(vec![
+        Command::AddNode {
+            id: node,
+            node: Node::new(AUTOMATION_NODE_ID).at(0.0, below + GAP),
+        },
+        Command::AddLane {
+            id: lane,
+            lane: AutomationLane::new(Endpoint::new(node, AUTOMATION_VALUE), vec![point]),
+        },
+    ])
 }
 
 #[cfg(test)]

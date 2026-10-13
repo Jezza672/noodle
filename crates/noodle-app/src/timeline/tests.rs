@@ -685,7 +685,7 @@ fn track_inputs(h: &H) -> usize {
 fn add_track_creates_a_group_with_a_track_input_in_one_undo_step() {
     let (mut h, _) = rig();
     let before = track_inputs(&h);
-    h.get_by_label("+ Add track").click();
+    h.get_by_label("+ Track").click();
     h.run();
     assert_eq!(track_inputs(&h), before + 1);
     let groups = |h: &H| {
@@ -713,7 +713,7 @@ fn add_track_works_with_no_tracks() {
     }
     h.run();
     assert_eq!(track_inputs(&h), 0);
-    h.get_by_label("+ Add track").click();
+    h.get_by_label("+ Track").click();
     h.run();
     assert_eq!(track_inputs(&h), 1);
 }

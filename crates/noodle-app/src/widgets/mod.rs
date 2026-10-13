@@ -10,8 +10,10 @@
 
 pub mod config;
 pub mod curve;
+pub mod envelope;
 pub mod format;
 pub mod graph;
+pub mod mixing_graph;
 pub mod param;
 pub mod taper;
 
@@ -20,5 +22,6 @@ mod tests;
 
 pub use config::ConfigField;
 pub use curve::CurveEditor;
+pub use envelope::EnvelopeEditor;
 pub use graph::{GraphEditor, Kind as GraphKind};
 pub use param::{Live, ParamField};

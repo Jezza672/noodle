@@ -777,12 +777,22 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** batch 1 (library and presets) is done in code; items 2 (new
-nodes) and 3 (warp evaluation songs) are not started. The design is in
-`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005. Batch 1
-left out samples by content hash (nothing holds audio until the Sampler) and
-ships no node presets yet (the system presets are group presets of the
-instrument templates; node presets arrive with the new nodes).
+**Status:** batch 2 (the nodes) has landed: Sampler, Note Split, Dynamics,
+Parametric EQ, Reverb and Arpeggiator, with graphs for Dynamics and EQ and a
+"Load sample…" picker. Drum rack, Compressor and Limiter groups, the
+evaluation songs (batch 3) and node presets follow. Batch 1 (library and
+presets) is done in code: it left out samples by content hash in the library
+(the Sampler's store now exists) and ships no node presets yet; the system
+presets are group presets of the instrument templates. The design is in `CONTEXT.md` (Presets and the
+group library) and ADRs 0004 and 0005.
+
+**Batch 4 (more nodes and free automation tracks):** ten nodes (Envelope, a
+drawn curve played on a trigger with a multi-voice or single-voice setting;
+Distortion; Bitcrusher; Chorus; Phaser; Envelope Follower; Sample & Hold; Lag;
+Comparator; Clock) and the Automation node, which turns a timeline lane into a
+0 to 1 signal wired to any input. The timeline's "+ Auto" button adds one and
+draws its lane in a row of its own. Not done: an envelope time axis in beats
+(the length is in seconds), and a curve preview on the Envelope node's body.
 
 1. **Library and presets.** Node presets (parameters and port-neutral config, same node
    type and port layout, one undo step, never touching wires, lanes, mute or

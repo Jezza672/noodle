@@ -132,6 +132,7 @@ pub fn export(
 
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
+    library.samples.set_dir(render.base.join("samples"));
     if let Some(extend) = &render.extend_registry {
         extend(&mut registry);
     }

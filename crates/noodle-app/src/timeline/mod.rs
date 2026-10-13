@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
-use noodle_core::{Clip, ClipId, Command, Endpoint, NodeId, Project, TempoMap, Tick};
+use noodle_core::{Clip, ClipId, Command, Endpoint, LaneId, NodeId, Project, TempoMap, Tick};
 
 use crate::session::{ArmKind, Edit, Session};
 use crate::theme::timeline as colors;
@@ -779,7 +779,6 @@ pub fn show(
         &automation::View {
             project,
             rows: &rows,
-            tracks: &tracks,
             content,
             scroll_y: state.scroll_y,
             axis,
@@ -1495,20 +1494,28 @@ fn draw_headers(
                 controls.controls,
             ));
         }
+    }
+    let project = session.project();
+    let mut lane_rows: Vec<(LaneId, f32)> = Vec::new();
+    for index in 0..tracks.len() {
         for (k, &id) in rows.lanes(index).iter().enumerate() {
-            let Some(automation) = session.project().lane(id) else {
-                continue;
-            };
-            let row = Rect::from_min_size(
-                Pos2::new(
-                    column.left(),
-                    content.top() - scroll_y + rows.lane_top(index, k),
-                ),
-                vec2(colors::HEADER_WIDTH, automation::HEIGHT),
-            );
-            let refused = automation::refused(automation);
-            edits.extend(automation::header(ui, row, id, automation, refused));
+            lane_rows.push((id, rows.lane_top(index, k)));
         }
+    }
+    for (k, &id) in rows.free_lanes().iter().enumerate() {
+        lane_rows.push((id, rows.free_lane_top(k)));
+    }
+    for (id, lane_top) in lane_rows {
+        let Some(lane) = project.lane(id) else {
+            continue;
+        };
+        let row = Rect::from_min_size(
+            Pos2::new(column.left(), content.top() - scroll_y + lane_top),
+            vec2(colors::HEADER_WIDTH, automation::HEIGHT),
+        );
+        let refused = automation::refused(lane);
+        let label = automation::label(project, lane);
+        edits.extend(automation::header(ui, row, id, &label, refused));
     }
     if renaming_group.is_some() && !renaming_seen {
         state.renaming = None;
@@ -1539,8 +1546,29 @@ fn draw_headers(
     );
     if spot.bottom() >= column.top() && spot.top() <= column.bottom() {
         let place = Rect::from_center_size(spot.center(), vec2(spot.width() - 24.0, 24.0));
-        if ui.put(place, egui::Button::new("+ Add track")).clicked() {
+        let (track, automation) = {
+            let half = (place.width() - 4.0) / 2.0;
+            let left = Rect::from_min_size(place.min, vec2(half, place.height()));
+            let right = Rect::from_min_size(
+                place.min + vec2(half + 4.0, 0.0),
+                vec2(half, place.height()),
+            );
+            (left, right)
+        };
+        if ui.put(track, egui::Button::new("+ Track")).clicked() {
             let command = add_track::command(graph, || session.new_node_id());
+            edits.push(Edit::Apply(command));
+        }
+        if ui
+            .put(automation, egui::Button::new("+ Auto"))
+            .on_hover_text(
+                "Adds an Automation node and a lane for it. Wire its output to any input.",
+            )
+            .clicked()
+        {
+            let project = session.project();
+            let command =
+                add_track::automation_command(graph, session.new_node_id(), project.next_lane_id());
             edits.push(Edit::Apply(command));
         }
     }

@@ -447,7 +447,7 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     // Watch from the text that was loaded, so an edit made while the device
     // opens isn't missed.
     let mut watch = Watch::new(path, text);
-    let registry = registry();
+    let registry = registry(path.parent().unwrap_or(Path::new("")));
     // Output nodes tied to other devices play on those too. The devices are
     // opened once, so a reload that changes them takes a restart.
     let mut devices = noodle_engine::output_devices(project.graph());
@@ -606,10 +606,13 @@ fn parse(path: &Path, text: &str) -> Result<Project, String> {
     Project::from_ron(text).map_err(|error| format!("can't load {}: {error}", path.display()))
 }
 
-fn registry() -> Registry {
+/// The node types, with samples read from `samples` beside the project file
+/// in `base`.
+fn registry(base: &Path) -> Registry {
     let mut registry = Registry::with_builtins();
     // Nothing displays meters or scopes yet, so their hub isn't needed.
-    let _telemetry = noodle_nodes::register_all(&mut registry);
+    let library = noodle_nodes::register_library(&mut registry);
+    library.samples.set_dir(base.join("samples"));
     noodle_plugins::discover().catalog.register(&mut registry);
     registry
 }

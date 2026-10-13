@@ -1,0 +1,27 @@
+// A drawn envelope on a clock: a Clock pulses every sixteenth note, a single-voice
+// Envelope plays its curve (a fast rise and a long bent fall) on each pulse,
+// and it opens a VCA on a saw that runs through a soft Distortion and a Chorus.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.generator.clock", params: {"rate": 4.0, "width": 0.25}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.mod.envelope", params: {"length": 0.12}, config: {"curve": "0 0 -0.6;0.04 1 -0.8;1 0 0", "single": 1}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.osc.saw", params: {"frequency": 110.0}, position: (x: 200.0, y: 160.0)),
+            4: (type: "noodle.effect.distortion", params: {"drive": 18.0, "level": -6.0}, position: (x: 400.0, y: 160.0)),
+            5: (type: "noodle.util.vca", position: (x: 600.0, y: 80.0)),
+            6: (type: "noodle.effect.chorus", params: {"rate": 0.8, "depth": 4.0, "mix": 0.4}, position: (x: 800.0, y: 80.0)),
+            7: (type: "noodle.util.gain", params: {"gain": -3.0}, position: (x: 1000.0, y: 80.0)),
+            8: (type: "noodle.io.output", position: (x: 1200.0, y: 80.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "trigger")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 2, port: "out"), to: (node: 5, port: "level")),
+            (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in")),
+        ],
+    ),
+)
