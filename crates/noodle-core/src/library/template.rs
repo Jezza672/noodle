@@ -88,7 +88,13 @@ impl GroupTemplate {
             // originals.
             node.preset = None;
             if matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) {
-                for key in [GAIN, MUTE, SOLO] {
+                // The group's own gain is set where it is used. A nested
+                // group's gain is its level in the mix inside, so it stays,
+                // as in a group preset; mute and solo never do.
+                if graph.node(old).and_then(|n| n.parent) == Some(group) {
+                    node.params.remove(GAIN);
+                }
+                for key in [MUTE, SOLO] {
                     node.params.remove(key);
                 }
                 // A port with no name is named from its node's ID, which a

@@ -595,3 +595,40 @@ fn files_with_a_slug_already_taken_get_their_own() {
     assert_ne!(ids[0], ids[1], "both are reachable");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_template_keeps_a_nested_groups_level_but_not_its_mute() {
+    let (mut project, mut history) = setup();
+    let outer = project.new_node_id();
+    let (inner, inner_out) = (project.new_node_id(), project.new_node_id());
+    history
+        .apply(
+            &mut project,
+            Command::Batch(vec![
+                Command::AddNode {
+                    id: outer,
+                    node: Node::new(GROUP),
+                },
+                Command::AddNode {
+                    id: inner,
+                    node: Node::new(GROUP).in_group(outer),
+                },
+                Command::AddNode {
+                    id: inner_out,
+                    node: named(GROUP_OUTPUT, "out")
+                        .in_group(inner)
+                        .with_param(GAIN, -9.0)
+                        .with_param(MUTE, 1.0),
+                },
+            ]),
+        )
+        .unwrap();
+    let template = GroupTemplate::from_group(project.graph(), outer, "Layered").unwrap();
+    let graph = template.graph();
+    let (_, out) = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == GROUP_OUTPUT)
+        .unwrap();
+    assert_eq!(out.params.get(GAIN), Some(&-9.0), "the layer's level stays");
+    assert!(!out.params.contains_key(MUTE), "its mute does not");
+}

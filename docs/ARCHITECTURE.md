@@ -318,7 +318,9 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
 - **Templates are copies.** `GroupTemplate::from_group` keeps the group,
   everything inside it (any depth), the wires between them and the nodes'
   positions relative to the group; it drops wires to the outside, automation
-  lanes, and gain, mute and solo on boundary nodes. `instantiate` returns one
+  lanes, the group's own boundary gain, and mute and solo on every boundary
+  node (a nested group's gain is its level inside, so it stays, as in a
+  group preset). `instantiate` returns one
   `Command::Batch` that adds an unlinked copy under fresh IDs (the group, then
   the layers inside it in the template's ID order) and sets `Node::template`
   to the entry ID. Nothing ever follows that link; it only says where the
