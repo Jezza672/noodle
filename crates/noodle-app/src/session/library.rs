@@ -1,0 +1,181 @@
+//! The library as the views use it: presets that fit a node or group, the
+//! group templates, and saving to the user's store.
+
+use noodle_core::library::{self, GroupPreset, GroupTemplate, Item, NodePreset};
+use noodle_core::{Node, NodeId};
+
+use super::{Edit, Session};
+
+/// A save to the user's library (not a change to the project).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LibraryEdit {
+    /// Saves the group as a template.
+    SaveTemplate { group: NodeId, name: String },
+    /// Saves a node's values as a preset; `overwrite` is the user preset ID
+    /// to replace instead of adding a new one.
+    SaveNodePreset {
+        node: NodeId,
+        name: String,
+        overwrite: Option<String>,
+    },
+    /// Saves every setting inside a group as a preset.
+    SaveGroupPreset {
+        group: NodeId,
+        name: String,
+        overwrite: Option<String>,
+    },
+}
+
+/// What is applied to a node or group, for the Presets control.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresetStatus {
+    /// The entry ID.
+    pub id: String,
+    pub name: String,
+    /// Edited since it was applied.
+    pub modified: bool,
+    /// A user preset, which Save can overwrite.
+    pub user: bool,
+}
+
+impl Session {
+    pub fn library(&self) -> &library::Library {
+        &self.library
+    }
+
+    /// Replaces the library, e.g. with one that keeps user entries on disk.
+    pub fn set_library(&mut self, library: library::Library) {
+        for problem in &library.problems {
+            self.message = Some(format!("Library: {problem}"));
+        }
+        self.library = library;
+    }
+
+    /// A node's port layout, as presets compare it.
+    fn layout_of(&self) -> impl Fn(&Node) -> Option<String> + '_ {
+        |node| self.registry.layout_signature(node)
+    }
+
+    /// The presets that fit a node (same type and ports) or group (same
+    /// topology), with their IDs: system ones first.
+    pub fn presets_for(&self, id: NodeId) -> Vec<(&str, &str)> {
+        let graph = self.project.graph();
+        let Some(node) = graph.node(id) else {
+            return Vec::new();
+        };
+        let layout = self.layout_of();
+        if node.type_id == noodle_core::group::GROUP {
+            self.library
+                .group_presets()
+                .filter(|(_, p)| p.applies_to(graph, id, &layout))
+                .map(|(entry, p)| (entry, p.name.as_str()))
+                .collect()
+        } else {
+            self.library
+                .node_presets()
+                .filter(|(_, p)| p.applies_to(node, &layout))
+                .map(|(entry, p)| (entry, p.name.as_str()))
+                .collect()
+        }
+    }
+
+    /// The command that applies library preset `entry` to `id`, if it fits.
+    pub fn apply_preset(&self, id: NodeId, entry: &str) -> Option<Edit> {
+        let graph = self.project.graph();
+        let layout = self.layout_of();
+        let node = graph.node(id)?;
+        let command = if node.type_id == noodle_core::group::GROUP {
+            self.library
+                .group_preset(entry)?
+                .apply(graph, id, entry, &layout)
+        } else {
+            self.library
+                .node_preset(entry)?
+                .apply(graph, id, entry, &layout)
+        };
+        command.ok().map(Edit::Apply)
+    }
+
+    /// The preset last applied to a node or group, and whether it has been
+    /// edited since. `None` if none was applied or it's gone from the
+    /// library.
+    pub fn preset_status(&self, id: NodeId) -> Option<PresetStatus> {
+        let graph = self.project.graph();
+        let node = graph.node(id)?;
+        let entry = node.preset.as_deref()?;
+        let layout = self.layout_of();
+        let (name, modified) = if node.type_id == noodle_core::group::GROUP {
+            let preset = self.library.group_preset(entry)?;
+            (
+                preset.name.clone(),
+                !preset.matches(graph, id, &layout),
+            )
+        } else {
+            let preset = self.library.node_preset(entry)?;
+            (preset.name.clone(), !preset.matches(node))
+        };
+        Some(PresetStatus {
+            id: entry.to_string(),
+            name,
+            modified,
+            user: entry.starts_with(library::USER),
+        })
+    }
+
+    pub(super) fn library_edit(&mut self, edit: LibraryEdit) {
+        let result = self.try_library_edit(edit);
+        match result {
+            Ok(message) => self.message = Some(message),
+            Err(error) => self.message = Some(format!("Couldn't save to the library: {error}")),
+        }
+    }
+
+    fn try_library_edit(&mut self, edit: LibraryEdit) -> Result<String, String> {
+        let (item, overwrite) = self.capture(edit)?;
+        let name = item.name().to_string();
+        match overwrite {
+            Some(id) => self
+                .library
+                .overwrite(&id, item)
+                .map_err(|e| e.to_string())?,
+            None => {
+                self.library.save(item).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(format!("Saved {name} to the library"))
+    }
+
+    /// The entry a save edit describes, from the project as it is now, and
+    /// the user entry it replaces.
+    fn capture(&self, edit: LibraryEdit) -> Result<(Item, Option<String>), String> {
+        let graph = self.project.graph();
+        let layout = self.layout_of();
+        Ok(match edit {
+            LibraryEdit::SaveTemplate { group, name } => {
+                let template =
+                    GroupTemplate::from_group(graph, group, name).map_err(|e| e.to_string())?;
+                (Item::Template(template), None)
+            }
+            LibraryEdit::SaveNodePreset {
+                node,
+                name,
+                overwrite,
+            } => {
+                let node = graph.node(node).ok_or("the node is gone")?;
+                let signature = layout(node).ok_or("this node has no preset layout")?;
+                (
+                    Item::NodePreset(NodePreset::capture(node, &signature, name)),
+                    overwrite,
+                )
+            }
+            LibraryEdit::SaveGroupPreset {
+                group,
+                name,
+                overwrite,
+            } => (
+                Item::GroupPreset(GroupPreset::capture(graph, group, &layout, name)),
+                overwrite,
+            ),
+        })
+    }
+}

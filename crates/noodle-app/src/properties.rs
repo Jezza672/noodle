@@ -6,10 +6,12 @@
 //! signal replaces its value until the wire is removed.
 
 use egui::{RichText, Ui};
+use noodle_core::group::GROUP;
+use noodle_core::library::{SYSTEM, USER};
 use noodle_core::{Command, Endpoint, Node, NodeId};
 use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
-use crate::session::{Edit, Session};
+use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
 use crate::widgets::{ConfigField, CurveEditor, GraphEditor, GraphKind, Live, ParamField};
 
@@ -35,6 +37,7 @@ pub fn show(
     problems(ui, session, id);
 
     let mut edits = Vec::new();
+    presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
     freezing(ui, session, id, &mut edits);
     match node_type {
@@ -50,6 +53,111 @@ pub fn show(
         }
     }
     edits
+}
+
+/// The Presets control: pick a preset that fits, save the values as a user
+/// preset, or overwrite the user preset applied (when it has been edited).
+/// For a group the presets are for everything inside it.
+fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut Vec<Edit>) {
+    let is_group = node.type_id == GROUP;
+    if !is_group && session.registry().get(&node.type_id).is_none() {
+        return;
+    }
+    let available = session.presets_for(id);
+    let status = session.preset_status(id);
+    let current = match &status {
+        Some(s) if s.modified => format!("{} (modified)", s.name),
+        Some(s) => s.name.clone(),
+        None => "None".to_string(),
+    };
+    ui.horizontal(|ui| {
+        ui.label("Presets");
+        egui::ComboBox::from_id_salt(("presets", id))
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for (heading, store) in [("System", SYSTEM), ("User", USER)] {
+                    let mut listed = available
+                        .iter()
+                        .filter(|(entry, _)| entry.starts_with(store))
+                        .peekable();
+                    if listed.peek().is_none() {
+                        continue;
+                    }
+                    ui.weak(heading);
+                    for (entry, name) in listed {
+                        let applied = status.as_ref().is_some_and(|s| s.id == *entry);
+                        if ui.selectable_label(applied, *name).clicked() {
+                            edits.extend(session.apply_preset(id, entry));
+                        }
+                    }
+                }
+                if available.is_empty() {
+                    ui.weak("None fit yet");
+                }
+            });
+    });
+
+    let naming = ui.id().with(("naming-preset", id));
+    let mut name: Option<String> = ui.data(|d| d.get_temp(naming));
+    let save = |name: String, overwrite: Option<String>| {
+        Edit::Library(if is_group {
+            LibraryEdit::SaveGroupPreset {
+                group: id,
+                name,
+                overwrite,
+            }
+        } else {
+            LibraryEdit::SaveNodePreset {
+                node: id,
+                name,
+                overwrite,
+            }
+        })
+    };
+    ui.horizontal(|ui| {
+        let overwritable = status.as_ref().filter(|s| s.user && s.modified);
+        let button = ui.add_enabled(overwritable.is_some(), egui::Button::new("Save"));
+        if let (true, Some(s)) = (button.clicked(), overwritable) {
+            edits.push(save(s.name.clone(), Some(s.id.clone())));
+        }
+        if ui.button("Save as...").clicked() {
+            name = Some(
+                status
+                    .as_ref()
+                    .map_or_else(String::new, |s| s.name.clone()),
+            );
+        }
+    });
+    if let Some(text) = &mut name {
+        let mut done = false;
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text("Preset name")
+                    .desired_width(140.0),
+            );
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let named = !text.trim().is_empty();
+            let clicked = ui.add_enabled(named, egui::Button::new("OK")).clicked();
+            if (clicked || enter) && named {
+                edits.push(save(text.trim().to_string(), None));
+                done = true;
+            }
+            if ui.button("Cancel").clicked() {
+                done = true;
+            }
+        });
+        if done {
+            name = None;
+        }
+    }
+    match name {
+        Some(name) => ui.data_mut(|d| {
+            d.insert_temp(naming, name);
+        }),
+        None => ui.data_mut(|d| d.remove::<String>(naming)),
+    }
+    ui.separator();
 }
 
 /// A plugin node's editor button.

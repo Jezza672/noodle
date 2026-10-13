@@ -99,6 +99,8 @@ pub struct EditorState {
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
+    /// The menu opened by right-clicking a group.
+    group_menu: Option<GroupMenu>,
     /// What meters and scopes show.
     bodies: body::Bodies,
     /// What Copy and Cut last took, for Paste.
@@ -134,6 +136,7 @@ impl Default for EditorState {
             canvas: Rect::NOTHING,
             gesture: Gesture::Idle,
             search: None,
+            group_menu: None,
             rename: None,
             bodies: body::Bodies::default(),
             clipboard: None,
@@ -346,6 +349,17 @@ enum StrokeAction {
     Reroute,
 }
 
+/// The menu a right-click on a group opens: "Save group to library...", which
+/// then asks for a name.
+struct GroupMenu {
+    group: NodeId,
+    /// Where it is drawn.
+    screen: Pos2,
+    /// The name being typed, once "Save group to library..." is chosen.
+    name: Option<String>,
+    focused: bool,
+}
+
 /// What is being renamed in place.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenameTarget {
@@ -402,6 +416,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
         Inputs {
             project: session.project(),
             registry: session.registry(),
+            library: session.library(),
             diagnostics: session.diagnostics(),
             new_node_id: &mut new_node_id,
             new_frame_id: &mut new_frame_id,
@@ -413,6 +428,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
 struct Inputs<'a> {
     project: &'a Project,
     registry: &'a Registry,
+    library: &'a noodle_core::library::Library,
     diagnostics: &'a [Diagnostic],
     new_node_id: &'a mut dyn FnMut() -> NodeId,
     new_frame_id: &'a mut dyn FnMut() -> FrameId,
@@ -825,6 +841,20 @@ fn pointer(
         && let Some(p) = latest
     {
         click(state, f, p, modifiers);
+    }
+    if response.secondary_clicked()
+        && let Some(p) = latest
+        && !modifiers.command
+        && !modifiers.shift
+        && let Hit::Node(id) = hit(f, p)
+        && is_group(f.project, id)
+    {
+        state.group_menu = Some(GroupMenu {
+            group: id,
+            screen: p,
+            name: None,
+            focused: false,
+        });
     }
     if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = latest
@@ -2067,6 +2097,60 @@ fn start_port_rename(
     }
 }
 
+/// The menu over a right-clicked group.
+fn group_menu(ui: &egui::Ui, state: &mut EditorState, f: &Frame_<'_>, edits: &mut Vec<Edit>) {
+    let Some(menu) = &mut state.group_menu else {
+        return;
+    };
+    if !is_group(f.project, menu.group) {
+        state.group_menu = None;
+        return;
+    }
+    let default_name = layout::group_title(f.project.graph(), menu.group);
+    let mut close = false;
+    let area = egui::Area::new(egui::Id::new("noodle-editor-group-menu"))
+        .fixed_pos(menu.screen)
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| match &mut menu.name {
+                None => {
+                    if ui.button("Save group to library...").clicked() {
+                        menu.name = Some(default_name.clone());
+                    }
+                }
+                Some(name) => {
+                    ui.label("Name in the library");
+                    let edit = ui.add(egui::TextEdit::singleline(name).desired_width(200.0));
+                    if !menu.focused {
+                        edit.request_focus();
+                        menu.focused = true;
+                    }
+                    let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    let named = !name.trim().is_empty();
+                    let save = ui.add_enabled(named, egui::Button::new("Save")).clicked();
+                    if (save || enter) && named {
+                        edits.push(Edit::Library(crate::session::LibraryEdit::SaveTemplate {
+                            group: menu.group,
+                            name: name.trim().to_string(),
+                        }));
+                        close = true;
+                    }
+                }
+            });
+        })
+        .response;
+    let escape = ui.input(|i| i.key_pressed(Key::Escape));
+    let clicked_outside = ui.input(|i| {
+        i.pointer.any_pressed()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|p| !area.rect.contains(p))
+    });
+    if close || escape || clicked_outside {
+        state.group_menu = None;
+    }
+}
+
 /// The add-node search and the frame-renaming box.
 fn popups(
     ui: &egui::Ui,
@@ -2076,7 +2160,7 @@ fn popups(
     edits: &mut Vec<Edit>,
 ) {
     if let Some(search) = &mut state.search {
-        match search.show(ui.ctx(), inputs.registry) {
+        match search.show(ui.ctx(), inputs.registry, inputs.library) {
             search::Outcome::Open => {}
             search::Outcome::Closed => state.search = None,
             search::Outcome::Chosen(choice) => {
@@ -2103,6 +2187,18 @@ fn popups(
                         edits.push(Edit::Apply(Command::AddNode { id, node }));
                         state.select_only([id]);
                     }
+                    Choice::Template(entry) => {
+                        if let Some(template) = inputs.library.template(&entry) {
+                            let (id, command) = template.instantiate(
+                                &entry,
+                                state.group,
+                                position(at),
+                                &mut *inputs.new_node_id,
+                            );
+                            edits.push(Edit::Apply(command));
+                            state.select_only([id]);
+                        }
+                    }
                     Choice::Frame => {
                         let id = (inputs.new_frame_id)();
                         edits.push(Edit::Apply(Command::AddFrame {
@@ -2121,6 +2217,8 @@ fn popups(
             }
         }
     }
+
+    group_menu(ui, state, f, edits);
 
     let Some(rename) = &mut state.rename else {
         return;
