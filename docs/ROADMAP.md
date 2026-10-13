@@ -777,12 +777,14 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** batch 2 (the nodes) has landed: Sampler, Note Split, Dynamics,
-Parametric EQ, Reverb and Arpeggiator, with graphs for Dynamics and EQ and a
-"Load sample…" picker. Drum rack, Compressor and Limiter groups, the
-evaluation songs (batch 3) and node presets follow; batch 1 (library and
-presets) is another stream. The design is in `CONTEXT.md` (Presets and the
-group library) and ADRs 0004 and 0005.
+**Status:** batches 2 and 3 have landed: the nodes (Sampler, Note Split,
+Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
+and a "Load sample…" picker), and the warp evaluation songs, whose drums are a
+drum rack of committed samples (`noodle-eval/songs/samples`) and whose mixes
+run through Compressor and Limiter groups (a Dynamics node with its controls
+exposed), a Parametric EQ and a Reverb. Node presets for the new nodes wait on
+batch 1 (library and presets), which is another stream. The design is in
+`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005.
 
 1. **Library and presets.** Node presets (parameters and port-neutral config, same node
    type and port layout, one undo step, never touching wires, lanes, mute or

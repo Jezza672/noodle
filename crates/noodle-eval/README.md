@@ -160,7 +160,11 @@ noise, filters, envelopes, VCAs and Math, with its controls as group inputs and
 everything editable. `songs/*.ron` are those projects at the song's own tempo
 (`noodle render songs/neon-drive.ron out.wav` plays one; `UPDATE_SONGS=1 cargo
 test -p noodle-eval --test songs` rewrites them after a change to the songs, and
-the test fails while they are stale).
+the test fails while they are stale). The drums are a drum rack of Samplers
+playing one-shots rendered from the synthesised drums and committed in
+`songs/samples` (named by content hash, `index.txt` says which is which; the
+same command rewrites them, and a test checks they still match the synthesis).
+The mixes run through Compressor, EQ and Reverb groups.
 
 The default run takes each song's **excerpt** (15 to 20 s, the busiest stretch,
 which is what joins the CI tests); `--full` takes the whole song and names its

@@ -179,11 +179,61 @@ pub enum Drum {
     Clap { cutoff: f32, decay: f32 },
 }
 
+/// A compressor's settings.
+#[derive(Debug, Clone, Copy)]
+pub struct Comp {
+    pub threshold: f32,
+    pub ratio: f32,
+    /// Seconds.
+    pub attack: f32,
+    pub release: f32,
+    pub knee: f32,
+    pub makeup: f32,
+}
+
+/// An effect in a chain, on a track or on the master.
+#[derive(Debug, Clone)]
+pub enum Fx {
+    /// A Parametric EQ with these bands: (type, frequency, gain in dB, Q).
+    Eq(Vec<(u8, f32, f32, f32)>),
+    /// A Compressor group (a Dynamics node with its controls exposed).
+    Compressor(Comp),
+    /// A Limiter group: a Dynamics in limiter mode, with `ceiling` dB.
+    Limiter {
+        ceiling: f32,
+    },
+    Reverb {
+        decay: f32,
+        damping: f32,
+        mix: f32,
+    },
+}
+
+/// One drum of a rack: the sample that plays, the synthesised drum it was
+/// made from, and where it sits.
+#[derive(Debug, Clone)]
+pub struct Slot {
+    /// The sample's name in `songs/samples/index.txt`.
+    pub sample: String,
+    pub drum: Drum,
+    /// The key that plays it.
+    pub key: u8,
+    pub db: f32,
+    pub pan: f32,
+}
+
+/// A drum rack: a Note Split in front of a Sampler for each slot, mixed.
+#[derive(Debug, Clone)]
+pub struct Rack {
+    pub slots: Vec<Slot>,
+}
+
 /// What a track plays.
 #[derive(Debug, Clone)]
 pub enum Instrument {
     Tone(Tone),
     Drum(Drum),
+    Rack(Rack),
 }
 
 impl Instrument {
@@ -196,6 +246,7 @@ impl Instrument {
             Self::Drum(Drum::Snare { .. }) => "Snare",
             Self::Drum(Drum::Hat { .. }) => "Hat",
             Self::Drum(Drum::Clap { .. }) => "Clap",
+            Self::Rack(_) => "Drum Rack",
         }
     }
 }
@@ -224,9 +275,183 @@ pub fn build(p: &mut Patch, instrument: &Instrument, column: f32, row: f32) -> N
         Instrument::Drum(Drum::Snare { tone, noise, decay }) => snare(p, *tone, *noise, *decay),
         Instrument::Drum(Drum::Hat { cutoff, decay }) => hat(p, *cutoff, *decay),
         Instrument::Drum(Drum::Clap { cutoff, decay }) => clap(p, *cutoff, *decay),
+        Instrument::Rack(rack) => drum_rack(p, rack),
     }
     p.leave(group);
     group
+}
+
+/// The drum rack group. Its input is `notes` (events), and each slot has a
+/// `level` (decibels, along the Sampler's gain) and a `tune` (cents) control,
+/// named after the slot; its output is `out`. Inside are a Note Split with an
+/// output per slot, a Sampler and a Pan for each, and a Mix.
+fn drum_rack(p: &mut Patch, rack: &Rack) {
+    let n = rack.slots.len();
+    let notes = p.input("notes", 0.0);
+    let split = p.add(
+        spec("noodle.event.note_split").config("outputs", Value::Int(n as i64)),
+        2.0,
+        0.0,
+    );
+    p.connect(notes, (split, "in"));
+    let mix = p.add(
+        spec("noodle.util.mix").config("inputs", Value::Int(n as i64)),
+        6.0,
+        0.0,
+    );
+    let out = p.output("out", 7.0, 0.0);
+    p.connect((mix, "out"), out);
+    for (i, slot) in rack.slots.iter().enumerate() {
+        let row = i as f32;
+        let key = f32::from(slot.key);
+        set_param(p, split, &format!("low{}", i + 1), key);
+        set_param(p, split, &format!("high{}", i + 1), key);
+        let label = format!("{} {}", drum_label(slot.drum), i + 1);
+        let level = p.input(&format!("{label} level"), row * 2.0 + 1.0);
+        let tune = p.input(&format!("{label} tune"), row * 2.0 + 2.0);
+        let sampler = p.add(
+            spec("noodle.instrument.sampler")
+                .config("sample", Value::Text(super::samples::hash(&slot.sample)))
+                .param("keytrack", 0.0)
+                .param("mode", 0.0)
+                .param("gain", slot.db),
+            3.0,
+            row,
+        );
+        let pan = p.add(spec("noodle.util.pan").param("pan", slot.pan), 4.0, row);
+        p.connect((split, out_key(i)), (sampler, "in"));
+        p.connect(level, (sampler, "gain"));
+        p.connect(tune, (sampler, "tune"));
+        p.connect((sampler, "out"), (pan, "in"));
+        p.connect((pan, "out"), (mix, wire_in(i)));
+    }
+}
+
+/// Adds `effects` one after another, starting from `from`, in columns from
+/// `column` at `row`. Returns the last port.
+pub fn chain(p: &mut Patch, effects: &[Fx], from: Port, column: f32, row: f32) -> Port {
+    let mut last = from;
+    for (i, effect) in effects.iter().enumerate() {
+        let column = column + i as f32;
+        let (node, input, output): (NodeId, &'static str, &'static str) = match effect {
+            Fx::Eq(bands) => {
+                let mut eq =
+                    spec("noodle.effect.eq").config("bands", Value::Int(bands.len() as i64));
+                for (n, &(kind, freq, gain, q)) in bands.iter().enumerate() {
+                    eq = eq
+                        .param(band_key("type", n), f32::from(kind))
+                        .param(band_key("freq", n), freq)
+                        .param(band_key("gain", n), gain)
+                        .param(band_key("q", n), q);
+                }
+                (p.add(eq, column, row), "in", "out")
+            }
+            Fx::Compressor(c) => (
+                dynamics_group(p, "Compressor", 0.0, *c, column, row),
+                "in",
+                "out",
+            ),
+            Fx::Limiter { ceiling } => {
+                let c = Comp {
+                    threshold: *ceiling,
+                    ratio: 20.0,
+                    attack: 0.001,
+                    release: 0.08,
+                    knee: 0.0,
+                    makeup: 0.0,
+                };
+                (
+                    dynamics_group(p, "Limiter", 1.0, c, column, row),
+                    "in",
+                    "out",
+                )
+            }
+            Fx::Reverb {
+                decay,
+                damping,
+                mix,
+            } => (
+                p.add(
+                    spec("noodle.effect.reverb")
+                        .param("decay", *decay)
+                        .param("damping", *damping)
+                        .param("mix", *mix),
+                    column,
+                    row,
+                ),
+                "in",
+                "out",
+            ),
+        };
+        p.connect(last, (node, input));
+        last = (node, output);
+    }
+    last
+}
+
+fn band_key(base: &'static str, n: usize) -> &'static str {
+    const KEYS: [[&str; 4]; 4] = [
+        ["type1", "freq1", "gain1", "q1"],
+        ["type2", "freq2", "gain2", "q2"],
+        ["type3", "freq3", "gain3", "q3"],
+        ["type4", "freq4", "gain4", "q4"],
+    ];
+    let which = ["type", "freq", "gain", "q"]
+        .iter()
+        .position(|&b| b == base)
+        .expect("a band parameter");
+    KEYS[n][which]
+}
+
+/// A Dynamics node as a group with its controls as the group's inputs, the
+/// way every instrument here is: Compressor, Limiter and Gate are settings of
+/// the one node, not nodes of their own. `mode` is the node's `mode` value.
+fn dynamics_group(p: &mut Patch, name: &str, mode: f32, c: Comp, column: f32, row: f32) -> NodeId {
+    let group = p.enter(name, column, row);
+    let input = p.input("in", 0.0);
+    let threshold = p.input("threshold", 1.0);
+    let ratio = p.input("ratio", 2.0);
+    let attack = p.input("attack", 3.0);
+    let release = p.input("release", 4.0);
+    let makeup = p.input("makeup", 5.0);
+    let node = p.add(
+        spec("noodle.effect.dynamics")
+            .param("mode", mode)
+            .param("threshold", c.threshold)
+            .param("ratio", c.ratio)
+            .param("attack", c.attack)
+            .param("release", c.release)
+            .param("knee", c.knee)
+            .param("makeup", c.makeup),
+        2.0,
+        0.0,
+    );
+    p.connect(input, (node, "in"));
+    p.connect(threshold, (node, "threshold"));
+    p.connect(ratio, (node, "ratio"));
+    p.connect(attack, (node, "attack"));
+    p.connect(release, (node, "release"));
+    p.connect(makeup, (node, "makeup"));
+    let out = p.output("out", 3.0, 0.0);
+    p.connect((node, "out"), out);
+    p.leave(group);
+    group
+}
+
+fn drum_label(drum: Drum) -> &'static str {
+    match drum {
+        Drum::Kick { .. } => "Kick",
+        Drum::Snare { .. } => "Snare",
+        Drum::Hat { .. } => "Hat",
+        Drum::Clap { .. } => "Clap",
+    }
+}
+
+fn out_key(i: usize) -> &'static str {
+    const KEYS: [&str; 8] = [
+        "out1", "out2", "out3", "out4", "out5", "out6", "out7", "out8",
+    ];
+    KEYS[i]
 }
 
 fn tonal(p: &mut Patch, tone: &Tone) {

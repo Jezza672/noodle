@@ -9,10 +9,10 @@
 //! The tempos are not 120 (the app's default, so a detector that gave up
 //! could pass for right) and sit inside the detector's range of 80 to 160.
 
-use super::kit::{Drum, Filter, Instrument, Osc, Tone, Wave, env};
+use super::kit::{Comp, Drum, Filter, Fx, Instrument, Osc, Rack, Slot, Tone, Wave, env};
 use super::music::{
-    ADD9, DOM7, MAJ, MAJ7, MAJOR_PENTATONIC, MIN7, MINOR_PENTATONIC, Pattern, SUS, Scale, chord,
-    drum, melody, pad, stabs, tones,
+    ADD9, DOM7, MAJ, MAJ7, MAJOR_PENTATONIC, MIN7, MINOR_PENTATONIC, Note, Pattern, SUS, Scale,
+    chord, drum, melody, pad, stabs, tones,
 };
 use super::{Part, Section, Song};
 
@@ -25,6 +25,159 @@ pub fn all() -> Vec<Song> {
         glass_ambient(),
         funk_engine(),
     ]
+    .into_iter()
+    .map(|song| mixed(racked(song)))
+    .collect()
+}
+
+/// The song's drum parts as one drum rack: a Sampler per drum behind a Note
+/// Split, played by one MIDI track on General MIDI keys, the way a drum
+/// machine in a DAW is set up. The patterns are the same; only the key and
+/// the instrument they play change.
+fn racked(mut song: Song) -> Song {
+    let first = song
+        .parts
+        .iter()
+        .position(|p| matches!(p.instrument, Instrument::Drum(_)));
+    let Some(first) = first else {
+        return song;
+    };
+    let (drums, mut rest): (Vec<Part>, Vec<Part>) = std::mem::take(&mut song.parts)
+        .into_iter()
+        .partition(|p| matches!(p.instrument, Instrument::Drum(_)));
+
+    let mut slots = Vec::new();
+    let mut lines: Vec<(u8, Vec<(&'static str, Pattern)>)> = Vec::new();
+    let mut taken: Vec<u8> = Vec::new();
+    for part in drums {
+        let Instrument::Drum(drum) = part.instrument else {
+            unreachable!("partitioned by drums")
+        };
+        // General MIDI: kick 36, snare 38, clap 39, closed hat 42, open 46.
+        let mut key = match drum {
+            Drum::Kick { .. } => 36,
+            Drum::Snare { .. } => 38,
+            Drum::Clap { .. } => 39,
+            Drum::Hat { decay, .. } if decay > 0.1 => 46,
+            Drum::Hat { .. } => 42,
+        };
+        while taken.contains(&key) {
+            key += 1;
+        }
+        taken.push(key);
+        slots.push(Slot {
+            sample: format!(
+                "{}-{}",
+                song.name,
+                part.name.to_lowercase().replace(' ', "-")
+            ),
+            drum,
+            key,
+            // The sampler is stereo, so its pan is a balance with no centre
+            // loss: take the 3 dB a mono synth's pan law took off.
+            db: part.db - 3.0,
+            pan: part.pan,
+        });
+        lines.push((key, part.plays));
+    }
+
+    // One pattern per section: every drum's pattern for it, on its key.
+    let mut plays: Vec<(&'static str, Pattern)> = Vec::new();
+    for section in &song.sections {
+        let mut here: Vec<(u8, Pattern)> = Vec::new();
+        for (key, line) in &mut lines {
+            if let Some(i) = line.iter().position(|(name, _)| *name == section.name) {
+                here.push((*key, line.swap_remove(i).1));
+            }
+        }
+        if here.is_empty() {
+            continue;
+        }
+        let pattern: Pattern = Box::new(move |bar| {
+            here.iter()
+                .flat_map(|(key, pattern)| {
+                    pattern(bar)
+                        .into_iter()
+                        .map(move |n| Note { key: *key, ..n })
+                })
+                .collect()
+        });
+        plays.push((section.name, pattern));
+    }
+    rest.insert(
+        first.min(rest.len()),
+        Part {
+            name: "Drums",
+            instrument: Instrument::Rack(Rack { slots }),
+            db: 0.0,
+            pan: 0.0,
+            plays,
+            fx: Vec::new(),
+        },
+    );
+    song.parts = rest;
+    song
+}
+
+/// Gives each song its mix: a compressor on the drum bus, an EQ and a reverb
+/// on the master, chosen to suit it. A compressor over the whole mix would
+/// pump the bass the tempo detector listens to, so it sits on the drums.
+fn mixed(mut song: Song) -> Song {
+    let bus = |threshold, ratio| {
+        Fx::Compressor(Comp {
+            threshold,
+            ratio,
+            attack: 0.008,
+            release: 0.12,
+            knee: 3.0,
+            makeup: 1.0,
+        })
+    };
+    // (type, frequency, gain, Q): 3 is a low cut, 4 a high cut, 2 a high shelf.
+    let tidy = Fx::Eq(vec![(3, 30.0, 0.0, 0.7), (2, 9000.0, 1.0, 0.7)]);
+    let drums = |song: &mut Song, fx: Fx| {
+        for part in &mut song.parts {
+            if part.name == "Drums" {
+                part.fx = vec![fx.clone()];
+            }
+        }
+    };
+    match song.name {
+        "neon-drive" => {
+            song.master_fx = vec![tidy];
+            drums(&mut song, bus(-16.0, 3.0));
+        }
+        "rainy-lofi" => {
+            song.master_fx = vec![
+                Fx::Eq(vec![(3, 40.0, 0.0, 0.7), (4, 9000.0, 0.0, 0.7)]),
+                Fx::Reverb {
+                    decay: 0.55,
+                    damping: 0.6,
+                    mix: 0.18,
+                },
+            ];
+        }
+        "breakbeat-run" => {
+            // Its sub bass is what the tempo detector hears, so no low cut.
+            song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
+            drums(&mut song, bus(-10.0, 2.0));
+        }
+        "glass-ambient" => {
+            song.master_fx = vec![
+                Fx::Reverb {
+                    decay: 0.75,
+                    damping: 0.35,
+                    mix: 0.3,
+                },
+                Fx::Eq(vec![(3, 50.0, 0.0, 0.7)]),
+            ];
+        }
+        _ => {
+            song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
+            drums(&mut song, bus(-15.0, 3.0));
+        }
+    }
+    song
 }
 
 fn sections(list: &[(&'static str, u32)]) -> Vec<Section> {
@@ -46,6 +199,7 @@ fn part(
         db,
         pan,
         plays,
+        fx: Vec::new(),
     }
 }
 
@@ -147,6 +301,7 @@ fn neon_drive() -> Song {
     Song {
         name: "neon-drive",
         master_db: -2.0,
+        master_fx: Vec::new(),
         bpm: 126.0,
         sections: sections(&[
             ("intro", 4),
@@ -294,6 +449,7 @@ fn rainy_lofi() -> Song {
     Song {
         name: "rainy-lofi",
         master_db: -2.5,
+        master_fx: Vec::new(),
         bpm: 88.0,
         sections: sections(&[
             ("intro", 4),
@@ -428,6 +584,7 @@ fn breakbeat_run() -> Song {
     Song {
         name: "breakbeat-run",
         master_db: -3.0,
+        master_fx: Vec::new(),
         bpm: 138.0,
         sections: sections(&[
             ("intro", 4),
@@ -562,6 +719,7 @@ fn glass_ambient() -> Song {
     Song {
         name: "glass-ambient",
         master_db: -1.0,
+        master_fx: Vec::new(),
         bpm: 100.0,
         sections: sections(&[
             ("intro", 4),
@@ -673,6 +831,7 @@ fn funk_engine() -> Song {
     Song {
         name: "funk-engine",
         master_db: -2.5,
+        master_fx: Vec::new(),
         bpm: 110.0,
         sections: sections(&[
             ("intro", 4),
