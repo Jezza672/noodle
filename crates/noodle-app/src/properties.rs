@@ -190,10 +190,8 @@ fn sample_picker(
             )
             .pick_file()
     {
-        match store
-            .import(&path)
-            .and_then(|hash| store.save(&hash).map(|_| hash))
-        {
+        // Kept in memory; saving the project writes it beside the file.
+        match store.import(&path) {
             Ok(hash) => {
                 ui.data_mut(|d| d.remove_temp::<String>(error_id));
                 edits.push(Edit::Apply(Command::SetConfig {

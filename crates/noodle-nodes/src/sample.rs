@@ -125,6 +125,10 @@ impl From<WavError> for SampleError {
 struct Inner {
     dir: Option<PathBuf>,
     samples: HashMap<String, Arc<Sample>>,
+    /// Hashes the folder did not have when last looked, so a view that asks
+    /// every frame does not read the disk every frame. Forgotten when the
+    /// folder changes or a sample comes in.
+    missing: std::collections::HashSet<String>,
 }
 
 /// Samples by content hash. Clones share the store.
@@ -142,7 +146,17 @@ impl SampleStore {
     /// [`save`](Self::save) writes to, normally `samples` beside the project
     /// file.
     pub fn set_dir(&self, dir: impl Into<PathBuf>) {
-        self.inner.lock().unwrap().dir = Some(dir.into());
+        let mut inner = self.inner.lock().unwrap();
+        inner.dir = Some(dir.into());
+        inner.missing.clear();
+    }
+
+    /// Like [`set_dir`](Self::set_dir) but `None` means there is no folder
+    /// yet (a project that has not been saved), so samples stay in memory.
+    pub fn set_dir_option(&self, dir: Option<PathBuf>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.dir = dir;
+        inner.missing.clear();
     }
 
     pub fn dir(&self) -> Option<PathBuf> {
@@ -156,9 +170,9 @@ impl SampleStore {
 
     pub fn insert_sample(&self, sample: Sample) -> String {
         let hash = sample.hash();
-        self.inner
-            .lock()
-            .unwrap()
+        let mut inner = self.inner.lock().unwrap();
+        inner.missing.remove(&hash);
+        inner
             .samples
             .entry(hash.clone())
             .or_insert_with(|| Arc::new(sample));
@@ -178,18 +192,24 @@ impl SampleStore {
             if let Some(sample) = inner.samples.get(hash) {
                 return Some(sample.clone());
             }
+            if inner.missing.contains(hash) {
+                return None;
+            }
             inner.dir.clone()?
         };
         // Only a hash that looks like one becomes a path.
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
-        let audio = read_wav(&dir.join(format!("{hash}.wav"))).ok()?;
-        let sample = Arc::new(Sample::from_audio(&audio));
-        // The file's name is a claim; the audio is what counts.
-        if sample.hash() != hash {
+        let found = read_wav(&dir.join(format!("{hash}.wav")))
+            .ok()
+            .map(|audio| Arc::new(Sample::from_audio(&audio)))
+            // The file's name is a claim; the audio is what counts.
+            .filter(|sample| sample.hash() == hash);
+        let Some(sample) = found else {
+            self.inner.lock().unwrap().missing.insert(hash.to_owned());
             return None;
-        }
+        };
         self.inner
             .lock()
             .unwrap()

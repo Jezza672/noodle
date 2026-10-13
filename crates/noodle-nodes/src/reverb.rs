@@ -74,6 +74,12 @@ const LINES: [f32; 8] = [
 const ALLPASS: [[f32; 2]; 2] = [[142.0, 107.0], [379.0, 277.0]];
 const ALLPASS_GAIN: f32 = 0.6;
 /// Depth of the length wobble, in samples at 48 kHz, and its speed in hertz.
+/// Below this (about -120 dB) the input or the tail counts as silent.
+const INAUDIBLE: f32 = 1e-6;
+/// How many silent samples in a row, with the tail gone, before the node
+/// stops processing. More than the longest pre-delay, so nothing is still in
+/// flight.
+const IDLE_AFTER: usize = 48_000;
 const WOBBLE: f32 = 6.0;
 const WOBBLE_RATE: f32 = 0.31;
 /// What the input is scaled by going in and the wet by coming out, so a
@@ -127,6 +133,7 @@ impl NodeType for Reverb {
             phase: 0.0,
             left: vec![0.0; setup.max_frames].into_boxed_slice(),
             right: vec![0.0; setup.max_frames].into_boxed_slice(),
+            quiet: 0,
         }))
     }
 }
@@ -180,6 +187,9 @@ struct ReverbNode {
     phase: f32,
     left: Box<[f32]>,
     right: Box<[f32]>,
+    /// How many samples in a row the input and the whole tail have been
+    /// below [`INAUDIBLE`].
+    quiet: usize,
 }
 
 impl ReverbNode {
@@ -212,11 +222,33 @@ impl Node for ReverbNode {
         .map(|p| inputs[p].lane(0, 0));
         let [size, decay, damping, predelay, width, mix] = params;
         let (in_l, in_r) = (input.lane(0, 0), input.lane(0, 1));
+        // Once the input has been silent and the tail has died away, the
+        // state is cleared and the node costs nothing until sound comes in.
+        let input_quiet = (input.is_silent(0, 0) && input.is_silent(0, 1))
+            || in_l[..ctx.frames]
+                .iter()
+                .chain(&in_r[..ctx.frames])
+                .all(|x| x.abs() < INAUDIBLE);
+        if self.quiet >= IDLE_AFTER && input_quiet {
+            out.silence(0, 0);
+            out.silence(0, 1);
+            return;
+        }
         let mut left = std::mem::take(&mut self.left);
         let mut right = std::mem::take(&mut self.right);
         let scale = self.sample_rate / 48_000.0;
 
         let tail_samples = self.lines.iter().map(|l| l.mask).max().unwrap_or(0) as f32;
+        // The feedback gains: each line loses 60 dB in `rt60`. The few
+        // samples of wobble in a line's length change this far below what
+        // anyone can hear, so it is worked out once for the block.
+        let room = size[0].clamp(0.5, 1.5);
+        let rt60 = decay[0].clamp(0.1, 20.0);
+        let gains: [f32; 8] = std::array::from_fn(|n| {
+            let delay = (LINES[n] * scale * room).clamp(2.0, tail_samples - 4.0);
+            10f32.powf(-3.0 * delay / (rt60 * self.sample_rate))
+        });
+        let mut tail = 0.0f32;
         for i in 0..ctx.frames {
             let (dry_l, dry_r) = (in_l[i], in_r[i]);
             // Pre-delay, then the allpass smear.
@@ -233,19 +265,18 @@ impl Node for ReverbNode {
             }
 
             let room = size[i].clamp(0.5, 1.5);
-            let rt60 = decay[i].clamp(0.1, 20.0);
             let damp = damping[i].clamp(0.0, 1.0) * 0.9;
             let mut y = [0.0f32; 8];
             for (n, ring) in self.lines.iter().enumerate() {
                 let wobble = WOBBLE * scale * (TAU * (self.phase + n as f32 / 8.0)).sin();
                 let delay = (LINES[n] * scale * room + wobble).clamp(2.0, tail_samples - 4.0);
-                // This line's feedback gain: the loop loses 60 dB in `rt60`.
-                let gain = 10f32.powf(-3.0 * delay / (rt60 * self.sample_rate));
+                let gain = gains[n];
                 let raw = ring.read(delay - 1.0);
                 self.damp[n] += (1.0 - damp) * (raw - self.damp[n]);
                 y[n] = self.damp[n] * gain;
             }
             // Householder: every line gets the sum of all, less itself twice.
+            tail = y.iter().fold(tail, |m, v| m.max(v.abs()));
             let sum: f32 = y.iter().sum::<f32>() * 0.25;
             for (n, &y) in y.iter().enumerate() {
                 let source = if n % 2 == 0 { inj[0] } else { inj[1] };
@@ -267,6 +298,17 @@ impl Node for ReverbNode {
             let m = mix[i].clamp(0.0, 1.0);
             left[i] = dry_l * (1.0 - m) + wet_l * m;
             right[i] = dry_r * (1.0 - m) + wet_r * m;
+        }
+        self.quiet = if input_quiet && tail < INAUDIBLE {
+            self.quiet.saturating_add(ctx.frames)
+        } else {
+            0
+        };
+        if self.quiet >= IDLE_AFTER {
+            self.reset();
+            self.quiet = IDLE_AFTER;
+            left.fill(0.0);
+            right.fill(0.0);
         }
         self.phase = (self.phase + WOBBLE_RATE * ctx.frames as f32 / self.sample_rate).fract();
 
@@ -302,6 +344,7 @@ impl Node for ReverbNode {
             ring.clear();
         }
         self.damp = [0.0; 8];
+        self.quiet = 0;
     }
 }
 
@@ -372,6 +415,28 @@ mod tests {
             blocks[0].0[..40].iter().all(|x| x.abs() < 1e-3),
             "after the pre-delay"
         );
+    }
+
+    #[test]
+    fn a_dead_tail_goes_idle_and_the_next_sound_wakes_it() {
+        let mut h = harness(Shape::MONO);
+        h.set(ReverbPorts::MIX, 1.0);
+        h.set(ReverbPorts::DECAY, 0.3);
+        let blocks = impulse(&mut h, 50);
+        assert!(rms(&blocks[1].0) > 1e-5, "there is a tail first");
+        assert!(
+            h.output(OUT).is_silent(0, 0),
+            "idle flags its output silent"
+        );
+        assert!(h.output(OUT).is_silent(0, 1));
+        // A new sound rings again.
+        let mut input = h.input(IN, 4_800);
+        input.fill(0.0);
+        input.lane_mut(0, 0)[0] = 1.0;
+        h.run(4_800).unwrap();
+        h.run(4_800).unwrap();
+        assert!(!h.output(OUT).is_silent(0, 0));
+        assert!(rms(h.output(OUT).lane(0, 0)) > 1e-4);
     }
 
     #[test]

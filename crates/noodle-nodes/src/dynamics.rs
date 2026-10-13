@@ -348,6 +348,9 @@ impl Node for DynamicsNode {
             } else {
                 DynamicsPorts::INPUT
             };
+            // The detector listens to all of its own channels, which a
+            // sidechain need not share in number with the input.
+            let detector_channels = inputs[detector].shape().channels;
             let param = |port: usize| inputs[port].lane(voice, 0);
             let (threshold, ratio, attack, release, knee, makeup) = (
                 param(DynamicsPorts::THRESHOLD),
@@ -378,7 +381,7 @@ impl Node for DynamicsNode {
             let red = reduction.lane_mut(voice, 0);
             for i in 0..frames {
                 let mut peak = 0.0f32;
-                for c in 0..channels {
+                for c in 0..detector_channels {
                     let x = inputs[detector].lane(voice, c)[i].abs();
                     // A NaN would poison the gain for good.
                     if x.is_finite() {
