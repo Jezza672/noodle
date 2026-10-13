@@ -426,9 +426,9 @@ fn group_stages_never_allocate_while_controls_change() {
                 value: Some(value),
             });
         };
-        set(&mut s, "gain", -(round as f32));
-        set(&mut s, "mute", (round % 2) as f32);
-        set(&mut s, "solo", ((round / 4) % 2) as f32);
+        set(&mut s, "gain.1", -(round as f32));
+        set(&mut s, "mute.1", (round % 2) as f32);
+        set(&mut s, "solo.1", ((round / 4) % 2) as f32);
         s.update();
         s.controller.maintain();
 
@@ -471,7 +471,7 @@ fn two_tracks_session(touch_first: bool) -> (Session, NodeId) {
         // the engine starts with.
         s.edit(Command::SetParam {
             node: outputs[0],
-            key: "mute".into(),
+            key: "mute.1".into(),
             value: Some(0.0),
         });
     }
@@ -506,7 +506,7 @@ fn muting_a_track_whose_stage_is_in_place_does_not_dip_the_others() {
     let mute = |s: &mut Session, node| {
         s.edit(Command::SetParam {
             node,
-            key: "mute".into(),
+            key: "mute.1".into(),
             value: Some(1.0),
         });
     };
