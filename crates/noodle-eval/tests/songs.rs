@@ -406,7 +406,7 @@ fn a_range_is_the_notes_inside_it_moved_to_the_start() {
 
 #[test]
 fn every_instrument_is_a_group_of_primitive_nodes_with_its_controls_exposed() {
-    use noodle_core::group::{GROUP, TRACK_INPUT};
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, TRACK_INPUT};
     // No node of a song does a synth's job on its own: these are all the types
     // that appear, and all of them are building blocks.
     const PRIMITIVES: [&str; 21] = [
@@ -488,7 +488,13 @@ fn every_instrument_is_a_group_of_primitive_nodes_with_its_controls_exposed() {
                 }
             }
             // And it holds more than one node: it is a patch.
-            assert!(graph.children(Some(synth)).count() >= 8);
+            assert!(
+                graph
+                    .children(Some(synth))
+                    .filter(|(_, n)| !matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT))
+                    .count()
+                    >= 5
+            );
         }
     }
 }

@@ -445,7 +445,12 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
         let project = h.state().session().project();
         let found = outputs
             .iter()
-            .find_map(|&out| project.lane_for(&Endpoint::new(out, MUTE)))
+            .find_map(|&out| {
+                project.lane_for(&Endpoint::new(
+                    out,
+                    noodle_core::group::control_key(MUTE, 1),
+                ))
+            })
             .expect("the lane was made");
         (found.0, found.1.clone())
     };

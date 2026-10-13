@@ -548,7 +548,8 @@ fn grouped() -> (H, ClipId) {
     use noodle_core::group::{GROUP, GROUP_OUTPUT};
     let (mut h, id) = rig();
     let inside = |type_id: &str| {
-        let mut node = Node::new(type_id);
+        let mut node =
+            Node::new(type_id).with_config(noodle_core::group::ports_config(&[(1, "p".into())]));
         node.parent = Some(NodeId(10));
         node
     };
@@ -579,10 +580,10 @@ fn the_mute_button_sets_the_output_nodes_mute() {
     let (mut h, _) = grouped();
     h.get_by_label("M").click();
     h.run();
-    assert_eq!(param(&h, "mute"), Some(1.0));
+    assert_eq!(param(&h, "mute.1"), Some(1.0));
     h.get_by_label("M").click();
     h.run();
-    assert_eq!(param(&h, "mute"), Some(0.0));
+    assert_eq!(param(&h, "mute.1"), Some(0.0));
 }
 
 #[test]
@@ -590,7 +591,7 @@ fn the_solo_button_sets_solo() {
     let (mut h, _) = grouped();
     h.get_by_label("S").click();
     h.run();
-    assert_eq!(param(&h, "solo"), Some(1.0));
+    assert_eq!(param(&h, "solo.1"), Some(1.0));
 }
 
 #[test]
@@ -603,10 +604,10 @@ fn dragging_the_gain_slider_is_one_undo_step() {
         .map(|i| from + Vec2::new(-200.0 * i as f32 / 6.0, 0.0))
         .collect();
     drag(&mut h, Modifiers::NONE, &path);
-    let gain = param(&h, "gain").unwrap();
+    let gain = param(&h, "gain.1").unwrap();
     assert!(gain < -20.0, "{gain}");
     h.state_mut().session.undo();
-    assert_eq!(param(&h, "gain"), None, "one undo puts it back");
+    assert_eq!(param(&h, "gain.1"), None, "one undo puts it back");
 }
 
 #[test]
@@ -628,46 +629,48 @@ fn set_param(h: &mut H, node: u64, key: &str, value: f32) {
 fn turning_solo_off_clears_it_on_every_boundary_node() {
     use noodle_core::group::GROUP_INPUT;
     let (mut h, _) = grouped();
-    let mut input = Node::new(GROUP_INPUT);
+    let mut input =
+        Node::new(GROUP_INPUT).with_config(noodle_core::group::ports_config(&[(1, "p".into())]));
     input.parent = Some(NodeId(10));
     h.state_mut().session.edit([Edit::Apply(Command::AddNode {
         id: NodeId(12),
         node: input,
     })]);
-    set_param(&mut h, 12, "solo", 1.0);
-    set_param(&mut h, 11, "solo", 1.0);
+    set_param(&mut h, 12, "solo.1", 1.0);
+    set_param(&mut h, 11, "solo.1", 1.0);
     h.get_by_label("S").click();
     h.run();
-    assert_eq!(param(&h, "solo"), Some(0.0));
+    assert_eq!(param(&h, "solo.1"), Some(0.0));
     let graph = h.state().session.project().graph();
-    assert_eq!(graph.node(NodeId(12)).unwrap().params["solo"], 0.0);
+    assert_eq!(graph.node(NodeId(12)).unwrap().params["solo.1"], 0.0);
 }
 
 #[test]
 fn solo_on_the_input_node_shows_as_soloed() {
     use noodle_core::group::GROUP_INPUT;
     let (mut h, _) = grouped();
-    let mut input = Node::new(GROUP_INPUT);
+    let mut input =
+        Node::new(GROUP_INPUT).with_config(noodle_core::group::ports_config(&[(1, "p".into())]));
     input.parent = Some(NodeId(10));
     h.state_mut().session.edit([Edit::Apply(Command::AddNode {
         id: NodeId(12),
         node: input,
     })]);
-    set_param(&mut h, 12, "solo", 1.0);
+    set_param(&mut h, 12, "solo.1", 1.0);
     // Pressing S turns it off, rather than setting it again.
     h.get_by_label("S").click();
     h.run();
     let graph = h.state().session.project().graph();
-    assert_eq!(graph.node(NodeId(12)).unwrap().params["solo"], 0.0);
+    assert_eq!(graph.node(NodeId(12)).unwrap().params["solo.1"], 0.0);
 }
 
 #[test]
 fn double_clicking_the_gain_slider_writes_zero_db() {
     let (mut h, _) = grouped();
-    set_param(&mut h, 11, "gain", -12.0);
+    set_param(&mut h, 11, "gain.1", -12.0);
     let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
     double_click(&mut h, slider.center());
-    assert_eq!(param(&h, "gain"), Some(0.0));
+    assert_eq!(param(&h, "gain.1"), Some(0.0));
 }
 
 fn track_inputs(h: &H) -> usize {

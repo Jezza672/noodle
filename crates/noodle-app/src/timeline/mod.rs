@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
-use noodle_core::group;
 use noodle_core::{Clip, ClipId, Command, Endpoint, NodeId, Project, TempoMap, Tick};
 
 use crate::session::{ArmKind, Edit, Session};
@@ -1449,13 +1448,13 @@ fn draw_headers(
                 ..t
             });
         let automated = controls.map_or_else(header::Automated::default, |t| {
-            let driven = |key| {
+            let driven = |key: String| {
                 let input = Endpoint::new(t.node, key);
                 session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
             };
             header::Automated {
-                gain: driven(group::GAIN),
-                mute: driven(group::MUTE),
+                gain: driven(t.gain_key()),
+                mute: driven(t.mute_key()),
             }
         });
         let changes = header::show(
@@ -1492,6 +1491,7 @@ fn draw_headers(
                 spot,
                 session.project(),
                 controls.node,
+                controls.port,
                 controls.controls,
             ));
         }
