@@ -148,6 +148,65 @@ fn problems(ui: &mut Ui, session: &Session, id: NodeId) {
     }
 }
 
+/// The Sampler's sample: what is loaded, and a button to load another. The
+/// audio goes into the sample store (and is saved in `samples` beside the
+/// project), and the node keeps its hash.
+fn sample_picker(
+    ui: &mut Ui,
+    session: &Session,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    let store = session.samples();
+    let hash = info.get_text(&node.config);
+    ui.label(info.name);
+    let status = if hash.is_empty() {
+        "No sample loaded".to_owned()
+    } else if let Some(sample) = store.get(&hash) {
+        format!(
+            "{:.2} s at {} Hz ({})",
+            sample.frames() as f32 / sample.sample_rate.max(1) as f32,
+            sample.sample_rate,
+            &hash[..8.min(hash.len())]
+        )
+    } else {
+        format!(
+            "Sample {} is missing from the samples folder",
+            &hash[..8.min(hash.len())]
+        )
+    };
+    ui.label(RichText::new(status).weak());
+    let error_id = egui::Id::new((id, "sample_error"));
+    if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
+        ui.colored_label(crate::theme::MUTE, error);
+    }
+    if ui.button("Load sample…").clicked()
+        && let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Audio",
+                &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
+            )
+            .pick_file()
+    {
+        // Kept in memory; saving the project writes it beside the file.
+        match store.import(&path) {
+            Ok(hash) => {
+                ui.data_mut(|d| d.remove_temp::<String>(error_id));
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: id,
+                    key: info.key.to_owned(),
+                    value: Some(noodle_core::Value::Text(hash)),
+                }));
+            }
+            Err(error) => {
+                ui.data_mut(|d| d.insert_temp(error_id, error.to_string()));
+            }
+        }
+    }
+}
+
 fn config(
     ui: &mut Ui,
     session: &Session,
@@ -198,6 +257,10 @@ fn config(
                     value: None,
                 }));
             }
+            continue;
+        }
+        if node_type.info().id == noodle_nodes::SAMPLER_ID && info.key == noodle_nodes::SAMPLE_KEY {
+            sample_picker(ui, session, id, info, node, edits);
             continue;
         }
         if info.key == noodle_plugins::PARAMS_KEY
@@ -438,6 +501,11 @@ fn graph(
             .is_some()
     };
     let values = |key: &str| {
+        if let Some(value) = crate::widgets::graph::special_value(key, node, &|channel| {
+            live(id, channel).map(|live| live.value)
+        }) {
+            return value;
+        }
         let own = || {
             let default = info_of(key).map_or(0.0, |info| info.default);
             node.params.get(key).copied().unwrap_or(default)
@@ -649,6 +717,61 @@ mod tests {
         drag(&mut harness, at(x, y), at(x + 0.2, y + 0.3));
         assert!(param(&harness, "cutoff").unwrap() > 2_000.0);
         assert!(param(&harness, "resonance").unwrap() > 0.5);
+    }
+
+    #[test]
+    fn dragging_the_dynamics_points_sets_threshold_and_attack() {
+        let mut harness = harness([Node::new("noodle.effect.dynamics")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        let outer = harness.get_by_label("Dynamics graph").rect();
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
+        let at = |x: f32, y: f32| {
+            egui::pos2(
+                plot.left() + x * plot.width(),
+                plot.bottom() - y * plot.height(),
+            )
+        };
+        // The threshold, -18 dB, sits 0.5625 dB below the line at the soft
+        // knee, on a plot of -60 to 0 dB across 46% of the width.
+        let y = (60.0 - 18.5625) / 72.0;
+        drag(&mut harness, at(0.46 * 42.0 / 60.0, y), at(0.46 * 0.5, y));
+        let threshold = param(&harness, "threshold").unwrap();
+        assert!((threshold + 30.0).abs() < 1.0, "{threshold}");
+
+        // The attack point: 10 ms in, over a span of (0.04 + 0.4 + 0.01) · 1.1.
+        let span = 0.45 * 1.1;
+        // 63% of the way to the reduction at 0 dB, on a scale of 1.1 times it.
+        let height = 1.0 - 0.632 / 1.1;
+        let from = at(0.54 + 0.46 * 0.01 / span, height);
+        drag(&mut harness, from, at(0.54 + 0.46 * 0.05 / span, 0.5));
+        let attack = param(&harness, "attack").unwrap();
+        assert!((attack - 0.05).abs() < 0.01, "{attack}");
+        // Each drag is its own undo step.
+        harness.state_mut().session.undo();
+        assert_eq!(param(&harness, "attack"), None);
+        assert!(param(&harness, "threshold").is_some());
+    }
+
+    #[test]
+    fn dragging_an_eq_band_sets_its_frequency_and_gain() {
+        let mut harness = harness([Node::new("noodle.effect.eq")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        let outer = harness.get_by_label("Frequency response graph").rect();
+        let plot = outer.shrink2(egui::vec2(2.0, 8.0));
+        let at = |x: f32, y: f32| {
+            egui::pos2(
+                plot.left() + x * plot.width(),
+                plot.bottom() - y * plot.height(),
+            )
+        };
+        // Band 1 is at 100 Hz, 0 dB: halfway up.
+        let x = (100.0f32 / 20.0).ln() / 1_000.0f32.ln();
+        drag(&mut harness, at(x, 0.5), at(x + 0.2, 0.75));
+        assert!(param(&harness, "freq1").unwrap() > 300.0);
+        let gain = param(&harness, "gain1").unwrap();
+        assert!((gain - 12.0).abs() < 1.5, "{gain}");
     }
 
     #[test]

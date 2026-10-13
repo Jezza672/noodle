@@ -216,6 +216,8 @@ impl Harness {
             transport: Transport {
                 playing: true,
                 position: self.position,
+                // 120 beats per minute, the default tempo.
+                tick: self.position as f64 * 2.0 * 960.0 / f64::from(self.sample_rate),
                 ..Transport::default()
             },
         };

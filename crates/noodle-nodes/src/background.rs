@@ -70,6 +70,7 @@ pub fn render_streaming<E>(
 ) -> Result<RenderReport, StreamError<E>> {
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
+    library.samples.set_dir(request.base.join("samples"));
     if let Some(extend) = &request.extend_registry {
         extend(&mut registry);
     }
@@ -106,6 +107,7 @@ pub fn profile(
 ) -> Result<(Profile, RenderReport), RenderError> {
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
+    library.samples.set_dir(request.base.join("samples"));
     if let Some(extend) = &request.extend_registry {
         extend(&mut registry);
     }

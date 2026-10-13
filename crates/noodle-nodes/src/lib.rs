@@ -2,12 +2,15 @@
 //! (meters and scopes) that report to the UI.
 
 mod adsr;
+mod arpeggiator;
 mod background;
 mod button;
 mod cached;
 mod clip;
 mod curve;
 mod delay;
+mod dynamics;
+mod eq;
 mod export;
 mod freeze;
 mod gain;
@@ -20,12 +23,16 @@ mod midi_in;
 mod mix;
 mod noise;
 mod normalize;
+mod note_split;
 mod notes;
 mod osc;
 mod pan;
 mod remap;
 mod reroute;
+mod reverb;
 mod reverse;
+mod sample;
+mod sampler;
 mod scope;
 mod stage;
 mod svf;
@@ -35,6 +42,9 @@ mod voice_mix;
 mod voices;
 
 pub use adsr::{ADSR_ID, Adsr, AdsrShape};
+pub use arpeggiator::{
+    ARPEGGIATOR_ID, Arpeggiator, RATE_NAMES as ARP_RATE_NAMES, RATE_TICKS as ARP_RATE_TICKS,
+};
 pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
     render_streaming, spawn_render, spawn_render_to_cache,
@@ -47,6 +57,14 @@ pub use clip::{
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
+pub use dynamics::{
+    DYNAMICS_ID, Dynamics, DynamicsMode, MAX_LOOKAHEAD_MS, attack_response, reduction_db,
+    release_response, transfer_db,
+};
+pub use eq::{
+    EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
+    default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
+};
 pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_export};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
@@ -62,12 +80,16 @@ pub use midi_in::{MIDI_IN_ID, MidiIn};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
+pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use reroute::{REROUTE_ID, Reroute};
+pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
 pub use reverse::Reverse;
+pub use sample::{Sample, SampleError, SampleStore};
+pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
 pub use stage::GroupStage;
 pub use svf::{SVF_ID, Svf, svf_response};
@@ -97,6 +119,9 @@ pub struct Library {
     /// Where MIDI In nodes get their messages from; connect a port to it
     /// with [`noodle_io::connect_midi`].
     pub midi: noodle_io::MidiBus,
+    /// Where Sampler nodes get their samples, by hash. Give it a folder
+    /// ([`SampleStore::set_dir`]) to read them from disk.
+    pub samples: SampleStore,
 }
 
 /// Registers every built-in node type.
@@ -132,11 +157,16 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Vca);
     registry.register(Math);
     registry.register(Delay);
+    registry.register(Dynamics::new(&telemetry));
+    registry.register(ParametricEq);
+    registry.register(Reverb);
     registry.register(Remap);
     registry.register(Adsr);
     registry.register(Lfo);
     registry.register(Key);
     registry.register(MonoNote);
+    registry.register(NoteSplit);
+    registry.register(Arpeggiator);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);
@@ -149,10 +179,13 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     let midi = noodle_io::MidiBus::new();
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
+    let samples = SampleStore::new();
+    registry.register(Sampler::new(&samples));
     Library {
         telemetry,
         clips,
         midi,
+        samples,
     }
 }
 
@@ -193,6 +226,7 @@ pub fn render_project_with_clips(
     frames: usize,
 ) -> Result<ClipRender, RenderError> {
     let library = register_library_blocking(registry);
+    library.samples.set_dir(base.join("samples"));
     let rate = settings.sample_rate.round() as u32;
     let table = TempoTable::new(project.tempo_map(), settings.sample_rate);
     let problems = library.clips.update(project, &table, rate, base);

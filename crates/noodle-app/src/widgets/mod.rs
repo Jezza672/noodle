@@ -12,6 +12,7 @@ pub mod config;
 pub mod curve;
 pub mod format;
 pub mod graph;
+pub mod mixing_graph;
 pub mod param;
 pub mod taper;
 

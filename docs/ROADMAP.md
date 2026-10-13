@@ -777,8 +777,12 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** designed, not started. Two batches; the design is in
-`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005.
+**Status:** batch 2 (the nodes) has landed: Sampler, Note Split, Dynamics,
+Parametric EQ, Reverb and Arpeggiator, with graphs for Dynamics and EQ and a
+"Load sample…" picker. Drum rack, Compressor and Limiter groups, the
+evaluation songs (batch 3) and node presets follow; batch 1 (library and
+presets) is another stream. The design is in `CONTEXT.md` (Presets and the
+group library) and ADRs 0004 and 0005.
 
 1. **Library and presets.** Node presets (parameters and port-neutral config, same node
    type and port layout, one undo step, never touching wires, lanes, mute or
