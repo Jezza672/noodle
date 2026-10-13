@@ -297,6 +297,44 @@ outputs only the delayed signal; an echo is a Mix, the Delay and a Gain wired
 round in a loop (`examples/feedback-echo.ron`). Every lane has its own line,
 and a lane silent for a whole line's length is flagged silent.
 
+### Instruments, dynamics and effects (M9)
+
+These are primitives; instruments and racks built from them are groups.
+
+- **Sampler** (`noodle.instrument.sampler`) plays one sample per note from a
+  note-event input, up to 16 voices mixed to a stereo output. The sample is a
+  config setting, the blake3 hash of the decoded audio (ADR 0004), resolved at
+  instantiation through the `SampleStore` that `register_library` returns: the
+  store keeps audio in memory and reads `<hash>.wav` from a folder, which the
+  app, the CLI and every offline render set to `samples` beside the project
+  file. A sample the store doesn't have is silence, and makes the node
+  uncacheable, so a render of silence is never remembered. Parameters: `root`,
+  `tune` (cents), `keytrack`, `start`, `end`, `mode` (one-shot or gate), `loop`
+  and loop points (gate mode only), `release`, `gain`. Interpolation is
+  four-point Catmull-Rom.
+- **Note Split** (`noodle.event.note_split`) routes notes to `outputs` event
+  outputs (config, 1 to 16) by key range and velocity range, with `transpose`
+  per output and an optional `rest` output (config) for what nothing took.
+  A note goes to every output that matches (layering); note-offs and
+  expression follow their note-on; other MIDI goes to all outputs. One output
+  and no rest is a note filter.
+- **Dynamics** (`noodle.effect.dynamics`) is a compressor, limiter, gate or
+  expander by `mode`, with a `detect` choice of input or sidechain, a
+  gain-reduction output, and gain computed in the log domain with a soft knee.
+  `lookahead` (0 to 20 ms) is config, not a parameter, because the plan fixes
+  a node's latency before audio runs; it delays the audio and reports itself
+  to delay compensation. Channels share one gain.
+- **Parametric EQ** (`noodle.effect.eq`) is `bands` (config, 1 to 8) RBJ
+  biquads in series: bell, shelves, cuts and notch. Coefficients are computed
+  once a block when nothing is wired and every 32 samples when something is.
+- **Reverb** (`noodle.effect.reverb`) is a stereo feedback delay network of
+  eight lines with a Householder matrix, input allpasses and a slow length
+  wobble. One-voice input, stereo output, deterministic.
+- **Arpeggiator** (`noodle.event.arpeggiator`) turns held notes into steps on
+  the transport's tick grid (free-running while stopped): up, down, up-down,
+  down-up, as played or random (seeded by the node's seed), over 1 to 4
+  octaves, with gate, swing and hold.
+
 ### Feedback loops
 
 A wire can close a loop only through a node that does not need its input to
@@ -1815,6 +1853,18 @@ envelope when idle and holds still during a drag, so a point follows the
 pointer; dragging past the right edge asks for longer times, and the graph
 rescales when you let go. To add a graph for a node type, add a `Kind` and
 its drawing and handles to `graph.rs`, and a height in `body::height`.
+
+`widgets/mixing_graph.rs` draws two more. Dynamics shows its transfer curve
+(input against output level, from `reduction_db`) with points for threshold,
+ratio, knee and makeup, a dot at the level passing through now, and beside it
+the step response, the gain reduction climbing at the attack and falling at
+the release, each with a point. The node reports its input level and gain
+reduction as the telemetry params `level` and `reduction` (the editor reads
+them whether or not anything is wired, and `special_value` hands them to the
+graph as `@level` and `@reduction`). Parametric EQ shows the combined response
+(`eq_response_db`) with a point per band along frequency and gain; a cut or
+notch has no gain, so its point moves in frequency only. A node's config can
+reach a graph too (`bands`, through `special_value`).
 
 ### Mixer
 
