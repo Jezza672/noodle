@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::LayoutOf;
 use super::topology::topology;
-use crate::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
+use crate::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
 use crate::{Command, Config, Graph, Node, NodeId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,9 +175,26 @@ pub struct GroupPreset {
     pub nodes: Vec<PresetValues>,
 }
 
-/// Group and boundary nodes carry names and controls, not settings.
-fn has_settings(node: &Node) -> bool {
-    !matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT)
+/// What a group preset stores for a node inside `group`: nothing for group
+/// nodes (their ports and names are the topology) or for the group's own
+/// boundary nodes (gain, mute and solo are the group's controls, not a
+/// sound). A nested group's boundary nodes keep their gain, so a layered
+/// instrument recalls its layers' levels; their mute and solo stay out, as
+/// they are a mix decision, not a sound. `None` means "stores nothing".
+fn stored(group: NodeId, node: &Node) -> Option<Node> {
+    match node.type_id.as_str() {
+        GROUP => None,
+        GROUP_INPUT | GROUP_OUTPUT if node.parent == Some(group) => None,
+        GROUP_INPUT | GROUP_OUTPUT => {
+            let mut node = node.clone();
+            node.params.remove(MUTE);
+            node.params.remove(SOLO);
+            // The name is the port, which the topology already holds.
+            node.config = Config::new();
+            Some(node)
+        }
+        _ => Some(node.clone()),
+    }
 }
 
 impl GroupPreset {
@@ -193,11 +210,9 @@ impl GroupPreset {
             .iter()
             .map(|&id| {
                 let node = graph.node(id).expect("a descendant");
-                if has_settings(node) {
-                    PresetValues::of(node)
-                } else {
-                    PresetValues::default()
-                }
+                stored(group, node)
+                    .map(|n| PresetValues::of(&n))
+                    .unwrap_or_default()
             })
             .collect();
         Self {
@@ -210,7 +225,13 @@ impl GroupPreset {
 
     /// Whether the group has the topology this preset was made for.
     pub fn applies_to(&self, graph: &Graph, group: NodeId, layout: LayoutOf) -> bool {
-        topology(graph, group, layout).key == self.topology
+        self.fits(&topology(graph, group, layout).key)
+    }
+
+    /// Whether this preset is for the topology with `key`: work the key out
+    /// once ([`topology`]) when asking about many presets.
+    pub fn fits(&self, key: &str) -> bool {
+        self.topology == key
     }
 
     /// Whether every node in the group still holds the preset's values.
@@ -219,7 +240,7 @@ impl GroupPreset {
         order.key == self.topology
             && order.order.iter().zip(&self.nodes).all(|(&id, values)| {
                 let node = graph.node(id).expect("a descendant");
-                !has_settings(node) || values.matches(node)
+                stored(group, node).is_none_or(|n| values.matches(&n))
             })
     }
 
@@ -242,10 +263,10 @@ impl GroupPreset {
         let mut commands = Vec::new();
         for (&id, values) in order.order.iter().zip(&self.nodes) {
             let node = graph.node(id).expect("a descendant");
-            if !has_settings(node) {
+            let Some(current) = stored(group, node) else {
                 continue;
-            }
-            commands.extend(values.set_on(id, node));
+            };
+            commands.extend(values.set_on(id, &current));
             // Whatever preset the node itself last had no longer describes it.
             if node.preset.is_some() {
                 commands.push(Command::SetPreset {

@@ -463,3 +463,135 @@ fn the_user_store_keeps_one_file_per_entry_and_system_entries_are_read_only() {
     assert!(library.overwrite(TRACK, preset).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_copy_of_a_template_with_unnamed_ports_keeps_its_ports_and_topology() {
+    let (mut project, mut history) = setup();
+    let group = project.new_node_id();
+    let (input, osc, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    // Boundary nodes with no `name`, as an older file may have.
+    history
+        .apply(
+            &mut project,
+            Command::Batch(vec![
+                Command::AddNode {
+                    id: group,
+                    node: Node::new(GROUP),
+                },
+                Command::AddNode {
+                    id: input,
+                    node: Node::new(GROUP_INPUT).in_group(group),
+                },
+                Command::AddNode {
+                    id: osc,
+                    node: Node::new("osc").in_group(group),
+                },
+                Command::AddNode {
+                    id: output,
+                    node: Node::new(GROUP_OUTPUT)
+                        .in_group(group)
+                        .with_param(GAIN, -3.0),
+                },
+            ]),
+        )
+        .unwrap();
+    let template = GroupTemplate::from_group(project.graph(), group, "Bare").unwrap();
+    let (copy, command) =
+        template.instantiate("user:template:bare", None, Position::default(), || {
+            project.new_node_id()
+        });
+    history.apply(&mut project, command).unwrap();
+    let graph = project.graph();
+    let names = |g| -> Vec<String> {
+        graph
+            .group_ports(g)
+            .inputs
+            .iter()
+            .map(|p| p.name.clone())
+            .collect()
+    };
+    assert_eq!(names(group), names(copy));
+    assert_eq!(
+        topology::topology(graph, group, &layout).key,
+        topology::topology(graph, copy, &layout).key
+    );
+}
+
+#[test]
+fn a_nested_groups_levels_are_in_a_preset_but_its_mute_and_solo_are_not() {
+    let (mut project, mut history) = setup();
+    let outer = project.new_node_id();
+    let (inner, inner_out, osc) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    history
+        .apply(
+            &mut project,
+            Command::Batch(vec![
+                Command::AddNode {
+                    id: outer,
+                    node: Node::new(GROUP),
+                },
+                Command::AddNode {
+                    id: inner,
+                    node: Node::new(GROUP).in_group(outer),
+                },
+                Command::AddNode {
+                    id: osc,
+                    node: Node::new("osc").in_group(inner),
+                },
+                Command::AddNode {
+                    id: inner_out,
+                    node: named(GROUP_OUTPUT, "out")
+                        .in_group(inner)
+                        .with_param(GAIN, -9.0)
+                        .with_param(MUTE, 1.0),
+                },
+            ]),
+        )
+        .unwrap();
+    let preset = GroupPreset::capture(project.graph(), outer, &layout, "Layered");
+    let set = |gain: f32, mute: f32| {
+        Command::Batch(vec![
+            Command::SetParam {
+                node: inner_out,
+                key: GAIN.into(),
+                value: Some(gain),
+            },
+            Command::SetParam {
+                node: inner_out,
+                key: MUTE.into(),
+                value: Some(mute),
+            },
+        ])
+    };
+    history.apply(&mut project, set(0.0, 0.0)).unwrap();
+    let apply = preset.apply(project.graph(), outer, "x", &layout).unwrap();
+    history.apply(&mut project, apply).unwrap();
+    let node = project.graph().node(inner_out).unwrap();
+    assert_eq!(node.params[GAIN], -9.0, "the layer's level is recalled");
+    assert_eq!(node.params[MUTE], 0.0, "its mute is not");
+    assert!(preset.matches(project.graph(), outer, &layout));
+}
+
+#[test]
+fn files_with_a_slug_already_taken_get_their_own() {
+    let dir = std::env::temp_dir().join(format!("noodle-library-slugs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut library = Library::open(Some(dir.clone()));
+    let item = Item::NodePreset(NodePreset::capture(&Node::new("filter"), "l", "Warm"));
+    library.save(item).unwrap();
+    // The same file copied in under another name.
+    std::fs::copy(dir.join("node-warm.ron"), dir.join("copy-of-warm.ron")).unwrap();
+    let reopened = Library::open(Some(dir.clone()));
+    let ids: Vec<&str> = reopened.node_presets().map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "both are reachable");
+    let _ = std::fs::remove_dir_all(&dir);
+}

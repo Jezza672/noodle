@@ -111,6 +111,11 @@ impl Library {
                         if item.slug().is_empty() {
                             item.set_slug(slugify(item.name()));
                         }
+                        // A file copied in under another name can carry a
+                        // slug already taken; give it its own, or it could
+                        // never be reached.
+                        let slug = self.unique_slug(item.kind(), item.slug());
+                        item.set_slug(slug);
                         self.entries.push(Stored {
                             id: entry_id(USER, &item),
                             item,

@@ -45,8 +45,12 @@ impl Session {
 
     /// Replaces the library, e.g. with one that keeps user entries on disk.
     pub fn set_library(&mut self, library: library::Library) {
-        for problem in &library.problems {
-            self.message = Some(format!("Library: {problem}"));
+        if let Some(first) = library.problems.first() {
+            let more = library.problems.len() - 1;
+            self.message = Some(match more {
+                0 => format!("Library: {first}"),
+                n => format!("Library: {first} (and {n} more files couldn't be read)"),
+            });
         }
         self.library = library;
     }
@@ -65,9 +69,11 @@ impl Session {
         };
         let layout = self.layout_of();
         if node.type_id == noodle_core::group::GROUP {
+            // Worked out once, not once per preset: this runs every frame.
+            let key = noodle_core::library::topology::topology(graph, id, &layout).key;
             self.library
                 .group_presets()
-                .filter(|(_, p)| p.applies_to(graph, id, &layout))
+                .filter(|(_, p)| p.fits(&key))
                 .map(|(entry, p)| (entry, p.name.as_str()))
                 .collect()
         } else {
