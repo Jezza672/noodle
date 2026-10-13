@@ -226,6 +226,7 @@ pub fn render_project_with_clips(
     frames: usize,
 ) -> Result<ClipRender, RenderError> {
     let library = register_library_blocking(registry);
+    library.samples.set_dir(base.join("samples"));
     let rate = settings.sample_rate.round() as u32;
     let table = TempoTable::new(project.tempo_map(), settings.sample_rate);
     let problems = library.clips.update(project, &table, rate, base);

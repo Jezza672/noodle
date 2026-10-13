@@ -73,6 +73,8 @@ pub struct Nodes {
     pub clips: ClipFeeds,
     /// Where the MIDI In nodes get their messages.
     pub midi: noodle_io::MidiBus,
+    /// Where the Sampler nodes get their samples, by hash.
+    pub samples: noodle_nodes::SampleStore,
     /// The plugins whose node types are in `registry`. Renders (freeze,
     /// export) add the same ones to their own registries.
     pub plugins: noodle_plugins::Catalog,
@@ -90,12 +92,14 @@ impl Nodes {
             telemetry,
             clips,
             midi,
+            samples,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
             telemetry,
             clips,
             midi,
+            samples,
             plugins: noodle_plugins::Catalog::default(),
             plugin_scan: None,
             plugin_files: Vec::new(),
@@ -181,6 +185,8 @@ pub struct Session {
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
     midi: noodle_io::MidiBus,
+    /// The samples the Samplers play, kept in `samples` beside the project.
+    samples: noodle_nodes::SampleStore,
     /// The open MIDI input port, if one is chosen and opened.
     midi_connection: Option<noodle_io::MidiConnection>,
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
@@ -401,6 +407,7 @@ impl Session {
             telemetry,
             clips,
             midi,
+            samples,
             plugins,
             plugin_scan,
             plugin_files,
@@ -420,6 +427,7 @@ impl Session {
             telemetry,
             clips,
             midi,
+            samples,
             midi_connection: None,
             midi_watch: MidiWatch::default(),
             file_watch: FileWatch::default(),
@@ -1771,6 +1779,11 @@ impl Session {
         }
     }
 
+    /// The samples the Sampler nodes play, by hash.
+    pub fn samples(&self) -> &noodle_nodes::SampleStore {
+        &self.samples
+    }
+
     /// The folder the project's audio files are relative to.
     fn base(&self) -> &Path {
         self.path
@@ -1869,6 +1882,8 @@ impl Session {
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
+        // Samplers read their samples from beside the project file.
+        self.samples.set_dir(self.base().join("samples"));
         // Devices are fixed for a stream's lifetime, so an Output node tied
         // to another one means playing afresh. `play` compiles.
         let wanted = noodle_engine::output_devices(self.project.graph());

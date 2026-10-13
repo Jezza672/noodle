@@ -132,6 +132,25 @@ impl NodeType for Sampler {
         Ok(vec![Shape::STEREO; layout.outputs.len()])
     }
 
+    fn cache_inputs(
+        &self,
+        _node: noodle_core::NodeId,
+        config: &Config,
+        _env: &noodle_engine::CacheEnv<'_>,
+        _key: &mut noodle_core::KeyBuilder,
+    ) -> Result<(), noodle_engine::Uncacheable> {
+        // The hash in the config keys the sound. A sample that can't be found
+        // renders as silence, and must not be remembered as the answer.
+        let hash = CONFIG[0].get_text(config);
+        if !hash.is_empty() && self.store.get(&hash).is_none() {
+            return Err(noodle_engine::Uncacheable::Because(format!(
+                "the sample {} is missing",
+                &hash[..8.min(hash.len())]
+            )));
+        }
+        Ok(())
+    }
+
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let hash = CONFIG[0].get_text(setup.config);
         let sample = self.store.get(&hash);

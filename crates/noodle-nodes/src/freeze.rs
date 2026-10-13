@@ -359,6 +359,7 @@ pub(crate) fn freeze_within(
     let frames = request.frames;
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
+    library.samples.set_dir(request.base.join("samples"));
     if let Some(extend) = &request.extend_registry {
         extend(&mut registry);
     }

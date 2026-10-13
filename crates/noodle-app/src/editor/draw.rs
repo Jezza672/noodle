@@ -334,9 +334,17 @@ fn boxed(
     }
 
     if let Some(area) = node.body {
+        let node_id = node.id;
         // What each parameter is now: a wire's live value, else the node's
         // own, else the default.
         let values = |key: &str| {
+            if let Some(node) = graph.node(node.id)
+                && let Some(value) = crate::widgets::graph::special_value(key, node, &|channel| {
+                    bodies.param_live(node_id, channel).map(|live| live.value)
+                })
+            {
+                return value;
+            }
             let default = node.ports.iter().find_map(|port| match &port.kind {
                 PortKind::Param(info) if port.key == key => Some(info.default),
                 _ => None,
