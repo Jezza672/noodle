@@ -123,6 +123,23 @@ mod tests {
     }
 
     #[test]
+    fn a_new_track_is_a_copy_of_the_hidden_track_template() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = apply(&mut project, &mut history);
+        let node = project.graph().node(group).unwrap();
+        assert_eq!(node.template.as_deref(), Some(noodle_core::library::TRACK));
+        // Not a link: the library holds no group in the project, and the
+        // template is not offered anywhere.
+        let library = noodle_core::library::Library::in_memory();
+        assert!(
+            library
+                .templates()
+                .all(|(id, _)| id != noodle_core::library::TRACK)
+        );
+        assert!(library.template(noodle_core::library::TRACK).is_some());
+    }
+
+    #[test]
     fn later_tracks_only_add_a_group_and_a_wire_to_the_mixers_spare() {
         let (mut project, mut history) = (Project::new(), History::new());
         let first = apply(&mut project, &mut history);

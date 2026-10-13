@@ -1,1 +1,220 @@
-[]
+[
+    Template((
+        name: "Kick",
+        slug: "kick",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Kick"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"name": "pitch"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.group.input",
+                config: {"name": "gate"},
+                position: (x: 0.0, y: 130.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.group.input",
+                config: {"name": "velocity"},
+                position: (x: 0.0, y: 260.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.group.input",
+                config: {"name": "tune"},
+                position: (x: 0.0, y: 390.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group.input",
+                config: {"name": "sweep"},
+                position: (x: 0.0, y: 520.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.group.input",
+                config: {"name": "decay"},
+                position: (x: 0.0, y: 650.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
+                position: (x: 440.0, y: 130.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.util.math",
+                params: {"b": 120.0, "c": 48.0},
+                config: {"expr": "a * b + c"},
+                position: (x: 660.0, y: 130.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.osc.sine",
+                position: (x: 880.0, y: 130.0),
+                parent: Some(1),
+            ),
+            11: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.001, "decay": 0.32, "release": 0.05, "sustain": 0.0},
+                position: (x: 880.0, y: 390.0),
+                parent: Some(1),
+            ),
+            12: (
+                type: "noodle.util.vca",
+                position: (x: 1100.0, y: 130.0),
+                parent: Some(1),
+            ),
+            13: (
+                type: "noodle.util.vca",
+                position: (x: 1320.0, y: 0.0),
+                parent: Some(1),
+            ),
+            14: (
+                type: "noodle.group.output",
+                config: {"name": "out"},
+                position: (x: 1540.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 8, port: "gate"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 9, port: "a"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 9, port: "b"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 9, port: "c"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 10, port: "frequency"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 11, port: "decay"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 11, port: "gate"),
+            ),
+            (
+                from: (node: 10, port: "out"),
+                to: (node: 12, port: "in"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 12, port: "level"),
+            ),
+            (
+                from: (node: 12, port: "out"),
+                to: (node: 13, port: "in"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 13, port: "level"),
+            ),
+            (
+                from: (node: 13, port: "out"),
+                to: (node: 14, port: "in"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Club Kick",
+        slug: "kick-club-kick",
+        topology: "663d5466523432ce",
+        nodes: [
+            (
+                params: {"attack": 0.001, "decay": 0.32, "release": 0.05, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"b": 120.0, "c": 48.0},
+                config: {"expr": "a * b + c"},
+            ),
+            (),
+            (),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Deep Kick",
+        slug: "kick-deep-kick",
+        topology: "663d5466523432ce",
+        nodes: [
+            (
+                params: {"attack": 0.001, "decay": 0.5, "release": 0.05, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"b": 60.0, "c": 40.0},
+                config: {"expr": "a * b + c"},
+            ),
+            (),
+            (),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Tight Kick",
+        slug: "kick-tight-kick",
+        topology: "663d5466523432ce",
+        nodes: [
+            (
+                params: {"attack": 0.001, "decay": 0.22, "release": 0.05, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"b": 140.0, "c": 52.0},
+                config: {"expr": "a * b + c"},
+            ),
+            (),
+            (),
+            (),
+            (),
+        ],
+    )),
+]

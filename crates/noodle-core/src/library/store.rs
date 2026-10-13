@@ -102,11 +102,11 @@ impl Library {
             match fs::read_to_string(&file) {
                 Ok(text) => match Item::from_ron(&text) {
                     Ok(mut item) => {
-                        if let Item::Template(t) = &item {
-                            if let Err(e) = t.validate() {
-                                self.problems.push(format!("{}: {e}", file.display()));
-                                continue;
-                            }
+                        if let Item::Template(t) = &item
+                            && let Err(e) = t.validate()
+                        {
+                            self.problems.push(format!("{}: {e}", file.display()));
+                            continue;
                         }
                         if item.slug().is_empty() {
                             item.set_slug(slugify(item.name()));
@@ -215,9 +215,10 @@ impl Library {
     pub fn save(&mut self, mut item: Item) -> io::Result<String> {
         let slug = self.unique_slug(item.kind(), &slugify(item.name()));
         item.set_slug(slug.clone());
-        let file = self.dir.as_ref().map(|dir| {
-            dir.join(format!("{}-{slug}.ron", item.kind().tag()))
-        });
+        let file = self
+            .dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{}-{slug}.ron", item.kind().tag())));
         if let Some(file) = &file {
             self.write(&item, file)?;
         }

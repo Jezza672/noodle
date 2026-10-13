@@ -1,6 +1,8 @@
 use super::*;
 use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, PORT_NAME, SOLO};
-use crate::{Command, Config, Connection, Endpoint, History, Node, NodeId, Position, Project, Value};
+use crate::{
+    Command, Config, Connection, Endpoint, History, Node, NodeId, Position, Project, Value,
+};
 
 /// Layout for tests: the type plus its `inputs` config, like a Mix.
 fn layout(node: &Node) -> Option<String> {
@@ -191,16 +193,21 @@ fn topology_ignores_ids_but_not_wiring_or_layout() {
         .unwrap();
     let changed = topology::topology(project.graph(), b, &layout);
     assert_ne!(ta.key, changed.key);
-    // So does a missing wire.
-    let (c, mut history_c) = (synth(&mut project, &mut history, 800.0, false), History::new());
-    let wire = project
-        .graph()
-        .connections()
-        .find(|c2| project.graph().node(c2.to.node).unwrap().parent == Some(c))
-        .unwrap();
-    history_c
-        .apply(&mut project, Command::Disconnect { input: wire.to })
-        .unwrap();
+    // So does one more wire between the same nodes.
+    let c = synth(&mut project, &mut history, 800.0, false);
+    let graph = project.graph();
+    let inside = |kind: &str| {
+        graph
+            .descendants(c)
+            .into_iter()
+            .find(|&id| graph.node(id).unwrap().type_id == kind)
+            .unwrap()
+    };
+    let wire = Command::Connect(Connection {
+        from: Endpoint::new(inside("osc"), "out"),
+        to: Endpoint::new(inside("filter"), "cutoff"),
+    });
+    history.apply(&mut project, wire).unwrap();
     assert_ne!(ta.key, topology::topology(project.graph(), c, &layout).key);
 }
 
@@ -224,11 +231,15 @@ fn symmetric_nodes_are_ordered_by_id() {
                     },
                     Command::AddNode {
                         id: x,
-                        node: Node::new("osc").with_param("frequency", 1.0).in_group(group),
+                        node: Node::new("osc")
+                            .with_param("frequency", 1.0)
+                            .in_group(group),
                     },
                     Command::AddNode {
                         id: y,
-                        node: Node::new("osc").with_param("frequency", 2.0).in_group(group),
+                        node: Node::new("osc")
+                            .with_param("frequency", 2.0)
+                            .in_group(group),
                     },
                     Command::AddNode {
                         id: out,
@@ -282,7 +293,10 @@ fn a_node_preset_sets_stored_values_only_and_is_one_undo_step() {
     history.apply(&mut project, command).unwrap();
     let node = project.graph().node(id).unwrap();
     assert_eq!(node.params.get("cutoff"), Some(&1200.0));
-    assert!(!node.params.contains_key("resonance"), "back to its default");
+    assert!(
+        !node.params.contains_key("resonance"),
+        "back to its default"
+    );
     assert_eq!(node.preset.as_deref(), Some("user:node:open"));
     assert_eq!(node.position, Position { x: 5.0, y: 5.0 });
     assert_eq!(project.graph().connections().count(), 1, "wires stay");
@@ -329,6 +343,28 @@ fn a_group_preset_applies_across_ids_and_skips_boundary_controls() {
     let (mut project, mut history) = setup();
     let a = synth(&mut project, &mut history, 1500.0, false);
     let b = synth(&mut project, &mut history, 100.0, true);
+    // The two groups' outputs have gains the preset must leave alone.
+    let out = |group| {
+        project
+            .graph()
+            .group_ports(group)
+            .output("out")
+            .unwrap()
+            .node
+    };
+    let (out_a, out_b) = (out(a), out(b));
+    for (node, gain) in [(out_a, -3.0), (out_b, -12.0)] {
+        history
+            .apply(
+                &mut project,
+                Command::SetParam {
+                    node,
+                    key: GAIN.into(),
+                    value: Some(gain),
+                },
+            )
+            .unwrap();
+    }
     let preset = GroupPreset::capture(project.graph(), a, &layout, "Bright");
     assert!(preset.applies_to(project.graph(), b, &layout));
     assert!(!preset.matches(project.graph(), b, &layout));
@@ -345,11 +381,13 @@ fn a_group_preset_applies_across_ids_and_skips_boundary_controls() {
             .unwrap()
     };
     assert_eq!(graph.node(filter(b)).unwrap().params["cutoff"], 1500.0);
-    assert_eq!(graph.node(b).unwrap().preset.as_deref(), Some("user:group:bright"));
+    assert_eq!(
+        graph.node(b).unwrap().preset.as_deref(),
+        Some("user:group:bright")
+    );
     // The output's gain, mute and solo are not part of a preset.
-    let out = graph.group_ports(b).output("out").unwrap().node;
-    assert_eq!(graph.node(out).unwrap().params[GAIN], -6.0);
-    assert_eq!(graph.node(out).unwrap().params[MUTE], 1.0);
+    assert_eq!(graph.node(out_b).unwrap().params[GAIN], -12.0);
+    assert_eq!(graph.node(out_b).unwrap().params[MUTE], 1.0);
     assert!(preset.matches(graph, b, &layout));
 }
 
@@ -381,7 +419,11 @@ fn items_round_trip_through_ron() {
     let group = synth(&mut project, &mut history, 800.0, false);
     let items = [
         Item::Template(GroupTemplate::from_group(project.graph(), group, "Synth").unwrap()),
-        Item::NodePreset(NodePreset::capture(&Node::new("filter").with_param("cutoff", 5.0), "l", "F")),
+        Item::NodePreset(NodePreset::capture(
+            &Node::new("filter").with_param("cutoff", 5.0),
+            "l",
+            "F",
+        )),
         Item::GroupPreset(GroupPreset::capture(project.graph(), group, &layout, "G")),
     ];
     for item in items {
@@ -394,7 +436,11 @@ fn the_user_store_keeps_one_file_per_entry_and_system_entries_are_read_only() {
     let dir = std::env::temp_dir().join(format!("noodle-library-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut library = Library::open(Some(dir.clone()));
-    let preset = Item::NodePreset(NodePreset::capture(&Node::new("filter"), "l", "Warm / Dark"));
+    let preset = Item::NodePreset(NodePreset::capture(
+        &Node::new("filter"),
+        "l",
+        "Warm / Dark",
+    ));
     let first = library.save(preset.clone()).unwrap();
     let second = library.save(preset.clone()).unwrap();
     assert_eq!(first, "user:node:warm-dark");

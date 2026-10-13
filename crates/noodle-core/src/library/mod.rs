@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::Node;
 
 pub use presets::{GroupPreset, NodePreset, PresetError, PresetValues};
-pub use store::{Library, Stored, SYSTEM, USER};
+pub use store::{Library, SYSTEM, Stored, USER};
 pub use template::{GroupTemplate, TRACK, TemplateError, track_template};
 
 /// A node's port layout as a string: equal strings mean the same ports.
@@ -117,6 +117,12 @@ impl Item {
     }
 }
 
+/// A system library file: a list of entries, as RON.
+pub fn pack_to_ron(items: &[Item]) -> String {
+    let pretty = ron::ser::PrettyConfig::default().depth_limit(4);
+    ron::ser::to_string_pretty(items, pretty).expect("library entries always serialize")
+}
+
 /// A file name and entry ID friendly form of `name`: lower case letters and
 /// digits, with single dashes between words.
 pub fn slugify(name: &str) -> String {
@@ -129,7 +135,11 @@ pub fn slugify(name: &str) -> String {
         }
     }
     let slug = slug.trim_end_matches('-').to_string();
-    if slug.is_empty() { "untitled".into() } else { slug }
+    if slug.is_empty() {
+        "untitled".into()
+    } else {
+        slug
+    }
 }
 
 /// 64-bit FNV-1a. A fixed, specified hash, because topology keys are saved

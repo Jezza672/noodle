@@ -2165,7 +2165,7 @@ fn group_menu(ui: &egui::Ui, state: &mut EditorState, f: &Frame_<'_>, edits: &mu
                     let named = !name.trim().is_empty();
                     let save = ui.add_enabled(named, egui::Button::new("Save")).clicked();
                     if (save || enter) && named {
-                        edits.push(Edit::Library(crate::session::LibraryEdit::SaveTemplate {
+                        edits.push(Edit::Library(crate::session::LibraryEdit::Template {
                             group: menu.group,
                             name: name.trim().to_string(),
                         }));

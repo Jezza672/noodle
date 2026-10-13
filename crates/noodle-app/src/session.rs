@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 mod export;
 mod library;
-pub use library::LibraryEdit;
 pub use export::ExportChoice;
+pub use library::LibraryEdit;
 
 use crate::filewatch::FileWatch;
 use crate::freezing::{Badge, Freezing, Look, Polled};

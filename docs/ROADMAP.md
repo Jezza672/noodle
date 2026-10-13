@@ -771,8 +771,12 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** designed, not started. Two batches; the design is in
-`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005.
+**Status:** batch 1 (library and presets) is done in code; items 2 (new
+nodes) and 3 (warp evaluation songs) are not started. The design is in
+`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005. Batch 1
+left out samples by content hash (nothing holds audio until the Sampler) and
+ships no node presets yet (the system presets are group presets of the
+instrument templates; node presets arrive with the new nodes).
 
 1. **Library and presets.** Node presets (parameters and port-neutral config, same node
    type and port layout, one undo step, never touching wires, lanes, mute or

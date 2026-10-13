@@ -129,7 +129,10 @@ pub fn topology(graph: &Graph, group: NodeId, layout: LayoutOf) -> Topology {
     let mut wire_lines: Vec<String> = edges
         .iter()
         .map(|(from, from_port, to, to_port)| {
-            format!("w{}.{from_port}>{}.{to_port}", position[*from], position[*to])
+            format!(
+                "w{}.{from_port}>{}.{to_port}",
+                position[*from], position[*to]
+            )
         })
         .collect();
     wire_lines.sort();

@@ -10,16 +10,16 @@ use super::{Edit, Session};
 #[derive(Clone, Debug, PartialEq)]
 pub enum LibraryEdit {
     /// Saves the group as a template.
-    SaveTemplate { group: NodeId, name: String },
+    Template { group: NodeId, name: String },
     /// Saves a node's values as a preset; `overwrite` is the user preset ID
     /// to replace instead of adding a new one.
-    SaveNodePreset {
+    NodePreset {
         node: NodeId,
         name: String,
         overwrite: Option<String>,
     },
     /// Saves every setting inside a group as a preset.
-    SaveGroupPreset {
+    GroupPreset {
         group: NodeId,
         name: String,
         overwrite: Option<String>,
@@ -106,10 +106,7 @@ impl Session {
         let layout = self.layout_of();
         let (name, modified) = if node.type_id == noodle_core::group::GROUP {
             let preset = self.library.group_preset(entry)?;
-            (
-                preset.name.clone(),
-                !preset.matches(graph, id, &layout),
-            )
+            (preset.name.clone(), !preset.matches(graph, id, &layout))
         } else {
             let preset = self.library.node_preset(entry)?;
             (preset.name.clone(), !preset.matches(node))
@@ -151,12 +148,12 @@ impl Session {
         let graph = self.project.graph();
         let layout = self.layout_of();
         Ok(match edit {
-            LibraryEdit::SaveTemplate { group, name } => {
+            LibraryEdit::Template { group, name } => {
                 let template =
                     GroupTemplate::from_group(graph, group, name).map_err(|e| e.to_string())?;
                 (Item::Template(template), None)
             }
-            LibraryEdit::SaveNodePreset {
+            LibraryEdit::NodePreset {
                 node,
                 name,
                 overwrite,
@@ -168,7 +165,7 @@ impl Session {
                     overwrite,
                 )
             }
-            LibraryEdit::SaveGroupPreset {
+            LibraryEdit::GroupPreset {
                 group,
                 name,
                 overwrite,

@@ -193,10 +193,7 @@ impl GroupTemplate {
             } else {
                 node.parent = node.parent.map(|p| ids[&p]);
             }
-            commands.push(Command::AddNode {
-                id: ids[old],
-                node,
-            });
+            commands.push(Command::AddNode { id: ids[old], node });
         }
         for c in &self.connections {
             commands.push(Command::Connect(Connection {

@@ -99,15 +99,16 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
 
     let naming = ui.id().with(("naming-preset", id));
     let mut name: Option<String> = ui.data(|d| d.get_temp(naming));
+    let mut just_opened = false;
     let save = |name: String, overwrite: Option<String>| {
         Edit::Library(if is_group {
-            LibraryEdit::SaveGroupPreset {
+            LibraryEdit::GroupPreset {
                 group: id,
                 name,
                 overwrite,
             }
         } else {
-            LibraryEdit::SaveNodePreset {
+            LibraryEdit::NodePreset {
                 node: id,
                 name,
                 overwrite,
@@ -121,11 +122,8 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
             edits.push(save(s.name.clone(), Some(s.id.clone())));
         }
         if ui.button("Save as...").clicked() {
-            name = Some(
-                status
-                    .as_ref()
-                    .map_or_else(String::new, |s| s.name.clone()),
-            );
+            just_opened = true;
+            name = Some(status.as_ref().map_or_else(String::new, |s| s.name.clone()));
         }
     });
     if let Some(text) = &mut name {
@@ -136,6 +134,9 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
                     .hint_text("Preset name")
                     .desired_width(140.0),
             );
+            if just_opened {
+                edit.request_focus();
+            }
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let named = !text.trim().is_empty();
             let clicked = ui.add_enabled(named, egui::Button::new("OK")).clicked();
@@ -606,6 +607,7 @@ fn describe(session: &Session, endpoint: &Endpoint) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::LibraryEdit;
     use egui::{Key, Modifiers, vec2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
@@ -1009,5 +1011,144 @@ mod tests {
         let harness = harness([Node::new("no.such.type").with_param("x", 1.0)]);
         harness.get_by_label("unknown node type `no.such.type`");
         harness.get_by_label("x: 1");
+    }
+
+    fn saved(session: &mut Session, node: NodeId, name: &str) {
+        session.edit([Edit::Library(LibraryEdit::NodePreset {
+            node,
+            name: name.into(),
+            overwrite: None,
+        })]);
+    }
+
+    fn set_cutoff(h: &mut Harness<'_, State>, value: f32) {
+        h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+            node: NodeId(1),
+            key: "cutoff".into(),
+            value: Some(value),
+        })]);
+    }
+
+    #[test]
+    fn a_saved_node_preset_is_applied_from_the_presets_control_in_one_undo_step() {
+        let mut h = harness([Node::new("noodle.filter.svf").with_param("cutoff", 900.0)]);
+        saved(&mut h.state_mut().session, NodeId(1), "Mellow");
+        set_cutoff(&mut h, 4000.0);
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("User");
+        h.get_by_label("Mellow").click();
+        h.run();
+        assert_eq!(param(&h, "cutoff"), Some(900.0));
+        let node = h.state().session.project().graph().node(NodeId(1)).unwrap();
+        assert_eq!(node.preset.as_deref(), Some("user:node:mellow"));
+        let shown = |h: &Harness<'_, State>| {
+            let combo = h.get_by_role(egui::accesskit::Role::ComboBox);
+            let node = combo.accesskit_node();
+            node.value().unwrap_or_default()
+        };
+        assert_eq!(shown(&h), "Mellow");
+        // Edited since: it says so.
+        set_cutoff(&mut h, 1000.0);
+        h.run();
+        assert_eq!(shown(&h), "Mellow (modified)");
+        // One undo step undid the apply, not part of it.
+        h.state_mut().session.undo();
+        assert_eq!(param(&h, "cutoff"), Some(900.0));
+        h.state_mut().session.undo();
+        assert_eq!(param(&h, "cutoff"), Some(4000.0));
+    }
+
+    #[test]
+    fn save_as_names_a_new_user_preset_and_save_overwrites_the_one_applied() {
+        let mut h = harness([Node::new("noodle.filter.svf").with_param("cutoff", 900.0)]);
+        h.run();
+        h.get_by_label("Save as...").click();
+        h.run();
+        h.event(egui::Event::Text("Dark".into()));
+        h.run();
+        h.get_by_label("OK").click();
+        h.run();
+        let session = &mut h.state_mut().session;
+        let preset = session
+            .library()
+            .node_preset("user:node:dark")
+            .expect("saved");
+        assert_eq!(preset.values.params["cutoff"], 900.0);
+        // Apply it, change the cutoff, and Save overwrites it.
+        let apply = session.apply_preset(NodeId(1), "user:node:dark").unwrap();
+        session.edit([apply]);
+        set_cutoff(&mut h, 2500.0);
+        h.run();
+        h.get_by_label("Save").click();
+        h.run();
+        let preset = h
+            .state()
+            .session
+            .library()
+            .node_preset("user:node:dark")
+            .unwrap();
+        assert_eq!(preset.values.params["cutoff"], 2500.0);
+        assert_eq!(
+            h.state()
+                .session
+                .library()
+                .node_presets()
+                .filter(|(id, _)| id.starts_with("user"))
+                .count(),
+            1,
+            "overwritten, not added"
+        );
+    }
+
+    #[test]
+    fn a_group_made_from_a_template_offers_its_system_presets() {
+        let mut session = Session::new(crate::session::Nodes::all());
+        let (group, command) = session
+            .library()
+            .template("system:template:kick")
+            .unwrap()
+            .instantiate(
+                "system:template:kick",
+                None,
+                noodle_core::Position::default(),
+                || session.new_node_id(),
+            );
+        session.edit([Edit::Apply(command)]);
+        let state = State {
+            session,
+            active: Some(group),
+        };
+        let mut h = crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
+            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            state.session.edit(edits);
+        });
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("System");
+        h.get_by_label("Deep Kick").click();
+        h.run();
+        let session = &h.state().session;
+        let node = session.project().graph().node(group).unwrap();
+        assert_eq!(node.preset.as_deref(), Some("system:group:kick-deep-kick"));
+        assert!(!session.preset_status(group).unwrap().modified);
+        // A control's value inside changed: the decay of 0.5 seconds.
+        let graph = session.project().graph();
+        assert!(
+            graph
+                .descendants(group)
+                .into_iter()
+                .any(|id| { graph.node(id).unwrap().params.get("decay") == Some(&0.5) })
+        );
+    }
+
+    #[test]
+    fn nothing_fits_a_node_no_preset_was_made_for() {
+        let mut h = harness([Node::new("noodle.osc.sine")]);
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("None fit yet");
     }
 }

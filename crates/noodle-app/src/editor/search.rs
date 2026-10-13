@@ -232,27 +232,35 @@ mod tests {
     #[test]
     fn every_word_must_match_the_name_category_or_id() {
         let registry = registry();
-        let names = |query| -> Vec<&str> {
+        let names = |query| -> Vec<String> {
             entries(&registry, &library(), query, false)
                 .iter()
-                .map(|e| e.name.as_ref())
+                .map(|e| e.name.to_string())
                 .collect()
         };
         assert_eq!(names("gain"), ["Gain"]);
         assert_eq!(names("GEN sine"), ["Sine"]);
         // By ID.
         assert_eq!(names("util.mix"), ["Mix"]);
-        assert!(names("frame").contains(&"Frame"));
+        assert!(names("frame").contains(&"Frame".to_string()));
         assert!(names("sine zzz").is_empty());
     }
 
     #[test]
     fn group_ports_are_offered_only_inside_a_group() {
         let registry = registry();
-        let outside = entries(&registry, &library(), "group", false);
-        assert_eq!(outside.len(), 1);
-        let inside = entries(&registry, &library(), "group", true);
-        assert_eq!(inside.len(), 3);
+        // The library's groups are listed too, in their own category.
+        let only_group = |entries: Vec<Entry>| {
+            entries
+                .into_iter()
+                .filter(|e| e.category == "Group")
+                .count()
+        };
+        assert_eq!(
+            only_group(entries(&registry, &library(), "group", false)),
+            1
+        );
+        assert_eq!(only_group(entries(&registry, &library(), "group", true)), 3);
         // Frames are only offered at the top level.
         assert!(
             entries(&registry, &library(), "frame", false)
@@ -285,13 +293,17 @@ mod tests {
         assert!(hidden > 0, "the automation source is internal");
         assert_eq!(
             all.len(),
-            registry.iter().count() - hidden + 2,
-            "the user's types, Frame and Group"
+            registry.iter().count() - hidden + 2 + library().templates().count(),
+            "the user's types, Frame, Group and the library's groups"
+        );
+        assert!(
+            all.iter()
+                .any(|e| e.category == GROUPS && e.name == "Subtractive Voice")
         );
         assert!(all.iter().all(|e| e.name != "Automation"));
         assert!(
             all.windows(2)
-                .all(|w| (w[0].category, w[0].name) <= (w[1].category, w[1].name))
+                .all(|w| (&w[0].category, &w[0].name) <= (&w[1].category, &w[1].name))
         );
     }
 }

@@ -1,1 +1,409 @@
-[]
+[
+    Template((
+        name: "Mono Synth",
+        slug: "mono-synth",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Mono Synth"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"name": "pitch"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.group.input",
+                config: {"name": "gate"},
+                position: (x: 0.0, y: 130.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.group.input",
+                config: {"name": "velocity"},
+                position: (x: 0.0, y: 260.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.group.input",
+                config: {"name": "cutoff"},
+                position: (x: 0.0, y: 520.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group.input",
+                config: {"name": "resonance"},
+                position: (x: 0.0, y: 650.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.group.input",
+                config: {"name": "amount"},
+                position: (x: 0.0, y: 780.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.group.input",
+                config: {"name": "detune"},
+                position: (x: 0.0, y: 910.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.group.input",
+                config: {"name": "attack"},
+                position: (x: 0.0, y: 1040.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.group.input",
+                config: {"name": "release"},
+                position: (x: 0.0, y: 1170.0),
+                parent: Some(1),
+            ),
+            11: (
+                type: "noodle.util.mix",
+                params: {"gain1": -3.0, "gain2": -1.0},
+                config: {"inputs": 2},
+                position: (x: 1100.0, y: 0.0),
+                parent: Some(1),
+            ),
+            12: (
+                type: "noodle.util.math",
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            13: (
+                type: "noodle.osc.saw",
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            14: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            15: (
+                type: "noodle.util.math",
+                params: {"b": 0.0},
+                config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
+                position: (x: 440.0, y: 156.0),
+                parent: Some(1),
+            ),
+            16: (
+                type: "noodle.osc.sine",
+                position: (x: 660.0, y: 156.0),
+                parent: Some(1),
+            ),
+            17: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 156.0),
+                parent: Some(1),
+            ),
+            18: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.002, "decay": 0.12, "release": 0.1, "sustain": 0.2},
+                position: (x: 1100.0, y: 260.0),
+                parent: Some(1),
+            ),
+            19: (
+                type: "noodle.util.math",
+                params: {"b": 0.25},
+                config: {"expr": "a * b + c"},
+                position: (x: 1320.0, y: 260.0),
+                parent: Some(1),
+            ),
+            20: (
+                type: "noodle.filter.ladder",
+                params: {"cutoff": 250.0, "resonance": 0.25},
+                position: (x: 1540.0, y: 0.0),
+                parent: Some(1),
+            ),
+            21: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.003, "decay": 0.12, "release": 0.08, "sustain": 0.8},
+                position: (x: 1100.0, y: 520.0),
+                parent: Some(1),
+            ),
+            22: (
+                type: "noodle.util.vca",
+                position: (x: 1760.0, y: 0.0),
+                parent: Some(1),
+            ),
+            23: (
+                type: "noodle.util.vca",
+                position: (x: 1980.0, y: 0.0),
+                parent: Some(1),
+            ),
+            24: (
+                type: "noodle.group.output",
+                config: {"name": "out"},
+                position: (x: 2420.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 14, port: "out"),
+                to: (node: 11, port: "in1"),
+            ),
+            (
+                from: (node: 17, port: "out"),
+                to: (node: 11, port: "in2"),
+            ),
+            (
+                from: (node: 2, port: "out"),
+                to: (node: 12, port: "a"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 12, port: "b"),
+            ),
+            (
+                from: (node: 12, port: "out"),
+                to: (node: 13, port: "frequency"),
+            ),
+            (
+                from: (node: 13, port: "out"),
+                to: (node: 14, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "out"),
+                to: (node: 15, port: "a"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 15, port: "b"),
+            ),
+            (
+                from: (node: 15, port: "out"),
+                to: (node: 16, port: "frequency"),
+            ),
+            (
+                from: (node: 16, port: "out"),
+                to: (node: 17, port: "in"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 18, port: "gate"),
+            ),
+            (
+                from: (node: 18, port: "out"),
+                to: (node: 19, port: "a"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 19, port: "b"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 19, port: "c"),
+            ),
+            (
+                from: (node: 19, port: "out"),
+                to: (node: 20, port: "cutoff"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 20, port: "in"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 20, port: "resonance"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 21, port: "attack"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 21, port: "gate"),
+            ),
+            (
+                from: (node: 10, port: "out"),
+                to: (node: 21, port: "release"),
+            ),
+            (
+                from: (node: 20, port: "out"),
+                to: (node: 22, port: "in"),
+            ),
+            (
+                from: (node: 21, port: "out"),
+                to: (node: 22, port: "level"),
+            ),
+            (
+                from: (node: 22, port: "out"),
+                to: (node: 23, port: "in"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 23, port: "level"),
+            ),
+            (
+                from: (node: 23, port: "out"),
+                to: (node: 24, port: "in"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Saw Bass",
+        slug: "mono-synth-saw-bass",
+        topology: "2058d36b86ec8084",
+        nodes: [
+            (
+                params: {"b": 0.25},
+                config: {"expr": "a * b + c"},
+            ),
+            (
+                params: {"gain1": -3.0, "gain2": -1.0},
+                config: {"inputs": 2},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.002, "decay": 0.12, "release": 0.1, "sustain": 0.2},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 250.0, "resonance": 0.25},
+            ),
+            (
+                params: {"b": 0.0},
+                config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.003, "decay": 0.12, "release": 0.08, "sustain": 0.8},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Sub Bass",
+        slug: "mono-synth-sub-bass",
+        topology: "2058d36b86ec8084",
+        nodes: [
+            (
+                params: {"b": 0.05},
+                config: {"expr": "a * b + c"},
+            ),
+            (
+                params: {"gain1": -3.0, "gain2": -1.0},
+                config: {"inputs": 2},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.003, "decay": 0.2, "release": 0.1, "sustain": 0.5},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 120.0, "resonance": 0.1},
+            ),
+            (
+                params: {"b": 0.0},
+                config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.004, "decay": 0.2, "release": 0.1, "sustain": 0.9},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Acid Bass",
+        slug: "mono-synth-acid-bass",
+        topology: "2058d36b86ec8084",
+        nodes: [
+            (
+                params: {"b": 0.5},
+                config: {"expr": "a * b + c"},
+            ),
+            (
+                params: {"gain1": -3.0, "gain2": -1.0},
+                config: {"inputs": 2},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.15, "release": 0.05, "sustain": 0.1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 400.0, "resonance": 0.6},
+            ),
+            (
+                params: {"b": 0.0},
+                config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.15, "release": 0.05, "sustain": 0.6},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+        ],
+    )),
+]

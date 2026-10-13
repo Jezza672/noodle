@@ -88,7 +88,11 @@ impl PresetValues {
                 });
             }
         }
-        for (key, _) in node.config.iter().filter(|(k, _)| self.config.get(k).is_none()) {
+        for (key, _) in node
+            .config
+            .iter()
+            .filter(|(k, _)| self.config.get(k).is_none())
+        {
             commands.push(Command::SetConfig {
                 node: id,
                 key: key.to_string(),
@@ -173,10 +177,7 @@ pub struct GroupPreset {
 
 /// Group and boundary nodes carry names and controls, not settings.
 fn has_settings(node: &Node) -> bool {
-    !matches!(
-        node.type_id.as_str(),
-        GROUP | GROUP_INPUT | GROUP_OUTPUT
-    )
+    !matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT)
 }
 
 impl GroupPreset {
@@ -260,4 +261,3 @@ impl GroupPreset {
         Ok(Command::Batch(commands))
     }
 }
-
