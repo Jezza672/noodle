@@ -31,8 +31,8 @@ pub use midi::{
     TimedMessage, connect_midi, midi_inputs, now_micros, parse_message, same_port,
 };
 pub use onsets::{
-    ANALYSIS_SECONDS, Analysis, CLEAR_TEMPO, TempoEstimate, detect_bass_onsets, detect_onsets,
-    estimate_grid, estimate_tempo,
+    ANALYSIS_SECONDS, Analysis, CLEAR_PROMINENCE, CLEAR_TEMPO, PROMINENT_ONSETS, TempoEstimate,
+    detect_bass_onsets, detect_onsets, estimate_grid, estimate_tempo,
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,

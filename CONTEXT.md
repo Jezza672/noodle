@@ -99,3 +99,28 @@ A short, controlled signal (a click train, a held chord, a sweep, a lone kick) u
 
 **Headline score**:
 The warp evaluation's main number for a song: the bare mixed audio with nothing but the file, so the detected clip tempo and the automatic mode choice are part of what is scored. Stems and a fixed mode are reported next to it as diagnostics.
+
+## Presets and the group library
+
+**Preset**:
+A named set of one node's parameter values and its config other than what shapes its ports, applied back to a node of the same type and port layout as one undo step. It never changes wires, automation lanes, mute or solo.
+
+**Group preset**:
+A preset for a group: the values and port-neutral config of every node inside it, apart from the group's own boundary controls (gain, mute, solo). It applies only to a group with the same topology; on any other group it is not offered.
+_Avoid_: Patch, snapshot
+
+**Topology (of a group)**:
+What makes two groups "the same" for presets: the same node types, the same wires between them, the same boundary ports and port names, and the same port layout on every node (so config that shapes ports counts). Config that does not shape ports, such as a sample or an expression, does not count, so two kits can be presets of one drum rack. Node IDs, labels and editor positions do not count.
+
+**Group template**:
+A saved group in the library. Using one puts an unlinked copy in the project, which stays freely editable and remembers which template it came from.
+_Avoid_: Linked instance, prefab
+
+**Library**:
+Everything saved for reuse: group templates and presets. System entries ship with the app and are read-only; user entries are the person's own files, shareable by copying them.
+
+**Note split**:
+One node that routes MIDI notes to its outputs by note range and velocity range. With one output and no rest output it is a note filter; with several, a splitter. A drum rack is a note split in front of samplers.
+
+**Hidden template**:
+A group template that the library does not list and the Add menu does not offer; the app instantiates it itself. A track is one, made only by Add track.

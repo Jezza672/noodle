@@ -692,7 +692,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate), batch 3 (the five songs) and batch 4 (borrowed truth) are built. Batch 4 is open on one item: `eval/clips.csv` has no clips yet, so the speech, instrument and mix cases are untried; only the probes have run against the reference stretchers. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`, `borrowed.json`) are a before and after.
+**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate), batch 3 (the five songs) and batch 4 (borrowed truth) are built. Batch 5 fixed tempo detection in full mixes (#141) and added `songs --stems`. Batch 4 is open on one item: `eval/clips.csv` has no clips yet, so the speech, instrument and mix cases are untried; only the probes have run against the reference stretchers. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`, `borrowed.json`) are a before and after.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
@@ -734,10 +734,10 @@ shows a before and after. Four batches:
    `noodle-eval/songs/`, the `songs` command and `baseline/songs.json`. Every
    instrument is a group node of primitive nodes. Nothing the songs needed was
    missing, so nothing was built for them; the drums are synthesised, since
-   there is no sampler. Gaps found, filed as issues: tempo detection finds nothing in
-   any of the five mixes (#141), the nodes have no tempo-synced echo or LFO
+   there is no sampler. Gaps found, filed as issues: tempo detection found nothing in
+   any of the five mixes (#141, fixed in batch 5: it now reads the bass onsets too and finds four of the five within 0.2%, on the excerpt and on the whole song; `glass-ambient`, with no drums, rightly gets none. The beat's phase is the most common position, and funk-engine's off-beat bass can put it half a beat off), the nodes have no tempo-synced echo or LFO
    (#142), and there is no sampler or drum rack (#143). The excerpts go through the harness in tests that
-   check wiring only, like the probes'. Stems are not scored yet.)
+   check wiring only, like the probes'. Stems are scored from batch 5 on, with `songs --stems`.)
 4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
    speech, solo instrument and full-mix clips (pinned checksums), a gitignored
    `eval/local/` for any file dropped in, and a `noodle-eval borrowed` command
@@ -768,6 +768,41 @@ code.
 **Done when:** one command prints the scores of every song, probe and reference
 clip for each warp mode, and a change that smears drums or shifts pitch moves
 a number and fails the CI excerpt.
+
+## M9: Library, presets and more nodes
+
+**Status:** designed, not started. Two batches; the design is in
+`CONTEXT.md` (Presets and the group library) and ADRs 0004 and 0005.
+
+1. **Library and presets.** Node presets (parameters and port-neutral config, same node
+   type and port layout, one undo step, never touching wires, lanes, mute or
+   solo). Group
+   presets, which apply only to a group with the same topology (node types, wires, boundary ports
+   and port layouts; IDs, labels, positions and config that does not shape
+   ports ignored).
+   Group templates: unlinked copies, system ones embedded and read-only, user
+   ones one `.ron` file each in the user data dir. A track is a hidden
+   template, instantiated only by Add track. UI: a Presets control in the
+   properties panel, a searchable Groups section in the Add menu, and "Save
+   group to library". Samples are stored by content hash. The existing
+   instrument examples ship as the first system templates.
+2. **New nodes.** `Note Split` (one output is a note filter; per-output note
+   and velocity ranges, `transpose`, optional `rest` output), `Sampler` (one
+   sample, root key, loop, one-shot or gate), `Dynamics` (compressor, limiter,
+   gate and expander as a `mode`; sidechain; gain-reduction output; lookahead
+   reported to plugin delay compensation; a transfer-curve graph with
+   draggable points and an attack and release plot), Parametric EQ, Reverb and
+   Arpeggiator. Drum rack, multi-zone instruments and Compressor, Limiter and
+   Gate are groups or presets, never monolithic nodes. Each node ships with
+   presets.
+3. **Warp evaluation songs.** Once the new nodes exist, the generated songs in
+   `noodle-eval/src/song/` use them: the drums become a drum rack (a Note
+   Split in front of Samplers, closing the sampler gap filed as #143), and the
+   instruments and mixes gain Dynamics, EQ and Reverb. The songs' `.ron`
+   projects and `baseline/songs.json` are regenerated, and the native renders
+   and scores are checked so the warp evaluation sees sampled drums, compressed
+   mixes and reverb tails, which the synthesised drums and dry mixes do not
+   test.
 
 ## Later
 
