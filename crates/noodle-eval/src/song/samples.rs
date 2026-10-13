@@ -87,8 +87,9 @@ pub fn synthesize(drum: Drum) -> Audio {
         .expect("a drum renders");
     // A centred pan is 1/sqrt(2) in each ear.
     let mut mono: Vec<f32> = stereo
-        .chunks_exact(2)
-        .map(|f| f[0] * std::f32::consts::SQRT_2)
+        .iter()
+        .step_by(2)
+        .map(|left| left * std::f32::consts::SQRT_2)
         .collect();
     let end = mono
         .iter()
