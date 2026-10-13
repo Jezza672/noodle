@@ -392,6 +392,132 @@ fn a_track_control_with_a_lane_is_greyed_and_says_so() {
     assert!(h.get_by_label("M").accesskit_node().is_disabled());
 }
 
+/// The Automation node the "+ Auto" button made, and its lane.
+fn free_lane(h: &H) -> (NodeId, LaneId) {
+    let project = h.state().session.project();
+    let (id, _) = project
+        .graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+        .expect("the button added an Automation node");
+    let (lane, _) = project
+        .lane_for(&Endpoint::new(id, noodle_nodes::AUTOMATION_VALUE))
+        .expect("and a lane on its value");
+    (id, lane)
+}
+
+#[test]
+fn the_auto_button_makes_a_free_automation_track_in_one_undo_step() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (node, id) = free_lane(&h);
+    assert_eq!(
+        lane(&h, id).unwrap().points,
+        vec![point(0, 0.0, Curve::Linear)]
+    );
+    // A free lane has a row of its own, below the track's, and the node is at
+    // the top level so it can be wired anywhere.
+    let free = row(&h, id);
+    assert_eq!(free.height(), super::automation::HEIGHT);
+    assert_eq!(
+        h.state()
+            .session
+            .project()
+            .graph()
+            .node(node)
+            .unwrap()
+            .parent,
+        None
+    );
+
+    h.state_mut().session.undo();
+    h.run();
+    assert!(lane(&h, id).is_none());
+    assert!(h.state().session.project().graph().node(node).is_none());
+}
+
+#[test]
+fn points_on_a_free_track_run_from_0_to_1_and_slide() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (_, id) = free_lane(&h);
+
+    // The top of the row is 1, the bottom 0, and a point there is linear.
+    let top = spot(&h, id, 2.0, 1.0);
+    click(&mut h, top);
+    h.run();
+    let low = spot(&h, id, 4.0, 0.25);
+    click(&mut h, low);
+    h.run();
+    let points = lane(&h, id).unwrap().points;
+    assert_eq!(points.len(), 3);
+    assert_eq!(points[1].tick, Tick(2 * 960));
+    assert!((points[1].value - 1.0).abs() < 1e-3, "{:?}", points[1]);
+    assert!((points[2].value - 0.25).abs() < 0.02, "{:?}", points[2]);
+    assert!(points.iter().all(|p| p.curve == Curve::Linear));
+
+    // Dragging a point moves it freely between 0 and 1, not to a switch.
+    let from = point_at(&h, id, 2);
+    let to = spot(&h, id, 4.0, 0.6);
+    drag(&mut h, &[from, to]);
+    h.run();
+    let moved = lane(&h, id).unwrap().points[2];
+    assert!((moved.value - 0.6).abs() < 0.03, "{moved:?}");
+}
+
+#[test]
+fn an_automation_node_in_a_tracks_group_shows_under_that_track() {
+    let (mut h, output) = rig();
+    let group = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .node(output)
+        .and_then(|n| n.parent)
+        .unwrap();
+    let node = h.state().session.new_node_id();
+    h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+        id: node,
+        node: noodle_core::Node::new(noodle_nodes::AUTOMATION_NODE_ID).in_group(group),
+    })]);
+    let id = add_lane(
+        &mut h,
+        Endpoint::new(node, noodle_nodes::AUTOMATION_VALUE),
+        vec![point(0, 0.5, Curve::Linear)],
+    );
+    let project = h.state().session.project();
+    let tracks = super::tracks(project);
+    let rows = super::automation::Rows::new(project, &tracks);
+    assert_eq!(rows.lanes(0), [id]);
+    assert!(rows.free_lanes().is_empty());
+    assert_eq!(
+        super::automation::label(project, project.lane(id).unwrap()),
+        "Automation 1"
+    );
+}
+
+#[test]
+fn free_tracks_are_numbered_in_node_order() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let project = h.state().session.project();
+    let labels: Vec<String> = project
+        .lanes()
+        .filter(|(_, lane)| lane.target.port == noodle_nodes::AUTOMATION_VALUE)
+        .map(|(_, lane)| super::automation::label(project, lane))
+        .collect();
+    assert_eq!(labels, ["Automation 1", "Automation 2"]);
+    // The gain lane keeps its old name.
+    let gain_lane = AutomationLane::new(gain(NodeId(1)), vec![]);
+    assert_eq!(super::automation::label(project, &gain_lane), "Gain lane");
+}
+
 fn press(h: &mut H, pos: Pos2, button: PointerButton, modifiers: Modifiers) {
     testkit::click_with(h, button, modifiers, pos);
 }

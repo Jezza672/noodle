@@ -1236,3 +1236,129 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     }
     assert!(heard, "the patch never sounded");
 }
+
+#[test]
+fn the_m10_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
+    use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
+
+    // A square LFO (4 Hz) and a clock both trigger envelopes (one per voice,
+    // one shared); the LFO also runs through a comparator into a Sample &
+    // Hold on noise, and a lag smooths the held value. A sine goes through a
+    // distortion, bitcrusher, chorus and phaser and a VCA the envelope
+    // opens; a follower listens to the sine, and an Automation node with a
+    // lane drives the distortion's mix.
+    let mut s = Session::new();
+    let lfo = s.add(
+        Node::new("noodle.mod.lfo")
+            .with_param("rate", 4.0)
+            .with_param("shape", 3.0),
+    );
+    let compare = s.add(Node::new("noodle.mod.comparator"));
+    let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 4.0));
+    let multi = s.add(Node::new("noodle.mod.envelope").with_param("length", 0.1));
+    let single = s.add(
+        Node::new("noodle.mod.envelope")
+            .with_config(Config::new().with("single", Value::Int(1)))
+            .with_param("length", 0.2)
+            .with_param("loop", 1.0),
+    );
+    let noise = s.add(Node::new("noodle.noise.white"));
+    let hold = s.add(Node::new("noodle.mod.samplehold"));
+    let lag = s.add(Node::new("noodle.mod.lag").with_param("rise", 0.05));
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let distortion = s.add(Node::new("noodle.effect.distortion"));
+    let crusher = s.add(Node::new("noodle.effect.bitcrusher"));
+    let chorus = s.add(Node::new("noodle.effect.chorus"));
+    let phaser = s.add(Node::new("noodle.effect.phaser").with_param("feedback", 0.5));
+    let vca = s.add(Node::new("noodle.util.vca"));
+    let follower = s.add(Node::new("noodle.mod.follower"));
+    let automation = s.add(Node::new("noodle.mod.automation"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(lfo, "out", compare, "in");
+    s.wire(compare, "out", multi, "trigger");
+    s.wire(clock, "out", single, "trigger");
+    s.wire(compare, "out", hold, "trigger");
+    s.wire(noise, "out", hold, "in");
+    s.wire(hold, "out", lag, "in");
+    s.wire(lag, "out", chorus, "rate");
+    s.wire(sine, "out", follower, "in");
+    s.wire(sine, "out", distortion, "in");
+    s.wire(automation, "out", distortion, "mix");
+    s.wire(distortion, "out", crusher, "in");
+    s.wire(crusher, "out", chorus, "in");
+    s.wire(chorus, "out", phaser, "in");
+    s.wire(phaser, "out", vca, "in");
+    s.wire(multi, "out", vca, "level");
+    s.wire(follower, "out", phaser, "depth");
+    s.wire(vca, "out", output, "in");
+    let points = |n: i64| {
+        (0..n)
+            .map(|i| AutomationPoint {
+                tick: Tick(i * 480),
+                value: (i % 2) as f32,
+                curve: Curve::Linear,
+            })
+            .collect()
+    };
+    let lane = s.project.new_lane_id();
+    s.edit(Command::AddLane {
+        id: lane,
+        lane: AutomationLane::new(Endpoint::new(automation, "value"), points(6)),
+    });
+    s.update();
+
+    let transport = s.controller.transport();
+    transport.play();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        for (node, key, value) in [
+            (distortion, "drive", 6.0 + round as f32),
+            (crusher, "bits", 2.0 + round as f32 * 0.5),
+            (phaser, "stages", (round % 5) as f32),
+            (multi, "length", 0.05 + 0.01 * round as f32),
+            (hold, "mode", (round % 2) as f32),
+        ] {
+            s.controller.set_param(node, key, value);
+        }
+        transport.seek(Tick(300 * round));
+        match round {
+            // Editing the curve rebuilds the envelope off the audio thread.
+            4 => {
+                s.edit(Command::SetConfig {
+                    node: multi,
+                    key: "curve".into(),
+                    value: Some(Value::Text("0 0.2 0;0.5 1 -0.5;1 0 0".into())),
+                });
+                s.update();
+            }
+            // Single voice changes the output's shape.
+            8 => {
+                s.edit(Command::SetConfig {
+                    node: multi,
+                    key: "single".into(),
+                    value: Some(Value::Int(1)),
+                });
+                s.update();
+            }
+            12 => {
+                s.edit(Command::SetLane {
+                    id: lane,
+                    lane: AutomationLane::new(Endpoint::new(automation, "value"), points(9)),
+                });
+                s.update();
+            }
+            _ => {}
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
+}

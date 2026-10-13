@@ -349,6 +349,38 @@ These are primitives; instruments and racks built from them are groups.
   down-up, as played or random (seeded by the node's seed), over 1 to 4
   octaves, with gate, swing and hold.
 
+- **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` when
+  its `trigger` rises through 0.5 (a new trigger restarts it; `loop` repeats it
+  while the trigger is held). The curve is config text, `x y bend` per anchor:
+  the ends sit at x = 0 and 1 and can be at any height, and each segment bends
+  by `t^(4^bend)`. It is a function of x, so the node plays it from a lookup
+  table built when the node is built (`EnvelopeCurve::lut`), like Remap's.
+  `single` is config because it changes the output's shape: 0 gives one
+  envelope per voice of the trigger, 1 one shared mono envelope that any
+  voice's trigger restarts. Outputs `out` and `active` (1 while playing). An
+  edit to the curve rebuilds the node and restarts a running envelope.
+- **Automation** (`noodle.mod.automation`) is the node behind a free
+  automation track: one parameter, `value` (0 to 1), copied to `out`. The
+  timeline's "+ Auto" button adds it with an ordinary lane on `value`, so
+  nothing new compiles: the lane is wired into `value` as always, and `out`
+  is wired by hand to any number of inputs. Its lane draws under the track
+  whose group holds the node, or, for a node outside any track's group, in
+  its own row after the last track (`Rows::free_lanes`).
+- **Effects and modulators added in M9 batch 4.** Distortion
+  (`noodle.effect.distortion`: soft, hard, fold, asymmetric), Bitcrusher
+  (`noodle.effect.bitcrusher`), Chorus (`noodle.effect.chorus`, a modulated
+  delay with feedback, so also a flanger; a second channel sweeps a quarter
+  cycle behind) and Phaser (`noodle.effect.phaser`, 2 to 12 allpass stages)
+  are per-lane effects; Chorus owns its delay lines like Delay, and neither
+  it nor the others allocate or lock on the audio thread. Envelope Follower
+  (`noodle.mod.follower`, peak or RMS), Sample & Hold
+  (`noodle.mod.samplehold`, sample or track mode), Lag
+  (`noodle.mod.lag`, separate rise and fall times; the first sample is taken
+  as is) and Comparator (`noodle.mod.comparator`, a Schmitt trigger) turn
+  signals into control signals and gates. Clock (`noodle.generator.clock`)
+  pulses on a note division of the transport's tick grid (silent while
+  stopped), so it stays in time through tempo changes, seeks and loops.
+
 ### Feedback loops
 
 A wire can close a loop only through a node that does not need its input to
@@ -893,6 +925,12 @@ into a parameter port.** It is not a clip and not a node the user wires.
   output.
 - Lanes are drawn by the arrangement view under their track, and in the
   properties panel next to the parameter they target.
+- **Free automation tracks (M9).** A lane drives one parameter, so it can't
+  reach an input with no lane of its own or several at once. The Automation
+  node (see Nodes) turns a lane into a signal: the timeline's "+ Auto" adds
+  the node and a lane on its `value` as one undo step, and the node's `out` is
+  wired like any other output. Its lane is a 0 to 1 slider-style row (not a
+  switch), numbered "Automation 1, 2, ..." by node order.
 
 ## Caching (M4)
 
