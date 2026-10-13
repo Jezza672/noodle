@@ -314,7 +314,7 @@ pub struct View<'a> {
     /// The area the lanes are drawn in.
     pub content: Rect,
     pub scroll_y: f32,
-    pub axis: Axis,
+    pub axis: Axis<'a>,
 }
 
 /// Draws every lane row and handles the pointer on them.

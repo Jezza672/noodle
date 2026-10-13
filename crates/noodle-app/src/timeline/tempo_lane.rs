@@ -104,7 +104,7 @@ pub fn show(
     map: &TempoMap,
     row: Rect,
     visible: Rect,
-    axis: Axis,
+    axis: Axis<'_>,
 ) -> Vec<Edit> {
     let mut edits = Vec::new();
     state.retain_existing(map);

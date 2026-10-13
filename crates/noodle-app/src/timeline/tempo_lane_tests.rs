@@ -55,7 +55,7 @@ fn spot(h: &H, beats: f32, bpm: f64) -> Pos2 {
     // 60 bpm to 180 bpm span the row less its padding.
     let along = ((bpm - 60.0) / 120.0) as f32;
     Pos2::new(
-        first.x + beats * state.timeline.ppq,
+        first.x + beats * state.timeline.pps / 2.0,
         row.bottom() - 8.0 - along * (row.height() - 16.0),
     )
 }

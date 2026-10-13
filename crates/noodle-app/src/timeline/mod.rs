@@ -1,10 +1,11 @@
 //! The arrangement view: a lane per track, with the clips each track plays,
 //! on a ruler of bars and beats.
 //!
-//! The view works in musical time. Its x axis is ticks, so it doesn't stretch
-//! when the tempo changes; a clip is as wide as its audio is long at that
-//! tempo. Every change is an [`Edit`] using the core's clip commands, so it
-//! can be undone.
+//! The view works in real time. Its x axis is linear in seconds, so a clip is
+//! as wide as its audio is long, and a bar is wider where the tempo is slower
+//! (its bar lines sit further apart). Everything that converts between ticks
+//! and screen x goes through the [`Axis`], which follows the tempo map. Every change is an [`Edit`] using the core's
+//! clip commands, so it can be undone.
 
 pub(crate) mod add_track;
 mod automation;
@@ -51,12 +52,12 @@ fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::Cli
 const FALLBACK_RATE: u32 = 48_000;
 /// A new MIDI clip is a bar of 4/4 long.
 const NEW_MIDI_CLIP: i64 = 3840;
-const MIN_PPQ: f32 = 8.0;
-const MAX_PPQ: f32 = 600.0;
+const MIN_PPS: f32 = 16.0;
+const MAX_PPS: f32 = 1200.0;
 
 pub struct TimelineState {
-    /// Zoom: screen points per quarter note.
-    ppq: f32,
+    /// Zoom: screen points per second.
+    pps: f32,
     /// How far the view is scrolled, in screen points.
     scroll_x: f32,
     scroll_y: f32,
@@ -96,7 +97,7 @@ pub struct TimelineState {
 impl Default for TimelineState {
     fn default() -> Self {
         Self {
-            ppq: 60.0,
+            pps: 120.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
             selected: BTreeSet::new(),
@@ -292,19 +293,22 @@ fn tracks(project: &Project) -> Vec<NodeId> {
 
 /// Where the screen's x axis is in time.
 #[derive(Clone, Copy)]
-struct Axis {
+struct Axis<'a> {
     /// The screen x of tick 0.
     origin: f32,
-    ppq: f32,
+    /// Screen points per second.
+    pps: f32,
+    map: &'a TempoMap,
 }
 
-impl Axis {
+impl Axis<'_> {
     fn x(self, tick: Tick) -> f32 {
-        self.origin + tick.quarters() as f32 * self.ppq
+        self.origin + (self.map.seconds_at(tick) * f64::from(self.pps)) as f32
     }
 
     fn tick(self, x: f32) -> Tick {
-        Tick::from_quarters(f64::from((x - self.origin) / self.ppq))
+        let seconds = f64::from(x - self.origin) / f64::from(self.pps);
+        Tick(self.map.tick_at_seconds(seconds).round() as i64)
     }
 }
 
@@ -372,15 +376,16 @@ pub fn show(
                         .get(ui.ctx(), directory.as_deref(), &audio.source)
                         .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                 });
-                clips::clip_end(map, clip, rate, warp_of(project, clip)).quarters()
+                map.seconds_at(clips::clip_end(map, clip, rate, warp_of(project, clip)))
             })
             .fold(0.0, f64::max) as f32
-            + 16.0;
+            + 8.0;
         navigate(ui, state, content, rows.total(), extent);
     }
     let axis = Axis {
         origin: content.left() - state.scroll_x,
-        ppq: state.ppq,
+        pps: state.pps,
+        map,
     };
 
     let mut edits = Vec::new();
@@ -1124,22 +1129,23 @@ pub fn show(
 }
 
 /// Scrolling and zooming, while the pointer is over the arrangement.
+/// `extent` is in seconds.
 fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tall: f32, extent: f32) {
     let (scroll, zoom, pointer) =
         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
     if zoom != 1.0 {
         // Keep the tick under the pointer where it is.
         let anchor_x = pointer.map_or(content.left(), |p| p.x.max(content.left()));
-        let quarters = (anchor_x - content.left() + state.scroll_x) / state.ppq;
-        state.ppq = (state.ppq * zoom).clamp(MIN_PPQ, MAX_PPQ);
-        state.scroll_x = quarters * state.ppq - (anchor_x - content.left());
+        let seconds = (anchor_x - content.left() + state.scroll_x) / state.pps;
+        state.pps = (state.pps * zoom).clamp(MIN_PPS, MAX_PPS);
+        state.scroll_x = seconds * state.pps - (anchor_x - content.left());
     } else {
         state.scroll_x -= scroll.x;
         state.scroll_y -= scroll.y;
     }
     state.scroll_x = state
         .scroll_x
-        .clamp(0.0, (extent * state.ppq - content.width() * 0.5).max(0.0));
+        .clamp(0.0, (extent * state.pps - content.width() * 0.5).max(0.0));
     state.scroll_y = state
         .scroll_y
         .clamp(0.0, (tall - content.height()).max(0.0));
@@ -1149,7 +1155,7 @@ struct Handles<'a> {
     ui: &'a mut egui::Ui,
     state: &'a mut TimelineState,
     map: &'a TempoMap,
-    axis: Axis,
+    axis: Axis<'a>,
     rate: u32,
     full: Rect,
     visible: Rect,
@@ -1282,7 +1288,7 @@ fn mode_for(full: Rect, x: f32) -> Mode {
 /// Where the pointer is, and what it's over, mid-drag.
 struct DragInput<'a> {
     map: &'a TempoMap,
-    axis: Axis,
+    axis: Axis<'a>,
     /// The pointer's x.
     x: f32,
     /// Alt: don't snap to beats.
@@ -1576,15 +1582,18 @@ fn draw_headers(
     (edits, arm)
 }
 
-fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {
+fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) {
     let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), colors::RULER_HEIGHT));
     let painter = ui.painter_at(strip);
     painter.rect_filled(strip, 0.0, colors::RULER);
     let left = rect.left() + colors::HEADER_WIDTH;
     let painter = ui.painter_at(Rect::from_min_max(Pos2::new(left, strip.top()), strip.max));
     let mut last_label = f32::NEG_INFINITY;
+    let mut last_line = f32::NEG_INFINITY;
     for line in lines {
         let x = axis.x(line.tick);
+        let spaced = x - last_line >= 24.0;
+        last_line = x;
         match line.kind {
             grid::Kind::Bar(bar) => {
                 painter.vline(
@@ -1603,7 +1612,7 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis, lines: &[grid::Line]) {
                     last_label = x;
                 }
             }
-            grid::Kind::Beat if axis.ppq >= 24.0 => {
+            grid::Kind::Beat if spaced => {
                 painter.vline(
                     x,
                     strip.bottom() - 5.0..=strip.bottom(),
