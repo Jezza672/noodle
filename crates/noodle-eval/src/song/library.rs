@@ -144,7 +144,8 @@ fn mixed(mut song: Song) -> Song {
     };
     match song.name {
         "neon-drive" => {
-            song.master_fx = vec![tidy];
+            // The limiter sits a little under the peak, so it barely acts.
+            song.master_fx = vec![tidy, Fx::Limiter { ceiling: -2.0 }];
             drums(&mut song, bus(-16.0, 3.0));
         }
         "rainy-lofi" => {
@@ -172,10 +173,12 @@ fn mixed(mut song: Song) -> Song {
                 Fx::Eq(vec![(3, 50.0, 0.0, 0.7)]),
             ];
         }
-        _ => {
+        "funk-engine" => {
+            // Like breakbeat-run, its mix is tempo-sensitive: no low cut.
             song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
             drums(&mut song, bus(-15.0, 3.0));
         }
+        other => panic!("no mix chosen for {other}"),
     }
     song
 }

@@ -413,7 +413,8 @@ fn dynamics_group(p: &mut Patch, name: &str, mode: f32, c: Comp, column: f32, ro
     let ratio = p.input("ratio", 2.0);
     let attack = p.input("attack", 3.0);
     let release = p.input("release", 4.0);
-    let makeup = p.input("makeup", 5.0);
+    let knee = p.input("knee", 5.0);
+    let makeup = p.input("makeup", 6.0);
     let node = p.add(
         spec("noodle.effect.dynamics")
             .param("mode", mode)
@@ -431,6 +432,7 @@ fn dynamics_group(p: &mut Patch, name: &str, mode: f32, c: Comp, column: f32, ro
     p.connect(ratio, (node, "ratio"));
     p.connect(attack, (node, "attack"));
     p.connect(release, (node, "release"));
+    p.connect(knee, (node, "knee"));
     p.connect(makeup, (node, "makeup"));
     let out = p.output("out", 3.0, 0.0);
     p.connect((node, "out"), out);
