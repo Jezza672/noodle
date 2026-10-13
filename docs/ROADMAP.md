@@ -229,6 +229,12 @@ and several Output nodes each tied to one device). All of this theme is done.
 
 **Group inputs and outputs (M2).** Boundary nodes grow ports as you wire.
 
+- **Done.** A group has one input node and one output node, each holding all
+  of that side's ports (it was a node per port), with a spare port to wire to
+  and a right-click to remove a port. A port's name is the same inside and
+  outside, and its gain, mute and solo are its own. Older projects migrate on
+  load (format 4) and render the same.
+
 - **Checked.** The Add Node list doesn't offer group input and output nodes
   (1). It does inside a group (a test now covers it); at the top level they
   would have no group to belong to, so they aren't offered there. If that

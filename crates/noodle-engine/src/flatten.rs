@@ -162,7 +162,7 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
                 stage,
                 Stage {
                     node: flat,
-                    input: is_input.then(|| InputStage { stage, group, name }),
+                    input: is_input.then_some(InputStage { stage, group, name }),
                 },
             );
         }
@@ -627,5 +627,66 @@ mod tests {
         set(&mut project, &mut history, a, &control_key(MUTE, 1), 1.0);
         let flat = flatten(project.graph());
         assert_eq!(flat.node(stage_id(a, 1)).unwrap().params[MUTE], 1.0);
+    }
+
+    #[test]
+    fn each_port_of_a_boundary_node_has_its_own_stage_and_controls() {
+        use noodle_core::spare::{Side, add_group_port, wire};
+        // osc -> [group: in1 -> gain -> out1, and also -> out2] -> out
+        let (mut project, mut history, group, _, output) = grouped();
+        let inner = NodeId(2);
+        let id = project.new_node_id();
+        let (command, key) = add_group_port(project.graph(), group, Side::Output, "out2", id);
+        history.apply(&mut project, command).unwrap();
+        history
+            .apply(
+                &mut project,
+                wire(Endpoint::new(inner, "out"), Endpoint::new(output, key)),
+            )
+            .unwrap();
+        // Only the second port has a gain.
+        set(
+            &mut project,
+            &mut history,
+            output,
+            &control_key(GAIN, 2),
+            -6.0,
+        );
+        let flat = flatten(project.graph());
+        assert!(
+            flat.node(stage_id(output, 1)).is_none(),
+            "port 1 costs nothing"
+        );
+        let stage = flat.node(stage_id(output, 2)).expect("port 2 has a stage");
+        assert_eq!(stage.params[GAIN], -6.0);
+        assert_eq!(
+            flat.source(&Endpoint::new(stage_id(output, 2), "in")),
+            Some(&Endpoint::new(inner, "out"))
+        );
+        // The first port's signal reaches the group's `out1` consumer directly.
+        assert_eq!(
+            flat.source(&Endpoint::new(NodeId(3), "in")),
+            Some(&Endpoint::new(inner, "out"))
+        );
+        // A wire into port 2's mute lands on its stage.
+        let mute_source = add(
+            &mut project,
+            &mut history,
+            Node::new("const").in_group(group),
+        );
+        wire_into_mute(&mut project, &mut history, mute_source, output);
+        let flat = flatten(project.graph());
+        assert_eq!(
+            flat.source(&Endpoint::new(stage_id(output, 2), "mute")),
+            Some(&Endpoint::new(mute_source, "out"))
+        );
+    }
+
+    fn wire_into_mute(project: &mut Project, history: &mut History, from: NodeId, node: NodeId) {
+        let c = Connection {
+            from: Endpoint::new(from, "out"),
+            to: Endpoint::new(node, control_key(MUTE, 2)),
+        };
+        history.apply(project, Command::Connect(c)).unwrap();
     }
 }

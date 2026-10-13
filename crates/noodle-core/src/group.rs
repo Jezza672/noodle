@@ -689,7 +689,7 @@ pub fn group_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Config, History};
+    use crate::History;
 
     fn add(project: &mut Project, history: &mut History, node: Node) -> NodeId {
         let id = project.new_node_id();
@@ -932,6 +932,82 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, stage_id(NodeId(6), 1));
         assert!(a.0 > u64::from(u32::MAX));
+    }
+
+    /// A group saved with a boundary node per port (format 3): two inputs, two
+    /// outputs, a gain on the second output, a wire into the first input's
+    /// mute, and a lane on the second output's gain.
+    const ONE_NODE_PER_PORT: &str = r#"(
+        format: 3,
+        graph: (
+            nodes: {
+                1: (type: "osc"),
+                2: (type: "noodle.group"),
+                3: (type: "noodle.group.input", config: {"name": "a"}, parent: Some(2), position: (x: -100.0, y: 40.0)),
+                4: (type: "noodle.group.input", config: {"name": "b"}, parent: Some(2), position: (x: -120.0, y: 90.0)),
+                5: (type: "noodle.group.output", config: {"name": "left"}, parent: Some(2)),
+                6: (type: "noodle.group.output", config: {"name": "right"}, params: {"gain": -6.0, "solo": 1.0}, parent: Some(2)),
+                7: (type: "gain", parent: Some(2)),
+                8: (type: "const", parent: Some(2)),
+                9: (type: "out"),
+            },
+            connections: [
+                (from: (node: 1, port: "out"), to: (node: 2, port: "a")),
+                (from: (node: 3, port: "out"), to: (node: 7, port: "in")),
+                (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+                (from: (node: 7, port: "out"), to: (node: 6, port: "in")),
+                (from: (node: 8, port: "out"), to: (node: 3, port: "mute")),
+                (from: (node: 2, port: "right"), to: (node: 9, port: "in")),
+            ],
+        ),
+        lanes: {1: (target: (node: 6, port: "gain"), points: [(tick: 0, value: -3.0, curve: Linear)])},
+    )"#;
+
+    #[test]
+    fn a_node_per_port_file_loads_as_one_node_per_side() {
+        let project = Project::from_ron(ONE_NODE_PER_PORT).unwrap();
+        let graph = project.graph();
+        let ports = graph.group_ports(NodeId(2));
+        let names = |list: &[GroupPort]| list.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&ports.inputs), ["a", "b"]);
+        assert_eq!(names(&ports.outputs), ["left", "right"]);
+        // The lowest ID of each side keeps the node; the rest are gone.
+        assert!(ports.inputs.iter().all(|p| p.node == NodeId(3)));
+        assert!(ports.outputs.iter().all(|p| p.node == NodeId(5)));
+        assert_eq!(graph.nodes().count(), 7);
+        // Ports are numbered in ID order, and wires follow them.
+        assert_eq!(
+            graph.source(&Endpoint::new(NodeId(7), "in")),
+            Some(&Endpoint::new(NodeId(3), "p1"))
+        );
+        assert_eq!(
+            graph.source(&Endpoint::new(NodeId(5), "p1")),
+            Some(&Endpoint::new(NodeId(3), "p2"))
+        );
+        assert_eq!(
+            graph.source(&Endpoint::new(NodeId(5), "p2")),
+            Some(&Endpoint::new(NodeId(7), "out"))
+        );
+        // Outside wires use the names, as they always did.
+        assert_eq!(
+            graph.source(&Endpoint::new(NodeId(2), "a")),
+            Some(&Endpoint::new(NodeId(1), "out"))
+        );
+        assert_eq!(
+            graph.source(&Endpoint::new(NodeId(3), "mute.1")),
+            Some(&Endpoint::new(NodeId(8), "out"))
+        );
+        // Controls move to their port, and so does a lane on them.
+        let right = graph.node(NodeId(5)).unwrap();
+        assert_eq!(right.params.get("gain.2"), Some(&-6.0));
+        assert!(right.port_controls(2).solo && !right.port_controls(1).solo);
+        assert!(!right.params.contains_key("gain"));
+        let (_, lane) = project.lanes().next().unwrap();
+        assert_eq!(lane.target, Endpoint::new(NodeId(5), "gain.2"));
+        assert_eq!(graph.control_port(NodeId(2)).unwrap().name, "left");
+        // And it saves in the new form, which loads as it is.
+        let text = project.to_ron();
+        assert_eq!(Project::from_ron(&text).unwrap(), project, "{text}");
     }
 
     /// A group at `parent` with an input and output node.
