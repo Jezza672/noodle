@@ -111,6 +111,8 @@ pub struct EditorState {
     /// A node whose view was asked for with a double-click, until the app
     /// takes it.
     view_request: Option<NodeId>,
+    /// The group port a right-click landed on, which its menu removes.
+    port_menu: Option<group::GroupPort>,
     /// Which nodes are frozen or offline, and how their renders are doing.
     freeze: BTreeMap<NodeId, Badge>,
 }
@@ -142,6 +144,7 @@ impl Default for EditorState {
             clipboard: None,
             arrange_requested: false,
             view_request: None,
+            port_menu: None,
             freeze: BTreeMap::new(),
         }
     }
@@ -366,11 +369,13 @@ enum RenameTarget {
     Frame(FrameId),
     /// A group: its name is its `name` config, which a track shares.
     Group(NodeId),
-    /// A group's port, named by the boundary node inside. The box opens over
+    /// A group's port, named in the boundary node inside. The box opens over
     /// the port's row on `shown_on`, the group or the boundary node itself,
     /// where the port is drawn.
     Port {
         boundary: NodeId,
+        /// The port's ID on `boundary`.
+        port: u32,
         shown_on: NodeId,
         side: Side,
         key: String,
@@ -838,6 +843,29 @@ fn pointer(
         }
     }
 
+    // Right-clicking a port row of a group's input or output node offers to
+    // remove the port.
+    if response.secondary_clicked() {
+        state.port_menu = latest.and_then(|p| boundary_port_at(f, p));
+    }
+    let port = state.port_menu.clone();
+    let mut remove = false;
+    response.context_menu(|ui| match &port {
+        Some(port) => {
+            if ui
+                .button(format!("Remove port \"{}\"", port.name))
+                .clicked()
+            {
+                remove = true;
+                ui.close();
+            }
+        }
+        None => ui.close(),
+    });
+    if remove && let Some(port) = state.port_menu.take() {
+        edits.extend(spare::remove_group_port(f.project, &port).map(Edit::Apply));
+    }
+
     if response.clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
@@ -931,6 +959,24 @@ fn is_boundary(project: &Project, id: NodeId) -> bool {
         .graph()
         .node(id)
         .is_some_and(|n| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT))
+}
+
+/// The port of a group's input or output node whose row is under `p`.
+fn boundary_port_at(f: &Frame_<'_>, p: Pos2) -> Option<group::GroupPort> {
+    let Hit::Node(id) = hit(f, p) else {
+        return None;
+    };
+    let port = port_row_at(f.scene.node(id)?, f.t.to_graph(p))?;
+    let node = f.project.graph().node(id)?;
+    let pid = group::parse_port_key(&port.key).filter(|_| is_boundary(f.project, id))?;
+    node.boundary_ports()
+        .iter()
+        .any(|&(other, _)| other == pid)
+        .then(|| group::GroupPort {
+            name: port.name.clone(),
+            node: id,
+            id: pid,
+        })
 }
 
 fn start_primary_drag(
@@ -1455,7 +1501,7 @@ fn finish(
 }
 
 /// What it takes to make the spare port `endpoint` real, if it is one: more
-/// inputs on a mixer, or a boundary node inside a group.
+/// inputs on a mixer, or a port on a group or the boundary node inside it.
 fn make_real(
     f: &Frame_<'_>,
     endpoint: &Endpoint,
@@ -1475,13 +1521,22 @@ fn make_real(
                 Side::Output => spare::Side::Output,
             };
             let id = (inputs.new_node_id)();
-            vec![spare::add_group_port(
-                graph,
-                endpoint.node,
-                side,
-                &endpoint.port,
-                id,
-            )]
+            vec![spare::add_group_port(graph, endpoint.node, side, &endpoint.port, id).0]
+        }
+        // A spare on a boundary node adds a port to it, named as the group's
+        // next spare, under the key the spare was drawn with.
+        GROUP_INPUT | GROUP_OUTPUT => {
+            let Some(group) = node.parent else {
+                return Vec::new();
+            };
+            let side = if node.type_id == GROUP_INPUT {
+                spare::Side::Input
+            } else {
+                spare::Side::Output
+            };
+            let name = spare::spare_group_name(graph, group, side);
+            let id = (inputs.new_node_id)();
+            vec![spare::add_group_port(graph, group, side, &name, id).0]
         }
         _ => Vec::new(),
     }
@@ -2003,37 +2058,6 @@ fn enter_or_leave(state: &mut EditorState, project: &Project) {
     }
 }
 
-/// A name for a new group input or output that no other port of the same
-/// kind in the group has: `in1`, `in2`, … or `out1`, `out2`, …
-fn free_port_name(project: &Project, group: Option<NodeId>, type_id: &str) -> String {
-    let graph = project.graph();
-    let (prefix, taken): (_, Vec<String>) = match group {
-        Some(g) if type_id == GROUP_INPUT => (
-            "in",
-            graph
-                .group_ports(g)
-                .inputs
-                .into_iter()
-                .map(|p| p.name)
-                .collect(),
-        ),
-        Some(g) => (
-            "out",
-            graph
-                .group_ports(g)
-                .outputs
-                .into_iter()
-                .map(|p| p.name)
-                .collect(),
-        ),
-        None => ("port", Vec::new()),
-    };
-    (1..)
-        .map(|n| format!("{prefix}{n}"))
-        .find(|name| !taken.contains(name))
-        .expect("an unbounded range has a free name")
-}
-
 /// Puts a new frame around the selected nodes.
 fn frame_selection(
     state: &mut EditorState,
@@ -2083,20 +2107,24 @@ fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
     let Some(node) = graph.node(id) else { return };
     let (target, label) = match node.type_id.as_str() {
         GROUP => (RenameTarget::Group(id), layout::group_title(graph, id)),
-        // A boundary node's port is its only one, so F2 names that port.
+        // F2 on a group's input or output node names its first port.
         GROUP_INPUT | GROUP_OUTPUT => {
+            let Some((port, name)) = node.boundary_ports().into_iter().next() else {
+                return;
+            };
             let (side, key) = if node.type_id == GROUP_INPUT {
-                (Side::Output, group::INPUT_PORT)
+                (Side::Output, group::port_key(port))
             } else {
-                (Side::Input, group::OUTPUT_PORT)
+                (Side::Input, group::port_key(port))
             };
             let target = RenameTarget::Port {
                 boundary: id,
+                port,
                 shown_on: id,
                 side,
-                key: key.to_owned(),
+                key,
             };
-            (target, group::port_name(id, node))
+            (target, name)
         }
         _ => return,
     };
@@ -2123,6 +2151,7 @@ fn start_port_rename(
         state.rename = Some(Rename {
             target: RenameTarget::Port {
                 boundary: found.node,
+                port: found.id,
                 shown_on: group,
                 side: port.side,
                 key: port.key.clone(),
@@ -2190,9 +2219,13 @@ fn group_menu(ui: &egui::Ui, state: &mut EditorState, f: &Frame_<'_>, edits: &mu
 /// Starts renaming the port of a group's input or output node, which is
 /// drawn on that node.
 fn start_boundary_rename(state: &mut EditorState, boundary: NodeId, port: &layout::PortGeom) {
+    let Some(id) = group::parse_port_key(&port.key) else {
+        return;
+    };
     state.rename = Some(Rename {
         target: RenameTarget::Port {
             boundary,
+            port: id,
             shown_on: boundary,
             side: port.side,
             key: port.key.clone(),
@@ -2226,14 +2259,20 @@ fn popups(
                             node.config = node_type.initial_config();
                         }
                         if matches!(type_id, GROUP_INPUT | GROUP_OUTPUT) {
-                            node.config = noodle_core::Config::new().with(
-                                group::PORT_NAME,
-                                noodle_core::Value::Text(free_port_name(
-                                    f.project,
-                                    state.group,
-                                    type_id,
-                                )),
-                            );
+                            // A group has one of each, holding all its ports:
+                            // asking for another selects the one it has.
+                            let existing = state.group.and_then(|group| {
+                                f.project
+                                    .graph()
+                                    .children(Some(group))
+                                    .find(|(_, n)| n.type_id == type_id)
+                                    .map(|(id, _)| id)
+                            });
+                            if let Some(existing) = existing {
+                                state.select_only([existing]);
+                                return;
+                            }
+                            node.config = group::ports_config(&[]);
                         }
                         edits.push(Edit::Apply(Command::AddNode { id, node }));
                         state.select_only([id]);
@@ -2385,7 +2424,9 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
                 value: (!label.is_empty()).then_some(noodle_core::Value::Text(label)),
             }
         }
-        RenameTarget::Port { boundary: id, .. } => spare::rename_group_port(project, id, &label)?,
+        RenameTarget::Port { boundary, port, .. } => {
+            spare::rename_group_port(project, boundary, port, &label)?
+        }
     };
     Some(Edit::Apply(command))
 }

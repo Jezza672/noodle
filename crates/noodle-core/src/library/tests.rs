@@ -1,5 +1,8 @@
 use super::*;
-use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, PORT_NAME, SOLO};
+use crate::group::{
+    GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, PORT_NAME, SOLO, control_key, port_key,
+    ports_config,
+};
 use crate::{
     Command, Config, Connection, Endpoint, History, Node, NodeId, Position, Project, Value,
 };
@@ -11,7 +14,7 @@ fn layout(node: &Node) -> Option<String> {
 }
 
 fn named(kind: &str, name: &str) -> Node {
-    Node::new(kind).with_config(Config::new().with(PORT_NAME, Value::Text(name.into())))
+    Node::new(kind).with_config(ports_config(&[(1, name.to_owned())]))
 }
 
 /// A group `Synth` with an input `pitch`, an oscillator, a filter and an
@@ -49,16 +52,16 @@ fn synth(project: &mut Project, history: &mut History, cutoff: f32, swap: bool) 
         Command::AddNode {
             id: output,
             node: named(GROUP_OUTPUT, "out")
-                .with_param(GAIN, -6.0)
-                .with_param(MUTE, 1.0)
-                .with_param(SOLO, 1.0)
+                .with_param(control_key(GAIN, 1), -6.0)
+                .with_param(control_key(MUTE, 1), 1.0)
+                .with_param(control_key(SOLO, 1), 1.0)
                 .in_group(group),
         },
     ];
     for (from, port, to, key) in [
-        (input, "out", osc, "frequency"),
+        (input, port_key(1).as_str(), osc, "frequency"),
         (osc, "out", filter, "in"),
-        (filter, "out", output, "in"),
+        (filter, "out", output, port_key(1).as_str()),
     ] {
         commands.push(Command::Connect(Connection {
             from: Endpoint::new(from, port),
@@ -359,7 +362,7 @@ fn a_group_preset_applies_across_ids_and_skips_boundary_controls() {
                 &mut project,
                 Command::SetParam {
                     node,
-                    key: GAIN.into(),
+                    key: control_key(GAIN, 1),
                     value: Some(gain),
                 },
             )
@@ -386,8 +389,14 @@ fn a_group_preset_applies_across_ids_and_skips_boundary_controls() {
         Some("user:group:bright")
     );
     // The output's gain, mute and solo are not part of a preset.
-    assert_eq!(graph.node(out_b).unwrap().params[GAIN], -12.0);
-    assert_eq!(graph.node(out_b).unwrap().params[MUTE], 1.0);
+    assert_eq!(
+        graph.node(out_b).unwrap().params[&control_key(GAIN, 1)],
+        -12.0
+    );
+    assert_eq!(
+        graph.node(out_b).unwrap().params[&control_key(MUTE, 1)],
+        1.0
+    );
     assert!(preset.matches(graph, b, &layout));
 }
 
@@ -494,7 +503,7 @@ fn a_copy_of_a_template_with_unnamed_ports_keeps_its_ports_and_topology() {
                     id: output,
                     node: Node::new(GROUP_OUTPUT)
                         .in_group(group)
-                        .with_param(GAIN, -3.0),
+                        .with_param(control_key(GAIN, 1), -3.0),
                 },
             ]),
         )
@@ -550,8 +559,8 @@ fn a_nested_groups_levels_are_in_a_preset_but_its_mute_and_solo_are_not() {
                     id: inner_out,
                     node: named(GROUP_OUTPUT, "out")
                         .in_group(inner)
-                        .with_param(GAIN, -9.0)
-                        .with_param(MUTE, 1.0),
+                        .with_param(control_key(GAIN, 1), -9.0)
+                        .with_param(control_key(MUTE, 1), 1.0),
                 },
             ]),
         )
@@ -561,12 +570,12 @@ fn a_nested_groups_levels_are_in_a_preset_but_its_mute_and_solo_are_not() {
         Command::Batch(vec![
             Command::SetParam {
                 node: inner_out,
-                key: GAIN.into(),
+                key: control_key(GAIN, 1),
                 value: Some(gain),
             },
             Command::SetParam {
                 node: inner_out,
-                key: MUTE.into(),
+                key: control_key(MUTE, 1),
                 value: Some(mute),
             },
         ])
@@ -575,8 +584,12 @@ fn a_nested_groups_levels_are_in_a_preset_but_its_mute_and_solo_are_not() {
     let apply = preset.apply(project.graph(), outer, "x", &layout).unwrap();
     history.apply(&mut project, apply).unwrap();
     let node = project.graph().node(inner_out).unwrap();
-    assert_eq!(node.params[GAIN], -9.0, "the layer's level is recalled");
-    assert_eq!(node.params[MUTE], 0.0, "its mute is not");
+    assert_eq!(
+        node.params[&control_key(GAIN, 1)],
+        -9.0,
+        "the layer's level is recalled"
+    );
+    assert_eq!(node.params[&control_key(MUTE, 1)], 0.0, "its mute is not");
     assert!(preset.matches(project.graph(), outer, &layout));
 }
 
@@ -617,8 +630,8 @@ fn a_template_keeps_a_nested_groups_level_but_not_its_mute() {
                     id: inner_out,
                     node: named(GROUP_OUTPUT, "out")
                         .in_group(inner)
-                        .with_param(GAIN, -9.0)
-                        .with_param(MUTE, 1.0),
+                        .with_param(control_key(GAIN, 1), -9.0)
+                        .with_param(control_key(MUTE, 1), 1.0),
                 },
             ]),
         )
@@ -629,6 +642,13 @@ fn a_template_keeps_a_nested_groups_level_but_not_its_mute() {
         .nodes()
         .find(|(_, n)| n.type_id == GROUP_OUTPUT)
         .unwrap();
-    assert_eq!(out.params.get(GAIN), Some(&-9.0), "the layer's level stays");
-    assert!(!out.params.contains_key(MUTE), "its mute does not");
+    assert_eq!(
+        out.params.get(&control_key(GAIN, 1)),
+        Some(&-9.0),
+        "the layer's level stays"
+    );
+    assert!(
+        !out.params.contains_key(&control_key(MUTE, 1)),
+        "its mute does not"
+    );
 }

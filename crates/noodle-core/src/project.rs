@@ -98,7 +98,7 @@ fn is_default_tempo_map(map: &TempoMap) -> bool {
 impl Project {
     /// The current file format version. Bump it when the format changes in a
     /// way older versions can't read, and migrate older files when loading.
-    pub const FORMAT: u32 = 3;
+    pub const FORMAT: u32 = 4;
 
     pub fn new() -> Self {
         Self::default()
@@ -601,12 +601,15 @@ impl Project {
         let next_clip_id = file.clips.keys().last().map_or(1, |id| id.0 + 1);
         let next_warp_id = file.warps.keys().last().map_or(1, |id| id.0 + 1);
         let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
+        let mut lanes = file.lanes;
+        // Format 4: a group's ports share one boundary node on each side.
+        let graph = crate::group::migrate_boundaries(&file.graph, &mut lanes).unwrap_or(file.graph);
         let mut clips = file.clips;
         for clip in clips.values_mut() {
             clip.assign_note_ids();
         }
         let project = Self {
-            graph: file.graph,
+            graph,
             frames: file.frames,
             next_frame_id,
             tempo_map: file.tempo_map,
@@ -614,7 +617,7 @@ impl Project {
             next_clip_id,
             warps: file.warps,
             next_warp_id,
-            lanes: file.lanes,
+            lanes,
             next_lane_id,
             track_order: file.track_order,
             frozen: file.frozen,

@@ -6,8 +6,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Value;
-use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, PORT_NAME, SOLO, port_name};
+use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, parse_control_key};
 use crate::{Command, Connection, Endpoint, Graph, Node, NodeId, Position};
 
 /// A saved group. Its nodes use their own IDs (the group itself is the one
@@ -91,17 +90,12 @@ impl GroupTemplate {
                 // The group's own gain is set where it is used. A nested
                 // group's gain is its level in the mix inside, so it stays,
                 // as in a group preset; mute and solo never do.
-                if graph.node(old).and_then(|n| n.parent) == Some(group) {
-                    node.params.remove(GAIN);
-                }
-                for key in [MUTE, SOLO] {
-                    node.params.remove(key);
-                }
-                // A port with no name is named from its node's ID, which a
-                // copy would change; pin the name so the copy has the same
-                // ports.
-                let name = port_name(old, &node);
-                node.config.set(PORT_NAME, Value::Text(name));
+                let own = graph.node(old).and_then(|n| n.parent) == Some(group);
+                node.params.retain(|key, _| match parse_control_key(key) {
+                    Some((GAIN, _)) => !own,
+                    Some(_) => false,
+                    None => true,
+                });
             }
             nodes.insert(new, node);
         }

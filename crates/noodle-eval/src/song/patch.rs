@@ -7,7 +7,8 @@
 
 use noodle_core::{
     Command, Config, Connection, Endpoint, History, Node, NodeId, Project, Value,
-    group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, PORT_NAME},
+    group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, PORT_NAME, parse_port_key},
+    spare::{Side, add_group_port},
 };
 
 /// Where a patch is being built: the project, and the group (if any) new
@@ -111,21 +112,41 @@ impl<'a> Patch<'a> {
             .and_then(|node| node.parent);
     }
 
-    /// A group input named `name`; wire from its `out` port.
-    pub fn input(&mut self, name: &str, row: f32) -> NodeId {
-        self.add(
-            spec(GROUP_INPUT).config(PORT_NAME, Value::Text(name.into())),
-            0.0,
-            row,
-        )
+    /// A group input named `name`; wire from the returned port. The inputs
+    /// of a group are ports of one group input node.
+    pub fn input(&mut self, name: &str, _row: f32) -> Port {
+        self.boundary(Side::Input, name)
     }
 
-    /// A group output named `name`; wire into its `in` port.
-    pub fn output(&mut self, name: &str, column: f32, row: f32) -> NodeId {
-        self.add(
-            spec(GROUP_OUTPUT).config(PORT_NAME, Value::Text(name.into())),
-            column,
-            row,
-        )
+    /// A group output named `name`; wire into the returned port.
+    pub fn output(&mut self, name: &str, _column: f32, _row: f32) -> Port {
+        self.boundary(Side::Output, name)
+    }
+
+    fn boundary(&mut self, side: Side, name: &str) -> Port {
+        let group = self.parent.expect("group ports are inside a group");
+        let id = self.project.new_node_id();
+        let (command, key) = add_group_port(self.project.graph(), group, side, name, id);
+        self.apply(command);
+        let kind = match side {
+            Side::Input => GROUP_INPUT,
+            Side::Output => GROUP_OUTPUT,
+        };
+        let node = self
+            .project
+            .graph()
+            .children(Some(group))
+            .find(|(_, n)| n.type_id == kind)
+            .expect("the port has a node")
+            .0;
+        let index = parse_port_key(&key).expect("a port key") as usize;
+        (node, PORT_KEYS[index])
     }
 }
+
+/// Port keys on a boundary node, so a [`Port`] can name them.
+const PORT_KEYS: [&str; 33] = [
+    "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11", "p12", "p13", "p14",
+    "p15", "p16", "p17", "p18", "p19", "p20", "p21", "p22", "p23", "p24", "p25", "p26", "p27",
+    "p28", "p29", "p30", "p31", "p32",
+];

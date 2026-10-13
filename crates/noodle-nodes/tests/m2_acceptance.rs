@@ -127,12 +127,12 @@ fn arrangement() -> Arrangement {
         &mut project,
         &mut history,
         Command::Disconnect {
-            input: Endpoint::new(one_out, "in"),
+            input: Endpoint::new(one_out, "p1"),
         },
     );
     for (from, to) in [
         (Endpoint::new(one_in, "audio"), Endpoint::new(gain, "in")),
-        (Endpoint::new(gain, "out"), Endpoint::new(one_out, "in")),
+        (Endpoint::new(gain, "out"), Endpoint::new(one_out, "p1")),
     ] {
         apply(
             &mut project,
@@ -175,7 +175,7 @@ fn arrangement() -> Arrangement {
         curve: Curve::Hold,
     };
     let automation = AutomationLane::new(
-        Endpoint::new(two_out, GAIN),
+        Endpoint::new(two_out, noodle_core::group::control_key(GAIN, 1)),
         vec![point(0, 0.0), point(3, HALF_DB)],
     );
     apply(
@@ -296,7 +296,7 @@ fn soloing_a_track_leaves_only_that_track_in_the_mix() {
         &mut history,
         Command::SetParam {
             node: two_out,
-            key: "solo".into(),
+            key: "solo.1".into(),
             value: Some(1.0),
         },
     );

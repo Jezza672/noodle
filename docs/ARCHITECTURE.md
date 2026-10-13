@@ -127,36 +127,49 @@ The **Project** is the single source of truth. It holds one global graph:
   it. Buses and sends are just wires.
   - **One graph.** A node's `parent` says which group it's inside. Wires only
     join nodes with the same parent, so the editor shows one level at a time.
-  - **Ports.** A group's ports are the boundary nodes inside it: a
-    `noodle.group.input` (output port `out`) per input and a
-    `noodle.group.output` (input port `in`) per output, named by their `name`
-    config. In M2's first cut they're structure only, so they need no
-    registry entry and flatten drops them.
-  - **Boundary parameters.** Every group's input and output nodes carry
-    gain (dB), mute and solo as ordinary node parameters (`Node::controls`,
-    `Graph::group_controls`). Flatten keeps a boundary node as a
-    `noodle.group.stage` node, under the boundary node's ID so a lane aimed
-    at it reaches it, once its gain or mute has been set at all (even back to
-    its default), is wired, or it is muted, and drops the rest. So a group nobody has
-    touched costs nothing and renders bit-for-bit like the flat patch, and a
-    touched one costs a stage that is exact at unity. The stage stays once
-    set because adding or removing a node in the audible path makes the
-    engine fade the whole output out and in (5 ms each way): the first touch
-    of a control on a group costs that one fade, and after that gain, mute and
-    solo are parameter changes. Mute is a smoothed 0 to 1 parameter, so it
-    ramps rather than clicks. A control reset should write the default, not
-    remove the parameter, or the stage goes and the fade comes back. Boundary
-    nodes show `gain` and `mute` as parameter ports in the editor (solo has
-    none; it is read from the project), so they can be wired like any other
-    parameter. A group has one gain and one mute, so only its control node
-    (`Graph::control_node`, the one the mixer drives) shows them. Another
-    boundary node shows them too once its gain or mute is set, wired or
-    driven by a lane, so nothing that affects the sound is hidden. A wire into either keeps the stage, and flatten joins the
-    wire's source to the stage's port. The wire replaces the value set on
-    the node, and wins over a lane on the same port (the lane gets the usual
-    "overridden" diagnostic). The mixer strip and the track header grey out
-    their fader and mute while a lane or a wire drives them.
-  - **Lanes as wires in the editor.** A lane on a boundary node's gain or
+  - **Ports.** A group has one `noodle.group.input` node and one
+    `noodle.group.output` node inside it, and its ports are the ports listed
+    in their `ports` config (`id:name` per line, `Node::boundary_ports`). An
+    input node has an output port `p<id>` for each of the group's inputs, and
+    an output node an input port `p<id>` for each output. The group node's
+    own ports are those names, so one string names a port on both sides of
+    the boundary, and a rename (`rename_group_port`) rewrites the wires on
+    the group in one step. The ID never changes, so nothing inside moves: the
+    wires and lanes inside use the ID, not the name. They are structure only,
+    so they need no registry entry and flatten drops them. Format 4 files
+    only: older files had a boundary node per port, named by its `name`
+    config, and `Project::from_ron` migrates them (the lowest-ID node of each
+    side keeps all the ports, in ID order, with wires, gain, mute, solo and
+    lanes moved to the port's keys).
+  - **Boundary parameters.** Every port carries gain (dB), mute and solo as
+    parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
+    `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten
+    keeps a port as a `noodle.group.stage` node, under the port's
+    `stage_id` (a node ID no project node can have, built from the boundary
+    node's ID and the port's), and points a lane or a wire aimed at the
+    port's gain or mute at it, once its gain or mute has been set at all
+    (even back to its default), is wired, or it is muted, and drops the rest.
+    So a group nobody has touched costs nothing and renders bit-for-bit like
+    the flat patch, and a touched one costs a stage that is exact at unity.
+    The stage stays once set because adding or removing a node in the audible
+    path makes the engine fade the whole output out and in (5 ms each way):
+    the first touch of a control on a group costs that one fade, and after
+    that gain, mute and solo are parameter changes. Mute is a smoothed 0 to 1
+    parameter, so it ramps rather than clicks. A control reset should write
+    the default, not remove the parameter, or the stage goes and the fade
+    comes back. A boundary node shows a port's `gain` and `mute` as parameter
+    ports in the editor (solo has none; it is read from the project), so they
+    can be wired like any other parameter. A group has one gain and one
+    mute, so only its control port (`Graph::control_port`, its first output
+    or else first input, the one the mixer drives) shows them. Another
+    port shows them too once its gain or mute is set, wired or driven by a
+    lane, so nothing that affects the sound is hidden. A wire into either
+    keeps the stage, and flatten joins the wire's source to the stage's
+    port. The wire replaces the value set on the node, and wins over a lane
+    on the same port (the lane gets the usual "overridden" diagnostic). The
+    mixer strip and the track header grey out their fader and mute while a
+    lane or a wire drives them.
+  - **Lanes as wires in the editor.** A lane on a boundary port's gain or
     mute shows as a wire from a `<Control> lane` output on the group's first
     track input node to that port. It isn't a stored connection: the editor
     draws it from the project's lanes, cutting it removes the lane, and it
@@ -188,12 +201,12 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Creating a track** creates the group, its track input node and the
     group's output node in one step, with the input's `audio` output wired
     into the group's output by default. Undo removes all of it.
-  - **Group input and output nodes carry the track's controls** as
-    parameters: gain, mute, solo and the like. The track's gain, mute and
+  - **A track's output port carries its controls** as
+    parameters of the group's output node: gain, mute, solo and the like. The track's gain, mute and
     solo buttons in the arrangement view show and set those parameters. Gain and mute are ordinary runtime parameters, so they can be
   automated and wired like any other. Solo is the exception (below).
-  - Every group gets such an input and output node, not only tracks, so a
-    nested group has the same controls.
+  - Every group has such ports, not only tracks, so a nested group has the
+    same controls.
   - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
     that are not soloed. It is read **at compile time** from the solo
     parameters (`Graph::solo_muted`). Among the groups sharing a parent, if
@@ -884,9 +897,10 @@ into a parameter port.** It is not a clip and not a node the user wires.
   node's config, so they are part of its `NodeKey`. A lane on a missing
   node is skipped without a diagnostic; one on a missing port or an audio input, or on a
   parameter with a wire, gets one.
-- **Group boundaries.** A lane on a group's boundary node can drive its
-  `gain` or `mute`: compiling keeps a stage for that node (the same stage a
-  set control keeps), and the lane is wired into the stage's port. A lane on
+- **Group boundaries.** A lane on a boundary port (target key `gain.<id>`
+  or `mute.<id>` on the boundary node) can drive its gain or mute: compiling
+  keeps a stage for that port (the same stage a set control keeps), and the
+  lane is retargeted to the stage and wired into its port. A lane on
   `solo` gets a diagnostic and does nothing, since solo is read when the
   project is compiled. Solo-muting goes to its own
   `solo_mute` input on the stage (OR-ed with `mute`), so a mute lane can't
@@ -1677,21 +1691,26 @@ It has these views:
     plus one greyed spare, and a group shows a spare input and output after
     its real ones. The spare is only drawn: nothing is stored until a wire is
     dropped on it (or dragged from it), and then the same undo step raises the
-    mixer's `inputs` or adds a boundary node inside the group, named `in1`,
-    `in2`, … or `out1`, … Config beyond the last wired mixer input is
+    mixer's `inputs` or adds a port to the group's input or output node, named
+    `in1`, `in2`, … or `out1`, … Config beyond the last wired mixer input is
     hidden, not removed, and a group port is never removed on its own,
-    because the boundary node may be used inside. Every edit made on the
+    because the port may be used inside. A group's input and output nodes have
+    a spare port of their own, drawn under their ports, which adds a port the
+    same way (the group's spare follows). A port is removed from its node
+    with a right-click on its row (`remove_group_port`, which takes the wires,
+    controls and lanes on it too, as one undo step). Every edit made on the
     user's behalf goes through `spare::wire`, which replaces whatever fed the
     input, never removes a node, and leaves wires leaving an output alone.
   - **Names.** F2 on a selected group, group input or group output renames it,
     and double-clicking a port row of a group node, or of a group input or
     output node, renames that port in place: the box opens over the port's
     row, where its label is drawn (a double-click elsewhere on a group enters
-    it). A group input or output node always labels its port on a row. A group's name is its
+    it). A group input or output node always labels its ports on rows, and F2
+    on one renames its first port. A group's name is its
     `name` config, which a track shares, and the track input inside shows its
-    group's name as its title. A port's name is its key, so `rename_group_port`
-    moves the wires on it in the same step, and refuses an empty name or one
-    another port on that side has. An empty group name puts the default back.
+    group's name as its title. A group's port is found by its name, so
+    `rename_group_port` moves the wires on it in the same step, and refuses an
+    empty name, one with a line break, or one another port on that side has. An empty group name puts the default back.
   - **Idle outputs.** A track input's `audio` output is greyed while no clip
     plays on the track, and `midi` is greyed until there are MIDI clips.
   - **Port order** is display only. `Node::port_order` lists port keys in the
@@ -1778,9 +1797,9 @@ It has these views:
     isn't a project edit, so `show` returns it beside the edits.
   - **Track headers** show the controls on the track group's output node:
     mute and solo buttons and a gain slider in decibels (double-click
-    resets), written as `SetParam` commands, so a slider drag is one undo
+    resets), written as `SetParam` commands on the group's control port, so a slider drag is one undo
     step. A track input node outside any group has no controls. Solo counts
-    if either boundary node has it, so turning it off clears every one, and
+    if any port has it, so turning it off clears every one, and
     a track silenced by another's solo is dimmed.
   - **Track names** are the track group's `name` config setting. Double-click
     a header's name to type one; Enter keeps it, Escape throws it away, and

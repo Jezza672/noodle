@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::LayoutOf;
 use super::topology::topology;
-use crate::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
+use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, parse_control_key};
 use crate::{Command, Config, Graph, Node, NodeId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,9 +187,9 @@ fn stored(group: NodeId, node: &Node) -> Option<Node> {
         GROUP_INPUT | GROUP_OUTPUT if node.parent == Some(group) => None,
         GROUP_INPUT | GROUP_OUTPUT => {
             let mut node = node.clone();
-            node.params.remove(MUTE);
-            node.params.remove(SOLO);
-            // The name is the port, which the topology already holds.
+            node.params
+                .retain(|key, _| parse_control_key(key).is_some_and(|(c, _)| c == GAIN));
+            // The ports are the topology, which already holds them.
             node.config = Config::new();
             Some(node)
         }

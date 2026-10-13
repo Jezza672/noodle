@@ -24,7 +24,7 @@ use music::{Bar, Chord, Note, Pattern};
 use noodle_core::group::{GAIN, create_track};
 use noodle_core::{
     Clip, ClipContent, Command, History, MidiNote, NodeId, Position, Project, TempoMap, Tick,
-    group::{MIDI, OUTPUT_PORT},
+    group::{MIDI, control_key},
 };
 use noodle_engine::{OUTPUT_ID, Registry, Settings};
 use noodle_nodes::{VOICE_MIX_ID, VOICES_ID, render_project_with_clips};
@@ -309,7 +309,7 @@ fn add_track(p: &mut Patch, part: &Part, index: usize) -> Track {
             p.project,
             Command::SetParam {
                 node: output,
-                key: GAIN.into(),
+                key: control_key(GAIN, 1),
                 value: Some(part.db),
             },
         )
@@ -353,7 +353,7 @@ fn add_track(p: &mut Patch, part: &Part, index: usize) -> Track {
             p.connect((synth, "out"), (pan, "in"));
         }
     }
-    p.connect((pan, "out"), (output, OUTPUT_PORT));
+    p.connect((pan, "out"), (output, "p1"));
     p.parent = None;
     Track { group, input }
 }

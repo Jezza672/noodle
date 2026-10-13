@@ -183,9 +183,15 @@ impl Rows {
     }
 }
 
+/// The control ([`group::GAIN`], [`group::MUTE`] or [`group::SOLO`]) that a
+/// lane's target key drives.
+fn control_of(key: &str) -> &str {
+    group::parse_control_key(key).map_or(key, |(control, _)| control)
+}
+
 /// What a lane's value means on screen.
 fn range(key: &str) -> (f32, f32) {
-    if key == group::GAIN {
+    if control_of(key) == group::GAIN {
         GAIN_RANGE
     } else {
         (0.0, 1.0)
@@ -194,11 +200,11 @@ fn range(key: &str) -> (f32, f32) {
 
 /// Switches (mute, solo) hold their value and snap to off or on; gain slides.
 fn is_switch(key: &str) -> bool {
-    key != group::GAIN
+    control_of(key) != group::GAIN
 }
 
 fn name(key: &str) -> &str {
-    match key {
+    match control_of(key) {
         group::GAIN => "Gain",
         group::MUTE => "Mute",
         group::SOLO => "Solo",
@@ -226,7 +232,7 @@ fn value_at(row: Rect, key: &str, y: f32) -> f32 {
 /// Whether the compiler will refuse the lane: solo is read when the project
 /// is compiled, so a lane on it never does anything.
 pub fn refused(lane: &AutomationLane) -> bool {
-    lane.target.port == group::SOLO
+    control_of(&lane.target.port) == group::SOLO
 }
 
 /// Everything the lanes need to know about where they are drawn.
@@ -533,6 +539,7 @@ pub fn add_menu(
     spot: Rect,
     project: &Project,
     node: NodeId,
+    port: u32,
     controls: Controls,
 ) -> Vec<Edit> {
     let mut edits = Vec::new();
@@ -546,7 +553,7 @@ pub fn add_menu(
             (group::GAIN, controls.gain_db, Curve::Linear),
             (group::MUTE, f32::from(controls.mute), Curve::Hold),
         ] {
-            let target = Endpoint::new(node, key);
+            let target = Endpoint::new(node, group::control_key(key, port));
             let taken = project.lane_for(&target).is_some();
             let item = ui.add_enabled(!taken, egui::Button::new(format!("Automate {}", name(key))));
             if item.on_disabled_hover_text("Already automated").clicked() {

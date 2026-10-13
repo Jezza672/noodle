@@ -106,19 +106,29 @@ pub fn strips(project: &Project) -> Vec<Strip> {
     project.sort_tracks(&mut ids);
     ids.into_iter()
         .filter_map(|id| Some((id, graph.node(id)?)))
-        .map(|(id, node)| Strip {
-            group: id,
-            name: match node.config.get(NAME) {
-                Some(Value::Text(name)) if !name.is_empty() => name.clone(),
-                _ => format!("Group {}", id.0),
-            },
-            controls: graph.group_controls(id),
-            node: graph.control_node(id),
-            gain_automated: driven(project, graph.control_node(id), GAIN),
-            mute_automated: driven(project, graph.control_node(id), MUTE),
-            channel: None,
-            gain_key: GAIN.to_owned(),
-            mute_key: MUTE.to_owned(),
+        .map(|(id, node)| {
+            // The strip sets the gain and mute of the group's control port.
+            let port = graph.control_port(id);
+            let key = |control: &str| match &port {
+                Some(port) => port.control_key(control),
+                None => control.to_owned(),
+            };
+            let (gain_key, mute_key) = (key(GAIN), key(MUTE));
+            let node_id = port.as_ref().map(|port| port.node);
+            Strip {
+                group: id,
+                name: match node.config.get(NAME) {
+                    Some(Value::Text(name)) if !name.is_empty() => name.clone(),
+                    _ => format!("Group {}", id.0),
+                },
+                controls: graph.group_controls(id),
+                node: node_id,
+                gain_automated: driven(project, node_id, &gain_key),
+                mute_automated: driven(project, node_id, &mute_key),
+                channel: None,
+                gain_key,
+                mute_key,
+            }
         })
         .collect()
 }
@@ -305,7 +315,7 @@ mod tests {
     use egui::vec2;
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
-    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, PORT_NAME};
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
     use noodle_core::{Config, Node};
 
     use super::*;
@@ -325,7 +335,7 @@ mod tests {
             }));
             for (offset, kind) in [(1, GROUP_INPUT), (2, GROUP_OUTPUT)] {
                 let node = Node::new(kind)
-                    .with_config(Config::new().with(PORT_NAME, Value::Text("p".into())))
+                    .with_config(noodle_core::group::ports_config(&[(1, "p".into())]))
                     .in_group(group);
                 edits.push(Edit::Apply(Command::AddNode {
                     id: NodeId(group.0 + offset),
@@ -364,7 +374,7 @@ mod tests {
             }),
             Edit::Apply(Command::SetParam {
                 node: NodeId(6),
-                key: GAIN.into(),
+                key: noodle_core::group::control_key(GAIN, 1),
                 value: Some(-6.0),
             }),
         ]);
@@ -558,7 +568,7 @@ mod tests {
         session.edit([
             // Bass (the first input) is quiet as a track, and the mixer's
             // second input is muted and turned down.
-            Edit::Apply(set(NodeId(6), GAIN, Some(-9.0))),
+            Edit::Apply(set(NodeId(6), "gain.1", Some(-9.0))),
             Edit::Apply(set(NodeId(100), "gain2", Some(-3.0))),
             Edit::Apply(set(NodeId(100), "mute2", Some(1.0))),
         ]);
@@ -588,13 +598,13 @@ mod tests {
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
         assert_eq!(param(&harness, 100, "mute1"), Some(1.0));
-        assert_eq!(param(&harness, 6, MUTE), None);
+        assert_eq!(param(&harness, 6, "mute.1"), None);
         // Resetting the third reading writes `gain3`.
         let third = harness.get_all_by_label("+0.0 dB").last().unwrap();
         third.click();
         harness.run();
         assert_eq!(param(&harness, 100, "gain3"), Some(0.0));
-        assert_eq!(param(&harness, 6, GAIN), Some(-9.0));
+        assert_eq!(param(&harness, 6, "gain.1"), Some(-9.0));
     }
 
     #[test]
