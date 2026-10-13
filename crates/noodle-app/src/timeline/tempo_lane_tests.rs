@@ -170,3 +170,16 @@ fn the_signature_is_part_of_the_map_the_lane_keeps() {
     assert_eq!(map.signatures()[0].signature, sig);
     assert_eq!(map.tempos().len(), 2);
 }
+
+#[test]
+fn dragging_a_slow_point_right_lands_under_the_pointer() {
+    let mut h = rig();
+    let at = spot(&h, 4.0, 60.0);
+    testkit::click(&mut h, at, Modifiers::NONE);
+    h.run();
+    let from = h.state().timeline.tempo().points()[1];
+    // Four beats at 120 bpm, which is what is before the point.
+    let to = Pos2::new(from.x + 4.0 * h.state().timeline.pps / 2.0, from.y);
+    testkit::drag_between(&mut h, Modifiers::NONE, from, to);
+    assert_eq!(tempos(&h)[1].0, 8 * 960);
+}

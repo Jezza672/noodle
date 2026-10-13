@@ -159,7 +159,20 @@ pub fn show(
         && let Some(moved) = tempo::moved(
             &drag.original,
             drag.index,
-            snap(pos.x),
+            {
+                // A point sits where the tempos before it put it, so read
+                // the pointer through the map without it, not the one
+                // being edited.
+                let before = tempo::removed(&drag.original, drag.index);
+                let before = before.as_ref().unwrap_or(&drag.original);
+                let tick = Axis {
+                    map: before,
+                    ..axis
+                }
+                .tick(pos.x)
+                .max(Tick::ZERO);
+                if free { tick } else { grid::snap(before, tick) }
+            },
             bpm_at(row, drag.range, pos.y),
         )
         && moved != *map

@@ -4,8 +4,9 @@
 //! The view works in real time. Its x axis is linear in seconds, so a clip is
 //! as wide as its audio is long, and a bar is wider where the tempo is slower
 //! (its bar lines sit further apart). Everything that converts between ticks
-//! and screen x goes through the [`Axis`], which follows the tempo map. Every change is an [`Edit`] using the core's
-//! clip commands, so it can be undone.
+//! and screen x goes through the [`Axis`], which follows the tempo map.
+//! Every change is an [`Edit`] using the core's clip commands, so it can be
+//! undone.
 
 pub(crate) mod add_track;
 mod automation;
@@ -1134,7 +1135,7 @@ fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tall: f32, 
     let (scroll, zoom, pointer) =
         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
     if zoom != 1.0 {
-        // Keep the tick under the pointer where it is.
+        // Keep the time under the pointer where it is.
         let anchor_x = pointer.map_or(content.left(), |p| p.x.max(content.left()));
         let seconds = (anchor_x - content.left() + state.scroll_x) / state.pps;
         state.pps = (state.pps * zoom).clamp(MIN_PPS, MAX_PPS);
@@ -1345,7 +1346,14 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
         Mode::Slip => {
             let warp = warp_of(project, grabbed);
             let frames = source.and_then(|s| s.frames);
-            let clip = clips::slip(map, grabbed, delta, rate, frames, warp)?;
+            // Unwarped content plays in real time, so measure the pointer's
+            // seconds from the clip start; warped content follows beats.
+            let slip_delta = if warp.is_some() {
+                delta
+            } else {
+                axis.tick(axis.x(grabbed.start) + x - drag.press_x).0 - grabbed.start.0
+            };
+            let clip = clips::slip(map, grabbed, slip_delta, rate, frames, warp)?;
             vec![Command::SetClip {
                 id: drag.grabbed,
                 clip,
