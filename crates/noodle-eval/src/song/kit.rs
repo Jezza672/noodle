@@ -234,7 +234,7 @@ fn tonal(p: &mut Patch, tone: &Tone) {
     let pitch = p.input("pitch", 0.0);
     let gate = p.input("gate", 1.0);
     let velocity = p.input("velocity", 2.0);
-    let fade = poly.then(|| p.input("fade", 3.0));
+    let fade: Option<Port> = poly.then(|| p.input("fade", 3.0));
     let cutoff = p.input("cutoff", 4.0);
     let resonance = p.input("resonance", 5.0);
     let amount = p.input("amount", 6.0);
@@ -255,8 +255,8 @@ fn tonal(p: &mut Patch, tone: &Tone) {
         let frequency = p.add(math(&expr).param("b", tone.detune), 2.0, row);
         let oscillator = p.add(spec(osc.wave.id()), 3.0, row);
         let pan = p.add(spec("noodle.util.pan").param("pan", osc.pan), 4.0, row);
-        p.connect((pitch, "out"), (frequency, "a"));
-        p.connect((detune, "out"), (frequency, "b"));
+        p.connect(pitch, (frequency, "a"));
+        p.connect(detune, (frequency, "b"));
         p.connect((frequency, "out"), (oscillator, "frequency"));
         p.connect((oscillator, "out"), (pan, "in"));
         p.connect((pan, "out"), (mix, wire_in(i)));
@@ -270,11 +270,11 @@ fn tonal(p: &mut Patch, tone: &Tone) {
     // and adds the `cutoff` control, and the filter adds that to its own
     // cutoff along the slider.
     let filter_env = p.add(adsr(tone.filter_env), 5.0, 2.0);
-    p.connect((gate, "out"), (filter_env, "gate"));
+    p.connect(gate, (filter_env, "gate"));
     let open = p.add(math("a * b + c").param("b", tone.amount), 6.0, 2.0);
     p.connect((filter_env, "out"), (open, "a"));
-    p.connect((amount, "out"), (open, "b"));
-    p.connect((cutoff, "out"), (open, "c"));
+    p.connect(amount, (open, "b"));
+    p.connect(cutoff, (open, "c"));
     let (filter, filtered): (NodeId, &'static str) = match tone.filter {
         Filter::Ladder => (
             p.add(
@@ -299,32 +299,32 @@ fn tonal(p: &mut Patch, tone: &Tone) {
     };
     p.connect((mix, "out"), (filter, "in"));
     p.connect((open, "out"), (filter, "cutoff"));
-    p.connect((resonance, "out"), (filter, "resonance"));
+    p.connect(resonance, (filter, "resonance"));
 
     // Amplitude: an envelope through a VCA, then the velocity through another,
     // and Voices' steal fade through a last.
     let amp = p.add(adsr(tone.amp_env), 5.0, 4.0);
-    p.connect((gate, "out"), (amp, "gate"));
-    p.connect((attack, "out"), (amp, "attack"));
-    p.connect((release, "out"), (amp, "release"));
+    p.connect(gate, (amp, "gate"));
+    p.connect(attack, (amp, "attack"));
+    p.connect(release, (amp, "release"));
     let shaped = p.add(spec("noodle.util.vca"), 8.0, 0.0);
     p.connect((filter, filtered), (shaped, "in"));
     p.connect((amp, "out"), (shaped, "level"));
     let touch = p.add(spec("noodle.util.vca"), 9.0, 0.0);
     p.connect((shaped, "out"), (touch, "in"));
-    p.connect((velocity, "out"), (touch, "level"));
+    p.connect(velocity, (touch, "level"));
     let mut last: Port = (touch, "out");
     if let Some(fade) = fade {
         let faded = p.add(spec("noodle.util.vca"), 10.0, 0.0);
         p.connect(last, (faded, "in"));
-        p.connect((fade, "out"), (faded, "level"));
+        p.connect(fade, (faded, "level"));
         last = (faded, "out");
     }
     let out = p.output("out", 11.0, 0.0);
-    p.connect(last, (out, "in"));
+    p.connect(last, out);
     if poly {
         let active = p.output("active", 11.0, 4.0);
-        p.connect((amp, "active"), (active, "in"));
+        p.connect((amp, "active"), active);
     }
 }
 
@@ -349,8 +349,8 @@ fn set_param(p: &mut Patch, node: NodeId, key: &str, value: f32) {
 
 /// The group's `gate` and `velocity` inputs, and its `out`, shared by drums.
 struct DrumFrame {
-    gate: NodeId,
-    velocity: NodeId,
+    gate: Port,
+    velocity: Port,
 }
 
 fn drum_frame(p: &mut Patch) -> DrumFrame {
@@ -367,9 +367,9 @@ fn drum_frame(p: &mut Patch) -> DrumFrame {
 fn finish(p: &mut Patch, frame: &DrumFrame, signal: Port, column: f32) {
     let touch = p.add(spec("noodle.util.vca"), column, 0.0);
     p.connect(signal, (touch, "in"));
-    p.connect((frame.velocity, "out"), (touch, "level"));
+    p.connect(frame.velocity, (touch, "level"));
     let out = p.output("out", column + 1.0, 0.0);
-    p.connect((touch, "out"), (out, "in"));
+    p.connect((touch, "out"), out);
 }
 
 fn kick(p: &mut Patch, base: f32, sweep: f32, decay: f32) {
@@ -378,20 +378,20 @@ fn kick(p: &mut Patch, base: f32, sweep: f32, decay: f32) {
     let punch = p.input("sweep", 4.0);
     let length = p.input("decay", 5.0);
     let fall = p.add(adsr(env(0.001, 0.04, 0.0, 0.02)), 2.0, 1.0);
-    p.connect((frame.gate, "out"), (fall, "gate"));
+    p.connect(frame.gate, (fall, "gate"));
     let frequency = p.add(
         math("a * b + c").param("b", sweep).param("c", base),
         3.0,
         1.0,
     );
     p.connect((fall, "out"), (frequency, "a"));
-    p.connect((punch, "out"), (frequency, "b"));
-    p.connect((tune, "out"), (frequency, "c"));
+    p.connect(punch, (frequency, "b"));
+    p.connect(tune, (frequency, "c"));
     let body = p.add(spec("noodle.osc.sine"), 4.0, 1.0);
     p.connect((frequency, "out"), (body, "frequency"));
     let amp = p.add(adsr(env(0.001, decay, 0.0, 0.05)), 4.0, 3.0);
-    p.connect((frame.gate, "out"), (amp, "gate"));
-    p.connect((length, "out"), (amp, "decay"));
+    p.connect(frame.gate, (amp, "gate"));
+    p.connect(length, (amp, "decay"));
     let shaped = p.add(spec("noodle.util.vca"), 5.0, 1.0);
     p.connect((body, "out"), (shaped, "in"));
     p.connect((amp, "out"), (shaped, "level"));
@@ -412,15 +412,15 @@ fn snare(p: &mut Patch, tone: f32, noise: f32, decay: f32) {
     );
     p.connect((hiss, "out"), (band, "in"));
     let noise_env = p.add(adsr(env(0.001, decay, 0.0, 0.04)), 3.0, 2.0);
-    p.connect((frame.gate, "out"), (noise_env, "gate"));
-    p.connect((length, "out"), (noise_env, "decay"));
+    p.connect(frame.gate, (noise_env, "gate"));
+    p.connect(length, (noise_env, "decay"));
     let snap_vca = p.add(spec("noodle.util.vca"), 4.0, 0.0);
     p.connect((band, "band"), (snap_vca, "in"));
     p.connect((noise_env, "out"), (snap_vca, "level"));
     let body = p.add(spec("noodle.osc.sine").param("frequency", tone), 2.0, 4.0);
-    p.connect((tune, "out"), (body, "frequency"));
+    p.connect(tune, (body, "frequency"));
     let body_env = p.add(adsr(env(0.001, decay * 0.5, 0.0, 0.03)), 3.0, 4.0);
-    p.connect((frame.gate, "out"), (body_env, "gate"));
+    p.connect(frame.gate, (body_env, "gate"));
     let body_vca = p.add(spec("noodle.util.vca"), 4.0, 4.0);
     p.connect((body, "out"), (body_vca, "in"));
     p.connect((body_env, "out"), (body_vca, "level"));
@@ -450,10 +450,10 @@ fn hat(p: &mut Patch, cutoff: f32, decay: f32) {
         0.0,
     );
     p.connect((hiss, "out"), (high, "in"));
-    p.connect((brightness, "out"), (high, "cutoff"));
+    p.connect(brightness, (high, "cutoff"));
     let amp = p.add(adsr(env(0.001, decay, 0.0, 0.01)), 3.0, 2.0);
-    p.connect((frame.gate, "out"), (amp, "gate"));
-    p.connect((length, "out"), (amp, "decay"));
+    p.connect(frame.gate, (amp, "gate"));
+    p.connect(length, (amp, "decay"));
     let shaped = p.add(spec("noodle.util.vca"), 4.0, 0.0);
     p.connect((high, "high"), (shaped, "in"));
     p.connect((amp, "out"), (shaped, "level"));
@@ -473,10 +473,10 @@ fn clap(p: &mut Patch, cutoff: f32, decay: f32) {
         0.0,
     );
     p.connect((hiss, "out"), (band, "in"));
-    p.connect((brightness, "out"), (band, "cutoff"));
+    p.connect(brightness, (band, "cutoff"));
     let amp = p.add(adsr(env(0.008, decay, 0.0, 0.04)), 3.0, 2.0);
-    p.connect((frame.gate, "out"), (amp, "gate"));
-    p.connect((length, "out"), (amp, "decay"));
+    p.connect(frame.gate, (amp, "gate"));
+    p.connect(length, (amp, "decay"));
     let shaped = p.add(spec("noodle.util.vca"), 4.0, 0.0);
     p.connect((band, "band"), (shaped, "in"));
     p.connect((amp, "out"), (shaped, "level"));

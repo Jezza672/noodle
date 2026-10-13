@@ -321,8 +321,10 @@ pub(crate) fn compile_with(
 ) -> (Schedule, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    let retargeted = crate::automation::retarget_lanes(graph, lanes);
+    let lanes: Vec<_> = retargeted.iter().map(|(id, lane)| (*id, lane)).collect();
     let graph = crate::flatten::flatten_keeping(graph, &keep);
-    let graph = &*crate::automation::add_lanes(&graph, lanes, registry, &mut diagnostics);
+    let graph = &*crate::automation::add_lanes(&graph, &lanes, registry, &mut diagnostics);
     let no_replacements = Replacements::new();
     let rewritten = crate::replace::rewrite(
         graph,

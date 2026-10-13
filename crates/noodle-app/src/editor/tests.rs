@@ -1527,12 +1527,14 @@ fn nodes_added_inside_a_group_belong_to_it() {
     h.key_press(Key::Enter);
     h.run();
 
+    // The node is added empty: its ports come from wiring to its spare.
     let graph = h.state().session.project().graph();
-    let ports = graph.group_ports(group);
-    assert_eq!(ports.outputs.len(), 1);
-    assert_eq!(ports.outputs[0].name, "out1");
-    let node = graph.node(ports.outputs[0].node).unwrap();
-    assert_eq!(node.parent, Some(group));
+    let (_, node) = graph
+        .children(Some(group))
+        .find(|(_, n)| n.type_id == noodle_core::group::GROUP_OUTPUT)
+        .expect("a group output node");
+    assert!(node.boundary_ports().is_empty());
+    assert!(graph.group_ports(group).outputs.is_empty());
 }
 
 #[test]
@@ -1623,43 +1625,6 @@ fn shift_d_skips_groups_and_their_ports() {
     press(&mut h, p, Modifiers::SHIFT, Key::D);
     let inside = h.state().session.project().graph().nodes().count();
     assert_eq!(inside, after + 1, "only the gain was copied");
-}
-
-#[test]
-fn new_ports_take_the_first_free_name() {
-    let mut project = noodle_core::Project::new();
-    let mut history = noodle_core::History::new();
-    let group = project.new_node_id();
-    history
-        .apply(
-            &mut project,
-            Command::AddNode {
-                id: group,
-                node: Node::new(noodle_core::group::GROUP),
-            },
-        )
-        .unwrap();
-    for name in ["in1", "in3"] {
-        let id = project.new_node_id();
-        let node = Node::new(noodle_core::group::GROUP_INPUT)
-            .in_group(group)
-            .with_config(noodle_core::Config::new().with(
-                noodle_core::group::PORT_NAME,
-                noodle_core::Value::Text(name.into()),
-            ));
-        history
-            .apply(&mut project, Command::AddNode { id, node })
-            .unwrap();
-    }
-    use noodle_core::group::{GROUP_INPUT, GROUP_OUTPUT};
-    assert_eq!(
-        super::free_port_name(&project, Some(group), GROUP_INPUT),
-        "in2"
-    );
-    assert_eq!(
-        super::free_port_name(&project, Some(group), GROUP_OUTPUT),
-        "out1"
-    );
 }
 
 #[test]
@@ -2169,7 +2134,7 @@ fn a_port_name_already_taken_is_refused() {
             name,
             id,
         );
-        session.edit([Edit::Apply(command)]);
+        session.edit([Edit::Apply(command.0)]);
     }
     h.run();
     let row = scene(&h)
@@ -2232,7 +2197,7 @@ fn a_wire_cannot_be_dropped_on_a_lanes_port() {
     let session = &mut h.state_mut().session;
     let id = session.project().next_lane_id();
     let lane = AutomationLane::new(
-        Endpoint::new(output, GAIN),
+        Endpoint::new(output, noodle_core::group::control_key(GAIN, 1)),
         vec![AutomationPoint {
             tick: Tick(0),
             value: 0.0,
@@ -2254,7 +2219,12 @@ fn a_wire_cannot_be_dropped_on_a_lanes_port() {
         socket(&h, input, Side::Output, &key),
     );
     // Dragging the other way round, from a parameter input onto the lane.
-    let gain_in = socket(&h, output, Side::Input, GAIN);
+    let gain_in = socket(
+        &h,
+        output,
+        Side::Input,
+        &noodle_core::group::control_key(GAIN, 1),
+    );
     link(&mut h, from, to);
     link(&mut h, gain_in, to);
     let graph = h.state().session.project().graph();
@@ -2434,18 +2404,9 @@ fn group_with_wired_input(h: &mut H) -> (NodeId, NodeId, NodeId) {
 }
 
 fn boundary_name(h: &H, node: NodeId) -> Option<String> {
-    match h
-        .state()
-        .session
-        .project()
-        .graph()
-        .node(node)?
-        .config
-        .get("name")
-    {
-        Some(noodle_core::Value::Text(t)) => Some(t.clone()),
-        _ => None,
-    }
+    let graph = h.state().session.project().graph();
+    let (_, name) = graph.node(node)?.boundary_ports().into_iter().next()?;
+    Some(name)
 }
 
 #[test]
@@ -2497,7 +2458,7 @@ fn double_clicking_a_group_inputs_own_port_row_renames_it_in_place() {
     let row = scene(&h)
         .node(input)
         .unwrap()
-        .port(Side::Output, "out")
+        .port(Side::Output, "p1")
         .unwrap()
         .row
         .center();
@@ -2513,4 +2474,175 @@ fn double_clicking_a_group_inputs_own_port_row_renames_it_in_place() {
     type_name(&mut h, "kick");
     assert_eq!(boundary_name(&h, input).as_deref(), Some("kick"));
     assert!(h.state().session.diagnostics().is_empty());
+}
+
+/// A group with an input node and an output node inside it, each with no
+/// ports yet, and the editor inside the group, with a gain to wire up.
+fn inside_a_group(h: &mut H) -> (NodeId, NodeId, NodeId, NodeId) {
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, ports_config};
+    let group = add(h, Node::new(GROUP));
+    let input = add(
+        h,
+        Node::new(GROUP_INPUT)
+            .with_config(ports_config(&[]))
+            .at(0.0, 0.0)
+            .in_group(group),
+    );
+    let output = add(
+        h,
+        Node::new(GROUP_OUTPUT)
+            .with_config(ports_config(&[]))
+            .at(700.0, 0.0)
+            .in_group(group),
+    );
+    let gain = add(
+        h,
+        Node::new("noodle.util.gain").at(350.0, 0.0).in_group(group),
+    );
+    h.state_mut().editor.enter(Some(group), None);
+    h.run();
+    (group, input, output, gain)
+}
+
+#[test]
+fn wiring_from_a_group_inputs_spare_adds_a_port_to_that_node() {
+    let mut h = rig();
+    let (group, input, output, gain) = inside_a_group(&mut h);
+    let before = h.state().session.project().clone();
+
+    // The spare is named for the next free input, and there is one node.
+    let spare = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p1")
+        .unwrap()
+        .clone();
+    assert!(spare.spare);
+    assert_eq!(spare.name, "in1");
+    let from = socket(&h, input, Side::Output, "p1");
+    let to = socket(&h, gain, Side::Input, "in");
+    link(&mut h, from, to);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(input, "p1")));
+
+    // A second port goes on the same node, and the outputs on theirs.
+    let to_output = socket(&h, output, Side::Input, "p1");
+    let from_gain = socket(&h, gain, Side::Output, "out");
+    link(&mut h, from_gain, to_output);
+    let graph = h.state().session.project().graph();
+    let ports = graph.group_ports(group);
+    assert_eq!(
+        ports
+            .inputs
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["in1"]
+    );
+    assert_eq!(
+        ports
+            .outputs
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["out1"]
+    );
+    assert_eq!(
+        graph
+            .children(Some(group))
+            .filter(|(_, n)| !n.boundary_ports().is_empty())
+            .count(),
+        2
+    );
+    let spare_after = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p2")
+        .unwrap()
+        .spare;
+    assert!(spare_after, "a new spare follows the new port");
+    assert!(h.state().session.diagnostics().is_empty());
+    // Both wires and both ports undo together with their steps.
+    h.state_mut().session.undo();
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn a_second_group_input_from_the_add_list_selects_the_one_there() {
+    use noodle_core::group::GROUP_INPUT;
+    let mut h = rig();
+    let (group, input, _, _) = inside_a_group(&mut h);
+    let at = empty_space(&h);
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("group input".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    assert_eq!(
+        graph
+            .children(Some(group))
+            .filter(|(_, n)| n.type_id == GROUP_INPUT)
+            .count(),
+        1
+    );
+    assert!(h.state().editor.selected.contains(&input));
+}
+
+#[test]
+fn right_clicking_a_group_port_removes_just_that_port() {
+    let mut h = rig();
+    let (group, input, _, gain) = inside_a_group(&mut h);
+    // Two inputs, both wired.
+    let b = socket(&h, input, Side::Output, "p1");
+    let to = socket(&h, gain, Side::Input, "in");
+    link(&mut h, b, to);
+    h.run();
+    let second = socket(&h, input, Side::Output, "p2");
+    let level = socket(&h, gain, Side::Input, "gain");
+    link(&mut h, second, level);
+    h.run();
+    assert_eq!(
+        h.state()
+            .session
+            .project()
+            .graph()
+            .group_ports(group)
+            .inputs
+            .len(),
+        2
+    );
+
+    // Right-click the first port's row, and take the menu item.
+    let row = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(40.0, 0.0));
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at);
+    h.run();
+    h.get_by_label_contains("Remove port").click();
+    h.run();
+
+    let graph = h.state().session.project().graph();
+    let names: Vec<_> = graph
+        .group_ports(group)
+        .inputs
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, ["in2"]);
+    assert_eq!(source(&h, gain, "in"), None, "its wire went with it");
+    assert_eq!(
+        source(&h, gain, "gain"),
+        Some(Endpoint::new(input, "p2")),
+        "the other port keeps its wire"
+    );
+    h.state_mut().session.undo();
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.group_ports(group).inputs.len(), 2);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(input, "p1")));
 }

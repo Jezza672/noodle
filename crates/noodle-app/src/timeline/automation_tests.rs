@@ -100,7 +100,7 @@ fn spot(h: &H, id: LaneId, beat: f32, along: f32) -> Pos2 {
 }
 
 fn gain(output: NodeId) -> Endpoint {
-    Endpoint::new(output, group::GAIN)
+    Endpoint::new(output, group::control_key(group::GAIN, 1))
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn the_track_header_adds_a_gain_lane_that_changes_nothing() {
     // Set the gain first, so the new lane has something to match.
     h.state_mut().session.edit([Edit::Apply(Command::SetParam {
         node: output,
-        key: group::GAIN.into(),
+        key: group::control_key(group::GAIN, 1),
         value: Some(-6.0),
     })]);
     h.run();
@@ -192,7 +192,7 @@ fn a_mute_lane_holds_and_snaps_to_off_or_on() {
     let (mut h, output) = rig();
     let id = add_lane(
         &mut h,
-        Endpoint::new(output, group::MUTE),
+        Endpoint::new(output, group::control_key(group::MUTE, 1)),
         vec![point(0, 0.0, Curve::Hold)],
     );
     let at = spot(&h, id, 1.0, 0.8);
@@ -316,7 +316,7 @@ fn a_lane_on_solo_is_shown_as_unable_to_work() {
     let (mut h, output) = rig();
     let id = add_lane(
         &mut h,
-        Endpoint::new(output, group::SOLO),
+        Endpoint::new(output, group::control_key(group::SOLO, 1)),
         vec![point(0, 1.0, Curve::Hold)],
     );
     assert!(h.state().timeline.automation().row(id).is_some());
@@ -386,7 +386,7 @@ fn a_track_control_with_a_lane_is_greyed_and_says_so() {
     assert!(slider.accesskit_node().is_disabled());
     add_lane(
         &mut h,
-        Endpoint::new(output, group::MUTE),
+        Endpoint::new(output, group::control_key(group::MUTE, 1)),
         vec![point(0, 0.0, Curve::Hold)],
     );
     assert!(h.get_by_label("M").accesskit_node().is_disabled());
