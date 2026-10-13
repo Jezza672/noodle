@@ -173,7 +173,7 @@ mod tests {
     fn a_lower_rate_holds_samples() {
         // 12 kHz at 48 kHz holds each sample for four.
         let out = run(&ramp(400), &[(BITS, 16.0), (RATE, 12_000.0)]);
-        for group in out.chunks_exact(4).skip(1) {
+        for group in out.chunks(4).skip(1) {
             assert!(group.iter().all(|&x| x == group[0]), "{group:?}");
         }
         assert_ne!(out[8], out[12]);
