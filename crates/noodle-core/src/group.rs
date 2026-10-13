@@ -3,16 +3,20 @@
 //!
 //! The project still has one graph. A node says which group it's inside with
 //! [`Node::parent`], and wires only join nodes with the same parent. Signals
-//! cross a group's boundary through two kinds of node inside it:
+//! cross a group's boundary through two nodes inside it:
 //!
-//! - a [`GROUP_INPUT`] node, whose `out` port carries whatever is wired to
-//!   the group's input of the same name;
-//! - a [`GROUP_OUTPUT`] node, whose `in` port feeds the group's output of the
-//!   same name.
+//! - a [`GROUP_INPUT`] node, with an output port for each of the group's
+//!   inputs, carrying whatever is wired to the group's input of the same name;
+//! - a [`GROUP_OUTPUT`] node, with an input port for each of the group's
+//!   outputs, feeding the group's output of the same name.
 //!
-//! The group node's own ports are exactly its boundary nodes, named by their
-//! `name` config. The engine flattens groups away before compiling, so group
-//! and boundary nodes have no DSP of their own.
+//! The group node's own ports are exactly the ports listed in its boundary
+//! nodes' [`PORTS`] config, so a port's name is one string, shown on both
+//! sides of the boundary. Each port has an ID that never changes, so a rename
+//! moves no wire and no lane inside the group; its key on the boundary node
+//! is [`port_key`]. A port has its own gain, mute and solo, as parameters
+//! keyed by [`control_key`]. The engine flattens groups away before
+//! compiling, so group and boundary nodes have no DSP of their own.
 
 use std::collections::BTreeMap;
 
@@ -145,7 +149,11 @@ impl Node {
             let Some((id, name)) = line.split_once(':') else {
                 continue;
             };
-            let Ok(id) = id.parse() else { continue };
+            // Stage IDs pack the port into 24 bits.
+            let Ok(id) = id.parse::<u32>() else { continue };
+            if id >= 1 << 24 {
+                continue;
+            }
             if !name.is_empty() && !ports.iter().any(|(other, _)| *other == id) {
                 ports.push((id, name.to_owned()));
             }

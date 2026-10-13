@@ -177,8 +177,8 @@ The **Project** is the single source of truth. It holds one global graph:
     the port, that wire is drawn and the lane waits behind it.
   - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
     the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
-    group output node with an `out` port that `audio` is wired to, and a group
-    input node with an `in` port. The
+    group output node with a port named `out` that `audio` is wired to, and a group
+    input node with a port named `in`. The
     output starts with gain 0 dB and mute 0 already set, so the track's stage
     exists from creation (solo and mute act at the output, so the input needs
     none) and the first fader or mute touch is a parameter change, not a

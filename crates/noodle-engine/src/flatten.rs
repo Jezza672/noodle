@@ -175,10 +175,13 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
 /// nothing flat is on the other side.
 fn stage_input(graph: &Graph, stages: &BTreeMap<NodeId, Stage>, to: &Endpoint) -> Option<Endpoint> {
     let node = graph.node(to.node)?;
-    if node.type_id != GROUP_OUTPUT {
+    if !matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT) {
         return None;
     }
-    if let Some(port) = parse_port_key(&to.port) {
+    // The signal port of an output node. An input node's is an output.
+    if node.type_id == GROUP_OUTPUT
+        && let Some(port) = parse_port_key(&to.port)
+    {
         let stage = stage_id(to.node, port);
         return stages
             .contains_key(&stage)
@@ -688,5 +691,21 @@ mod tests {
             to: Endpoint::new(node, control_key(MUTE, 2)),
         };
         history.apply(project, Command::Connect(c)).unwrap();
+    }
+
+    #[test]
+    fn a_wire_into_a_group_inputs_mute_lands_on_its_stage() {
+        let (mut project, mut history, group, input, _) = grouped();
+        let lfo = add(&mut project, &mut history, Node::new("lfo").in_group(group));
+        let c = Connection {
+            from: Endpoint::new(lfo, "out"),
+            to: Endpoint::new(input, control_key(MUTE, 1)),
+        };
+        history.apply(&mut project, Command::Connect(c)).unwrap();
+        let flat = flatten(project.graph());
+        assert_eq!(
+            flat.source(&Endpoint::new(stage_id(input, 1), "mute")),
+            Some(&Endpoint::new(lfo, "out"))
+        );
     }
 }
