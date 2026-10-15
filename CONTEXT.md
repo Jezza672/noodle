@@ -76,6 +76,20 @@ A clip property that repeats a loop region of the clip, in beats, gaplessly, so 
 **Clip editor**:
 The panel below the arrangement for the selected clip: the piano roll for MIDI, and for audio the clip's own timeline with its waveform and, along the top, its warp markers. Properties stay in the properties panel.
 
+## Stems
+
+**Stem**:
+One of the parts an AI model separates a clip's audio into (drums, bass, vocals, other). Stems are made once per clip, ahead of playback, and kept with the clip's analysis.
+
+**Residual**:
+The clip's audio minus its stems, so that stems plus residual add back up to the clip. It holds whatever the model did not assign to a stem.
+
+**Split to stems**:
+An action on an audio clip that makes one new clip for each stem, and one for the residual, regardless of whether the clip is warped. It is one undo step.
+
+**Stem warp**:
+Warping a clip by warping each stem and the residual with the mode that suits it, then adding them back together.
+
 ## Warp evaluation
 
 **Warp evaluation**:
