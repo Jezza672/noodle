@@ -46,6 +46,8 @@ fn rig(warped: bool) -> H {
     let dir = tempfile::tempdir().unwrap();
     write_wav(&dir.path().join("hits.wav"), &clicks(), 1, RATE).unwrap();
     let mut session = Session::new(Nodes::all());
+    // Quarter beats, as these tests were written for.
+    session.set_snap(240);
     assert!(session.save_as(&dir.path().join("p.ron")));
     session.edit([Edit::Apply(Command::AddNode {
         id: NodeId(1),

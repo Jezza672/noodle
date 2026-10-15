@@ -288,6 +288,10 @@ impl App {
                 self.menus(ui, &mut actions);
                 ui.separator();
                 self.transport(ui, &mut actions);
+                ui.separator();
+                if let Some(step) = crate::snap::menu(ui, self.session.snap()) {
+                    self.session.set_snap(step);
+                }
             });
         });
 

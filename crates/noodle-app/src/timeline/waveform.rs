@@ -85,9 +85,16 @@ impl Cache {
     }
 }
 
-/// The waveform's colour on a clip of `clip_colour`.
+/// The waveform's colour on a clip of `clip_colour`: a darker shade of it.
+/// (Not `gamma_multiply`, which dims the alpha too and so would draw the clip's
+/// own colour, half see-through, over itself: no waveform at all.)
 pub(super) fn ink(clip_colour: Color32) -> Color32 {
-    clip_colour.gamma_multiply(0.45)
+    let dark = |c: u8| (f32::from(c) * 0.4) as u8;
+    Color32::from_rgb(
+        dark(clip_colour.r()),
+        dark(clip_colour.g()),
+        dark(clip_colour.b()),
+    )
 }
 
 /// The clip a waveform belongs to.
@@ -171,6 +178,19 @@ fn scaled(peak: Peak, gain: f32) -> Peak {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ink_stands_out_from_the_clip_it_is_drawn_on() {
+        for index in 0..8 {
+            let clip = crate::theme::timeline::track_colour(index);
+            let ink = ink(clip);
+            assert_eq!(ink.a(), 255, "see-through ink is the clip's own colour");
+            assert!(
+                clip.intensity() - ink.intensity() > 0.25,
+                "track {index}: {clip:?} vs {ink:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_clips_gain_scales_a_peak_but_not_off_the_screen() {

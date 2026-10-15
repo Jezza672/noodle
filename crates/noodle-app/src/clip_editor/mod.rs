@@ -30,7 +30,8 @@ use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
 use crate::timeline::Loaded;
 
-const TOOLBAR: f32 = 26.0;
+const TOOLBAR: f32 = crate::toolbar::HEIGHT;
+const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap";
 const RULER: f32 = 18.0;
 const FLAGS: f32 = 22.0;
 const BRACE: f32 = 14.0;
@@ -219,17 +220,6 @@ impl Axis {
     }
 }
 
-/// The grid a marker snaps to, in beats, at this zoom.
-fn grid(ppb: f32) -> f64 {
-    if ppb >= 80.0 {
-        0.25
-    } else if ppb >= 30.0 {
-        0.5
-    } else {
-        1.0
-    }
-}
-
 /// `beat` on the grid of lines every `step` beats, slid `origin` beats.
 fn snap_to(beat: f64, step: f64, origin: f64) -> f64 {
     ((beat - origin) / step).round() * step + origin
@@ -270,21 +260,12 @@ pub fn show(
     );
 
     let toolbar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR));
-    let mut closed = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(toolbar.shrink2(vec2(8.0, 2.0))),
-        |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.label(format!("Clip editor · {name}"));
-                ui.separator();
-                ui.weak("Double-click to add a marker, or a transient's handle to pin it · drag a flag to move it (Shift or a dragged box picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        closed = true;
-                    }
-                });
-            });
-        },
+    let closed = crate::toolbar::show(
+        ui,
+        toolbar,
+        &format!("Clip editor · {name}"),
+        HINT,
+        |_| {},
     );
     if closed {
         if state.drag.take().is_some() {
@@ -420,9 +401,12 @@ pub fn show(
 
     // Gestures.
     let response = ui.interact(area, ui.id().with("clip editor"), Sense::click_and_drag());
-    let (free, additive) =
+    let (alt, additive) =
         ui.input(|i| (i.modifiers.alt, i.modifiers.shift || i.modifiers.command));
-    let step = grid(state.ppb);
+    // Alt, or the snap setting at Off, lets a marker go anywhere. Otherwise it
+    // snaps to the setting's grid, in beats.
+    let free = alt || session.snap() <= 1;
+    let step = session.snap() as f64 / f64::from(TICKS_PER_QUARTER as u32);
     let hit = |pos: Pos2| hit_test(pos, &rows, axis, warp, onsets);
     if let Some(pos) = response.hover_pos() {
         ui.ctx().set_cursor_icon(match hit(pos) {

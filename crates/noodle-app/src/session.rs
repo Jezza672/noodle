@@ -224,6 +224,9 @@ pub struct Session {
     recording: Option<Recording>,
     /// How the MIDI of the next take is snapped. Not saved with the project.
     record_quantise: crate::midi_take::Quantise,
+    /// The step, in ticks, that clips, notes and markers snap to (see
+    /// [`crate::snap`]). Not saved with the project.
+    snap: i64,
     /// Stands in for the input stream's recorder in tests.
     #[cfg(test)]
     fake_input: Option<Box<dyn TakeSink>>,
@@ -447,6 +450,7 @@ impl Session {
             armed_midi: BTreeSet::new(),
             recording: None,
             record_quantise: crate::midi_take::Quantise::default(),
+            snap: crate::snap::DEFAULT,
             #[cfg(test)]
             fake_input: None,
             message: None,
@@ -1434,6 +1438,16 @@ impl Session {
             ArmKind::Audio => self.armed_audio.contains(&track),
             ArmKind::Midi => self.armed_midi.contains(&track),
         }
+    }
+
+    /// The step, in ticks, that the arrangement, piano roll and clip editor
+    /// snap to. 1 is off.
+    pub fn snap(&self) -> i64 {
+        self.snap
+    }
+
+    pub fn set_snap(&mut self, ticks: i64) {
+        self.snap = ticks.max(1);
     }
 
     /// How the MIDI of the next take is snapped to the beat.

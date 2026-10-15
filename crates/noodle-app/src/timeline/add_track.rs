@@ -27,7 +27,25 @@ pub fn default_mixer(graph: &Graph) -> Option<NodeId> {
 /// adds are the group and its own, except that a project with no mixer gets
 /// one, wired to an Output node (a top level one whose input is free if
 /// there is one).
-pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
+pub fn command(graph: &Graph, new_id: impl FnMut() -> NodeId) -> Command {
+    with_input(graph, new_id).0
+}
+
+/// Like [`command`], and also says which node is the new track's input, the
+/// node its clips belong to.
+pub fn with_input(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> (Command, NodeId) {
+    // `create_track` takes the group's ID, then its input's, then the track
+    // input's: the third.
+    let mut taken = 0;
+    let mut track = NodeId(0);
+    let mut new_id = || {
+        let id = new_id();
+        taken += 1;
+        if taken == 3 {
+            track = id;
+        }
+        id
+    };
     let below = graph.nodes().map(|(_, n)| n.position.y).fold(0.0, f32::max);
     let position = Position {
         x: 0.0,
@@ -71,7 +89,8 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
         Endpoint::new(group, "out"),
         Endpoint::new(mixer, key),
     ));
-    Command::Batch(commands)
+    let command = Command::Batch(commands);
+    (command, track)
 }
 
 /// The Add automation button's command: an Automation node below everything

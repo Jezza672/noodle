@@ -18,7 +18,7 @@ use noodle_core::{
     AutomationLane, AutomationPoint, Command, Curve, Endpoint, LaneId, NodeId, Project, Tick,
 };
 
-use super::{Axis, grid};
+use super::Axis;
 use crate::session::Edit;
 use crate::theme::timeline as colors;
 
@@ -326,7 +326,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
         state.rows.clear();
         state.texts.clear();
     }
-    let map = view.project.tempo_map();
     {
         for (id, lane_top) in view.rows.placed() {
             let Some(lane) = view.project.lane(id) else {
@@ -370,7 +369,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
             let free = ui.input(|i| i.modifiers.alt);
             let snap = |x: f32| {
                 let tick = view.axis.tick(x).max(Tick::ZERO);
-                if free { tick } else { grid::snap(map, tick) }
+                if free { tick } else { view.axis.snap(tick) }
             };
 
             if response.drag_started_by(PointerButton::Primary) {

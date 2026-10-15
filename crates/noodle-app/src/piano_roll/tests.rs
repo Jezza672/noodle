@@ -26,6 +26,7 @@ fn note(start: i64, length: i64, key: u8) -> MidiNote {
 /// A four beat clip (3840 ticks) holding `notes`, open in the roll.
 fn rig(notes: &[MidiNote]) -> H {
     let mut session = Session::new(Nodes::all());
+    session.set_snap(240);
     session.edit([Edit::Apply(Command::AddNode {
         id: NodeId(1),
         node: Node::new(TRACK_INPUT),

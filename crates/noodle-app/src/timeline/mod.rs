@@ -149,15 +149,20 @@ impl TimelineState {
         }
     }
 
-    /// Where "Import audio" puts its clips from the File menu or the button:
-    /// on the selected clip's track, else the first, at the playhead.
+    /// Where "Import audio" puts its clips from the File menu or the button,
+    /// at the playhead: on the track that is highlighted (its header picked),
+    /// else the selected clip's track, else the first.
     pub fn import_target(&self, project: &Project, playhead: Tick) -> Option<Target> {
         let track = self
-            .selected
-            .iter()
-            .next()
-            .and_then(|&id| project.clip(id))
-            .map(|clip| clip.node)
+            .selected_track
+            .filter(|&input| tracks(project).contains(&input))
+            .or_else(|| {
+                self.selected
+                    .iter()
+                    .next()
+                    .and_then(|&id| project.clip(id))
+                    .map(|clip| clip.node)
+            })
             .or_else(|| tracks(project).first().copied())?;
         Some(Target {
             track,
@@ -300,11 +305,18 @@ struct Axis<'a> {
     /// Screen points per second.
     pps: f32,
     map: &'a TempoMap,
+    /// The snap step in ticks (see [`crate::snap`]); 1 or less is off.
+    snap: i64,
 }
 
 impl Axis<'_> {
     fn x(self, tick: Tick) -> f32 {
         self.origin + (self.map.seconds_at(tick) * f64::from(self.pps)) as f32
+    }
+
+    /// `tick` on the grid the snap setting asks for.
+    fn snap(self, tick: Tick) -> Tick {
+        grid::snap_to(self.map, tick, self.snap)
     }
 
     fn tick(self, x: f32) -> Tick {
@@ -387,6 +399,7 @@ pub fn show(
         origin: content.left() - state.scroll_x,
         pps: state.pps,
         map,
+        snap: session.snap(),
     };
 
     let mut edits = Vec::new();
@@ -1004,7 +1017,7 @@ pub fn show(
             if ui.input(|i| i.modifiers.alt) {
                 tick
             } else {
-                grid::snap(map, tick)
+                axis.snap(tick)
             }
         });
     // Only a new tick is worth seeking to: a held button, or a drag that stays
@@ -1031,18 +1044,25 @@ pub fn show(
             .input(|i| i.pointer.latest_pos())
             .filter(|p| content.contains(*p))
     {
-        if tracks.is_empty() {
-            notice = Some("Add a track before dropping audio onto it".to_string());
+        let y = pos.y - content.top() + state.scroll_y;
+        let tick = axis.tick(pos.x).max(Tick::ZERO);
+        let at = if ui.input(|i| i.modifiers.alt) {
+            tick
         } else {
-            let lane = rows.track_at(pos.y - content.top() + state.scroll_y);
-            let tick = axis.tick(pos.x).max(Tick::ZERO);
-            let at = if ui.input(|i| i.modifiers.alt) {
-                tick
-            } else {
-                grid::snap(map, tick)
-            };
-            let track = tracks[lane];
+            axis.snap(tick)
+        };
+        if tracks.is_empty() || y >= rows.total() {
+            // Dropped on the empty space under the tracks: a new track for it.
+            let (new_track, track) = add_track::with_input(project.graph(), || session.new_node_id());
             let added = import::import(session, &dropped, track, at);
+            edits.extend(
+                added
+                    .command
+                    .map(|clips| Edit::Apply(Command::Batch(vec![new_track, clips]))),
+            );
+            notice = added.notice;
+        } else {
+            let added = import::import(session, &dropped, tracks[rows.track_at(y)], at);
             edits.extend(added.command.map(Edit::Apply));
             notice = added.notice;
         }
@@ -1079,7 +1099,7 @@ pub fn show(
             let (track, tick) = match at {
                 Some(at) => (
                     tracks[rows.track_at(at.y - content.top() + state.scroll_y)],
-                    grid::snap(map, axis.tick(at.x).max(Tick::ZERO)),
+                    axis.snap(axis.tick(at.x).max(Tick::ZERO)),
                 ),
                 None => match state.import_target(project, playhead.unwrap_or(Tick::ZERO)) {
                     Some(target) => (target.track, target.at),
@@ -1106,7 +1126,7 @@ pub fn show(
                     let tick = if ui.input(|i| i.modifiers.alt) {
                         tick
                     } else {
-                        grid::snap(map, tick)
+                        axis.snap(tick)
                     };
                     Some(Target {
                         track: tracks[rows.track_at(at.y - content.top() + state.scroll_y)],
@@ -1311,7 +1331,7 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
         target,
         source,
     } = input;
-    let snap = |tick: Tick| if free { tick } else { grid::snap(map, tick) };
+    let snap = |tick: Tick| if free { tick } else { axis.snap(tick) };
     let delta = axis.tick(x).0 - axis.tick(drag.press_x).0;
     let (_, grabbed) = drag.originals.iter().find(|(id, _)| *id == drag.grabbed)?;
     let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
