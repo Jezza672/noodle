@@ -305,7 +305,7 @@ pub fn show(
                     .iter()
                     .find(|(_, step)| *step == state.step)
                     .map_or("Grid", |(name, _)| *name);
-                egui::ComboBox::from_id_salt("piano roll grid")
+                crate::widgets::Dropdown::from_id_salt("piano roll grid")
                     .selected_text(format!("Grid: {label}"))
                     .show_ui(ui, |ui| {
                         for (name, step) in STEPS {

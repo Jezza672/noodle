@@ -468,7 +468,8 @@ impl<'a> ParamField<'a> {
         );
         let ui = &mut inner;
         let mut name_width = 0.0;
-        if !self.compact && !self.label.is_empty() {
+        // A toggle is named by its own button.
+        if !self.compact && !self.label.is_empty() && !ChoiceStyle::is_toggle(labels) {
             let label = ui.label(egui::RichText::new(self.label).font(font.clone()));
             name_width = label.rect.width() + ui.spacing().item_spacing.x;
         }
@@ -526,7 +527,7 @@ impl<'a> ParamField<'a> {
             }
             ChoiceStyle::List => {
                 let text = labels.get(current).map_or("", |l| l.as_ref());
-                let (button, chosen) = dropdown(ui, id, control, text, labels, current, &font);
+                let (button, chosen) = dropdown(ui, id, control, text, labels, current);
                 picked = chosen;
                 responses.push(button);
             }
@@ -611,11 +612,15 @@ impl ChoiceStyle {
     /// The most options shown side by side.
     const MAX_SEGMENTS: usize = 4;
 
-    fn of(ui: &Ui, labels: &[std::borrow::Cow<'static, str>], font: &FontId, width: f32) -> Self {
-        let is_toggle = labels.len() == 2
+    /// Exactly Off and On, in either order.
+    fn is_toggle(labels: &[std::borrow::Cow<'static, str>]) -> bool {
+        labels.len() == 2
             && (labels[0].eq_ignore_ascii_case("off") && labels[1].eq_ignore_ascii_case("on")
-                || labels[0].eq_ignore_ascii_case("on") && labels[1].eq_ignore_ascii_case("off"));
-        if is_toggle {
+                || labels[0].eq_ignore_ascii_case("on") && labels[1].eq_ignore_ascii_case("off"))
+    }
+
+    fn of(ui: &Ui, labels: &[std::borrow::Cow<'static, str>], font: &FontId, width: f32) -> Self {
+        if Self::is_toggle(labels) {
             return Self::Toggle;
         }
         if labels.len() > Self::MAX_SEGMENTS {
@@ -653,58 +658,25 @@ fn dropdown(
     text: &str,
     labels: &[std::borrow::Cow<'static, str>],
     current: usize,
-    font: &FontId,
 ) -> (Response, Option<usize>) {
-    let open_id = id.with("open");
-    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-    let button = ui.put(
-        rect,
-        egui::Button::new(egui::RichText::new(format!("{text} ▾")).font(font.clone()))
-            .min_size(vec2(0.0, 0.0)),
-    );
-    if button.clicked() {
-        open = !open;
-    }
     let mut picked = None;
-    if open {
-        let list = egui::Area::new(id.with("list"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(rect.left_bottom())
-            .constrain(true)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(rect.width());
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            // Justified, so a row is the whole width of the list.
-                            ui.with_layout(
-                                egui::Layout::top_down_justified(egui::Align::LEFT),
-                                |ui| {
-                                    for (index, label) in labels.iter().enumerate() {
-                                        let r =
-                                            ui.selectable_label(index == current, label.as_ref());
-                                        if r.clicked() {
-                                            picked = Some(index);
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                });
-            });
-        let outside = ui.input(|i| {
-            i.pointer.any_pressed()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|p| !list.response.rect.contains(p) && !rect.contains(p))
-        });
-        if picked.is_some() || outside || ui.input(|i| i.key_pressed(Key::Escape)) {
-            open = false;
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(open_id, open));
-    (button, picked)
+    let inner = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        crate::widgets::Dropdown::from_id_salt(id)
+            .selected_text(text)
+            .width(rect.width())
+            .show_ui(ui, |ui| {
+                for (index, label) in labels.iter().enumerate() {
+                    if ui
+                        .selectable_label(index == current, label.as_ref())
+                        .clicked()
+                    {
+                        picked = Some(index);
+                    }
+                }
+            })
+            .response
+    });
+    (inner.inner, picked)
 }
 
 /// A field that's being typed into.

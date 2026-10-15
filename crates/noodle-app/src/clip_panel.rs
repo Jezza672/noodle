@@ -384,7 +384,7 @@ fn quantise_section(
     ui.horizontal(|ui| {
         ui.label("Grid");
         let mut grid = quantise.grid;
-        egui::ComboBox::from_id_salt("clip quantise grid")
+        crate::widgets::Dropdown::from_id_salt("clip quantise grid")
             .selected_text(grid_name(grid))
             .show_ui(ui, |ui| {
                 for option in QUANTISE_GRIDS {
@@ -425,7 +425,7 @@ fn quantise_section(
                 .map_or("Linked".to_string(), |(_, name)| format!("Linked: {name}")),
         };
         let mut chosen: Option<Option<(ClipId, bool)>> = None;
-        egui::ComboBox::from_id_salt("clip groove")
+        crate::widgets::Dropdown::from_id_salt("clip groove")
             .selected_text(current)
             .show_ui(ui, |ui| {
                 if ui
@@ -540,7 +540,7 @@ pub fn show(
     ui.horizontal(|ui| {
         ui.label("Mode");
         let mut mode = warp.mode;
-        egui::ComboBox::from_id_salt("clip warp mode")
+        crate::widgets::Dropdown::from_id_salt("clip warp mode")
             .selected_text(match mode {
                 WarpMode::Repitch => "Repitch",
                 WarpMode::Grain => "Grain",

@@ -749,7 +749,7 @@ impl Kinds<'_> {
                 .input(&at.port)
                 .map_or(PortKind::Any, |p| self.boundary(p.node, p.id, depth)),
             GROUP_OUTPUT => group::parse_port_key(&at.port)
-                .map_or(PortKind::Audio, |id| self.boundary(at.node, id, depth)),
+                .map_or(PortKind::Any, |id| self.boundary(at.node, id, depth)),
             GROUP_INPUT => PortKind::Any,
             _ => {
                 let Some(layout) = self
@@ -1226,6 +1226,13 @@ mod tests {
             .unwrap()
             .kind
             .clone()
+    }
+
+    #[test]
+    fn unknown_node_types_get_a_readable_name() {
+        assert_eq!(friendly_type_name("noodle.effect.low_pass"), "Low pass");
+        assert_eq!(friendly_type_name("plain"), "Plain");
+        assert_eq!(friendly_type_name(""), "");
     }
 
     #[test]

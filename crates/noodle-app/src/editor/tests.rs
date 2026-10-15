@@ -818,7 +818,7 @@ fn a_dropdown_on_a_node_opens_and_picks() {
     let mut h = rig();
     let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
     h.run();
-    h.get_by_label("Sine ▾").click();
+    h.get_by_value("Sine").click();
     h.run();
     h.get_by_label("Saw").click();
     h.run();
@@ -1349,7 +1349,7 @@ fn a_wired_choice_has_no_field() {
     let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
     h.run();
     // A drop-down on a node shows its choice, here the default.
-    let combos = |h: &H| h.query_all_by_label("Sine ▾").count();
+    let combos = |h: &H| h.query_all_by_value("Sine").count();
     assert_eq!(combos(&h), 1);
     connect(&mut h, lfo, "out", lfo, "shape");
     h.run();
@@ -1671,6 +1671,27 @@ fn double_clicking_a_group_enters_it_and_the_breadcrumb_leads_back() {
     h.run();
     assert_eq!(h.state().editor.group, None);
     assert!(h.state().editor.selected.contains(&group));
+}
+
+#[test]
+fn double_clicking_a_plain_node_asks_the_app_to_open_it() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let p = title(&h, gain);
+    double_click(&mut h, p);
+    assert_eq!(h.state_mut().editor.take_open_request(), Some(gain));
+}
+
+#[test]
+fn double_clicking_a_group_enters_it_rather_than_asking_to_open_it() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    h.run();
+    let p = title(&h, group);
+    double_click(&mut h, p);
+    assert_eq!(h.state().editor.group, Some(group));
+    assert_eq!(h.state_mut().editor.take_open_request(), None);
 }
 
 #[test]

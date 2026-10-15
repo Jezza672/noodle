@@ -85,7 +85,7 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
     };
     ui.horizontal(|ui| {
         ui.label("Presets");
-        egui::ComboBox::from_id_salt(("presets", id))
+        crate::widgets::Dropdown::from_id_salt(("presets", id))
             .selected_text(current)
             .show_ui(ui, |ui| {
                 for (heading, store) in [("System", SYSTEM), ("User", USER)] {

@@ -1963,7 +1963,9 @@ through the telemetry API.
   fit the row, and otherwise a drop-down. The drop-down is not egui's
   `ComboBox` but a button that opens a plain area under it (closed by a pick,
   Escape or a press elsewhere), so it does not depend on how the platform
-  delivers a click: the combo box would not open for a Mac user.
+  delivers a click: the combo box would not open for a Mac user. Every
+  drop-down in the app is `widgets::Dropdown`, which keeps `ComboBox`'s API
+  and reports itself as a combo box to accessibility; don't use `ComboBox`.
 - **Units:** values are stored in the unit they're shown in (a 0 to 100
   `Percent` parameter shows 50 as "50.0 %"). Hz and seconds switch to kHz
   and ms, and typed values accept the unit and those prefixes ("2k",

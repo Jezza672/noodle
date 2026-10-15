@@ -174,7 +174,7 @@ pub fn show(
     if mixers.len() > 1 {
         ui.horizontal(|ui| {
             ui.label("Mixer");
-            egui::ComboBox::from_id_salt("mixer view")
+            crate::widgets::Dropdown::from_id_salt("mixer view")
                 .selected_text(format!("Mix {}", mixer.0))
                 .show_ui(ui, |ui| {
                     for &m in &mixers {

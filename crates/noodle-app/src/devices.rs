@@ -309,8 +309,8 @@ fn combo<R>(
     contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::Response {
     let label = ui.label(label);
-    egui::ComboBox::from_id_salt(label.id)
-        .selected_text(selected)
+    crate::widgets::Dropdown::from_id_salt(label.id)
+        .selected_text(selected.into().text().to_string())
         .width(260.0)
         .show_ui(ui, contents)
         .response

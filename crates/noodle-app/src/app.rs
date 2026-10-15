@@ -265,7 +265,7 @@ impl App {
         };
         ui.horizontal(|ui| {
             let name = ui.label("Scope");
-            let combo = egui::ComboBox::from_id_salt("scope view")
+            let combo = crate::widgets::Dropdown::from_id_salt("scope view")
                 .selected_text(label(shown))
                 .show_ui(ui, |ui| {
                     for &n in &scopes {
@@ -789,7 +789,7 @@ impl App {
             actions.push(Action::EndTempoDrag);
         }
         let current = map.signatures()[0].signature;
-        egui::ComboBox::from_id_salt("time_signature")
+        crate::widgets::Dropdown::from_id_salt("time_signature")
             .width(44.0)
             .selected_text(current.to_string())
             .show_ui(ui, |ui| {
@@ -814,7 +814,7 @@ impl App {
     /// recording is never snapped, only the clip the take becomes.
     fn quantise_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let current = self.session.record_quantise();
-        egui::ComboBox::from_id_salt("record_quantise")
+        crate::widgets::Dropdown::from_id_salt("record_quantise")
             .width(48.0)
             .selected_text(format!("Q {}", current.label()))
             .show_ui(ui, |ui| {
@@ -1806,6 +1806,38 @@ mod tests {
         harness.run();
         // And now the properties panel's.
         assert_eq!(harness.query_all_by_label("Frequency").count(), 2);
+    }
+
+    #[test]
+    fn a_toggle_parameter_is_named_once_in_the_properties() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.instrument.sampler"),
+        })]);
+        let mut harness = harness(app);
+        harness.run();
+        let before = harness.query_all_by_label("Keytrack").count();
+        harness.state_mut().editor.selected.insert(id);
+        harness.state_mut().editor.active = Some(id);
+        harness.run();
+        // The panel adds its own, and only one.
+        assert_eq!(harness.query_all_by_label("Keytrack").count(), before + 1);
+    }
+
+    #[test]
+    fn opening_a_node_without_an_editor_window_does_nothing() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        app.editor.request_open_for_test(id);
+        app.open_requested_view();
+        assert!(app.editor.take_open_request().is_none());
+        assert!(!app.session.plugin_editor_open(id));
     }
 
     #[test]

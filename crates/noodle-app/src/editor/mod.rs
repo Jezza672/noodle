@@ -183,6 +183,11 @@ impl EditorState {
         self.fit_requested = true;
     }
 
+    #[cfg(test)]
+    pub fn request_open_for_test(&mut self, node: NodeId) {
+        self.open_request = Some(node);
+    }
+
     /// The node an ordinary double-click landed on, once.
     pub fn take_open_request(&mut self) -> Option<NodeId> {
         self.open_request.take()
