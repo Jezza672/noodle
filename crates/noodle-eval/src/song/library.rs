@@ -147,6 +147,9 @@ fn mixed(mut song: Song) -> Song {
         }
         "breakbeat-run" => {
             // Its sub bass is what the tempo detector hears, so no low cut.
+            // Bus Glue adds make-up gain, so the master comes down to keep the
+            // loudest moment under full scale.
+            song.master_db -= 2.0;
             song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
             drums(&mut song, Fx::Dynamics("Bus Glue"));
         }

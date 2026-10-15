@@ -3,7 +3,7 @@
     graph: (
         nodes: {
             1: (type: "noodle.util.mix", config: {"inputs": 5}, position: (x: 2640.0, y: 0.0)),
-            2: (type: "noodle.util.gain", params: {"gain": -3.0}, position: (x: 2860.0, y: 0.0)),
+            2: (type: "noodle.util.gain", params: {"gain": -5.0}, position: (x: 2860.0, y: 0.0)),
             3: (type: "noodle.io.output", position: (x: 3080.0, y: 0.0)),
             4: (type: "noodle.effect.eq", params: {"freq1": 9000.0, "gain1": 1.0, "q1": 0.7, "type1": 2.0}, config: {"bands": 1}, position: (x: 2750.0, y: 130.0)),
             5: (type: "noodle.group", config: {"name": "Drums"}, position: (x: 0.0, y: 0.0), template: Some("system:template:track")),
