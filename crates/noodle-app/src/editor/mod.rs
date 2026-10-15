@@ -2107,6 +2107,7 @@ fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
     let Some(node) = graph.node(id) else { return };
     let (target, label) = match node.type_id.as_str() {
         GROUP => (RenameTarget::Group(id), layout::group_title(graph, id)),
+        spare::MIXER => (RenameTarget::Group(id), spare::mixer_name(graph, id)),
         // F2 on a group's input or output node names its first port.
         GROUP_INPUT | GROUP_OUTPUT => {
             let Some((port, name)) = node.boundary_ports().into_iter().next() else {
@@ -2414,7 +2415,12 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
         }
         RenameTarget::Group(id) => {
             let graph = project.graph();
-            if label == layout::group_title(graph, id) {
+            let shown = if graph.node(id)?.type_id == spare::MIXER {
+                spare::mixer_name(graph, id)
+            } else {
+                layout::group_title(graph, id)
+            };
+            if label == shown {
                 return None;
             }
             // An empty name puts the default back.

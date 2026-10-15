@@ -781,8 +781,8 @@ a number and fails the CI excerpt.
 Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
 and a "Load sample…" picker), and the warp evaluation songs, whose drums are a
 drum rack of committed samples (`noodle-eval/songs/samples`) and whose mixes
-run through Dynamics nodes set as compressor and limiter (the node's presets
-make the same settings), a Parametric EQ and a Reverb. Batch 1 (library and
+run through Dynamics nodes set by the compressor and limiter node presets, a
+Parametric EQ and a Reverb. Batch 1 (library and
 presets) is done in code: it left out samples by content hash in the library
 (the Sampler's store now exists) and shipped no node presets (batch 5 added
 them); the system presets are group presets of the instrument templates. The
@@ -817,8 +817,8 @@ excepted, see ARCHITECTURE.md).
    gate and expander as a `mode`; sidechain; gain-reduction output; lookahead
    reported to plugin delay compensation; a transfer-curve graph with
    draggable points and an attack and release plot), Parametric EQ, Reverb and
-   Arpeggiator. Drum rack, multi-zone instruments and Compressor, Limiter and
-   Gate are groups or presets, never monolithic nodes. Each node ships with
+   Arpeggiator. Drum rack and multi-zone instruments are groups, and Compressor, Limiter and
+   Gate are presets of Dynamics, never monolithic nodes. Each node ships with
    presets.
 3. **Warp evaluation songs.** Once the new nodes exist, the generated songs in
    `noodle-eval/src/song/` use them: the drums become a drum rack (a Note

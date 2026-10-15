@@ -179,29 +179,14 @@ pub enum Drum {
     Clap { cutoff: f32, decay: f32 },
 }
 
-/// A compressor's settings.
-#[derive(Debug, Clone, Copy)]
-pub struct Comp {
-    pub threshold: f32,
-    pub ratio: f32,
-    /// Seconds.
-    pub attack: f32,
-    pub release: f32,
-    pub knee: f32,
-    pub makeup: f32,
-}
-
 /// An effect in a chain, on a track or on the master.
 #[derive(Debug, Clone)]
 pub enum Fx {
     /// A Parametric EQ with these bands: (type, frequency, gain in dB, Q).
     Eq(Vec<(u8, f32, f32, f32)>),
-    /// A Dynamics node set as a compressor.
-    Compressor(Comp),
-    /// A Dynamics node set as a limiter, with `ceiling` dB.
-    Limiter {
-        ceiling: f32,
-    },
+    /// A Dynamics node set by the system node preset of this name
+    /// ("Compressor", "Limiter" and so on; see `node_presets.rs`).
+    Dynamics(&'static str),
     Reverb {
         decay: f32,
         damping: f32,
@@ -348,18 +333,7 @@ pub fn chain(p: &mut Patch, effects: &[Fx], from: Port, column: f32, row: f32) -
                 }
                 (p.add(eq, column, row), "in", "out")
             }
-            Fx::Compressor(c) => (dynamics(p, 0.0, *c, column, row), "in", "out"),
-            Fx::Limiter { ceiling } => {
-                let c = Comp {
-                    threshold: *ceiling,
-                    ratio: 20.0,
-                    attack: 0.001,
-                    release: 0.08,
-                    knee: 0.0,
-                    makeup: 0.0,
-                };
-                (dynamics(p, 1.0, c, column, row), "in", "out")
-            }
+            Fx::Dynamics(preset) => (dynamics(p, preset, column, row), "in", "out"),
             Fx::Reverb {
                 decay,
                 damping,
@@ -397,22 +371,37 @@ fn band_key(base: &'static str, n: usize) -> &'static str {
     KEYS[n][which]
 }
 
-/// A Dynamics node set up as a compressor (`mode` 0) or limiter (`mode` 1).
-/// They are settings of the one node, not nodes of their own, so the node
-/// presets of Dynamics make the same ones.
-fn dynamics(p: &mut Patch, mode: f32, c: Comp, column: f32, row: f32) -> NodeId {
-    p.add(
-        spec("noodle.effect.dynamics")
-            .param("mode", mode)
-            .param("threshold", c.threshold)
-            .param("ratio", c.ratio)
-            .param("attack", c.attack)
-            .param("release", c.release)
-            .param("knee", c.knee)
-            .param("makeup", c.makeup),
-        column,
-        row,
-    )
+/// A Dynamics node with the values of the system node preset `preset`, so the
+/// songs use the same settings a player gets from the Presets control.
+fn dynamics(p: &mut Patch, preset: &str, column: f32, row: f32) -> NodeId {
+    const KEYS: [&str; 7] = [
+        "mode",
+        "threshold",
+        "ratio",
+        "attack",
+        "release",
+        "knee",
+        "makeup",
+    ];
+    let registry = super::system::registry();
+    let values = super::node_presets::presets(&registry)
+        .into_iter()
+        .find_map(|item| match item {
+            noodle_core::library::Item::NodePreset(n)
+                if n.node_type == "noodle.effect.dynamics" && n.name == preset =>
+            {
+                Some(n.values.params)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no Dynamics preset called {preset}"));
+    let mut node = spec("noodle.effect.dynamics");
+    for key in KEYS {
+        if let Some(&value) = values.get(key) {
+            node = node.param(key, value);
+        }
+    }
+    p.add(node, column, row)
 }
 
 pub fn drum_label(drum: Drum) -> &'static str {

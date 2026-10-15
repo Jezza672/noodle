@@ -445,6 +445,11 @@ impl Node for DynamicsNode {
             line.fill(0.0);
         }
     }
+
+    fn stopped(&mut self) {
+        self.level_tap.write(&[0.0]);
+        self.reduction_tap.write(&[0.0]);
+    }
 }
 
 #[cfg(test)]

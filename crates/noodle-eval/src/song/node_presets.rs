@@ -2,9 +2,8 @@
 //! node, written as a table. `files()` in `system.rs` turns them into
 //! `library/system/nodes.ron`.
 //!
-//! The Dynamics node has none here yet: its Compressor, Limiter and Gate
-//! presets come with the batch that replaces the old groups of those names,
-//! which removes its exemption in `tests/library.rs`.
+//! Compressor, Limiter, Gate and Expander are presets of the one Dynamics node,
+//! not groups.
 //! The Sampler's presets leave its loaded sample alone.
 
 use noodle_core::library::{Item, NodePreset, slugify};
@@ -280,6 +279,111 @@ fn table() -> Vec<Row> {
             &[("rate", 0.0), ("width", 0.1)],
         ),
         // Effects.
+        // Dynamics.
+        row(
+            "noodle.effect.dynamics",
+            "Compressor",
+            &[
+                ("mode", 0.0),
+                ("threshold", -18.0),
+                ("ratio", 4.0),
+                ("attack", 0.01),
+                ("release", 0.1),
+                ("knee", 6.0),
+                ("makeup", 0.0),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "Vocal Compressor",
+            &[
+                ("mode", 0.0),
+                ("threshold", -20.0),
+                ("ratio", 3.0),
+                ("attack", 0.005),
+                ("release", 0.12),
+                ("knee", 8.0),
+                ("makeup", 4.0),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "Bus Glue",
+            &[
+                ("mode", 0.0),
+                ("threshold", -14.0),
+                ("ratio", 2.0),
+                ("attack", 0.03),
+                ("release", 0.2),
+                ("knee", 10.0),
+                ("makeup", 1.5),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "Limiter",
+            &[
+                ("mode", 1.0),
+                ("threshold", -1.0),
+                ("ratio", 100.0),
+                ("attack", 0.0005),
+                ("release", 0.05),
+                ("knee", 0.0),
+                ("makeup", 0.0),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "Gate",
+            &[
+                ("mode", 2.0),
+                ("threshold", -50.0),
+                ("ratio", 10.0),
+                ("attack", 0.002),
+                ("release", 0.1),
+                ("knee", 0.0),
+                ("makeup", 0.0),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "Drum Gate",
+            &[
+                ("mode", 2.0),
+                ("threshold", -40.0),
+                ("ratio", 10.0),
+                ("attack", 0.0005),
+                ("release", 0.06),
+                ("knee", 0.0),
+                ("makeup", 0.0),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "Expander",
+            &[
+                ("mode", 3.0),
+                ("threshold", -45.0),
+                ("ratio", 2.0),
+                ("attack", 0.01),
+                ("release", 0.15),
+                ("knee", 6.0),
+                ("makeup", 0.0),
+            ],
+        ),
+        row(
+            "noodle.effect.dynamics",
+            "De-noise",
+            &[
+                ("mode", 3.0),
+                ("threshold", -55.0),
+                ("ratio", 1.6),
+                ("attack", 0.02),
+                ("release", 0.3),
+                ("knee", 12.0),
+                ("makeup", 0.0),
+            ],
+        ),
         row(
             "noodle.effect.distortion",
             "Warm Overdrive",

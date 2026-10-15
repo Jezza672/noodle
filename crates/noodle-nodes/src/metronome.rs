@@ -52,6 +52,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Metronome {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

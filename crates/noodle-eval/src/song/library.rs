@@ -9,7 +9,7 @@
 //! The tempos are not 120 (the app's default, so a detector that gave up
 //! could pass for right) and sit inside the detector's range of 80 to 160.
 
-use super::kit::{Comp, Drum, Filter, Fx, Instrument, Osc, Rack, Slot, Tone, Wave, env};
+use super::kit::{Drum, Filter, Fx, Instrument, Osc, Rack, Slot, Tone, Wave, env};
 use super::music::{
     ADD9, DOM7, MAJ, MAJ7, MAJOR_PENTATONIC, MIN7, MINOR_PENTATONIC, Note, Pattern, SUS, Scale,
     chord, drum, melody, pad, stabs, tones,
@@ -121,16 +121,6 @@ fn racked(mut song: Song) -> Song {
 /// on the master, chosen to suit it. A compressor over the whole mix would
 /// pump the bass the tempo detector listens to, so it sits on the drums.
 fn mixed(mut song: Song) -> Song {
-    let bus = |threshold, ratio| {
-        Fx::Compressor(Comp {
-            threshold,
-            ratio,
-            attack: 0.008,
-            release: 0.12,
-            knee: 3.0,
-            makeup: 1.0,
-        })
-    };
     // (type, frequency, gain, Q): 3 is a low cut, 4 a high cut, 2 a high shelf.
     let tidy = Fx::Eq(vec![(3, 30.0, 0.0, 0.7), (2, 9000.0, 1.0, 0.7)]);
     let drums = |song: &mut Song, fx: Fx| {
@@ -142,9 +132,8 @@ fn mixed(mut song: Song) -> Song {
     };
     match song.name {
         "neon-drive" => {
-            // The limiter sits a little under the peak, so it barely acts.
-            song.master_fx = vec![tidy, Fx::Limiter { ceiling: -2.0 }];
-            drums(&mut song, bus(-16.0, 3.0));
+            song.master_fx = vec![tidy, Fx::Dynamics("Limiter")];
+            drums(&mut song, Fx::Dynamics("Compressor"));
         }
         "rainy-lofi" => {
             song.master_fx = vec![
@@ -159,7 +148,7 @@ fn mixed(mut song: Song) -> Song {
         "breakbeat-run" => {
             // Its sub bass is what the tempo detector hears, so no low cut.
             song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
-            drums(&mut song, bus(-10.0, 2.0));
+            drums(&mut song, Fx::Dynamics("Bus Glue"));
         }
         "glass-ambient" => {
             song.master_fx = vec![
@@ -174,7 +163,7 @@ fn mixed(mut song: Song) -> Song {
         "funk-engine" => {
             // Like breakbeat-run, its mix is tempo-sensitive: no low cut.
             song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
-            drums(&mut song, bus(-15.0, 3.0));
+            drums(&mut song, Fx::Dynamics("Compressor"));
         }
         other => panic!("no mix chosen for {other}"),
     }

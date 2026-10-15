@@ -66,6 +66,14 @@ impl LaneKernel for StageKernel {
         Skip::AnySilent(&[IN])
     }
 
+    /// Muted for good (the mute has finished ramping up), the stage writes
+    /// zeros, so nothing that only feeds it needs to run.
+    fn silenced_by(&self, constants: &[Option<f32>]) -> bool {
+        [MUTE, SOLO_MUTE]
+            .iter()
+            .any(|&port| constants[port].is_some_and(|value| value >= 1.0))
+    }
+
     fn process_lane(&mut self, _: &mut (), _: &Context, mut lane: Lane<'_, '_>) {
         let input = lane.inputs.get(IN);
         let gain = lane.inputs.get(GAIN);

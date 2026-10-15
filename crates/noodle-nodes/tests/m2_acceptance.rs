@@ -22,7 +22,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use noodle_core::group::{GAIN, GROUP_OUTPUT, TRACK_INPUT, create_track};
+use noodle_core::group::{GROUP_OUTPUT, TRACK_INPUT, create_track};
 use noodle_core::{
     AutomationLane, AutomationPoint, Clip, ClipContent, Command, Config, Connection, Curve,
     Endpoint, History, Node, NodeId, Position, Project, Tick, Value,
@@ -175,7 +175,8 @@ fn arrangement() -> Arrangement {
         curve: Curve::Hold,
     };
     let automation = AutomationLane::new(
-        Endpoint::new(two_out, noodle_core::group::control_key(GAIN, 1)),
+        // The track input's gain, which the track's output follows.
+        Endpoint::new(two_in, noodle_core::group::TRACK_GAIN),
         vec![point(0, 0.0), point(3, HALF_DB)],
     );
     apply(

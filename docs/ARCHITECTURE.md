@@ -200,11 +200,23 @@ The **Project** is the single source of truth. It holds one global graph:
     empty on a track with no MIDI clips.)
   - **Creating a track** creates the group, its track input node and the
     group's output node in one step, with the input's `audio` output wired
-    into the group's output by default. Undo removes all of it.
-  - **A track's output port carries its controls** as
-    parameters of the group's output node: gain, mute, solo and the like. The track's gain, mute and
-    solo buttons in the arrangement view show and set those parameters. Gain and mute are ordinary runtime parameters, so they can be
-  automated and wired like any other. Solo is the exception (below).
+    into the group's output by default. Undo removes all of it. The new
+    group is named "Track N", as the timeline would call it.
+  - **A track's gain and mute are the track input's parameters** (`gain`,
+    `mute`), passed on as outputs of the same names, which creation wires into
+    the group output's gain and mute. The mixer strip, the track header and
+    automation lanes all set those parameters
+    (`Graph::control_target`); a track whose gain or mute is wired some other
+    way falls back to the group output's own.
+  - **Mixers are named** by their `name` config (`spare::mixer_name`); the
+    default mixer, the one Add track feeds, is "Main". F2 in the graph and a
+    text field in the mixer view rename one.
+  - **A group's output port carries its controls** as parameters of the
+    group's output node: gain, mute and solo. Gain and mute are ordinary
+    runtime parameters, so they can be automated and wired like any other.
+    For a track they are wired from the track input (below), so the track's
+    buttons set the track input's parameters; only solo is set on the output.
+    Solo is the exception (below).
   - Every group has such ports, not only tracks, so a nested group has the
     same controls.
   - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
@@ -413,7 +425,10 @@ These are primitives; instruments and racks built from them are groups.
   gain-reduction output, and gain computed in the log domain with a soft knee.
   `lookahead` (0 to 20 ms) is config, not a parameter, because the plan fixes
   a node's latency before audio runs; it delays the audio and reports itself
-  to delay compensation. Channels share one gain.
+  to delay compensation. Channels share one gain. Compressor, Limiter, Gate
+  and Expander (and variants such as Vocal Compressor and Drum Gate) are
+  system *presets* of this one node (`library/system/dynamics.ron`), not
+  groups.
 - **Parametric EQ** (`noodle.effect.eq`) is `bands` (config, 1 to 8) RBJ
   biquads in series: bell, shelves, cuts and notch. Coefficients are computed
   once a block when nothing is wired and every 32 samples when something is.
@@ -534,6 +549,19 @@ pool, so nothing allocates.
   inactive therefore starts the oscillator at phase 0 rather than wherever it
   free-ran to.
 - **Real-time rules** hold: a skip is a branch and a memset.
+- **Nodes nobody listens to don't run.** At the start of each block the plan
+  works out which nodes are live (`Plan::update_liveness`): those that always
+  run (Output nodes, taps, and types whose `NodeType::always_runs` is true:
+  scope, meter, MIDI In, track input, plugins, metronome) and every node whose
+  outputs a live node reads. A node whose outputs are unconnected, or are read
+  only by nodes that are *silenced* (`Node::silenced_by`: a stage with its
+  mute settled on, a VCA or multiplier whose level is a constant 0), stops, and
+  so does everything that only feeds it, back to the sources. A silenced
+  node's other inputs may come from a source whose output is known without
+  running it (`Node::constant_output`, used by the track input's gain and
+  mute). A stopped node whose outputs a live node still reads has them
+  zeroed. When a node becomes live again it is `reset()` and its delay lines
+  cleared, so it starts fresh rather than playing stale state.
 
 ### The engine and the transport
 

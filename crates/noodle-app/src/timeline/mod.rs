@@ -1481,16 +1481,18 @@ fn draw_headers(
                 armed_midi: session.is_armed(input, ArmKind::Midi),
                 ..t
             });
-        let automated = controls.map_or_else(header::Automated::default, |t| {
-            let driven = |key: String| {
-                let input = Endpoint::new(t.node, key);
-                session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
-            };
-            header::Automated {
-                gain: driven(t.gain_key()),
-                mute: driven(t.mute_key()),
-            }
-        });
+        let automated = controls
+            .as_ref()
+            .map_or_else(header::Automated::default, |t| {
+                let driven = |(node, key): &(NodeId, String)| {
+                    let input = Endpoint::new(*node, key.as_str());
+                    session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
+                };
+                header::Automated {
+                    gain: driven(&t.gain_target),
+                    mute: driven(&t.mute_target),
+                }
+            });
         let changes = header::show(
             ui,
             graph,
@@ -1500,7 +1502,7 @@ fn draw_headers(
                 input,
                 selected: state.selected_track == Some(input),
             },
-            controls,
+            controls.clone(),
             automated,
             &mut state.renaming,
         );
@@ -1515,7 +1517,7 @@ fn draw_headers(
             state.selected.clear();
             state.automation.deselect();
         }
-        if let Some(controls) = controls {
+        if let Some(controls) = &controls {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
                 vec2(26.0, 18.0),
@@ -1524,8 +1526,8 @@ fn draw_headers(
                 ui,
                 spot,
                 session.project(),
-                controls.node,
-                controls.port,
+                &controls.gain_target,
+                &controls.mute_target,
                 controls.controls,
             ));
         }

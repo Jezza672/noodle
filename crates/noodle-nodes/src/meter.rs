@@ -36,6 +36,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Meter {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -128,6 +132,20 @@ impl LevelProbe {
 
     pub(crate) fn reset(&mut self) {
         self.mean_squares.fill(0.0);
+    }
+
+    /// Reports silence on every slot, for a node that has stopped running.
+    pub(crate) fn silence(&mut self) {
+        self.reset();
+        for slot in 0..self.mean_squares.len() {
+            self.writer.write(
+                slot,
+                Level {
+                    peak: 0.0,
+                    rms: 0.0,
+                },
+            );
+        }
     }
 }
 
