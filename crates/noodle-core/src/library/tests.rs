@@ -324,6 +324,25 @@ fn a_node_preset_sets_stored_values_only_and_is_one_undo_step() {
 }
 
 #[test]
+fn a_preset_leaves_a_loaded_sample_alone() {
+    let (mut project, mut history) = setup();
+    let id = project.new_node_id();
+    let mut loaded = Node::new("filter").with_param("cutoff", 300.0);
+    loaded.config.set("sample", Value::Text("hash".into()));
+    history
+        .apply(&mut project, Command::AddNode { id, node: loaded })
+        .unwrap();
+    let source = Node::new("filter").with_param("cutoff", 1200.0);
+    let preset = NodePreset::capture(&source, &layout(&source).unwrap(), "Open");
+    let command = preset.apply(project.graph(), id, "x", &layout).unwrap();
+    history.apply(&mut project, command).unwrap();
+    let node = project.graph().node(id).unwrap();
+    assert_eq!(node.params.get("cutoff"), Some(&1200.0));
+    assert!(node.config.get("sample").is_some(), "the sample stays");
+    assert!(preset.matches(node), "and does not count as an edit");
+}
+
+#[test]
 fn a_node_preset_is_refused_for_another_type_or_layout() {
     let (mut project, mut history) = setup();
     let id = project.new_node_id();
@@ -603,7 +622,11 @@ fn files_with_a_slug_already_taken_get_their_own() {
     // The same file copied in under another name.
     std::fs::copy(dir.join("node-warm.ron"), dir.join("copy-of-warm.ron")).unwrap();
     let reopened = Library::open(Some(dir.clone()));
-    let ids: Vec<&str> = reopened.node_presets().map(|(id, _)| id).collect();
+    let ids: Vec<&str> = reopened
+        .node_presets()
+        .map(|(id, _)| id)
+        .filter(|id| id.starts_with(USER))
+        .collect();
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1], "both are reachable");
     let _ = std::fs::remove_dir_all(&dir);

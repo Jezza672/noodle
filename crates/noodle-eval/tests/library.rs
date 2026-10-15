@@ -61,3 +61,73 @@ fn every_system_preset_fits_its_template() {
             .any(|e| matches!(e.item, Item::GroupPreset(_)))
     );
 }
+
+/// Nodes that have nothing worth a preset (no settings, or only wiring), and
+/// Dynamics, whose presets are the Compressor, Limiter and Gate.
+const WITHOUT_PRESETS: &[&str] = &[
+    "noodle.effect.dynamics",
+    "noodle.event.mono",
+    "noodle.group.stage",
+    "noodle.input.button",
+    "noodle.internal.automation",
+    "noodle.io.input",
+    "noodle.io.output",
+    "noodle.mod.automation",
+    "noodle.noise.white",
+    "noodle.offline.reverse",
+    "noodle.poly.voice_mix",
+    "noodle.track.input",
+    "noodle.util.mix",
+    "noodle.util.reroute",
+    "noodle.view.meter",
+    "noodle.view.scope",
+];
+
+/// Every built-in node has presets (bar a few), each fits a fresh node of its
+/// type and sets only parameters that exist, inside their range.
+#[test]
+fn every_node_has_presets_that_fit() {
+    let library = Library::in_memory();
+    let mut registry = noodle_engine::Registry::with_builtins();
+    let _ = noodle_nodes::register_library(&mut registry);
+    let layout = |node: &noodle_core::Node| registry.layout_signature(node);
+    let mut covered = std::collections::BTreeMap::<String, usize>::new();
+    for (id, preset) in library.node_presets() {
+        let mut node = noodle_core::Node::new(&preset.node_type);
+        node.config = preset.values.config.clone();
+        assert!(preset.applies_to(&node, &layout), "{id} fits its node");
+        let ty = registry.get(&preset.node_type).expect("a known node");
+        let ports = ty.layout(&node.config).unwrap();
+        for (key, value) in &preset.values.params {
+            let info = ports
+                .inputs
+                .iter()
+                .find_map(|p| match &p.kind {
+                    noodle_engine::InputKind::Param(info) if p.key == key.as_str() => Some(info),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{id} sets {key}, which {} lacks", preset.node_type));
+            assert!(
+                (info.min..=info.max).contains(value),
+                "{id}: {key} = {value} is outside {}..{}",
+                info.min,
+                info.max
+            );
+        }
+        *covered.entry(preset.node_type.clone()).or_default() += 1;
+    }
+    for ty in registry.iter() {
+        let id = ty.info().id;
+        if WITHOUT_PRESETS.contains(&id) {
+            assert!(
+                !covered.contains_key(id),
+                "{id} is listed as without presets"
+            );
+        } else {
+            assert!(
+                covered.get(id).copied().unwrap_or(0) >= 2,
+                "{id} needs at least two presets"
+            );
+        }
+    }
+}

@@ -31,6 +31,10 @@ impl fmt::Display for PresetError {
 
 impl std::error::Error for PresetError {}
 
+/// Config a preset that doesn't store it leaves alone: the sample a Sampler
+/// has loaded is the user's, not part of a sound setting.
+const KEPT: &[&str] = &["sample"];
+
 /// The values one node holds: parameters that are set, and config.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresetValues {
@@ -56,7 +60,16 @@ impl PresetValues {
                 .iter()
                 .zip(&node.params)
                 .all(|((a, x), (b, y))| a == b && x.to_bits() == y.to_bits())
-            && self.config == node.config
+            && self.config.iter().count()
+                == node
+                    .config
+                    .iter()
+                    .filter(|(k, _)| self.config.get(k).is_some() || !KEPT.contains(k))
+                    .count()
+            && self
+                .config
+                .iter()
+                .all(|(k, v)| node.config.get(k) == Some(v))
     }
 
     /// The commands that make `node` hold these values and nothing else:
@@ -91,7 +104,7 @@ impl PresetValues {
         for (key, _) in node
             .config
             .iter()
-            .filter(|(k, _)| self.config.get(k).is_none())
+            .filter(|(k, _)| self.config.get(k).is_none() && !KEPT.contains(k))
         {
             commands.push(Command::SetConfig {
                 node: id,

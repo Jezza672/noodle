@@ -317,6 +317,10 @@ pub fn files() -> Vec<File> {
         });
     }
     files.push(subtractive_voice(&layout));
+    files.push(File {
+        name: "nodes",
+        items: super::node_presets::presets(&registry),
+    });
     files
 }
 

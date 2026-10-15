@@ -15,6 +15,7 @@
 pub mod kit;
 pub mod library;
 pub mod music;
+pub mod node_presets;
 mod patch;
 pub mod system;
 
