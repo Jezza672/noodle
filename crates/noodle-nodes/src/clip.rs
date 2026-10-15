@@ -107,6 +107,10 @@ impl TrackInput {
 }
 
 impl NodeType for TrackInput {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

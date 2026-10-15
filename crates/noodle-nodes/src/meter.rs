@@ -36,6 +36,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Meter {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

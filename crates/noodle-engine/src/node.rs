@@ -58,6 +58,15 @@ pub trait NodeType: Send + Sync + 'static {
         false
     }
 
+    /// True if the node does something besides turn its inputs into its
+    /// outputs, such as reporting to the UI, reading a device or hosting a
+    /// plugin, so the engine runs it even when nothing downstream of it is
+    /// listening. Every other node is only run while a path from it leads to
+    /// an Output node (see "Silence skipping" in the architecture notes).
+    fn always_runs(&self) -> bool {
+        false
+    }
+
     /// The config a newly added node of this type starts with, for settings
     /// whose first value isn't the same as leaving them out. Whatever adds a
     /// node from the UI (the add-node search, the plugin browser) applies it.
@@ -380,8 +389,19 @@ pub trait Node: Send + 'static {
     }
 
     /// Clears internal state such as filter memory, e.g. when the transport
-    /// jumps.
+    /// jumps, or when the node starts running again after the engine stopped
+    /// it because nothing downstream was listening.
     fn reset(&mut self) {}
+
+    /// Whether the node's outputs are exactly zero for this block whatever
+    /// its connected inputs hold, given the inputs that are the same for the
+    /// whole block (`constants[i]` is `Some` for input `i` if it is
+    /// unconnected, and has settled). The engine then doesn't run the nodes
+    /// that only feed it. Must be cheap and real-time safe; false is always
+    /// safe.
+    fn silenced_by(&self, _constants: &[Option<f32>]) -> bool {
+        false
+    }
 }
 
 /// The most latency, in samples, the engine will compensate for a single

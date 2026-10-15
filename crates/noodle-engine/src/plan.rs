@@ -135,6 +135,22 @@ pub(crate) struct Plan {
     max_frames: usize,
     /// What each step waits for, to run the plan on several threads.
     graph: StepGraph,
+    /// For each node (the slot of a split node's output half), the nodes that
+    /// read its outputs.
+    readers: Vec<Vec<usize>>,
+    /// Whether a node can be read by one that runs before it (a feedback
+    /// loop), so the liveness pass needs to repeat.
+    loops: bool,
+    /// Per node slot, worked out at the start of each block by
+    /// [`Plan::update_liveness`]: the node has a listener, and runs.
+    live: Box<[bool]>,
+    /// The node was live in the previous block.
+    was_live: Box<[bool]>,
+    /// The node doesn't run, but something live reads its outputs, which have
+    /// to be zeros.
+    zero: Box<[bool]>,
+    /// The node's outputs are zero whatever its inputs hold.
+    silenced: Box<[bool]>,
     /// Reports how long each block takes, when something is watching.
     blocks: Option<BlockWriter>,
 }
@@ -165,6 +181,13 @@ struct PlanNode {
     probes: Vec<(usize, ParamWriter)>,
     /// Reports how long the node takes, when something is watching.
     cpu: Option<CpuWriter>,
+    /// The node runs whatever is downstream of it: an Output node, a tap, or
+    /// a type with [`NodeType::always_runs`](crate::NodeType::always_runs).
+    always_runs: bool,
+    /// The settled value of each input for the current block, `None` for
+    /// inputs that are wired or still moving. Filled to ask the node whether
+    /// it is [silenced](Node::silenced_by).
+    constants: Vec<Option<f32>>,
     /// Delay lines that hold some of this node's inputs back to line up with
     /// the slowest one, run just before the node.
     delays: Vec<DelayLine>,
@@ -545,6 +568,10 @@ pub(crate) fn build(
             cpu: telemetry
                 .filter(|_| !input_half)
                 .map(|telemetry| telemetry.open_cpu(id)),
+            always_runs: is_output
+                || scheduled.node_type.info().id == TAP_ID
+                || scheduled.node_type.always_runs(),
+            constants: vec![None; scheduled.inputs.len()],
             delays: Vec::new(),
             scratch,
             bus_out: match bus {
@@ -576,6 +603,9 @@ pub(crate) fn build(
         });
 
     let graph = step_graph(&nodes, &offsets_in);
+    let readers = readers_of(&wiring, &nodes);
+    let slots = nodes.len();
+    let nodes_have_loops = nodes.iter().any(|node| node.owner.is_some());
     info.shape = PlanShape {
         steps: graph.steps(),
         critical_path: graph.critical_path(),
@@ -599,6 +629,12 @@ pub(crate) fn build(
         delay_migrations,
         max_frames,
         graph,
+        loops: nodes_have_loops,
+        readers,
+        live: vec![true; slots].into_boxed_slice(),
+        was_live: vec![true; slots].into_boxed_slice(),
+        zero: vec![false; slots].into_boxed_slice(),
+        silenced: vec![false; slots].into_boxed_slice(),
         blocks: telemetry.map(Telemetry::block_writer),
     };
     (Box::new(plan), info)
@@ -624,6 +660,27 @@ fn audible_wiring(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Wiring {
         audible.insert(*id, sources.clone());
     }
     audible
+}
+
+/// For each node (by slot, a split node counting as its output half), the
+/// nodes that read something it writes.
+fn readers_of(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Vec<Vec<usize>> {
+    let slots: HashMap<NodeId, usize> = wiring
+        .iter()
+        .enumerate()
+        .filter(|(slot, _)| nodes[*slot].owner.is_none())
+        .map(|(slot, (id, _))| (*id, slot))
+        .collect();
+    let mut readers = vec![Vec::new(); nodes.len()];
+    for (reader, (_, sources)) in wiring.iter().enumerate() {
+        for (source, _) in sources.iter().flatten() {
+            let source = slots[source];
+            if source != reader && !readers[source].contains(&reader) {
+                readers[source].push(reader);
+            }
+        }
+    }
+    readers
 }
 
 /// How many events one event output can produce per block.
@@ -696,6 +753,9 @@ impl Plan {
         for &(from, to) in &self.value_migrations {
             self.values[to].continue_from(&old.values[from]);
         }
+        for &(from, to) in &self.migrations {
+            self.was_live[to] = old.was_live[from];
+        }
         for &((old_slot, old_line), (slot, line)) in &self.delay_migrations {
             self.nodes[slot].delays[line].continue_from(&mut old.nodes[old_slot].delays[old_line]);
         }
@@ -710,6 +770,68 @@ impl Plan {
             for delay in &mut node.delays {
                 delay.clear();
             }
+        }
+    }
+
+    /// Works out which nodes have to run this block: those that are always
+    /// run, and any whose outputs a running node reads. A node whose outputs
+    /// nothing reads, or only nodes that are [silenced](Node::silenced_by)
+    /// (a muted track's stage, a VCA at level 0), stops, and so does
+    /// everything that only feeds it, back to the sources. Real-time safe.
+    fn update_liveness(&mut self) {
+        let values = &self.values;
+        for (silenced, node) in self.silenced.iter_mut().zip(&mut self.nodes) {
+            *silenced = false;
+            if node.owner.is_some() {
+                continue;
+            }
+            let Some(instance) = &node.instance else {
+                continue;
+            };
+            for (constant, input) in node.constants.iter_mut().zip(&node.inputs) {
+                *constant = match *input {
+                    Input::Value(slot) => values[slot].constant(),
+                    Input::Absent => Some(0.0),
+                    _ => None,
+                };
+            }
+            *silenced = instance.silenced_by(&node.constants);
+        }
+        for (live, node) in self.live.iter_mut().zip(&self.nodes) {
+            *live = node.always_runs;
+        }
+        // The input half of a split node follows its output half.
+        loop {
+            let mut changed = false;
+            for node in (0..self.nodes.len()).rev() {
+                if self.live[node] {
+                    continue;
+                }
+                if self.readers[node]
+                    .iter()
+                    .any(|&reader| self.live[reader] && !self.silenced[reader])
+                {
+                    self.live[node] = true;
+                    changed = true;
+                }
+            }
+            if !changed || !self.loops {
+                break;
+            }
+        }
+        for node in 0..self.nodes.len() {
+            let live = self.live[node];
+            self.zero[node] = !live && self.readers[node].iter().any(|&reader| self.live[reader]);
+            if live && !self.was_live[node] {
+                let node = &mut self.nodes[node];
+                if let Some(instance) = &mut node.instance {
+                    instance.reset();
+                }
+                for delay in &mut node.delays {
+                    delay.clear();
+                }
+            }
+            self.was_live[node] = live;
         }
     }
 
@@ -746,6 +868,7 @@ impl Plan {
             value.prepare(frames);
         }
         output.fill(0.0);
+        self.update_liveness();
 
         // Views are made from raw pointers because one node's outputs and
         // another's inputs can be the same buffer at different times, which
@@ -762,6 +885,8 @@ impl Plan {
             channels,
             ctx,
             input,
+            live: &self.live,
+            zero: &self.zero,
         };
 
         match workers.filter(|w| w.worth(self.graph.shape())) {
@@ -811,6 +936,9 @@ struct Frame<'a> {
     channels: usize,
     ctx: &'a Context,
     input: Interleaved<'a>,
+    /// By slot of the node's output half. See [`Plan::update_liveness`].
+    live: &'a [bool],
+    zero: &'a [bool],
 }
 
 /// A block shared between threads.
@@ -857,9 +985,32 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         channels,
         ctx,
         input,
+        ..
     } = frame;
     let frames = ctx.frames;
     let node = unsafe { &mut *nodes.add(index) };
+    let home = node.owner.unwrap_or(index);
+    if !frame.live[home] {
+        // Nothing listens to this node, so it doesn't run. If something that
+        // ignores it still reads its outputs, they have to hold silence.
+        if frame.zero[home] {
+            // SAFETY: as for the views below; nothing else touches this
+            // node's outputs now.
+            unsafe {
+                for view in &node.outputs {
+                    let mut out = view.write(pool, silent, frames, max_frames);
+                    out.fill(0.0);
+                    for lane in 0..view.shape.lanes() {
+                        out.set_silent(lane / view.shape.channels, lane % view.shape.channels);
+                    }
+                }
+                for &buffer in &node.event_outputs {
+                    (*events.add(buffer)).clear();
+                }
+            }
+        }
+        return false;
+    }
     let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
     let mut outputs: Vec<SignalOut<'_>> = recycle(mem::take(&mut node.scratch.outputs));
     let mut event_inputs: Vec<&[Event]> = recycle(mem::take(&mut node.scratch.event_inputs));
