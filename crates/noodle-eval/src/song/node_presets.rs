@@ -2,8 +2,9 @@
 //! node, written as a table. `files()` in `system.rs` turns them into
 //! `library/system/nodes.ron`.
 //!
-//! The Dynamics node has none here: its Compressor, Limiter and Gate
-//! presets replace the old groups of those names and are added with them.
+//! The Dynamics node has none here yet: its Compressor, Limiter and Gate
+//! presets come with the batch that replaces the old groups of those names,
+//! which removes its exemption in `tests/library.rs`.
 //! The Sampler's presets leave its loaded sample alone.
 
 use noodle_core::library::{Item, NodePreset, slugify};
@@ -206,11 +207,10 @@ fn table() -> Vec<Row> {
         .text("curve", "0 0 0.8;1 1 0"),
         row(
             "noodle.mod.envelope",
-            "Shared Sweep, 2 Beats",
+            "Sweep, 2 Beats",
             &[("beats", 2.0), ("time", 1.0)],
         )
-        .text("curve", "0 0 0.4;0.3 1 -0.6;1 0.2 0")
-        .int("single", 1),
+        .text("curve", "0 0 0.4;0.3 1 -0.6;1 0.2 0"),
         row(
             "noodle.mod.envelope",
             "Looping Swell, Half Beat",

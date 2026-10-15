@@ -340,6 +340,19 @@ fn a_preset_leaves_a_loaded_sample_alone() {
     assert_eq!(node.params.get("cutoff"), Some(&1200.0));
     assert!(node.config.get("sample").is_some(), "the sample stays");
     assert!(preset.matches(node), "and does not count as an edit");
+
+    // An Envelope's `single` is its voice shape, so a preset keeps it too.
+    let shared = project.new_node_id();
+    let mut node = Node::new("filter");
+    node.config.set("single", Value::Int(1));
+    history
+        .apply(&mut project, Command::AddNode { id: shared, node })
+        .unwrap();
+    let command = preset.apply(project.graph(), shared, "x", &layout).unwrap();
+    history.apply(&mut project, command).unwrap();
+    let node = project.graph().node(shared).unwrap();
+    assert_eq!(node.config.get("single"), Some(&Value::Int(1)));
+    assert!(preset.matches(node));
 }
 
 #[test]

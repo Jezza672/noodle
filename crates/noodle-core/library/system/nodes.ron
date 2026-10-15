@@ -384,8 +384,8 @@
         ),
     )),
     NodePreset((
-        name: "Shared Sweep, 2 Beats",
-        slug: "envelope-shared-sweep-2-beats",
+        name: "Sweep, 2 Beats",
+        slug: "envelope-sweep-2-beats",
         node_type: "noodle.mod.envelope",
         layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
@@ -395,7 +395,6 @@
             },
             config: {
                 "curve": "0 0 0.4;0.3 1 -0.6;1 0.2 0",
-                "single": 1,
             },
         ),
     )),

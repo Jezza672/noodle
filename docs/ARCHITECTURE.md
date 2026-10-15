@@ -348,13 +348,13 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   to their defaults. `SetPreset` records the entry in `Node::preset` (no
   effect on the engine); the Presets control shows the entry's name, and
   "modified" once the node's values differ from it. Config named in
-  `presets::KEPT` (the Sampler's `sample`) is left alone when the preset
-  doesn't store it, so applying a preset never unloads a sample.
+  `presets::KEPT` (the Sampler's `sample`, the Envelope's `single`) is left alone when the preset
+  doesn't store it, so applying a preset never unloads a sample or changes a voice shape.
 - **System node presets** live in one generated file, `library/system/nodes.ron`
   (a table in `noodle-eval/src/song/node_presets.rs`, rewritten by
   `UPDATE_LIBRARY=1`). Every node has at least two, except those with nothing
-  to set and Dynamics, whose presets belong with the Compressor, Limiter and
-  Gate; a test lists the exceptions.
+  to set and Dynamics, whose presets arrive with the Compressor, Limiter and
+  Gate batch (which removes its exemption); a test lists the exceptions.
 - **Port layout** comes from the node types, which `noodle-core` doesn't know,
   so the functions that compare layouts take a closure; the app passes
   `Registry::layout_signature` (the keys and kinds of every port). A node

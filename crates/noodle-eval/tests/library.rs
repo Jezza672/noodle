@@ -83,8 +83,8 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.view.scope",
 ];
 
-/// Every built-in node has presets (bar a few), each fits a fresh node of its
-/// type and sets only parameters that exist, inside their range.
+/// Every built-in node has presets (bar a few), each fits a node of its type
+/// with the preset's config (some, like Note Split's rest output, need it) and sets only parameters that exist, inside their range.
 #[test]
 fn every_node_has_presets_that_fit() {
     let library = Library::in_memory();

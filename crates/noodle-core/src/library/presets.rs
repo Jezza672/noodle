@@ -32,8 +32,9 @@ impl fmt::Display for PresetError {
 impl std::error::Error for PresetError {}
 
 /// Config a preset that doesn't store it leaves alone: the sample a Sampler
-/// has loaded is the user's, not part of a sound setting.
-const KEPT: &[&str] = &["sample"];
+/// has loaded is the user's, and an Envelope's `single` decides its output's
+/// voice shape (a wiring decision), neither part of a sound setting.
+const KEPT: &[&str] = &["sample", "single"];
 
 /// The values one node holds: parameters that are set, and config.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
