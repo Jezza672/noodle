@@ -30,6 +30,9 @@ const SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key
 /// Shown in the Edit menu. The node editor handles the key itself, so this
 /// is not in [`SHORTCUTS`].
 const ARRANGE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::L);
+/// Shown in the View menu. The canvas handles the key itself, with the
+/// pointer over it, so this is not in [`SHORTCUTS`].
+const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F);
 /// Shown in the Edit menu. The canvas handles the key itself, with the
 /// pointer over it, so this is not in [`SHORTCUTS`].
 const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
@@ -134,6 +137,8 @@ enum Action {
     StartExport,
     DeleteSelection,
     ArrangeNodes,
+    /// Fits the node editor's view around the whole graph at this level.
+    FitGraph,
     Close,
 }
 
@@ -206,6 +211,13 @@ impl App {
     /// Opens the view a double-click on a mixer or scope node asked for, on
     /// that node.
     fn open_requested_view(&mut self) {
+        // A double-click on a plugin node opens the plugin's own editor.
+        if let Some(node) = self.editor.take_open_request()
+            && self.session.plugin_of(node).is_some()
+        {
+            let open = !self.session.plugin_editor_open(node);
+            self.session.edit([Edit::PluginEditor { node, open }]);
+        }
         let Some(node) = self.editor.take_view_request() else {
             return;
         };
@@ -325,6 +337,7 @@ impl App {
         let active = self.editor.active;
         egui::Panel::right("properties")
             .default_size(theme::PROPERTIES_WIDTH)
+            .frame(egui::Frame::side_top_panel(ui.style()).fill(theme::PANEL))
             .show(ui, |ui| {
                 // A panel is remembered at the size of its contents, so
                 // short contents (nothing selected) would shrink it, and
@@ -619,6 +632,15 @@ impl App {
             );
         });
         ui.menu_button("View", |ui| {
+            if ui
+                .add(egui::Button::new("Fit Graph").shortcut_text(ui.ctx().format_shortcut(&FIT)))
+                .on_hover_text("Centre the node editor on the whole graph at this level")
+                .clicked()
+            {
+                actions.push(Action::FitGraph);
+                ui.close();
+            }
+            ui.separator();
             if ui
                 .selectable_label(self.scope_open, "Scope")
                 .on_hover_text("A larger view of a Scope node")
@@ -1180,6 +1202,10 @@ impl App {
             }
             Action::ArrangeNodes => {
                 self.editor.request_arrange();
+                ctx.request_repaint();
+            }
+            Action::FitGraph => {
+                self.editor.request_fit();
                 ctx.request_repaint();
             }
             Action::DeleteSelection => {

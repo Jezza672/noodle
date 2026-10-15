@@ -6,7 +6,9 @@
 //!   value sits along its taper. Drag sideways to change it (hold Shift for
 //!   fine control), click to type a value, and press Backspace while hovering
 //!   to reset it to the default. The right-click menu also resets.
-//! - **Stepped parameters with labels** are a drop-down.
+//! - **Stepped parameters with labels** are a toggle button when they are Off
+//!   and On, radio-style segments when a few short options fit the row, and
+//!   otherwise a drop-down.
 //!
 //! The field doesn't own the value: it's given the current value each frame
 //! and reports what the user asked for as a [`ParamEdit`], which the caller
@@ -14,8 +16,8 @@
 //! so a whole drag can become one undo step.
 
 use egui::{
-    Align2, ComboBox, CursorIcon, FontId, Id, Key, Modifiers, Rect, Response, Sense, StrokeKind,
-    TextEdit, TextStyle, Ui, WidgetInfo, pos2, vec2,
+    Align2, CursorIcon, FontId, Id, Key, Modifiers, Rect, Response, Sense, StrokeKind, TextEdit,
+    TextStyle, Ui, WidgetInfo, pos2, vec2,
 };
 use noodle_core::{Command, NodeId};
 use noodle_engine::{ParamInfo, ParamKind};
@@ -156,10 +158,6 @@ impl<'a> ParamField<'a> {
     }
 
     /// Defaults to the available width.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "for the node editor, which lands separately")
-    )]
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
         self
@@ -457,47 +455,111 @@ impl<'a> ParamField<'a> {
         let id = ui.make_persistent_id(self.id_salt);
         let size = self.size(ui);
         let current = taper::clamp(self.info, self.value) as usize;
-        let mut selected = current;
+        let font = self.font(ui);
+        let mut picked = None;
+        let mut resets = false;
 
-        let inner = ui.allocate_ui_with_layout(
-            size,
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                if !self.compact && !self.label.is_empty() {
-                    ui.label(egui::RichText::new(self.label).font(self.font(ui)));
-                }
-                let selected_text =
-                    egui::RichText::new(labels.get(current).map_or("", |l| l.as_ref()))
-                        .font(self.font(ui));
-                ComboBox::from_id_salt(id)
-                    .width(ui.available_width())
-                    .selected_text(selected_text)
-                    .show_ui(ui, |ui| {
-                        for (index, label) in labels.iter().enumerate() {
-                            ui.selectable_value(&mut selected, index, label.as_ref());
-                        }
-                    })
-                    .response
-            },
+        // Whatever is left of the row once the name has been drawn.
+        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+        let mut inner = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let ui = &mut inner;
+        let mut name_width = 0.0;
+        if !self.compact && !self.label.is_empty() {
+            let label = ui.label(egui::RichText::new(self.label).font(font.clone()));
+            name_width = label.rect.width() + ui.spacing().item_spacing.x;
+        }
+        let control = Rect::from_min_size(
+            pos2(rect.left() + name_width, rect.top()),
+            vec2((rect.width() - name_width).max(1.0), rect.height()),
         );
 
-        let mut response = inner.inner;
+        let style = ChoiceStyle::of(ui, labels, &font, control.width());
+        let on = |label: &str| label.eq_ignore_ascii_case("on");
+        let mut responses = Vec::new();
+        match style {
+            ChoiceStyle::Toggle => {
+                // On or off: one button, lit while on, named for the setting.
+                let on_index = if on(&labels[1]) { 1 } else { 0 };
+                let text = if self.label.is_empty() {
+                    labels[on_index].as_ref()
+                } else {
+                    self.label
+                };
+                let button = ui.put(
+                    control,
+                    egui::Button::selectable(
+                        current == on_index,
+                        egui::RichText::new(text).font(font.clone()),
+                    )
+                    .min_size(vec2(0.0, 0.0)),
+                );
+                if button.clicked() {
+                    picked = Some(1 - current.min(1));
+                }
+                responses.push(button);
+            }
+            ChoiceStyle::Segments => {
+                // A few options: all of them at once, the chosen one lit.
+                let width = control.width() / labels.len() as f32;
+                for (index, label) in labels.iter().enumerate() {
+                    let segment = Rect::from_min_size(
+                        pos2(control.left() + index as f32 * width, control.top()),
+                        vec2(width, control.height()),
+                    );
+                    let button = ui.put(
+                        segment,
+                        egui::Button::selectable(
+                            index == current,
+                            egui::RichText::new(label.as_ref()).font(font.clone()),
+                        )
+                        .min_size(vec2(0.0, 0.0)),
+                    );
+                    if button.clicked() {
+                        picked = Some(index);
+                    }
+                    responses.push(button);
+                }
+            }
+            ChoiceStyle::List => {
+                let text = labels.get(current).map_or("", |l| l.as_ref());
+                let (button, chosen) = dropdown(ui, id, control, text, labels, current, &font);
+                picked = chosen;
+                responses.push(button);
+            }
+        }
+
         let mut edit = None;
-        if selected != current {
-            edit = Some(ParamEdit::Set(selected as f32));
+        let mut response = response;
+        if let Some(index) = picked.filter(|&index| index != current) {
+            edit = Some(ParamEdit::Set(index as f32));
             response.mark_changed();
         }
-        if wants_reset(ui, &response) {
+        // The buttons cover the row, so ask where the pointer is, not who
+        // is hovered.
+        let targeted = responses.iter().any(Response::has_focus)
+            || (ui.rect_contains_pointer(rect) && ui.memory(|m| m.focused()).is_none());
+        resets |= targeted && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
+        for button in &responses {
+            button.context_menu(|ui| {
+                if ui.button("Reset to default").clicked() {
+                    resets = true;
+                    ui.close();
+                }
+            });
+        }
+        if resets {
             edit = Some(ParamEdit::Reset);
         }
-        response.context_menu(|ui| {
-            if ui.button("Reset to default").clicked() {
-                edit = Some(ParamEdit::Reset);
-                ui.close();
-            }
-        });
+        let tooltip = self.tooltip();
+        for button in &responses {
+            button.clone().on_hover_text(tooltip.clone());
+        }
         ParamOutput {
-            response: response.on_hover_text(self.tooltip()),
+            response: response.on_hover_text(tooltip),
             edit,
             gesture: Gesture::Idle,
         }
@@ -532,6 +594,117 @@ impl<'a> ParamField<'a> {
         }
         text
     }
+}
+
+/// How a choice between named options is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChoiceStyle {
+    /// Off and On: one button that is lit while on.
+    Toggle,
+    /// A few short options, side by side.
+    Segments,
+    /// Too many (or too long) to show at once: a button that opens a list.
+    List,
+}
+
+impl ChoiceStyle {
+    /// The most options shown side by side.
+    const MAX_SEGMENTS: usize = 4;
+
+    fn of(ui: &Ui, labels: &[std::borrow::Cow<'static, str>], font: &FontId, width: f32) -> Self {
+        let is_toggle = labels.len() == 2
+            && (labels[0].eq_ignore_ascii_case("off") && labels[1].eq_ignore_ascii_case("on")
+                || labels[0].eq_ignore_ascii_case("on") && labels[1].eq_ignore_ascii_case("off"));
+        if is_toggle {
+            return Self::Toggle;
+        }
+        if labels.len() > Self::MAX_SEGMENTS {
+            return Self::List;
+        }
+        // Each option needs its text and the button's padding.
+        let pad = 2.0 * ui.spacing().button_padding.x;
+        let needed: f32 = labels
+            .iter()
+            .map(|label| {
+                ui.painter()
+                    .layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+                    + pad
+            })
+            .sum();
+        if needed <= width {
+            Self::Segments
+        } else {
+            Self::List
+        }
+    }
+}
+
+/// A button showing the chosen option that opens a list under it. This is
+/// not egui's `ComboBox`: the list is a plain area that closes itself, so it
+/// does not depend on how the platform delivers a click (the combo box did
+/// not open for some Mac users). Returns the button and the option chosen
+/// this frame.
+fn dropdown(
+    ui: &mut Ui,
+    id: Id,
+    rect: Rect,
+    text: &str,
+    labels: &[std::borrow::Cow<'static, str>],
+    current: usize,
+    font: &FontId,
+) -> (Response, Option<usize>) {
+    let open_id = id.with("open");
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    let button = ui.put(
+        rect,
+        egui::Button::new(egui::RichText::new(format!("{text} ▾")).font(font.clone()))
+            .min_size(vec2(0.0, 0.0)),
+    );
+    if button.clicked() {
+        open = !open;
+    }
+    let mut picked = None;
+    if open {
+        let list = egui::Area::new(id.with("list"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.left_bottom())
+            .constrain(true)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(rect.width());
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            // Justified, so a row is the whole width of the list.
+                            ui.with_layout(
+                                egui::Layout::top_down_justified(egui::Align::LEFT),
+                                |ui| {
+                                    for (index, label) in labels.iter().enumerate() {
+                                        let r =
+                                            ui.selectable_label(index == current, label.as_ref());
+                                        if r.clicked() {
+                                            picked = Some(index);
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                });
+            });
+        let outside = ui.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| !list.response.rect.contains(p) && !rect.contains(p))
+        });
+        if picked.is_some() || outside || ui.input(|i| i.key_pressed(Key::Escape)) {
+            open = false;
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(open_id, open));
+    (button, picked)
 }
 
 /// A field that's being typed into.

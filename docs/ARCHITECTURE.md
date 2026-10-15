@@ -1278,7 +1278,7 @@ the running plugin, so they are heard at once. `capture(node)` reads the live
 plugin's saved state and every parameter's value; `Captured::commands` turns
 that into one `Command::Batch`: `SetConfig state` plus a `SetParam` per
 parameter, so the ports agree with the plugin (the ports win on the first
-block). The app opens editors from the properties panel (`Edit::PluginEditor`)
+block). The app opens editors from the properties panel or a double-click on the node (`Edit::PluginEditor`; a failure to open stays beside the button)
 and captures when the window closes (`Session::poll_plugin_editors`), as one
 undo step. That is a config change, so the node recompiles and its plugin is
 reloaded from the stored state. State changed while an editor is open is
@@ -1723,6 +1723,28 @@ It has these views:
     empty name, one with a line break, or one another port on that side has. An empty group name puts the default back.
   - **Idle outputs.** A track input's `audio` output is greyed while no clip
     plays on the track, and `midi` is greyed until there are MIDI clips.
+  - **Any-type group ports.** A group port nothing is wired to on either
+    side takes a wire of any kind (`PortKind::Any`, drawn half in the signal
+    colour and half in the event colour; a spare is a grey ring with two
+    coloured arcs). Its kind is never stored: `layout::Kinds` works it out
+    each frame from the wires on either side of the boundary (the kind of
+    what feeds it, else of what it feeds, looking through other groups up to
+    a few levels). So the first wire to either side solidifies the port, and
+    the far side then only takes that kind; removing the wires frees it
+    again. The engine needs nothing: flattening follows port keys, whatever
+    the wire carries.
+  - **Shown parameters.** `Node::param_shown` holds the user's choice, per
+    parameter, to draw it on the node in the graph or leave it off
+    (`Command::SetParamShown`, display only). The dot beside each parameter
+    in the properties panel makes the choice. With no choice, `Layout::param_shown`
+    decides: every parameter on a node with at most four inputs and four
+    outputs; on one with more, the parameters its type marks
+    `ParamInfo::featured` (the few most worth automating), or the first
+    four if it marks none. A parameter with a wire or an automation lane
+    stays on the node whatever the choice, and a mixer's per-input gain and
+    mute are not subject to it.
+  - **Fit.** `F` (or Home) with the pointer on the canvas, or View → Fit
+    Graph, fits the nodes of the level being edited in view.
   - **Port order** is display only. `Node::port_order` lists port keys in the
     order the editor shows them, set by dragging a port's label up or down its
     column (`Command::SetPortOrder`, one undo step). Ports are still found
@@ -1870,7 +1892,12 @@ through the telemetry API.
   hovering or the right-click menu to reset. With keyboard focus, the
   arrow keys nudge the value and Enter starts typing; AccessKit's increment
   and decrement actions work too.
-- **Drop-downs** for stepped parameters with labels.
+- **Choices** for stepped parameters with labels: a toggle button when the
+  labels are Off and On, radio-style segments when up to four short options
+  fit the row, and otherwise a drop-down. The drop-down is not egui's
+  `ComboBox` but a button that opens a plain area under it (closed by a pick,
+  Escape or a press elsewhere), so it does not depend on how the platform
+  delivers a click: the combo box would not open for a Mac user.
 - **Units:** values are stored in the unit they're shown in (a 0 to 100
   `Percent` parameter shows 50 as "50.0 %"). Hz and seconds switch to kHz
   and ms, and typed values accept the unit and those prefixes ("2k",

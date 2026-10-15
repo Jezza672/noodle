@@ -13,6 +13,10 @@ pub struct ParamInfo {
     pub unit: Unit,
     pub kind: ParamKind,
     pub modulation: Modulation,
+    /// One of the few parameters worth automating, which a node with many
+    /// ports shows on itself in the graph by default (see
+    /// [`Layout::param_shown`](crate::Layout::param_shown)).
+    pub featured: bool,
 }
 
 /// What a wire into a parameter's port does to the parameter's own value.
@@ -77,6 +81,7 @@ impl ParamInfo {
                 smoothing_ms: Self::DEFAULT_SMOOTHING_MS,
             },
             modulation: Modulation::Replace,
+            featured: false,
         }
     }
 
@@ -94,6 +99,15 @@ impl ParamInfo {
     /// where a choice starts.
     pub fn default_to(self, default: f32) -> Self {
         Self { default, ..self }
+    }
+
+    /// Marks the parameter as one of the most useful to automate, so a node
+    /// with many ports shows it on itself by default.
+    pub fn featured(self) -> Self {
+        Self {
+            featured: true,
+            ..self
+        }
     }
 
     pub fn log(self) -> Self {

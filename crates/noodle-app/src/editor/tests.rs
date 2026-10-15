@@ -791,6 +791,124 @@ fn home_fits_everything_in_view() {
 }
 
 #[test]
+fn f_fits_everything_in_view_and_so_does_the_menu_request() {
+    let mut h = rig();
+    let far = add(&mut h, Node::new("noodle.osc.sine").at(2000.0, 1200.0));
+    add(&mut h, Node::new("noodle.osc.sine").at(-1000.0, 0.0));
+    h.run();
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::F);
+    let canvas = h.state().editor.canvas;
+    let rect = scene(&h).node(far).unwrap().rect;
+    assert!(canvas.contains(screen(&h, rect.max)));
+    // Shift+F is freeze, not fit.
+    let zoom = h.state().editor.view.zoom;
+    h.state_mut().editor.view = super::View::default();
+    press(&mut h, p, Modifiers::SHIFT, Key::F);
+    assert_eq!(h.state().editor.view, super::View::default());
+    assert!(zoom < 1.0);
+    // The View menu asks for the same thing.
+    h.state_mut().editor.request_fit();
+    h.run();
+    assert!(canvas.contains(screen(&h, rect.max)));
+}
+
+#[test]
+fn a_dropdown_on_a_node_opens_and_picks() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
+    h.run();
+    h.get_by_label("Sine ▾").click();
+    h.run();
+    h.get_by_label("Saw").click();
+    h.run();
+    assert_eq!(param(&h, lfo, "shape"), Some(2.0));
+    // The list closed behind the pick.
+    assert!(h.query_by_label("Square").is_none());
+}
+
+#[test]
+fn a_node_with_many_ports_shows_only_its_featured_parameters() {
+    let mut h = rig();
+    let chorus = add(&mut h, Node::new("noodle.effect.chorus").at(0.0, 0.0));
+    h.run();
+    let shown = |h: &H, key: &str| {
+        scene(h)
+            .node(chorus)
+            .unwrap()
+            .port(Side::Input, key)
+            .is_some()
+    };
+    for key in ["in", "rate", "depth", "feedback", "mix"] {
+        assert!(shown(&h, key), "{key} is on the node");
+    }
+    assert!(!shown(&h, "delay"), "the others are left off");
+    // A node with few ports shows every one.
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    h.run();
+    assert!(
+        scene(&h)
+            .node(gain)
+            .unwrap()
+            .port(Side::Input, "gain")
+            .is_some()
+    );
+}
+
+#[test]
+fn the_dot_puts_a_parameter_on_the_node_or_takes_it_off() {
+    let mut h = rig();
+    let chorus = add(&mut h, Node::new("noodle.effect.chorus").at(0.0, 0.0));
+    let command = |key: &str, shown| {
+        Edit::Apply(Command::SetParamShown {
+            node: chorus,
+            key: key.into(),
+            shown: Some(shown),
+        })
+    };
+    h.state_mut()
+        .session
+        .edit([command("delay", true), command("rate", false)]);
+    h.run();
+    let shown = |h: &H, key: &str| {
+        scene(h)
+            .node(chorus)
+            .unwrap()
+            .port(Side::Input, key)
+            .is_some()
+    };
+    assert!(shown(&h, "delay"));
+    assert!(!shown(&h, "rate"));
+    // Undo puts it back as it was.
+    h.state_mut().session.undo();
+    h.state_mut().session.undo();
+    h.run();
+    assert!(!shown(&h, "delay"));
+    assert!(shown(&h, "rate"));
+}
+
+#[test]
+fn a_hidden_parameter_keeps_its_port_while_a_wire_goes_into_it() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(-300.0, 0.0));
+    let chorus = add(&mut h, Node::new("noodle.effect.chorus").at(0.0, 0.0));
+    connect(&mut h, lfo, "out", chorus, "delay");
+    h.run();
+    let node = scene(&h);
+    assert!(
+        node.node(chorus)
+            .unwrap()
+            .port(Side::Input, "delay")
+            .is_some()
+    );
+    assert!(
+        node.wires
+            .iter()
+            .any(|w| w.connection.to == Endpoint::new(chorus, "delay"))
+    );
+}
+
+#[test]
 fn ctrl_j_frames_the_selection_and_the_frame_carries_its_nodes() {
     let mut h = rig();
     let (sine, gain, _) = wired(&mut h);
@@ -1231,7 +1349,7 @@ fn a_wired_choice_has_no_field() {
     let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
     h.run();
     // A drop-down on a node shows its choice, here the default.
-    let combos = |h: &H| h.query_all_by_role(egui::accesskit::Role::ComboBox).count();
+    let combos = |h: &H| h.query_all_by_label("Sine ▾").count();
     assert_eq!(combos(&h), 1);
     connect(&mut h, lfo, "out", lfo, "shape");
     h.run();

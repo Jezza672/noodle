@@ -35,12 +35,17 @@ pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
 pub const PROPERTIES_WIDTH: f32 = 260.0;
 
 pub fn apply(ctx: &egui::Context) {
-    ctx.set_visuals(visuals());
-    ctx.global_style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 5.0);
-        style.spacing.button_padding = egui::vec2(8.0, 3.0);
-        style.spacing.interact_size.y = 22.0;
-    });
+    // The app is dark whatever the system is: without this a system in light
+    // mode leaves the light theme's own style on every widget that reads it.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.set_visuals_of(theme, visuals());
+        ctx.style_mut_of(theme, |style| {
+            style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+            style.spacing.button_padding = egui::vec2(8.0, 3.0);
+            style.spacing.interact_size.y = 22.0;
+        });
+    }
 }
 
 pub fn visuals() -> Visuals {
@@ -184,5 +189,24 @@ pub mod timeline {
         }
         let hue = (index as f32 * 0.17 + 0.52).fract();
         egui::ecolor::Hsva::new(hue, 0.5, 0.85, 1.0).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_app_is_dark_whatever_the_system_theme_is() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        assert_eq!(
+            ctx.options(|o| o.theme_preference),
+            egui::ThemePreference::Dark
+        );
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            ctx.set_theme(theme);
+            assert_eq!(ctx.global_style().visuals.panel_fill, PANEL, "{theme:?}");
+        }
     }
 }

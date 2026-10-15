@@ -40,16 +40,16 @@ struct ChorusPorts {
     #[param(
         "rate",
         "Rate",
-        ParamInfo::new(0.05, 10.0, 0.6).log().unit(Unit::Hertz).offset()
+        ParamInfo::new(0.05, 10.0, 0.6).log().unit(Unit::Hertz).offset().featured()
     )]
     rate: (),
-    #[param("depth", "Depth", ParamInfo::new(0.0, 15.0, 3.0).offset())]
+    #[param("depth", "Depth", ParamInfo::new(0.0, 15.0, 3.0).offset().featured())]
     depth: (),
     #[param("delay", "Delay", ParamInfo::new(0.5, 40.0, 12.0).log())]
     delay: (),
-    #[param("feedback", "Feedback", ParamInfo::new(-0.95, 0.95, 0.0))]
+    #[param("feedback", "Feedback", ParamInfo::new(-0.95, 0.95, 0.0).featured())]
     feedback: (),
-    #[param("mix", "Mix", ParamInfo::new(0.0, 1.0, 0.5))]
+    #[param("mix", "Mix", ParamInfo::new(0.0, 1.0, 0.5).featured())]
     mix: (),
     #[output("out", "Out")]
     out: (),

@@ -140,7 +140,8 @@ impl NodeType for ParametricEq {
                     format!("Gain {i}"),
                     ParamInfo::new(-24.0, 24.0, 0.0)
                         .unit(Unit::Decibels)
-                        .offset(),
+                        .offset()
+                        .featured(),
                 )
                 .param(
                     format!("q{i}"),

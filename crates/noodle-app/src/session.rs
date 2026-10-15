@@ -175,6 +175,8 @@ pub struct Session {
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
     plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
+    /// Why a plugin's editor last failed to open, until it opens.
+    plugin_editor_errors: std::collections::BTreeMap<NodeId, String>,
     /// Whether plugins run in processes of their own.
     sandbox_plugins: bool,
     /// How many restarts of each plugin host have been reported, and when
@@ -421,6 +423,7 @@ impl Session {
             plugin_scan,
             plugin_files,
             plugin_editors: Default::default(),
+            plugin_editor_errors: Default::default(),
             sandbox_plugins: false,
             host_restarts: Default::default(),
             hosts_checked: None,
@@ -720,9 +723,19 @@ impl Session {
         match noodle_plugins::open_editor(node) {
             Ok(key) => {
                 self.plugin_editors.insert(node, key);
+                self.plugin_editor_errors.remove(&node);
             }
-            Err(error) => self.message = Some(format!("Couldn't open the editor: {error}")),
+            Err(error) => {
+                let why = format!("Couldn't open the editor: {error}");
+                self.plugin_editor_errors.insert(node, why.clone());
+                self.message = Some(why);
+            }
         }
+    }
+
+    /// Why the node's plugin editor didn't open, if it hasn't.
+    pub fn plugin_editor_error(&self, node: NodeId) -> Option<&str> {
+        self.plugin_editor_errors.get(&node).map(String::as_str)
     }
 
     /// Stores the state of each plugin whose editor has closed. The node
@@ -1992,6 +2005,7 @@ impl Effect {
             // Changes nothing the engine sees.
             Command::MoveNode { .. }
             | Command::SetPortOrder { .. }
+            | Command::SetParamShown { .. }
             | Command::SetTrackOrder(_)
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }

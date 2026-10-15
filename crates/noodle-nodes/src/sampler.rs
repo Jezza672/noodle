@@ -68,14 +68,14 @@ struct SamplerPorts {
     #[param(
         "tune",
         "Tune",
-        ParamInfo::new(-1_200.0, 1_200.0, 0.0).unit(Unit::Cents).offset()
+        ParamInfo::new(-1_200.0, 1_200.0, 0.0).unit(Unit::Cents).offset().featured()
     )]
     tune: (),
     #[param("keytrack", "Keytrack", ParamInfo::choice(["Off", "On"]).default_to(1.0))]
     keytrack: (),
-    #[param("start", "Start", ParamInfo::new(0.0, 1.0, 0.0).smoothing(0.0))]
+    #[param("start", "Start", ParamInfo::new(0.0, 1.0, 0.0).smoothing(0.0).featured())]
     start: (),
-    #[param("end", "End", ParamInfo::new(0.0, 1.0, 1.0).smoothing(0.0))]
+    #[param("end", "End", ParamInfo::new(0.0, 1.0, 1.0).smoothing(0.0).featured())]
     end: (),
     #[param("mode", "Mode", ParamInfo::choice(["One-shot", "Gate"]))]
     mode: (),
@@ -94,7 +94,7 @@ struct SamplerPorts {
     #[param(
         "gain",
         "Gain",
-        ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels).offset()
+        ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels).offset().featured()
     )]
     gain: (),
     #[output("out", "Out")]

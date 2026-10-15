@@ -438,3 +438,61 @@ fn a_field_abandoned_mid_typing_comes_back_as_a_slider() {
     p.drag(&mut h, WIDTH / 4.0);
     assert!(close(p.value, 75.0), "{}", p.value);
 }
+
+/// Presses and releases at `at`, a frame each.
+fn click_at(h: &mut Harness, p: &mut Param, at: Pos2) {
+    p.frame(h, vec![Event::PointerMoved(at)]);
+    p.frame(h, vec![pointer(at, true)]);
+    p.frame(h, vec![pointer(at, false)]);
+    p.frame(h, vec![]);
+}
+
+#[test]
+fn off_and_on_is_a_button_that_toggles() {
+    let mut h = Harness::new();
+    let mut p = Param::new(ParamInfo::choice(["Off", "On"]));
+    p.frame(&mut h, vec![]);
+    let at = p.rect.center();
+    click_at(&mut h, &mut p, at);
+    assert_eq!(p.value, 1.0);
+    click_at(&mut h, &mut p, at);
+    assert_eq!(p.value, 0.0);
+}
+
+#[test]
+fn a_few_options_are_radio_buttons_that_pick_directly() {
+    let mut h = Harness::new();
+    let mut p = Param::new(ParamInfo::choice(["A", "B", "C"]));
+    p.frame(&mut h, vec![]);
+    // The last option is at the right-hand end of the row, whatever the
+    // name takes on the left.
+    let last = pos2(p.rect.right() - 5.0, p.rect.center().y);
+    click_at(&mut h, &mut p, last);
+    assert_eq!(p.value, 2.0);
+    click_at(&mut h, &mut p, last);
+    assert_eq!(
+        p.value, 2.0,
+        "choosing the same option again changes nothing"
+    );
+    let first = pos2(p.rect.left() + 60.0, p.rect.center().y);
+    click_at(&mut h, &mut p, first);
+    assert_eq!(p.value, 0.0);
+}
+
+#[test]
+fn many_options_open_a_list_that_picks_one() {
+    let mut h = Harness::new();
+    let mut p = Param::new(ParamInfo::choice(["A", "B", "C", "D", "E", "F"]));
+    p.frame(&mut h, vec![]);
+    let at = p.rect.center();
+    click_at(&mut h, &mut p, at);
+    assert_eq!(p.value, 0.0, "opening the list picks nothing");
+    // The list sits under the button; its second row is the option "B".
+    let row = pos2(at.x, p.rect.bottom() + 45.0);
+    click_at(&mut h, &mut p, row);
+    assert_eq!(p.value, 1.0, "the second row was picked");
+    // And it closed: the same place now picks nothing.
+    let value = p.value;
+    click_at(&mut h, &mut p, row);
+    assert_eq!(p.value, value);
+}
