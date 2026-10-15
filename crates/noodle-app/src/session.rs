@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod export;
+mod library;
 pub use export::ExportChoice;
+pub use library::LibraryEdit;
 
 use crate::filewatch::FileWatch;
 use crate::freezing::{Badge, Freezing, Look, Polled};
@@ -62,6 +64,9 @@ pub enum Edit {
         node: NodeId,
         open: bool,
     },
+    /// Saves to or deletes from the user's library. Not an undo step: the
+    /// project is untouched.
+    Library(LibraryEdit),
 }
 
 /// The node types a session can use, and the hub their telemetry (meters,
@@ -167,6 +172,8 @@ pub struct Session {
     project: Project,
     history: History,
     registry: Registry,
+    /// Group templates and presets, system and the user's.
+    library: noodle_core::library::Library,
     /// The plugin node types in `registry`.
     plugins: noodle_plugins::Catalog,
     /// Where a background plugin scan reports, until it has.
@@ -419,6 +426,7 @@ impl Session {
             project: Project::new(),
             history: History::new(),
             registry,
+            library: noodle_core::library::Library::in_memory(),
             plugins,
             plugin_scan,
             plugin_files,
@@ -956,6 +964,10 @@ impl Session {
                 }
                 Edit::PluginEditor { node, open } => {
                     self.plugin_editor(node, open);
+                    continue;
+                }
+                Edit::Library(edit) => {
+                    self.library_edit(edit);
                     continue;
                 }
             };
@@ -2006,6 +2018,7 @@ impl Effect {
             Command::MoveNode { .. }
             | Command::SetPortOrder { .. }
             | Command::SetParamShown { .. }
+            | Command::SetPreset { .. }
             | Command::SetTrackOrder(_)
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }

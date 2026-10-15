@@ -10,6 +10,7 @@ mod edit;
 mod frame;
 mod graph;
 pub mod group;
+pub mod library;
 mod project;
 pub mod spare;
 mod timeline;

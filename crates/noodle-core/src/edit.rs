@@ -53,6 +53,12 @@ pub enum Command {
         key: String,
         shown: Option<bool>,
     },
+    /// Records which library preset was last applied to a node or group, or
+    /// `None` to forget it. Changes nothing the engine sees.
+    SetPreset {
+        node: NodeId,
+        preset: Option<String>,
+    },
     /// Moves a node into a group, or `None` out to the top level. The node
     /// can't be wired to nodes outside its new group.
     SetParent {
@@ -312,6 +318,10 @@ impl Command {
             Command::SetParent { node, parent } => {
                 let old = graph.set_parent(node, parent)?;
                 Command::SetParent { node, parent: old }
+            }
+            Command::SetPreset { node, preset } => {
+                let old = std::mem::replace(&mut graph.node_mut(node)?.preset, preset);
+                Command::SetPreset { node, preset: old }
             }
             Command::Batch(_)
             | Command::RemoveNode { .. }

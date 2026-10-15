@@ -1,0 +1,144 @@
+[
+    Template((
+        name: "Clap",
+        slug: "clap",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Clap"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:pitch\n2:gate\n3:velocity\n4:cutoff\n5:decay"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.noise.white",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 1500.0, "resonance": 0.3},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.008, "decay": 0.16, "release": 0.04, "sustain": 0.0},
+                position: (x: 660.0, y: 260.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.vca",
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.util.vca",
+                position: (x: 1100.0, y: 0.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1350.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 4, port: "cutoff"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 5, port: "decay"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 5, port: "gate"),
+            ),
+            (
+                from: (node: 4, port: "band"),
+                to: (node: 6, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "level"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 7, port: "level"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 8, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Clap",
+        slug: "clap-clap",
+        topology: "1a04d8c25721d122",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 1500.0, "resonance": 0.3},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.008, "decay": 0.16, "release": 0.04, "sustain": 0.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Low Clap",
+        slug: "clap-low-clap",
+        topology: "1a04d8c25721d122",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 1000.0, "resonance": 0.3},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.008, "decay": 0.2, "release": 0.04, "sustain": 0.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Snappy Clap",
+        slug: "clap-snappy-clap",
+        topology: "1a04d8c25721d122",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 2000.0, "resonance": 0.3},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.008, "decay": 0.1, "release": 0.04, "sustain": 0.0},
+            ),
+        ],
+    )),
+]
