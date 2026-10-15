@@ -90,7 +90,7 @@
     GroupPreset((
         name: "Closed Hat",
         slug: "hat-closed-hat",
-        topology: "01a9f985318e0f88",
+        topology: "c0dd57ca77cbfbd3",
         nodes: [
             (),
             (),
@@ -99,16 +99,16 @@
             (
                 params: {"cutoff": 7500.0, "resonance": 0.15},
             ),
+            (),
             (
                 params: {"attack": 0.001, "decay": 0.045, "release": 0.01, "sustain": 0.0},
             ),
-            (),
         ],
     )),
     GroupPreset((
         name: "Open Hat",
         slug: "hat-open-hat",
-        topology: "01a9f985318e0f88",
+        topology: "c0dd57ca77cbfbd3",
         nodes: [
             (),
             (),
@@ -117,16 +117,16 @@
             (
                 params: {"cutoff": 6000.0, "resonance": 0.15},
             ),
+            (),
             (
                 params: {"attack": 0.001, "decay": 0.22, "release": 0.01, "sustain": 0.0},
             ),
-            (),
         ],
     )),
     GroupPreset((
         name: "Bright Hat",
         slug: "hat-bright-hat",
-        topology: "01a9f985318e0f88",
+        topology: "c0dd57ca77cbfbd3",
         nodes: [
             (),
             (),
@@ -135,10 +135,10 @@
             (
                 params: {"cutoff": 9000.0, "resonance": 0.15},
             ),
+            (),
             (
                 params: {"attack": 0.001, "decay": 0.05, "release": 0.01, "sustain": 0.0},
             ),
-            (),
         ],
     )),
 ]

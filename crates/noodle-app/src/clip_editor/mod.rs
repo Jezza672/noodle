@@ -25,12 +25,17 @@ use noodle_core::{
     TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
 };
 
+mod plain;
+
 use crate::clip_panel;
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
 use crate::timeline::Loaded;
 
-const TOOLBAR: f32 = 26.0;
+const TOOLBAR: f32 = crate::toolbar::HEIGHT;
+const HINT_PLAIN: &str =
+    "Drag the waveform to slide the audio under the clip · Warp gives it beats to pin";
+const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap";
 const RULER: f32 = 18.0;
 const FLAGS: f32 = 22.0;
 const BRACE: f32 = 14.0;
@@ -109,8 +114,14 @@ pub struct ClipEditor {
     drag: Option<Drag>,
     /// Where the editor was last right-clicked, in beats.
     menu_at: Option<f64>,
+    /// The drag of an unwarped clip's waveform, if there is one.
+    slip: Option<plain::Slip>,
+    /// Whether the last frame drew an unwarped clip (in seconds, not beats).
+    plain: bool,
     #[cfg(test)]
     geometry: Option<Geometry>,
+    #[cfg(test)]
+    plain_geometry: Option<plain::Geometry>,
 }
 
 /// Where things were drawn last frame, for tests to point at.
@@ -144,8 +155,12 @@ impl Default for ClipEditor {
             marquee: None,
             drag: None,
             menu_at: None,
+            slip: None,
+            plain: false,
             #[cfg(test)]
             geometry: None,
+            #[cfg(test)]
+            plain_geometry: None,
         }
     }
 }
@@ -158,6 +173,7 @@ impl ClipEditor {
             self.selected.clear();
             self.marquee = None;
             self.drag = None;
+            self.slip = None;
             self.focus = true;
         }
     }
@@ -165,6 +181,7 @@ impl ClipEditor {
     pub fn close(&mut self) {
         self.clip = None;
         self.drag = None;
+        self.slip = None;
         self.marquee = None;
         self.selected.clear();
     }
@@ -193,6 +210,11 @@ impl ClipEditor {
     pub fn geometry(&self) -> Option<Geometry> {
         self.geometry
     }
+
+    #[cfg(test)]
+    pub fn plain_geometry(&self) -> Option<plain::Geometry> {
+        self.plain_geometry
+    }
 }
 
 /// What the user did in the clip editor.
@@ -216,17 +238,6 @@ impl Axis {
 
     fn beat(self, x: f32) -> f64 {
         f64::from((x - self.origin) / self.ppb)
-    }
-}
-
-/// The grid a marker snaps to, in beats, at this zoom.
-fn grid(ppb: f32) -> f64 {
-    if ppb >= 80.0 {
-        0.25
-    } else if ppb >= 30.0 {
-        0.5
-    } else {
-        1.0
     }
 }
 
@@ -270,20 +281,30 @@ pub fn show(
     );
 
     let toolbar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR));
-    let mut closed = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(toolbar.shrink2(vec2(8.0, 2.0))),
+    let unwarped = project.warp_of(id).is_none();
+    if state.plain != unwarped {
+        // The horizontal axis changes between seconds and beats.
+        state.plain = unwarped;
+        state.focus = true;
+    }
+    let closed = crate::toolbar::show(
+        ui,
+        toolbar,
+        &format!("Clip editor · {name}"),
+        if unwarped { HINT_PLAIN } else { HINT },
         |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.label(format!("Clip editor · {name}"));
-                ui.separator();
-                ui.weak("Double-click to add a marker, or a transient's handle to pin it · drag a flag to move it (Shift or a dragged box picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        closed = true;
-                    }
-                });
-            });
+            if unwarped
+                && ui
+                    .button("Warp")
+                    .on_hover_text(
+                        "Give this clip beats to pin: the tempo is guessed from its hits",
+                    )
+                    .clicked()
+            {
+                let analysis = loaded.and_then(|l| l.analysis.as_deref());
+                out.edits
+                    .extend(clip_panel::start_warp(project, id, analysis).map(Edit::Apply));
+            }
         },
     );
     if closed {
@@ -308,18 +329,8 @@ pub fn show(
         return out;
     };
     let Some((_, warp)) = project.warp_of(id) else {
-        let message = Rect::from_center_size(body.center(), vec2(360.0, 56.0));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(message), |ui| {
-            ui.vertical_centered(|ui| {
-                ui.label("This clip isn't warped, so it has no beats to pin.");
-                if ui.button("Warp").clicked() {
-                    out.edits.extend(
-                        clip_panel::start_warp(project, id, loaded.analysis.as_deref())
-                            .map(Edit::Apply),
-                    );
-                }
-            });
-        });
+        out.edits
+            .extend(plain::show(ui, state, session, id, loaded, body, playhead));
         return out;
     };
     let rate = f64::from(loaded.source.sample_rate);
@@ -420,9 +431,11 @@ pub fn show(
 
     // Gestures.
     let response = ui.interact(area, ui.id().with("clip editor"), Sense::click_and_drag());
-    let (free, additive) =
-        ui.input(|i| (i.modifiers.alt, i.modifiers.shift || i.modifiers.command));
-    let step = grid(state.ppb);
+    let (alt, additive) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift || i.modifiers.command));
+    // Alt, or the snap setting at Off, lets a marker go anywhere. Otherwise it
+    // snaps to the setting's grid, in beats.
+    let free = alt || session.snap() <= 1;
+    let step = session.snap() as f64 / f64::from(TICKS_PER_QUARTER as u32);
     let hit = |pos: Pos2| hit_test(pos, &rows, axis, warp, onsets);
     if let Some(pos) = response.hover_pos() {
         ui.ctx().set_cursor_icon(match hit(pos) {

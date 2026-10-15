@@ -289,6 +289,7 @@ fn sample_picker(
         )
     };
     ui.label(RichText::new(status).weak());
+    crate::sample_view::preview(ui, session, id, 64.0);
     let error_id = egui::Id::new((id, "sample_error"));
     if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
         ui.colored_label(crate::theme::MUTE, error);
@@ -1367,7 +1368,7 @@ mod tests {
 
     #[test]
     fn nothing_fits_a_node_no_preset_was_made_for() {
-        let mut h = harness([Node::new("noodle.osc.sine")]);
+        let mut h = harness([Node::new("noodle.noise.white")]);
         h.get_by_role(egui::accesskit::Role::ComboBox).click();
         h.run();
         h.get_by_label("None fit yet");
