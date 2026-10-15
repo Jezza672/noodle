@@ -46,7 +46,7 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 
 | Crate | What it is |
 |---|---|
-| `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. |
+| `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. `library/`: group templates, node and group presets, topology, the system and user stores; `library/system/*.ron` are generated (`UPDATE_LIBRARY=1 cargo test -p noodle-eval --test library`). |
 | `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. |
 | `noodle-macros` | `#[derive(Ports)]`: a node's `Layout` and port-index constants from one declaration. Re-exported as `noodle_engine::Ports`. |
 | `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `track_input_midi.rs`, `warped_clips.rs` (Repitch playback), `stretched_clips.rs` and `stretched_playback.rs` (Grain and Beats, offline and live), `benches/warp.rs` (stretcher speed), `midi_input.rs`, `offline_clips.rs`, `export.rs`, `m2_acceptance.rs`, `parallel.rs` (worker threads; counts allocations on every thread, so it is one test function), `profile.rs`. `render_project_with_clips` renders a project with audio clips offline. |

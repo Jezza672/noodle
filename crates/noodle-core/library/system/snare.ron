@@ -1,0 +1,221 @@
+[
+    Template((
+        name: "Snare",
+        slug: "snare",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Snare"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:pitch\n2:gate\n3:velocity\n4:tune\n5:decay"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.noise.white",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 2200.0, "resonance": 0.25},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.001, "decay": 0.2, "release": 0.04, "sustain": 0.0},
+                position: (x: 660.0, y: 260.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.vca",
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.osc.sine",
+                params: {"frequency": 190.0},
+                position: (x: 440.0, y: 520.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.001, "decay": 0.1, "release": 0.03, "sustain": 0.0},
+                position: (x: 660.0, y: 520.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.util.vca",
+                position: (x: 880.0, y: 520.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.util.mix",
+                params: {"gain1": 0.0, "gain2": -4.0},
+                config: {"inputs": 2},
+                position: (x: 1100.0, y: 260.0),
+                parent: Some(1),
+            ),
+            11: (
+                type: "noodle.util.vca",
+                position: (x: 1320.0, y: 0.0),
+                parent: Some(1),
+            ),
+            12: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1570.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 5, port: "decay"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 5, port: "gate"),
+            ),
+            (
+                from: (node: 4, port: "band"),
+                to: (node: 6, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "level"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 7, port: "frequency"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 8, port: "gate"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 9, port: "in"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 9, port: "level"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 10, port: "in1"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 10, port: "in2"),
+            ),
+            (
+                from: (node: 10, port: "out"),
+                to: (node: 11, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 11, port: "level"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 12, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Snare",
+        slug: "snare-snare",
+        topology: "e2556e36d41933e9",
+        nodes: [
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 2200.0, "resonance": 0.25},
+            ),
+            (
+                params: {"gain1": 0.0, "gain2": -4.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"frequency": 190.0},
+            ),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.1, "release": 0.03, "sustain": 0.0},
+            ),
+            (
+                params: {"attack": 0.001, "decay": 0.2, "release": 0.04, "sustain": 0.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Tight Snare",
+        slug: "snare-tight-snare",
+        topology: "e2556e36d41933e9",
+        nodes: [
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 2600.0, "resonance": 0.25},
+            ),
+            (
+                params: {"gain1": 0.0, "gain2": -4.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"frequency": 210.0},
+            ),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.08, "release": 0.03, "sustain": 0.0},
+            ),
+            (
+                params: {"attack": 0.001, "decay": 0.16, "release": 0.04, "sustain": 0.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Loose Snare",
+        slug: "snare-loose-snare",
+        topology: "e2556e36d41933e9",
+        nodes: [
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 1800.0, "resonance": 0.25},
+            ),
+            (
+                params: {"gain1": 0.0, "gain2": -4.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"frequency": 180.0},
+            ),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.15, "release": 0.03, "sustain": 0.0},
+            ),
+            (
+                params: {"attack": 0.001, "decay": 0.3, "release": 0.04, "sustain": 0.0},
+            ),
+            (),
+        ],
+    )),
+]
