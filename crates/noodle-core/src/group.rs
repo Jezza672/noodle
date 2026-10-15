@@ -504,54 +504,18 @@ pub(crate) fn migrate_boundaries(
 /// output wired to the group's output by default, and a group input beside
 /// them so the group has the same controls at both ends. One undo step.
 ///
+/// A track is the hidden library template
+/// [`library::TRACK`](crate::library::TRACK), and this instantiates it: the
+/// group, then its group input `in`, track input and group output `out`.
+///
 /// Returns the group's ID and the command. `parent` is the group the track
-/// goes in, `None` for the top level. The group input is named `in` and the
-/// output `out`.
+/// goes in, `None` for the top level.
 pub fn create_track(
     parent: Option<NodeId>,
     position: Position,
-    mut new_id: impl FnMut() -> NodeId,
+    new_id: impl FnMut() -> NodeId,
 ) -> (NodeId, Command) {
-    let group = new_id();
-    let (input, source, output) = (new_id(), new_id(), new_id());
-    let inside = |node: Node, x: f32, y: f32| {
-        let mut node = node.at(position.x + x, position.y + y);
-        node.parent = Some(group);
-        node
-    };
-    let named =
-        |kind: &str, name: &str| Node::new(kind).with_config(ports_config(&[(1, name.to_owned())]));
-    let mut group_node = Node::new(GROUP).at(position.x, position.y);
-    group_node.parent = parent;
-    let command = Command::Batch(vec![
-        Command::AddNode {
-            id: group,
-            node: group_node,
-        },
-        Command::AddNode {
-            id: input,
-            node: inside(named(GROUP_INPUT, "in"), -300.0, 0.0),
-        },
-        Command::AddNode {
-            id: source,
-            node: inside(Node::new(TRACK_INPUT), 0.0, 0.0),
-        },
-        Command::AddNode {
-            id: output,
-            node: inside(
-                named(GROUP_OUTPUT, "out")
-                    .with_param(control_key(GAIN, 1), 0.0)
-                    .with_param(control_key(MUTE, 1), 0.0),
-                300.0,
-                0.0,
-            ),
-        },
-        Command::Connect(Connection {
-            from: Endpoint::new(source, AUDIO),
-            to: Endpoint::new(output, port_key(1)),
-        }),
-    ]);
-    (group, command)
+    crate::library::track_template().instantiate(crate::library::TRACK, parent, position, new_id)
 }
 
 /// Folds `nodes` into a new group and returns its ID with the command that
