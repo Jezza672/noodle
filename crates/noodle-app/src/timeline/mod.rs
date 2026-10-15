@@ -1053,7 +1053,8 @@ pub fn show(
         };
         if tracks.is_empty() || y >= rows.total() {
             // Dropped on the empty space under the tracks: a new track for it.
-            let (new_track, track) = add_track::with_input(project.graph(), || session.new_node_id());
+            let (new_track, track) =
+                add_track::with_input(project.graph(), || session.new_node_id());
             let added = import::import(session, &dropped, track, at);
             edits.extend(
                 added

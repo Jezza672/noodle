@@ -32,7 +32,9 @@ pub fn show(
                 ui.separator();
                 middle(ui);
                 if !hint.is_empty() {
-                    ui.add(egui::Label::new(RichText::new(hint).color(colors::TEXT_WEAK)).truncate());
+                    ui.add(
+                        egui::Label::new(RichText::new(hint).color(colors::TEXT_WEAK)).truncate(),
+                    );
                 }
             });
         },

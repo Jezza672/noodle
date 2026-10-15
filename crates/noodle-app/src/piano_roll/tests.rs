@@ -331,3 +331,15 @@ fn the_selection_follows_its_notes_through_undo_and_redo() {
 fn click(h: &mut H, pos: Pos2) {
     crate::testkit::click(h, pos, Modifiers::NONE);
 }
+
+#[test]
+fn the_toolbar_keeps_its_close_button_and_follows_the_snap_setting() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = rig(&[]);
+    let close = h.get_by_label("Close").rect();
+    assert!(close.right() <= 900.0 && close.left() > 400.0, "{close:?}");
+    h.get_by_label("Snap: 1/4 beat");
+    h.state_mut().session.set_snap(960);
+    h.run();
+    h.get_by_label("Snap: Beat");
+}

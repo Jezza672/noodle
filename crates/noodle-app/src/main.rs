@@ -21,6 +21,7 @@ mod pill_buttons;
 mod plugin_browser;
 mod prefs;
 mod properties;
+mod sample_view;
 mod session;
 mod snap;
 mod tempo;

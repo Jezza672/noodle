@@ -180,6 +180,7 @@ fn sample_picker(
         )
     };
     ui.label(RichText::new(status).weak());
+    crate::sample_view::preview(ui, session, id, 64.0);
     let error_id = egui::Id::new((id, "sample_error"));
     if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
         ui.colored_label(crate::theme::MUTE, error);
