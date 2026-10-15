@@ -82,6 +82,10 @@ fn frame_offset(arrival: u64, previous_start: Option<u64>, sample_rate: f32, fra
 }
 
 impl NodeType for MidiIn {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

@@ -159,6 +159,10 @@ fn layout_of(descriptor: &Descriptor, exposed: &[&ParamDesc]) -> Layout {
 }
 
 impl NodeType for PluginNodeType {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         self.info
     }
@@ -357,6 +361,10 @@ impl PluginNodeType {
 pub(crate) struct Shared(pub Arc<PluginNodeType>, pub bool);
 
 impl NodeType for Shared {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         self.0.info()
     }

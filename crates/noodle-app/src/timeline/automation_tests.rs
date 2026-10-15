@@ -5,7 +5,7 @@ use crate::testkit;
 use egui::{Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use noodle_core::group::{self, GROUP_OUTPUT, create_track};
+use noodle_core::group::{self, GROUP_OUTPUT, TRACK_INPUT, create_track};
 use noodle_core::{
     AutomationLane, AutomationPoint, Command, Curve, Endpoint, LaneId, NodeId, Position, Tick,
 };
@@ -21,6 +21,8 @@ struct Rig {
 type H = Harness<'static, Rig>;
 
 /// One track, with its group's output node.
+/// A harness over one new track, and its track input, which holds the
+/// track's gain and mute.
 fn rig() -> (H, NodeId) {
     let mut session = Session::new(Nodes::all());
     let (_, command) = create_track(None, Position { x: 0.0, y: 0.0 }, || session.new_node_id());
@@ -29,7 +31,7 @@ fn rig() -> (H, NodeId) {
         .project()
         .graph()
         .nodes()
-        .find(|(_, node)| node.type_id == GROUP_OUTPUT)
+        .find(|(_, node)| node.type_id == TRACK_INPUT)
         .map(|(id, _)| id)
         .unwrap();
     let mut h = Harness::builder()
@@ -100,7 +102,7 @@ fn spot(h: &H, id: LaneId, beat: f32, along: f32) -> Pos2 {
 }
 
 fn gain(output: NodeId) -> Endpoint {
-    Endpoint::new(output, group::control_key(group::GAIN, 1))
+    Endpoint::new(output, group::TRACK_GAIN)
 }
 
 #[test]
@@ -126,7 +128,7 @@ fn the_track_header_adds_a_gain_lane_that_changes_nothing() {
     // Set the gain first, so the new lane has something to match.
     h.state_mut().session.edit([Edit::Apply(Command::SetParam {
         node: output,
-        key: group::control_key(group::GAIN, 1),
+        key: group::TRACK_GAIN.into(),
         value: Some(-6.0),
     })]);
     h.run();
@@ -192,7 +194,7 @@ fn a_mute_lane_holds_and_snaps_to_off_or_on() {
     let (mut h, output) = rig();
     let id = add_lane(
         &mut h,
-        Endpoint::new(output, group::control_key(group::MUTE, 1)),
+        Endpoint::new(output, group::TRACK_MUTE),
         vec![point(0, 0.0, Curve::Hold)],
     );
     let at = spot(&h, id, 1.0, 0.8);
@@ -313,7 +315,16 @@ fn the_lane_header_removes_the_lane() {
 
 #[test]
 fn a_lane_on_solo_is_shown_as_unable_to_work() {
-    let (mut h, output) = rig();
+    let (mut h, _) = rig();
+    let output = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .nodes()
+        .find(|(_, node)| node.type_id == GROUP_OUTPUT)
+        .map(|(id, _)| id)
+        .unwrap();
     let id = add_lane(
         &mut h,
         Endpoint::new(output, group::control_key(group::SOLO, 1)),
@@ -386,7 +397,7 @@ fn a_track_control_with_a_lane_is_greyed_and_says_so() {
     assert!(slider.accesskit_node().is_disabled());
     add_lane(
         &mut h,
-        Endpoint::new(output, group::control_key(group::MUTE, 1)),
+        Endpoint::new(output, group::TRACK_MUTE),
         vec![point(0, 0.0, Curve::Hold)],
     );
     assert!(h.get_by_label("M").accesskit_node().is_disabled());

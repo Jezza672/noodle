@@ -446,10 +446,9 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
         let found = outputs
             .iter()
             .find_map(|&out| {
-                project.lane_for(&Endpoint::new(
-                    out,
-                    noodle_core::group::control_key(MUTE, 1),
-                ))
+                let group = project.graph().node(out)?.parent?;
+                let (node, key) = project.graph().control_target(group, MUTE)?;
+                project.lane_for(&Endpoint::new(node, key))
             })
             .expect("the lane was made");
         (found.0, found.1.clone())
@@ -477,8 +476,9 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
     h.run();
     h.get_by_label("Mixer").click();
     h.run();
-    h.get_by_label("Track 1");
-    h.get_by_label("Track 2");
+    // Each name is on the track's header and on its mixer strip.
+    assert_eq!(h.get_all_by_label("Track 1").count(), 2);
+    assert_eq!(h.get_all_by_label("Track 2").count(), 2);
 
     // Offline, the mix is both clips for two beats, then the first alone.
     let project = h.state().session().project().clone();

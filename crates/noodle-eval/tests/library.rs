@@ -62,10 +62,8 @@ fn every_system_preset_fits_its_template() {
     );
 }
 
-/// Nodes that have nothing worth a preset (no settings, or only wiring), and
-/// Dynamics, whose presets are the Compressor, Limiter and Gate.
+/// Nodes that have nothing worth a preset (no settings, or only wiring).
 const WITHOUT_PRESETS: &[&str] = &[
-    "noodle.effect.dynamics",
     "noodle.event.mono",
     "noodle.group.stage",
     "noodle.input.button",
@@ -129,5 +127,19 @@ fn every_node_has_presets_that_fit() {
                 "{id} needs at least two presets"
             );
         }
+    }
+}
+
+/// Compressor, Limiter, Gate and Expander are presets of the Dynamics node.
+#[test]
+fn the_dynamics_modes_are_presets_of_the_dynamics_node() {
+    let library = Library::in_memory();
+    let names: Vec<&str> = library
+        .node_presets()
+        .filter(|(_, p)| p.node_type == noodle_nodes::DYNAMICS_ID)
+        .map(|(_, p)| p.name.as_str())
+        .collect();
+    for wanted in ["Compressor", "Limiter", "Gate", "Expander"] {
+        assert!(names.contains(&wanted), "{wanted} in {names:?}");
     }
 }
