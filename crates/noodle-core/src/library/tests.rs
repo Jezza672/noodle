@@ -603,7 +603,12 @@ fn files_with_a_slug_already_taken_get_their_own() {
     // The same file copied in under another name.
     std::fs::copy(dir.join("node-warm.ron"), dir.join("copy-of-warm.ron")).unwrap();
     let reopened = Library::open(Some(dir.clone()));
-    let ids: Vec<&str> = reopened.node_presets().map(|(id, _)| id).collect();
+    // (The system library has node presets of its own.)
+    let ids: Vec<&str> = reopened
+        .node_presets()
+        .map(|(id, _)| id)
+        .filter(|id| id.starts_with("user:"))
+        .collect();
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1], "both are reachable");
     let _ = std::fs::remove_dir_all(&dir);
