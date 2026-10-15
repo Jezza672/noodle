@@ -5,7 +5,7 @@
 //!   remembers its source in [`Node::template`] and nothing more), so editing
 //!   or upgrading a template never changes a project.
 //! - A [`NodePreset`] is one node's parameter values and config, applicable
-//!   to a node of the same type and port layout.
+//!   to a node of the same type that has the ports it sets, found by name.
 //! - A [`GroupPreset`] is the values of every node inside a group, applicable
 //!   to a group with the same [topology](topology).
 //!
@@ -17,8 +17,9 @@
 //! per entry, which can be shared by copying them.
 //!
 //! Port layouts come from the node types, which this crate doesn't know, so
-//! the functions that compare them take a [`LayoutOf`] that gives a node's
-//! layout as a string (equal strings mean equal ports).
+//! the functions that need them take a [`LayoutOf`] that gives a node's port
+//! keys as one string. Presets look ports up by name, never by position, so
+//! a node type gaining or reordering ports doesn't break its presets.
 //!
 //! A track is a *hidden* template ([`track_template`]): the library doesn't
 //! list it and the Add menu doesn't offer it. Only
@@ -37,9 +38,16 @@ pub use presets::{GroupPreset, NodePreset, PresetError, PresetValues};
 pub use store::{Library, SYSTEM, Stored, USER};
 pub use template::{GroupTemplate, TRACK, TemplateError, track_template};
 
-/// A node's port layout as a string: equal strings mean the same ports.
-/// `None` for a node whose type is unknown.
+/// A node's port keys as a string: sorted `;`-separated tokens, `i:key` for an
+/// input, `o:key` for an output, `ei:` and `eo:` for events. `None` for a node
+/// whose type is unknown.
 pub type LayoutOf<'a> = &'a dyn Fn(&Node) -> Option<String>;
+
+/// Whether the port signature `layout` has an input called `key`.
+pub(crate) fn has_input(layout: &str, key: &str) -> bool {
+    let want = format!("i:{key}");
+    layout.split(';').any(|token| token == want)
+}
 
 /// What a library file holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

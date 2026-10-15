@@ -16,7 +16,7 @@ use noodle_engine::OUTPUT_ID;
 use noodle_engine::{
     BlockStats, CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry,
 };
-use noodle_nodes::{METERED, SCOPE_ID};
+use noodle_nodes::{ENVELOPE_ID, METERED, SCOPE_ID};
 
 use crate::theme::editor as colors;
 use crate::widgets::{GraphKind, Live};
@@ -26,6 +26,7 @@ pub fn height(type_id: &str) -> f32 {
     match type_id {
         id if METERED.contains(&id) => 30.0,
         SCOPE_ID | OUTPUT_ID => 80.0,
+        ENVELOPE_ID => 56.0,
         id if GraphKind::of(id).is_some() => 56.0,
         _ => 0.0,
     }
@@ -33,7 +34,9 @@ pub fn height(type_id: &str) -> f32 {
 
 /// Draws a node's body into `rect`, the space [`height`] reserved, in screen
 /// points. Scale anything drawn by `zoom`. `values` gives the node's
-/// parameters, for the bodies that draw what they do.
+/// parameters, for the bodies that draw what they do; `curve` is an Envelope
+/// node's drawn curve, as its config text.
+#[allow(clippy::too_many_arguments)]
 pub fn paint(
     painter: &Painter,
     rect: Rect,
@@ -42,6 +45,7 @@ pub fn paint(
     type_id: &str,
     bodies: &Bodies,
     values: &dyn Fn(&str) -> f32,
+    curve: &str,
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
     match type_id {
@@ -53,12 +57,33 @@ pub fn paint(
             MeterAxis::Horizontal,
         ),
         SCOPE_ID | OUTPUT_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
+        ENVELOPE_ID => envelope(painter, area, zoom, curve),
         id => {
             if let Some(kind) = GraphKind::of(id) {
                 crate::widgets::graph::paint(painter, area, kind, zoom, values);
             }
         }
     }
+}
+
+/// An Envelope node's drawn curve, as a line under a faint baseline.
+fn envelope(painter: &Painter, area: Rect, zoom: f32, text: &str) {
+    let curve = noodle_nodes::EnvelopeCurve::from_text(text);
+    painter.rect_filled(area, 2.0 * zoom, colors::BODY);
+    let inner = area.shrink2(Vec2::new(3.0, 4.0) * zoom);
+    let line: Vec<Pos2> = (0..=64)
+        .map(|i| {
+            let x = i as f32 / 64.0;
+            Pos2::new(
+                inner.left() + x * inner.width(),
+                inner.bottom() - curve.eval(x) * inner.height(),
+            )
+        })
+        .collect();
+    painter.add(PathShape::line(
+        line,
+        Stroke::new(1.5 * zoom, colors::METER_RMS),
+    ));
 }
 
 /// What the bodies show, read from the engine once a frame.
@@ -754,6 +779,37 @@ mod tests {
         .unwrap();
         bodies.update(&telemetry, &project, 0.016);
         assert_eq!(bodies.param_live(gain, "gain"), None);
+    }
+
+    #[test]
+    fn an_envelope_draws_its_curve_on_its_body() {
+        assert!(height(ENVELOPE_ID) > 0.0);
+        let ctx = egui::Context::default();
+        let drawn = |text: &str| {
+            let output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+                let painter = ctx.layer_painter(egui::LayerId::background());
+                let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 60.0));
+                envelope(&painter, rect, 1.0, text);
+            });
+            let points = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Path(path) => Some(path.points.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            // Nothing renders these textures; dropping them unapplied panics.
+            std::mem::forget(output.textures_delta);
+            points
+        };
+        let default = drawn("");
+        assert_eq!(default.len(), 65);
+        // A curve drawn flat at the top is a flat line near the top.
+        let flat = drawn("0 1 0;1 1 0");
+        assert!(flat.iter().all(|p| (p.y - flat[0].y).abs() < 1e-3));
+        assert!(flat[0].y < default[0].y, "full height is higher than 0");
+        assert_ne!(default, flat);
     }
 
     #[test]

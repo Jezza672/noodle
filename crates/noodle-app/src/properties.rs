@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn nothing_fits_a_node_no_preset_was_made_for() {
-        let mut h = harness([Node::new("noodle.osc.sine")]);
+        let mut h = harness([Node::new("noodle.noise.white")]);
         h.get_by_role(egui::accesskit::Role::ComboBox).click();
         h.run();
         h.get_by_label("None fit yet");

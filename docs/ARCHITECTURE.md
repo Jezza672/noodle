@@ -359,16 +359,26 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   touches wires, lanes, mute or solo. Values the preset doesn't store go back
   to their defaults. `SetPreset` records the entry in `Node::preset` (no
   effect on the engine); the Presets control shows the entry's name, and
-  "modified" once the node's values differ from it.
-- **Port layout** comes from the node types, which `noodle-core` doesn't know,
-  so the functions that compare layouts take a closure; the app passes
-  `Registry::layout_signature` (the keys and kinds of every port). A node
-  preset applies only to a node of the same type and layout.
+  "modified" once the node's values differ from it. Config named in
+  `presets::KEPT` (the Sampler's `sample`, the Envelope's `single`) is left alone when the preset
+  doesn't store it, so applying a preset never unloads a sample or changes a voice shape.
+- **System node presets** live in one generated file, `library/system/nodes.ron`
+  (a table in `noodle-eval/src/song/node_presets.rs`, rewritten by
+  `UPDATE_LIBRARY=1`). Every node has at least two, except those with nothing
+  to set and Dynamics, whose presets arrive with the Compressor, Limiter and
+  Gate batch (which removes its exemption); a test lists the exceptions.
+- **Presets find ports by name.** Port layout comes from the node types,
+  which `noodle-core` doesn't know, so the functions that need it take a
+  closure; the app passes `Registry::layout_signature` (the sorted keys of
+  every port, no positions). A node preset fits a node of the same type that
+  has every parameter it sets, and whose ports its config wouldn't change; so
+  a node type gaining or reordering ports doesn't break its presets.
 - **Topology** (`library::topology`) decides which groups a `GroupPreset`
-  fits: the same node types, wires, boundary port names and layouts. Config
+  fits: the same node types, wires and boundary port names (a group preset also
+  needs each node to have the parameters it sets). Config
   that doesn't shape ports (a sample, an expression) doesn't count, nor do
   IDs, labels or positions. Nodes are put in a canonical order by colour
-  refinement (each node starts from its type, layout and boundary name and
+  refinement (each node starts from its type and boundary name and
   takes on its neighbours' colours until stable); nodes still
   indistinguishable (the five saws of a unison) fall back to ID order, so a
   copy of a template pairs them as the template did. A preset stores its
@@ -430,8 +440,9 @@ These are primitives; instruments and racks built from them are groups.
   down-up, as played or random (seeded by the node's seed), over 1 to 4
   octaves, with gate, swing and hold.
 
-- **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` when
-  its `trigger` rises through 0.5 (a new trigger restarts it; `loop` repeats it
+- **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` (or,
+  with `time` set to Beats, over `beats` beats at the transport's tempo, read
+  at each block) when its `trigger` rises through 0.5 (a new trigger restarts it; `loop` repeats it
   while the trigger is held). The curve is config text, `x y bend` per anchor:
   the ends sit at x = 0 and 1 and can be at any height, and each segment bends
   by `t^(4^bend)`. It is a function of x, so the node plays it from a lookup
@@ -439,7 +450,8 @@ These are primitives; instruments and racks built from them are groups.
   `single` is config because it changes the output's shape: 0 gives one
   envelope per voice of the trigger, 1 one shared mono envelope that any
   voice's trigger restarts. Outputs `out` and `active` (1 while playing). An
-  edit to the curve rebuilds the node and restarts a running envelope.
+  edit to the curve rebuilds the node and restarts a running envelope. The
+  node's body in the editor draws the curve.
 - **Automation** (`noodle.mod.automation`) is the node behind a free
   automation track: one parameter, `value` (0 to 1), copied to `out`. The
   timeline's "+ Auto" button adds it with an ordinary lane on `value`, so

@@ -47,10 +47,10 @@ fn every_system_preset_fits_its_template() {
         noodle_core::History::new()
             .apply(&mut project, command)
             .unwrap();
-        let key = topology::topology(project.graph(), group, &layout).key;
+        let order = topology::topology(project.graph(), group);
         let fitting: Vec<_> = library
             .group_presets()
-            .filter(|(_, p)| p.topology == key)
+            .filter(|(_, p)| p.fits(project.graph(), group, &order, &layout))
             .collect();
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }
@@ -62,18 +62,81 @@ fn every_system_preset_fits_its_template() {
     );
 }
 
-/// Compressor, Limiter, Gate and Expander are presets of the Dynamics node,
-/// and each fits a Dynamics node as the registry lays it out.
+/// Nodes that have nothing worth a preset (no settings, or only wiring).
+const WITHOUT_PRESETS: &[&str] = &[
+    "noodle.event.mono",
+    "noodle.group.stage",
+    "noodle.input.button",
+    "noodle.internal.automation",
+    "noodle.io.input",
+    "noodle.io.output",
+    "noodle.mod.automation",
+    "noodle.noise.white",
+    "noodle.offline.reverse",
+    "noodle.poly.voice_mix",
+    "noodle.track.input",
+    "noodle.util.mix",
+    "noodle.util.reroute",
+    "noodle.view.meter",
+    "noodle.view.scope",
+];
+
+/// Every built-in node has presets (bar a few), each fits a node of its type
+/// with the preset's config (some, like Note Split's rest output, need it) and sets only parameters that exist, inside their range.
 #[test]
-fn the_dynamics_modes_are_presets_of_the_dynamics_node() {
+fn every_node_has_presets_that_fit() {
     let library = Library::in_memory();
     let mut registry = noodle_engine::Registry::with_builtins();
     let _ = noodle_nodes::register_library(&mut registry);
     let layout = |node: &noodle_core::Node| registry.layout_signature(node);
-    let node = noodle_core::Node::new(noodle_nodes::DYNAMICS_ID);
+    let mut covered = std::collections::BTreeMap::<String, usize>::new();
+    for (id, preset) in library.node_presets() {
+        let mut node = noodle_core::Node::new(&preset.node_type);
+        node.config = preset.values.config.clone();
+        assert!(preset.applies_to(&node, &layout), "{id} fits its node");
+        let ty = registry.get(&preset.node_type).expect("a known node");
+        let ports = ty.layout(&node.config).unwrap();
+        for (key, value) in &preset.values.params {
+            let info = ports
+                .inputs
+                .iter()
+                .find_map(|p| match &p.kind {
+                    noodle_engine::InputKind::Param(info) if p.key == key.as_str() => Some(info),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{id} sets {key}, which {} lacks", preset.node_type));
+            assert!(
+                (info.min..=info.max).contains(value),
+                "{id}: {key} = {value} is outside {}..{}",
+                info.min,
+                info.max
+            );
+        }
+        *covered.entry(preset.node_type.clone()).or_default() += 1;
+    }
+    for ty in registry.iter() {
+        let id = ty.info().id;
+        if WITHOUT_PRESETS.contains(&id) {
+            assert!(
+                !covered.contains_key(id),
+                "{id} is listed as without presets"
+            );
+        } else {
+            assert!(
+                covered.get(id).copied().unwrap_or(0) >= 2,
+                "{id} needs at least two presets"
+            );
+        }
+    }
+}
+
+/// Compressor, Limiter, Gate and Expander are presets of the Dynamics node.
+#[test]
+fn the_dynamics_modes_are_presets_of_the_dynamics_node() {
+    let library = Library::in_memory();
     let names: Vec<&str> = library
         .node_presets()
-        .filter(|(_, p)| p.applies_to(&node, &layout))
+        .filter(|(_, p)| p.node_type == noodle_nodes::DYNAMICS_ID)
         .map(|(_, p)| p.name.as_str())
         .collect();
     for wanted in ["Compressor", "Limiter", "Gate", "Expander"] {

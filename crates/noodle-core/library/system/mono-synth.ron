@@ -205,132 +205,132 @@
     GroupPreset((
         name: "Saw Bass",
         slug: "mono-synth-saw-bass",
-        topology: "f0c19252d3418ae1",
+        topology: "f415f588e6bca65e",
         nodes: [
             (
-                params: {"b": 0.0},
-                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+                params: {"attack": 0.003, "decay": 0.12, "release": 0.08, "sustain": 0.8},
             ),
-            (),
-            (),
-            (),
             (
                 params: {"attack": 0.002, "decay": 0.12, "release": 0.1, "sustain": 0.2},
             ),
             (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (
                 params: {"b": 0.0},
                 config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
             ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"cutoff": 250.0, "resonance": 0.25},
+            ),
+            (),
+            (),
+            (),
             (),
             (
                 params: {"b": 0.25},
                 config: {"expr": "a * b + c"},
             ),
             (
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+            (
                 params: {"gain1": -3.0, "gain2": -1.0},
                 config: {"inputs": 2},
-            ),
-            (
-                params: {"attack": 0.003, "decay": 0.12, "release": 0.08, "sustain": 0.8},
-            ),
-            (),
-            (),
-            (
-                params: {"cutoff": 250.0, "resonance": 0.25},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"pan": 0.0},
             ),
         ],
     )),
     GroupPreset((
         name: "Sub Bass",
         slug: "mono-synth-sub-bass",
-        topology: "f0c19252d3418ae1",
+        topology: "f415f588e6bca65e",
         nodes: [
             (
-                params: {"b": 0.0},
-                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+                params: {"attack": 0.004, "decay": 0.2, "release": 0.1, "sustain": 0.9},
             ),
-            (),
-            (),
-            (),
             (
                 params: {"attack": 0.003, "decay": 0.2, "release": 0.1, "sustain": 0.5},
             ),
             (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (
                 params: {"b": 0.0},
                 config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
             ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"cutoff": 120.0, "resonance": 0.1},
+            ),
+            (),
+            (),
+            (),
             (),
             (
                 params: {"b": 0.05},
                 config: {"expr": "a * b + c"},
             ),
             (
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+            (
                 params: {"gain1": -3.0, "gain2": -1.0},
                 config: {"inputs": 2},
-            ),
-            (
-                params: {"attack": 0.004, "decay": 0.2, "release": 0.1, "sustain": 0.9},
-            ),
-            (),
-            (),
-            (
-                params: {"cutoff": 120.0, "resonance": 0.1},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"pan": 0.0},
             ),
         ],
     )),
     GroupPreset((
         name: "Acid Bass",
         slug: "mono-synth-acid-bass",
-        topology: "f0c19252d3418ae1",
+        topology: "f415f588e6bca65e",
         nodes: [
             (
-                params: {"b": 0.0},
-                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+                params: {"attack": 0.001, "decay": 0.15, "release": 0.05, "sustain": 0.6},
             ),
-            (),
-            (),
-            (),
             (
                 params: {"attack": 0.001, "decay": 0.15, "release": 0.05, "sustain": 0.1},
             ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
             (
                 params: {"b": 0.0},
                 config: {"expr": "a * 0.5 * pow(2, b * 0 / 1200)"},
             ),
             (),
             (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"cutoff": 400.0, "resonance": 0.6},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
                 params: {"b": 0.5},
                 config: {"expr": "a * b + c"},
             ),
             (
+                params: {"b": 0.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+            (
                 params: {"gain1": -3.0, "gain2": -1.0},
                 config: {"inputs": 2},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.15, "release": 0.05, "sustain": 0.6},
-            ),
-            (),
-            (),
-            (
-                params: {"cutoff": 400.0, "resonance": 0.6},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"pan": 0.0},
             ),
         ],
     )),
