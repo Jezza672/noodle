@@ -328,6 +328,13 @@ impl Scene {
                 _ => title,
             };
 
+            // A mixer shows the name it was given.
+            let title = if node.type_id == noodle_core::spare::MIXER {
+                noodle_core::spare::mixer_name(graph, id)
+            } else {
+                title
+            };
+
             // Ports that wires refer to but the node doesn't have.
             for connection in &connections {
                 for (endpoint, side) in [
@@ -1358,6 +1365,16 @@ mod tests {
             children(&project, GROUP_OUTPUT),
         );
         let target = Endpoint::new(output, group::control_key(GAIN, 1));
+        // A new track wires its track input's gain here; take that off so
+        // the lane has the port to itself.
+        history
+            .apply(
+                &mut project,
+                Command::Disconnect {
+                    input: target.clone(),
+                },
+            )
+            .unwrap();
         let id = project.new_lane_id();
         let point = AutomationPoint {
             tick: Tick(0),

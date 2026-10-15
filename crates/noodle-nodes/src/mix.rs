@@ -133,6 +133,10 @@ impl Node for MixNode {
         self.probe.reset();
         self.sum.reset();
     }
+
+    fn stopped(&mut self) {
+        self.probe.silence();
+    }
 }
 
 /// A modulated parameter's value at `frame`, as its first lane has it.

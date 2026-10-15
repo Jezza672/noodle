@@ -2334,6 +2334,11 @@ fn a_wire_cannot_be_dropped_on_a_lanes_port() {
     };
     let (input, output) = (find(&h, TRACK_INPUT), find(&h, GROUP_OUTPUT));
     let session = &mut h.state_mut().session;
+    // A new track wires its track input's gain here; take that off so the
+    // lane has the port to itself.
+    session.edit([Edit::Apply(Command::Disconnect {
+        input: Endpoint::new(output, noodle_core::group::control_key(GAIN, 1)),
+    })]);
     let id = session.project().next_lane_id();
     let lane = AutomationLane::new(
         Endpoint::new(output, noodle_core::group::control_key(GAIN, 1)),

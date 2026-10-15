@@ -102,6 +102,10 @@ impl Node for GainNode {
         self.probe.reset();
         self.gain.reset();
     }
+
+    fn stopped(&mut self) {
+        self.probe.silence();
+    }
 }
 
 struct GainKernel;

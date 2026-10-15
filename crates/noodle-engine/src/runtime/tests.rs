@@ -1512,3 +1512,145 @@ fn a_wired_parameter_reports_its_live_value_and_range() {
     assert_eq!(telemetry.read_param(offset, "in"), None);
     assert_eq!(telemetry.read_param(counter, "out"), None);
 }
+
+/// Outputs 1 and counts the blocks it runs.
+struct Tally(Arc<AtomicUsize>);
+
+impl NodeType for Tally {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("tally");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime().output("out", "Out"))
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(TallyNode(Arc::clone(&self.0), 0)))
+    }
+}
+
+/// The blocks it has run since the last reset.
+struct TallyNode(Arc<AtomicUsize>, usize);
+
+impl Node for TallyNode {
+    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        self.1 += 1;
+        io.outputs[0].fill(self.1 as f32);
+    }
+
+    fn reset(&mut self) {
+        self.1 = 0;
+    }
+
+    fn stopped(&mut self) {
+        STOPPED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+static STOPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// A multiplier with a settled `level` of 0 as its off switch.
+struct Times;
+
+impl NodeType for Times {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("times");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime()
+            .input("in", "In")
+            .param(
+                "level",
+                "Level",
+                ParamInfo::new(0.0, 1.0, 1.0).smoothing(0.0),
+            )
+            .output("out", "Out"))
+    }
+
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(PerLane::new(TimesKernel, setup)))
+    }
+}
+
+struct TimesKernel;
+
+impl LaneKernel for TimesKernel {
+    type State = ();
+
+    fn skip(&self) -> crate::Skip {
+        crate::Skip::AnySilent(&[0, 1])
+    }
+
+    fn process_lane(&mut self, _: &mut (), _: &Context, mut lane: Lane<'_, '_>) {
+        let (input, level) = (lane.inputs.get(0), lane.inputs.get(1));
+        for ((o, x), l) in lane.outputs.get_mut(0).iter_mut().zip(input).zip(level) {
+            *o = x * l;
+        }
+    }
+}
+
+fn tally_rig() -> (Rig, Arc<AtomicUsize>) {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let mut rig = Rig::new(SETTINGS);
+    rig.registry.register(Tally(Arc::clone(&runs)));
+    rig.registry.register(Times);
+    (rig, runs)
+}
+
+#[test]
+fn a_node_nothing_listens_to_does_not_run() {
+    let (mut rig, runs) = tally_rig();
+    let tally = rig.add("tally");
+    let output = rig.add(OUTPUT_ID);
+    assert!(rig.update().is_empty());
+    assert_eq!(rig.render(8), [0.0; 8]);
+    assert_eq!(runs.load(Ordering::Relaxed), 0);
+
+    // Once something plays it, it runs.
+    rig.wire(tally, output, "in");
+    assert!(rig.update().is_empty());
+    rig.render(8);
+    assert!(runs.load(Ordering::Relaxed) > 0);
+}
+
+#[test]
+fn a_chain_that_ends_nowhere_stops_back_to_its_source() {
+    let (mut rig, runs) = tally_rig();
+    let tally = rig.add("tally");
+    let times = rig.add("times");
+    rig.wire(tally, times, "in");
+    rig.add(OUTPUT_ID);
+    assert!(rig.update().is_empty());
+    rig.render(8);
+    assert_eq!(runs.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_node_feeding_a_node_that_is_off_stops_until_it_is_on_again() {
+    let (mut rig, runs) = tally_rig();
+    let tally = rig.add("tally");
+    let times = rig.add("times");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(tally, times, "in");
+    rig.wire(times, output, "in");
+    assert!(rig.update().is_empty());
+    rig.render(8);
+    let on = runs.load(Ordering::Relaxed);
+    assert!(on > 0);
+
+    rig.controller.set_param(times, "level", 0.0);
+    rig.render(8);
+    assert_eq!(runs.load(Ordering::Relaxed), on, "the source stopped");
+    assert!(STOPPED.load(Ordering::Relaxed) >= 1, "and was told so");
+    assert_eq!(rig.render(4), [0.0; 4]);
+
+    // Coming back, it starts fresh rather than where it left off.
+    rig.controller.set_param(times, "level", 1.0);
+    assert_eq!(rig.render(4), [1.0; 4]);
+    assert!(runs.load(Ordering::Relaxed) > on);
+}

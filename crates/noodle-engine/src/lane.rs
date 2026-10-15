@@ -30,6 +30,20 @@ pub trait LaneKernel: Send + 'static {
     fn is_idle(&self, _state: &Self::State) -> bool {
         true
     }
+
+    /// Whether the outputs are zero for the whole block whatever the
+    /// connected inputs hold, given the inputs that are constant for the block
+    /// (see [`Node::silenced_by`]). By default, a kernel with no state to ring
+    /// out whose [`skip`](Self::skip) is [`Skip::AnySilent`] is silenced by
+    /// any of those inputs being a constant 0.
+    fn silenced_by(&self, constants: &[Option<f32>]) -> bool {
+        match self.skip() {
+            Skip::AnySilent(ports) if std::mem::size_of::<Self::State>() == 0 => {
+                ports.iter().any(|&port| constants[port] == Some(0.0))
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Which silent inputs let [`PerLane`] skip a lane: it writes zeros to the
@@ -169,6 +183,10 @@ impl<K: LaneKernel> Node for PerLane<K> {
 
     fn reset(&mut self) {
         self.states.fill_with(K::State::default);
+    }
+
+    fn silenced_by(&self, constants: &[Option<f32>]) -> bool {
+        self.kernel.silenced_by(constants)
     }
 }
 

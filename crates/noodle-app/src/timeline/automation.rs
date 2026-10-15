@@ -111,8 +111,8 @@ fn is_automation_node(project: &Project, node: NodeId) -> bool {
         .is_some_and(|n| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
 }
 
-/// The lanes that belong to a track: those driving a boundary node or an
-/// Automation node of the group its track input sits in. Empty for a track
+/// The lanes that belong to a track: those driving a boundary node, the
+/// track input (its gain and mute) or an Automation node of the group its track input sits in. Empty for a track
 /// outside any group.
 pub fn lanes_for(project: &Project, input: NodeId) -> Vec<LaneId> {
     let graph = project.graph();
@@ -126,7 +126,10 @@ pub fn lanes_for(project: &Project, input: NodeId) -> Vec<LaneId> {
                 node.parent == Some(group)
                     && matches!(
                         node.type_id.as_str(),
-                        group::GROUP_INPUT | group::GROUP_OUTPUT | noodle_nodes::AUTOMATION_NODE_ID
+                        group::GROUP_INPUT
+                            | group::GROUP_OUTPUT
+                            | group::TRACK_INPUT
+                            | noodle_nodes::AUTOMATION_NODE_ID
                     )
             })
         })
@@ -601,8 +604,8 @@ pub fn add_menu(
     ui: &mut egui::Ui,
     spot: Rect,
     project: &Project,
-    node: NodeId,
-    port: u32,
+    gain: &(NodeId, String),
+    mute: &(NodeId, String),
     controls: Controls,
 ) -> Vec<Edit> {
     let mut edits = Vec::new();
@@ -612,11 +615,11 @@ pub fn add_menu(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     child.menu_button("~", |ui| {
-        for (key, now, curve) in [
-            (group::GAIN, controls.gain_db, Curve::Linear),
-            (group::MUTE, f32::from(controls.mute), Curve::Hold),
+        for ((key, (node, port)), now, curve) in [
+            ((group::GAIN, gain), controls.gain_db, Curve::Linear),
+            ((group::MUTE, mute), f32::from(controls.mute), Curve::Hold),
         ] {
-            let target = Endpoint::new(node, group::control_key(key, port));
+            let target = Endpoint::new(*node, port.as_str());
             let taken = project.lane_for(&target).is_some();
             let item = ui.add_enabled(!taken, egui::Button::new(format!("Automate {}", name(key))));
             if item.on_disabled_hover_text("Already automated").clicked() {

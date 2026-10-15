@@ -69,6 +69,10 @@ impl Node for VoiceMixNode {
         self.probe.reset();
     }
 
+    fn stopped(&mut self) {
+        self.probe.silence();
+    }
+
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let input = io.inputs[IN];
         let out = &mut io.outputs[OUT];
