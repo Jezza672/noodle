@@ -404,7 +404,7 @@ fn arrange_clips_on_tracks_automate_a_parameter_and_mix_down() {
 
     // Two tracks, with a clip dropped on each lane at the first beat.
     for _ in 0..2 {
-        h.get_by_label("+ Add track").click();
+        h.get_by_label("+ Track").click();
         h.run();
     }
     let lane_at = |h: &H, name: &str| {

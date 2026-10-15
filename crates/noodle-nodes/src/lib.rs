@@ -3,18 +3,27 @@
 
 mod adsr;
 mod arpeggiator;
+mod automation;
 mod background;
+mod bitcrush;
 mod button;
 mod cached;
+mod chorus;
 mod clip;
+mod clock;
+mod comparator;
 mod curve;
 mod delay;
+mod distortion;
 mod dynamics;
+mod envelope;
 mod eq;
 mod export;
+mod follower;
 mod freeze;
 mod gain;
 mod ladder;
+mod lag;
 mod lfo;
 mod math;
 mod meter;
@@ -27,11 +36,13 @@ mod note_split;
 mod notes;
 mod osc;
 mod pan;
+mod phaser;
 mod remap;
 mod reroute;
 mod reverb;
 mod reverse;
 mod sample;
+mod sample_hold;
 mod sampler;
 mod scope;
 mod stage;
@@ -45,33 +56,45 @@ pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
     ARPEGGIATOR_ID, Arpeggiator, RATE_NAMES as ARP_RATE_NAMES, RATE_TICKS as ARP_RATE_TICKS,
 };
+pub use automation::{AUTOMATION_NODE_ID, AUTOMATION_VALUE, Automation};
 pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
     render_streaming, spawn_render, spawn_render_to_cache,
 };
+pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
+pub use chorus::{CHORUS_ID, Chorus};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
     StretchSource, Stretcher, TRACK_INPUT_ID, TrackInput, WarpMap, active_at,
 };
+pub use clock::{CLOCK_ID, Clock, DIVISION_TICKS, DIVISIONS as CLOCK_DIVISIONS};
+pub use comparator::{COMPARATOR_ID, Comparator};
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
+pub use distortion::{DISTORTION_ID, Distortion, SHAPES as DISTORTION_SHAPES, shaper};
 pub use dynamics::{
     DYNAMICS_ID, Dynamics, DynamicsMode, MAX_LOOKAHEAD_MS, attack_response, reduction_db,
     release_response, transfer_db,
+};
+pub use envelope::{
+    ENVELOPE_CURVE_KEY, ENVELOPE_ID, ENVELOPE_SINGLE_KEY, Envelope, EnvelopeCurve, EnvelopePoint,
+    is_single as envelope_is_single,
 };
 pub use eq::{
     EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
     default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
 };
 pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_export};
+pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
     spawn_freeze,
 };
 pub use gain::{GAIN_ID, Gain};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
+pub use lag::{LAG_ID, Lag};
 pub use lfo::{LFO_ID, Lfo, lfo_wave};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
@@ -84,11 +107,13 @@ pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
+pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
 pub use reverse::Reverse;
 pub use sample::{Sample, SampleError, SampleStore};
+pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
 pub use stage::GroupStage;
@@ -163,6 +188,17 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Remap);
     registry.register(Adsr);
     registry.register(Lfo);
+    registry.register(Envelope);
+    registry.register(EnvelopeFollower);
+    registry.register(SampleHold);
+    registry.register(Lag);
+    registry.register(Comparator);
+    registry.register(Automation);
+    registry.register(Clock);
+    registry.register(Distortion);
+    registry.register(Bitcrusher);
+    registry.register(Chorus);
+    registry.register(Phaser);
     registry.register(Key);
     registry.register(MonoNote);
     registry.register(NoteSplit);

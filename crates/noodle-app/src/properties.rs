@@ -6,12 +6,16 @@
 //! signal replaces its value until the wire is removed.
 
 use egui::{RichText, Ui};
+use noodle_core::group::GROUP;
+use noodle_core::library::{SYSTEM, USER};
 use noodle_core::{Command, Endpoint, Node, NodeId};
 use noodle_engine::{InputKind, Location, NodeType, ParamReading};
 
-use crate::session::{Edit, Session};
+use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
-use crate::widgets::{ConfigField, CurveEditor, GraphEditor, GraphKind, Live, ParamField};
+use crate::widgets::{
+    ConfigField, CurveEditor, EnvelopeEditor, GraphEditor, GraphKind, Live, ParamField,
+};
 
 /// What the wired parameter `key` of a node has been doing lately, if known:
 /// the editor reads it once a frame.
@@ -35,6 +39,7 @@ pub fn show(
     problems(ui, session, id);
 
     let mut edits = Vec::new();
+    presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
     freezing(ui, session, id, &mut edits);
     match node_type {
@@ -50,6 +55,112 @@ pub fn show(
         }
     }
     edits
+}
+
+/// The Presets control: pick a preset that fits, save the values as a user
+/// preset, or overwrite the user preset applied (when it has been edited).
+/// For a group the presets are for everything inside it.
+fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut Vec<Edit>) {
+    let is_group = node.type_id == GROUP;
+    if !is_group && session.registry().get(&node.type_id).is_none() {
+        return;
+    }
+    let available = session.presets_for(id);
+    let status = session.preset_status(id);
+    let current = match &status {
+        Some(s) if s.modified => format!("{} (modified)", s.name),
+        Some(s) => s.name.clone(),
+        None => "None".to_string(),
+    };
+    ui.horizontal(|ui| {
+        ui.label("Presets");
+        egui::ComboBox::from_id_salt(("presets", id))
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for (heading, store) in [("System", SYSTEM), ("User", USER)] {
+                    let mut listed = available
+                        .iter()
+                        .filter(|(entry, _)| entry.starts_with(store))
+                        .peekable();
+                    if listed.peek().is_none() {
+                        continue;
+                    }
+                    ui.weak(heading);
+                    for (entry, name) in listed {
+                        let applied = status.as_ref().is_some_and(|s| s.id == *entry);
+                        if ui.selectable_label(applied, *name).clicked() {
+                            edits.extend(session.apply_preset(id, entry));
+                        }
+                    }
+                }
+                if available.is_empty() {
+                    ui.weak("None fit yet");
+                }
+            });
+    });
+
+    let naming = ui.id().with(("naming-preset", id));
+    let mut name: Option<String> = ui.data(|d| d.get_temp(naming));
+    let mut just_opened = false;
+    let save = |name: String, overwrite: Option<String>| {
+        Edit::Library(if is_group {
+            LibraryEdit::GroupPreset {
+                group: id,
+                name,
+                overwrite,
+            }
+        } else {
+            LibraryEdit::NodePreset {
+                node: id,
+                name,
+                overwrite,
+            }
+        })
+    };
+    ui.horizontal(|ui| {
+        let overwritable = status.as_ref().filter(|s| s.user && s.modified);
+        let button = ui.add_enabled(overwritable.is_some(), egui::Button::new("Save"));
+        if let (true, Some(s)) = (button.clicked(), overwritable) {
+            edits.push(save(s.name.clone(), Some(s.id.clone())));
+        }
+        if ui.button("Save as...").clicked() {
+            just_opened = true;
+            name = Some(status.as_ref().map_or_else(String::new, |s| s.name.clone()));
+        }
+    });
+    if let Some(text) = &mut name {
+        let mut done = false;
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text("Preset name")
+                    .desired_width(140.0),
+            );
+            if just_opened {
+                edit.request_focus();
+            }
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let named = !text.trim().is_empty();
+            let clicked = ui.add_enabled(named, egui::Button::new("OK")).clicked();
+            if (clicked || enter) && named {
+                edits.push(save(text.trim().to_string(), None));
+                done = true;
+            }
+            if ui.button("Cancel").clicked() {
+                done = true;
+            }
+        });
+        if done {
+            name = None;
+        }
+    }
+    match name {
+        Some(name) => ui.data_mut(|d| {
+            d.insert_temp(naming, name);
+        }),
+        None => ui.data_mut(|d| d.remove::<String>(naming)),
+    }
+    ui.separator();
 }
 
 /// A plugin node's editor button.
@@ -251,6 +362,31 @@ fn config(
                 .small(),
             );
             if ui.small_button("Reset to straight line").clicked() {
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: id,
+                    key: info.key.to_owned(),
+                    value: None,
+                }));
+            }
+            continue;
+        }
+        if node_type.info().id == noodle_nodes::ENVELOPE_ID
+            && info.key == noodle_nodes::ENVELOPE_CURVE_KEY
+        {
+            let text = info.get_text(&node.config);
+            ui.label(info.name);
+            let curve = noodle_nodes::EnvelopeCurve::from_text(&text);
+            edits.extend(EnvelopeEditor::new(id, info.key, &curve).show(ui));
+            ui.label(
+                RichText::new(
+                    "Left to right is the Length, bottom to top the height. Drag a point to \
+                     move it, drag the line between two points to bend it, and click the \
+                     line to add a point.",
+                )
+                .weak()
+                .small(),
+            );
+            if ui.small_button("Reset to the default shape").clicked() {
                 edits.push(Edit::Apply(Command::SetConfig {
                     node: id,
                     key: info.key.to_owned(),
@@ -566,6 +702,7 @@ fn describe(session: &Session, endpoint: &Endpoint) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::LibraryEdit;
     use egui::{Key, Modifiers, vec2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
@@ -936,6 +1073,77 @@ mod tests {
         assert_eq!(curve_of(&harness), noodle_nodes::Curve::linear());
     }
 
+    fn envelope_of(harness: &Harness<'_, State>) -> noodle_nodes::EnvelopeCurve {
+        let graph = harness.state().session.project().graph();
+        let config = &graph.node(NodeId(1)).unwrap().config;
+        match config.get("curve") {
+            Some(Value::Text(text)) => noodle_nodes::EnvelopeCurve::from_text(text),
+            _ => noodle_nodes::EnvelopeCurve::default(),
+        }
+    }
+
+    #[test]
+    fn the_envelope_curve_is_drawn_with_the_mouse() {
+        let mut harness = harness([Node::new("noodle.mod.envelope")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        // The editor is `width` wide and 120 high, under the "Curve" label.
+        let label = harness.get_by_label("Curve").rect();
+        let width = 320.0f32.min(300.0 - 2.0 * label.min.x);
+        let at = |x: f32, y: f32| {
+            egui::pos2(
+                label.min.x + x * width,
+                label.max.y + 4.0 + 120.0 * (1.0 - y),
+            )
+        };
+        let before = envelope_of(&harness);
+        assert_eq!(before.points().len(), 3);
+
+        // Drag the peak to the right and down: one undo step.
+        let peak = before.points()[1];
+        let from = at(peak.x, peak.y);
+        harness.hover_at(from);
+        harness.run();
+        harness.drag_at(from);
+        harness.run();
+        harness.hover_at(at(0.4, 0.6));
+        harness.run();
+        harness.drop_at(at(0.4, 0.6));
+        harness.run();
+        let moved = envelope_of(&harness).points()[1];
+        assert!(
+            (moved.x - 0.4).abs() < 0.05 && (moved.y - 0.6).abs() < 0.05,
+            "{moved:?}"
+        );
+        harness.state_mut().session.undo();
+        harness.run();
+        assert_eq!(envelope_of(&harness), before);
+
+        // Drag the falling stretch upward: it bends instead of moving.
+        let x = 0.7;
+        let on_line = at(x, before.eval(x));
+        harness.hover_at(on_line);
+        harness.run();
+        harness.drag_at(on_line);
+        harness.run();
+        harness.hover_at(at(x, 0.9));
+        harness.run();
+        harness.drop_at(at(x, 0.9));
+        harness.run();
+        let bent = envelope_of(&harness);
+        assert_eq!(bent.points().len(), 3);
+        assert_ne!(bent.points()[1].bend, before.points()[1].bend);
+
+        // The button puts the default shape back.
+        harness.get_by_label("Reset to the default shape").click();
+        harness.run();
+        harness.run();
+        assert_eq!(
+            envelope_of(&harness),
+            noodle_nodes::EnvelopeCurve::default()
+        );
+    }
+
     /// Replaces the text in the focused field.
     fn type_over(harness: &Harness<'_, State>, text: &str) {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
@@ -1024,5 +1232,144 @@ mod tests {
         let harness = harness([Node::new("no.such.type").with_param("x", 1.0)]);
         harness.get_by_label("unknown node type `no.such.type`");
         harness.get_by_label("x: 1");
+    }
+
+    fn saved(session: &mut Session, node: NodeId, name: &str) {
+        session.edit([Edit::Library(LibraryEdit::NodePreset {
+            node,
+            name: name.into(),
+            overwrite: None,
+        })]);
+    }
+
+    fn set_cutoff(h: &mut Harness<'_, State>, value: f32) {
+        h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+            node: NodeId(1),
+            key: "cutoff".into(),
+            value: Some(value),
+        })]);
+    }
+
+    #[test]
+    fn a_saved_node_preset_is_applied_from_the_presets_control_in_one_undo_step() {
+        let mut h = harness([Node::new("noodle.filter.svf").with_param("cutoff", 900.0)]);
+        saved(&mut h.state_mut().session, NodeId(1), "Mellow");
+        set_cutoff(&mut h, 4000.0);
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("User");
+        h.get_by_label("Mellow").click();
+        h.run();
+        assert_eq!(param(&h, "cutoff"), Some(900.0));
+        let node = h.state().session.project().graph().node(NodeId(1)).unwrap();
+        assert_eq!(node.preset.as_deref(), Some("user:node:mellow"));
+        let shown = |h: &Harness<'_, State>| {
+            let combo = h.get_by_role(egui::accesskit::Role::ComboBox);
+            let node = combo.accesskit_node();
+            node.value().unwrap_or_default()
+        };
+        assert_eq!(shown(&h), "Mellow");
+        // Edited since: it says so.
+        set_cutoff(&mut h, 1000.0);
+        h.run();
+        assert_eq!(shown(&h), "Mellow (modified)");
+        // One undo step undid the apply, not part of it.
+        h.state_mut().session.undo();
+        assert_eq!(param(&h, "cutoff"), Some(900.0));
+        h.state_mut().session.undo();
+        assert_eq!(param(&h, "cutoff"), Some(4000.0));
+    }
+
+    #[test]
+    fn save_as_names_a_new_user_preset_and_save_overwrites_the_one_applied() {
+        let mut h = harness([Node::new("noodle.filter.svf").with_param("cutoff", 900.0)]);
+        h.run();
+        h.get_by_label("Save as...").click();
+        h.run();
+        h.event(egui::Event::Text("Dark".into()));
+        h.run();
+        h.get_by_label("OK").click();
+        h.run();
+        let session = &mut h.state_mut().session;
+        let preset = session
+            .library()
+            .node_preset("user:node:dark")
+            .expect("saved");
+        assert_eq!(preset.values.params["cutoff"], 900.0);
+        // Apply it, change the cutoff, and Save overwrites it.
+        let apply = session.apply_preset(NodeId(1), "user:node:dark").unwrap();
+        session.edit([apply]);
+        set_cutoff(&mut h, 2500.0);
+        h.run();
+        h.get_by_label("Save").click();
+        h.run();
+        let preset = h
+            .state()
+            .session
+            .library()
+            .node_preset("user:node:dark")
+            .unwrap();
+        assert_eq!(preset.values.params["cutoff"], 2500.0);
+        assert_eq!(
+            h.state()
+                .session
+                .library()
+                .node_presets()
+                .filter(|(id, _)| id.starts_with("user"))
+                .count(),
+            1,
+            "overwritten, not added"
+        );
+    }
+
+    #[test]
+    fn a_group_made_from_a_template_offers_its_system_presets() {
+        let mut session = Session::new(crate::session::Nodes::all());
+        let (group, command) = session
+            .library()
+            .template("system:template:kick")
+            .unwrap()
+            .instantiate(
+                "system:template:kick",
+                None,
+                noodle_core::Position::default(),
+                || session.new_node_id(),
+            );
+        session.edit([Edit::Apply(command)]);
+        let state = State {
+            session,
+            active: Some(group),
+        };
+        let mut h = crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
+            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            state.session.edit(edits);
+        });
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("System");
+        h.get_by_label("Deep Kick").click();
+        h.run();
+        let session = &h.state().session;
+        let node = session.project().graph().node(group).unwrap();
+        assert_eq!(node.preset.as_deref(), Some("system:group:kick-deep-kick"));
+        assert!(!session.preset_status(group).unwrap().modified);
+        // A control's value inside changed: the decay of 0.5 seconds.
+        let graph = session.project().graph();
+        assert!(
+            graph
+                .descendants(group)
+                .into_iter()
+                .any(|id| { graph.node(id).unwrap().params.get("decay") == Some(&0.5) })
+        );
+    }
+
+    #[test]
+    fn nothing_fits_a_node_no_preset_was_made_for() {
+        let mut h = harness([Node::new("noodle.osc.sine")]);
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("None fit yet");
     }
 }

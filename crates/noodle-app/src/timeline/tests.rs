@@ -5,10 +5,10 @@ use crate::testkit::{click_with, double_click, drag, drag_between, drop_files};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use noodle_core::{Clip, ClipId, Command, Node, NodeId, Tick};
+use noodle_core::{Clip, ClipId, Command, Node, NodeId, TempoMap, Tick};
 use noodle_io::write_wav;
 
-use super::{TRACK_INPUT, TimelineState, show};
+use super::{Axis, TRACK_INPUT, TimelineState, show};
 use crate::session::{ArmKind, Edit, Nodes, Session};
 
 struct Rig {
@@ -256,7 +256,7 @@ fn a_picked_tempo_point_and_a_picked_clip_never_share_delete() {
     assert!(h.state().timeline.selected().contains(&id));
     let lane = h.state().timeline.tempo().row().expect("the lane is shown");
     let first = h.state().timeline.tempo().points()[0];
-    let spot = Pos2::new(first.x + 8.0 * h.state().timeline.ppq, lane.center().y);
+    let spot = Pos2::new(first.x + 4.0 * h.state().timeline.pps, lane.center().y);
     click_with(&mut h, PointerButton::Primary, Modifiers::NONE, spot);
     assert_eq!(tempos(&h), 2);
     assert!(h.state().timeline.selected().is_empty());
@@ -453,7 +453,7 @@ fn a_waveform_is_only_worked_out_again_when_the_view_changes() {
     h.run_steps(5);
     assert_eq!(h.state().timeline.columns_computed(), computed);
     // Zooming changes the columns.
-    h.state_mut().timeline.ppq = 90.0;
+    h.state_mut().timeline.pps = 180.0;
     h.run_steps(2);
     assert_eq!(h.state().timeline.columns_computed(), computed + 1);
 }
@@ -685,7 +685,7 @@ fn track_inputs(h: &H) -> usize {
 fn add_track_creates_a_group_with_a_track_input_in_one_undo_step() {
     let (mut h, _) = rig();
     let before = track_inputs(&h);
-    h.get_by_label("+ Add track").click();
+    h.get_by_label("+ Track").click();
     h.run();
     assert_eq!(track_inputs(&h), before + 1);
     let groups = |h: &H| {
@@ -713,7 +713,7 @@ fn add_track_works_with_no_tracks() {
     }
     h.run();
     assert_eq!(track_inputs(&h), 0);
-    h.get_by_label("+ Add track").click();
+    h.get_by_label("+ Track").click();
     h.run();
     assert_eq!(track_inputs(&h), 1);
 }
@@ -1185,7 +1185,7 @@ fn command_arrows_scroll_the_playhead_into_view() {
     // Select the clip, then jump to its end far past the right edge.
     let at = centre(&h, id);
     drag(&mut h, Modifiers::NONE, &[at]);
-    h.state_mut().timeline.ppq = 600.0;
+    h.state_mut().timeline.pps = 1200.0;
     h.run();
     let before = h.state().timeline.scroll_x;
     key_over(&mut h, at, Modifiers::COMMAND, Key::ArrowRight);
@@ -1672,4 +1672,37 @@ fn an_unwarped_section_needs_no_render() {
     wait_for_waveforms(&mut h, 1);
     h.run_steps(5);
     assert_eq!(h.state().timeline.warped_renders(), 0);
+}
+
+#[test]
+fn the_axis_is_linear_in_seconds_so_slow_bars_are_wider() {
+    use noodle_core::{TempoChange, TimeSignature};
+    // One bar of 4/4 at 120 bpm (2 s), then 60 bpm (4 s per bar).
+    let map = TempoMap::new(
+        vec![
+            TempoChange {
+                tick: Tick::ZERO,
+                bpm: 120.0,
+            },
+            TempoChange {
+                tick: Tick(3840),
+                bpm: 60.0,
+            },
+        ],
+        vec![noodle_core::SignatureChange {
+            bar: 0,
+            signature: TimeSignature::COMMON,
+        }],
+    )
+    .unwrap();
+    let axis = Axis {
+        origin: 10.0,
+        pps: 100.0,
+        map: &map,
+    };
+    assert_eq!(axis.x(Tick(3840)) - axis.x(Tick::ZERO), 200.0);
+    assert_eq!(axis.x(Tick(7680)) - axis.x(Tick(3840)), 400.0);
+    for tick in [0, 100, 3840, 5000, 9999] {
+        assert_eq!(axis.tick(axis.x(Tick(tick))), Tick(tick));
+    }
 }

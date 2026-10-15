@@ -2646,3 +2646,70 @@ fn right_clicking_a_group_port_removes_just_that_port() {
     assert_eq!(graph.group_ports(group).inputs.len(), 2);
     assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(input, "p1")));
 }
+
+#[test]
+fn the_add_menu_lists_library_groups_and_adds_an_unlinked_copy() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("kick".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    let (group, node) = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == GROUP)
+        .expect("the group was added");
+    assert_eq!(node.template.as_deref(), Some("system:template:kick"));
+    assert_eq!(node.position, Position { x: 120.0, y: 80.0 });
+    assert!(node.parent.is_none());
+    assert!(graph.descendants(group).len() > 4, "its contents came too");
+    assert!(graph.group_ports(group).input("gate").is_some());
+    assert_eq!(h.state().editor.active, Some(group));
+    // One undo step takes it all away.
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project().graph().nodes().count(), 0);
+}
+
+#[test]
+fn the_add_menu_searches_the_groups_section() {
+    let mut h = rig();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("groups".into()));
+    h.run();
+    h.get_by_label("Subtractive Voice  ·  Groups");
+    h.get_by_label("Mono Synth  ·  Groups");
+    // The hidden track template is not offered.
+    h.event(Event::Text(" track".into()));
+    h.run();
+    assert!(h.query_by_label("Track  ·  Groups").is_none());
+}
+
+#[test]
+fn right_clicking_a_group_saves_it_to_the_user_library() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    let p = title(&h, group);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+    h.get_by_label("Save group to library...").click();
+    h.run();
+    type_name(&mut h, "My Group");
+    let library = h.state().session.library();
+    let (id, template) = library
+        .templates()
+        .find(|(id, _)| id.starts_with("user:"))
+        .expect("a user template");
+    assert_eq!(id, "user:template:my-group");
+    assert_eq!(template.name, "My Group");
+    assert!(h.state().editor.group_menu.is_none(), "the menu closed");
+    // Saving doesn't touch the project.
+    assert!(h.state().session.can_undo());
+    h.state_mut().session.undo();
+    assert!(!h.state().session.can_undo());
+}

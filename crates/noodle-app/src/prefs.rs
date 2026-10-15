@@ -42,6 +42,14 @@ pub fn default_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "Noodle").map(|dirs| dirs.config_dir().join("prefs.ron"))
 }
 
+/// Where the user's library of saved groups and presets lives: one `.ron`
+/// file per entry, in the data directory, e.g.
+/// `~/.local/share/noodle/library` on Linux. Copy files in or out to share
+/// them.
+pub fn library_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "Noodle").map(|dirs| dirs.data_dir().join("library"))
+}
+
 /// Reads the preferences at `path` and keeps them for [`remember_audio`].
 /// A missing or unreadable file gives the defaults: losing preferences
 /// shouldn't stop the app starting. A damaged file is moved aside to

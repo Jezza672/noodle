@@ -150,6 +150,8 @@ pub(crate) fn add_lanes<'a>(
                 position: Default::default(),
                 parent: None,
                 port_order: Vec::new(),
+                template: None,
+                preset: None,
             },
         ));
         connections.push(Connection {

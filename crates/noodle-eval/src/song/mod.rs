@@ -17,6 +17,7 @@ pub mod library;
 pub mod music;
 mod patch;
 pub mod samples;
+pub mod system;
 
 use crate::tempo::steady;
 use kit::Instrument;

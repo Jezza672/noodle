@@ -175,10 +175,11 @@ The **Project** is the single source of truth. It holds one global graph:
     draws it from the project's lanes, cutting it removes the lane, and it
     can't be spliced, rerouted or wired from. If a real wire is dropped on
     the port, that wire is drawn and the lane waits behind it.
-  - **`create_track`** (`noodle_core::group`) makes a track as one undo step:
-    the group, a `noodle.track.input` node (outputs `audio` and `midi`), a
-    group output node with a port named `out` that `audio` is wired to, and a group
-    input node with a port named `in`. The
+  - **`create_track`** (`noodle_core::group`) makes a track as one undo step
+    by instantiating the hidden library template `system:template:track`
+    (see [Library and presets](#library-and-presets-m9)): the group, a group
+    input `in`, a `noodle.track.input` node (outputs `audio` and `midi`), and
+    a group output `out` with `audio` wired to it, in that ID order. The
     output starts with gain 0 dB and mute 0 already set, so the track's stage
     exists from creation (solo and mute act at the output, so the input needs
     none) and the first fader or mute touch is a parameter change, not a
@@ -311,6 +312,71 @@ outputs only the delayed signal; an echo is a Mix, the Delay and a Gain wired
 round in a loop (`examples/feedback-echo.ron`). Every lane has its own line,
 and a lane silent for a whole line's length is flagged silent.
 
+### Library and presets (M9)
+
+Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
+`noodle_core::library` holds the types, `Session` the loaded library.
+
+- **Entries.** A `GroupTemplate` (a group and its contents), a `NodePreset`
+  (one node's parameters and config) and a `GroupPreset` (every node inside a
+  group). A library file is one entry as RON (`Item`); the embedded system
+  files are lists of entries (a template and its presets).
+- **Stores.** `Library` has the system entries, embedded with `include_str!`
+  from `noodle-core/library/system/` and read-only, and the user entries, one
+  `.ron` file each in the user data dir (`<data dir>/library`, found by
+  `prefs::library_dir`; copy a file to share it). With no directory it keeps
+  user entries in memory, which tests use. IDs are `store:kind:slug`, e.g.
+  `system:template:kick`, `user:group:warm-pad`. There is no project-level
+  store. Unreadable user files are listed in `Library::problems`, not fatal.
+- **Templates are copies.** `GroupTemplate::from_group` keeps the group,
+  everything inside it (any depth), the wires between them and the nodes'
+  positions relative to the group; it drops wires to the outside, automation
+  lanes, the group's own boundary gain, and mute and solo on every boundary
+  node (a nested group's gain is its level inside, so it stays, as in a
+  group preset). `instantiate` returns one
+  `Command::Batch` that adds an unlinked copy under fresh IDs (the group, then
+  the layers inside it in the template's ID order) and sets `Node::template`
+  to the entry ID. Nothing ever follows that link; it only says where the
+  copy came from.
+- **Tracks are a hidden template.** `system:template:track` has
+  `hidden: true`: `Library::templates` doesn't list it and the Add menu
+  doesn't offer it. `group::create_track` instantiates it, and the Add track
+  button (and every test that makes a track) goes through that.
+- **Presets set stored values only.** Applying one is a `Command::Batch` of
+  `SetParam`, `SetConfig` and `SetPreset`: one undo step, and it never
+  touches wires, lanes, mute or solo. Values the preset doesn't store go back
+  to their defaults. `SetPreset` records the entry in `Node::preset` (no
+  effect on the engine); the Presets control shows the entry's name, and
+  "modified" once the node's values differ from it.
+- **Port layout** comes from the node types, which `noodle-core` doesn't know,
+  so the functions that compare layouts take a closure; the app passes
+  `Registry::layout_signature` (the keys and kinds of every port). A node
+  preset applies only to a node of the same type and layout.
+- **Topology** (`library::topology`) decides which groups a `GroupPreset`
+  fits: the same node types, wires, boundary port names and layouts. Config
+  that doesn't shape ports (a sample, an expression) doesn't count, nor do
+  IDs, labels or positions. Nodes are put in a canonical order by colour
+  refinement (each node starts from its type, layout and boundary name and
+  takes on its neighbours' colours until stable); nodes still
+  indistinguishable (the five saws of a unison) fall back to ID order, so a
+  copy of a template pairs them as the template did. A preset stores its
+  values in that order with the topology key (FNV-1a, fixed so keys in saved
+  files stay valid).
+- **System templates** are the song kit's instruments (`Mono Synth`,
+  `Poly Synth`, `Pad`, `Kick`, `Snare`, `Hat`, `Clap`) and the subtractive
+  example's `Subtractive Voice`, each with three group presets. They are
+  generated by `noodle-eval/src/song/system.rs` (so they are groups of
+  primitive nodes, editable once added) and a test keeps the files in step:
+  `UPDATE_LIBRARY=1 cargo test -p noodle-eval --test library`.
+- **UI.** The properties panel's header has a Presets control (System and
+  User sections, Save to overwrite the user preset applied, Save as...); the
+  Add menu (Shift+A) lists templates under Groups; right-click a group for
+  "Save group to library...". `Edit::Library` saves to the user store and is
+  not an undo step.
+- **Not yet.** Samples by content hash (ADR 0004) arrive with the Sampler in
+  batch B; nothing in batch A holds audio. No "update from template" action
+  (ADR 0005), and user track templates are later.
+
 ### Instruments, dynamics and effects (M9)
 
 These are primitives; instruments and racks built from them are groups.
@@ -348,6 +414,38 @@ These are primitives; instruments and racks built from them are groups.
   the transport's tick grid (free-running while stopped): up, down, up-down,
   down-up, as played or random (seeded by the node's seed), over 1 to 4
   octaves, with gate, swing and hold.
+
+- **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` when
+  its `trigger` rises through 0.5 (a new trigger restarts it; `loop` repeats it
+  while the trigger is held). The curve is config text, `x y bend` per anchor:
+  the ends sit at x = 0 and 1 and can be at any height, and each segment bends
+  by `t^(4^bend)`. It is a function of x, so the node plays it from a lookup
+  table built when the node is built (`EnvelopeCurve::lut`), like Remap's.
+  `single` is config because it changes the output's shape: 0 gives one
+  envelope per voice of the trigger, 1 one shared mono envelope that any
+  voice's trigger restarts. Outputs `out` and `active` (1 while playing). An
+  edit to the curve rebuilds the node and restarts a running envelope.
+- **Automation** (`noodle.mod.automation`) is the node behind a free
+  automation track: one parameter, `value` (0 to 1), copied to `out`. The
+  timeline's "+ Auto" button adds it with an ordinary lane on `value`, so
+  nothing new compiles: the lane is wired into `value` as always, and `out`
+  is wired by hand to any number of inputs. Its lane draws under the track
+  whose group holds the node, or, for a node outside any track's group, in
+  its own row after the last track (`Rows::free_lanes`).
+- **Effects and modulators added in M9 batch 4.** Distortion
+  (`noodle.effect.distortion`: soft, hard, fold, asymmetric), Bitcrusher
+  (`noodle.effect.bitcrusher`), Chorus (`noodle.effect.chorus`, a modulated
+  delay with feedback, so also a flanger; a second channel sweeps a quarter
+  cycle behind) and Phaser (`noodle.effect.phaser`, 2 to 12 allpass stages)
+  are per-lane effects; Chorus owns its delay lines like Delay, and neither
+  it nor the others allocate or lock on the audio thread. Envelope Follower
+  (`noodle.mod.follower`, peak or RMS), Sample & Hold
+  (`noodle.mod.samplehold`, sample or track mode), Lag
+  (`noodle.mod.lag`, separate rise and fall times; the first sample is taken
+  as is) and Comparator (`noodle.mod.comparator`, a Schmitt trigger) turn
+  signals into control signals and gates. Clock (`noodle.generator.clock`)
+  pulses on a note division of the transport's tick grid (silent while
+  stopped), so it stays in time through tempo changes, seeks and loops, to the resolution of a block (a tempo change or loop wrap inside a block lands at the next).
 
 ### Feedback loops
 
@@ -893,6 +991,12 @@ into a parameter port.** It is not a clip and not a node the user wires.
   output.
 - Lanes are drawn by the arrangement view under their track, and in the
   properties panel next to the parameter they target.
+- **Free automation tracks (M9).** A lane drives one parameter, so it can't
+  reach an input with no lane of its own or several at once. The Automation
+  node (see Nodes) turns a lane into a signal: the timeline's "+ Auto" adds
+  the node and a lane on its `value` as one undo step, and the node's `out` is
+  wired like any other output. Its lane is a 0 to 1 slider-style row (not a
+  switch), numbered "Automation 1, 2, ..." by node order.
 
 ## Caching (M4)
 
@@ -1731,8 +1835,11 @@ It has these views:
     keeps the last file it decoded, so the steps of an edit do not read it
     again. There is no on-disk cache of it: a render is cheap next to
     the stretcher's speed, and the engine itself stretches live.
-  - **Ticks on the x axis**, so the view doesn't stretch when the tempo
-    changes. Zoom is points per quarter note.
+  - **Seconds on the x axis**: time is linear, so a clip is as wide as its
+    audio is long. In a slower section a bar lasts longer, so its bar lines
+    sit further apart. Every tick/x conversion (clips, automation, tempo
+    lane, playhead, ruler, snapping, drags) goes through `Axis`, which
+    follows the tempo map. Zoom is points per second.
   - **Moving and trimming** are `SetClip` commands, one undo step per drag.
     Each frame's edit is worked out from the clips as they were when the
     drag began, so snapping can't accumulate error. Moves and the grabbed

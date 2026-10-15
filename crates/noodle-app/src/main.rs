@@ -63,6 +63,9 @@ fn main() -> ExitCode {
         },
         None => Session::new(Nodes::all_with_plugins()),
     };
+    if let Some(dir) = prefs::library_dir() {
+        session.set_library(noodle_core::library::Library::open(Some(dir)));
+    }
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
         session.set_audio_config(prefs.audio);
