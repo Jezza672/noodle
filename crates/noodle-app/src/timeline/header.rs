@@ -50,12 +50,16 @@ pub struct Automated {
 pub(crate) const AUTOMATED: &str = "Driven by a lane or a wire; edit or remove that to change it";
 
 /// A track's controls: where they are set and what they say now.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackControls {
     /// The boundary node that holds gain and mute, and gets solo turned on,
     /// and the ID of the port on it they belong to.
     pub node: NodeId,
     pub port: u32,
+    /// Where gain and mute are set: the parameters of the track input that
+    /// feeds the group output, or else the group output's own.
+    pub gain_target: (NodeId, String),
+    pub mute_target: (NodeId, String),
     pub controls: Controls,
     /// Silent because another track is soloed.
     pub muted_by_solo: bool,
@@ -68,18 +72,6 @@ pub struct TrackControls {
 /// The controls for the track whose clips `input` plays, if it sits in a group
 /// that has a boundary node. `muted_by_solo` is the graph's `solo_muted` set,
 /// worked out once for all the headers.
-impl TrackControls {
-    /// The key of the track's gain parameter on its boundary node.
-    pub fn gain_key(&self) -> String {
-        group::control_key(group::GAIN, self.port)
-    }
-
-    /// The key of the track's mute parameter on its boundary node.
-    pub fn mute_key(&self) -> String {
-        group::control_key(group::MUTE, self.port)
-    }
-}
-
 pub fn controls_for(
     graph: &Graph,
     input: NodeId,
@@ -90,6 +82,8 @@ pub fn controls_for(
     Some(TrackControls {
         node: port.node,
         port: port.id,
+        gain_target: graph.control_target(group, group::GAIN)?,
+        mute_target: graph.control_target(group, group::MUTE)?,
         controls: graph.group_controls(group),
         muted_by_solo: muted_by_solo.contains(&group),
         armed_audio: false,
@@ -245,7 +239,7 @@ pub fn show(
             .layout(Layout::top_down(Align::Min)),
     );
     child.set_clip_rect(lane.intersect(ui.clip_rect()));
-    let silenced = track.is_some_and(|t| t.muted_by_solo);
+    let silenced = track.as_ref().is_some_and(|t| t.muted_by_solo);
     let group = graph.node(input).and_then(|n| n.parent);
     let stored = group.and_then(|group| stored_name(graph, group));
     let shown = stored
@@ -297,6 +291,8 @@ pub fn show(
     let Some(TrackControls {
         node,
         port,
+        gain_target,
+        mute_target,
         controls,
         armed_audio,
         armed_midi,
@@ -330,8 +326,8 @@ pub fn show(
             .inner;
         if mute {
             edits.push(Edit::Apply(set(
-                node,
-                &group::control_key(group::MUTE, port),
+                mute_target.0,
+                &mute_target.1,
                 Some(f32::from(!controls.mute)),
             )));
         }
@@ -370,17 +366,9 @@ pub fn show(
         if double {
             // Written, not removed: a control that has been set keeps its stage in
             // the compiled graph, so resetting it can't change the graph's shape.
-            edits.push(Edit::Apply(set(
-                node,
-                &group::control_key(group::GAIN, port),
-                Some(0.0),
-            )));
+            edits.push(Edit::Apply(set(gain_target.0, &gain_target.1, Some(0.0))));
         } else if slider.changed() {
-            edits.push(Edit::Drag(set(
-                node,
-                &group::control_key(group::GAIN, port),
-                Some(gain),
-            )));
+            edits.push(Edit::Drag(set(gain_target.0, &gain_target.1, Some(gain))));
         }
         if slider.drag_stopped() {
             edits.push(Edit::EndDrag);

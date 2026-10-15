@@ -16,10 +16,7 @@ const GAP: f32 = 200.0;
 
 /// The default mixer: the first Mix node at the top level.
 pub fn default_mixer(graph: &Graph) -> Option<NodeId> {
-    graph
-        .nodes()
-        .find(|(_, node)| node.type_id == MIXER && node.parent.is_none())
-        .map(|(id, _)| id)
+    spare::default_mixer(graph)
 }
 
 /// Creates a track below everything in the graph and wires its output to the
@@ -34,7 +31,18 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
         y: below + GAP,
     };
     let (group, create) = create_track(None, position, &mut new_id);
-    let mut commands = vec![create];
+    // Named as the timeline would call it, so the group and the track header
+    // agree from the start.
+    let tracks = graph
+        .nodes()
+        .filter(|(_, node)| node.type_id == noodle_core::group::TRACK_INPUT)
+        .count();
+    let name = Command::SetConfig {
+        node: group,
+        key: noodle_core::group::PORT_NAME.into(),
+        value: Some(Value::Text(format!("Track {}", tracks + 1))),
+    };
+    let mut commands = vec![create, name];
     let (mixer, key) = match default_mixer(graph)
         .filter(|&m| (spare::mixer_used(graph, m) as i64) < spare::MIXER_MAX_INPUTS)
     {
@@ -45,7 +53,9 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
         }
         None => {
             let mixer = new_id();
-            let config = Config::new().with(spare::MIXER_INPUTS, Value::Int(1));
+            let config = Config::new()
+                .with(spare::MIXER_INPUTS, Value::Int(1))
+                .with(spare::MIXER_NAME, Value::Text(spare::DEFAULT_MIXER_NAME.into()));
             let node = Node::new(MIXER)
                 .with_config(config)
                 .at(position.x + 500.0, position.y);

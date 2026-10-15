@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use noodle_core::ClipId;
 use noodle_engine::{
     Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, Setup, Shape,
+    NoteId, ParamInfo, Setup, Shape, Unit,
 };
 use noodle_io::{ClipStream, MidiBus};
 use rtrb::{Consumer, Producer, PushError};
@@ -49,6 +49,12 @@ pub const TRACK_INPUT_ID: &str = "noodle.track.input";
 
 const AUDIO: usize = 0;
 const MIDI: usize = 0;
+/// The track's gain and mute: parameters (inputs 0 and 1), passed on as
+/// outputs 1 and 2 for the track's group output to take.
+const GAIN_IN: usize = 0;
+const MUTE_IN: usize = 1;
+const GAIN_OUT: usize = 1;
+const MUTE_OUT: usize = 2;
 /// The most MIDI notes one track sounds at once; more are dropped.
 const MAX_SOUNDING: usize = 128;
 /// The note IDs of keys auditioned from the piano roll; see
@@ -71,7 +77,7 @@ const WARP_CHUNK: usize = 256;
 
 static INFO: NodeInfo = NodeInfo {
     id: TRACK_INPUT_ID,
-    version: 1,
+    version: 2,
     name: "Track Input",
     category: "Track",
 };
@@ -117,7 +123,15 @@ impl NodeType for TrackInput {
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(Layout::realtime()
+            .param(
+                "gain",
+                "Gain",
+                ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
+            )
+            .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
             .output("audio", "Audio")
+            .output("gain", "Gain")
+            .output("mute", "Mute")
             .event_output("midi", "MIDI"))
     }
 
@@ -127,7 +141,7 @@ impl NodeType for TrackInput {
         _layout: &Layout,
         _inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
-        Ok(vec![Shape::STEREO])
+        Ok(vec![Shape::STEREO, Shape::MONO, Shape::MONO])
     }
 
     fn cache_inputs(
@@ -1261,8 +1275,24 @@ fn read_frames(stream: &mut ClipStream, out: &mut [f32], blocking: bool) -> usiz
 }
 
 impl Node for TrackInputNode {
+    fn constant_output(&self, output: usize, constants: &[Option<f32>]) -> Option<f32> {
+        match output {
+            GAIN_OUT => constants[GAIN_IN],
+            MUTE_OUT => constants[MUTE_IN],
+            _ => None,
+        }
+    }
+
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let n = ctx.frames;
+        // The track's own controls, passed on for its group output.
+        // (A rig that drives the node by hand may have only the audio output.)
+        for (input, output) in [(GAIN_IN, GAIN_OUT), (MUTE_IN, MUTE_OUT)] {
+            if let (Some(input), Some(output)) = (io.inputs.get(input), io.outputs.get_mut(output))
+            {
+                output.lane_mut(0, 0).copy_from_slice(input.lane(0, 0));
+            }
+        }
         let transport = ctx.transport;
         self.shared
             .position

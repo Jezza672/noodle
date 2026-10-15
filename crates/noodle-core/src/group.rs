@@ -40,6 +40,11 @@ pub const PORTS: &str = "ports";
 pub const TRACK_INPUT: &str = "noodle.track.input";
 pub const AUDIO: &str = "audio";
 pub const MIDI: &str = "midi";
+/// The track input's gain in dB, both its parameter and an output carrying
+/// it, wired by default to the gain of the track's group output.
+pub const TRACK_GAIN: &str = "gain";
+/// The same for mute (0 or 1).
+pub const TRACK_MUTE: &str = "mute";
 
 /// The key of a port on its boundary node: the output of a [`GROUP_INPUT`]
 /// node, or the input of a [`GROUP_OUTPUT`] node. `id` is the port's ID.
@@ -288,14 +293,50 @@ impl Graph {
             .or_else(|| ports.inputs.into_iter().next())
     }
 
+    /// The parameter that a strip's gain or mute for `group` is set on:
+    /// `control` is [`GAIN`] or [`MUTE`]. For a track, whose group output is
+    /// wired from its track input's gain or mute output (see
+    /// [`TRACK_GAIN`]), that is the track input's parameter; otherwise it is
+    /// the control port's own gain or mute. `None` for a group with no ports.
+    pub fn control_target(&self, group: NodeId, control: &str) -> Option<(NodeId, String)> {
+        let port = self.control_port(group)?;
+        let key = port.control_key(control);
+        let from_track = self
+            .source(&Endpoint::new(port.node, key.as_str()))
+            .filter(|source| {
+                source.port == control
+                    && self.node(source.node).is_some_and(|n| {
+                        n.type_id == TRACK_INPUT && n.parent == Some(group)
+                    })
+            });
+        Some(match from_track {
+            Some(source) => (source.node, control.to_owned()),
+            None => (port.node, key),
+        })
+    }
+
     /// A group's gain, mute and solo, as the mixer shows them: the gain and
-    /// mute of its [`control_port`](Self::control_port), and solo if any of
-    /// the group's ports has it on.
+    /// mute of its [`control_port`](Self::control_port) (or of the track
+    /// input that feeds them, see [`control_target`](Self::control_target)),
+    /// and solo if any of the group's ports has it on.
     pub fn group_controls(&self, group: NodeId) -> Controls {
         let mut controls = self
             .control_port(group)
             .and_then(|port| Some(self.node(port.node)?.port_controls(port.id)))
             .unwrap_or_default();
+        // A track input's own parameter, if that is what the group's gain or
+        // mute follows.
+        let from_track = |control: &str| {
+            let (node, key) = self.control_target(group, control)?;
+            let node = self.node(node).filter(|n| n.type_id == TRACK_INPUT)?;
+            Some(node.params.get(&key).copied())
+        };
+        if let Some(gain) = from_track(GAIN) {
+            controls.gain_db = gain.filter(|g| g.is_finite()).unwrap_or(0.0);
+        }
+        if let Some(mute) = from_track(MUTE) {
+            controls.mute = mute.is_some_and(|m| m >= 0.5);
+        }
         controls.solo = self.has_own_solo(group);
         controls
     }

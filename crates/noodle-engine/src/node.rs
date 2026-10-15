@@ -402,6 +402,15 @@ pub trait Node: Send + 'static {
     fn silenced_by(&self, _constants: &[Option<f32>]) -> bool {
         false
     }
+
+    /// The value signal output `output` holds for the whole block, if it is
+    /// known from the inputs that are constant for the block (`constants`, as
+    /// for [`silenced_by`](Self::silenced_by)) without running the node. A
+    /// node wired from it can then be [silenced](Self::silenced_by) by it
+    /// as if the value were its own parameter. `None` is always safe.
+    fn constant_output(&self, _output: usize, _constants: &[Option<f32>]) -> Option<f32> {
+        None
+    }
 }
 
 /// The most latency, in samples, the engine will compensate for a single

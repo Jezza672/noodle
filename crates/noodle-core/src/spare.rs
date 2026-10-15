@@ -22,6 +22,10 @@ use crate::{Command, Connection, Endpoint, Graph, Node, NodeId, Position, Projec
 
 /// The mixer node type: a sum of its inputs.
 pub const MIXER: &str = "noodle.util.mix";
+/// The mixer's config key for its name, which the user can change.
+pub const MIXER_NAME: &str = "name";
+/// What the mixer a project starts with is called.
+pub const DEFAULT_MIXER_NAME: &str = "Main";
 /// The mixer's config key for how many inputs it has.
 pub const MIXER_INPUTS: &str = "inputs";
 /// How many inputs a mixer has when `inputs` isn't set.
@@ -62,6 +66,25 @@ pub fn mixer_param_index(key: &str) -> Option<usize> {
         .strip_prefix("gain")
         .or_else(|| key.strip_prefix("mute"))?;
     digits.parse().ok().filter(|&i| i >= 1)
+}
+
+/// The default mixer: the first Mix node at the top level, which Add Track
+/// feeds.
+pub fn default_mixer(graph: &Graph) -> Option<NodeId> {
+    graph
+        .nodes()
+        .find(|(_, node)| node.type_id == MIXER && node.parent.is_none())
+        .map(|(id, _)| id)
+}
+
+/// A mixer's name: its `name` config if it has one, else "Main" for the
+/// default mixer and "Mixer N" (its node ID) for any other.
+pub fn mixer_name(graph: &Graph, mixer: NodeId) -> String {
+    match graph.node(mixer).and_then(|n| n.config.get(MIXER_NAME)) {
+        Some(Value::Text(name)) if !name.is_empty() => name.clone(),
+        _ if default_mixer(graph) == Some(mixer) => DEFAULT_MIXER_NAME.to_owned(),
+        _ => format!("Mixer {}", mixer.0),
+    }
 }
 
 /// How many inputs a mixer's config gives it.

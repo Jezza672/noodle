@@ -107,14 +107,24 @@ pub fn strips(project: &Project) -> Vec<Strip> {
     ids.into_iter()
         .filter_map(|id| Some((id, graph.node(id)?)))
         .map(|(id, node)| {
-            // The strip sets the gain and mute of the group's control port.
+            // The strip sets the gain and mute of the group's control port,
+            // or of the track input that feeds them. The strip has one node,
+            // so a gain and a mute that follow different nodes fall back to
+            // the port's own.
             let port = graph.control_port(id);
-            let key = |control: &str| match &port {
-                Some(port) => port.control_key(control),
-                None => control.to_owned(),
+            let own = |control: &str| match &port {
+                Some(port) => Some((port.node, port.control_key(control))),
+                None => None,
             };
-            let (gain_key, mute_key) = (key(GAIN), key(MUTE));
-            let node_id = port.as_ref().map(|port| port.node);
+            let followed = (graph.control_target(id, GAIN), graph.control_target(id, MUTE));
+            let ((node_id, gain_key), (_, mute_key)) = match followed {
+                (Some(gain), Some(mute)) if gain.0 == mute.0 => (gain, mute),
+                _ => match (own(GAIN), own(MUTE)) {
+                    (Some(gain), Some(mute)) => (gain, mute),
+                    _ => ((NodeId(0), GAIN.to_owned()), (NodeId(0), MUTE.to_owned())),
+                },
+            };
+            let node_id = port.as_ref().map(|_| node_id);
             Strip {
                 group: id,
                 name: match node.config.get(NAME) {
@@ -171,24 +181,25 @@ pub fn show(
         ui.weak("There is no mixer yet. Add a Mix node, or add a track.");
         return Vec::new();
     };
-    if mixers.len() > 1 {
-        ui.horizontal(|ui| {
+    let mut edits = Vec::new();
+    ui.horizontal(|ui| {
+        if mixers.len() > 1 {
             ui.label("Mixer");
             egui::ComboBox::from_id_salt("mixer view")
-                .selected_text(format!("Mix {}", mixer.0))
+                .selected_text(spare::mixer_name(graph, mixer))
                 .show_ui(ui, |ui| {
                     for &m in &mixers {
-                        ui.selectable_value(view, Some(m), format!("Mix {}", m.0));
+                        ui.selectable_value(view, Some(m), spare::mixer_name(graph, m));
                     }
                 });
-        });
-    }
+        }
+        edits.extend(rename_field(ui, graph, mixer));
+    });
     let strips = mixer_strips(project, mixer);
     if strips.is_empty() {
         ui.weak("Nothing is wired into this mixer.");
-        return Vec::new();
+        return edits;
     }
-    let mut edits = Vec::new();
     egui::ScrollArea::horizontal().show(ui, |ui| {
         ui.horizontal_top(|ui| {
             for (index, strip) in strips.iter().enumerate() {
@@ -201,6 +212,34 @@ pub fn show(
         });
     });
     edits
+}
+
+/// The mixer's name as a text field. The name is kept while it is typed and
+/// written when the field loses focus; an empty name puts the default back.
+fn rename_field(ui: &mut Ui, graph: &noodle_core::Graph, mixer: NodeId) -> Option<Edit> {
+    let shown = spare::mixer_name(graph, mixer);
+    let id = ui.id().with(("mixer name", mixer));
+    let mut text: String = ui
+        .data_mut(|data| data.get_temp(id))
+        .unwrap_or_else(|| shown.clone());
+    let field = ui
+        .add(egui::TextEdit::singleline(&mut text).desired_width(120.0))
+        .on_hover_text("Rename this mixer");
+    if field.changed() {
+        ui.data_mut(|data| data.insert_temp(id, text.clone()));
+    }
+    if !field.lost_focus() {
+        return None;
+    }
+    ui.data_mut(|data| data.remove_temp::<String>(id));
+    let text = text.trim().to_owned();
+    (text != shown).then(|| {
+        Edit::Apply(Command::SetConfig {
+            node: mixer,
+            key: spare::MIXER_NAME.into(),
+            value: (!text.is_empty()).then_some(Value::Text(text)),
+        })
+    })
 }
 
 fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut Vec<Edit>) {

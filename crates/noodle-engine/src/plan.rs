@@ -188,6 +188,9 @@ struct PlanNode {
     /// inputs that are wired or still moving. Filled to ask the node whether
     /// it is [silenced](Node::silenced_by).
     constants: Vec<Option<f32>>,
+    /// Where each signal input comes from, if it is wired: the source node's
+    /// slot and its output index.
+    sources: Vec<Option<(usize, usize)>>,
     /// Delay lines that hold some of this node's inputs back to line up with
     /// the slowest one, run just before the node.
     delays: Vec<DelayLine>,
@@ -572,6 +575,7 @@ pub(crate) fn build(
                 || scheduled.node_type.info().id == TAP_ID
                 || scheduled.node_type.always_runs(),
             constants: vec![None; scheduled.inputs.len()],
+            sources: Vec::new(),
             delays: Vec::new(),
             scratch,
             bus_out: match bus {
@@ -603,7 +607,7 @@ pub(crate) fn build(
         });
 
     let graph = step_graph(&nodes, &offsets_in);
-    let readers = readers_of(&wiring, &nodes);
+    let readers = readers_of(&wiring, &mut nodes);
     let slots = nodes.len();
     let nodes_have_loops = nodes.iter().any(|node| node.owner.is_some());
     info.shape = PlanShape {
@@ -664,7 +668,8 @@ fn audible_wiring(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Wiring {
 
 /// For each node (by slot, a split node counting as its output half), the
 /// nodes that read something it writes.
-fn readers_of(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Vec<Vec<usize>> {
+/// Also fills in where each node's signal inputs come from.
+fn readers_of(wiring: &[(NodeId, Sources)], nodes: &mut [PlanNode]) -> Vec<Vec<usize>> {
     let slots: HashMap<NodeId, usize> = wiring
         .iter()
         .enumerate()
@@ -679,6 +684,12 @@ fn readers_of(wiring: &[(NodeId, Sources)], nodes: &[PlanNode]) -> Vec<Vec<usize
                 readers[source].push(reader);
             }
         }
+        let signals = nodes[reader].inputs.len();
+        nodes[reader].sources = sources
+            .iter()
+            .take(signals)
+            .map(|source| source.map(|(id, port)| (slots[&id], port)))
+            .collect();
     }
     readers
 }
@@ -779,23 +790,38 @@ impl Plan {
     /// (a muted track's stage, a VCA at level 0), stops, and so does
     /// everything that only feeds it, back to the sources. Real-time safe.
     fn update_liveness(&mut self) {
-        let values = &self.values;
-        for (silenced, node) in self.silenced.iter_mut().zip(&mut self.nodes) {
-            *silenced = false;
-            if node.owner.is_some() {
+        // In schedule order, so a source's constants are known before the
+        // nodes it feeds ask about its outputs.
+        for slot in 0..self.nodes.len() {
+            self.silenced[slot] = false;
+            if self.nodes[slot].owner.is_some() {
                 continue;
             }
-            let Some(instance) = &node.instance else {
-                continue;
-            };
-            for (constant, input) in node.constants.iter_mut().zip(&node.inputs) {
-                *constant = match *input {
-                    Input::Value(slot) => values[slot].constant(),
+            for index in 0..self.nodes[slot].inputs.len() {
+                let constant = match self.nodes[slot].inputs[index] {
+                    Input::Value(value) => self.values[value].constant(),
                     Input::Absent => Some(0.0),
-                    _ => None,
+                    // A wire from an output that holds one value.
+                    Input::Buffer(_) => self.nodes[slot]
+                        .sources
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|(source, output)| {
+                            let source = &self.nodes[source];
+                            source
+                                .instance
+                                .as_ref()?
+                                .constant_output(output, &source.constants)
+                        }),
+                    Input::Offset(_) => None,
                 };
+                self.nodes[slot].constants[index] = constant;
             }
-            *silenced = instance.silenced_by(&node.constants);
+            let node = &self.nodes[slot];
+            if let Some(instance) = &node.instance {
+                self.silenced[slot] = instance.silenced_by(&node.constants);
+            }
         }
         for (live, node) in self.live.iter_mut().zip(&self.nodes) {
             *live = node.always_runs;
