@@ -781,8 +781,8 @@ a number and fails the CI excerpt.
 Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
 and a "Load sample…" picker), and the warp evaluation songs, whose drums are a
 drum rack of committed samples (`noodle-eval/songs/samples`) and whose mixes
-run through Compressor and Limiter groups (a Dynamics node with its controls
-exposed), a Parametric EQ and a Reverb. Batch 1 (library and presets) is done
+run through Dynamics nodes set as compressor and limiter (the node's presets
+make the same settings), a Parametric EQ and a Reverb. Batch 1 (library and presets) is done
 in code: it left out samples by content hash in the library (the Sampler's
 store now exists) and ships no node presets yet; the system presets are group
 presets of the instrument templates. What is left of M9: node presets for

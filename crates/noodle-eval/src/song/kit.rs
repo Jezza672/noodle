@@ -196,9 +196,9 @@ pub struct Comp {
 pub enum Fx {
     /// A Parametric EQ with these bands: (type, frequency, gain in dB, Q).
     Eq(Vec<(u8, f32, f32, f32)>),
-    /// A Compressor group (a Dynamics node with its controls exposed).
+    /// A Dynamics node set as a compressor.
     Compressor(Comp),
-    /// A Limiter group: a Dynamics in limiter mode, with `ceiling` dB.
+    /// A Dynamics node set as a limiter, with `ceiling` dB.
     Limiter {
         ceiling: f32,
     },
@@ -348,11 +348,7 @@ pub fn chain(p: &mut Patch, effects: &[Fx], from: Port, column: f32, row: f32) -
                 }
                 (p.add(eq, column, row), "in", "out")
             }
-            Fx::Compressor(c) => (
-                dynamics_group(p, "Compressor", 0.0, *c, column, row),
-                "in",
-                "out",
-            ),
+            Fx::Compressor(c) => (dynamics(p, 0.0, *c, column, row), "in", "out"),
             Fx::Limiter { ceiling } => {
                 let c = Comp {
                     threshold: *ceiling,
@@ -362,11 +358,7 @@ pub fn chain(p: &mut Patch, effects: &[Fx], from: Port, column: f32, row: f32) -
                     knee: 0.0,
                     makeup: 0.0,
                 };
-                (
-                    dynamics_group(p, "Limiter", 1.0, c, column, row),
-                    "in",
-                    "out",
-                )
+                (dynamics(p, 1.0, c, column, row), "in", "out")
             }
             Fx::Reverb {
                 decay,
@@ -405,19 +397,11 @@ fn band_key(base: &'static str, n: usize) -> &'static str {
     KEYS[n][which]
 }
 
-/// A Dynamics node as a group with its controls as the group's inputs, the
-/// way every instrument here is: Compressor, Limiter and Gate are settings of
-/// the one node, not nodes of their own. `mode` is the node's `mode` value.
-fn dynamics_group(p: &mut Patch, name: &str, mode: f32, c: Comp, column: f32, row: f32) -> NodeId {
-    let group = p.enter(name, column, row);
-    let input = p.input("in", 0.0);
-    let threshold = p.input("threshold", 1.0);
-    let ratio = p.input("ratio", 2.0);
-    let attack = p.input("attack", 3.0);
-    let release = p.input("release", 4.0);
-    let knee = p.input("knee", 5.0);
-    let makeup = p.input("makeup", 6.0);
-    let node = p.add(
+/// A Dynamics node set up as a compressor (`mode` 0) or limiter (`mode` 1).
+/// They are settings of the one node, not nodes of their own, so the node
+/// presets of Dynamics make the same ones.
+fn dynamics(p: &mut Patch, mode: f32, c: Comp, column: f32, row: f32) -> NodeId {
+    p.add(
         spec("noodle.effect.dynamics")
             .param("mode", mode)
             .param("threshold", c.threshold)
@@ -426,20 +410,9 @@ fn dynamics_group(p: &mut Patch, name: &str, mode: f32, c: Comp, column: f32, ro
             .param("release", c.release)
             .param("knee", c.knee)
             .param("makeup", c.makeup),
-        2.0,
-        0.0,
-    );
-    p.connect(input, (node, "in"));
-    p.connect(threshold, (node, "threshold"));
-    p.connect(ratio, (node, "ratio"));
-    p.connect(attack, (node, "attack"));
-    p.connect(release, (node, "release"));
-    p.connect(knee, (node, "knee"));
-    p.connect(makeup, (node, "makeup"));
-    let out = p.output("out", 3.0, 0.0);
-    p.connect((node, "out"), out);
-    p.leave(group);
-    group
+        column,
+        row,
+    )
 }
 
 pub fn drum_label(drum: Drum) -> &'static str {

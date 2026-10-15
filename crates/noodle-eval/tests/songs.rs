@@ -591,39 +591,24 @@ fn the_committed_samples_are_what_the_synthesis_makes() {
 }
 
 #[test]
-fn compressor_and_limiter_groups_expose_their_controls() {
-    use noodle_core::group::GROUP;
-    let mut seen = std::collections::BTreeSet::new();
+fn compressor_and_limiter_are_dynamics_nodes_not_groups() {
+    use noodle_core::Value;
+    let mut modes = std::collections::BTreeSet::new();
     for song in all() {
         let project = song.source_project();
-        let graph = project.graph();
-        for (id, node) in graph.nodes().filter(|(_, n)| n.type_id == GROUP) {
-            let Some(noodle_core::Value::Text(name)) = node.config.get("name") else {
-                continue;
-            };
-            if name != "Compressor" && name != "Limiter" {
-                continue;
+        for (_, node) in project.graph().nodes() {
+            if node.type_id == "noodle.effect.dynamics" {
+                modes.insert(node.params.get("mode").copied().unwrap_or(0.0) as i32);
             }
-            seen.insert(name.clone());
-            let ports = graph.group_ports(id);
-            for control in [
-                "in",
-                "threshold",
-                "ratio",
-                "attack",
-                "release",
-                "knee",
-                "makeup",
-            ] {
+            if let Some(Value::Text(name)) = node.config.get("name") {
                 assert!(
-                    ports.input(control).is_some(),
-                    "{} {name}: {control}",
+                    name != "Compressor" && name != "Limiter",
+                    "{}: {name} is a Dynamics preset, not a group",
                     song.name
                 );
             }
-            assert!(ports.output("out").is_some(), "{} {name}", song.name);
         }
     }
-    // Both are used somewhere, so both are checked.
-    assert_eq!(seen.len(), 2, "{seen:?}");
+    // Both a compressor and a limiter are used, so both are covered.
+    assert_eq!(modes.into_iter().collect::<Vec<_>>(), vec![0, 1]);
 }
