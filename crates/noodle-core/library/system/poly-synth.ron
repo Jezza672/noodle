@@ -222,135 +222,135 @@
     GroupPreset((
         name: "Pluck",
         slug: "poly-synth-pluck",
-        topology: "ca99ae55bdf95460",
+        topology: "da5b34bf35fd64b7",
         nodes: [
-            (),
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+            ),
             (
                 params: {"attack": 0.002, "decay": 0.28, "release": 0.15, "sustain": 0.0},
             ),
+            (),
+            (),
             (
                 params: {"pan": 0.3},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 700.0, "resonance": 0.2},
             ),
             (),
             (
                 params: {"b": 7.0},
                 config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
             ),
-            (),
-            (),
-            (
-                params: {"b": 0.35},
-                config: {"expr": "a * b + c"},
-            ),
-            (),
-            (),
             (
                 params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
             ),
-            (),
             (
-                params: {"pan": -0.3},
-            ),
-            (
-                params: {"gain1": -3.0, "gain2": -3.0},
-                config: {"inputs": 2},
-            ),
-            (
-                params: {"cutoff": 700.0, "resonance": 0.2},
-            ),
-            (
-                params: {"b": 7.0},
-                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+                params: {"b": 0.35},
+                config: {"expr": "a * b + c"},
             ),
         ],
     )),
     GroupPreset((
         name: "Short Pluck",
         slug: "poly-synth-short-pluck",
-        topology: "ca99ae55bdf95460",
+        topology: "da5b34bf35fd64b7",
         nodes: [
-            (),
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+            ),
             (
                 params: {"attack": 0.002, "decay": 0.14, "release": 0.1, "sustain": 0.0},
             ),
+            (),
+            (),
             (
                 params: {"pan": 0.3},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 1400.0, "resonance": 0.2},
             ),
             (),
             (
                 params: {"b": 7.0},
                 config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
             ),
-            (),
-            (),
-            (
-                params: {"b": 0.4},
-                config: {"expr": "a * b + c"},
-            ),
-            (),
-            (),
             (
                 params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
             ),
-            (),
             (
-                params: {"pan": -0.3},
-            ),
-            (
-                params: {"gain1": -3.0, "gain2": -3.0},
-                config: {"inputs": 2},
-            ),
-            (
-                params: {"cutoff": 1400.0, "resonance": 0.2},
-            ),
-            (
-                params: {"b": 7.0},
-                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+                params: {"b": 0.4},
+                config: {"expr": "a * b + c"},
             ),
         ],
     )),
     GroupPreset((
         name: "Soft Keys",
         slug: "poly-synth-soft-keys",
-        topology: "ca99ae55bdf95460",
+        topology: "da5b34bf35fd64b7",
         nodes: [
-            (),
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+            ),
             (
                 params: {"attack": 0.002, "decay": 0.6, "release": 0.3, "sustain": 0.0},
             ),
+            (),
+            (),
             (
                 params: {"pan": 0.3},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 900.0, "resonance": 0.2},
             ),
             (),
             (
                 params: {"b": 7.0},
                 config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
             ),
-            (),
-            (),
-            (
-                params: {"b": 0.2},
-                config: {"expr": "a * b + c"},
-            ),
-            (),
-            (),
             (
                 params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
             ),
-            (),
             (
-                params: {"pan": -0.3},
-            ),
-            (
-                params: {"gain1": -3.0, "gain2": -3.0},
-                config: {"inputs": 2},
-            ),
-            (
-                params: {"cutoff": 900.0, "resonance": 0.2},
-            ),
-            (
-                params: {"b": 7.0},
-                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+                params: {"b": 0.2},
+                config: {"expr": "a * b + c"},
             ),
         ],
     )),

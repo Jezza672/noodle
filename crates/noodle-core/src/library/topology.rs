@@ -1,20 +1,20 @@
 //! What makes two groups "the same" for presets.
 //!
 //! Two groups have the same topology if they have the same node types, the
-//! same wires between them, the same boundary ports under the same IDs and names, and
-//! the same port layout on every node. Node IDs, labels, editor positions and
+//! same wires between them, the same boundary ports under the same IDs and names. Port
+//! layouts are not part of it (presets check the ports they set by name). Node IDs, labels, editor positions and
 //! config that does not shape ports (a sample, an expression) don't count.
 //!
 //! Nodes are put in a canonical order that doesn't depend on IDs, found by
 //! refining colours like the Weisfeiler-Leman test: each node starts with a
-//! colour from its type, layout and boundary name, and takes on the colours
+//! colour from its type and boundary name, and takes on the colours
 //! of its neighbours until nothing changes. Nodes that are still
 //! indistinguishable (the five saws of a unison) are ordered by ID, so a
 //! group copied from a template keeps their order.
 
 use std::collections::BTreeMap;
 
-use super::{LayoutOf, fnv};
+use super::fnv;
 use crate::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use crate::{Graph, Node, NodeId};
 
@@ -39,23 +39,21 @@ fn ports(node: &Node) -> String {
     ports.join(",")
 }
 
-fn label(node: &Node, layout: LayoutOf) -> String {
+fn label(node: &Node) -> String {
     match node.type_id.as_str() {
         GROUP => "group".into(),
         GROUP_INPUT => format!("in:{}", ports(node)),
         GROUP_OUTPUT => format!("out:{}", ports(node)),
-        kind => {
-            format!("{kind}|{}", layout(node).unwrap_or_default())
-        }
+        kind => kind.to_string(),
     }
 }
 
-pub fn topology(graph: &Graph, group: NodeId, layout: LayoutOf) -> Topology {
+pub fn topology(graph: &Graph, group: NodeId) -> Topology {
     let ids = graph.descendants(group);
     let index: BTreeMap<NodeId, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
     let labels: Vec<String> = ids
         .iter()
-        .map(|&id| label(graph.node(id).expect("a descendant"), layout))
+        .map(|&id| label(graph.node(id).expect("a descendant")))
         .collect();
     let parents: Vec<Option<usize>> = ids
         .iter()
