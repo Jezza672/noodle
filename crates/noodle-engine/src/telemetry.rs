@@ -446,7 +446,9 @@ impl CpuWriter {
         // About a second of smoothing at typical block sizes: slow enough to
         // read, quick enough to follow an edit.
         self.load += (used - self.load) * 0.02;
-        self.peak = used.max(self.peak * 0.995);
+        // The peak decays more slowly than the load follows, but not provably
+        // so for every sequence; the peak is never below the load it sits over.
+        self.peak = used.max(self.peak * 0.995).max(self.load);
         self.cells
             .load
             .store(self.load.to_bits(), Ordering::Relaxed);

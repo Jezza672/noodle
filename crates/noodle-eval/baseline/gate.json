@@ -1,0 +1,17 @@
+{
+  "lone-kick/step/noodle-auto/missed_onsets": 1.0,
+  "lone-kick/step/noodle-beats/missed_onsets": 0.667,
+  "lone-kick/step/noodle-grain/missed_onsets": 0.667,
+  "lone-kick/x0.75/noodle-auto/missed_onsets": 1.0,
+  "lone-kick/x0.75/noodle-beats/median_abs_offset_ms": 21.333,
+  "lone-kick/x1.5/noodle-auto/missed_onsets": 1.0,
+  "sweep/step/noodle-auto/pitch_median_abs_cents": 441.668,
+  "sweep/step/noodle-beats/pitch_median_abs_cents": 16.43,
+  "sweep/step/noodle-grain/pitch_median_abs_cents": 16.553,
+  "sweep/x0.75/noodle-auto/pitch_median_abs_cents": 493.581,
+  "sweep/x0.75/noodle-beats/pitch_median_abs_cents": 19.262,
+  "sweep/x0.75/noodle-grain/pitch_median_abs_cents": 19.243,
+  "sweep/x1.5/noodle-auto/pitch_median_abs_cents": 658.494,
+  "sweep/x1.5/noodle-beats/pitch_median_abs_cents": 30.022,
+  "sweep/x1.5/noodle-grain/pitch_median_abs_cents": 29.929
+}
