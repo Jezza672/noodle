@@ -151,7 +151,7 @@ impl ExportDialog {
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 ui.label("Format");
-                egui::ComboBox::from_id_salt("export format")
+                crate::widgets::Dropdown::from_id_salt("export format")
                     .selected_text(self.format.label())
                     .show_ui(ui, |ui| {
                         for format in ExportFormat::ALL {

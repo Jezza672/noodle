@@ -452,9 +452,36 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
             Color32::TRANSPARENT,
             Stroke::new(1.0, colors::TEXT_WEAK),
         );
+        if port.kind == PortKind::Any {
+            any_marks(
+                painter,
+                center,
+                radius,
+                Stroke::new(1.5, colors::AUDIO_SOCKET),
+                Stroke::new(1.5, colors::EVENT_SOCKET),
+            );
+        }
         return;
     }
     match port.kind {
+        // Takes any kind of wire: half the colour of each, until one is
+        // wired and the port becomes that kind.
+        PortKind::Any => {
+            painter.circle(center, radius, colors::AUDIO_SOCKET, outline);
+            let half: Vec<Pos2> = (0..=8)
+                .map(|i| {
+                    let angle =
+                        -3.0 * std::f32::consts::FRAC_PI_4 + std::f32::consts::PI * i as f32 / 8.0;
+                    center + Vec2::angled(angle) * radius
+                })
+                .collect();
+            painter.add(PathShape::convex_polygon(
+                half,
+                colors::EVENT_SOCKET,
+                Stroke::NONE,
+            ));
+            painter.circle_stroke(center, radius, outline);
+        }
         PortKind::Event => {
             let r = radius * 1.2;
             let points = vec![
@@ -483,6 +510,22 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
             painter.circle(center, radius, fill, outline);
         }
     }
+}
+
+/// The marks on a spare socket that takes any kind of wire: an arc of each
+/// kind's colour over the grey ring.
+fn any_marks(painter: &Painter, center: Pos2, radius: f32, audio: Stroke, event: Stroke) {
+    let arc = |from: f32, to: f32| -> Vec<Pos2> {
+        (0..=8)
+            .map(|i| {
+                let angle = from + (to - from) * i as f32 / 8.0;
+                center + Vec2::angled(angle) * radius
+            })
+            .collect()
+    };
+    let quarter = std::f32::consts::FRAC_PI_2;
+    painter.add(PathShape::line(arc(quarter, 3.0 * quarter), audio));
+    painter.add(PathShape::line(arc(-quarter, quarter), event));
 }
 
 fn warning(painter: &Painter, at: Pos2, z: f32, align: Align2) {

@@ -54,6 +54,7 @@ use noodle_nodes::{REROUTE_ID, SCOPE_ID};
 use crate::freezing::Badge;
 use crate::session::{Edit, Session};
 use crate::theme::{self, editor as colors};
+pub use layout::friendly_type_name;
 use layout::{FRAME_HEADER_HEIGHT, PortKind, REROUTE_SIZE, Scene, Side};
 use search::{Choice, Search};
 use view::Transform;
@@ -108,9 +109,14 @@ pub struct EditorState {
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
+    /// Set by View → Fit Graph, done on the next frame like arranging.
+    fit_requested: bool,
     /// A node whose view was asked for with a double-click, until the app
     /// takes it.
     view_request: Option<NodeId>,
+    /// A node an ordinary double-click landed on, until the app takes it: a
+    /// plugin node opens its editor window.
+    open_request: Option<NodeId>,
     /// The group port a right-click landed on, which its menu removes.
     port_menu: Option<group::GroupPort>,
     /// Which nodes are frozen or offline, and how their renders are doing.
@@ -143,7 +149,9 @@ impl Default for EditorState {
             bodies: body::Bodies::default(),
             clipboard: None,
             arrange_requested: false,
+            fit_requested: false,
             view_request: None,
+            open_request: None,
             port_menu: None,
             freeze: BTreeMap::new(),
         }
@@ -167,6 +175,22 @@ impl EditorState {
     /// frame: the selection, or everything if nothing is selected.
     pub fn request_arrange(&mut self) {
         self.arrange_requested = true;
+    }
+
+    /// Asks for the view to be fitted around the whole graph at the current
+    /// level on the next frame.
+    pub fn request_fit(&mut self) {
+        self.fit_requested = true;
+    }
+
+    #[cfg(test)]
+    pub fn request_open_for_test(&mut self, node: NodeId) {
+        self.open_request = Some(node);
+    }
+
+    /// The node an ordinary double-click landed on, once.
+    pub fn take_open_request(&mut self) -> Option<NodeId> {
+        self.open_request.take()
     }
 
     /// The node whose view a double-click asked for, once.
@@ -654,8 +678,11 @@ fn navigate(
     if response.dragged_by(PointerButton::Middle) {
         state.view.pan(response.drag_delta());
     }
-    if response.contains_pointer()
-        && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Home))
+    // Home with the pointer over the canvas, or F (see `keyboard`) or View →
+    // Fit Graph.
+    let key =
+        response.contains_pointer() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Home));
+    if (std::mem::take(&mut state.fit_requested) || key)
         && let Some(bounds) = scene.bounds()
     {
         state.view.fit(canvas, bounds);
@@ -927,6 +954,9 @@ fn pointer(
                     edits.push(Edit::Apply(wire.cut()));
                 }
             }
+            // Any other node: the app opens its own window if it has one
+            // (a plugin's editor).
+            Hit::Node(id) => state.open_request = Some(id),
             _ => {}
         }
     }
@@ -1645,6 +1675,10 @@ fn keyboard(
         .input(|i| i.pointer.latest_pos())
         .unwrap_or(canvas.center());
 
+    if pressed(Modifiers::NONE, Key::F) {
+        state.fit_requested = true;
+        ui.ctx().request_repaint();
+    }
     if pressed(Modifiers::SHIFT, Key::A) {
         state.search = Some(Search::new(
             f.t.to_graph(pointer),

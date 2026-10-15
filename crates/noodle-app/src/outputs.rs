@@ -7,7 +7,8 @@
 //! system and can take a moment, so it happens when the view opens and on
 //! Refresh, never every frame.
 
-use egui::{ComboBox, RichText, Ui};
+use crate::widgets::Dropdown;
+use egui::{RichText, Ui};
 use noodle_core::{Command, Config, Node, NodeId, Project, Value};
 use noodle_engine::{OUTPUT_DEVICE, OUTPUT_DEVICE_KEY, OUTPUT_ID, Problem};
 use noodle_io::{AudioError, DeviceInfo, DeviceList, OutputStatus};
@@ -222,7 +223,7 @@ impl OutputsView {
             name_of(&row.device)
         };
         let mut chosen = None;
-        let combo = ComboBox::from_id_salt(("output device", row.node))
+        let combo = Dropdown::from_id_salt(("output device", row.node))
             .selected_text(selected)
             .width(260.0)
             .show_ui(ui, |ui| {

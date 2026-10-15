@@ -32,15 +32,15 @@ pub const REVERB_ID: &str = "noodle.effect.reverb";
 struct ReverbPorts {
     #[input("in", "In")]
     input: (),
-    #[param("size", "Size", ParamInfo::new(0.5, 1.5, 1.0))]
+    #[param("size", "Size", ParamInfo::new(0.5, 1.5, 1.0).featured())]
     size: (),
     #[param(
         "decay",
         "Decay",
-        ParamInfo::new(0.1, 20.0, 2.0).log().unit(Unit::Seconds)
+        ParamInfo::new(0.1, 20.0, 2.0).log().unit(Unit::Seconds).featured()
     )]
     decay: (),
-    #[param("damping", "Damping", ParamInfo::new(0.0, 1.0, 0.4))]
+    #[param("damping", "Damping", ParamInfo::new(0.0, 1.0, 0.4).featured())]
     damping: (),
     #[param(
         "predelay",
@@ -50,7 +50,7 @@ struct ReverbPorts {
     predelay: (),
     #[param("width", "Width", ParamInfo::new(0.0, 1.0, 1.0))]
     width: (),
-    #[param("mix", "Mix", ParamInfo::new(0.0, 1.0, 0.3))]
+    #[param("mix", "Mix", ParamInfo::new(0.0, 1.0, 0.3).featured())]
     mix: (),
     #[output("out", "Out")]
     out: (),

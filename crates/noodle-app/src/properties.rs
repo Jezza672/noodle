@@ -34,14 +34,25 @@ pub fn show(
     };
     let node_type = session.registry().get(&node.type_id);
 
-    ui.heading(node_type.map_or(node.type_id.as_str(), |t| t.info().name));
-    ui.label(RichText::new(&node.type_id).weak().small());
-    problems(ui, session, id);
-
     let mut edits = Vec::new();
+    ui.horizontal(|ui| {
+        // The freeze button sits at the right of the name, in the same row.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            freeze_button(ui, session, id, &mut edits);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let name = node_type.map_or_else(
+                    || crate::editor::friendly_type_name(&node.type_id),
+                    |t| t.info().name.to_owned(),
+                );
+                ui.add(egui::Label::new(RichText::new(name).heading()).truncate())
+                    .on_hover_text(&node.type_id);
+            });
+        });
+    });
+    freeze_status(ui, session, id);
+    problems(ui, session, id);
     presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
-    freezing(ui, session, id, &mut edits);
     match node_type {
         Some(node_type) => {
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
@@ -74,7 +85,7 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
     };
     ui.horizontal(|ui| {
         ui.label("Presets");
-        egui::ComboBox::from_id_salt(("presets", id))
+        crate::widgets::Dropdown::from_id_salt(("presets", id))
             .selected_text(current)
             .show_ui(ui, |ui| {
                 for (heading, store) in [("System", SYSTEM), ("User", USER)] {
@@ -163,87 +174,95 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
     ui.separator();
 }
 
-/// A plugin node's editor button.
+/// A plugin node's editor button, and why it didn't open if it didn't.
 fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
     let Some(plugin) = session.plugin_of(id) else {
         return;
     };
     let open = session.plugin_editor_open(id);
-    ui.horizontal(|ui| {
-        let label = if open { "Close editor" } else { "Open editor" };
-        if ui
-            .button(label)
-            .on_hover_text(format!(
-                "{}'s own window. Closing it keeps what you changed in the project.",
-                plugin.descriptor().name
-            ))
-            .clicked()
-        {
-            edits.push(Edit::PluginEditor {
-                node: id,
-                open: !open,
-            });
-        }
-    });
+    let label = if open { "Close editor" } else { "Open editor" };
+    if ui
+        .button(label)
+        .on_hover_text(format!(
+            "{}'s own window. Closing it keeps what you changed in the project.",
+            plugin.descriptor().name
+        ))
+        .clicked()
+    {
+        edits.push(Edit::PluginEditor {
+            node: id,
+            open: !open,
+        });
+    }
+    // The session says why an editor couldn't open; keep it where the
+    // button is rather than only in the status line.
+    if let Some(why) = session.plugin_editor_error(id) {
+        ui.add(egui::Label::new(RichText::new(why).color(ui.visuals().error_fg_color)).wrap());
+    }
 }
 
-/// Whether the node is frozen, how its render is doing, and the button to
-/// change it.
-fn freezing(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
-    use crate::freezing::BadgeState;
+/// Whether the node can be frozen: a node or group with audio out.
+fn freezable(session: &Session, id: NodeId) -> bool {
+    let node = session.project().graph().node(id);
+    node.is_some_and(|node| {
+        if node.type_id == noodle_core::group::GROUP {
+            return !session.project().graph().group_ports(id).outputs.is_empty();
+        }
+        session
+            .registry()
+            .get(&node.type_id)
+            .and_then(|t| t.layout(&node.config).ok())
+            .is_some_and(|layout| !layout.outputs.is_empty())
+    })
+}
 
+/// The Freeze / Unfreeze button, for the right of the node's name. A node
+/// that isn't frozen and can't be gets none.
+fn freeze_button(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
     let frozen = session.project().is_frozen(id);
     let badge = session.freeze_badges().get(&id);
-    if !frozen && badge.is_none() {
-        // Offer to freeze only what can be: a node or group with audio out.
-        let node = session.project().graph().node(id);
-        let has_audio = node.is_some_and(|node| {
-            if node.type_id == noodle_core::group::GROUP {
-                return !session.project().graph().group_ports(id).outputs.is_empty();
-            }
-            session
-                .registry()
-                .get(&node.type_id)
-                .and_then(|t| t.layout(&node.config).ok())
-                .is_some_and(|layout| !layout.outputs.is_empty())
-        });
-        if !has_audio {
-            return;
+    if !frozen && badge.is_none() && !freezable(session, id) {
+        return;
+    }
+    let label = if frozen { "Unfreeze" } else { "Freeze" };
+    if ui
+        .button(label)
+        .on_hover_text("Render this once and play the result, so it costs no CPU (Shift+F)")
+        .clicked()
+    {
+        edits.push(Edit::Apply(Command::SetFrozen {
+            node: id,
+            frozen: !frozen,
+        }));
+    }
+}
+
+/// How the node's render is doing, under its name. A failure wraps to the
+/// panel's width: a long message must never widen the panel.
+fn freeze_status(ui: &mut Ui, session: &Session, id: NodeId) {
+    use crate::freezing::BadgeState;
+
+    let Some(badge) = session.freeze_badges().get(&id) else {
+        return;
+    };
+    match &badge.state {
+        BadgeState::Ready => {
+            ui.weak(if badge.frozen { "Frozen" } else { "Rendered" });
+        }
+        BadgeState::Rendering(fraction) => {
+            ui.add(
+                egui::ProgressBar::new(*fraction)
+                    .desired_width(ui.available_width().min(160.0))
+                    .show_percentage(),
+            );
+        }
+        BadgeState::Waiting => {
+            ui.weak("Waiting to render");
+        }
+        BadgeState::Failed(why) => {
+            ui.add(egui::Label::new(RichText::new(why).color(ui.visuals().error_fg_color)).wrap());
         }
     }
-    ui.horizontal(|ui| {
-        let label = if frozen { "Unfreeze" } else { "Freeze" };
-        if ui
-            .button(label)
-            .on_hover_text("Render this once and play the result, so it costs no CPU (Shift+F)")
-            .clicked()
-        {
-            edits.push(Edit::Apply(Command::SetFrozen {
-                node: id,
-                frozen: !frozen,
-            }));
-        }
-        if let Some(badge) = badge {
-            match &badge.state {
-                BadgeState::Ready => {
-                    ui.weak(if badge.frozen { "Frozen" } else { "Rendered" });
-                }
-                BadgeState::Rendering(fraction) => {
-                    ui.add(
-                        egui::ProgressBar::new(*fraction)
-                            .desired_width(120.0)
-                            .show_percentage(),
-                    );
-                }
-                BadgeState::Waiting => {
-                    ui.weak("Waiting to render");
-                }
-                BadgeState::Failed(why) => {
-                    ui.colored_label(ui.visuals().error_fg_color, why);
-                }
-            }
-        }
-    });
 }
 
 fn problems(ui: &mut Ui, session: &Session, id: NodeId) {
@@ -254,7 +273,9 @@ fn problems(ui: &mut Ui, session: &Session, id: NodeId) {
         };
         if here {
             let color = ui.visuals().error_fg_color;
-            ui.label(RichText::new(diagnostic.problem.to_string()).color(color));
+            ui.add(
+                egui::Label::new(RichText::new(diagnostic.problem.to_string()).color(color)).wrap(),
+            );
         }
     }
 }
@@ -595,20 +616,81 @@ fn params(
                 max: live.max,
             })
         });
-        let shown = reading.map_or(value, |reading| reading.value);
-        ui.add_enabled_ui(source.is_none(), |ui| {
-            let out = ParamField::new(&input.name, info, shown)
-                .id_salt((id, key))
-                .show(ui);
-            if let Some(source) = &source {
-                out.response
-                    .on_disabled_hover_text(format!("Driven by {}", describe(session, source)));
-            } else {
-                edits.extend(out.edits(id, key));
+        let shown_value = reading.map_or(value, |reading| reading.value);
+        let lane = session
+            .project()
+            .lane_for(&Endpoint::new(id, key))
+            .is_some();
+        let shown = layout.param_shown(&node.param_shown, key);
+        ui.horizontal(|ui| {
+            if let Some(edit) = shown_dot(ui, id, key, shown, source.is_some() || lane) {
+                edits.push(edit);
             }
+            ui.add_enabled_ui(source.is_none(), |ui| {
+                let out = ParamField::new(&input.name, info, shown_value)
+                    .id_salt((id, key))
+                    .width(ui.available_width())
+                    .show(ui);
+                if let Some(source) = &source {
+                    out.response
+                        .on_disabled_hover_text(format!("Driven by {}", describe(session, source)));
+                } else {
+                    edits.extend(out.edits(id, key));
+                }
+            });
         });
         ui.label(RichText::new(range_text(info, reading)).weak().small());
     }
+}
+
+/// The dot beside a parameter: filled while the parameter is drawn on the
+/// node in the graph. Clicking it shows or hides the parameter there, which
+/// keeps a node with many controls a reasonable size without taking any away.
+/// A parameter with a wire or a lane stays on the node, so its dot is fixed.
+fn shown_dot(ui: &mut Ui, node: NodeId, key: &str, shown: bool, fixed: bool) -> Option<Edit> {
+    let size = egui::vec2(16.0, ui.spacing().interact_size.y);
+    let sense = if fixed {
+        egui::Sense::hover()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let on = shown || fixed;
+    let colour = if on {
+        crate::theme::ACCENT
+    } else {
+        ui.visuals().widgets.noninteractive.fg_stroke.color
+    };
+    let centre = rect.center();
+    let radius = if response.hovered() && !fixed {
+        5.5
+    } else {
+        4.5
+    };
+    if on {
+        ui.painter().circle_filled(centre, radius, colour);
+    } else {
+        ui.painter()
+            .circle_stroke(centre, radius, egui::Stroke::new(1.5, colour));
+    }
+    let tip = if fixed {
+        "Shown on the node: a wire or an automation lane goes into it"
+    } else if on {
+        "Shown on the node. Click to hide it there"
+    } else {
+        "Hidden on the node. Click to show it there"
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, !fixed, on, "Show on node")
+    });
+    let response = response.on_hover_text(tip);
+    (response.clicked()).then(|| {
+        Edit::Apply(Command::SetParamShown {
+            node,
+            key: key.to_owned(),
+            shown: Some(!on),
+        })
+    })
 }
 
 /// The graph of what the node does, with its points to drag. A wired
@@ -910,6 +992,87 @@ mod tests {
         assert!(param(&harness, "freq1").unwrap() > 300.0);
         let gain = param(&harness, "gain1").unwrap();
         assert!((gain - 12.0).abs() < 1.5, "{gain}");
+    }
+
+    #[test]
+    fn the_freeze_button_is_in_the_name_row_at_the_right() {
+        let harness = harness([Node::new("noodle.offline.reverse")]);
+        let name = harness.get_by_label("Reverse").rect();
+        let freeze = harness.get_by_label("Freeze").rect();
+        assert!(
+            (name.center().y - freeze.center().y).abs() < 4.0,
+            "{name:?} {freeze:?}"
+        );
+        assert!(freeze.left() > name.right(), "{name:?} {freeze:?}");
+        assert!(freeze.right() > 250.0, "at the right edge: {freeze:?}");
+        // And the type's ID is no longer printed under it.
+        assert!(harness.query_by_label("noodle.offline.reverse").is_none());
+    }
+
+    #[test]
+    fn a_long_freeze_error_wraps_instead_of_widening_the_panel() {
+        let mut harness = harness([
+            Node::new("noodle.offline.reverse"),
+            Node::new(noodle_engine::INPUT_ID),
+        ]);
+        harness
+            .state_mut()
+            .session
+            .edit([Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(NodeId(2), "out"),
+                to: Endpoint::new(NodeId(1), "in"),
+            }))]);
+        harness.run();
+        let messages: Vec<_> = harness
+            .get_all_by_label_contains("same every time")
+            .map(|m| m.rect())
+            .collect();
+        assert!(!messages.is_empty());
+        for why in messages {
+            assert!(why.right() <= 300.0, "{why:?}");
+        }
+        // The controls below it are still on screen.
+        let freeze = harness.get_by_label("Freeze").rect();
+        assert!(freeze.right() <= 300.0, "{freeze:?}");
+    }
+
+    #[test]
+    fn a_dot_beside_each_parameter_shows_or_hides_it_on_the_node() {
+        let mut harness = harness([Node::new("noodle.effect.chorus")]);
+        harness.set_size(vec2(300.0, 900.0));
+        harness.run();
+        let dots: Vec<_> = harness.get_all_by_label("Show on node").collect();
+        assert_eq!(dots.len(), 5, "one for each parameter");
+        // The third is Delay, which a node with so many ports leaves off.
+        dots[2].click();
+        harness.run();
+        let shown = harness
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(NodeId(1))
+            .unwrap()
+            .param_shown
+            .clone();
+        assert_eq!(shown.get("delay"), Some(&true));
+        // The first is Rate, which it shows; clicking turns it off.
+        harness
+            .get_all_by_label("Show on node")
+            .next()
+            .unwrap()
+            .click();
+        harness.run();
+        let shown = harness
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(NodeId(1))
+            .unwrap()
+            .param_shown
+            .clone();
+        assert_eq!(shown.get("rate"), Some(&false));
     }
 
     #[test]

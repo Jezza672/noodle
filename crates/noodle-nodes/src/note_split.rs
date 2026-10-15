@@ -88,12 +88,12 @@ impl NodeType for NoteSplit {
                 .param(
                     format!("low{n}"),
                     format!("Low key {n}"),
-                    ParamInfo::new(0.0, 127.0, 0.0).smoothing(0.0),
+                    ParamInfo::new(0.0, 127.0, 0.0).smoothing(0.0).featured(),
                 )
                 .param(
                     format!("high{n}"),
                     format!("High key {n}"),
-                    ParamInfo::new(0.0, 127.0, 127.0).smoothing(0.0),
+                    ParamInfo::new(0.0, 127.0, 127.0).smoothing(0.0).featured(),
                 )
                 .param(
                     format!("vel_low{n}"),

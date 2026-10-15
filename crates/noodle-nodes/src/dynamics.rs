@@ -78,21 +78,21 @@ struct DynamicsPorts {
     #[param(
         "threshold",
         "Threshold",
-        ParamInfo::new(-80.0, 0.0, -18.0).unit(Unit::Decibels).offset()
+        ParamInfo::new(-80.0, 0.0, -18.0).unit(Unit::Decibels).offset().featured()
     )]
     threshold: (),
-    #[param("ratio", "Ratio", ParamInfo::new(1.0, 100.0, 4.0).log().offset())]
+    #[param("ratio", "Ratio", ParamInfo::new(1.0, 100.0, 4.0).log().offset().featured())]
     ratio: (),
     #[param(
         "attack",
         "Attack",
-        ParamInfo::new(0.0001, 0.5, 0.01).log().unit(Unit::Seconds).offset()
+        ParamInfo::new(0.0001, 0.5, 0.01).log().unit(Unit::Seconds).offset().featured()
     )]
     attack: (),
     #[param(
         "release",
         "Release",
-        ParamInfo::new(0.005, 5.0, 0.1).log().unit(Unit::Seconds).offset()
+        ParamInfo::new(0.005, 5.0, 0.1).log().unit(Unit::Seconds).offset().featured()
     )]
     release: (),
     #[param(

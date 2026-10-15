@@ -45,6 +45,14 @@ pub enum Command {
         node: NodeId,
         order: Vec<String>,
     },
+    /// Shows a parameter on the node in the graph (`Some(true)`), hides it
+    /// (`Some(false)`), or leaves it to the node type's default (`None`).
+    /// Display only.
+    SetParamShown {
+        node: NodeId,
+        key: String,
+        shown: Option<bool>,
+    },
     /// Records which library preset was last applied to a node or group, or
     /// `None` to forget it. Changes nothing the engine sees.
     SetPreset {
@@ -294,6 +302,18 @@ impl Command {
             Command::SetPortOrder { node, order } => {
                 let old = std::mem::replace(&mut graph.node_mut(node)?.port_order, order);
                 Command::SetPortOrder { node, order: old }
+            }
+            Command::SetParamShown { node, key, shown } => {
+                let map = &mut graph.node_mut(node)?.param_shown;
+                let old = match shown {
+                    Some(shown) => map.insert(key.clone(), shown),
+                    None => map.remove(&key),
+                };
+                Command::SetParamShown {
+                    node,
+                    key,
+                    shown: old,
+                }
             }
             Command::SetParent { node, parent } => {
                 let old = graph.set_parent(node, parent)?;
@@ -658,6 +678,16 @@ mod tests {
             Command::SetPortOrder {
                 node: mix,
                 order: vec!["in2".into(), "in".into()],
+            },
+            Command::SetParamShown {
+                node: a,
+                key: "frequency".into(),
+                shown: Some(false),
+            },
+            Command::SetParamShown {
+                node: a,
+                key: "frequency".into(),
+                shown: None,
             },
             Command::SetParam {
                 node: a,

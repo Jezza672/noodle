@@ -178,6 +178,44 @@ pub enum Mode {
 }
 
 impl Layout {
+    /// The most parameters a node shows on itself by default once it has
+    /// more than [`Self::MANY_PORTS`] inputs or outputs.
+    pub const DEFAULT_SHOWN: usize = 4;
+    /// A node with more inputs or more outputs than this shows only some of
+    /// its parameters by default.
+    pub const MANY_PORTS: usize = 4;
+
+    /// Whether the parameter `key` is drawn on the node in the graph, given
+    /// the node's own choices (`chosen`, by key). A parameter nobody chose
+    /// for shows by default on a node with few ports; on one with many it
+    /// shows if the type marks it [`featured`](ParamInfo::featured), or, when
+    /// the type marks none, if it is one of the first few. Audio and event
+    /// ports always show.
+    pub fn param_shown(
+        &self,
+        chosen: &std::collections::BTreeMap<String, bool>,
+        key: &str,
+    ) -> bool {
+        if let Some(&shown) = chosen.get(key) {
+            return shown;
+        }
+        let many = self.inputs.len() + self.event_inputs.len() > Self::MANY_PORTS
+            || self.outputs.len() + self.event_outputs.len() > Self::MANY_PORTS;
+        if !many {
+            return true;
+        }
+        let params = || {
+            self.inputs.iter().filter_map(|input| match &input.kind {
+                InputKind::Param(info) => Some((input.key.as_ref(), info)),
+                InputKind::Audio => None,
+            })
+        };
+        if params().any(|(_, info)| info.featured) {
+            return params().any(|(k, info)| k == key && info.featured);
+        }
+        params().take(Self::DEFAULT_SHOWN).any(|(k, _)| k == key)
+    }
+
     pub fn realtime() -> Self {
         Self::with_mode(Mode::Realtime)
     }
@@ -516,3 +554,76 @@ impl fmt::Display for NodeError {
 }
 
 impl std::error::Error for NodeError {}
+
+#[cfg(test)]
+mod layout_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn params(keys: &[(&str, bool)]) -> Layout {
+        let mut layout = Layout::realtime().input("in", "In");
+        for &(key, featured) in keys {
+            let info = ParamInfo::new(0.0, 1.0, 0.0);
+            layout = layout.param(
+                key.to_owned(),
+                key.to_owned(),
+                if featured { info.featured() } else { info },
+            );
+        }
+        layout
+    }
+
+    #[test]
+    fn a_node_with_few_ports_shows_every_parameter() {
+        let layout = params(&[("a", false), ("b", false), ("c", false), ("d", false)]);
+        assert!(
+            ["a", "b", "c", "d"]
+                .iter()
+                .all(|k| layout.param_shown(&BTreeMap::new(), k))
+        );
+    }
+
+    #[test]
+    fn a_node_with_many_ports_shows_its_featured_parameters() {
+        let layout = params(&[
+            ("a", false),
+            ("b", true),
+            ("c", false),
+            ("d", true),
+            ("e", false),
+        ]);
+        let shown = |k| layout.param_shown(&BTreeMap::new(), k);
+        assert_eq!(
+            [shown("a"), shown("b"), shown("c"), shown("d"), shown("e")],
+            [false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn with_none_featured_the_first_four_show() {
+        let layout = params(&[
+            ("a", false),
+            ("b", false),
+            ("c", false),
+            ("d", false),
+            ("e", false),
+        ]);
+        let shown = |k| layout.param_shown(&BTreeMap::new(), k);
+        assert_eq!([shown("a"), shown("d"), shown("e")], [true, true, false]);
+    }
+
+    #[test]
+    fn the_users_choice_beats_the_default() {
+        let layout = params(&[
+            ("a", false),
+            ("b", false),
+            ("c", false),
+            ("d", false),
+            ("e", false),
+        ]);
+        let chosen = BTreeMap::from([("a".to_owned(), false), ("e".to_owned(), true)]);
+        assert!(!layout.param_shown(&chosen, "a"));
+        assert!(layout.param_shown(&chosen, "e"));
+    }
+}
