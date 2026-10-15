@@ -10,7 +10,7 @@
 use egui::{Align2, FontId, Key, PointerButton, Pos2, Rect, Sense, Stroke, vec2};
 use noodle_core::{Command, TempoMap, Tick};
 
-use super::{Axis, grid};
+use super::Axis;
 use crate::session::Edit;
 use crate::tempo;
 use crate::theme::timeline as colors;
@@ -138,7 +138,7 @@ pub fn show(
     let free = ui.input(|i| i.modifiers.alt);
     let snap = |x: f32| {
         let tick = axis.tick(x).max(Tick::ZERO);
-        if free { tick } else { grid::snap(map, tick) }
+        if free { tick } else { axis.snap(tick) }
     };
 
     if response.drag_started_by(PointerButton::Primary) {
@@ -171,7 +171,15 @@ pub fn show(
                 }
                 .tick(pos.x)
                 .max(Tick::ZERO);
-                if free { tick } else { grid::snap(before, tick) }
+                if free {
+                    tick
+                } else {
+                    Axis {
+                        map: before,
+                        ..axis
+                    }
+                    .snap(tick)
+                }
             },
             bpm_at(row, drag.range, pos.y),
         )

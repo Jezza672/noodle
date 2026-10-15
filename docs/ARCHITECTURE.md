@@ -713,8 +713,10 @@ before the start, keys and velocities in range).
   double-clicked. Dragging on empty space draws a note, dragging a note moves
   it (in time and pitch, a whole selection together), dragging its right end
   resizes it, Delete removes, the arrow keys transpose and nudge, and a bar in
-  the velocity lane sets velocity. Notes snap to a grid step (a beat down to
-  1/16 of a beat), Alt turns snapping off. Each gesture is one undo step,
+  the velocity lane sets velocity. Notes snap to the app-wide snap step (the
+  *Snap* menu in the menu bar: a beat down to 1/16 of a beat, or off; one
+  setting for the arrangement, the piano roll and the clip editor, `snap.rs`),
+  Alt turns snapping off. Each gesture is one undo step,
   worked out from the notes as they were when it began. Notes carry an `id`
   that is unique in their clip (the project assigns one to any note that
   repeats an earlier id when a clip enters it, which also fixes files from
@@ -901,6 +903,15 @@ piece and the fade-out on the last, held to the last pass.
 timeline's trims, fades, split and slip of a warped section work in warped beats
 (`timeline/warped.rs`). While a marker is dragged the session turns the preview
 on (and off at the end of the drag); the node dips (declick) when it flips.
+A clip that isn't warped opens too (`clip_editor/plain.rs`): its file on a
+seconds ruler with the part the clip plays lit, where dragging the waveform
+slips the audio under the clip (a `SetClip` of the offset, one undo step) and
+a Warp button turns the beat editing on. The toolbar over the piano roll, the
+clip editor and the sample view is `toolbar.rs`: a title and a Close button that
+stay in view however long the hint is. The Sampler's sample (`sample_view.rs`)
+is drawn as a preview in its properties, and a double-click opens it in the same
+slot with draggable start, end and loop markers (they set the node's
+parameters).
 
 **Grid offset and the clip editor's gestures.** `ClipWarp::grid_offset` slides a
 clip's beat lines (not its markers or tempo) by a number of beats, so the lines
@@ -1855,7 +1866,8 @@ It has these views:
   - **Moving and trimming** are `SetClip` commands, one undo step per drag.
     Each frame's edit is worked out from the clips as they were when the
     drag began, so snapping can't accumulate error. Moves and the grabbed
-    edge snap to beats; Alt turns that off. Trimming turns the dragged tick
+    edge snap to the snap step (`Axis::snap`: the beat lines, or finer
+    divisions of the beat); Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
   - **Copying.** Ctrl/Cmd-dragging a clip adds copies in the drag's own undo
@@ -1868,9 +1880,12 @@ It has these views:
     one undo step.
   - **Adding audio.** Dropping files on a lane, or Import audio (the button
     in the corner and File → Import Audio…, which open a file dialog and
-    target the selected clip's track, or the first, at the playhead; the
+    target the highlighted track (its header picked), else the selected
+    clip's track, else the first, at the playhead; the
     right-click menu on a lane targets the lane and tick clicked), creates one clip per file, laid end
-    to end from the drop position (snapped to beats; Alt turns that off).
+    to end from the drop position (snapped to the snap step; Alt turns that off).
+    A drop on the empty space under the last track makes a new track for the
+    files, in the same undo step.
     The clip's length is the file's frame count, read when it's added; a file
     that can't be read, or doesn't say how long it is, is left out and the
     status line says why. All the clips are one `Batch`, so one undo removes

@@ -854,7 +854,52 @@ fn a_file_that_cant_be_read_is_reported_and_adds_nothing() {
 }
 
 #[test]
-fn dropping_a_file_where_there_are_no_tracks_asks_for_one() {
+fn the_snap_setting_sets_the_grid_a_drop_lands_on() {
+    for (step, expected) in [(960, Tick(1920)), (480, Tick(2400)), (1, Tick(2304))] {
+        let (mut h, id) = rig();
+        h.state_mut().session.set_snap(step);
+        h.run();
+        let file = wav(&h, "b.wav", 48_000);
+        // 2.4 beats: 2304 ticks.
+        let at = lane_two(&h, id, 2.4);
+        drop_files(&mut h, at, &[file]);
+        let added = clips_on(&h, 2);
+        assert_eq!(added[0].start, expected, "snap {step}");
+    }
+}
+
+/// The track inputs in the project, in the order the lanes show them.
+fn lane_inputs(h: &H) -> Vec<NodeId> {
+    super::tracks(h.state().session.project())
+}
+
+#[test]
+fn dropping_a_file_below_all_the_tracks_makes_a_new_track_for_it() {
+    let (mut h, id) = rig();
+    let file = wav(&h, "b.wav", 48_000);
+    // Under the second lane, at the third beat.
+    let at = lane_two(&h, id, 2.2) + Vec2::new(0.0, super::colors::LANE_HEIGHT);
+    drop_files(&mut h, at, &[file]);
+    let tracks = lane_inputs(&h);
+    assert_eq!(tracks.len(), 3, "a third track");
+    let new = tracks[2];
+    let added: Vec<Clip> = h
+        .state()
+        .session
+        .project()
+        .clips()
+        .map(|(_, c)| c.clone())
+        .filter(|c| c.node == new)
+        .collect();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].start, Tick(1920), "where it was dropped");
+    assert!(clips_on(&h, 1).len() == 1 && clips_on(&h, 2).is_empty());
+    h.state_mut().session.undo();
+    assert_eq!(lane_inputs(&h).len(), 2, "track and clip are one undo step");
+}
+
+#[test]
+fn dropping_a_file_where_there_are_no_tracks_makes_one() {
     let (mut h, id) = rig();
     let file = wav(&h, "b.wav", 48_000);
     let at = lane_two(&h, id, 1.0);
@@ -865,8 +910,34 @@ fn dropping_a_file_where_there_are_no_tracks_asks_for_one() {
     }
     h.run();
     drop_files(&mut h, at, &[file]);
-    assert_eq!(h.state().session.project().clips().count(), 0);
+    assert_eq!(h.state().session.project().clips().count(), 1);
+    assert_eq!(lane_inputs(&h).len(), 1);
+    assert!(h.state().notices.is_empty());
+}
+
+#[test]
+fn a_file_that_cant_be_read_below_the_tracks_makes_no_track() {
+    let (mut h, id) = rig();
+    let bad = h.state()._dir.path().join("notes.txt");
+    std::fs::write(&bad, "not audio").unwrap();
+    let at = lane_two(&h, id, 1.0) + Vec2::new(0.0, super::colors::LANE_HEIGHT);
+    drop_files(&mut h, at, &[bad]);
+    assert_eq!(lane_inputs(&h).len(), 2);
     assert_eq!(h.state().notices.len(), 1);
+}
+
+#[test]
+fn the_import_button_prefers_the_highlighted_track_over_a_selected_clip() {
+    let (mut h, id) = rig();
+    h.state_mut().playhead = Some(Tick(480));
+    h.run();
+    // The clip is on the first track; the second track's header is picked.
+    h.state_mut().timeline.selected = std::collections::BTreeSet::from([id]);
+    h.state_mut().timeline.selected_track = Some(NodeId(2));
+    h.get_by_label("Import audio…").click();
+    h.run();
+    let target = h.state().picks.last().copied().unwrap();
+    assert_eq!((target.track, target.at), (NodeId(2), Tick(480)));
 }
 
 #[test]
@@ -1699,6 +1770,7 @@ fn the_axis_is_linear_in_seconds_so_slow_bars_are_wider() {
         origin: 10.0,
         pps: 100.0,
         map: &map,
+        snap: 960,
     };
     assert_eq!(axis.x(Tick(3840)) - axis.x(Tick::ZERO), 200.0);
     assert_eq!(axis.x(Tick(7680)) - axis.x(Tick(3840)), 400.0);
