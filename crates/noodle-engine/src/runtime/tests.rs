@@ -1544,7 +1544,13 @@ impl Node for TallyNode {
     fn reset(&mut self) {
         self.1 = 0;
     }
+
+    fn stopped(&mut self) {
+        STOPPED.fetch_add(1, Ordering::Relaxed);
+    }
 }
+
+static STOPPED: AtomicUsize = AtomicUsize::new(0);
 
 /// A multiplier with a settled `level` of 0 as its off switch.
 struct Times;
@@ -1640,6 +1646,7 @@ fn a_node_feeding_a_node_that_is_off_stops_until_it_is_on_again() {
     rig.controller.set_param(times, "level", 0.0);
     rig.render(8);
     assert_eq!(runs.load(Ordering::Relaxed), on, "the source stopped");
+    assert!(STOPPED.load(Ordering::Relaxed) >= 1, "and was told so");
     assert_eq!(rig.render(4), [0.0; 4]);
 
     // Coming back, it starts fresh rather than where it left off.

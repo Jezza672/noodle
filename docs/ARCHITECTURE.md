@@ -211,10 +211,12 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Mixers are named** by their `name` config (`spare::mixer_name`); the
     default mixer, the one Add track feeds, is "Main". F2 in the graph and a
     text field in the mixer view rename one.
-  - **A track's output port carries its controls** as
-    parameters of the group's output node: gain, mute, solo and the like. The track's gain, mute and
-    solo buttons in the arrangement view show and set those parameters. Gain and mute are ordinary runtime parameters, so they can be
-  automated and wired like any other. Solo is the exception (below).
+  - **A group's output port carries its controls** as parameters of the
+    group's output node: gain, mute and solo. Gain and mute are ordinary
+    runtime parameters, so they can be automated and wired like any other.
+    For a track they are wired from the track input (below), so the track's
+    buttons set the track input's parameters; only solo is set on the output.
+    Solo is the exception (below).
   - Every group has such ports, not only tracks, so a nested group has the
     same controls.
   - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks

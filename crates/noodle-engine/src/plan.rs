@@ -848,6 +848,12 @@ impl Plan {
         for node in 0..self.nodes.len() {
             let live = self.live[node];
             self.zero[node] = !live && self.readers[node].iter().any(|&reader| self.live[reader]);
+            if !live
+                && self.was_live[node]
+                && let Some(instance) = &mut self.nodes[node].instance
+            {
+                instance.stopped();
+            }
             if live && !self.was_live[node] {
                 let node = &mut self.nodes[node];
                 if let Some(instance) = &mut node.instance {

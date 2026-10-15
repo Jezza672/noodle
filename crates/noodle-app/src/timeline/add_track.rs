@@ -19,6 +19,23 @@ pub fn default_mixer(graph: &Graph) -> Option<NodeId> {
     spare::default_mixer(graph)
 }
 
+/// The lowest N for which no group is named "Track N".
+fn free_track_number(graph: &Graph) -> usize {
+    let taken: std::collections::HashSet<&str> = graph
+        .nodes()
+        .filter(|(_, node)| node.type_id == noodle_core::group::GROUP)
+        .filter_map(
+            |(_, node)| match node.config.get(noodle_core::group::PORT_NAME) {
+                Some(Value::Text(name)) => Some(name.as_str()),
+                _ => None,
+            },
+        )
+        .collect();
+    (1..)
+        .find(|n| !taken.contains(format!("Track {n}").as_str()))
+        .expect("there are only so many tracks")
+}
+
 /// Creates a track below everything in the graph and wires its output to the
 /// next spare input of the default mixer, as one command. The only nodes it
 /// adds are the group and its own, except that a project with no mixer gets
@@ -33,14 +50,11 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
     let (group, create) = create_track(None, position, &mut new_id);
     // Named as the timeline would call it, so the group and the track header
     // agree from the start.
-    let tracks = graph
-        .nodes()
-        .filter(|(_, node)| node.type_id == noodle_core::group::TRACK_INPUT)
-        .count();
+    let number = free_track_number(graph);
     let name = Command::SetConfig {
         node: group,
         key: noodle_core::group::PORT_NAME.into(),
-        value: Some(Value::Text(format!("Track {}", tracks + 1))),
+        value: Some(Value::Text(format!("Track {number}"))),
     };
     let mut commands = vec![create, name];
     let (mixer, key) = match default_mixer(graph)
@@ -137,6 +151,28 @@ mod tests {
         let nodes = project.graph().nodes();
         let found = nodes.filter(|(_, n)| n.type_id == MIXER);
         found.map(|(id, _)| id).collect()
+    }
+
+    #[test]
+    fn a_new_track_takes_the_lowest_free_name() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let groups: Vec<NodeId> = (0..3).map(|_| apply(&mut project, &mut history)).collect();
+        let name = |project: &Project, id| {
+            project
+                .graph()
+                .node(id)
+                .and_then(|n| match n.config.get("name") {
+                    Some(Value::Text(t)) => Some(t.clone()),
+                    _ => None,
+                })
+        };
+        assert_eq!(name(&project, groups[2]).as_deref(), Some("Track 3"));
+        // Deleting track 2 and adding another doesn't repeat "Track 3".
+        history
+            .apply(&mut project, Command::RemoveNode { id: groups[1] })
+            .unwrap();
+        let fresh = apply(&mut project, &mut history);
+        assert_eq!(name(&project, fresh).as_deref(), Some("Track 2"));
     }
 
     #[test]

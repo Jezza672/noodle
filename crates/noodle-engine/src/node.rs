@@ -393,6 +393,12 @@ pub trait Node: Send + 'static {
     /// it because nothing downstream was listening.
     fn reset(&mut self) {}
 
+    /// Called once when the engine stops running the node because nothing
+    /// downstream is listening (see "Silence skipping" in the architecture
+    /// notes). A node that reports a level to the UI writes zero here, so its
+    /// meter doesn't hold the last reading.
+    fn stopped(&mut self) {}
+
     /// Whether the node's outputs are exactly zero for this block whatever
     /// its connected inputs hold, given the inputs that are the same for the
     /// whole block (`constants[i]` is `Some` for input `i` if it is
