@@ -785,8 +785,10 @@ run through Compressor and Limiter groups (a Dynamics node with its controls
 exposed), a Parametric EQ and a Reverb. Batch 1 (library and presets) is done
 in code: it left out samples by content hash in the library (the Sampler's
 store now exists) and ships no node presets yet; the system presets are group
-presets of the instrument templates. The design is in `CONTEXT.md` (Presets and
-the group library) and ADRs 0004 and 0005.
+presets of the instrument templates. What is left of M9: node presets for
+Sampler, Note Split, Dynamics, Parametric EQ, Reverb and Arpeggiator, now that
+the preset API exists. The design is in `CONTEXT.md` (Presets and the group
+library) and ADRs 0004 and 0005.
 
 **Batch 4 (more nodes and free automation tracks):** ten nodes (Envelope, a
 drawn curve played on a trigger with a multi-voice or single-voice setting;

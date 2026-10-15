@@ -85,12 +85,9 @@ pub fn synthesize(drum: Drum) -> Audio {
     let stereo = song
         .render(&crate::tempo::steady(120.0), song.whole(), RATE)
         .expect("a drum renders");
-    // A centred pan is 1/sqrt(2) in each ear.
-    let mut mono: Vec<f32> = stereo
-        .iter()
-        .step_by(2)
-        .map(|left| left * std::f32::consts::SQRT_2)
-        .collect();
+    // The pan is unity in each ear at the centre, so the left channel is the
+    // drum at its own level.
+    let mut mono: Vec<f32> = stereo.iter().step_by(2).copied().collect();
     let end = mono
         .iter()
         .rposition(|x| x.abs() > 1e-4)

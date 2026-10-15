@@ -73,9 +73,7 @@ fn racked(mut song: Song) -> Song {
             ),
             drum,
             key,
-            // The sampler is stereo, so its pan is a balance with no centre
-            // loss: take the 3 dB a mono synth's pan law took off.
-            db: part.db - 3.0,
+            db: part.db,
             pan: part.pan,
         });
         lines.push((key, part.plays));

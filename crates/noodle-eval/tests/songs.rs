@@ -483,6 +483,24 @@ fn every_instrument_is_a_group_of_primitive_nodes_with_its_controls_exposed() {
                     part.name
                 );
             }
+            if let noodle_eval::song::kit::Instrument::Rack(rack) = &part.instrument {
+                // Every slot's level, tune and pan are controls of the rack.
+                for (i, slot) in rack.slots.iter().enumerate() {
+                    let label = format!(
+                        "{} {}",
+                        noodle_eval::song::kit::drum_label(slot.drum),
+                        i + 1
+                    );
+                    for control in ["level", "tune", "pan"] {
+                        assert!(
+                            ports.input(&format!("{label} {control}")).is_some(),
+                            "{} {}: {label} {control}",
+                            song.name,
+                            part.name
+                        );
+                    }
+                }
+            }
             assert!(ports.output("out").is_some());
             if matches!(part.instrument, noodle_eval::song::kit::Instrument::Tone(_)) {
                 for name in [

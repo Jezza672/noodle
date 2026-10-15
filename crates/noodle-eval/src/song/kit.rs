@@ -282,7 +282,7 @@ pub fn build(p: &mut Patch, instrument: &Instrument, column: f32, row: f32) -> N
 }
 
 /// The drum rack group. Its input is `notes` (events), and each slot has a
-/// `level` (decibels, along the Sampler's gain) and a `tune` (cents) control,
+/// `level` (decibels, along the Sampler's gain), a `tune` (cents) and a `pan`,
 /// named after the slot; its output is `out`. Inside are a Note Split with an
 /// output per slot, a Sampler and a Pan for each, and a Mix.
 fn drum_rack(p: &mut Patch, rack: &Rack) {
@@ -309,6 +309,7 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         let label = format!("{} {}", drum_label(slot.drum), i + 1);
         let level = p.input(&format!("{label} level"), row * 2.0 + 1.0);
         let tune = p.input(&format!("{label} tune"), row * 2.0 + 2.0);
+        let slot_pan = p.input(&format!("{label} pan"), row * 2.0 + 3.0);
         let sampler = p.add(
             spec("noodle.instrument.sampler")
                 .config("sample", Value::Text(super::samples::hash(&slot.sample)))
@@ -322,6 +323,7 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         p.connect((split, out_key(i)), (sampler, "in"));
         p.connect(level, (sampler, "gain"));
         p.connect(tune, (sampler, "tune"));
+        p.connect(slot_pan, (pan, "pan"));
         p.connect((sampler, "out"), (pan, "in"));
         p.connect((pan, "out"), (mix, wire_in(i)));
     }
@@ -440,7 +442,7 @@ fn dynamics_group(p: &mut Patch, name: &str, mode: f32, c: Comp, column: f32, ro
     group
 }
 
-fn drum_label(drum: Drum) -> &'static str {
+pub fn drum_label(drum: Drum) -> &'static str {
     match drum {
         Drum::Kick { .. } => "Kick",
         Drum::Snare { .. } => "Snare",
