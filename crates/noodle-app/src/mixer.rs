@@ -112,11 +112,14 @@ pub fn strips(project: &Project) -> Vec<Strip> {
             // so a gain and a mute that follow different nodes fall back to
             // the port's own.
             let port = graph.control_port(id);
-            let own = |control: &str| match &port {
-                Some(port) => Some((port.node, port.control_key(control))),
-                None => None,
+            let own = |control: &str| {
+                port.as_ref()
+                    .map(|port| (port.node, port.control_key(control)))
             };
-            let followed = (graph.control_target(id, GAIN), graph.control_target(id, MUTE));
+            let followed = (
+                graph.control_target(id, GAIN),
+                graph.control_target(id, MUTE),
+            );
             let ((node_id, gain_key), (_, mute_key)) = match followed {
                 (Some(gain), Some(mute)) if gain.0 == mute.0 => (gain, mute),
                 _ => match (own(GAIN), own(MUTE)) {

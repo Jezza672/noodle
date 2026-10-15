@@ -779,7 +779,7 @@ a number and fails the CI excerpt.
 
 **Status:** batch 2 (the nodes) has landed: Sampler, Note Split, Dynamics,
 Parametric EQ, Reverb and Arpeggiator, with graphs for Dynamics and EQ and a
-"Load sample…" picker. Drum rack, Compressor and Limiter groups, the
+"Load sample…" picker. Drum rack, the
 evaluation songs (batch 3) and node presets follow. Batch 1 (library and
 presets) is done in code: it left out samples by content hash in the library
 (the Sampler's store now exists) and ships no node presets yet; the system
@@ -812,8 +812,8 @@ draws its lane in a row of its own. Not done: an envelope time axis in beats
    gate and expander as a `mode`; sidechain; gain-reduction output; lookahead
    reported to plugin delay compensation; a transfer-curve graph with
    draggable points and an attack and release plot), Parametric EQ, Reverb and
-   Arpeggiator. Drum rack, multi-zone instruments and Compressor, Limiter and
-   Gate are groups or presets, never monolithic nodes. Each node ships with
+   Arpeggiator. Drum rack and multi-zone instruments are groups, and Compressor, Limiter and
+   Gate are presets of Dynamics, never monolithic nodes. Each node ships with
    presets.
 3. **Warp evaluation songs.** Once the new nodes exist, the generated songs in
    `noodle-eval/src/song/` use them: the drums become a drum rack (a Note

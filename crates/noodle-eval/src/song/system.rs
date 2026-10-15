@@ -317,7 +317,53 @@ pub fn files() -> Vec<File> {
         });
     }
     files.push(subtractive_voice(&layout));
+    files.push(dynamics_presets(&layout));
     files
+}
+
+/// The Dynamics node's presets. Compressor, Limiter, Gate and Expander are
+/// presets of the one node, not groups: there is nothing to build them from
+/// that the node doesn't already do, and a group would only hide its graph.
+fn dynamics_presets(layout: &dyn Fn(&noodle_core::Node) -> Option<String>) -> File {
+    // (name, mode, threshold dB, ratio, attack s, release s, knee dB, makeup dB)
+    type Preset = (&'static str, f32, f32, f32, f32, f32, f32, f32);
+    const PRESETS: [Preset; 8] = [
+        ("Compressor", 0.0, -18.0, 4.0, 0.01, 0.1, 6.0, 0.0),
+        ("Vocal Compressor", 0.0, -20.0, 3.0, 0.005, 0.12, 8.0, 4.0),
+        ("Bus Glue", 0.0, -14.0, 2.0, 0.03, 0.2, 10.0, 1.5),
+        ("Limiter", 1.0, -1.0, 100.0, 0.0005, 0.05, 0.0, 0.0),
+        ("Gate", 2.0, -50.0, 10.0, 0.002, 0.1, 0.0, 0.0),
+        ("Drum Gate", 2.0, -40.0, 10.0, 0.0005, 0.06, 0.0, 0.0),
+        ("Expander", 3.0, -45.0, 2.0, 0.01, 0.15, 6.0, 0.0),
+        ("De-noise", 3.0, -55.0, 1.6, 0.02, 0.3, 12.0, 0.0),
+    ];
+    let items = PRESETS
+        .iter()
+        .map(
+            |&(name, mode, threshold, ratio, attack, release, knee, makeup)| {
+                let mut node = noodle_core::Node::new(noodle_nodes::DYNAMICS_ID);
+                for (key, value) in [
+                    ("mode", mode),
+                    ("threshold", threshold),
+                    ("ratio", ratio),
+                    ("attack", attack),
+                    ("release", release),
+                    ("knee", knee),
+                    ("makeup", makeup),
+                ] {
+                    node.params.insert(key.into(), value);
+                }
+                let layout = layout(&node).expect("Dynamics is registered");
+                let mut preset = noodle_core::library::NodePreset::capture(&node, &layout, name);
+                preset.slug = noodle_core::library::slugify(name);
+                Item::NodePreset(preset)
+            },
+        )
+        .collect();
+    File {
+        name: "dynamics",
+        items,
+    }
 }
 
 /// Node IDs of the example's group: the filter, the two envelopes.

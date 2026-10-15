@@ -23,6 +23,7 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/snare.ron"),
     include_str!("../../library/system/hat.ron"),
     include_str!("../../library/system/clap.ron"),
+    include_str!("../../library/system/dynamics.ron"),
 ];
 
 pub(super) fn parse_pack(text: &str) -> Result<Vec<Item>, ron::error::SpannedError> {

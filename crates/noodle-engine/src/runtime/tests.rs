@@ -1558,7 +1558,11 @@ impl NodeType for Times {
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(Layout::realtime()
             .input("in", "In")
-            .param("level", "Level", ParamInfo::new(0.0, 1.0, 1.0).smoothing(0.0))
+            .param(
+                "level",
+                "Level",
+                ParamInfo::new(0.0, 1.0, 1.0).smoothing(0.0),
+            )
             .output("out", "Out"))
     }
 

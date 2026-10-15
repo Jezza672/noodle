@@ -305,9 +305,9 @@ impl Graph {
             .source(&Endpoint::new(port.node, key.as_str()))
             .filter(|source| {
                 source.port == control
-                    && self.node(source.node).is_some_and(|n| {
-                        n.type_id == TRACK_INPUT && n.parent == Some(group)
-                    })
+                    && self
+                        .node(source.node)
+                        .is_some_and(|n| n.type_id == TRACK_INPUT && n.parent == Some(group))
             });
         Some(match from_track {
             Some(source) => (source.node, control.to_owned()),

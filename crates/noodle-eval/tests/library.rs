@@ -61,3 +61,22 @@ fn every_system_preset_fits_its_template() {
             .any(|e| matches!(e.item, Item::GroupPreset(_)))
     );
 }
+
+/// Compressor, Limiter, Gate and Expander are presets of the Dynamics node,
+/// and each fits a Dynamics node as the registry lays it out.
+#[test]
+fn the_dynamics_modes_are_presets_of_the_dynamics_node() {
+    let library = Library::in_memory();
+    let mut registry = noodle_engine::Registry::with_builtins();
+    let _ = noodle_nodes::register_library(&mut registry);
+    let layout = |node: &noodle_core::Node| registry.layout_signature(node);
+    let node = noodle_core::Node::new(noodle_nodes::DYNAMICS_ID);
+    let names: Vec<&str> = library
+        .node_presets()
+        .filter(|(_, p)| p.applies_to(&node, &layout))
+        .map(|(_, p)| p.name.as_str())
+        .collect();
+    for wanted in ["Compressor", "Limiter", "Gate", "Expander"] {
+        assert!(names.contains(&wanted), "{wanted} in {names:?}");
+    }
+}

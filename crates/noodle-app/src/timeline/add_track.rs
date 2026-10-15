@@ -53,9 +53,10 @@ pub fn command(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> Command {
         }
         None => {
             let mixer = new_id();
-            let config = Config::new()
-                .with(spare::MIXER_INPUTS, Value::Int(1))
-                .with(spare::MIXER_NAME, Value::Text(spare::DEFAULT_MIXER_NAME.into()));
+            let config = Config::new().with(spare::MIXER_INPUTS, Value::Int(1)).with(
+                spare::MIXER_NAME,
+                Value::Text(spare::DEFAULT_MIXER_NAME.into()),
+            );
             let node = Node::new(MIXER)
                 .with_config(config)
                 .at(position.x + 500.0, position.y);

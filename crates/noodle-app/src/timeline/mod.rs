@@ -1460,16 +1460,18 @@ fn draw_headers(
                 armed_midi: session.is_armed(input, ArmKind::Midi),
                 ..t
             });
-        let automated = controls.as_ref().map_or_else(header::Automated::default, |t| {
-            let driven = |(node, key): &(NodeId, String)| {
-                let input = Endpoint::new(*node, key.as_str());
-                session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
-            };
-            header::Automated {
-                gain: driven(&t.gain_target),
-                mute: driven(&t.mute_target),
-            }
-        });
+        let automated = controls
+            .as_ref()
+            .map_or_else(header::Automated::default, |t| {
+                let driven = |(node, key): &(NodeId, String)| {
+                    let input = Endpoint::new(*node, key.as_str());
+                    session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
+                };
+                header::Automated {
+                    gain: driven(&t.gain_target),
+                    mute: driven(&t.mute_target),
+                }
+            });
         let changes = header::show(
             ui,
             graph,
