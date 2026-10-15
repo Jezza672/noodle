@@ -814,15 +814,12 @@ pub fn presets(registry: &Registry) -> Vec<Item> {
                 .iter()
                 .map(|&(key, value)| (key.to_string(), value))
                 .collect();
-            let layout = registry
-                .layout_signature(&node)
-                .unwrap_or_else(|| panic!("{} has a layout", row.node));
             let node_name = registry
                 .get(row.node)
                 .unwrap_or_else(|| panic!("{} is registered", row.node))
                 .info()
                 .name;
-            let mut preset = NodePreset::capture(&node, &layout, row.name);
+            let mut preset = NodePreset::capture(&node, row.name);
             preset.slug = slugify(&format!("{node_name} {}", row.name));
             Item::NodePreset(preset)
         })

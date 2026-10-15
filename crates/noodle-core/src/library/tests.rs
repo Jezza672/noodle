@@ -7,10 +7,25 @@ use crate::{
     Command, Config, Connection, Endpoint, History, Node, NodeId, Position, Project, Value,
 };
 
-/// Layout for tests: the type plus its `inputs` config, like a Mix.
+/// Port keys for tests: a filter has `cutoff` and `resonance`, a mix has a
+/// `gainN` per input of its `inputs` config, and any other node has the
+/// parameters it holds. All have `in` and `out`.
 fn layout(node: &Node) -> Option<String> {
-    let inputs = node.config.get("inputs").cloned().unwrap_or(Value::Int(0));
-    Some(format!("{}/{inputs:?}", node.type_id))
+    let mut keys: Vec<String> = vec!["i:in".into(), "o:out".into()];
+    match node.type_id.as_str() {
+        "filter" => keys.extend(["i:cutoff".into(), "i:resonance".into()]),
+        "mix" => {
+            let n = node
+                .config
+                .get("inputs")
+                .and_then(Value::as_int)
+                .unwrap_or(0);
+            keys.extend((1..=n).map(|i| format!("i:gain{i}")));
+        }
+        _ => keys.extend(node.params.keys().map(|k| format!("i:{k}"))),
+    }
+    keys.sort();
+    Some(keys.join(";"))
 }
 
 fn named(kind: &str, name: &str) -> Node {
@@ -168,35 +183,14 @@ fn a_track_is_the_hidden_template_and_create_track_instantiates_it() {
 }
 
 #[test]
-fn topology_ignores_ids_but_not_wiring_or_layout() {
+fn topology_ignores_ids_but_not_wiring() {
     let (mut project, mut history) = setup();
     let a = synth(&mut project, &mut history, 800.0, false);
     let b = synth(&mut project, &mut history, 100.0, true);
     let graph = project.graph();
-    let (ta, tb) = (
-        topology::topology(graph, a, &layout),
-        topology::topology(graph, b, &layout),
-    );
+    let (ta, tb) = (topology::topology(graph, a), topology::topology(graph, b));
     assert_eq!(ta.key, tb.key, "IDs, positions and values don't count");
-    // Config that shapes ports does.
-    let filter = graph
-        .descendants(b)
-        .into_iter()
-        .find(|&id| graph.node(id).unwrap().type_id == "filter")
-        .unwrap();
-    history
-        .apply(
-            &mut project,
-            Command::SetConfig {
-                node: filter,
-                key: "inputs".into(),
-                value: Some(Value::Int(3)),
-            },
-        )
-        .unwrap();
-    let changed = topology::topology(project.graph(), b, &layout);
-    assert_ne!(ta.key, changed.key);
-    // So does one more wire between the same nodes.
+    // One more wire between the same nodes does. between the same nodes.
     let c = synth(&mut project, &mut history, 800.0, false);
     let graph = project.graph();
     let inside = |kind: &str| {
@@ -211,7 +205,7 @@ fn topology_ignores_ids_but_not_wiring_or_layout() {
         to: Endpoint::new(inside("filter"), "cutoff"),
     });
     history.apply(&mut project, wire).unwrap();
-    assert_ne!(ta.key, topology::topology(project.graph(), c, &layout).key);
+    assert_ne!(ta.key, topology::topology(project.graph(), c).key);
 }
 
 #[test]
@@ -256,7 +250,7 @@ fn symmetric_nodes_are_ordered_by_id() {
         (group, x, y)
     };
     let (g, x, y) = make(&mut project, &mut history);
-    let order = topology::topology(project.graph(), g, &layout).order;
+    let order = topology::topology(project.graph(), g).order;
     let at = |id| order.iter().position(|&o| o == id).unwrap();
     assert!(at(x) < at(y), "the lower ID of two twins comes first");
 }
@@ -289,7 +283,7 @@ fn a_node_preset_sets_stored_values_only_and_is_one_undo_step() {
         )
         .unwrap();
     let source = Node::new("filter").with_param("cutoff", 1200.0);
-    let preset = NodePreset::capture(&source, &layout(&source).unwrap(), "Open");
+    let preset = NodePreset::capture(&source, "Open");
     let command = preset
         .apply(project.graph(), id, "user:node:open", &layout)
         .unwrap();
@@ -333,7 +327,7 @@ fn a_preset_leaves_a_loaded_sample_alone() {
         .apply(&mut project, Command::AddNode { id, node: loaded })
         .unwrap();
     let source = Node::new("filter").with_param("cutoff", 1200.0);
-    let preset = NodePreset::capture(&source, &layout(&source).unwrap(), "Open");
+    let preset = NodePreset::capture(&source, "Open");
     let command = preset.apply(project.graph(), id, "x", &layout).unwrap();
     history.apply(&mut project, command).unwrap();
     let node = project.graph().node(id).unwrap();
@@ -363,14 +357,45 @@ fn a_node_preset_is_refused_for_another_type_or_layout() {
     history
         .apply(&mut project, Command::AddNode { id, node })
         .unwrap();
-    let wrong_type = NodePreset::capture(&Node::new("filter"), "filter/Int(0)", "x");
+    let wrong_type = NodePreset::capture(&Node::new("filter"), "x");
     assert_eq!(
         wrong_type.apply(project.graph(), id, "e", &layout),
         Err(PresetError::WrongNode)
     );
-    let three = Node::new("mix").with_config(Config::new().with("inputs", Value::Int(3)));
-    let wrong_ports = NodePreset::capture(&three, &layout(&three).unwrap(), "x");
+    // A mix with three inputs sets a port the two-input one lacks.
+    let three = Node::new("mix")
+        .with_config(Config::new().with("inputs", Value::Int(3)))
+        .with_param("gain3", -6.0);
+    let wrong_ports = NodePreset::capture(&three, "x");
     assert!(!wrong_ports.applies_to(project.graph().node(id).unwrap(), &layout));
+}
+
+#[test]
+fn a_preset_finds_its_ports_by_name_not_position() {
+    let (mut project, mut history) = setup();
+    let id = project.new_node_id();
+    history
+        .apply(
+            &mut project,
+            Command::AddNode {
+                id,
+                node: Node::new("filter"),
+            },
+        )
+        .unwrap();
+    let preset = NodePreset::capture(&Node::new("filter").with_param("cutoff", 900.0), "x");
+    let node = project.graph().node(id).unwrap();
+    // The node type gains a port and reorders the rest: still fits.
+    let grown = |n: &Node| {
+        let mut keys: Vec<String> = layout(n)?.split(';').map(String::from).collect();
+        keys.push("i:drive".into());
+        keys.reverse();
+        Some(keys.join(";"))
+    };
+    assert!(preset.applies_to(node, &grown));
+    // One that lost the port it sets doesn't.
+    let shrunk = |_: &Node| Some("i:in;o:out".to_string());
+    assert!(!preset.applies_to(node, &shrunk));
 }
 
 #[test]
@@ -400,9 +425,9 @@ fn a_group_preset_applies_across_ids_and_skips_boundary_controls() {
             )
             .unwrap();
     }
-    let preset = GroupPreset::capture(project.graph(), a, &layout, "Bright");
+    let preset = GroupPreset::capture(project.graph(), a, "Bright");
     assert!(preset.applies_to(project.graph(), b, &layout));
-    assert!(!preset.matches(project.graph(), b, &layout));
+    assert!(!preset.matches(project.graph(), b));
     let command = preset
         .apply(project.graph(), b, "user:group:bright", &layout)
         .unwrap();
@@ -429,14 +454,14 @@ fn a_group_preset_applies_across_ids_and_skips_boundary_controls() {
         graph.node(out_b).unwrap().params[&control_key(MUTE, 1)],
         1.0
     );
-    assert!(preset.matches(graph, b, &layout));
+    assert!(preset.matches(graph, b));
 }
 
 #[test]
 fn a_group_preset_is_refused_by_a_different_topology() {
     let (mut project, mut history) = setup();
     let a = synth(&mut project, &mut history, 1500.0, false);
-    let preset = GroupPreset::capture(project.graph(), a, &layout, "Bright");
+    let preset = GroupPreset::capture(project.graph(), a, "Bright");
     let other = project.new_node_id();
     history
         .apply(
@@ -462,10 +487,9 @@ fn items_round_trip_through_ron() {
         Item::Template(GroupTemplate::from_group(project.graph(), group, "Synth").unwrap()),
         Item::NodePreset(NodePreset::capture(
             &Node::new("filter").with_param("cutoff", 5.0),
-            "l",
             "F",
         )),
-        Item::GroupPreset(GroupPreset::capture(project.graph(), group, &layout, "G")),
+        Item::GroupPreset(GroupPreset::capture(project.graph(), group, "G")),
     ];
     for item in items {
         assert_eq!(Item::from_ron(&item.to_ron()).unwrap(), item);
@@ -477,11 +501,7 @@ fn the_user_store_keeps_one_file_per_entry_and_system_entries_are_read_only() {
     let dir = std::env::temp_dir().join(format!("noodle-library-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut library = Library::open(Some(dir.clone()));
-    let preset = Item::NodePreset(NodePreset::capture(
-        &Node::new("filter"),
-        "l",
-        "Warm / Dark",
-    ));
+    let preset = Item::NodePreset(NodePreset::capture(&Node::new("filter"), "Warm / Dark"));
     let first = library.save(preset.clone()).unwrap();
     let second = library.save(preset.clone()).unwrap();
     assert_eq!(first, "user:node:warm-dark");
@@ -557,8 +577,8 @@ fn a_copy_of_a_template_with_unnamed_ports_keeps_its_ports_and_topology() {
     };
     assert_eq!(names(group), names(copy));
     assert_eq!(
-        topology::topology(graph, group, &layout).key,
-        topology::topology(graph, copy, &layout).key
+        topology::topology(graph, group).key,
+        topology::topology(graph, copy).key
     );
 }
 
@@ -597,7 +617,7 @@ fn a_nested_groups_levels_are_in_a_preset_but_its_mute_and_solo_are_not() {
             ]),
         )
         .unwrap();
-    let preset = GroupPreset::capture(project.graph(), outer, &layout, "Layered");
+    let preset = GroupPreset::capture(project.graph(), outer, "Layered");
     let set = |gain: f32, mute: f32| {
         Command::Batch(vec![
             Command::SetParam {
@@ -622,7 +642,7 @@ fn a_nested_groups_levels_are_in_a_preset_but_its_mute_and_solo_are_not() {
         "the layer's level is recalled"
     );
     assert_eq!(node.params[&control_key(MUTE, 1)], 0.0, "its mute is not");
-    assert!(preset.matches(project.graph(), outer, &layout));
+    assert!(preset.matches(project.graph(), outer));
 }
 
 #[test]
@@ -630,7 +650,7 @@ fn files_with_a_slug_already_taken_get_their_own() {
     let dir = std::env::temp_dir().join(format!("noodle-library-slugs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut library = Library::open(Some(dir.clone()));
-    let item = Item::NodePreset(NodePreset::capture(&Node::new("filter"), "l", "Warm"));
+    let item = Item::NodePreset(NodePreset::capture(&Node::new("filter"), "Warm"));
     library.save(item).unwrap();
     // The same file copied in under another name.
     std::fs::copy(dir.join("node-warm.ron"), dir.join("copy-of-warm.ron")).unwrap();

@@ -47,10 +47,10 @@ fn every_system_preset_fits_its_template() {
         noodle_core::History::new()
             .apply(&mut project, command)
             .unwrap();
-        let key = topology::topology(project.graph(), group, &layout).key;
+        let order = topology::topology(project.graph(), group);
         let fitting: Vec<_> = library
             .group_presets()
-            .filter(|(_, p)| p.topology == key)
+            .filter(|(_, p)| p.fits(project.graph(), group, &order, &layout))
             .collect();
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }

@@ -415,45 +415,48 @@
     GroupPreset((
         name: "Warm Chord",
         slug: "subtractive-voice-warm-chord",
-        topology: "364aeca8337545ba",
+        topology: "b05eca30ad16dbe9",
         nodes: [
+            (),
+            (),
             (),
             (
                 params: {"b": 18.0},
                 config: {"expr": "a * pow(2, b * -1.0 / 1200)"},
             ),
+            (),
+            (),
+            (
+                params: {"attack": 0.004, "decay": 0.25, "release": 0.2, "sustain": 0.2},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.01, "decay": 0.1, "release": 0.25, "sustain": 0.8},
+            ),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 0.5 / 1200)"},
+            ),
+            (),
+            (
+                params: {"cutoff": 250.0, "resonance": 0.35},
+            ),
+            (),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 1.0 / 1200)"},
+            ),
+            (),
             (
                 params: {"gain1": -6.99, "gain2": -6.99, "gain3": -6.99, "gain4": -6.99, "gain5": -6.99},
                 config: {"inputs": 5},
             ),
             (),
+            (),
             (
                 params: {"a": 0.7},
                 config: {"expr": "a * 0.0"},
-            ),
-            (
-                params: {"b": 0.55},
-                config: {"expr": "a * b + c"},
-            ),
-            (
-                params: {"attack": 0.01, "decay": 0.1, "release": 0.25, "sustain": 0.8},
-            ),
-            (
-                params: {"cutoff": 250.0, "resonance": 0.35},
-            ),
-            (),
-            (),
-            (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 0.5 / 1200)"},
-            ),
-            (
-                params: {"attack": 0.004, "decay": 0.25, "release": 0.2, "sustain": 0.2},
-            ),
-            (),
-            (
-                params: {"a": 0.7},
-                config: {"expr": "a * -1.0"},
             ),
             (
                 params: {"b": 18.0},
@@ -461,80 +464,80 @@
             ),
             (
                 params: {"a": 0.7},
-                config: {"expr": "a * 1.0"},
-            ),
-            (
-                params: {"a": 0.7},
                 config: {"expr": "a * 0.5"},
             ),
+            (),
             (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 0.0 / 1200)"},
+                params: {"a": 0.7},
+                config: {"expr": "a * -1.0"},
             ),
-            (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 1.0 / 1200)"},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
             (
                 params: {"a": 0.7},
                 config: {"expr": "a * -0.5"},
             ),
             (),
             (),
+            (
+                params: {"a": 0.7},
+                config: {"expr": "a * 1.0"},
+            ),
             (),
-            (),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 0.0 / 1200)"},
+            ),
+            (
+                params: {"b": 0.55},
+                config: {"expr": "a * b + c"},
+            ),
             (),
         ],
     )),
     GroupPreset((
         name: "Soft Pad",
         slug: "subtractive-voice-soft-pad",
-        topology: "364aeca8337545ba",
+        topology: "b05eca30ad16dbe9",
         nodes: [
+            (),
+            (),
             (),
             (
                 params: {"b": 18.0},
                 config: {"expr": "a * pow(2, b * -1.0 / 1200)"},
             ),
+            (),
+            (),
+            (
+                params: {"attack": 0.3, "decay": 0.25, "release": 0.8, "sustain": 0.2},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.3, "decay": 0.1, "release": 0.9, "sustain": 0.8},
+            ),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 0.5 / 1200)"},
+            ),
+            (),
+            (
+                params: {"cutoff": 180.0, "resonance": 0.35},
+            ),
+            (),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 1.0 / 1200)"},
+            ),
+            (),
             (
                 params: {"gain1": -6.99, "gain2": -6.99, "gain3": -6.99, "gain4": -6.99, "gain5": -6.99},
                 config: {"inputs": 5},
             ),
             (),
+            (),
             (
                 params: {"a": 0.7},
                 config: {"expr": "a * 0.0"},
-            ),
-            (
-                params: {"b": 0.55},
-                config: {"expr": "a * b + c"},
-            ),
-            (
-                params: {"attack": 0.3, "decay": 0.1, "release": 0.9, "sustain": 0.8},
-            ),
-            (
-                params: {"cutoff": 180.0, "resonance": 0.35},
-            ),
-            (),
-            (),
-            (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 0.5 / 1200)"},
-            ),
-            (
-                params: {"attack": 0.3, "decay": 0.25, "release": 0.8, "sustain": 0.2},
-            ),
-            (),
-            (
-                params: {"a": 0.7},
-                config: {"expr": "a * -1.0"},
             ),
             (
                 params: {"b": 18.0},
@@ -542,80 +545,80 @@
             ),
             (
                 params: {"a": 0.7},
-                config: {"expr": "a * 1.0"},
-            ),
-            (
-                params: {"a": 0.7},
                 config: {"expr": "a * 0.5"},
             ),
+            (),
             (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 0.0 / 1200)"},
+                params: {"a": 0.7},
+                config: {"expr": "a * -1.0"},
             ),
-            (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 1.0 / 1200)"},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
             (
                 params: {"a": 0.7},
                 config: {"expr": "a * -0.5"},
             ),
             (),
             (),
+            (
+                params: {"a": 0.7},
+                config: {"expr": "a * 1.0"},
+            ),
             (),
-            (),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 0.0 / 1200)"},
+            ),
+            (
+                params: {"b": 0.55},
+                config: {"expr": "a * b + c"},
+            ),
             (),
         ],
     )),
     GroupPreset((
         name: "Bright Stab",
         slug: "subtractive-voice-bright-stab",
-        topology: "364aeca8337545ba",
+        topology: "b05eca30ad16dbe9",
         nodes: [
+            (),
+            (),
             (),
             (
                 params: {"b": 18.0},
                 config: {"expr": "a * pow(2, b * -1.0 / 1200)"},
             ),
+            (),
+            (),
+            (
+                params: {"attack": 0.002, "decay": 0.25, "release": 0.1, "sustain": 0.2},
+            ),
+            (),
+            (),
+            (
+                params: {"attack": 0.005, "decay": 0.1, "release": 0.12, "sustain": 0.8},
+            ),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 0.5 / 1200)"},
+            ),
+            (),
+            (
+                params: {"cutoff": 600.0, "resonance": 0.5},
+            ),
+            (),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 1.0 / 1200)"},
+            ),
+            (),
             (
                 params: {"gain1": -6.99, "gain2": -6.99, "gain3": -6.99, "gain4": -6.99, "gain5": -6.99},
                 config: {"inputs": 5},
             ),
             (),
+            (),
             (
                 params: {"a": 0.7},
                 config: {"expr": "a * 0.0"},
-            ),
-            (
-                params: {"b": 0.55},
-                config: {"expr": "a * b + c"},
-            ),
-            (
-                params: {"attack": 0.005, "decay": 0.1, "release": 0.12, "sustain": 0.8},
-            ),
-            (
-                params: {"cutoff": 600.0, "resonance": 0.5},
-            ),
-            (),
-            (),
-            (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 0.5 / 1200)"},
-            ),
-            (
-                params: {"attack": 0.002, "decay": 0.25, "release": 0.1, "sustain": 0.2},
-            ),
-            (),
-            (
-                params: {"a": 0.7},
-                config: {"expr": "a * -1.0"},
             ),
             (
                 params: {"b": 18.0},
@@ -623,35 +626,32 @@
             ),
             (
                 params: {"a": 0.7},
-                config: {"expr": "a * 1.0"},
-            ),
-            (
-                params: {"a": 0.7},
                 config: {"expr": "a * 0.5"},
             ),
+            (),
             (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 0.0 / 1200)"},
+                params: {"a": 0.7},
+                config: {"expr": "a * -1.0"},
             ),
-            (
-                params: {"b": 18.0},
-                config: {"expr": "a * pow(2, b * 1.0 / 1200)"},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
             (
                 params: {"a": 0.7},
                 config: {"expr": "a * -0.5"},
             ),
             (),
             (),
+            (
+                params: {"a": 0.7},
+                config: {"expr": "a * 1.0"},
+            ),
             (),
-            (),
+            (
+                params: {"b": 18.0},
+                config: {"expr": "a * pow(2, b * 0.0 / 1200)"},
+            ),
+            (
+                params: {"b": 0.55},
+                config: {"expr": "a * b + c"},
+            ),
             (),
         ],
     )),

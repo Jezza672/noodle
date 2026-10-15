@@ -90,55 +90,55 @@
     GroupPreset((
         name: "Clap",
         slug: "clap-clap",
-        topology: "1a04d8c25721d122",
+        topology: "117ea53729c790f7",
         nodes: [
             (),
             (),
-            (),
-            (
-                params: {"cutoff": 1500.0, "resonance": 0.3},
-            ),
             (),
             (),
             (
                 params: {"attack": 0.008, "decay": 0.16, "release": 0.04, "sustain": 0.0},
             ),
+            (
+                params: {"cutoff": 1500.0, "resonance": 0.3},
+            ),
+            (),
         ],
     )),
     GroupPreset((
         name: "Low Clap",
         slug: "clap-low-clap",
-        topology: "1a04d8c25721d122",
+        topology: "117ea53729c790f7",
         nodes: [
             (),
             (),
-            (),
-            (
-                params: {"cutoff": 1000.0, "resonance": 0.3},
-            ),
             (),
             (),
             (
                 params: {"attack": 0.008, "decay": 0.2, "release": 0.04, "sustain": 0.0},
             ),
+            (
+                params: {"cutoff": 1000.0, "resonance": 0.3},
+            ),
+            (),
         ],
     )),
     GroupPreset((
         name: "Snappy Clap",
         slug: "clap-snappy-clap",
-        topology: "1a04d8c25721d122",
+        topology: "117ea53729c790f7",
         nodes: [
             (),
             (),
-            (),
-            (
-                params: {"cutoff": 2000.0, "resonance": 0.3},
-            ),
             (),
             (),
             (
                 params: {"attack": 0.008, "decay": 0.1, "release": 0.04, "sustain": 0.0},
             ),
+            (
+                params: {"cutoff": 2000.0, "resonance": 0.3},
+            ),
+            (),
         ],
     )),
 ]

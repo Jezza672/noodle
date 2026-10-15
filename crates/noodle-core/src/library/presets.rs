@@ -5,8 +5,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::LayoutOf;
-use super::topology::topology;
+use super::topology::{Topology, topology};
+use super::{LayoutOf, has_input};
 use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, parse_control_key};
 use crate::{Command, Config, Graph, Node, NodeId};
 
@@ -73,6 +73,33 @@ impl PresetValues {
                 .all(|(k, v)| node.config.get(k) == Some(v))
     }
 
+    /// The node with these values' config in place of its own (bar what
+    /// presets leave alone), as applying them would leave it.
+    fn applied_config(&self, node: &Node) -> Node {
+        let mut after = node.clone();
+        after.config = self.config.clone();
+        for key in KEPT {
+            if self.config.get(key).is_none()
+                && let Some(value) = node.config.get(key)
+            {
+                after.config.set(*key, value.clone());
+            }
+        }
+        after
+    }
+
+    /// Whether these values can be set on `node` by name: every parameter
+    /// they hold is an input of the node, and their config doesn't change
+    /// which ports it has. A node whose type is unknown fits only when
+    /// `unknown` says so.
+    fn fits(&self, node: &Node, layout: LayoutOf, unknown: bool) -> bool {
+        let Some(ports) = layout(node) else {
+            return unknown;
+        };
+        self.params.keys().all(|key| has_input(&ports, key))
+            && layout(&self.applied_config(node)).as_deref() == Some(ports.as_str())
+    }
+
     /// The commands that make `node` hold these values and nothing else:
     /// parameters and config that aren't stored go back to their defaults.
     fn set_on(&self, id: NodeId, node: &Node) -> Vec<Command> {
@@ -118,32 +145,31 @@ impl PresetValues {
 }
 
 /// A preset for one node: its parameters and config, for any node of the same
-/// type and port layout.
+/// type that has the ports it sets. Values are by port name, so a node type
+/// gaining or reordering ports doesn't break a preset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodePreset {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub slug: String,
     pub node_type: String,
-    /// The port layout it was made for.
-    pub layout: String,
     pub values: PresetValues,
 }
 
 impl NodePreset {
-    pub fn capture(node: &Node, layout: &str, name: impl Into<String>) -> Self {
+    pub fn capture(node: &Node, name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             slug: String::new(),
             node_type: node.type_id.clone(),
-            layout: layout.to_string(),
             values: PresetValues::of(node),
         }
     }
 
-    /// Whether `node` is of this preset's type with the same ports.
+    /// Whether `node` is of this preset's type and has the ports it sets
+    /// (found by name), and the preset's config wouldn't change its ports.
     pub fn applies_to(&self, node: &Node, layout: LayoutOf) -> bool {
-        node.type_id == self.node_type && layout(node).as_deref() == Some(self.layout.as_str())
+        node.type_id == self.node_type && self.values.fits(node, layout, false)
     }
 
     /// Whether `node` still holds exactly the preset's values.
@@ -212,13 +238,8 @@ fn stored(group: NodeId, node: &Node) -> Option<Node> {
 }
 
 impl GroupPreset {
-    pub fn capture(
-        graph: &Graph,
-        group: NodeId,
-        layout: LayoutOf,
-        name: impl Into<String>,
-    ) -> Self {
-        let order = topology(graph, group, layout);
+    pub fn capture(graph: &Graph, group: NodeId, name: impl Into<String>) -> Self {
+        let order = topology(graph, group);
         let nodes = order
             .order
             .iter()
@@ -237,20 +258,28 @@ impl GroupPreset {
         }
     }
 
-    /// Whether the group has the topology this preset was made for.
+    /// Whether the group has the topology this preset was made for, and
+    /// every node in it has the ports the preset sets (found by name).
     pub fn applies_to(&self, graph: &Graph, group: NodeId, layout: LayoutOf) -> bool {
-        self.fits(&topology(graph, group, layout).key)
+        self.fits(graph, group, &topology(graph, group), layout)
     }
 
-    /// Whether this preset is for the topology with `key`: work the key out
-    /// once ([`topology`]) when asking about many presets.
-    pub fn fits(&self, key: &str) -> bool {
-        self.topology == key
+    /// [`applies_to`](Self::applies_to) with the group's [`topology`] already
+    /// worked out, for asking about many presets.
+    pub fn fits(&self, graph: &Graph, group: NodeId, order: &Topology, layout: LayoutOf) -> bool {
+        order.key == self.topology
+            && order.order.len() == self.nodes.len()
+            && order.order.iter().zip(&self.nodes).all(|(&id, values)| {
+                let node = graph.node(id).expect("a descendant");
+                // Nodes that store nothing, and types the registry doesn't
+                // know (a group's boundary), have no ports to check.
+                stored(group, node).is_none() || values.fits(node, layout, true)
+            })
     }
 
     /// Whether every node in the group still holds the preset's values.
-    pub fn matches(&self, graph: &Graph, group: NodeId, layout: LayoutOf) -> bool {
-        let order = topology(graph, group, layout);
+    pub fn matches(&self, graph: &Graph, group: NodeId) -> bool {
+        let order = topology(graph, group);
         order.key == self.topology
             && order.order.iter().zip(&self.nodes).all(|(&id, values)| {
                 let node = graph.node(id).expect("a descendant");
@@ -270,8 +299,8 @@ impl GroupPreset {
         if graph.node(group).is_none() {
             return Err(PresetError::NoSuchNode(group));
         }
-        let order = topology(graph, group, layout);
-        if order.key != self.topology || order.order.len() != self.nodes.len() {
+        let order = topology(graph, group);
+        if !self.fits(graph, group, &order, layout) {
             return Err(PresetError::WrongTopology);
         }
         let mut commands = Vec::new();

@@ -355,15 +355,18 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   `UPDATE_LIBRARY=1`). Every node has at least two, except those with nothing
   to set and Dynamics, whose presets arrive with the Compressor, Limiter and
   Gate batch (which removes its exemption); a test lists the exceptions.
-- **Port layout** comes from the node types, which `noodle-core` doesn't know,
-  so the functions that compare layouts take a closure; the app passes
-  `Registry::layout_signature` (the keys and kinds of every port). A node
-  preset applies only to a node of the same type and layout.
+- **Presets find ports by name.** Port layout comes from the node types,
+  which `noodle-core` doesn't know, so the functions that need it take a
+  closure; the app passes `Registry::layout_signature` (the sorted keys of
+  every port, no positions). A node preset fits a node of the same type that
+  has every parameter it sets, and whose ports its config wouldn't change; so
+  a node type gaining or reordering ports doesn't break its presets.
 - **Topology** (`library::topology`) decides which groups a `GroupPreset`
-  fits: the same node types, wires, boundary port names and layouts. Config
+  fits: the same node types, wires and boundary port names (a group preset also
+  needs each node to have the parameters it sets). Config
   that doesn't shape ports (a sample, an expression) doesn't count, nor do
   IDs, labels or positions. Nodes are put in a canonical order by colour
-  refinement (each node starts from its type, layout and boundary name and
+  refinement (each node starts from its type and boundary name and
   takes on its neighbours' colours until stable); nodes still
   indistinguishable (the five saws of a unison) fall back to ID order, so a
   copy of a template pairs them as the template did. A preset stores its

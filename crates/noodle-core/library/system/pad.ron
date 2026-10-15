@@ -260,10 +260,43 @@
     GroupPreset((
         name: "Slow Pad",
         slug: "pad-slow-pad",
-        topology: "751f273b541f946c",
+        topology: "8b0bbea5ad9f8853",
         nodes: [
             (
+                params: {"attack": 0.35, "decay": 0.5, "release": 0.7, "sustain": 0.7},
+            ),
+            (
                 params: {"attack": 0.35, "decay": 0.3, "release": 0.7, "sustain": 0.85},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain1": -5.0, "gain2": -5.0, "gain3": -5.0},
+                config: {"inputs": 3},
+            ),
+            (
+                params: {"cutoff": 700.0, "resonance": 0.15},
+            ),
+            (
+                params: {"pan": 0.6},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.6},
+            ),
+            (
+                params: {"b": 11.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+            (
+                params: {"b": 0.1},
+                config: {"expr": "a * b + c"},
             ),
             (
                 params: {"b": 11.0},
@@ -274,49 +307,49 @@
                 params: {"b": 11.0},
                 config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
             ),
-            (
-                params: {"gain1": -5.0, "gain2": -5.0, "gain3": -5.0},
-                config: {"inputs": 3},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
             (),
-            (),
-            (),
-            (),
-            (
-                params: {"b": 11.0},
-                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
-            ),
-            (),
-            (
-                params: {"cutoff": 700.0, "resonance": 0.15},
-            ),
-            (),
-            (
-                params: {"b": 0.1},
-                config: {"expr": "a * b + c"},
-            ),
-            (),
-            (
-                params: {"attack": 0.35, "decay": 0.5, "release": 0.7, "sustain": 0.7},
-            ),
-            (
-                params: {"pan": 0.6},
-            ),
-            (
-                params: {"pan": -0.6},
-            ),
         ],
     )),
     GroupPreset((
         name: "Bright Pad",
         slug: "pad-bright-pad",
-        topology: "751f273b541f946c",
+        topology: "8b0bbea5ad9f8853",
         nodes: [
             (
+                params: {"attack": 0.25, "decay": 0.5, "release": 0.6, "sustain": 0.7},
+            ),
+            (
                 params: {"attack": 0.25, "decay": 0.3, "release": 0.6, "sustain": 0.85},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain1": -5.0, "gain2": -5.0, "gain3": -5.0},
+                config: {"inputs": 3},
+            ),
+            (
+                params: {"cutoff": 2400.0, "resonance": 0.15},
+            ),
+            (
+                params: {"pan": 0.6},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.6},
+            ),
+            (
+                params: {"b": 11.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+            (
+                params: {"b": 0.1},
+                config: {"expr": "a * b + c"},
             ),
             (
                 params: {"b": 11.0},
@@ -327,49 +360,49 @@
                 params: {"b": 11.0},
                 config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
             ),
-            (
-                params: {"gain1": -5.0, "gain2": -5.0, "gain3": -5.0},
-                config: {"inputs": 3},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
             (),
-            (),
-            (),
-            (),
-            (
-                params: {"b": 11.0},
-                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
-            ),
-            (),
-            (
-                params: {"cutoff": 2400.0, "resonance": 0.15},
-            ),
-            (),
-            (
-                params: {"b": 0.1},
-                config: {"expr": "a * b + c"},
-            ),
-            (),
-            (
-                params: {"attack": 0.25, "decay": 0.5, "release": 0.6, "sustain": 0.7},
-            ),
-            (
-                params: {"pan": 0.6},
-            ),
-            (
-                params: {"pan": -0.6},
-            ),
         ],
     )),
     GroupPreset((
         name: "Dark Swell",
         slug: "pad-dark-swell",
-        topology: "751f273b541f946c",
+        topology: "8b0bbea5ad9f8853",
         nodes: [
             (
+                params: {"attack": 1.2, "decay": 0.5, "release": 1.6, "sustain": 0.7},
+            ),
+            (
                 params: {"attack": 1.2, "decay": 0.3, "release": 1.6, "sustain": 0.85},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain1": -5.0, "gain2": -5.0, "gain3": -5.0},
+                config: {"inputs": 3},
+            ),
+            (
+                params: {"cutoff": 500.0, "resonance": 0.15},
+            ),
+            (
+                params: {"pan": 0.6},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.6},
+            ),
+            (
+                params: {"b": 11.0},
+                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
+            ),
+            (
+                params: {"b": 0.1},
+                config: {"expr": "a * b + c"},
             ),
             (
                 params: {"b": 11.0},
@@ -380,40 +413,7 @@
                 params: {"b": 11.0},
                 config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
             ),
-            (
-                params: {"gain1": -5.0, "gain2": -5.0, "gain3": -5.0},
-                config: {"inputs": 3},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
             (),
-            (),
-            (),
-            (),
-            (
-                params: {"b": 11.0},
-                config: {"expr": "a * 1 * pow(2, b * 0 / 1200)"},
-            ),
-            (),
-            (
-                params: {"cutoff": 500.0, "resonance": 0.15},
-            ),
-            (),
-            (
-                params: {"b": 0.1},
-                config: {"expr": "a * b + c"},
-            ),
-            (),
-            (
-                params: {"attack": 1.2, "decay": 0.5, "release": 1.6, "sustain": 0.7},
-            ),
-            (
-                params: {"pan": 0.6},
-            ),
-            (
-                params: {"pan": -0.6},
-            ),
         ],
     )),
 ]

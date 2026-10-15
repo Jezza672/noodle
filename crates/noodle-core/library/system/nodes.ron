@@ -3,7 +3,6 @@
         name: "Sub 55 Hz",
         slug: "sine-sub-55-hz",
         node_type: "noodle.osc.sine",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 55.0,
@@ -14,7 +13,6 @@
         name: "Concert A",
         slug: "sine-concert-a",
         node_type: "noodle.osc.sine",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 440.0,
@@ -25,7 +23,6 @@
         name: "Slow Wobble",
         slug: "sine-slow-wobble",
         node_type: "noodle.osc.sine",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 0.5,
@@ -36,7 +33,6 @@
         name: "Low Saw",
         slug: "saw-low-saw",
         node_type: "noodle.osc.saw",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 110.0,
@@ -47,7 +43,6 @@
         name: "Concert A",
         slug: "saw-concert-a",
         node_type: "noodle.osc.saw",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 440.0,
@@ -58,7 +53,6 @@
         name: "Low Triangle",
         slug: "triangle-low-triangle",
         node_type: "noodle.osc.triangle",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 110.0,
@@ -69,7 +63,6 @@
         name: "Concert A",
         slug: "triangle-concert-a",
         node_type: "noodle.osc.triangle",
-        layout: "ip:frequency;o:out;",
         values: (
             params: {
                 "frequency": 440.0,
@@ -80,7 +73,6 @@
         name: "Hollow Square",
         slug: "square-hollow-square",
         node_type: "noodle.osc.square",
-        layout: "ip:frequency;ip:width;o:out;",
         values: (
             params: {
                 "frequency": 220.0,
@@ -92,7 +84,6 @@
         name: "Pulse 25%",
         slug: "square-pulse-25",
         node_type: "noodle.osc.square",
-        layout: "ip:frequency;ip:width;o:out;",
         values: (
             params: {
                 "frequency": 220.0,
@@ -104,7 +95,6 @@
         name: "Thin Pulse",
         slug: "square-thin-pulse",
         node_type: "noodle.osc.square",
-        layout: "ip:frequency;ip:width;o:out;",
         values: (
             params: {
                 "frequency": 220.0,
@@ -116,7 +106,6 @@
         name: "Warm Low Pass",
         slug: "state-variable-filter-warm-low-pass",
         node_type: "noodle.filter.svf",
-        layout: "ia:in;ip:cutoff;ip:resonance;o:low;o:band;o:high;",
         values: (
             params: {
                 "cutoff": 800.0,
@@ -128,7 +117,6 @@
         name: "Bright Low Pass",
         slug: "state-variable-filter-bright-low-pass",
         node_type: "noodle.filter.svf",
-        layout: "ia:in;ip:cutoff;ip:resonance;o:low;o:band;o:high;",
         values: (
             params: {
                 "cutoff": 5000.0,
@@ -140,7 +128,6 @@
         name: "Resonant Peak",
         slug: "state-variable-filter-resonant-peak",
         node_type: "noodle.filter.svf",
-        layout: "ia:in;ip:cutoff;ip:resonance;o:low;o:band;o:high;",
         values: (
             params: {
                 "cutoff": 1200.0,
@@ -152,7 +139,6 @@
         name: "Mellow Ladder",
         slug: "ladder-filter-mellow-ladder",
         node_type: "noodle.filter.ladder",
-        layout: "ia:in;ip:cutoff;ip:resonance;ip:drive;o:out;",
         values: (
             params: {
                 "cutoff": 600.0,
@@ -165,7 +151,6 @@
         name: "Acid Squelch",
         slug: "ladder-filter-acid-squelch",
         node_type: "noodle.filter.ladder",
-        layout: "ia:in;ip:cutoff;ip:resonance;ip:drive;o:out;",
         values: (
             params: {
                 "cutoff": 700.0,
@@ -178,7 +163,6 @@
         name: "Driven Open",
         slug: "ladder-filter-driven-open",
         node_type: "noodle.filter.ladder",
-        layout: "ia:in;ip:cutoff;ip:resonance;ip:drive;o:out;",
         values: (
             params: {
                 "cutoff": 6000.0,
@@ -191,7 +175,6 @@
         name: "Pluck",
         slug: "adsr-pluck",
         node_type: "noodle.mod.adsr",
-        layout: "ia:gate;ip:attack;ip:decay;ip:sustain;ip:release;o:out;o:active;",
         values: (
             params: {
                 "attack": 0.002,
@@ -205,7 +188,6 @@
         name: "Organ",
         slug: "adsr-organ",
         node_type: "noodle.mod.adsr",
-        layout: "ia:gate;ip:attack;ip:decay;ip:sustain;ip:release;o:out;o:active;",
         values: (
             params: {
                 "attack": 0.005,
@@ -219,7 +201,6 @@
         name: "Slow Pad",
         slug: "adsr-slow-pad",
         node_type: "noodle.mod.adsr",
-        layout: "ia:gate;ip:attack;ip:decay;ip:sustain;ip:release;o:out;o:active;",
         values: (
             params: {
                 "attack": 0.8,
@@ -233,7 +214,6 @@
         name: "Stab",
         slug: "adsr-stab",
         node_type: "noodle.mod.adsr",
-        layout: "ia:gate;ip:attack;ip:decay;ip:sustain;ip:release;o:out;o:active;",
         values: (
             params: {
                 "attack": 0.001,
@@ -247,7 +227,6 @@
         name: "Vibrato",
         slug: "lfo-vibrato",
         node_type: "noodle.mod.lfo",
-        layout: "ip:rate;ip:depth;ip:offset;ip:shape;ip:phase;o:out;",
         values: (
             params: {
                 "depth": 0.05,
@@ -260,7 +239,6 @@
         name: "Tremolo",
         slug: "lfo-tremolo",
         node_type: "noodle.mod.lfo",
-        layout: "ip:rate;ip:depth;ip:offset;ip:shape;ip:phase;o:out;",
         values: (
             params: {
                 "depth": 0.5,
@@ -274,7 +252,6 @@
         name: "Slow Sweep",
         slug: "lfo-slow-sweep",
         node_type: "noodle.mod.lfo",
-        layout: "ip:rate;ip:depth;ip:offset;ip:shape;ip:phase;o:out;",
         values: (
             params: {
                 "depth": 1.0,
@@ -287,7 +264,6 @@
         name: "Sample and Hold Noise",
         slug: "lfo-sample-and-hold-noise",
         node_type: "noodle.mod.lfo",
-        layout: "ip:rate;ip:depth;ip:offset;ip:shape;ip:phase;o:out;",
         values: (
             params: {
                 "depth": 1.0,
@@ -300,7 +276,6 @@
         name: "Pluck",
         slug: "envelope-pluck",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "length": 0.3,
@@ -312,7 +287,6 @@
         name: "Swell",
         slug: "envelope-swell",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "length": 2.0,
@@ -327,7 +301,6 @@
         name: "Stab",
         slug: "envelope-stab",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "length": 0.6,
@@ -342,7 +315,6 @@
         name: "Riser, 4 Beats",
         slug: "envelope-riser-4-beats",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "beats": 4.0,
@@ -357,7 +329,6 @@
         name: "Faller, 1 Beat",
         slug: "envelope-faller-1-beat",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "beats": 1.0,
@@ -372,7 +343,6 @@
         name: "Pump, 1 Beat",
         slug: "envelope-pump-1-beat",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "beats": 1.0,
@@ -387,7 +357,6 @@
         name: "Sweep, 2 Beats",
         slug: "envelope-sweep-2-beats",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "beats": 2.0,
@@ -402,7 +371,6 @@
         name: "Looping Swell, Half Beat",
         slug: "envelope-looping-swell-half-beat",
         node_type: "noodle.mod.envelope",
-        layout: "ia:trigger;ip:length;ip:depth;ip:loop;ip:time;ip:beats;o:out;o:active;",
         values: (
             params: {
                 "beats": 0.5,
@@ -418,7 +386,6 @@
         name: "Fast Peak",
         slug: "envelope-follower-fast-peak",
         node_type: "noodle.mod.follower",
-        layout: "ia:in;ip:attack;ip:release;ip:mode;o:out;",
         values: (
             params: {
                 "attack": 0.001,
@@ -431,7 +398,6 @@
         name: "Smooth RMS",
         slug: "envelope-follower-smooth-rms",
         node_type: "noodle.mod.follower",
-        layout: "ia:in;ip:attack;ip:release;ip:mode;o:out;",
         values: (
             params: {
                 "attack": 0.02,
@@ -444,7 +410,6 @@
         name: "Glide",
         slug: "lag-glide",
         node_type: "noodle.mod.lag",
-        layout: "ia:in;ip:rise;ip:fall;o:out;",
         values: (
             params: {
                 "fall": 0.08,
@@ -456,7 +421,6 @@
         name: "Slow Rise, Fast Fall",
         slug: "lag-slow-rise-fast-fall",
         node_type: "noodle.mod.lag",
-        layout: "ia:in;ip:rise;ip:fall;o:out;",
         values: (
             params: {
                 "fall": 0.05,
@@ -468,7 +432,6 @@
         name: "Slew Smoother",
         slug: "lag-slew-smoother",
         node_type: "noodle.mod.lag",
-        layout: "ia:in;ip:rise;ip:fall;o:out;",
         values: (
             params: {
                 "fall": 0.01,
@@ -480,7 +443,6 @@
         name: "Zero Crossing",
         slug: "comparator-zero-crossing",
         node_type: "noodle.mod.comparator",
-        layout: "ia:in;ip:threshold;ip:hysteresis;o:out;",
         values: (
             params: {
                 "hysteresis": 0.02,
@@ -492,7 +454,6 @@
         name: "Half Level Gate",
         slug: "comparator-half-level-gate",
         node_type: "noodle.mod.comparator",
-        layout: "ia:in;ip:threshold;ip:hysteresis;o:out;",
         values: (
             params: {
                 "hysteresis": 0.1,
@@ -504,7 +465,6 @@
         name: "Sample on Trigger",
         slug: "sample-hold-sample-on-trigger",
         node_type: "noodle.mod.samplehold",
-        layout: "ia:in;ia:trigger;ip:mode;o:out;",
         values: (
             params: {
                 "mode": 0.0,
@@ -515,7 +475,6 @@
         name: "Track and Hold",
         slug: "sample-hold-track-and-hold",
         node_type: "noodle.mod.samplehold",
-        layout: "ia:in;ia:trigger;ip:mode;o:out;",
         values: (
             params: {
                 "mode": 1.0,
@@ -526,7 +485,6 @@
         name: "Quarter Notes",
         slug: "clock-quarter-notes",
         node_type: "noodle.generator.clock",
-        layout: "ip:rate;ip:width;o:out;",
         values: (
             params: {
                 "rate": 2.0,
@@ -538,7 +496,6 @@
         name: "Eighth Notes, Short",
         slug: "clock-eighth-notes-short",
         node_type: "noodle.generator.clock",
-        layout: "ip:rate;ip:width;o:out;",
         values: (
             params: {
                 "rate": 3.0,
@@ -550,7 +507,6 @@
         name: "Sixteenth Notes",
         slug: "clock-sixteenth-notes",
         node_type: "noodle.generator.clock",
-        layout: "ip:rate;ip:width;o:out;",
         values: (
             params: {
                 "rate": 4.0,
@@ -562,7 +518,6 @@
         name: "Triplet Eighths",
         slug: "clock-triplet-eighths",
         node_type: "noodle.generator.clock",
-        layout: "ip:rate;ip:width;o:out;",
         values: (
             params: {
                 "rate": 8.0,
@@ -574,7 +529,6 @@
         name: "Bar",
         slug: "clock-bar",
         node_type: "noodle.generator.clock",
-        layout: "ip:rate;ip:width;o:out;",
         values: (
             params: {
                 "rate": 0.0,
@@ -586,7 +540,6 @@
         name: "Warm Overdrive",
         slug: "distortion-warm-overdrive",
         node_type: "noodle.effect.distortion",
-        layout: "ia:in;ip:drive;ip:shape;ip:level;ip:mix;o:out;",
         values: (
             params: {
                 "drive": 10.0,
@@ -600,7 +553,6 @@
         name: "Hard Fuzz",
         slug: "distortion-hard-fuzz",
         node_type: "noodle.effect.distortion",
-        layout: "ia:in;ip:drive;ip:shape;ip:level;ip:mix;o:out;",
         values: (
             params: {
                 "drive": 28.0,
@@ -614,7 +566,6 @@
         name: "Wavefolder",
         slug: "distortion-wavefolder",
         node_type: "noodle.effect.distortion",
-        layout: "ia:in;ip:drive;ip:shape;ip:level;ip:mix;o:out;",
         values: (
             params: {
                 "drive": 18.0,
@@ -628,7 +579,6 @@
         name: "Subtle Grit",
         slug: "distortion-subtle-grit",
         node_type: "noodle.effect.distortion",
-        layout: "ia:in;ip:drive;ip:shape;ip:level;ip:mix;o:out;",
         values: (
             params: {
                 "drive": 6.0,
@@ -642,7 +592,6 @@
         name: "Lo-fi",
         slug: "bitcrusher-lo-fi",
         node_type: "noodle.effect.bitcrusher",
-        layout: "ia:in;ip:bits;ip:rate;ip:mix;o:out;",
         values: (
             params: {
                 "bits": 10.0,
@@ -655,7 +604,6 @@
         name: "8-bit",
         slug: "bitcrusher-8-bit",
         node_type: "noodle.effect.bitcrusher",
-        layout: "ia:in;ip:bits;ip:rate;ip:mix;o:out;",
         values: (
             params: {
                 "bits": 8.0,
@@ -668,7 +616,6 @@
         name: "Crunch",
         slug: "bitcrusher-crunch",
         node_type: "noodle.effect.bitcrusher",
-        layout: "ia:in;ip:bits;ip:rate;ip:mix;o:out;",
         values: (
             params: {
                 "bits": 4.0,
@@ -681,7 +628,6 @@
         name: "Classic Chorus",
         slug: "chorus-classic-chorus",
         node_type: "noodle.effect.chorus",
-        layout: "ia:in;ip:rate;ip:depth;ip:delay;ip:feedback;ip:mix;o:out;",
         values: (
             params: {
                 "delay": 12.0,
@@ -696,7 +642,6 @@
         name: "Wide Shimmer",
         slug: "chorus-wide-shimmer",
         node_type: "noodle.effect.chorus",
-        layout: "ia:in;ip:rate;ip:depth;ip:delay;ip:feedback;ip:mix;o:out;",
         values: (
             params: {
                 "delay": 18.0,
@@ -711,7 +656,6 @@
         name: "Flanger",
         slug: "chorus-flanger",
         node_type: "noodle.effect.chorus",
-        layout: "ia:in;ip:rate;ip:depth;ip:delay;ip:feedback;ip:mix;o:out;",
         values: (
             params: {
                 "delay": 2.0,
@@ -726,7 +670,6 @@
         name: "Slow Phaser",
         slug: "phaser-slow-phaser",
         node_type: "noodle.effect.phaser",
-        layout: "ia:in;ip:rate;ip:depth;ip:centre;ip:stages;ip:feedback;ip:mix;o:out;",
         values: (
             params: {
                 "centre": 600.0,
@@ -742,7 +685,6 @@
         name: "Jet Sweep",
         slug: "phaser-jet-sweep",
         node_type: "noodle.effect.phaser",
-        layout: "ia:in;ip:rate;ip:depth;ip:centre;ip:stages;ip:feedback;ip:mix;o:out;",
         values: (
             params: {
                 "centre": 1200.0,
@@ -758,7 +700,6 @@
         name: "Fast Swirl",
         slug: "phaser-fast-swirl",
         node_type: "noodle.effect.phaser",
-        layout: "ia:in;ip:rate;ip:depth;ip:centre;ip:stages;ip:feedback;ip:mix;o:out;",
         values: (
             params: {
                 "centre": 900.0,
@@ -774,7 +715,6 @@
         name: "Small Room",
         slug: "reverb-small-room",
         node_type: "noodle.effect.reverb",
-        layout: "ia:in;ip:size;ip:decay;ip:damping;ip:predelay;ip:width;ip:mix;o:out;",
         values: (
             params: {
                 "damping": 0.5,
@@ -790,7 +730,6 @@
         name: "Large Hall",
         slug: "reverb-large-hall",
         node_type: "noodle.effect.reverb",
-        layout: "ia:in;ip:size;ip:decay;ip:damping;ip:predelay;ip:width;ip:mix;o:out;",
         values: (
             params: {
                 "damping": 0.4,
@@ -806,7 +745,6 @@
         name: "Dark Plate",
         slug: "reverb-dark-plate",
         node_type: "noodle.effect.reverb",
-        layout: "ia:in;ip:size;ip:decay;ip:damping;ip:predelay;ip:width;ip:mix;o:out;",
         values: (
             params: {
                 "damping": 0.8,
@@ -822,7 +760,6 @@
         name: "Endless Wash",
         slug: "reverb-endless-wash",
         node_type: "noodle.effect.reverb",
-        layout: "ia:in;ip:size;ip:decay;ip:damping;ip:predelay;ip:width;ip:mix;o:out;",
         values: (
             params: {
                 "damping": 0.3,
@@ -838,7 +775,6 @@
         name: "Slapback",
         slug: "delay-slapback",
         node_type: "noodle.util.delay",
-        layout: "ia:in;ip:time;o:out;",
         values: (
             params: {
                 "time": 0.09,
@@ -849,7 +785,6 @@
         name: "Eighth at 120 bpm",
         slug: "delay-eighth-at-120-bpm",
         node_type: "noodle.util.delay",
-        layout: "ia:in;ip:time;o:out;",
         values: (
             params: {
                 "time": 0.25,
@@ -860,7 +795,6 @@
         name: "Quarter at 120 bpm",
         slug: "delay-quarter-at-120-bpm",
         node_type: "noodle.util.delay",
-        layout: "ia:in;ip:time;o:out;",
         values: (
             params: {
                 "time": 0.5,
@@ -871,7 +805,6 @@
         name: "Long Echo",
         slug: "delay-long-echo",
         node_type: "noodle.util.delay",
-        layout: "ia:in;ip:time;o:out;",
         values: (
             params: {
                 "time": 1.0,
@@ -882,7 +815,6 @@
         name: "Low Cut and Presence",
         slug: "parametric-eq-low-cut-and-presence",
         node_type: "noodle.effect.eq",
-        layout: "ia:in;ip:type1;ip:freq1;ip:gain1;ip:q1;ip:type2;ip:freq2;ip:gain2;ip:q2;ip:type3;ip:freq3;ip:gain3;ip:q3;ip:type4;ip:freq4;ip:gain4;ip:q4;o:out;",
         values: (
             params: {
                 "freq1": 80.0,
@@ -908,7 +840,6 @@
         name: "Scoop Mids",
         slug: "parametric-eq-scoop-mids",
         node_type: "noodle.effect.eq",
-        layout: "ia:in;ip:type1;ip:freq1;ip:gain1;ip:q1;ip:type2;ip:freq2;ip:gain2;ip:q2;ip:type3;ip:freq3;ip:gain3;ip:q3;ip:type4;ip:freq4;ip:gain4;ip:q4;o:out;",
         values: (
             params: {
                 "freq1": 100.0,
@@ -935,7 +866,6 @@
         name: "Telephone",
         slug: "parametric-eq-telephone",
         node_type: "noodle.effect.eq",
-        layout: "ia:in;ip:type1;ip:freq1;ip:gain1;ip:q1;ip:type2;ip:freq2;ip:gain2;ip:q2;ip:type3;ip:freq3;ip:gain3;ip:q3;ip:type4;ip:freq4;ip:gain4;ip:q4;o:out;",
         values: (
             params: {
                 "freq1": 400.0,
@@ -962,7 +892,6 @@
         name: "Warm and Smooth",
         slug: "parametric-eq-warm-and-smooth",
         node_type: "noodle.effect.eq",
-        layout: "ia:in;ip:type1;ip:freq1;ip:gain1;ip:q1;ip:type2;ip:freq2;ip:gain2;ip:q2;ip:type3;ip:freq3;ip:gain3;ip:q3;ip:type4;ip:freq4;ip:gain4;ip:q4;o:out;",
         values: (
             params: {
                 "freq1": 150.0,
@@ -989,7 +918,6 @@
         name: "Up Eighths",
         slug: "arpeggiator-up-eighths",
         node_type: "noodle.event.arpeggiator",
-        layout: "ip:pattern;ip:rate;ip:octaves;ip:gate;ip:swing;ip:hold;ei:in;eo:out;",
         values: (
             params: {
                 "gate": 0.6,
@@ -1003,7 +931,6 @@
         name: "Up-Down Sixteenths",
         slug: "arpeggiator-up-down-sixteenths",
         node_type: "noodle.event.arpeggiator",
-        layout: "ip:pattern;ip:rate;ip:octaves;ip:gate;ip:swing;ip:hold;ei:in;eo:out;",
         values: (
             params: {
                 "gate": 0.5,
@@ -1017,7 +944,6 @@
         name: "Trance Gate",
         slug: "arpeggiator-trance-gate",
         node_type: "noodle.event.arpeggiator",
-        layout: "ip:pattern;ip:rate;ip:octaves;ip:gate;ip:swing;ip:hold;ei:in;eo:out;",
         values: (
             params: {
                 "gate": 0.3,
@@ -1031,7 +957,6 @@
         name: "Swung Random",
         slug: "arpeggiator-swung-random",
         node_type: "noodle.event.arpeggiator",
-        layout: "ip:pattern;ip:rate;ip:octaves;ip:gate;ip:swing;ip:hold;ei:in;eo:out;",
         values: (
             params: {
                 "gate": 0.5,
@@ -1046,7 +971,6 @@
         name: "Held Down Eighths",
         slug: "arpeggiator-held-down-eighths",
         node_type: "noodle.event.arpeggiator",
-        layout: "ip:pattern;ip:rate;ip:octaves;ip:gate;ip:swing;ip:hold;ei:in;eo:out;",
         values: (
             params: {
                 "gate": 0.8,
@@ -1061,7 +985,6 @@
         name: "Keyboard Split at C3",
         slug: "note-split-keyboard-split-at-c3",
         node_type: "noodle.event.note_split",
-        layout: "ip:low1;ip:high1;ip:vel_low1;ip:vel_high1;ip:transpose1;ip:low2;ip:high2;ip:vel_low2;ip:vel_high2;ip:transpose2;ei:in;eo:out1;eo:out2;",
         values: (
             params: {
                 "high1": 59.0,
@@ -1076,7 +999,6 @@
         name: "Velocity Layers",
         slug: "note-split-velocity-layers",
         node_type: "noodle.event.note_split",
-        layout: "ip:low1;ip:high1;ip:vel_low1;ip:vel_high1;ip:transpose1;ip:low2;ip:high2;ip:vel_low2;ip:vel_high2;ip:transpose2;ei:in;eo:out1;eo:out2;",
         values: (
             params: {
                 "vel_high1": 0.6,
@@ -1091,7 +1013,6 @@
         name: "Octave Layer Up",
         slug: "note-split-octave-layer-up",
         node_type: "noodle.event.note_split",
-        layout: "ip:low1;ip:high1;ip:vel_low1;ip:vel_high1;ip:transpose1;ip:low2;ip:high2;ip:vel_low2;ip:vel_high2;ip:transpose2;ei:in;eo:out1;eo:out2;",
         values: (
             params: {
                 "transpose2": 12.0,
@@ -1105,7 +1026,6 @@
         name: "Low Notes and Rest",
         slug: "note-split-low-notes-and-rest",
         node_type: "noodle.event.note_split",
-        layout: "ip:low1;ip:high1;ip:vel_low1;ip:vel_high1;ip:transpose1;ei:in;eo:out1;eo:rest;",
         values: (
             params: {
                 "high1": 47.0,
@@ -1120,7 +1040,6 @@
         name: "Middle C",
         slug: "key-middle-c",
         node_type: "noodle.event.key",
-        layout: "ip:note;ip:gate;ip:velocity;eo:out;",
         values: (
             params: {
                 "note": 60.0,
@@ -1132,7 +1051,6 @@
         name: "Bass C",
         slug: "key-bass-c",
         node_type: "noodle.event.key",
-        layout: "ip:note;ip:gate;ip:velocity;eo:out;",
         values: (
             params: {
                 "note": 36.0,
@@ -1144,7 +1062,6 @@
         name: "Soft High C",
         slug: "key-soft-high-c",
         node_type: "noodle.event.key",
-        layout: "ip:note;ip:gate;ip:velocity;eo:out;",
         values: (
             params: {
                 "note": 84.0,
@@ -1156,7 +1073,6 @@
         name: "All Channels",
         slug: "midi-in-all-channels",
         node_type: "noodle.event.midi_in",
-        layout: "ip:channel;eo:out;",
         values: (
             params: {
                 "channel": 0.0,
@@ -1167,7 +1083,6 @@
         name: "Channel 1",
         slug: "midi-in-channel-1",
         node_type: "noodle.event.midi_in",
-        layout: "ip:channel;eo:out;",
         values: (
             params: {
                 "channel": 1.0,
@@ -1178,7 +1093,6 @@
         name: "Channel 10 (Drums)",
         slug: "midi-in-channel-10-drums",
         node_type: "noodle.event.midi_in",
-        layout: "ip:channel;eo:out;",
         values: (
             params: {
                 "channel": 10.0,
@@ -1189,7 +1103,6 @@
         name: "One-shot",
         slug: "sampler-one-shot",
         node_type: "noodle.instrument.sampler",
-        layout: "ip:root;ip:tune;ip:keytrack;ip:start;ip:end;ip:mode;ip:loop;ip:loop_start;ip:loop_end;ip:release;ip:gain;o:out;ei:in;",
         values: (
             params: {
                 "loop": 0.0,
@@ -1202,7 +1115,6 @@
         name: "Gated Loop",
         slug: "sampler-gated-loop",
         node_type: "noodle.instrument.sampler",
-        layout: "ip:root;ip:tune;ip:keytrack;ip:start;ip:end;ip:mode;ip:loop;ip:loop_start;ip:loop_end;ip:release;ip:gain;o:out;ei:in;",
         values: (
             params: {
                 "loop": 1.0,
@@ -1215,7 +1127,6 @@
         name: "Pitched Hit",
         slug: "sampler-pitched-hit",
         node_type: "noodle.instrument.sampler",
-        layout: "ip:root;ip:tune;ip:keytrack;ip:start;ip:end;ip:mode;ip:loop;ip:loop_start;ip:loop_end;ip:release;ip:gain;o:out;ei:in;",
         values: (
             params: {
                 "keytrack": 1.0,
@@ -1228,7 +1139,6 @@
         name: "Fixed Pitch Hit",
         slug: "sampler-fixed-pitch-hit",
         node_type: "noodle.instrument.sampler",
-        layout: "ip:root;ip:tune;ip:keytrack;ip:start;ip:end;ip:mode;ip:loop;ip:loop_start;ip:loop_end;ip:release;ip:gain;o:out;ei:in;",
         values: (
             params: {
                 "keytrack": 0.0,
@@ -1241,7 +1151,6 @@
         name: "Eight Voices",
         slug: "voices-eight-voices",
         node_type: "noodle.poly.voices",
-        layout: "ip:tail;ip:steal_fade;ia:busy;o:pitch;o:gate;o:velocity;o:fade;ei:in;",
         values: (
             params: {
                 "steal_fade": 0.005,
@@ -1256,7 +1165,6 @@
         name: "Four Voices, Quick Steal",
         slug: "voices-four-voices-quick-steal",
         node_type: "noodle.poly.voices",
-        layout: "ip:tail;ip:steal_fade;ia:busy;o:pitch;o:gate;o:velocity;o:fade;ei:in;",
         values: (
             params: {
                 "steal_fade": 0.002,
@@ -1271,7 +1179,6 @@
         name: "Sixteen Voices, Long Tails",
         slug: "voices-sixteen-voices-long-tails",
         node_type: "noodle.poly.voices",
-        layout: "ip:tail;ip:steal_fade;ia:busy;o:pitch;o:gate;o:velocity;o:fade;ei:in;",
         values: (
             params: {
                 "steal_fade": 0.01,
@@ -1286,7 +1193,6 @@
         name: "Unity",
         slug: "gain-unity",
         node_type: "noodle.util.gain",
-        layout: "ia:in;ip:gain;o:out;",
         values: (
             params: {
                 "gain": 0.0,
@@ -1297,7 +1203,6 @@
         name: "Minus 6 dB",
         slug: "gain-minus-6-db",
         node_type: "noodle.util.gain",
-        layout: "ia:in;ip:gain;o:out;",
         values: (
             params: {
                 "gain": -6.0,
@@ -1308,7 +1213,6 @@
         name: "Headroom, Minus 12 dB",
         slug: "gain-headroom-minus-12-db",
         node_type: "noodle.util.gain",
-        layout: "ia:in;ip:gain;o:out;",
         values: (
             params: {
                 "gain": -12.0,
@@ -1319,7 +1223,6 @@
         name: "Boost 6 dB",
         slug: "gain-boost-6-db",
         node_type: "noodle.util.gain",
-        layout: "ia:in;ip:gain;o:out;",
         values: (
             params: {
                 "gain": 6.0,
@@ -1330,7 +1233,6 @@
         name: "Centre",
         slug: "pan-centre",
         node_type: "noodle.util.pan",
-        layout: "ia:in;ip:pan;o:out;",
         values: (
             params: {
                 "pan": 0.0,
@@ -1341,7 +1243,6 @@
         name: "Left",
         slug: "pan-left",
         node_type: "noodle.util.pan",
-        layout: "ia:in;ip:pan;o:out;",
         values: (
             params: {
                 "pan": -0.7,
@@ -1352,7 +1253,6 @@
         name: "Right",
         slug: "pan-right",
         node_type: "noodle.util.pan",
-        layout: "ia:in;ip:pan;o:out;",
         values: (
             params: {
                 "pan": 0.7,
@@ -1363,7 +1263,6 @@
         name: "Full Level",
         slug: "vca-full-level",
         node_type: "noodle.util.vca",
-        layout: "ia:in;ip:level;o:out;",
         values: (
             params: {
                 "level": 1.0,
@@ -1374,7 +1273,6 @@
         name: "Half Level",
         slug: "vca-half-level",
         node_type: "noodle.util.vca",
-        layout: "ia:in;ip:level;o:out;",
         values: (
             params: {
                 "level": 0.5,
@@ -1385,7 +1283,6 @@
         name: "Quiet Click",
         slug: "metronome-quiet-click",
         node_type: "noodle.util.metronome",
-        layout: "ip:on;ip:level;ip:pitch;ip:accent;o:out;",
         values: (
             params: {
                 "accent": 1.0,
@@ -1399,7 +1296,6 @@
         name: "Loud High Click",
         slug: "metronome-loud-high-click",
         node_type: "noodle.util.metronome",
-        layout: "ip:on;ip:level;ip:pitch;ip:accent;o:out;",
         values: (
             params: {
                 "accent": 1.0,
@@ -1413,7 +1309,6 @@
         name: "Even Click",
         slug: "metronome-even-click",
         node_type: "noodle.util.metronome",
-        layout: "ip:on;ip:level;ip:pitch;ip:accent;o:out;",
         values: (
             params: {
                 "accent": 0.0,
@@ -1427,7 +1322,6 @@
         name: "Scale and Offset",
         slug: "math-scale-and-offset",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             params: {
                 "b": 1.0,
@@ -1442,7 +1336,6 @@
         name: "Invert",
         slug: "math-invert",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             config: {
                 "expr": "1 - a",
@@ -1453,7 +1346,6 @@
         name: "Bipolar to Unipolar",
         slug: "math-bipolar-to-unipolar",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             config: {
                 "expr": "a * 0.5 + 0.5",
@@ -1464,7 +1356,6 @@
         name: "Crossfade",
         slug: "math-crossfade",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             params: {
                 "c": 0.5,
@@ -1478,7 +1369,6 @@
         name: "Soft Clip",
         slug: "math-soft-clip",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             params: {
                 "b": 2.0,
@@ -1492,7 +1382,6 @@
         name: "Rectify",
         slug: "math-rectify",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             config: {
                 "expr": "abs(a)",
@@ -1503,7 +1392,6 @@
         name: "Semitones to Ratio",
         slug: "math-semitones-to-ratio",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             config: {
                 "expr": "2 ^ (a / 12)",
@@ -1514,7 +1402,6 @@
         name: "Clamp",
         slug: "math-clamp",
         node_type: "noodle.util.math",
-        layout: "ip:a;ip:b;ip:c;ip:d;o:out;",
         values: (
             params: {
                 "b": -1.0,
@@ -1529,7 +1416,6 @@
         name: "Unipolar to Bipolar",
         slug: "remap-unipolar-to-bipolar",
         node_type: "noodle.util.remap",
-        layout: "ia:in;ip:in_min;ip:in_max;ip:out_min;ip:out_max;o:out;",
         values: (
             params: {
                 "in_max": 1.0,
@@ -1543,7 +1429,6 @@
         name: "Invert",
         slug: "remap-invert",
         node_type: "noodle.util.remap",
-        layout: "ia:in;ip:in_min;ip:in_max;ip:out_min;ip:out_max;o:out;",
         values: (
             params: {
                 "in_max": 1.0,
@@ -1557,7 +1442,6 @@
         name: "Cutoff Range",
         slug: "remap-cutoff-range",
         node_type: "noodle.util.remap",
-        layout: "ia:in;ip:in_min;ip:in_max;ip:out_min;ip:out_max;o:out;",
         values: (
             params: {
                 "in_max": 1.0,
@@ -1571,7 +1455,6 @@
         name: "Peak to Minus 1 dB",
         slug: "normalize-peak-to-minus-1-db",
         node_type: "noodle.offline.normalize",
-        layout: "ia:in;ip:level;ip:mode;o:out;",
         values: (
             params: {
                 "level": -1.0,
@@ -1583,7 +1466,6 @@
         name: "Peak to Zero",
         slug: "normalize-peak-to-zero",
         node_type: "noodle.offline.normalize",
-        layout: "ia:in;ip:level;ip:mode;o:out;",
         values: (
             params: {
                 "level": 0.0,
@@ -1595,7 +1477,6 @@
         name: "Loudness to Minus 16 dB RMS",
         slug: "normalize-loudness-to-minus-16-db-rms",
         node_type: "noodle.offline.normalize",
-        layout: "ia:in;ip:level;ip:mode;o:out;",
         values: (
             params: {
                 "level": -16.0,
@@ -1607,7 +1488,6 @@
         name: "Half Speed",
         slug: "time-stretch-half-speed",
         node_type: "noodle.offline.time_stretch",
-        layout: "ia:in;ip:ratio;ip:grain;o:out;",
         values: (
             params: {
                 "grain": 0.04,
@@ -1619,7 +1499,6 @@
         name: "Double Speed",
         slug: "time-stretch-double-speed",
         node_type: "noodle.offline.time_stretch",
-        layout: "ia:in;ip:ratio;ip:grain;o:out;",
         values: (
             params: {
                 "grain": 0.04,
@@ -1631,7 +1510,6 @@
         name: "Slight Slowdown, Long Grain",
         slug: "time-stretch-slight-slowdown-long-grain",
         node_type: "noodle.offline.time_stretch",
-        layout: "ia:in;ip:ratio;ip:grain;o:out;",
         values: (
             params: {
                 "grain": 0.08,

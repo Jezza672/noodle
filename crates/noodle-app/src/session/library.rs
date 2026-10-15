@@ -70,10 +70,10 @@ impl Session {
         let layout = self.layout_of();
         if node.type_id == noodle_core::group::GROUP {
             // Worked out once, not once per preset: this runs every frame.
-            let key = noodle_core::library::topology::topology(graph, id, &layout).key;
+            let order = noodle_core::library::topology::topology(graph, id);
             self.library
                 .group_presets()
-                .filter(|(_, p)| p.fits(&key))
+                .filter(|(_, p)| p.fits(graph, id, &order, &layout))
                 .map(|(entry, p)| (entry, p.name.as_str()))
                 .collect()
         } else {
@@ -109,10 +109,9 @@ impl Session {
         let graph = self.project.graph();
         let node = graph.node(id)?;
         let entry = node.preset.as_deref()?;
-        let layout = self.layout_of();
         let (name, modified) = if node.type_id == noodle_core::group::GROUP {
             let preset = self.library.group_preset(entry)?;
-            (preset.name.clone(), !preset.matches(graph, id, &layout))
+            (preset.name.clone(), !preset.matches(graph, id))
         } else {
             let preset = self.library.node_preset(entry)?;
             (preset.name.clone(), !preset.matches(node))
@@ -165,18 +164,15 @@ impl Session {
                 overwrite,
             } => {
                 let node = graph.node(node).ok_or("the node is gone")?;
-                let signature = layout(node).ok_or("this node has no preset layout")?;
-                (
-                    Item::NodePreset(NodePreset::capture(node, &signature, name)),
-                    overwrite,
-                )
+                layout(node).ok_or("this node has no preset layout")?;
+                (Item::NodePreset(NodePreset::capture(node, name)), overwrite)
             }
             LibraryEdit::GroupPreset {
                 group,
                 name,
                 overwrite,
             } => (
-                Item::GroupPreset(GroupPreset::capture(graph, group, &layout, name)),
+                Item::GroupPreset(GroupPreset::capture(graph, group, name)),
                 overwrite,
             ),
         })

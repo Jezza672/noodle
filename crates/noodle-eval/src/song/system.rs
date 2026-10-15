@@ -287,7 +287,6 @@ fn built(instrument: &Instrument) -> (Project, NodeId) {
 
 pub fn files() -> Vec<File> {
     let registry = registry();
-    let layout = |node: &noodle_core::Node| registry.layout_signature(node);
     let mut files = Vec::new();
     for family in families() {
         let mut items = Vec::new();
@@ -300,7 +299,7 @@ pub fn files() -> Vec<File> {
                 template.slug = family.slug.into();
                 items.push(Item::Template(template));
             }
-            let mut preset = GroupPreset::capture(project.graph(), group, &layout, *preset);
+            let mut preset = GroupPreset::capture(project.graph(), group, *preset);
             preset.slug =
                 noodle_core::library::slugify(&format!("{} {}", family.name, preset.name));
             let same = key.get_or_insert(preset.topology.clone()).clone();
@@ -316,7 +315,7 @@ pub fn files() -> Vec<File> {
             items,
         });
     }
-    files.push(subtractive_voice(&layout));
+    files.push(subtractive_voice());
     files.push(File {
         name: "nodes",
         items: super::node_presets::presets(&registry),
@@ -331,7 +330,7 @@ const AMP_ENV: u64 = 20;
 
 /// The Subtractive Voice of `examples/subtractive-synth.ron`, with presets
 /// that change its filter and envelopes.
-fn subtractive_voice(layout: &dyn Fn(&noodle_core::Node) -> Option<String>) -> File {
+fn subtractive_voice() -> File {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/subtractive-synth.ron");
     let text = std::fs::read_to_string(path).expect("the example is there");
@@ -355,7 +354,7 @@ fn subtractive_voice(layout: &dyn Fn(&noodle_core::Node) -> Option<String>) -> F
         history
             .apply(&mut project, Command::Batch(batch))
             .expect("the example has these");
-        let mut preset = GroupPreset::capture(project.graph(), group, layout, name);
+        let mut preset = GroupPreset::capture(project.graph(), group, name);
         preset.slug = noodle_core::library::slugify(&format!("Subtractive Voice {name}"));
         items.push(Item::GroupPreset(preset));
     };
