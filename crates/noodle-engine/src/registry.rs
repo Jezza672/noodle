@@ -32,31 +32,20 @@ impl Registry {
         self.types.get(id)
     }
 
-    /// A node's port layout as a string, for comparing: equal strings mean
-    /// the node has the same ports with the same keys and kinds. `None` if
-    /// the type is unknown or its config is invalid. Presets use this to
-    /// tell which nodes and groups they fit.
+    /// The keys of a node's ports as one string, sorted, so the order ports
+    /// are declared in doesn't matter: `i:key` for an audio or parameter
+    /// input, `o:key` for an output, `ei:` and `eo:` for events, separated by
+    /// `;`. `None` if the type is unknown or its config is invalid. Presets
+    /// use this to tell whether a node has the ports they set, by name.
     pub fn layout_signature(&self, node: &noodle_core::Node) -> Option<String> {
-        use crate::InputKind;
         let layout = self.get(&node.type_id)?.layout(&node.config).ok()?;
-        let mut out = String::new();
-        for input in &layout.inputs {
-            let kind = match input.kind {
-                InputKind::Audio => 'a',
-                InputKind::Param(_) => 'p',
-            };
-            out.push_str(&format!("i{kind}:{};", input.key));
-        }
-        for port in &layout.outputs {
-            out.push_str(&format!("o:{};", port.key));
-        }
-        for port in &layout.event_inputs {
-            out.push_str(&format!("ei:{};", port.key));
-        }
-        for port in &layout.event_outputs {
-            out.push_str(&format!("eo:{};", port.key));
-        }
-        Some(out)
+        let mut keys: Vec<String> = Vec::new();
+        keys.extend(layout.inputs.iter().map(|p| format!("i:{}", p.key)));
+        keys.extend(layout.outputs.iter().map(|p| format!("o:{}", p.key)));
+        keys.extend(layout.event_inputs.iter().map(|p| format!("ei:{}", p.key)));
+        keys.extend(layout.event_outputs.iter().map(|p| format!("eo:{}", p.key)));
+        keys.sort();
+        Some(keys.join(";"))
     }
 
     /// All types, ordered by ID.

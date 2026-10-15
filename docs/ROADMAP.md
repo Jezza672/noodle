@@ -782,7 +782,7 @@ Parametric EQ, Reverb and Arpeggiator, with graphs for Dynamics and EQ and a
 "Load sample…" picker. Drum rack, Compressor and Limiter groups, the
 evaluation songs (batch 3) and node presets follow. Batch 1 (library and
 presets) is done in code: it left out samples by content hash in the library
-(the Sampler's store now exists) and ships no node presets yet; the system
+(the Sampler's store now exists) and shipped no node presets (batch 5 added them); the system
 presets are group presets of the instrument templates. The design is in `CONTEXT.md` (Presets and the
 group library) and ADRs 0004 and 0005.
 
@@ -791,8 +791,10 @@ drawn curve played on a trigger with a multi-voice or single-voice setting;
 Distortion; Bitcrusher; Chorus; Phaser; Envelope Follower; Sample & Hold; Lag;
 Comparator; Clock) and the Automation node, which turns a timeline lane into a
 0 to 1 signal wired to any input. The timeline's "+ Auto" button adds one and
-draws its lane in a row of its own. Not done: an envelope time axis in beats
-(the length is in seconds), and a curve preview on the Envelope node's body.
+draws its lane in a row of its own. Batch 5 added the
+Envelope's length in beats (`time` Seconds or Beats, and `beats`), a curve
+preview on its body, and system presets for every node (`nodes.ron`; Dynamics
+excepted, see ARCHITECTURE.md).
 
 1. **Library and presets.** Node presets (parameters and port-neutral config, same node
    type and port layout, one undo step, never touching wires, lanes, mute or

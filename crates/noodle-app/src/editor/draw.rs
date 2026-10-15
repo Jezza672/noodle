@@ -356,6 +356,10 @@ fn boxed(
                 .or(default)
                 .unwrap_or(0.0)
         };
+        let curve = match graph.node(node.id).and_then(|n| n.config.get("curve")) {
+            Some(noodle_core::Value::Text(text)) => text.clone(),
+            _ => String::new(),
+        };
         body::paint(
             painter,
             f.t.rect_to_screen(area),
@@ -364,6 +368,7 @@ fn boxed(
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
             &values,
+            &curve,
         );
     }
 }

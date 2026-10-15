@@ -134,28 +134,28 @@
     GroupPreset((
         name: "Snare",
         slug: "snare-snare",
-        topology: "e2556e36d41933e9",
+        topology: "a8696b1f49fc3a1e",
         nodes: [
             (),
             (),
             (),
             (),
             (
-                params: {"cutoff": 2200.0, "resonance": 0.25},
+                params: {"attack": 0.001, "decay": 0.1, "release": 0.03, "sustain": 0.0},
             ),
             (
                 params: {"gain1": 0.0, "gain2": -4.0},
                 config: {"inputs": 2},
             ),
             (
-                params: {"frequency": 190.0},
+                params: {"attack": 0.001, "decay": 0.2, "release": 0.04, "sustain": 0.0},
+            ),
+            (
+                params: {"cutoff": 2200.0, "resonance": 0.25},
             ),
             (),
             (
-                params: {"attack": 0.001, "decay": 0.1, "release": 0.03, "sustain": 0.0},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.2, "release": 0.04, "sustain": 0.0},
+                params: {"frequency": 190.0},
             ),
             (),
         ],
@@ -163,28 +163,28 @@
     GroupPreset((
         name: "Tight Snare",
         slug: "snare-tight-snare",
-        topology: "e2556e36d41933e9",
+        topology: "a8696b1f49fc3a1e",
         nodes: [
             (),
             (),
             (),
             (),
             (
-                params: {"cutoff": 2600.0, "resonance": 0.25},
+                params: {"attack": 0.001, "decay": 0.08, "release": 0.03, "sustain": 0.0},
             ),
             (
                 params: {"gain1": 0.0, "gain2": -4.0},
                 config: {"inputs": 2},
             ),
             (
-                params: {"frequency": 210.0},
+                params: {"attack": 0.001, "decay": 0.16, "release": 0.04, "sustain": 0.0},
+            ),
+            (
+                params: {"cutoff": 2600.0, "resonance": 0.25},
             ),
             (),
             (
-                params: {"attack": 0.001, "decay": 0.08, "release": 0.03, "sustain": 0.0},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.16, "release": 0.04, "sustain": 0.0},
+                params: {"frequency": 210.0},
             ),
             (),
         ],
@@ -192,28 +192,28 @@
     GroupPreset((
         name: "Loose Snare",
         slug: "snare-loose-snare",
-        topology: "e2556e36d41933e9",
+        topology: "a8696b1f49fc3a1e",
         nodes: [
             (),
             (),
             (),
             (),
             (
-                params: {"cutoff": 1800.0, "resonance": 0.25},
+                params: {"attack": 0.001, "decay": 0.15, "release": 0.03, "sustain": 0.0},
             ),
             (
                 params: {"gain1": 0.0, "gain2": -4.0},
                 config: {"inputs": 2},
             ),
             (
-                params: {"frequency": 180.0},
+                params: {"attack": 0.001, "decay": 0.3, "release": 0.04, "sustain": 0.0},
+            ),
+            (
+                params: {"cutoff": 1800.0, "resonance": 0.25},
             ),
             (),
             (
-                params: {"attack": 0.001, "decay": 0.15, "release": 0.03, "sustain": 0.0},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.3, "release": 0.04, "sustain": 0.0},
+                params: {"frequency": 180.0},
             ),
             (),
         ],

@@ -109,20 +109,20 @@
     GroupPreset((
         name: "Club Kick",
         slug: "kick-club-kick",
-        topology: "6143de3dcf4d4679",
+        topology: "0734509e7084295a",
         nodes: [
-            (),
+            (
+                params: {"attack": 0.001, "decay": 0.32, "release": 0.05, "sustain": 0.0},
+            ),
             (),
             (),
             (
                 params: {"b": 120.0, "c": 48.0},
                 config: {"expr": "a * b + c"},
             ),
+            (),
             (
                 params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.32, "release": 0.05, "sustain": 0.0},
             ),
             (),
             (),
@@ -131,20 +131,20 @@
     GroupPreset((
         name: "Deep Kick",
         slug: "kick-deep-kick",
-        topology: "6143de3dcf4d4679",
+        topology: "0734509e7084295a",
         nodes: [
-            (),
+            (
+                params: {"attack": 0.001, "decay": 0.5, "release": 0.05, "sustain": 0.0},
+            ),
             (),
             (),
             (
                 params: {"b": 60.0, "c": 40.0},
                 config: {"expr": "a * b + c"},
             ),
+            (),
             (
                 params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.5, "release": 0.05, "sustain": 0.0},
             ),
             (),
             (),
@@ -153,20 +153,20 @@
     GroupPreset((
         name: "Tight Kick",
         slug: "kick-tight-kick",
-        topology: "6143de3dcf4d4679",
+        topology: "0734509e7084295a",
         nodes: [
-            (),
+            (
+                params: {"attack": 0.001, "decay": 0.22, "release": 0.05, "sustain": 0.0},
+            ),
             (),
             (),
             (
                 params: {"b": 140.0, "c": 52.0},
                 config: {"expr": "a * b + c"},
             ),
+            (),
             (
                 params: {"attack": 0.001, "decay": 0.04, "release": 0.02, "sustain": 0.0},
-            ),
-            (
-                params: {"attack": 0.001, "decay": 0.22, "release": 0.05, "sustain": 0.0},
             ),
             (),
             (),

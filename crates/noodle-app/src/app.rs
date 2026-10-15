@@ -59,6 +59,7 @@ pub struct App {
     timeline: TimelineState,
     piano_roll: PianoRoll,
     clip_editor: ClipEditor,
+    sample_view: crate::sample_view::SampleView,
     clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
@@ -168,6 +169,7 @@ impl App {
             timeline: TimelineState::default(),
             piano_roll: PianoRoll::default(),
             clip_editor: ClipEditor::default(),
+            sample_view: Default::default(),
             clip_panel: ClipPanel::default(),
             audition_track: None,
             devices: DevicePicker::default(),
@@ -300,6 +302,10 @@ impl App {
                 self.menus(ui, &mut actions);
                 ui.separator();
                 self.transport(ui, &mut actions);
+                ui.separator();
+                if let Some(step) = crate::snap::menu(ui, self.session.snap()) {
+                    self.session.set_snap(step);
+                }
             });
         });
 
@@ -393,16 +399,36 @@ impl App {
                 }
                 if let Some(clip) = out.open_midi {
                     self.clip_editor.close();
+                    self.sample_view.close();
                     self.piano_roll.open(clip);
                 }
                 if let Some(clip) = out.open_audio {
                     self.piano_roll.close();
+                    self.sample_view.close();
                     self.clip_editor.open(clip);
                 }
                 for (track, kind, on) in out.arm {
                     self.session.arm_kind(track, kind, on);
                 }
             });
+
+        // A double-click on a Sampler's preview in the properties panel.
+        if let Some(node) = crate::sample_view::take_request(ui.ctx()) {
+            self.piano_roll.close();
+            self.clip_editor.close();
+            self.sample_view.open(node);
+        }
+        self.sample_view.retain_existing(&self.session);
+        if self.sample_view.node().is_some() {
+            egui::Panel::top("sample view")
+                .resizable(true)
+                .default_size(crate::sample_view::DEFAULT_HEIGHT)
+                .frame(egui::Frame::NONE.fill(theme::PANEL))
+                .show(ui, |ui| {
+                    let edits = crate::sample_view::show(ui, &mut self.sample_view, &self.session);
+                    self.session.edit(edits);
+                });
+        }
 
         if let Some(clip) = self.piano_roll.clip() {
             egui::Panel::top("piano roll")
@@ -2331,5 +2357,71 @@ mod tests {
         let state = harness.state();
         let extras = pill_buttons::extras(state.session.project(), state.session.registry());
         assert!(!extras[0].on);
+    }
+
+    /// A Sampler holding a one second sample, selected, in a harness.
+    fn sampler_rig() -> (Harness<'static, App>, noodle_core::NodeId) {
+        let mut app = empty();
+        let hash = app.session.samples().insert(&noodle_io::Audio {
+            samples: (0..48_000).map(|i| (i as f32 * 0.05).sin()).collect(),
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new(noodle_nodes::SAMPLER_ID),
+        })]);
+        app.session.edit([Edit::Apply(Command::SetConfig {
+            node: id,
+            key: noodle_nodes::SAMPLE_KEY.to_owned(),
+            value: Some(noodle_core::Value::Text(hash)),
+        })]);
+        app.editor.selected.insert(id);
+        app.editor.active = Some(id);
+        // Frames short enough for two clicks to make a double click.
+        let mut h = Harness::builder()
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        (h, id)
+    }
+
+    #[test]
+    fn the_samplers_properties_show_its_sample_and_a_double_click_opens_the_view() {
+        use crate::testkit::double_click;
+        let (mut h, id) = sampler_rig();
+        assert!(h.state().sample_view.node().is_none());
+        let at = h.get_by_label("Sample waveform").rect().center();
+        double_click(&mut h, at);
+        h.run();
+        assert_eq!(h.state().sample_view.node(), Some(id));
+        h.get_by_label("Sample · 1.00 s at 48000 Hz");
+        // Close shuts it again.
+        h.get_by_label("Close").click();
+        h.run();
+        assert!(h.state().sample_view.node().is_none());
+    }
+
+    #[test]
+    fn dragging_the_start_marker_in_the_sample_view_sets_the_start_parameter() {
+        use crate::testkit::{double_click, drag_between};
+        let (mut h, id) = sampler_rig();
+        let at = h.get_by_label("Sample waveform").rect().center();
+        double_click(&mut h, at);
+        h.run();
+        let body = h
+            .ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sample view body")))
+            .expect("the view has been drawn");
+        let from = egui::Pos2::new(body.left() + 1.0, body.center().y);
+        let to = egui::Pos2::new(body.left() + body.width() * 0.25, body.center().y);
+        drag_between(&mut h, egui::Modifiers::NONE, from, to);
+        let start = h.state().session.project().graph().node(id).unwrap().params["start"];
+        assert!((start - 0.25).abs() < 0.01, "{start}");
+        // One undo step.
+        h.state_mut().session.undo();
+        let node = h.state().session.project().graph().node(id).unwrap();
+        assert!(!node.params.contains_key("start"));
     }
 }

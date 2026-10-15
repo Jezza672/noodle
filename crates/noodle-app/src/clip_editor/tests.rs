@@ -46,6 +46,8 @@ fn rig(warped: bool) -> H {
     let dir = tempfile::tempdir().unwrap();
     write_wav(&dir.path().join("hits.wav"), &clicks(), 1, RATE).unwrap();
     let mut session = Session::new(Nodes::all());
+    // Quarter beats, as these tests were written for.
+    session.set_snap(240);
     assert!(session.save_as(&dir.path().join("p.ron")));
     session.edit([Edit::Apply(Command::AddNode {
         id: NodeId(1),
@@ -730,4 +732,73 @@ fn detect_finds_the_tempo_and_where_the_beat_falls() {
     // The clicks start on the beat, so the lines come back to (about) whole
     // beats.
     assert!(w.grid_offset.abs() < 0.06, "{}", w.grid_offset);
+}
+
+/// An unwarped rig whose clip plays only the first two seconds of its file,
+/// once the file's waveform has arrived.
+fn plain_rig() -> H {
+    let mut h = rig(false);
+    let rig = h.state_mut();
+    let mut clip = rig.session.project().clip(rig.clip).unwrap().clone();
+    if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+        audio.length = 2 * u64::from(RATE);
+    }
+    let id = rig.clip;
+    rig.session
+        .edit([Edit::Apply(Command::SetClip { id, clip })]);
+    for _ in 0..50 {
+        h.run();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    h
+}
+
+fn offset(h: &H) -> u64 {
+    let rig = h.state();
+    rig.session
+        .project()
+        .clip(rig.clip)
+        .unwrap()
+        .as_audio()
+        .unwrap()
+        .offset
+}
+
+#[test]
+fn an_unwarped_clip_shows_its_waveform_and_the_drag_slips_the_audio_under_it() {
+    let mut h = plain_rig();
+    assert_eq!(offset(&h), 0);
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    let from = Pos2::new(g.window + g.pps * 1.0, g.wave.center().y);
+    // The audio follows the pointer: half a second to the left brings the
+    // file's later audio under the window.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        from,
+        from - Vec2::new(g.pps * 0.5, 0.0),
+    );
+    let slipped = offset(&h);
+    assert!(
+        (slipped as i64 - i64::from(RATE) / 2).abs() < i64::from(RATE) / 50,
+        "{slipped}"
+    );
+    // One undo step, and the clip itself stays where it is.
+    h.state_mut().session.undo();
+    assert_eq!(offset(&h), 0);
+    let rig = h.state();
+    assert_eq!(rig.session.project().clip(rig.clip).unwrap().start, Tick(0));
+}
+
+#[test]
+fn the_toolbar_shows_the_title_and_a_close_button_inside_the_panel() {
+    for warped in [false, true] {
+        let h = rig(warped);
+        h.get_by_label("Clip editor · hits.wav");
+        let close = h.get_by_label("Close").rect();
+        assert!(
+            close.right() <= 900.0 && close.left() > 400.0,
+            "{warped}: the Close button is at {close:?}"
+        );
+    }
 }

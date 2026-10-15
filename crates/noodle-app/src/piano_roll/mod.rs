@@ -21,7 +21,7 @@ use crate::theme::{self, timeline as colors};
 use crate::timeline::grid;
 use noodle_core::Command;
 
-const TOOLBAR: f32 = 26.0;
+const TOOLBAR: f32 = crate::toolbar::HEIGHT;
 const RULER: f32 = 18.0;
 const KEYBOARD: f32 = 64.0;
 const VELOCITY: f32 = 56.0;
@@ -59,16 +59,6 @@ struct Drag {
     grabbed: usize,
     press: Pos2,
 }
-
-/// The grid step notes snap to, in ticks. 1 is free.
-const STEPS: [(&str, i64); 6] = [
-    ("Beat", 960),
-    ("1/2 beat", 480),
-    ("1/4 beat", 240),
-    ("1/8 beat", 120),
-    ("1/16 beat", 60),
-    ("Off", 1),
-];
 
 pub struct PianoRoll {
     clip: Option<ClipId>,
@@ -294,32 +284,15 @@ pub fn show(
 
     // The toolbar.
     let toolbar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR));
-    let mut closed = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(toolbar.shrink2(vec2(8.0, 2.0))),
+    // The snap is the app-wide setting, in the menu bar.
+    state.step = session.snap();
+    let closed = crate::toolbar::show(
+        ui,
+        toolbar,
+        &format!("Piano roll · {id}"),
+        "Drag to draw · Alt: no snap · Delete removes",
         |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.label(format!("Piano roll · {id}"));
-                ui.separator();
-                let label = STEPS
-                    .iter()
-                    .find(|(_, step)| *step == state.step)
-                    .map_or("Grid", |(name, _)| *name);
-                crate::widgets::Dropdown::from_id_salt("piano roll grid")
-                    .selected_text(format!("Grid: {label}"))
-                    .show_ui(ui, |ui| {
-                        for (name, step) in STEPS {
-                            ui.selectable_value(&mut state.step, step, name);
-                        }
-                    });
-                ui.add_space(8.0);
-                ui.weak("Drag to draw · Alt: no snap · Delete removes");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        closed = true;
-                    }
-                });
-            });
+            ui.label(format!("Snap: {}", crate::snap::label(state.step)));
         },
     );
     if closed {

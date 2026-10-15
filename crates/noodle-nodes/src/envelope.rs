@@ -9,7 +9,8 @@ use noodle_engine::{
 
 use crate::curve::{LUT_STEPS, lookup};
 
-/// An envelope you draw: a curve that plays out, over `length` seconds, each
+/// An envelope you draw: a curve that plays out, over `length` seconds (or
+/// `beats` beats at the timeline's tempo, with `time` set to Beats), each
 /// time a trigger arrives. It outputs `depth × curve`, where the curve runs
 /// from 0 to 1 in height. Before the first trigger, and after the curve has
 /// played, the output rests at the curve's last height (0 for the default
@@ -63,6 +64,14 @@ struct EnvelopePorts {
     depth: (),
     #[param("loop", "Loop", ParamInfo::choice(["Off", "On"]))]
     looping: (),
+    #[param("time", "Time", ParamInfo::choice(["Seconds", "Beats"]))]
+    time: (),
+    #[param(
+        "beats",
+        "Beats",
+        ParamInfo::new(0.0625, 64.0, 1.0).log()
+    )]
+    beats: (),
     #[output("out", "Out")]
     out: (),
     #[output("active", "Active")]
@@ -73,6 +82,8 @@ const TRIGGER: usize = EnvelopePorts::TRIGGER;
 const LENGTH: usize = EnvelopePorts::LENGTH;
 const DEPTH: usize = EnvelopePorts::DEPTH;
 const LOOP: usize = EnvelopePorts::LOOPING;
+const TIME: usize = EnvelopePorts::TIME;
+const BEATS: usize = EnvelopePorts::BEATS;
 const OUT: usize = EnvelopePorts::OUT;
 const ACTIVE: usize = EnvelopePorts::ACTIVE;
 
@@ -177,9 +188,20 @@ impl Runner {
     }
 }
 
-/// The curve fraction one sample covers for a `length` in seconds.
+/// The curve fraction one sample covers. The length is `length` seconds, or
+/// `beats` beats at the transport's tempo when `in_beats` is set.
 #[inline]
-fn increment(length: f32, sample_rate: f32) -> f32 {
+fn increment(length: f32, beats: f32, in_beats: bool, bpm: f64, sample_rate: f32) -> f32 {
+    let length = if in_beats {
+        let bpm = if bpm.is_finite() && bpm > 0.0 {
+            bpm
+        } else {
+            120.0
+        };
+        beats * (60.0 / bpm) as f32
+    } else {
+        length
+    };
     let length = if length.is_finite() {
         length.max(0.001)
     } else {
@@ -218,12 +240,14 @@ impl LaneKernel for EnvelopeKernel {
         let trigger = lane.inputs.get(TRIGGER);
         let (length, depth) = (lane.inputs.get(LENGTH), lane.inputs.get(DEPTH));
         let looping = lane.inputs.get(LOOP);
+        let (time, beats) = (lane.inputs.get(TIME), lane.inputs.get(BEATS));
+        let bpm = ctx.transport.bpm;
         let [out, active] = lane.outputs.get_disjoint_mut([OUT, ACTIVE]);
         for i in 0..out.len() {
             let held = trigger[i] >= 0.5;
             let start = held && !state.gate;
             state.gate = held;
-            let inc = increment(length[i], ctx.sample_rate);
+            let inc = increment(length[i], beats[i], time[i] >= 0.5, bpm, ctx.sample_rate);
             let height =
                 state
                     .runner
@@ -248,6 +272,8 @@ impl Node for SingleEnvelope {
         let trigger = &io.inputs[TRIGGER];
         let (length, depth) = (io.inputs[LENGTH].lane(0, 0), io.inputs[DEPTH].lane(0, 0));
         let looping = io.inputs[LOOP].lane(0, 0);
+        let (time, beats) = (io.inputs[TIME].lane(0, 0), io.inputs[BEATS].lane(0, 0));
+        let bpm = ctx.transport.bpm;
         let [out, active] = io
             .outputs
             .get_disjoint_mut([OUT, ACTIVE])
@@ -262,7 +288,7 @@ impl Node for SingleEnvelope {
                 held |= high;
                 *gate = high;
             }
-            let inc = increment(length[i], ctx.sample_rate);
+            let inc = increment(length[i], beats[i], time[i] >= 0.5, bpm, ctx.sample_rate);
             let height =
                 self.runner
                     .tick(&self.lut, self.rest, start, held, inc, looping[i] >= 0.5);
@@ -554,6 +580,35 @@ mod tests {
         // The trigger was only 10 samples long, and the curve still played.
         assert_eq!(active[1_000], 1.0);
         assert!(out[frames - 1] < 1e-2 && active[frames - 1] == 0.0);
+    }
+
+    #[test]
+    fn a_length_in_beats_follows_the_tempo() {
+        let frames = 6_000;
+        let mut h = Harness::new(
+            &Envelope,
+            &config(&triangle(), false),
+            &[(TRIGGER, Shape::MONO)],
+            RATE,
+            frames,
+        )
+        .unwrap();
+        // The harness runs at 120 bpm, so 0.2 of a beat is 0.1 s; the length
+        // in seconds is ignored.
+        h.set(LENGTH, 5.0);
+        h.set(TIME, 1.0);
+        h.set(BEATS, 0.2);
+        let (out, _) = run(&mut h, &gate(frames, 10..20));
+        let peak = out
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap();
+        assert!(
+            (2_400 + 10 - peak.0 as i64).abs() < 20,
+            "peak at {}",
+            peak.0
+        );
     }
 
     #[test]

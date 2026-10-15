@@ -103,14 +103,14 @@ The warp evaluation's main number for a song: the bare mixed audio with nothing 
 ## Presets and the group library
 
 **Preset**:
-A named set of one node's parameter values and its config other than what shapes its ports, applied back to a node of the same type and port layout as one undo step. It never changes wires, automation lanes, mute or solo.
+A named set of one node's parameter values and its config other than what shapes its ports, applied back to a node of the same type that has the ports it sets (found by name, never by position) as one undo step. It never changes wires, automation lanes, mute or solo.
 
 **Group preset**:
 A preset for a group: the values and port-neutral config of every node inside it, apart from the group's own boundary controls (gain, mute, solo). It applies only to a group with the same topology; on any other group it is not offered.
 _Avoid_: Patch, snapshot
 
 **Topology (of a group)**:
-What makes two groups "the same" for presets: the same node types, the same wires between them, the same boundary ports and port names, and the same port layout on every node (so config that shapes ports counts). Config that does not shape ports, such as a sample or an expression, does not count, so two kits can be presets of one drum rack. Node IDs, labels and editor positions do not count.
+What makes two groups "the same" for presets: the same node types, the same wires between them, the same boundary ports and port names, (a group preset also needs every node to have the parameters it sets, by name). Config such as a sample or an expression does not count, so two kits can be presets of one drum rack. Node IDs, labels and editor positions do not count.
 
 **Group template**:
 A saved group in the library. Using one puts an unlinked copy in the project, which stays freely editable and remembers which template it came from.
