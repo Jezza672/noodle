@@ -64,6 +64,8 @@ fn every_system_preset_fits_its_template() {
 
 /// Nodes that have nothing worth a preset (no settings, or only wiring).
 const WITHOUT_PRESETS: &[&str] = &[
+    "noodle.spectral.analyze",
+    "noodle.spectral.synthesize",
     "noodle.event.mono",
     "noodle.group.stage",
     "noodle.input.button",

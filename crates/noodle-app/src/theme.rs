@@ -111,9 +111,11 @@ pub mod editor {
     /// Wires to and from selected nodes.
     pub const WIRE_SELECTED: Color32 = Color32::from_rgb(200, 241, 105);
     pub const EVENT_WIRE: Color32 = Color32::from_rgb(240, 160, 64);
+    pub const SPECTRAL_WIRE: Color32 = Color32::from_rgb(176, 124, 255);
     pub const AUDIO_SOCKET: Color32 = Color32::from_rgb(92, 200, 230);
     pub const PARAM_SOCKET: Color32 = Color32::from_rgb(138, 138, 147);
     pub const EVENT_SOCKET: Color32 = Color32::from_rgb(240, 160, 64);
+    pub const SPECTRAL_SOCKET: Color32 = Color32::from_rgb(176, 124, 255);
     /// Frames are barely tinted; the outline carries them.
     pub const FRAME: Color32 = Color32::from_rgba_premultiplied(6, 9, 16, 20);
     /// The border around a frame.

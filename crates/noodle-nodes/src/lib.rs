@@ -45,6 +45,7 @@ mod sample;
 mod sample_hold;
 mod sampler;
 mod scope;
+mod spectral;
 mod stage;
 mod svf;
 mod time_stretch;
@@ -116,6 +117,11 @@ pub use sample::{Sample, SampleError, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
+pub use spectral::{
+    ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
+    SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID, SpectralBlur, SpectralFilter,
+    SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
+};
 pub use stage::GroupStage;
 pub use svf::{SVF_ID, Svf, svf_response};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
@@ -192,6 +198,14 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(EnvelopeFollower);
     registry.register(SampleHold);
     registry.register(Lag);
+    registry.register(Analyze);
+    registry.register(Synthesize);
+    registry.register(SpectralGate);
+    registry.register(SpectralFilter);
+    registry.register(SpectralShift);
+    registry.register(SpectralFreeze);
+    registry.register(SpectralBlur);
+    registry.register(Cross);
     registry.register(Comparator);
     registry.register(Automation);
     registry.register(Clock);

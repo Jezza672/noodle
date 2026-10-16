@@ -44,6 +44,18 @@ impl Registry {
         keys.extend(layout.outputs.iter().map(|p| format!("o:{}", p.key)));
         keys.extend(layout.event_inputs.iter().map(|p| format!("ei:{}", p.key)));
         keys.extend(layout.event_outputs.iter().map(|p| format!("eo:{}", p.key)));
+        keys.extend(
+            layout
+                .spectral_inputs
+                .iter()
+                .map(|p| format!("si:{}", p.key)),
+        );
+        keys.extend(
+            layout
+                .spectral_outputs
+                .iter()
+                .map(|p| format!("so:{}", p.key)),
+        );
         keys.sort();
         Some(keys.join(";"))
     }

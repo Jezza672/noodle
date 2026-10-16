@@ -29,6 +29,7 @@ mod render;
 mod replace;
 mod runtime;
 mod signal;
+mod spectral;
 mod telemetry;
 mod tempo;
 pub mod testing;
@@ -45,7 +46,7 @@ pub use cache::{
 };
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
-    ScheduledNode, compile, compile_replacing, compile_with_lanes,
+    ScheduledNode, SpectralBufferId, compile, compile_replacing, compile_with_lanes,
 };
 pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
@@ -75,6 +76,10 @@ pub use runtime::{
     Bus, Controller, Processor, Settings, SettingsError, engine, engine_with_workers,
 };
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
+pub use spectral::{
+    Analyzer, BINS, Bin, FFT_SIZE, HOP, SYNTH_LATENCY, SpectralBuf, SpectralIn, SpectralOut,
+    Synthesizer, bin_frequency, frame_capacity,
+};
 pub use telemetry::{
     BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level, MeterReader,
     MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,

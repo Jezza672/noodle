@@ -872,6 +872,46 @@ fn table() -> Vec<Row> {
                 ("out_max", 8000.0),
             ],
         ),
+        // Spectral.
+        row(
+            "noodle.spectral.gate",
+            "Denoise",
+            &[("threshold", -55.0), ("reduction", 30.0), ("knee", 9.0)],
+        ),
+        row(
+            "noodle.spectral.gate",
+            "Loudest Partials Only",
+            &[("threshold", -25.0), ("reduction", 80.0), ("knee", 6.0)],
+        ),
+        row(
+            "noodle.spectral.filter",
+            "Telephone Band",
+            &[("low", 300.0), ("high", 3400.0), ("mode", 0.0)],
+        ),
+        row(
+            "noodle.spectral.filter",
+            "Notch Out the Mids",
+            &[("low", 800.0), ("high", 2500.0), ("mode", 1.0)],
+        ),
+        row(
+            "noodle.spectral.filter",
+            "Low End Only",
+            &[("low", 20.0), ("high", 250.0), ("mode", 0.0)],
+        ),
+        row("noodle.spectral.shift", "One Bin Up", &[("shift", 24.0)]),
+        row("noodle.spectral.shift", "Bell-like", &[("shift", 90.0)]),
+        row(
+            "noodle.spectral.shift",
+            "Down a Little",
+            &[("shift", -40.0)],
+        ),
+        row("noodle.spectral.freeze", "Held", &[("freeze", 1.0)]),
+        row("noodle.spectral.freeze", "Live", &[("freeze", 0.0)]),
+        row("noodle.spectral.blur", "Soften", &[("amount", 0.5)]),
+        row("noodle.spectral.blur", "Haze", &[("amount", 0.9)]),
+        row("noodle.spectral.blur", "Wash", &[("amount", 0.98)]),
+        row("noodle.spectral.cross", "Full Vocode", &[("mix", 1.0)]),
+        row("noodle.spectral.cross", "Half and Half", &[("mix", 0.5)]),
         // Offline.
         row(
             "noodle.offline.normalize",
