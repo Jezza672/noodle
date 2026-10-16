@@ -271,9 +271,9 @@ impl GroupTemplate {
 
         // Wires at the group's own ports that no longer have a port.
         for c in graph.connections() {
-            if c.to.node == group && new_ports.input(&c.to.port).is_none() {
-                commands.push(Command::Disconnect { input: c.to });
-            } else if c.from.node == group && new_ports.output(&c.from.port).is_none() {
+            let gone = (c.to.node == group && new_ports.input(&c.to.port).is_none())
+                || (c.from.node == group && new_ports.output(&c.from.port).is_none());
+            if gone {
                 commands.push(Command::Disconnect { input: c.to });
             }
         }
