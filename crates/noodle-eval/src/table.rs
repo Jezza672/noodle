@@ -67,9 +67,8 @@ impl Baseline {
             .iter()
             .filter_map(|(key, metrics)| {
                 let mut parts = key.rsplitn(4, '/');
-                let view = View::ALL
-                    .into_iter()
-                    .find(|v| Some(v.name()) == parts.next())?;
+                let last = parts.next()?;
+                let view = View::ALL.into_iter().find(|v| v.name() == last)?;
                 let method = Method::parse(parts.next()?)?;
                 let case = parts.next()?.to_string();
                 let probe = parts.next()?.to_string();
@@ -222,6 +221,16 @@ pub fn versus_best_whole_mix(
     rows: &[Row],
     pick: impl Fn(&Row) -> bool,
 ) -> BTreeMap<Method, Versus> {
+    versus(rows, pick, &Method::WHOLE_MIX)
+}
+
+/// [`versus_best_whole_mix`] with any set of yardstick methods: each other
+/// contender is compared with the best of `yardstick` per metric.
+pub fn versus(
+    rows: &[Row],
+    pick: impl Fn(&Row) -> bool,
+    yardstick: &[Method],
+) -> BTreeMap<Method, Versus> {
     let mut groups: BTreeMap<(&str, &str, &str), Vec<&Row>> = BTreeMap::new();
     for row in rows.iter().filter(|r| pick(r)) {
         groups
@@ -233,7 +242,7 @@ pub fn versus_best_whole_mix(
     for group in groups.values() {
         let whole: Vec<&&Row> = group
             .iter()
-            .filter(|r| Method::WHOLE_MIX.contains(&r.method))
+            .filter(|r| yardstick.contains(&r.method))
             .collect();
         if whole.is_empty() {
             continue;
@@ -292,8 +301,8 @@ pub fn format_ceiling(rows: &[Row]) -> String {
         "split contenders against the best whole-mix mode (auto, grain or beats) per metric:\n\
          wins = share of metric cells with a lower error; ratio = median error over the best whole-mix error (below 1 is better)\n",
     );
-    let mut table = |title: &str, pick: &dyn Fn(&Row) -> bool| {
-        let versus = versus_best_whole_mix(rows, pick);
+    let mut table = |title: &str, pick: &dyn Fn(&Row) -> bool, yard: &[Method]| {
+        let versus = versus(rows, pick, yard);
         if versus.is_empty() {
             return;
         }
@@ -310,17 +319,28 @@ pub fn format_ceiling(rows: &[Row]) -> String {
         }
     };
     for view in View::ALL {
-        table(&format!("all songs, {} view", view.name()), &|r| {
-            r.view == view
-        });
+        table(
+            &format!("all songs, {} view", view.name()),
+            &|r| r.view == view,
+            &Method::WHOLE_MIX,
+        );
+    }
+    for yard in Method::WHOLE_MIX {
+        table(
+            &format!("all songs, native view, against {} alone", yard.name()),
+            &|r| r.view == View::Native,
+            &[yard],
+        );
     }
     let mut songs: Vec<&str> = rows.iter().map(|r| r.probe.as_str()).collect();
     songs.sort_unstable();
     songs.dedup();
     for song in songs {
-        table(&format!("{song}, native view"), &|r| {
-            r.probe == song && r.view == View::Native
-        });
+        table(
+            &format!("{song}, native view"),
+            &|r| r.probe == song && r.view == View::Native,
+            &Method::WHOLE_MIX,
+        );
     }
     let native: Vec<Row> = rows
         .iter()

@@ -190,7 +190,7 @@ mod tests {
         // fifth of the first stem is gone from it.
         assert!((out[2][0] - 0.1).abs() < 1e-6 && (out[2][1] - 0.1).abs() < 1e-6);
         assert!((out[0][0] - 0.8).abs() < 1e-6);
-        assert_eq!(leak(&[a.clone()], 0.5), vec![a]);
+        assert_eq!(leak(std::slice::from_ref(&a), 0.5), vec![a]);
         assert!((leak_amount(20.0) - 0.1).abs() < 1e-6);
     }
 

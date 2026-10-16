@@ -831,7 +831,10 @@ excepted, see ARCHITECTURE.md).
 
 ## M10: Stems
 
-**Status:** Designed (CONTEXT.md, "Stems"; ADR 0006). Nothing built.
+**Status:** Batch 1 (the ceiling experiment) is done and its result is **no clear gain**: with
+flawless stems, Stem warp beats the best whole-mix mode on a median 3 to 4% less error (9% against
+Auto, what the app does today), and that disappears with 20 dB of leakage. Batches 2 and 3 are not
+started; see the result below before building them.
 
 AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
 sources are in the project folder `research/stem-warp/findings.md`. Three batches:
@@ -845,6 +848,24 @@ sources are in the project folder `research/stem-warp/findings.md`. Three batche
    so it also adds simulated leakage between stems to test the residual. The generated songs
    have no vocals, so the vocals default is untested by this batch. If there is no clear gain,
    stop here. The ADR and docs landed in #166.
+   **Result** (`noodle-eval songs --ceiling`, five songs, all nine tempo cases, baseline in
+   `baseline/ceiling.json`, `songs --verdict` reads it again). The stems are exact: drums, bass
+   and other (the songs have no vocals), rendered with the mix's master chain; they add back to
+   the mix to better than -70 dB (-100 and lower on three songs). Each stem warps at the true
+   source tempo, Beats for the drums and Grain for the rest, residual in Grain. Native view,
+   median error over the best whole-mix mode of Auto, Grain and Beats, per metric (below 1 is
+   better): perfect stems 1.01 (beats it on 40% of cells), 30 dB leakage 1.02, 20 dB 1.05, 10 dB
+   1.18; harmonic/percussive split without a model 1.28. Against Auto alone: 0.93 for perfect
+   stems, 0.95 at 20 dB, 1.01 at 10 dB. By song, perfect stems gain on rainy-lofi (0.94 of the
+   best whole-mix error) and tie on funk-engine and glass-ambient, and lose on breakbeat-run
+   (1.03) and neon-drive (1.12). The mix quality of the existing modes is the limit, not the
+   separation: the "other" stem is mostly short synth notes, which Grain smears about as much as
+   it does in the mix. **Decision for the owner:** the gain is too small, and too uneven, to
+   justify HT-Demucs, a downloaded model and a native runtime for Stem warp. Split to stems
+   (batch 2) stands on its own as an editing feature, whatever batch 3 does. If batch 3 is
+   built anyway, test per-stem mode choice (Beats for plucked and arpeggiated "other"), since
+   fixed Grain on "other" is the likeliest reason for the small gain; the vocals default is
+   still untested.
 2. **Separation and Split to stems.** The separator trait in its own crate (added to
    CLAUDE.md's crate table), with a fake separator for tests, the ONNX backend, the consented weight
    download, a cancellable background job with progress, and **Split to stems** on an audio
