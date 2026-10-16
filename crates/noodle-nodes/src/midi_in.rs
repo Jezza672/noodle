@@ -129,6 +129,11 @@ pub(crate) struct LiveMidi {
     pending: Option<TimedPacket>,
     /// Semitones a full per-note pitch bend moves a note.
     note_bend: f32,
+    /// Per channel and key, the note's pitch from its attribute or Pitch 7.25
+    /// (semitones from the key) and its per-note bend. The `Pitch`
+    /// expression sent is their sum, whichever changed last.
+    pitch_base: Box<[[f32; 128]; 16]>,
+    pitch_bend: Box<[[f32; 128]; 16]>,
     /// When the previous block began, for the lack of a device saying so.
     previous_start: Option<u64>,
     /// Per channel, the keys that have a note-on and no note-off yet, one
@@ -147,6 +152,8 @@ impl LiveMidi {
             id_base,
             pending: None,
             note_bend: 48.0,
+            pitch_base: Box::new([[0.0; 128]; 16]),
+            pitch_bend: Box::new([[0.0; 128]; 16]),
             previous_start: None,
             held: [0; 16],
             ending: 0,
@@ -208,6 +215,9 @@ impl LiveMidi {
             } => {
                 self.held[usize::from(channel)] |= 1 << key;
                 let note = self.note_id(channel, key);
+                let (c, k) = (usize::from(channel), usize::from(key));
+                self.pitch_base[c][k] = 0.0;
+                self.pitch_bend[c][k] = 0.0;
                 // A velocity of 0 is not a note-off here: it is the softest.
                 let velocity = f32::from(velocity.max(1)) / 65_535.0;
                 let on = EventKind::NoteOn {
@@ -221,10 +231,11 @@ impl LiveMidi {
                 }
                 match attribute {
                     Attribute::Pitch(pitch) if (pitch - f32::from(key)).abs() > 1e-4 => {
+                        self.pitch_base[c][k] = pitch - f32::from(key);
                         push(EventKind::Expression {
                             note,
                             expression: Expression::Pitch,
-                            value: pitch - f32::from(key),
+                            value: self.pitch_base[c][k],
                         })
                     }
                     _ => true,
@@ -255,11 +266,15 @@ impl LiveMidi {
                 channel,
                 key,
                 value,
-            } => push(EventKind::Expression {
-                note: self.note_id(channel, key),
-                expression: Expression::Pitch,
-                value: signed(value) * self.note_bend,
-            }),
+            } => {
+                let (c, k) = (usize::from(channel), usize::from(key));
+                self.pitch_bend[c][k] = signed(value) * self.note_bend;
+                push(EventKind::Expression {
+                    note: self.note_id(channel, key),
+                    expression: Expression::Pitch,
+                    value: self.pitch_base[c][k] + self.pitch_bend[c][k],
+                })
+            }
             Midi2::PerNoteController {
                 channel,
                 key,
@@ -268,6 +283,7 @@ impl LiveMidi {
                 value,
             } => {
                 let note = self.note_id(channel, key);
+                let (c, k) = (usize::from(channel), usize::from(key));
                 let (expression, value) = match index {
                     // Modulation and brightness.
                     1 | 74 => (Expression::Timbre, unit(value)),
@@ -276,10 +292,14 @@ impl LiveMidi {
                     10 => (Expression::Pan, unit(value) * 2.0 - 1.0),
                     // Pitch 7.25: the note's pitch as key numbers with a
                     // 25-bit fraction.
-                    3 => (
-                        Expression::Pitch,
-                        (f64::from(value) / f64::from(1u32 << 25) - f64::from(key)) as f32,
-                    ),
+                    3 => {
+                        self.pitch_base[c][k] =
+                            (f64::from(value) / f64::from(1u32 << 25) - f64::from(key)) as f32;
+                        (
+                            Expression::Pitch,
+                            self.pitch_base[c][k] + self.pitch_bend[c][k],
+                        )
+                    }
                     _ => return true,
                 };
                 push(EventKind::Expression {
@@ -669,6 +689,46 @@ mod tests {
             events[4],
             EventKind::NoteOff { note, velocity } if note == note_id(1, 60) && (velocity - 0.25).abs() < 1e-3
         ));
+    }
+
+    #[test]
+    fn a_per_note_bend_adds_to_the_pitch_attribute_instead_of_replacing_it() {
+        let (mut h, bus) = node();
+        send2(&bus, note_on2(0, 62, 0x8000, Attribute::Pitch(62.5)));
+        // A controller starting a touch sends a centred bend.
+        let bend = |value| Midi2::PerNotePitchBend {
+            channel: 0,
+            key: 62,
+            value,
+        };
+        send2(&bus, bend(0x8000_0000));
+        // A quarter of the way up: 12 semitones at the default range of 48.
+        send2(&bus, bend(0xA000_0000));
+        // Pitch 7.25 sets a new base, which the bend still rides on.
+        send2(
+            &bus,
+            Midi2::PerNoteController {
+                channel: 0,
+                key: 62,
+                registered: true,
+                index: 3,
+                value: 63 << 25,
+            },
+        );
+        h.run(16).unwrap();
+        let pitches: Vec<f32> = h
+            .events(MidiInPorts::OUT)
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::Expression {
+                    expression: Expression::Pitch,
+                    value,
+                    ..
+                } => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pitches, vec![0.5, 0.5, 12.5, 13.0]);
     }
 
     #[test]

@@ -243,9 +243,12 @@ impl MidiReceiver {
         self.pop_timed().map(|(_, message)| message)
     }
 
-    /// The same with the time the message arrived. MIDI 2.0 messages are
-    /// narrowed ([`Packet::to_midi1`]) and packets with no MIDI 1.0 form
-    /// skipped, for readers of notes and controllers that don't want more.
+    /// The same with the time the message arrived. This is lossy: MIDI 2.0
+    /// messages are narrowed to the first MIDI 1.0 message they make
+    /// ([`Packet::to_midi1`]; a parameter gives only its first controller, a
+    /// program change loses its bank) and packets with no MIDI 1.0 form are
+    /// skipped. It is for readers of notes, like the take recorder; use
+    /// [`pop_packet`](Self::pop_packet) for the rest.
     pub fn pop_timed(&mut self) -> Option<TimedMessage> {
         loop {
             let (at, packet) = self.0.pop().ok()?;

@@ -1664,6 +1664,11 @@ impl ValueInput {
     }
 }
 
+/// Spectral delay lines are recorded in `PlanInfo::delays` under this plus
+/// their port, which no signal input index reaches, so a change in a node's
+/// signal inputs can't make a signal line take over a spectral one's state.
+const SPECTRAL_KEY_BASE: usize = 1 << 20;
+
 /// `(old slot, old line)` to `(slot, line)` for delay lines that take over
 /// the contents of the previous plan's.
 type DelayMigrations = Vec<((usize, usize), (usize, usize))>;
@@ -1805,7 +1810,7 @@ fn compensate(
                 shape,
             });
             nodes[index].spectral_inputs[port] = Some((dest, shape));
-            let key = (slot.id, slot.inputs.len() + port);
+            let key = (slot.id, SPECTRAL_KEY_BASE + port);
             info.delays.push((key, (index, line_index, delay as u32)));
             let old = previous.and_then(|p| {
                 p.delays
