@@ -44,6 +44,44 @@ fn a_clip_plays_from_its_offset_at_its_start() {
 }
 
 #[test]
+fn a_muted_clip_is_silent_and_comes_back_when_unmuted() {
+    let mut rig = Rig::blocking("muted");
+    rig.wav("one.wav", 1, 30_000, |_, _| 0.5);
+    let id = rig.add_clip(0, "one.wav", 0, 20_000);
+    rig.wait_ready(0, 1);
+    let (left, _) = rig.play(0, 2_000);
+    assert_close(&left[300..], |_| 0.5, "before the mute");
+
+    let mute = |rig: &mut Rig, muted: bool| {
+        rig.edit_clip(id, |clip| {
+            let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+                unreachable!("not an audio clip")
+            };
+            audio.muted = muted;
+        });
+        rig.settle();
+    };
+    // The playing clip is dropped as one that was deleted would be: it dips
+    // and then it is gone.
+    mute(&mut rig, true);
+    assert!(rig.problems.is_empty(), "{:?}", rig.problems);
+    let (left, right) = rig.play(2_000, 6_000);
+    assert!(
+        left[3_000..]
+            .iter()
+            .chain(&right[3_000..])
+            .all(|&s| s == 0.0)
+    );
+    // It stays out of the schedule, so there is no stream to open.
+    assert_eq!(rig.feeds.status(rig.id).streams, 0);
+
+    mute(&mut rig, false);
+    rig.wait_ready(6_000, 1);
+    let (left, _) = rig.play(6_000, 9_000);
+    assert_close(&left[2_500..], |_| 0.5, "after unmuting");
+}
+
+#[test]
 fn mono_files_play_in_both_channels() {
     let mut rig = Rig::blocking("mono");
     rig.wav("mono.wav", 1, 20_000, |_, i| i as f32 / 100_000.0);

@@ -157,6 +157,10 @@ impl NodeType for TrackInput {
         for (id, clip) in env.project.clips_on(node) {
             key.u64(id.0).i64(clip.start.0);
             match &clip.content {
+                noodle_core::ClipContent::Audio(audio) if audio.muted => {
+                    // Silent, so its file doesn't matter, only that it is.
+                    key.str("muted");
+                }
                 noodle_core::ClipContent::Audio(audio) => {
                     let file = (env.file_key)(&audio.source).ok_or_else(|| {
                         noodle_engine::Uncacheable::Because(format!("can't read {}", audio.source))

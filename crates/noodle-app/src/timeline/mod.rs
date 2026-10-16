@@ -45,6 +45,16 @@ const EDGE: f32 = 6.0;
 /// Clips narrower than this can only be moved.
 const MIN_TRIMMABLE: f32 = 24.0;
 /// The warp of an audio clip, if it has one.
+/// The command that mutes audio clip `id` (shown as `clip`), or unmutes it if it
+/// is muted.
+pub(crate) fn toggle_mute(id: ClipId, clip: &Clip) -> Command {
+    let mut changed = clip.clone();
+    if let noodle_core::ClipContent::Audio(audio) = &mut changed.content {
+        audio.muted = !audio.muted;
+    }
+    Command::SetClip { id, clip: changed }
+}
+
 fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::ClipWarp> {
     project.warp(clip.as_audio()?.warp?)
 }
@@ -276,7 +286,7 @@ enum Mode {
 
 /// The track lanes, top to bottom: every track input node, and any other node
 /// that has clips.
-fn tracks(project: &Project) -> Vec<NodeId> {
+pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
     let mut tracks: Vec<NodeId> = project
         .graph()
         .nodes()
@@ -621,8 +631,34 @@ pub fn show(
                 edits.push(Edit::EndDrag);
             }
 
+            if let Some(audio) = audio {
+                response.context_menu(|ui| {
+                    let mute = if audio.muted { "Unmute" } else { "Mute" };
+                    if ui.button(mute).clicked() {
+                        ui.close();
+                        edits.push(Edit::Apply(toggle_mute(id, clip)));
+                    }
+                    if ui
+                        .button("Split to stems")
+                        .on_hover_text(
+                            "Make a track for the drums, bass, vocals and the rest, and mute this clip",
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        edits.push(Edit::SplitToStems(id));
+                    }
+                });
+            }
+
             let painter = ui.painter_at(visible);
-            painter.rect_filled(full, f32::from(crate::theme::RADIUS), colour);
+            // A muted section stays where it is but is drawn faded.
+            let fill = if audio.is_some_and(|audio| audio.muted) {
+                colour.gamma_multiply(0.35)
+            } else {
+                colour
+            };
+            painter.rect_filled(full, f32::from(crate::theme::RADIUS), fill);
             let missing = audio.is_some() && source.is_none();
             let label = match (audio, clip.as_midi()) {
                 (Some(audio), _) => {

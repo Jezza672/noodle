@@ -841,7 +841,7 @@ included: Compressor, Limiter, Gate, Expander and variants).
 
 ## M10: Stems
 
-**Status:** Designed (CONTEXT.md, "Stems"; ADR 0006). Nothing built.
+**Status:** Batch 2 (Split to stems) is in code and works end to end with a fake separator, but cannot be used by a person yet: there is no built-in weights address (the licence is unchecked; the address comes from `NOODLE_STEM_MODEL_URL`), no ONNX Runtime library is shipped on any platform, and the backend has not run real HT-Demucs weights. See ARCHITECTURE.md ("Stems"). Designed: CONTEXT.md, "Stems", and ADR 0006. Batch 1's result (PR #174) said Stem warp should not be built yet. Batch 3 is not started.
 
 AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
 sources are in the project folder `research/stem-warp/findings.md`. Three batches:
@@ -855,7 +855,7 @@ sources are in the project folder `research/stem-warp/findings.md`. Three batche
    so it also adds simulated leakage between stems to test the residual. The generated songs
    have no vocals, so the vocals default is untested by this batch. If there is no clear gain,
    stop here. The ADR and docs landed in #166.
-2. **Separation and Split to stems.** The separator trait in its own crate (added to
+2. **Separation and Split to stems (in code; remaining: a built-in weights address once the licence is checked, and shipping or fetching ONNX Runtime).** The separator trait in its own crate (added to
    CLAUDE.md's crate table), with a fake separator for tests, the ONNX backend, the consented weight
    download, a cancellable background job with progress, and **Split to stems** on an audio
    clip: one new track under the source for each stem and for the residual, named

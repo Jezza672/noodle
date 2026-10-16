@@ -534,6 +534,7 @@ pub fn show(
             edits.extend(start_warp(project, id, analysis).map(Edit::Apply));
         }
         gain(ui, project, id, &mut edits);
+        section(ui, project, id, &mut edits);
         return edits;
     };
 
@@ -689,7 +690,32 @@ pub fn show(
     });
 
     gain(ui, project, id, &mut edits);
+    section(ui, project, id, &mut edits);
     edits
+}
+
+/// Mute, and Split to stems.
+fn section(ui: &mut Ui, project: &Project, id: ClipId, edits: &mut Vec<Edit>) {
+    let Some(clip) = project.clip(id) else { return };
+    let Some(audio) = clip.as_audio() else { return };
+    let mut muted = audio.muted;
+    if ui
+        .checkbox(&mut muted, "Mute")
+        .on_hover_text("Silence this clip without removing it")
+        .changed()
+    {
+        edits.push(Edit::Apply(crate::timeline::toggle_mute(id, clip)));
+    }
+    if ui
+        .button("Split to stems")
+        .on_hover_text(
+            "Make a track for the drums, bass, vocals and the rest, and mute this clip. \
+             The stems are written to the project's stems folder.",
+        )
+        .clicked()
+    {
+        edits.push(Edit::SplitToStems(id));
+    }
 }
 
 /// The clip's gain, in decibels.
@@ -720,7 +746,80 @@ fn gain(ui: &mut Ui, project: &Project, id: ClipId, edits: &mut Vec<Edit>) {
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use noodle_core::{Clip, Tick};
+
     use super::*;
+    use crate::session::Nodes;
+
+    struct Rig {
+        session: crate::session::Session,
+        panel: ClipPanel,
+        clip: ClipId,
+        asked: Vec<Edit>,
+    }
+
+    fn rig() -> Harness<'static, Rig> {
+        let mut session = crate::session::Session::new(Nodes::all());
+        let node = session.new_node_id();
+        let clip = session.project().next_clip_id();
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: node,
+                node: noodle_core::Node::new(noodle_nodes::TRACK_INPUT_ID),
+            }),
+            Edit::Apply(Command::AddClip {
+                id: clip,
+                clip: Clip::audio(node, Tick(0), "a.wav", 1_000),
+            }),
+        ]);
+        Harness::new_ui_state(
+            |ui, rig: &mut Rig| {
+                let edits = show(ui, &mut rig.panel, &rig.session, rig.clip, None);
+                for edit in edits {
+                    match edit {
+                        Edit::SplitToStems(_) => rig.asked.push(edit),
+                        edit => rig.session.edit([edit]),
+                    }
+                }
+            },
+            Rig {
+                session,
+                panel: ClipPanel::default(),
+                clip,
+                asked: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn the_panel_mutes_and_unmutes_the_clip_and_asks_to_split_it() {
+        let mut harness = rig();
+        harness.run();
+        let muted = |h: &Harness<'_, Rig>| {
+            let rig = h.state();
+            rig.session
+                .project()
+                .clip(rig.clip)
+                .unwrap()
+                .as_audio()
+                .unwrap()
+                .muted
+        };
+        assert!(!muted(&harness));
+        harness.get_by_label("Mute").click();
+        harness.run();
+        assert!(muted(&harness));
+        harness.get_by_label("Mute").click();
+        harness.run();
+        assert!(!muted(&harness));
+
+        harness.get_by_label("Split to stems").click();
+        harness.run();
+        let rig = harness.state();
+        assert_eq!(rig.asked, [Edit::SplitToStems(rig.clip)]);
+    }
 
     #[test]
     fn taps_make_a_tempo_from_the_third_on() {
