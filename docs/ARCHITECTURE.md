@@ -899,7 +899,9 @@ After a seek it renders three hops it throws away.
 
 Each band is **cut at transients**, and what is cut at differs. The worker finds
 two lists once per source and keeps them: the transients of the whole mix
-(`detect_onsets`) and those of its bass (`detect_bass_onsets`: the level of the
+(`detect_onsets`: a block's level against the average power of the 30 ms
+before it, not the quietest of two short blocks, which a low held chord's
+swinging block power fooled into an attack every few blocks) and those of its bass (`detect_bass_onsets`: the level of the
 low-passed audio, rising at once and falling over 40 ms, so that a low tone's
 swing isn't an attack). **Beats** cuts the mids and highs at the first list and
 the bass at the second; **Grain** cuts both at the bass's, so that a kick's body
@@ -961,7 +963,8 @@ editor sets it, as does the panel's Offset field and Detect
 a weak guess unless `TempoEstimate::is_clear`: onsets mostly on the beat, or a
 beat standing well above every other tempo's score; `Analysis::of` scores the
 bass onsets as well as all of them, since hats and arpeggios bury the beat in a
-full mix; Detect is enabled whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
+full mix, and the treble's (`detect_treble_onsets`) when neither is clear, for
+bells over a dark pad; Detect is enabled whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
 Shift/Ctrl click, a box in the flags' row, Ctrl+A) and a picked group moves and
 is deleted as one edit. Each detected transient has a handle on the row under
 the brace; double-clicking it pins a marker where the transient plays now

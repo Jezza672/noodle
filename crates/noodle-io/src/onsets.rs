@@ -33,6 +33,23 @@ pub fn detect_bass_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
     detect_onsets(&bass, rate)
 }
 
+/// The frames at which a transient starts in the treble of `mono` (above about
+/// 1.5 kHz): bells and plucks over a dark pad, which the full-band level
+/// can't see through.
+pub fn detect_treble_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
+    let a = 1.0 - (-std::f32::consts::TAU * 1_500.0 / rate as f32).exp();
+    let (mut p, mut q) = (0.0f32, 0.0f32);
+    let treble: Vec<f32> = mono
+        .iter()
+        .map(|x| {
+            p += a * (x - p);
+            q += a * (p - q);
+            x - q
+        })
+        .collect();
+    detect_onsets(&treble, rate)
+}
+
 /// The frames at which a transient starts in `mono`, at `rate`, in order.
 ///
 /// An onset is where the short-time level jumps by at least 5 dB over the
@@ -53,18 +70,22 @@ pub fn detect_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
             10.0 * (power + 1e-12).log10()
         })
         .collect();
-    // How much each block rises over the quieter of the two before it.
+    // How much each block rises over the average power of the 30 ms before
+    // it. The quietest of a couple of short blocks would do for noise, but a
+    // low held tone is about one cycle per block and its block power swings
+    // from one to the next, so a held chord looked like an attack every few
+    // blocks; the average of several blocks is steady for a held sound and
+    // still far below a real attack.
+    const BEFORE: usize = 6;
+    let power: Vec<f32> = level.iter().map(|db| 10f32.powf(db / 10.0)).collect();
     let rise: Vec<f32> = (0..blocks)
         .map(|b| {
-            let before = level[b.saturating_sub(2)..b]
-                .iter()
-                .copied()
-                .fold(f32::INFINITY, f32::min);
-            if before.is_finite() {
-                level[b] - before
-            } else {
-                0.0
+            if b == 0 {
+                return 0.0;
             }
+            let before = &power[b.saturating_sub(BEFORE)..b];
+            let mean = before.iter().sum::<f32>() / before.len() as f32;
+            level[b] - 10.0 * mean.max(1e-12).log10()
         })
         .collect();
     let near = ((MIN_GAP * f64::from(rate)) / hop as f64).ceil() as usize;
@@ -342,7 +363,19 @@ impl Analysis {
         // on at least a quarter of the beats.
         let bass_grid =
             estimate_grid(&bass).filter(|b| bass.len() as f64 >= 0.25 * seconds * b.bpm / 60.0);
-        let grid = best_grid(estimate_grid(&onsets), bass_grid);
+        let treble: Vec<f64> = detect_treble_onsets(mono, rate)
+            .into_iter()
+            .map(|frame| frame as f64 / f64::from(rate))
+            .collect();
+        let treble_grid =
+            estimate_grid(&treble).filter(|t| treble.len() as f64 >= 0.25 * seconds * t.bpm / 60.0);
+        // The treble speaks only when the full band and the bass found no
+        // clear tempo: bells over a dark pad, where those see nothing.
+        let found = best_grid(estimate_grid(&onsets), bass_grid);
+        let grid = found
+            .filter(TempoEstimate::is_clear)
+            .or(treble_grid.filter(TempoEstimate::is_clear))
+            .or(found);
         Self {
             tempo: grid.filter(TempoEstimate::is_clear).map(|g| g.bpm),
             grid,
@@ -400,6 +433,48 @@ mod tests {
         for (f, want) in found.iter().zip([RATE as u64, 3 * RATE as u64]) {
             assert!(f.abs_diff(want) < 600, "{f} for {want}");
         }
+    }
+
+    #[test]
+    fn a_held_chord_is_not_a_run_of_attacks() {
+        // Low notes a few cents apart under harmonics that beat: block power
+        // swings, but nothing is struck after the first moment.
+        let tau = std::f64::consts::TAU;
+        let x: Vec<f32> = (0..6 * RATE as usize)
+            .map(|i| {
+                let t = i as f64 / f64::from(RATE);
+                let envelope = (t / 0.02).min(1.0);
+                let tone: f64 = [220.0, 220.0 * 1.0017, 261.63, 329.63]
+                    .iter()
+                    .map(|f| {
+                        (1..=6)
+                            .map(|h| (tau * f * f64::from(h) * t).sin() / f64::from(h))
+                            .sum::<f64>()
+                    })
+                    .sum();
+                (0.09 * envelope * tone) as f32
+            })
+            .collect();
+        let found = detect_onsets(&x, RATE);
+        assert!(found.len() <= 2, "{found:?}");
+    }
+
+    #[test]
+    fn bells_over_a_dark_pad_give_a_tempo_through_the_treble() {
+        let tau = std::f32::consts::TAU;
+        let beat = RATE as usize / 2; // 120 bpm
+        let mut x: Vec<f32> = (0..16 * beat)
+            .map(|i| (tau * 110.0 * i as f32 / RATE as f32).sin() * 0.3)
+            .collect();
+        for n in 0..16 {
+            for i in 0..RATE as usize / 4 {
+                let t = i as f32 / RATE as f32;
+                x[n * beat + i] += (tau * 3_000.0 * t).sin() * 0.15 * (-t * 14.0).exp();
+            }
+        }
+        let analysis = Analysis::of(&x, RATE);
+        let tempo = analysis.tempo.expect("a tempo");
+        assert!((tempo - 120.0).abs() < 0.5, "{tempo}");
     }
 
     #[test]

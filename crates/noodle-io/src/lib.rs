@@ -32,7 +32,7 @@ pub use midi::{
 };
 pub use onsets::{
     ANALYSIS_SECONDS, Analysis, CLEAR_PROMINENCE, CLEAR_TEMPO, PROMINENT_ONSETS, TempoEstimate,
-    detect_bass_onsets, detect_onsets, estimate_grid, estimate_tempo,
+    detect_bass_onsets, detect_onsets, detect_treble_onsets, estimate_grid, estimate_tempo,
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, OpenedOutput, OutputStatus,
