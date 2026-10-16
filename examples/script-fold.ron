@@ -1,0 +1,21 @@
+// A script as an oscillator: a saw phase folded through a sine, with the fold
+// amount swept by an LFO wired into the script's own "fold" parameter. The
+// script is the node's config, and its `param` lines are its ports.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.osc.sine", params: {"frequency": 3.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.util.math", params: {"a": 0.0}, config: {"expr": "4 + a * 3"}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.util.script", config: {"script": "// A wavefolded saw.\nparam freq = 220 [20, 2000] log hz\nparam fold = 4 [1, 8]\noutput out\nstate phase\nphase += freq / sr\nphase -= floor(phase)\nout = sin(fold * (phase * 2 - 1) * pi) * 0.5"}, params: {"freq": 165.0}, position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.util.gain", params: {"gain": -9.0}, position: (x: 600.0, y: 0.0)),
+            5: (type: "noodle.io.output", position: (x: 800.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "a")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "fold")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+        ],
+    ),
+)
