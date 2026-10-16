@@ -415,14 +415,13 @@ impl Harness {
         self.export_wav(&format!("{tag}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
-<<<<<<< HEAD
             let (tempo, parts): (TempoCurve, Vec<(&[f32], WarpMode)>) = match splits.get(&method) {
                 Some(split) => (
                     TempoCurve::constant(self.source_bpm),
                     split.iter().map(|(x, m)| (x.as_slice(), *m)).collect(),
                 ),
                 None => {
-                    let (tempo, mode) = self.choice(method, &analysis, &target);
+                    let (tempo, mode) = self.choice(method, &analysis);
                     (tempo, vec![(source.as_slice(), mode)])
                 }
             };
@@ -437,12 +436,6 @@ impl Harness {
                 );
             }
             let warped = crate::stems::sum(&forward);
-=======
-            let (tempo, mode) = self.choice(method, &analysis);
-            let warped = self
-                .warp(&source, tempo, mode, &target, frames)
-                .map_err(|e| format!("{name} {} {}: {e}", case.name(), method.name()))?;
->>>>>>> origin/main
             self.export_wav(&format!("{tag}_{}_warped", method.name()), &warped)?;
             // Back to the source tempo: the clip's tempo is the target's.
             let back_tempo = TempoCurve::from_tempo_map(&target, Tick::ZERO, 0.0, seconds);
