@@ -208,7 +208,10 @@ impl Song {
 
         // The notes, as a MIDI clip on each track.
         let length = Tick::from_quarters(range.beats());
-        for (input, part) in sources.into_iter().filter(|(_, part)| keep(part)) {
+        // Every part with notes takes a clip ID, kept or not: a synth's random
+        // choices follow its clip's ID, so a part sounds the same alone as in
+        // the mix only if its clip has the same ID in both.
+        for (input, part) in sources {
             let mut clip = Clip::midi(input, Tick::ZERO, length);
             let ClipContent::Midi(midi) = &mut clip.content else {
                 unreachable!("a MIDI clip")
@@ -229,6 +232,9 @@ impl Song {
                 continue;
             }
             let id = project.new_clip_id();
+            if !keep(part) {
+                continue;
+            }
             history
                 .apply(&mut project, Command::AddClip { id, clip })
                 .expect("a valid clip");

@@ -612,3 +612,69 @@ fn compressor_and_limiter_are_dynamics_nodes_not_groups() {
     // Both a compressor and a limiter are used, so both are covered.
     assert_eq!(modes.into_iter().collect::<Vec<_>>(), vec![0, 1]);
 }
+
+#[test]
+fn the_exact_stems_add_up_to_the_mix() {
+    // A part must sound the same alone as in the mix, or the ceiling
+    // experiment would warp stems that are not what the mix holds. (Synths'
+    // random choices follow their clip's ID, so the stem renders keep the
+    // mix's IDs.) What is left over is a limiter or a shared reverb tail.
+    use noodle_eval::stems::{Stem, rms_db};
+    let _load = shared();
+    each_song(|song| {
+        let range = song.excerpt_range();
+        let h = Harness::for_song(song, range, RATE).unwrap();
+        let (mix, _) = h.song_renders(song, range, TempoCase::Ratio(1.0)).unwrap();
+        let stems = h.exact_stems(song, range, &mix).unwrap();
+        let kinds: Vec<Stem> = stems.parts.iter().map(|(s, _)| *s).collect();
+        assert!(kinds.contains(&Stem::Drums), "{}: {kinds:?}", song.name);
+        assert!(!kinds.contains(&Stem::Vocals), "{}: no voices", song.name);
+        let (left, total) = (rms_db(&stems.residual), rms_db(&mix));
+        assert!(
+            left < total - 35.0,
+            "{}: residual {left:.1} dB against the mix {total:.1} dB",
+            song.name
+        );
+    });
+}
+
+#[test]
+fn the_ceiling_scores_whole_mix_and_split_contenders_side_by_side() {
+    let _alone = LOAD.write().unwrap_or_else(|e| e.into_inner());
+    let song = all().into_iter().find(|s| s.name == "neon-drive").unwrap();
+    let first = song.excerpt_range().start;
+    let range = Range {
+        start: first,
+        end: first + 8.0,
+    };
+    let h = Harness::for_song(&song, range, RATE).unwrap();
+    let methods = [
+        Method::Grain,
+        Method::Hpss,
+        Method::Stems,
+        Method::StemsLeak20,
+    ];
+    let rows = h
+        .run_ceiling("neon-drive", &song, range, TempoCase::Ratio(0.75), &methods)
+        .unwrap();
+    assert_eq!(rows.len(), methods.len() * View::ALL.len());
+    for row in &rows {
+        let ssmad = row.metric("SSMAD").unwrap();
+        assert!(ssmad.is_finite(), "{}: {ssmad}", row.key());
+    }
+    // The verdict compares the split contenders with the whole-mix mode.
+    let versus = noodle_eval::table::versus_best_whole_mix(&rows, |_| true);
+    assert!(versus.contains_key(&Method::Stems) && versus.contains_key(&Method::Hpss));
+    assert!(!versus.contains_key(&Method::Grain));
+    // Stems that are warped with one mode would be the whole-mix warp again:
+    // the only difference between Stems and Grain is Beats on the drums, so
+    // the two renders must not be the same audio.
+    let ssmad = |m| {
+        rows.iter()
+            .find(|r| r.method == m && r.view == View::Native)
+            .unwrap()
+            .metric("SPhMW")
+            .unwrap()
+    };
+    assert_ne!(ssmad(Method::Stems), ssmad(Method::Grain));
+}

@@ -38,6 +38,7 @@ use noodle_engine::{OUTPUT_ID, Registry, Settings};
 use noodle_io::{ANALYSIS_SECONDS, Analysis, write_wav};
 use noodle_nodes::{TRACK_INPUT_ID, render_project_with_clips};
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// How a clip is warped.
@@ -51,10 +52,48 @@ pub enum Method {
     Beats,
     /// The floor: plain resampling, so the pitch follows the speed.
     Repitch,
+    /// The M10 ceiling: the song's exact stems and residual, each warped with
+    /// the mode that suits it (Beats for the drums, Grain for the rest) and
+    /// added up. Only [`Harness::run_ceiling`] makes it.
+    Stems,
+    /// [`Method::Stems`] after each stem has bled 30, 20 or 10 dB of the
+    /// others into it ([`crate::stems::leak`]).
+    StemsLeak30,
+    StemsLeak20,
+    StemsLeak10,
+    /// The non-AI baseline: the mix split into harmonic (Grain) and
+    /// percussive (Beats) parts by median filtering, warped and added up.
+    Hpss,
 }
 
 impl Method {
     pub const ALL: [Method; 4] = [Method::Auto, Method::Grain, Method::Beats, Method::Repitch];
+
+    /// What the stem ceiling compares: the whole-mix modes and the split ones.
+    pub const CEILING: [Method; 8] = [
+        Method::Auto,
+        Method::Grain,
+        Method::Beats,
+        Method::Hpss,
+        Method::Stems,
+        Method::StemsLeak30,
+        Method::StemsLeak20,
+        Method::StemsLeak10,
+    ];
+
+    /// The whole-mix modes the split ones have to beat.
+    pub const WHOLE_MIX: [Method; 3] = [Method::Auto, Method::Grain, Method::Beats];
+
+    /// How many decibels below itself each other stem bleeds into a stem,
+    /// for the leaky variants.
+    pub fn leak_db(self) -> Option<f32> {
+        match self {
+            Self::StemsLeak30 => Some(30.0),
+            Self::StemsLeak20 => Some(20.0),
+            Self::StemsLeak10 => Some(10.0),
+            _ => None,
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -62,11 +101,19 @@ impl Method {
             Self::Grain => "grain",
             Self::Beats => "beats",
             Self::Repitch => "repitch",
+            Self::Stems => "stems",
+            Self::StemsLeak30 => "stems-30",
+            Self::StemsLeak20 => "stems-20",
+            Self::StemsLeak10 => "stems-10",
+            Self::Hpss => "hpss",
         }
     }
 
     pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|m| m.name() == name)
+        Self::ALL
+            .into_iter()
+            .chain(Self::CEILING)
+            .find(|m| m.name() == name)
     }
 
     /// Whether this is a contender; Repitch is the floor.
@@ -94,6 +141,10 @@ impl View {
         }
     }
 }
+
+/// The parts a [`Method::Stems`]-style contender warps: each at its own
+/// mode, from the audio at the source tempo.
+pub type Split = Vec<(Vec<f32>, WarpMode)>;
 
 /// One scored warp.
 #[derive(Debug, Clone, PartialEq)]
@@ -255,6 +306,64 @@ impl Harness {
         Ok(rows)
     }
 
+    /// The ceiling experiment on `range` of `song` at one target tempo: the
+    /// whole-mix modes and the harmonic/percussive baseline next to Stem warp
+    /// with the song's exact stems and with simulated leakage between them.
+    /// All are scored against the native mix, in every view, as `name`.
+    pub fn run_ceiling(
+        &self,
+        name: &str,
+        song: &Song,
+        range: Range,
+        case: TempoCase,
+        methods: &[Method],
+    ) -> Result<Vec<Row>, String> {
+        let (source, native) = self.song_renders(song, range, case)?;
+        let stems = self.exact_stems(song, range, &source)?;
+        let mut splits = BTreeMap::new();
+        for &method in methods {
+            let split = match method {
+                Method::Stems => Some(stems.split(None)),
+                Method::Hpss => {
+                    let (harmonic, percussive) = crate::stems::hpss(&source, self.rate);
+                    Some(vec![
+                        (harmonic, WarpMode::Grain),
+                        (percussive, WarpMode::Beats),
+                    ])
+                }
+                m => m.leak_db().map(|db| stems.split(Some(db))),
+            };
+            if let Some(split) = split {
+                splits.insert(method, split);
+            }
+        }
+        self.score_split(name, source, native, case, methods, &splits)
+    }
+
+    /// The song's stems rendered exactly, and what they leave of `source`.
+    pub fn exact_stems(&self, song: &Song, range: Range, source: &[f32]) -> Result<Stems, String> {
+        let source_map = steady(song.bpm);
+        let mut parts = Vec::new();
+        for stem in crate::stems::Stem::ALL {
+            if !song
+                .parts
+                .iter()
+                .any(|p| crate::stems::stem_of(p.name) == stem)
+            {
+                continue;
+            }
+            let audio = song.render_of(&source_map, range, self.rate, |p| {
+                crate::stems::stem_of(p.name) == stem
+            })?;
+            if crate::stems::peak(&audio) > 1e-6 {
+                parts.push((stem, audio));
+            }
+        }
+        let signals: Vec<Vec<f32>> = parts.iter().map(|(_, a)| a.clone()).collect();
+        let residual = crate::stems::minus(source, &crate::stems::sum(&signals));
+        Ok(Stems { parts, residual })
+    }
+
     /// The source and the native render of `range` of `song` for `case`.
     pub fn song_renders(
         &self,
@@ -278,6 +387,21 @@ impl Harness {
         case: TempoCase,
         methods: &[Method],
     ) -> Result<Vec<Row>, String> {
+        self.score_split(name, source, native, case, methods, &BTreeMap::new())
+    }
+
+    /// [`Harness::score`], where a method in `splits` is not a warp of the
+    /// whole source but of its parts, each at the true source tempo in its
+    /// own mode, added up afterwards (on the way back too).
+    pub fn score_split(
+        &self,
+        name: &str,
+        source: Vec<f32>,
+        native: Vec<f32>,
+        case: TempoCase,
+        methods: &[Method],
+        splits: &BTreeMap<Method, Split>,
+    ) -> Result<Vec<Row>, String> {
         let rate = self.rate;
         let target = self.target(case);
         let frames = native.len() / 2;
@@ -291,24 +415,44 @@ impl Harness {
         self.export_wav(&format!("{tag}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
-            let (tempo, mode) = self.choice(method, &analysis, &target);
-            let warped = self
-                .warp(&source, tempo, mode, &target, frames)
-                .map_err(|e| format!("{name} {} {}: {e}", case.name(), method.name()))?;
+            let (tempo, parts): (TempoCurve, Vec<(&[f32], WarpMode)>) = match splits.get(&method) {
+                Some(split) => (
+                    TempoCurve::constant(self.source_bpm),
+                    split.iter().map(|(x, m)| (x.as_slice(), *m)).collect(),
+                ),
+                None => {
+                    let (tempo, mode) = self.choice(method, &analysis, &target);
+                    (tempo, vec![(source.as_slice(), mode)])
+                }
+            };
+            let fail = |what: &str, e: String| {
+                format!("{name} {} {}{what}: {e}", case.name(), method.name())
+            };
+            let mut forward = Vec::new();
+            for (x, mode) in &parts {
+                forward.push(
+                    self.warp(x, tempo.clone(), *mode, &target, frames)
+                        .map_err(|e| fail("", e))?,
+                );
+            }
+            let warped = crate::stems::sum(&forward);
             self.export_wav(&format!("{tag}_{}_warped", method.name()), &warped)?;
             // Back to the source tempo: the clip's tempo is the target's.
             let back_tempo = TempoCurve::from_tempo_map(&target, Tick::ZERO, 0.0, seconds);
-            let back = self
-                .warp(
-                    &warped,
-                    back_tempo,
-                    mode,
-                    &steady(self.source_bpm),
-                    source.len() / 2,
-                )
-                .map_err(|e| {
-                    format!("{} {} {} round trip: {e}", name, case.name(), method.name())
-                })?;
+            let mut returned = Vec::new();
+            for (x, (_, mode)) in forward.iter().zip(&parts) {
+                returned.push(
+                    self.warp(
+                        x,
+                        back_tempo.clone(),
+                        *mode,
+                        &steady(self.source_bpm),
+                        source.len() / 2,
+                    )
+                    .map_err(|e| fail(" round trip", e))?,
+                );
+            }
+            let back = crate::stems::sum(&returned);
             self.export_wav(&format!("{tag}_{}_roundtrip", method.name()), &back)?;
             for view in View::ALL {
                 let (reference, test, map) = match view {
@@ -355,6 +499,7 @@ impl Harness {
             Method::Grain => fixed(WarpMode::Grain),
             Method::Beats => fixed(WarpMode::Beats),
             Method::Repitch => fixed(WarpMode::Repitch),
+            other => unreachable!("{} is warped in parts, not chosen", other.name()),
         }
     }
 
@@ -496,4 +641,34 @@ fn project(
         ]),
     )?;
     Ok(project)
+}
+
+/// A song's stems at the source tempo, and the residual (the mix minus all
+/// of them).
+pub struct Stems {
+    pub parts: Vec<(crate::stems::Stem, Vec<f32>)>,
+    pub residual: Vec<f32>,
+}
+
+impl Stems {
+    /// The parts to warp, each with its stem's mode and the residual with
+    /// Grain; with `leak_db`, each stem first bleeds the others into it that
+    /// far below itself. A residual with nothing in it is left out.
+    pub fn split(&self, leak_db: Option<f32>) -> Split {
+        let signals: Vec<Vec<f32>> = self.parts.iter().map(|(_, a)| a.clone()).collect();
+        let signals = match leak_db {
+            Some(db) => crate::stems::leak(&signals, crate::stems::leak_amount(db)),
+            None => signals,
+        };
+        let mut split: Split = self
+            .parts
+            .iter()
+            .zip(signals)
+            .map(|((stem, _), audio)| (audio, stem.mode()))
+            .collect();
+        if crate::stems::peak(&self.residual) > 1e-4 {
+            split.push((self.residual.clone(), WarpMode::Grain));
+        }
+        split
+    }
 }
