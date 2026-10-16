@@ -76,6 +76,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.noise.white",
     "noodle.offline.reverse",
     "noodle.poly.voice_mix",
+    "noodle.util.script",
     "noodle.track.input",
     "noodle.util.mix",
     "noodle.util.reroute",
