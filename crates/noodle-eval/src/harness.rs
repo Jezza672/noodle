@@ -61,6 +61,10 @@ pub enum Method {
     StemsLeak30,
     StemsLeak20,
     StemsLeak10,
+    /// Exact stems all warped in one mode, Beats or Grain: the cost of
+    /// splitting and summing without the benefit of a mode per stem.
+    StemsBeats,
+    StemsGrain,
     /// The non-AI baseline: the mix split into harmonic (Grain) and
     /// percussive (Beats) parts by median filtering, warped and added up.
     Hpss,
@@ -70,7 +74,7 @@ impl Method {
     pub const ALL: [Method; 4] = [Method::Auto, Method::Grain, Method::Beats, Method::Repitch];
 
     /// What the stem ceiling compares: the whole-mix modes and the split ones.
-    pub const CEILING: [Method; 8] = [
+    pub const CEILING: [Method; 10] = [
         Method::Auto,
         Method::Grain,
         Method::Beats,
@@ -79,6 +83,8 @@ impl Method {
         Method::StemsLeak30,
         Method::StemsLeak20,
         Method::StemsLeak10,
+        Method::StemsBeats,
+        Method::StemsGrain,
     ];
 
     /// The whole-mix modes the split ones have to beat.
@@ -105,6 +111,8 @@ impl Method {
             Self::StemsLeak30 => "stems-30",
             Self::StemsLeak20 => "stems-20",
             Self::StemsLeak10 => "stems-10",
+            Self::StemsBeats => "stems-beats",
+            Self::StemsGrain => "stems-grain",
             Self::Hpss => "hpss",
         }
     }
@@ -323,7 +331,9 @@ impl Harness {
         let mut splits = BTreeMap::new();
         for &method in methods {
             let split = match method {
-                Method::Stems => Some(stems.split(None)),
+                Method::Stems => Some(stems.split(None, None)),
+                Method::StemsBeats => Some(stems.split(None, Some(WarpMode::Beats))),
+                Method::StemsGrain => Some(stems.split(None, Some(WarpMode::Grain))),
                 Method::Hpss => {
                     let (harmonic, percussive) = crate::stems::hpss(&source, self.rate);
                     Some(vec![
@@ -331,7 +341,7 @@ impl Harness {
                         (percussive, WarpMode::Beats),
                     ])
                 }
-                m => m.leak_db().map(|db| stems.split(Some(db))),
+                m => m.leak_db().map(|db| stems.split(Some(db), None)),
             };
             if let Some(split) = split {
                 splits.insert(method, split);
@@ -656,8 +666,9 @@ pub struct Stems {
 impl Stems {
     /// The parts to warp, each with its stem's mode and the residual with
     /// Grain; with `leak_db`, each stem first bleeds the others into it that
-    /// far below itself. A residual with nothing in it is left out.
-    pub fn split(&self, leak_db: Option<f32>) -> Split {
+    /// far below itself. With `mode`, every part takes it instead of its
+    /// stem's. A residual with nothing in it is left out.
+    pub fn split(&self, leak_db: Option<f32>, mode: Option<WarpMode>) -> Split {
         let signals: Vec<Vec<f32>> = self.parts.iter().map(|(_, a)| a.clone()).collect();
         let signals = match leak_db {
             Some(db) => crate::stems::leak(&signals, crate::stems::leak_amount(db)),
@@ -667,10 +678,10 @@ impl Stems {
             .parts
             .iter()
             .zip(signals)
-            .map(|((stem, _), audio)| (audio, stem.mode()))
+            .map(|((stem, _), audio)| (audio, mode.unwrap_or_else(|| stem.mode())))
             .collect();
         if crate::stems::peak(&self.residual) > 1e-4 {
-            split.push((self.residual.clone(), WarpMode::Grain));
+            split.push((self.residual.clone(), mode.unwrap_or(WarpMode::Grain)));
         }
         split
     }

@@ -231,6 +231,16 @@ pub fn versus(
     pick: impl Fn(&Row) -> bool,
     yardstick: &[Method],
 ) -> BTreeMap<Method, Versus> {
+    versus_of(rows, pick, yardstick, |_| true)
+}
+
+/// [`versus`] over only the metrics `wanted` picks.
+pub fn versus_of(
+    rows: &[Row],
+    pick: impl Fn(&Row) -> bool,
+    yardstick: &[Method],
+    wanted: impl Fn(&str) -> bool,
+) -> BTreeMap<Method, Versus> {
     let mut groups: BTreeMap<(&str, &str, &str), Vec<&Row>> = BTreeMap::new();
     for row in rows.iter().filter(|r| pick(r)) {
         groups
@@ -252,7 +262,7 @@ pub fn versus(
             .filter(|r| !Method::WHOLE_MIX.contains(&r.method))
         {
             for (name, _) in &row.metrics {
-                if UNRANKED.contains(&name.as_str()) {
+                if UNRANKED.contains(&name.as_str()) || !wanted(name) {
                     continue;
                 }
                 let value = |r: &Row| r.metric(name).filter(|v| v.is_finite()).map(f64::abs);
@@ -342,6 +352,7 @@ pub fn format_ceiling(rows: &[Row]) -> String {
             &Method::WHOLE_MIX,
         );
     }
+    out.push_str(&format_by_metric(rows));
     let native: Vec<Row> = rows
         .iter()
         .filter(|r| r.view == View::Native)
@@ -349,6 +360,65 @@ pub fn format_ceiling(rows: &[Row]) -> String {
         .collect();
     out.push('\n');
     out.push_str(&format_ranks(&mean_ranks(&native)));
+    out
+}
+
+/// The contenders in the per-metric block.
+const BY_METRIC: [Method; 6] = [
+    Method::Stems,
+    Method::StemsLeak20,
+    Method::StemsLeak10,
+    Method::StemsBeats,
+    Method::StemsGrain,
+    Method::Hpss,
+];
+
+/// One line per metric: the median error of each split contender over Auto's,
+/// in the native view, with the share of cells it wins in brackets. A pooled
+/// median can net opposite effects to 1, as spectral gains against transient
+/// losses did in the ceiling experiment, so this is the table to read.
+pub fn format_by_metric(rows: &[Row]) -> String {
+    let Some(first) = rows.iter().find(|r| r.method == Method::Auto) else {
+        return String::new();
+    };
+    let mut out =
+        String::from("\nper metric, native view, error over auto's (share of cells won):\n");
+    let _ = write!(out, "  {:<30}", "");
+    for m in BY_METRIC {
+        let _ = write!(out, " {:>13}", m.name());
+    }
+    out.push('\n');
+    for (name, _) in &first.metrics {
+        if UNRANKED.contains(&name.as_str()) {
+            continue;
+        }
+        let versus = versus_of(
+            rows,
+            |r| r.view == View::Native,
+            &[Method::Auto],
+            |n| n == name,
+        );
+        if versus.is_empty() {
+            continue;
+        }
+        let _ = write!(out, "  {name:<30}");
+        for m in BY_METRIC {
+            match versus.get(&m) {
+                Some(v) => {
+                    let _ = write!(
+                        out,
+                        " {:>6.2} ({:>3.0}%)",
+                        v.median_ratio,
+                        100.0 * v.wins as f64 / v.cells.max(1) as f64
+                    );
+                }
+                None => {
+                    let _ = write!(out, " {:>13}", "-");
+                }
+            }
+        }
+        out.push('\n');
+    }
     out
 }
 

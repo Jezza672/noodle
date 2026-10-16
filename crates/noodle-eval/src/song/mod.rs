@@ -208,9 +208,11 @@ impl Song {
 
         // The notes, as a MIDI clip on each track.
         let length = Tick::from_quarters(range.beats());
-        // Every part takes a clip ID, kept or not: a synth's random choices
-        // follow its clip's ID, so a part sounds the same alone as in the mix
-        // only if its clip has the same ID in both.
+        // Every part takes a clip ID, kept or not. A note's identity is a hash
+        // of its clip ID, so the IDs set the order of notes that start together
+        // and so which voice (with its free-running oscillator) each gets: a
+        // part sounds the same alone as in the mix only if its clip has the same
+        // ID in both.
         for (input, part) in sources {
             let mut clip = Clip::midi(input, Tick::ZERO, length);
             let ClipContent::Midi(midi) = &mut clip.content else {
