@@ -896,9 +896,17 @@ spectral nodes). The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
    denoiser), a choice of frame size (a config on Analyze that every spectral
    node on the wire adopts), and delay compensation across spectral wires.
 
+## Scripting node (done)
+
+`Script` (`noodle.util.script`): a per-sample program whose text declares the
+node's ports, with state, `if`, the Math functions and `rand`. See
+ARCHITECTURE.md ("There are no synth nodes", the `Script` paragraph). Math
+stays as the one-line form.
+
 ## Later
 
 - ~~AU hosting.~~ **Done** (macOS): effects, instruments and music effects, with ports, notes, state and the transport; editors are the follow-up. See "AU hosting" in ARCHITECTURE.md.
-- A scripting or expression node.
+- Script node follow-ups: loops with a step limit, arrays or delay lines in
+  scripts, MIDI/event ports.
 - MIDI 2.0.
 - Surround and multichannel buses.

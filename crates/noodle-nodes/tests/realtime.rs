@@ -806,6 +806,43 @@ fn a_remap_never_allocates_while_its_curve_is_edited() {
 }
 
 #[test]
+fn a_script_never_allocates_while_its_text_is_edited() {
+    // lfo -> script (a filter with state, noise and a branch) -> output, and
+    // the script is rewritten between blocks, which rebuilds the node off the
+    // audio thread; the new program has other ports, so the wires follow.
+    let mut s = Session::new();
+    let lfo = s.add(Node::new("noodle.mod.lfo").with_param("rate", 5.0));
+    let script = s.add(Node::new("noodle.util.script"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(lfo, "out", script, "in");
+    s.wire(script, "out", output, "in");
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..8 {
+        let text = format!(
+            "input in\nparam g = {} [0, 4]\noutput out\nstate z\nlet n = rand() * 0.1\n\
+             z += (in + n - z) * 0.2\nif z > 0.5 {{ out = z * g }} else {{ out = z * g * 2 }}",
+            round + 1
+        );
+        s.edit(Command::SetConfig {
+            node: script,
+            key: "script".to_owned(),
+            value: Some(Value::Text(text)),
+        });
+        s.update();
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(heard && out.iter().all(|x| x.is_finite()));
+}
+
+#[test]
 fn editing_a_remap_curve_does_not_fade_the_output() {
     // A constant 0.5 comes out of the Remap whichever of these point-symmetric
     // curves it holds, so any dip in the output is a fade, not the new curve.

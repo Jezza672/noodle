@@ -374,6 +374,18 @@ another oscillator. `Math` (`noodle.util.math`) takes an
 `expr` config such as `a * b + c` over inputs `a` to `d`; it is compiled to a
 postfix program when the node is built and run on a fixed stack per sample.
 `Pan` (`noodle.util.pan`) is the equal-power stereo placement it uses.
+`Script` (`noodle.util.script`) is Math grown into a program: its `script`
+config declares the node's ports (`input x`, `param cutoff = 1000 [20, 20000]
+log hz`, `output y`), `state` variables that last between samples, `let`
+locals, assignments, `if`/`else` and the Math functions plus `rand()`, `db()`,
+`mtof()` and `select()`, with `sr`, `bpm`, `beat` and `time` readable. There are
+no loops, so a script is bounded and safe on the audio thread. The text is
+parsed to a postfix program with forward-only jumps when the node is built
+(a mistake fails the node with its line number), and each lane keeps its
+variables in a fixed array, so nothing allocates. The script shapes ports, so
+it is config, and it has no node presets (a preset keeps its node's ports). The
+properties panel edits it as a code box that commits on losing focus, showing
+the ports it makes or the error as you type. `examples/script-fold.ron` is one.
 `Delay` (`noodle.util.delay`) delays its input by `time` (seconds, up to 2,
 interpolated linearly, offset-style modulation so an LFO can sweep it) and
 outputs only the delayed signal; an echo is a Mix, the Delay and a Gain wired
