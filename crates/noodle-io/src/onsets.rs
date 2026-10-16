@@ -577,6 +577,132 @@ mod tests {
         assert!((tempo - 126.0).abs() < 0.5, "{tempo}");
     }
 
+    /// A funk-like bar at `bpm`: a kick and a bass line on a sub-bass tone,
+    /// with a stream of hats on the off-beats, for `bars` bars. `kick` and
+    /// `hats` scale their levels.
+    fn mix(bpm: f64, bars: usize, kick: f32, hats: f32) -> Vec<f32> {
+        let beat = 60.0 / bpm;
+        let tau = std::f32::consts::TAU;
+        let mut out = vec![0.0f32; ((bars * 4) as f64 * beat * f64::from(RATE)) as usize];
+        let mut put = |t: f64, f: &dyn Fn(f32) -> f32, len: f32| {
+            let start = (t * f64::from(RATE)) as usize;
+            for i in 0..((len * RATE as f32) as usize).min(out.len().saturating_sub(start)) {
+                let x = i as f32 / RATE as f32;
+                out[start + i] += f(x);
+            }
+        };
+        let mut seed = 1u32;
+        for bar in 0..bars {
+            let origin = (bar * 4) as f64 * beat;
+            // Kick on 1 and the "and" of 2; bass on 1, 3 and the "and" of 4.
+            for step in [0.0, 1.5] {
+                put(
+                    origin + step * beat,
+                    &|x| {
+                        (tau * (45.0 + 80.0 * (-x * 40.0).exp()) * x).sin()
+                            * (-x * 14.0).exp()
+                            * kick
+                    },
+                    0.4,
+                );
+            }
+            for (step, hz) in [(0.0, 41.2), (2.0, 49.0), (3.5, 55.0)] {
+                put(
+                    origin + step * beat,
+                    &|x| {
+                        let env = (x / 0.005).min(1.0) * (-x * 5.0).exp();
+                        ((tau * hz * x).sin() + 0.4 * (tau * 2.0 * hz * x).sin()) * 0.5 * env
+                    },
+                    0.5,
+                );
+            }
+            for eighth in 0..8 {
+                if eighth % 2 == 1 || eighth == 2 {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let level = 0.15 + 0.1 * ((seed >> 20) as f32 / 4096.0);
+                    let hit = seed;
+                    put(
+                        origin + eighth as f64 * 0.5 * beat,
+                        &|x| {
+                            // White noise from a hash of the sample's time.
+                            let h = ((x * RATE as f32) as u32 ^ hit)
+                                .wrapping_mul(2_654_435_761)
+                                .rotate_left(13)
+                                .wrapping_mul(1_664_525);
+                            ((h >> 8) as f32 / (1 << 23) as f32 - 1.0)
+                                * (-x * 90.0).exp()
+                                * level
+                                * hats
+                        },
+                        0.1,
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// An RBJ high-pass at `hz`, Q 0.7.
+    fn low_cut(x: &mut [f32], hz: f32) {
+        let w = std::f32::consts::TAU * hz / RATE as f32;
+        let alpha = w.sin() / (2.0 * 0.7);
+        let c = w.cos();
+        let a0 = 1.0 + alpha;
+        let (b0, b1, b2) = ((1.0 + c) / 2.0 / a0, -(1.0 + c) / a0, (1.0 + c) / 2.0 / a0);
+        let (a1, a2) = (-2.0 * c / a0, (1.0 - alpha) / a0);
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        for v in x.iter_mut() {
+            let y = b0 * *v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            (x2, x1, y2, y1) = (x1, *v, y1, y);
+            *v = y;
+        }
+    }
+
+    /// A bus compressor: peak follower (`attack_ms`, 150 ms release), 4:1
+    /// over `threshold_db`.
+    fn compress(x: &mut [f32], threshold_db: f32, attack_ms: f32) {
+        let coef = |ms: f32| (-1.0 / (ms * 0.001 * RATE as f32)).exp();
+        let (attack, release) = (coef(attack_ms), coef(150.0));
+        let mut level = 0.0f32;
+        for v in x.iter_mut() {
+            let a = v.abs();
+            let k = if a > level { attack } else { release };
+            level = a + k * (level - a);
+            let db = 20.0 * level.max(1e-9).log10();
+            let over = (db - threshold_db).max(0.0);
+            *v *= 10f32.powf(-over * 0.75 / 20.0);
+        }
+    }
+
+    /// Mixes are low-cut and bus-compressed, and neither moves where a bass
+    /// line's onsets fall: the tempo and the beat stay put (#156).
+    #[test]
+    fn the_tempo_survives_a_low_cut_and_bus_compression() {
+        let bpm = 110.0;
+        for (kick, hats) in [(1.0, 1.0), (0.7, 1.0), (1.0, 0.7), (1.4, 1.4)] {
+            for (cut, threshold, attack) in [
+                (false, None, 0.0),
+                (true, None, 0.0),
+                (false, Some(-24.0), 3.0),
+                (true, Some(-24.0), 3.0),
+                (true, Some(-30.0), 1.0),
+            ] {
+                let mut x = mix(bpm, 16, kick, hats);
+                if cut {
+                    low_cut(&mut x, 30.0);
+                }
+                if let Some(t) = threshold {
+                    compress(&mut x, t, attack);
+                }
+                let label = format!("kick {kick} hats {hats} cut {cut} comp {threshold:?}");
+                let tempo = Analysis::of(&x, RATE)
+                    .tempo
+                    .unwrap_or_else(|| panic!("{label}: no tempo"));
+                assert!((tempo - bpm).abs() / bpm < 0.002, "{label}: {tempo}");
+            }
+        }
+    }
+
     #[test]
     fn scattered_onsets_have_no_tempo() {
         assert_eq!(estimate_tempo(&[0.1, 0.4]), None);

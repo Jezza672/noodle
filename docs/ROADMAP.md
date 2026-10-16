@@ -777,7 +777,9 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** batches 2 and 3 have landed: the nodes (Sampler, Note Split,
+**Status:** batch C (#156) restored the 30 Hz low cut and whole-mix compressor on
+funk-engine and breakbeat-run; the tempo detector copes with them since the
+M8 closing onset fixes, and a regression test covers it. Batches 2 and 3 have landed: the nodes (Sampler, Note Split,
 Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
 and a "Load sample…" picker), and the warp evaluation songs, whose drums are a
 drum rack of committed samples (`noodle-eval/songs/samples`) and whose mixes
