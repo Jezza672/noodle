@@ -1536,8 +1536,9 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
 #[test]
 fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     // A 5.1 engine: sine -> surround pan (azimuth swept by an LFO) -> split
-    // -> merge -> output, and the same pan through a downmix to stereo and
-    // an upmix back.
+    // -> merge -> output, the same pan through a downmix to stereo and an
+    // upmix back, and a second pan whose layout alternates 5.1 and 7.1 (a
+    // 6 -> 8 -> 6 channel rebuild) into a Convert Layout back to 5.1.
     let surround = Settings {
         channels: 6,
         ..SETTINGS
@@ -1563,9 +1564,17 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
         Node::new("noodle.util.convert_layout")
             .with_config(Config::new().with("layout", Value::Text("5.1".to_owned()))),
     );
+    let swept = s.add(Node::new("noodle.util.surround_pan"));
+    let to_51 = s.add(
+        Node::new("noodle.util.convert_layout")
+            .with_config(Config::new().with("layout", Value::Text("5.1".to_owned()))),
+    );
     let mix = s
-        .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(2))));
+        .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(3))));
     let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", swept, "in");
+    s.wire(swept, "out", to_51, "in");
+    s.wire(to_51, "out", mix, "in3");
     s.wire(sine, "out", pan, "in");
     s.wire(lfo, "out", pan, "azimuth");
     s.wire(pan, "out", split, "in");
@@ -1582,17 +1591,17 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     let mut out = vec![0.0; 1000 * surround.channels];
     let mut channels_heard = [false; 6];
     for round in 0..8 {
-        // Between blocks, on this thread: a layout the engine has fewer
-        // channels than (the extras are dropped at the output), then back.
-        if round % 2 == 1 {
-            s.edit(Command::SetConfig {
-                node: pan,
-                key: "layout".to_owned(),
-                value: Some(Value::Text("5.1".to_owned())),
-            });
-            s.update();
-            s.controller.maintain();
-        }
+        // Between blocks, on this thread: the second pan changes shape,
+        // 6 channels then 8 then 6 again.
+        s.edit(Command::SetConfig {
+            node: swept,
+            key: "layout".to_owned(),
+            value: Some(Value::Text(
+                if round % 2 == 1 { "7.1" } else { "5.1" }.to_owned(),
+            )),
+        });
+        s.update();
+        s.controller.maintain();
         let violations = realtime(|| {
             for _ in 0..4 {
                 s.processor.process(&mut out);

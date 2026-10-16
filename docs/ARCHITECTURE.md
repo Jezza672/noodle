@@ -738,9 +738,13 @@ the conventions and nodes that make them usable.
   layout as a drop-down. `Mix` needs equal channel counts or one (the
   existing broadcast rule), so convert before mixing different layouts.
 - **Outputs.** An Output node's channel n goes to device channel n. A mono
-  signal now goes to the first two channels only (not the centre, LFE and
-  rears of a surround bus); a signal with fewer channels than the bus leaves
-  the rest silent, and extra channels are dropped. Plugin nodes keep their own
+  signal goes to the first two channels only (not the centre, LFE and rears of
+  a surround bus); a signal with fewer channels than the bus leaves the rest
+  silent. A signal with *more* channels than the bus is downmixed through
+  `convert_matrix` when both counts name layouts (a matrix made when the plan
+  is built, so nothing allocates on the audio thread): 5.1 on a stereo
+  device, or a stereo project exported as Mono, folds down instead of losing
+  channels. Counts with no layout (say 5 into 2) still drop the extras. Plugin nodes keep their own
   rule (a mono wire into a stereo port, any other mismatch an error), so a
   surround mix goes through Convert Layout before a stereo plugin.
 - **Devices.** `AudioConfig::channels` opens the main device with that many
@@ -755,9 +759,10 @@ the conventions and nodes that make them usable.
 - **Export.** The export dialog has a Channels drop-down (a layout) and
   `ExportChoice::layout` sets the render's channel count; WAV and FLAC take up
   to 8. `noodle render --channels N` writes the same. Hound writes the
-  `WAVE_FORMAT_EXTENSIBLE` mask for N channels as the first N speaker bits,
-  which is right for 6 (5.1) but not for 4 (it says L R C LFE, not quad) or 8
-  (it says the wide 7.1); players mostly go by channel count.
+  `WAVE_FORMAT_EXTENSIBLE` mask as the first N speaker bits, so after
+  finalising `set_wav_channel_mask` overwrites it (4 bytes at offset 40) with
+  the layout's own, which matters for quad and 7.1 (WAV only; FLAC has no mask
+  here).
 - **Meters.** The Mix node's and the meters' readings average a bus's
   channels' power (peak is the loudest channel) and are not weighted by
   layout.

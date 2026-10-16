@@ -199,8 +199,15 @@ impl Node for SurroundPanNode {
             for (channel, &g) in gains[..channels].iter().enumerate() {
                 let lane = out.lane_mut(voice, channel);
                 if Some(channel) == lfe_channel {
-                    for ((o, x), db) in lane.iter_mut().zip(mono.iter()).zip(lf) {
-                        *o = x * lfe_gain(*db);
+                    if let Some(db) = lfe.constant() {
+                        let k = lfe_gain(db);
+                        for (o, x) in lane.iter_mut().zip(mono.iter()) {
+                            *o = x * k;
+                        }
+                    } else {
+                        for ((o, x), db) in lane.iter_mut().zip(mono.iter()).zip(lf) {
+                            *o = x * lfe_gain(*db);
+                        }
                     }
                 } else if fixed.is_some() {
                     for (o, x) in lane.iter_mut().zip(mono.iter()) {

@@ -2741,6 +2741,54 @@ mod tests {
     }
 
     #[test]
+    fn exporting_to_a_narrower_layout_folds_the_mix_down() {
+        use noodle_engine::ChannelLayout;
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let peak = |path: &std::path::Path, channels: usize| {
+            let audio = noodle_io::decode_file(path).unwrap();
+            assert_eq!(audio.channels, channels);
+            audio.samples.iter().fold(0.0f32, |p, x| p.max(x.abs()))
+        };
+        let export = |session: &mut Session, name: &str, layout| {
+            let path = dir.path().join(name);
+            let choice = ExportChoice {
+                format: ExportFormat::WavFloat,
+                layout,
+                range: Some((0.0, 0.25)),
+            };
+            session.start_export(path.clone(), choice).unwrap();
+            until(session, "the export finishes", |s| {
+                s.export_progress().is_none()
+            });
+            path
+        };
+
+        // A sine panned hard right, exported as mono: the right channel is
+        // not lost.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, Some("noodle.util.pan"));
+        let pan = NodeId(3);
+        session.edit(vec![Edit::Apply(Command::SetParam {
+            node: pan,
+            key: "pan".into(),
+            value: Some(1.0),
+        })]);
+        let path = export(&mut session, "mono.wav", ChannelLayout::Mono);
+        assert!(peak(&path, 1) > 0.05);
+
+        // The default 5.1 pan puts everything in the centre; as stereo it
+        // folds into both ears instead of vanishing.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache2"));
+        sine_chain(&mut session, Some(noodle_nodes::SURROUND_PAN_ID));
+        let path = export(&mut session, "stereo.wav", ChannelLayout::Stereo);
+        assert!(peak(&path, 2) > 0.05);
+    }
+
+    #[test]
     fn an_export_includes_offline_nodes_and_can_be_cancelled() {
         use noodle_io::ExportFormat;
 
