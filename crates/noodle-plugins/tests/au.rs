@@ -68,7 +68,7 @@ fn the_delay_is_described_from_the_unit() {
     assert_eq!(d.audio_outputs.len(), 1);
     assert_eq!(d.audio_outputs[0].channels, 2);
     let names: Vec<_> = d.params.iter().map(|p| p.name.as_str()).collect();
-    for wanted in ["Dry/Wet Mix", "Delay Time", "Feedback"] {
+    for wanted in ["Dry/Wet Mix", "Feedback"] {
         assert!(names.contains(&wanted), "{wanted} in {names:?}");
     }
     let mix = &d.params[names.iter().position(|n| *n == "Dry/Wet Mix").unwrap()];
@@ -136,14 +136,16 @@ fn audio_goes_through_the_unit_and_its_parameters_have_ports() {
 }
 
 #[test]
-fn a_short_delay_echoes_the_input() {
+fn the_default_second_of_delay_echoes_the_input() {
+    // The delay time isn't a real-time parameter, so it has no port: the unit
+    // keeps its default of one second (48000 frames).
     let d = descriptor(DELAY);
-    let (mix, time) = (param_port(&d, "Dry/Wet Mix"), param_port(&d, "Delay Time"));
+    let mix = param_port(&d, "Dry/Wet Mix");
     let mut h = harness(DELAY, &Config::new(), &[(0, Shape::STEREO)]);
     h.set(mix, 100.0);
-    h.set(time, 0.01);
-    // A burst, then silence: the echo shows up in a later block.
-    for block in 0..8 {
+    // A burst, then silence: the echo shows up about a second later.
+    let mut echoed_at = None;
+    for block in 0..260 {
         let mut input = h.input(0, 256);
         for channel in 0..input.shape().channels {
             for (i, s) in input.lane_mut(0, channel).iter_mut().enumerate() {
@@ -151,18 +153,21 @@ fn a_short_delay_echoes_the_input() {
             }
         }
         h.run(256).unwrap();
-        if block >= 1 {
-            let peak = h
-                .output(0)
-                .lane(0, 0)
-                .iter()
-                .fold(0.0f32, |m, s| m.max(s.abs()));
-            if peak > 0.05 {
-                return;
-            }
+        let peak = h
+            .output(0)
+            .lane(0, 0)
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        if peak > 0.05 {
+            echoed_at = Some(block);
+            break;
         }
     }
-    panic!("the 10 ms delay never echoed the burst");
+    let block = echoed_at.expect("the burst never came back");
+    assert!(
+        (180..=196).contains(&block),
+        "a second is about 187 blocks, the echo came at {block}"
+    );
 }
 
 fn note_on(time: u32, id: u32, key: u8) -> Event {

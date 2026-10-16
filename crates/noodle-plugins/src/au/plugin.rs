@@ -111,13 +111,29 @@ fn find(id: ComponentId) -> Result<AudioComponent, HostError> {
     };
     // SAFETY: a valid description; null starts the search.
     let component = unsafe { AudioComponentFindNext(ptr::null_mut(), NonNull::from(&mut wanted)) };
+    let missing = || HostError(format!("no Audio Unit {} is installed", id.to_text()));
     if component.is_null() {
-        Err(HostError(format!(
-            "no Audio Unit {} is installed",
-            id.to_text()
-        )))
-    } else {
+        return Err(missing());
+    }
+    // A zero field is a wildcard to AudioToolbox, so the first match may be
+    // some other unit: only the exact one will do.
+    let mut found = MaybeUninit::<AudioComponentDescription>::uninit();
+    // SAFETY: a component FindNext just returned, and a valid out pointer.
+    let status = unsafe {
+        AudioComponentGetDescription(component, NonNull::new_unchecked(found.as_mut_ptr()))
+    };
+    // SAFETY: filled by the call that succeeded.
+    let found = unsafe { found.assume_init() };
+    if status == OK
+        && (
+            found.componentType,
+            found.componentSubType,
+            found.componentManufacturer,
+        ) == (id.kind, id.subtype, id.manufacturer)
+    {
         Ok(component)
+    } else {
+        Err(missing())
     }
 }
 
