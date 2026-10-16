@@ -99,6 +99,9 @@ pub(super) struct AdsrLayout {
     pub(super) span: f32,
     /// How long the held level is drawn between the decay and the release.
     pub(super) hold: f32,
+    /// How many dB of gain reduction the Dynamics step response covers
+    /// (unused by the ADSR).
+    pub(super) depth: f32,
 }
 
 /// Fits the whole envelope, with a little sustain and some room to grow.
@@ -108,6 +111,7 @@ fn adsr_layout(values: Values<'_>) -> AdsrLayout {
     AdsrLayout {
         span: (a + d + hold + r) * 1.2,
         hold,
+        depth: 0.0,
     }
 }
 

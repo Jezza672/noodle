@@ -98,14 +98,35 @@ fn y_out(y: f32) -> f32 {
     OUT_RANGE.0 + y.clamp(0.0, 1.0) * (OUT_RANGE.1 - OUT_RANGE.0)
 }
 
+/// Rounds up to the next 1, 2 or 5 times a power of ten, so a plot's axis
+/// keeps its scale through small changes instead of refitting on every one.
+fn nice_up(x: f32) -> f32 {
+    let x = x.max(1e-6);
+    let base = 10f32.powf(x.log10().floor());
+    [1.0, 2.0, 5.0, 10.0]
+        .into_iter()
+        .map(|m| m * base)
+        .find(|&v| v >= x * 0.999)
+        .unwrap_or(10.0 * base)
+}
+
 /// The time axis of the step response: the level steps up for `hold` and
-/// back down, over `span` seconds in all.
+/// back down, over `span` seconds in all, with `depth` dB of reduction on the
+/// vertical axis. All three snap to round numbers, so editing a value does
+/// not rescale the plot and the editor can hold them still during a drag.
 pub(super) fn dynamics_layout(values: Values<'_>) -> AdsrLayout {
     let (attack, release) = (values("attack"), values("release"));
-    let hold = (4.0 * attack).max(0.02);
+    let hold = nice_up((4.0 * attack).max(0.02));
+    let c = Curve::read(values);
+    let most = if c.mode.is_downward() {
+        c.reduction(IN_RANGE.0)
+    } else {
+        c.reduction(IN_RANGE.1)
+    };
     AdsrLayout {
-        span: (hold + 4.0 * release + attack) * 1.1,
+        span: nice_up((hold + 4.0 * release + attack) * 1.1),
         hold,
+        depth: nice_up(most.max(6.0) * 1.1),
     }
 }
 
@@ -139,8 +160,8 @@ fn step_reduction(c: &Curve, attack: f32, release: f32, layout: AdsrLayout, t: f
 }
 
 /// Where a reduction sits on the time plot: none at the top.
-fn red_y(reduction: f32, most: f32) -> f32 {
-    1.0 - (reduction / most.max(6.0) / 1.1).clamp(0.0, 1.0)
+fn red_y(reduction: f32, layout: AdsrLayout) -> f32 {
+    1.0 - (reduction / layout.depth.max(1.0)).clamp(0.0, 1.0)
 }
 
 fn time_x(t: f32, layout: AdsrLayout) -> f32 {
@@ -215,6 +236,37 @@ pub(super) fn eq_dragged(which: usize, at: P, values: Values<'_>) -> Vec<(&'stat
     out
 }
 
+/// The input level the ratio point sits at: halfway along the sloped part
+/// of the curve (past the knee, towards the end of the plot), where the ratio
+/// shows most. The makeup point has the right-hand end of the curve to itself.
+fn ratio_level(c: &Curve) -> f32 {
+    if c.mode.is_downward() {
+        let edge = c.threshold - c.knee / 2.0;
+        let span = (edge - IN_RANGE.0).max(3.0);
+        (IN_RANGE.0 + span / 2.0).max(IN_RANGE.0)
+    } else {
+        let edge = c.threshold + c.knee / 2.0;
+        let span = (IN_RANGE.1 - edge).max(3.0);
+        (IN_RANGE.1 - span / 2.0).min(IN_RANGE.1)
+    }
+}
+
+/// The ratio that makes the curve pass through `out_level` at `level`
+/// (including makeup), found by bisection because the knee bends the curve.
+fn ratio_through(c: &Curve, level: f32, out_level: f32) -> f32 {
+    let target = (level + c.makeup - out_level).max(0.0);
+    let (mut low, mut high) = (1.0f32, 100.0f32);
+    for _ in 0..40 {
+        let mid = (low * high).sqrt();
+        if reduction_db(c.mode, c.threshold, mid, c.knee, level) < target {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (low * high).sqrt()
+}
+
 pub(super) fn dynamics_handles(values: Values<'_>, layout: AdsrLayout) -> Vec<Handle> {
     let c = Curve::read(values);
     let (attack, release) = (values("attack"), values("release"));
@@ -224,18 +276,13 @@ pub(super) fn dynamics_handles(values: Values<'_>, layout: AdsrLayout) -> Vec<Ha
         keys: &["threshold"],
         name: "Threshold",
     }];
-    match c.mode {
-        DynamicsMode::Compressor => out.push(Handle {
-            at: (in_x(IN_RANGE.1, true), out_y(c.out(IN_RANGE.1))),
+    if matches!(c.mode, DynamicsMode::Compressor | DynamicsMode::Expander) {
+        let level = ratio_level(&c);
+        out.push(Handle {
+            at: (in_x(level, true), out_y(c.out(level))),
             keys: &["ratio"],
             name: "Ratio",
-        }),
-        DynamicsMode::Expander => out.push(Handle {
-            at: (in_x(IN_RANGE.0, true), out_y(c.out(IN_RANGE.0))),
-            keys: &["ratio"],
-            name: "Ratio",
-        }),
-        DynamicsMode::Limiter | DynamicsMode::Gate => {}
+        });
     }
     let side = if c.mode.is_downward() { -1.0 } else { 1.0 };
     let knee_at = t + side * c.knee / 2.0;
@@ -244,20 +291,14 @@ pub(super) fn dynamics_handles(values: Values<'_>, layout: AdsrLayout) -> Vec<Ha
         keys: &["knee"],
         name: "Knee",
     });
-    let anchor = if c.mode.is_downward() {
-        IN_RANGE.1
-    } else {
-        IN_RANGE.0 + 6.0
-    };
     out.push(Handle {
-        at: (in_x(anchor, true), out_y(c.out(anchor))),
+        at: (in_x(IN_RANGE.1, true), out_y(c.out(IN_RANGE.1))),
         keys: &["makeup"],
         name: "Makeup",
     });
-    let (_, most) = step_reduction(&c, attack, release, layout, 0.0);
     let on_curve = |t: f32| {
         let (g, _) = step_reduction(&c, attack, release, layout, t);
-        (time_x(t, layout), red_y(g, most))
+        (time_x(t, layout), red_y(g, layout))
     };
     out.push(Handle {
         at: on_curve(attack),
@@ -287,28 +328,10 @@ pub(super) fn dynamics_dragged(
     let out_level = y_out(at.1);
     match handle.name {
         "Threshold" => vec![("threshold", level)],
-        "Ratio" => {
-            let ratio = if c.mode.is_downward() {
-                // Reduction at the bottom of the plot is (R - 1) · depth.
-                let depth = (c.threshold - IN_RANGE.0).max(1.0);
-                let reduction = (IN_RANGE.0 + c.makeup - out_level).max(0.0);
-                1.0 + reduction / depth
-            } else {
-                // Reduction at the top is (1 - 1/R) · height over the threshold.
-                let height = (IN_RANGE.1 - c.threshold).max(1.0);
-                let reduction = (IN_RANGE.1 + c.makeup - out_level).clamp(0.0, 0.99 * height);
-                1.0 / (1.0 - reduction / height)
-            };
-            vec![("ratio", ratio)]
-        }
+        "Ratio" => vec![("ratio", ratio_through(&c, ratio_level(&c), out_level))],
         "Knee" => vec![("knee", 2.0 * (level - c.threshold).abs())],
         "Makeup" => {
-            let anchor = if c.mode.is_downward() {
-                IN_RANGE.1
-            } else {
-                IN_RANGE.0 + 6.0
-            };
-            let without = transfer_db(c.mode, c.threshold, c.ratio, c.knee, anchor);
+            let without = transfer_db(c.mode, c.threshold, c.ratio, c.knee, IN_RANGE.1);
             vec![("makeup", out_level - without)]
         }
         "Attack" => vec![("attack", x_time(at.0, layout).max(0.0))],
@@ -436,13 +459,12 @@ pub(super) fn paint_dynamics(
     }
     // Step response.
     let (attack, release) = (values("attack"), values("release"));
-    let (_, most) = step_reduction(&c, attack, release, layout, 0.0);
     let steps = 160;
     let points: Vec<P> = (0..=steps)
         .map(|i| {
             let t = layout.span * i as f32 / steps as f32;
             let (g, _) = step_reduction(&c, attack, release, layout, t);
-            (time_x(t, layout), red_y(g, most))
+            (time_x(t, layout), red_y(g, layout))
         })
         .collect();
     pen.line((TIME_LEFT, 1.0), (1.0, 1.0), grid);
@@ -537,8 +559,56 @@ mod tests {
         let lower = dynamics_dragged(1, (at.0, at.1 - 0.15), layout, &values);
         assert!(lower[0].1 > 4.0, "{lower:?}");
         // Dragged to the diagonal: no compression.
-        let diagonal = dynamics_dragged(1, (at.0, out_y(0.0)), layout, &values);
+        let diagonal = dynamics_dragged(
+            1,
+            (at.0, out_y(ratio_level(&Curve::read(&values)))),
+            layout,
+            &values,
+        );
         assert!((diagonal[0].1 - 1.0).abs() < 1e-3, "{diagonal:?}");
+    }
+
+    #[test]
+    fn the_makeup_point_is_at_the_right_of_the_curve_and_the_ratio_point_is_not() {
+        for mode in [0.0, 3.0] {
+            let v = |key: &str| if key == "mode" { mode } else { values(key) };
+            let handles = dynamics_handles(&v, dynamics_layout(&v));
+            let at = |name: &str| handles.iter().find(|h| h.name == name).unwrap().at;
+            assert!((at("Makeup").0 - TRANSFER_WIDTH).abs() < 1e-6);
+            assert!((at("Ratio").0 - at("Makeup").0).abs() > 0.05);
+        }
+    }
+
+    #[test]
+    fn the_ratio_point_follows_the_pointer_through_a_knee() {
+        let v = |key: &str| match key {
+            "knee" => 12.0,
+            "makeup" => 3.0,
+            _ => values(key),
+        };
+        let layout = dynamics_layout(&v);
+        let c = Curve::read(&v);
+        let level = ratio_level(&c);
+        for ratio in [2.0f32, 8.0, 20.0] {
+            let w = |key: &str| if key == "ratio" { ratio } else { v(key) };
+            let at = dynamics_handles(&w, layout)[1].at;
+            let got = dynamics_dragged(1, at, layout, &v)[0].1;
+            assert!(
+                (got / ratio - 1.0).abs() < 0.02,
+                "{ratio}: {got} at {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn small_edits_do_not_rescale_the_step_plot() {
+        let a = dynamics_layout(&values);
+        let nudged = |key: &str| match key {
+            "ratio" => 3.5,
+            "release" => 0.21,
+            _ => values(key),
+        };
+        assert_eq!(a, dynamics_layout(&nudged));
     }
 
     #[test]
