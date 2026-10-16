@@ -2686,6 +2686,7 @@ dependencies = [
 name = "noodle-stems"
 version = "0.1.0"
 dependencies = [
+ "libloading 0.8.9",
  "noodle-io",
  "ort",
  "sha2",

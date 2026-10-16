@@ -17,7 +17,7 @@ use std::fmt;
 pub use fake::FakeSeparator;
 pub use model::{DownloadError, ModelSpec, ModelStore, SHA256_VARIABLE, URL_VARIABLE};
 #[cfg(feature = "onnx")]
-pub use onnx::OnnxSeparator;
+pub use onnx::{OnnxSeparator, runtime_file_name};
 pub use split::{SplitError, SplitOutput, SplitRequest, StemFile, split};
 
 /// The sample rate the models work at.

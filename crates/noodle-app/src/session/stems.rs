@@ -48,6 +48,9 @@ pub(super) struct Stems {
     run: Option<Run>,
     /// The clip whose split waits for the user to agree to the download.
     asking: Option<ClipId>,
+    /// Tests of the asking don't have an ONNX Runtime to load.
+    #[cfg(test)]
+    skip_runtime_check: bool,
 }
 
 impl Stems {
@@ -61,6 +64,8 @@ impl Stems {
             },
             run: None,
             asking: None,
+            #[cfg(test)]
+            skip_runtime_check: false,
         }
     }
 
@@ -70,6 +75,45 @@ impl Stems {
             Source::Model { store, spec } => store.as_ref().is_none_or(|s| !s.is_present(spec)),
             #[cfg(test)]
             Source::Custom(_) => false,
+        }
+    }
+
+    /// The ONNX Runtime library in the model folder, if one was put there.
+    fn runtime_in_folder(&self) -> Option<PathBuf> {
+        match &self.source {
+            Source::Model {
+                store: Some(store), ..
+            } => [
+                "libonnxruntime.so",
+                "libonnxruntime.dylib",
+                "onnxruntime.dll",
+            ]
+            .into_iter()
+            .map(|name| store.dir().join(name))
+            .find(|path| path.is_file()),
+            _ => None,
+        }
+    }
+
+    /// Why the model can't be used before it is downloaded: no address, or no
+    /// ONNX Runtime to run it with. Checked before asking, so nothing large is
+    /// downloaded for a machine that couldn't use it.
+    fn cannot_start(&self) -> Option<String> {
+        if let Some(why) = self.cannot_download() {
+            return Some(why);
+        }
+        #[cfg(test)]
+        if self.skip_runtime_check {
+            return None;
+        }
+        match &self.source {
+            Source::Model { .. } => {
+                noodle_stems::OnnxSeparator::load_runtime(self.runtime_in_folder().as_deref())
+                    .err()
+                    .map(|e| e.to_string())
+            }
+            #[cfg(test)]
+            Source::Custom(_) => None,
         }
     }
 
@@ -140,7 +184,7 @@ impl Session {
             return;
         }
         if self.stems.needs_download() {
-            if let Some(why) = self.stems.cannot_download() {
+            if let Some(why) = self.stems.cannot_start() {
                 self.message = Some(why);
                 return;
             }
@@ -712,6 +756,7 @@ mod tests {
             store: Some(ModelStore::new(dir.path().join("models"))),
             spec,
         };
+        session.stems.skip_runtime_check = true;
         let before = session.project().clone();
 
         session.split_to_stems(id);
@@ -751,6 +796,43 @@ mod tests {
         let message = session.message().unwrap();
         assert!(message.contains("test.onnx") && message.contains("NOODLE_STEM_MODEL_URL"));
         assert_eq!(session.stems_consent(), None);
+    }
+
+    #[test]
+    fn a_runtime_that_does_not_load_is_found_out_before_anything_is_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, id, _) = rig(dir.path(), 0, 20_000);
+        let models = dir.path().join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        // Whatever the platform calls the library, this one isn't.
+        for name in [
+            "libonnxruntime.so",
+            "libonnxruntime.dylib",
+            "onnxruntime.dll",
+        ] {
+            std::fs::write(models.join(name), b"not a library").unwrap();
+        }
+        session.stems.source = Source::Model {
+            store: Some(ModelStore::new(&models)),
+            spec: ModelSpec {
+                id: "test",
+                version: "1",
+                file: "test.onnx",
+                url: Some("http://127.0.0.1:1/model.onnx".into()),
+                sha256: None,
+            },
+        };
+        session.split_to_stems(id);
+        assert!(
+            session
+                .message()
+                .unwrap()
+                .contains("can't load ONNX Runtime"),
+            "{:?}",
+            session.message()
+        );
+        assert_eq!(session.stems_consent(), None, "not asked to download");
+        assert!(session.split_progress().is_none());
     }
 
     #[test]

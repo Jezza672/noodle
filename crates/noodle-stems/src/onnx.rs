@@ -36,24 +36,90 @@ fn failed(error: impl std::fmt::Display) -> SeparateError {
     SeparateError::Failed(error.to_string())
 }
 
+/// What `ort` refused the runtime for, once it has.
+static LOAD_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The name ONNX Runtime's library has on this platform.
+pub fn runtime_file_name() -> String {
+    format!(
+        "{}onnxruntime{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    )
+}
+
+/// Whether `shape` (where -1 is any size) is `want`.
+fn fits(shape: &[i64], want: &[i64]) -> bool {
+    shape.len() == want.len() && shape.iter().zip(want).all(|(&s, &w)| s == w || s < 0)
+}
+
+const SIGNATURE: &str = "one input [1, 2, 343980] (a stereo waveform) and an output [1, 4, 2, 343980] \
+     (four stereo stems), with the STFT and its inverse inside the graph";
+
 impl OnnxSeparator {
-    /// Opens the model at `weights`. `runtime` is the ONNX Runtime library
-    /// (`libonnxruntime.so`, `.dylib` or `onnxruntime.dll`); `None` leaves it to
-    /// the `ORT_DYLIB_PATH` variable and the system's search.
+    /// Loads the ONNX Runtime library, so that a machine without it finds out
+    /// before anything is downloaded. `runtime` is the library's path; `None`
+    /// uses the `ORT_DYLIB_PATH` variable, then the system's search for
+    /// `libonnxruntime.so`, `.dylib` or `onnxruntime.dll`. Loading again is
+    /// harmless.
+    pub fn load_runtime(runtime: Option<&Path>) -> Result<(), SeparateError> {
+        Self::environment_builder(runtime).map(|_| ())
+    }
+
+    fn environment_builder(
+        runtime: Option<&Path>,
+    ) -> Result<ort::environment::EnvironmentBuilder, SeparateError> {
+        let path = match runtime {
+            Some(path) => path.to_path_buf(),
+            None => match std::env::var("ORT_DYLIB_PATH") {
+                Ok(path) if !path.is_empty() => path.into(),
+                _ => runtime_file_name().into(),
+            },
+        };
+        let explain = |why: &dyn std::fmt::Display| {
+            failed(format!(
+                "can't load ONNX Runtime ({}): {why}. Install ONNX Runtime and put {} in the \
+                 model folder or on the library path",
+                path.display(),
+                runtime_file_name()
+            ))
+        };
+        // `ort` keeps a failed load, and after one it says every later load
+        // worked and then panics when the library is first used. So a library
+        // that is not there is found out here first, where trying again after
+        // installing it works, and a failure `ort` itself reports is kept.
+        let mut failure = LOAD_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(why) = failure.as_ref() {
+            return Err(failed(format!(
+                "{why}. ONNX Runtime has to be fixed before Noodle is started again"
+            )));
+        }
+        // SAFETY: loading a library runs its initialisers, which is what the
+        // user asked for by installing it.
+        let library = unsafe { libloading::Library::new(&path) }.map_err(|e| explain(&e))?;
+        // SAFETY: only looks the symbol up.
+        unsafe { library.get::<unsafe extern "C" fn()>(b"OrtGetApiBase") }
+            .map_err(|_| explain(&"it does not look like ONNX Runtime"))?;
+        drop(library);
+        match ort::init_from(&path) {
+            Ok(builder) => Ok(builder),
+            Err(e) => {
+                let error = explain(&e);
+                *failure = Some(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// Opens the model at `weights`. See [`load_runtime`](Self::load_runtime)
+    /// for `runtime`. A model that doesn't have the signature this backend
+    /// expects is refused here, with the signature spelled out.
     pub fn open(
         weights: &Path,
         runtime: Option<&Path>,
         model: ModelId,
     ) -> Result<Self, SeparateError> {
-        let builder = match runtime {
-            Some(path) => ort::init_from(path).map_err(|e| {
-                failed(format!(
-                    "can't load the ONNX Runtime library at {}: {e}",
-                    path.display()
-                ))
-            })?,
-            None => ort::init(),
-        };
+        let builder = Self::environment_builder(runtime)?;
         let environment = builder
             .with_name("noodle")
             .build()
@@ -61,6 +127,25 @@ impl OnnxSeparator {
         let session = Session::builder(&environment)
             .and_then(|mut builder| builder.commit_from_file(weights))
             .map_err(|e| failed(format!("can't open the model {}: {e}", weights.display())))?;
+        let seg = SEGMENT as i64;
+        let input_ok = session.inputs().len() == 1
+            && session.inputs()[0]
+                .dtype()
+                .tensor_shape()
+                .is_some_and(|s| fits(s, &[1, 2, seg]));
+        let output_ok = !session.outputs().is_empty()
+            && session.outputs()[0]
+                .dtype()
+                .tensor_shape()
+                .is_some_and(|s| fits(s, &[1, 4, 2, seg]));
+        if !input_ok || !output_ok {
+            return Err(failed(format!(
+                "{} is not the kind of HT-Demucs model Noodle can run. It needs {SIGNATURE}; this one has {} input(s) and {} output(s)",
+                weights.display(),
+                session.inputs().len(),
+                session.outputs().len(),
+            )));
+        }
         Ok(Self {
             session,
             model,
@@ -133,7 +218,18 @@ fn blend(
     let mut sum = Stem::ALL.map(|_| Stereo::silent(frames));
     let mut total_weight = vec![0.0f32; frames];
     let stride = ((SEGMENT as f32 * (1.0 - OVERLAP)) as usize).max(1);
-    let starts: Vec<usize> = (0..frames.max(1)).step_by(stride).collect();
+    // Segments every stride, the last one ending where the audio does, so the
+    // model sees real audio through to the end instead of padding.
+    let mut starts = Vec::new();
+    let mut next = 0;
+    loop {
+        if next + SEGMENT >= frames {
+            starts.push(frames.saturating_sub(SEGMENT));
+            break;
+        }
+        starts.push(next);
+        next += stride;
+    }
     for (n, &start) in starts.iter().enumerate() {
         if !progress(n as f32 / starts.len() as f32) {
             return Err(SeparateError::Cancelled);
@@ -162,9 +258,6 @@ fn blend(
         for i in 0..len {
             total_weight[start + i] += weight(i);
         }
-        if start + SEGMENT >= frames {
-            break;
-        }
     }
     for stem in &mut sum {
         for channel in [&mut stem.left, &mut stem.right] {
@@ -182,6 +275,34 @@ fn blend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_library_anywhere_is_an_error_not_a_panic() {
+        // `None` searches the system for the library, which isn't there.
+        if std::env::var("ORT_DYLIB_PATH").is_ok_and(|p| !p.is_empty()) {
+            return;
+        }
+        let error = OnnxSeparator::load_runtime(None).unwrap_err().to_string();
+        assert!(
+            error.contains("onnxruntime") && error.contains("Install"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_second_try_after_a_failed_load_fails_too() {
+        let bad = Path::new("/nonexistent/libonnxruntime.so");
+        assert!(OnnxSeparator::load_runtime(Some(bad)).is_err());
+        assert!(OnnxSeparator::load_runtime(Some(bad)).is_err());
+    }
+
+    #[test]
+    fn shapes_match_with_dynamic_sizes_as_wildcards() {
+        assert!(fits(&[1, 2, 343_980], &[1, 2, 343_980]));
+        assert!(fits(&[-1, 2, -1], &[1, 2, 343_980]));
+        assert!(!fits(&[1, 2, 100], &[1, 2, 343_980]));
+        assert!(!fits(&[1, 2], &[1, 2, 343_980]));
+    }
 
     #[test]
     fn a_missing_library_is_an_error_that_names_it() {
@@ -209,7 +330,8 @@ mod tests {
 
     #[test]
     fn overlapping_segments_blend_back_into_one_signal_in_the_stems_order() {
-        // Longer than two segments, so there are overlaps and a short last one.
+        // Longer than two segments, so there are overlaps and a last segment
+        // that starts early to end with the audio.
         let frames = SEGMENT * 2 + 12_345;
         let mix = Stereo {
             left: (0..frames)

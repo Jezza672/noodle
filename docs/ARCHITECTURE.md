@@ -1106,11 +1106,26 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   into 7.8 s segments that overlap by a quarter, normalises the mix as Demucs
   does, and blends the segments with triangular weights. The runtime library is
   loaded when a separator is opened (`ort`'s `load-dynamic`), from
-  `libonnxruntime.*` in the model folder or the system's search, so the build
-  needs no native library and a machine without one gets an error that says so.
-  The model contract (a `[1, 2, 343980]` waveform in, `[1, 4, 2, 343980]` out,
-  stems in the order drums, bass, other, vocals) is checked against a stub in
-  tests, **not against real weights**.
+  `libonnxruntime.*` in the model folder, `ORT_DYLIB_PATH` or the system's search,
+  so the build needs no native library. `ort::init` panics on a missing library
+  and, after one failed load, reports later loads as fine and panics when the
+  library is first used; so the library is opened directly first, always loaded
+  through `init_from`, and a failure `ort` itself gives (a too-old runtime) is
+  remembered. The session loads the runtime before asking to download anything,
+  so a machine without one is told so up front. The last segment ends where the
+  audio does (it starts early) rather than being padded, so the model always sees
+  real audio. `open` checks the model's signature (one input `[1, 2, 343980]`,
+  first output `[1, 4, 2, 343980]`, so the STFT and its inverse are inside the
+  graph, as in the Mixxx HT-Demucs export) and refuses any other with that
+  signature spelled out; exports that keep the STFT outside (two inputs, a
+  frequency and a time output) are not supported. Which exact file and SHA the
+  built-in address will point at is still to be chosen. Verified against ONNX
+  Runtime 1.29 with tiny stand-in models of that signature
+  (`tests/runtime.rs`, which runs only where `NOODLE_TEST_ORT_DIR` names a folder
+  with the library and the models; CI skips it), **not against real weights**.
+  Memory: a split holds about ten copies of the clip's audio at once (the decode,
+  the mix, four stems at the model rate and five parts at the source rate), around
+  1 GB for five minutes of stereo.
 - **Weights.** Not bundled. `ModelStore` keeps them in the `models` folder of the
   user data directory; `download` streams to a `.partial` file, checks a SHA-256
   if one is known, and renames, so a cancelled or failed download leaves nothing.
