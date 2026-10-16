@@ -40,7 +40,7 @@ use crate::descriptor::{
 };
 use crate::host::{Flags, Host};
 use crate::{PARAMS_KEY, STATE_KEY};
-use crate::{editor, sandbox, thread, vst3};
+use crate::{au, editor, sandbox, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
 pub const PARAM_STEP: usize = 32;
@@ -103,6 +103,14 @@ impl PluginNodeType {
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
+}
+
+/// The start of the bar `beats` (quarter notes) is in, in quarter notes. A bar
+/// is `numerator` beats of a 1/`denominator` note each: 6/8 is three quarter
+/// notes long, 4/4 four and 2/2 four.
+pub(crate) fn bar_start(beats: f64, numerator: i32, denominator: i32) -> f64 {
+    let bar = f64::from(numerator.max(1)) * 4.0 / f64::from(denominator.max(1));
+    (beats / bar).floor() * bar
 }
 
 /// A parameter's range and default as the port has them: a plugin's own
@@ -307,6 +315,9 @@ impl PluginNodeType {
             _ => None,
         };
         let exposed = exposed_params(&self.descriptor, setup.config);
+        if self.descriptor.format == PluginFormat::Au {
+            return self.instantiate_au(setup, state, &exposed);
+        }
         if self.descriptor.format == PluginFormat::Vst3 {
             let loaded = vst3::load(
                 &self.path,
@@ -350,6 +361,37 @@ impl PluginNodeType {
         );
         node.latency = loaded.latency;
         Ok(Instance::realtime(node))
+    }
+}
+
+impl PluginNodeType {
+    /// Loads an Audio Unit into this process. (Without an editor: the unit's
+    /// parameters have ports, and a node's saved state is what it holds.)
+    #[cfg(target_os = "macos")]
+    fn instantiate_au(
+        &self,
+        setup: &Setup<'_>,
+        state: Option<Vec<u8>>,
+        exposed: &[&ParamDesc],
+    ) -> Result<Instance, NodeError> {
+        let loaded = au::load(&self.descriptor, state, setup.sample_rate, setup.max_frames)
+            .map_err(|error| NodeError::config(error.to_string()))?;
+        Ok(Instance::realtime(au::AuNode::new(
+            loaded,
+            &self.descriptor,
+            exposed,
+            setup.max_frames,
+        )))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn instantiate_au(
+        &self,
+        _setup: &Setup<'_>,
+        _state: Option<Vec<u8>>,
+        _exposed: &[&ParamDesc],
+    ) -> Result<Instance, NodeError> {
+        Err(NodeError::config(au::unsupported().to_string()))
     }
 }
 

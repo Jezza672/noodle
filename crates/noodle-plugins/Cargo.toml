@@ -1,6 +1,6 @@
 [package]
 name = "noodle-plugins"
-description = "Plugin hosting: CLAP and VST3 plugins as graph nodes."
+description = "Plugin hosting: CLAP, VST3 and AU plugins as graph nodes."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -41,6 +41,11 @@ core-foundation = "0.10"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSGeometry", "NSThread", "NSDate", "NSRunLoop", "NSObjCRuntime"] }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSGraphics", "NSResponder", "NSView", "NSWindow", "NSEvent", "NSRunningApplication"] }
+
+# Audio Unit hosting (see `src/au`). Versions match what cpal already pulls in.
+objc2-audio-toolbox = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-core-foundation = { version = "0.3", features = ["CFData", "CFPropertyList", "CFString"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }

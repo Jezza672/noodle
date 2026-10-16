@@ -1,9 +1,9 @@
-//! Hosting CLAP and VST3 plugins as graph nodes.
+//! Hosting CLAP, VST3 and (on macOS) Audio Unit plugins as graph nodes.
 //!
 //! - [`scan`](ScanCache) finds `.clap` and `.vst3` files and scans each in a child
 //!   process; results are cached.
 //! - A [`Catalog`] turns scan results into node types, one per plugin
-//!   (`clap.<plugin id>` or `vst3.<class id>`), whose ports are the plugin's audio ports, note
+//!   (`clap.<plugin id>`, `vst3.<class id>` or `au.<component id>`), whose ports are the plugin's audio ports, note
 //!   ports and parameters.
 //! - [`set_sandbox`] runs plugins in separate host processes, so a crashing plugin
 //!   can't take the session with it.
@@ -11,6 +11,7 @@
 //!   freezes, exports and background renders see the same plugins as live
 //!   playback.
 
+mod au;
 mod catalog;
 mod descriptor;
 mod editor;
@@ -30,6 +31,12 @@ pub use editor::{
     Captured, EditorKey, capture, capture_key, close_editor, editor_instance_running,
     editor_is_open, editor_key_is_open, is_running, open_editor,
 };
+/// The virtual files of the installed Audio Units (none off macOS): scan
+/// them like any plugin file. See [`discover`], which includes them.
+pub fn audio_unit_files() -> Vec<std::path::PathBuf> {
+    au::component_files()
+}
+
 pub use host::{HostError, MAX_PARAMS, capture_state, describe_file};
 pub use node::{PARAM_STEP, PluginNodeType};
 pub use sandbox::{

@@ -14,7 +14,7 @@ use vst3::Steinberg::*;
 use noodle_engine::{Context, Event as NoodleEvent, EventKind, Expression, Io, Node, NoteId};
 
 use crate::descriptor::{Descriptor, ParamDesc};
-use crate::node::{PARAM_STEP, param_range};
+use crate::node::{PARAM_STEP, bar_start, param_range};
 
 use super::classes::{Changes, DiscardChanges, Edits, Events, raw};
 use super::plugin::Plugin;
@@ -668,14 +668,6 @@ fn legacy_midi(bus: i32, time: i32, channel: u8, control: u8, value: i8, value2:
         value2,
     };
     event
-}
-
-/// The start of the bar `beats` (quarter notes) is in, in quarter notes. A bar
-/// is `numerator` beats of a 1/`denominator` note each: 6/8 is three quarter
-/// notes long, 4/4 four and 2/2 four.
-fn bar_start(beats: f64, numerator: i32, denominator: i32) -> f64 {
-    let bar = f64::from(numerator.max(1)) * 4.0 / f64::from(denominator.max(1));
-    (beats / bar).floor() * bar
 }
 
 /// What the transport looks like `start` frames into the block.

@@ -13,6 +13,8 @@ pub enum PluginFormat {
     #[default]
     Clap,
     Vst3,
+    /// An Audio Unit (macOS only). Listed as a virtual file, see `au/`.
+    Au,
 }
 
 impl PluginFormat {
@@ -21,6 +23,7 @@ impl PluginFormat {
         match self {
             PluginFormat::Clap => "CLAP",
             PluginFormat::Vst3 => "VST3",
+            PluginFormat::Au => "AU",
         }
     }
 
@@ -29,12 +32,15 @@ impl PluginFormat {
         match self {
             PluginFormat::Clap => "clap.",
             PluginFormat::Vst3 => "vst3.",
+            PluginFormat::Au => "au.",
         }
     }
 
     /// The format a plugin file is in, from its extension.
     pub fn of_path(path: &std::path::Path) -> Self {
-        if path.extension().is_some_and(|ext| ext == "vst3") {
+        if crate::au::is_component_path(path) {
+            PluginFormat::Au
+        } else if path.extension().is_some_and(|ext| ext == "vst3") {
             PluginFormat::Vst3
         } else {
             PluginFormat::Clap
@@ -106,11 +112,16 @@ impl PluginFile {
     }
 }
 
-/// A plugin's size and modification time in whole seconds. For a macOS
+/// A plugin's size and modification time in whole seconds. (For an Audio
+/// Unit, zero and its version number.) For a macOS
 /// bundle (a folder), the total size and the newest modification time of
 /// everything inside: replacing the binary in place doesn't touch the
 /// folder's own time.
 pub fn file_stamp(path: &std::path::Path) -> Option<(u64, u64)> {
+    // An Audio Unit is no file: its stamp is its version.
+    if crate::au::is_component_path(path) {
+        return crate::au::stamp(path);
+    }
     fn stamp(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
         let modified = meta
             .modified()

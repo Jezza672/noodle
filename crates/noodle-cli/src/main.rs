@@ -84,8 +84,9 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         threads: usize,
     },
-    /// List the CLAP and VST3 plugins found on this machine. A plugin's node
-    /// type is `clap.<plugin id>` or `vst3.<class id>`; its ports are the plugin's audio and note ports
+    /// List the CLAP, VST3 and (on macOS) AU plugins found on this machine. A
+    /// plugin's node type is `clap.<plugin id>`, `vst3.<class id>` or
+    /// `au.<component id>`; its ports are the plugin's audio and note ports
     /// and parameters. New or changed plugin files are scanned (in a child
     /// process) and the results cached.
     Plugins,
@@ -571,7 +572,7 @@ impl Watch {
 fn list_plugins() {
     let found = noodle_plugins::discover();
     if found.files.is_empty() {
-        println!("no CLAP or VST3 plugins found in the standard folders");
+        println!("no CLAP, VST3 or AU plugins found in the standard folders");
     }
     for file in &found.files {
         if let Some(error) = &file.error {

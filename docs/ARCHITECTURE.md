@@ -1335,7 +1335,8 @@ ports become graph ports. Plugin state is saved in the Project.
 - **CLAP** is hosted through `clack` (`noodle-plugins`).
 - **VST3** is hosted through the Rust `vst3` bindings (raw COM, loaded with
   `libloading`): see "VST3 hosting" below.
-- **AU** may come later. Most macOS plugins also ship as VST3 or CLAP.
+- **AU** (macOS only) is hosted through AudioToolbox's component API: see
+  "AU hosting" below.
 - Plugin editors open as separate native windows: embedded in a window the host makes (macOS, Windows), or the plugin's own floating window (Linux, or when it can't embed). Both run on the plugin thread.
 - Scanning runs in a child process, so a plugin that crashes during scanning
   can't take down the app.
@@ -1343,7 +1344,7 @@ ports become graph ports. Plugin state is saved in the Project.
   own that exchanges audio through shared memory, so a crashing or hanging
   plugin can't take down the session; see [Sandboxed plugins](#sandboxed-plugins).
 - **Latency:** plugins report their latency (CLAP's latency extension, VST3's
-  `getLatencySamples`, both read once after activation, on the plugin thread) and the engine
+  `getLatencySamples`, `kAudioUnitProperty_Latency`, all read once after activation, on the plugin thread) and the engine
   compensates for it; see [Performance (M6)](#performance-m6).
 
 ### CLAP hosting
@@ -1481,6 +1482,47 @@ and captures when the window closes (`Session::poll_plugin_editors`), as one
 undo step. That is a config change, so the node recompiles and its plugin is
 reloaded from the stored state. State changed while an editor is open is
 stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
+
+### AU hosting
+
+An Audio Unit is the same kind of node as the others (`PluginNodeType`, the
+same `Catalog`, scan cache, browser, sandbox and caching), with ID
+`au.<component id>`. The code is in `noodle-plugins/src/au/`; it compiles on
+macOS only (`mod.rs` holds what is portable: IDs, names, the MIDI mapping, so
+other systems can read a scan cache saved on a Mac and say why it can't be
+built).
+
+- **No files.** The system keeps AUs in a registry, found by type, subtype and
+  manufacturer code, so an AU is a *virtual file* whose path is
+  `audiounit:<id>`, the three codes as 8 hex digits each, joined by `-`.
+  `discover` adds `audio_unit_files()` (every installed effect `aufx`,
+  instrument `aumu`, music effect `aumf` and generator `augn`, listed with
+  `AudioComponentFindNext`, which loads no plugin code) to the folders'
+  results; `discover_in` over given folders doesn't. The scan child
+  instantiates the unit to read its buses and parameters. The scan cache's
+  "modification time" for one is its component version, so an update
+  rescans.
+- **Audio.** Every bus is set to non-interleaved 32-bit float at the engine's
+  rate, with `MaximumFramesPerSlice` set to the block size. The node pulls
+  each output bus with `AudioUnitRender`; the unit's input buses pull from a
+  render callback that copies the node's inputs (a `Pull` the node owns and
+  frees after the unit). A block runs in chunks of at most `max_frames`.
+- **Events.** Parameters go in with `AudioUnitSetParameter` and a frame
+  offset, a wired one sampled every `PARAM_STEP` frames; notes as MIDI
+  through `MusicDeviceMIDIEvent` (note-on, note-off remembering the key and
+  channel, raw MIDI). Instruments and music effects get a note port. Note
+  expressions and MIDI output aren't mapped. The transport reaches the unit
+  through the host callbacks (`HostCallbackInfo`: tempo and beat, time
+  signature and bar, playing and sample position).
+- **State** is the unit's `kAudioUnitProperty_ClassInfo` property list,
+  serialised as a binary plist. Latency is `kAudioUnitProperty_Latency`.
+- **Parameters** in the global scope; meters, read-only and non-realtime
+  ones are left out.
+- **Not yet:** editors (a Cocoa view factory or `AUViewController`; the
+  properties panel says so, and state changes by wiring the parameter
+  ports), AUv3 units that need asynchronous instantiation, and AUs outside the
+  system registry. The real-time test (`realtime.rs`) doesn't cover the AU
+  node, since units are Apple's code.
 
 ### VST3 hosting
 

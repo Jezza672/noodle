@@ -905,7 +905,7 @@ stays as the one-line form.
 
 ## Later
 
-- AU hosting.
+- ~~AU hosting.~~ **Done** (macOS): effects, instruments and music effects, with ports, notes, state and the transport; editors are the follow-up. See "AU hosting" in ARCHITECTURE.md.
 - Script node follow-ups: loops with a step limit, arrays or delay lines in
   scripts, MIDI/event ports.
 - MIDI 2.0.
