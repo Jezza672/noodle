@@ -169,7 +169,11 @@ the test fails while they are stale). The drums are a drum rack of Samplers
 playing one-shots rendered from the synthesised drums and committed in
 `songs/samples` (named by content hash, `index.txt` says which is which; the
 same command rewrites them, and a test checks they still match the synthesis).
-The mixes run through Dynamics (compressor, limiter), EQ and Reverb nodes.
+The mixes run through Dynamics (compressor, limiter), EQ and Reverb nodes, with
+a 30 Hz low cut and a whole-mix compressor on funk-engine and breakbeat-run too:
+the songs are benchmarks, so a detector that fails on a processed mix is fixed,
+not the mix softened (#156; `the_tempo_survives_a_low_cut_and_bus_compression`
+in `noodle-io/src/onsets.rs` is its regression test).
 
 The default run takes each song's **excerpt** (15 to 20 s, the busiest stretch,
 which is what joins the CI tests); `--full` takes the whole song and names its
