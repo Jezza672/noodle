@@ -28,13 +28,13 @@ pub fn show(
     live: LiveParams<'_>,
 ) -> Vec<Edit> {
     let graph = session.project().graph();
+    let mut edits = pending_scripts(ui, session, active);
     let Some((id, node)) = active.and_then(|id| Some((id, graph.node(id)?))) else {
         ui.weak("Select a node to see its properties.");
-        return Vec::new();
+        return edits;
     };
     let node_type = session.registry().get(&node.type_id);
 
-    let mut edits = Vec::new();
     ui.horizontal(|ui| {
         // The freeze button sits at the right of the name, in the same row.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -417,6 +417,10 @@ fn config(
             }
             continue;
         }
+        if node_type.info().id == noodle_nodes::SCRIPT_ID && info.key == noodle_nodes::SCRIPT_KEY {
+            script_editor(ui, id, info, node, edits);
+            continue;
+        }
         if node_type.info().id == noodle_nodes::SAMPLER_ID && info.key == noodle_nodes::SAMPLE_KEY {
             sample_picker(ui, session, id, info, node, edits);
             continue;
@@ -435,6 +439,119 @@ fn config(
             .on_hover_text("Changing this rebuilds the node, and may change its ports.");
     }
 }
+
+/// Script text typed into a node that is no longer the active one (the user
+/// clicked another node while the box had focus, so the box never saw the focus
+/// leave): committed now, so it isn't lost.
+fn pending_scripts(ui: &Ui, session: &Session, active: Option<NodeId>) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    for (id, node) in session.project().graph().nodes() {
+        if Some(id) == active || node.type_id != noodle_nodes::SCRIPT_ID {
+            continue;
+        }
+        let pending_id = egui::Id::new((id, "script_pending"));
+        let Some(text) = ui.data_mut(|d| d.remove_temp::<String>(pending_id)) else {
+            continue;
+        };
+        let committed = match node.config.get(noodle_nodes::SCRIPT_KEY) {
+            Some(noodle_core::Value::Text(t)) if !t.trim().is_empty() => t.as_str(),
+            _ => noodle_nodes::DEFAULT_SCRIPT,
+        };
+        if text != committed {
+            edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: noodle_nodes::SCRIPT_KEY.to_owned(),
+                value: Some(noodle_core::Value::Text(text)),
+            }));
+        }
+    }
+    edits
+}
+
+/// The Script node's text: a code box that commits once it loses focus (the
+/// node is rebuilt then, and may get other ports), with the ports the text
+/// makes or what is wrong with it shown as it is typed.
+fn script_editor(
+    ui: &mut Ui,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    let committed = match info.get_text(&node.config) {
+        text if text.trim().is_empty() => noodle_nodes::DEFAULT_SCRIPT.to_owned(),
+        text => text,
+    };
+    let pending_id = egui::Id::new((id, "script_pending"));
+    let mut text: String = ui
+        .data(|d| d.get_temp(pending_id))
+        .unwrap_or_else(|| committed.clone());
+    ui.label(info.name);
+    let response = ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .id_salt((id, "script_text"))
+            .code_editor()
+            .desired_rows(10)
+            .desired_width(f32::INFINITY),
+    );
+    if response.has_focus() {
+        ui.data_mut(|d| d.insert_temp(pending_id, text.clone()));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(pending_id));
+        if response.lost_focus() && text != committed {
+            edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: info.key.to_owned(),
+                value: Some(noodle_core::Value::Text(text.clone())),
+            }));
+        }
+    }
+    match noodle_nodes::check_script(&text) {
+        Ok(ports) => {
+            ui.label(
+                RichText::new(format!(
+                    "Inputs: {}. Outputs: {}.",
+                    ports.inputs.join(", "),
+                    ports.outputs.join(", ")
+                ))
+                .weak()
+                .small(),
+            );
+        }
+        Err(error) => {
+            ui.colored_label(crate::theme::MUTE, error);
+        }
+    }
+    egui::CollapsingHeader::new("Script reference")
+        .id_salt(("script-help", id))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(RichText::new(SCRIPT_HELP).small().monospace());
+        });
+    if ui.small_button("Reset to a pass-through").clicked() {
+        edits.push(Edit::Apply(Command::SetConfig {
+            node: id,
+            key: info.key.to_owned(),
+            value: None,
+        }));
+    }
+}
+
+const SCRIPT_HELP: &str = "\
+input x            audio input
+param p = 1 [0, 4] log hz   parameter
+output y           output
+state z = 0        keeps its value
+let k = x * 2      this sample only
+y = k + z          (also += -= *= /=)
+if c { } else { }  comparisons give 1/0
+sr bpm beat time pi tau e
+(time is coarse late on: keep phase in state)
+rand()  select(c,a,b)  db()  mtof()
+sin cos tan tanh abs sqrt exp ln
+log2 log10 floor ceil round fract
+sign min max pow atan2 clamp mix
+// comment; lines or ; end statements";
 
 /// The most parameters the picker lists at once; narrow the search for more.
 const PICKER_ROWS: usize = 200;
@@ -1168,6 +1285,107 @@ mod tests {
         let harness = super::tests::harness([mix(0)]);
         harness.get_by_label_contains("inputs");
         harness.get_by_value("0");
+    }
+
+    fn script_of(harness: &Harness<'_, State>) -> Option<String> {
+        let graph = harness.state().session.project().graph();
+        match graph.node(NodeId(1))?.config.get("script") {
+            Some(Value::Text(text)) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn script_typed_into_a_node_is_kept_when_another_node_is_selected() {
+        let mut harness = harness([
+            Node::new("noodle.util.script"),
+            Node::new("noodle.osc.sine"),
+        ]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        harness
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.run();
+        harness.event(egui::Event::Text("output o\no = 0.5".into()));
+        harness.run();
+        assert_eq!(script_of(&harness), None, "still being typed");
+        harness.state_mut().active = Some(NodeId(2));
+        harness.run();
+        harness.run();
+        assert_eq!(script_of(&harness).as_deref(), Some("output o\no = 0.5"));
+    }
+
+    #[test]
+    fn the_script_is_edited_as_text_and_commits_when_the_box_loses_focus() {
+        let mut harness = harness([Node::new("noodle.util.script")]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        harness.get_by_label_contains("Inputs: in. Outputs: out.");
+
+        // Typing alone changes nothing yet, but the ports line follows.
+        harness
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.run();
+        harness.event(egui::Event::Text(
+            "input x\nparam amount = 2 [0, 4]\noutput a\noutput b\na = x * amount\nb = -a".into(),
+        ));
+        harness.run();
+        harness.get_by_label_contains("Inputs: x, amount. Outputs: a, b.");
+        assert_eq!(script_of(&harness), None, "still being typed");
+
+        // Leaving the box commits it, and the node gets the new ports.
+        harness.key_press(Key::Escape);
+        harness.run();
+        harness.run();
+        let text = script_of(&harness).expect("committed");
+        assert!(text.starts_with("input x\nparam amount"), "{text}");
+        let layout = harness
+            .state()
+            .session
+            .registry()
+            .get("noodle.util.script")
+            .unwrap()
+            .layout(
+                &harness
+                    .state()
+                    .session
+                    .project()
+                    .graph()
+                    .node(NodeId(1))
+                    .unwrap()
+                    .config,
+            )
+            .unwrap();
+        assert_eq!(layout.outputs.len(), 2);
+        harness.get_by_label("Amount");
+
+        // A mistake is shown, and the button puts the pass-through back.
+        harness
+            .state_mut()
+            .session
+            .edit([Edit::Apply(Command::SetConfig {
+                node: NodeId(1),
+                key: "script".to_owned(),
+                value: Some(Value::Text("output o\no = nope".into())),
+            })]);
+        harness.run();
+        assert!(
+            harness
+                .query_all_by_label_contains("unknown name `nope`")
+                .count()
+                >= 1
+        );
+        harness.get_by_label("Reset to a pass-through").click();
+        harness.run();
+        harness.run();
+        assert_eq!(script_of(&harness), None);
+        harness.get_by_label_contains("Inputs: in. Outputs: out.");
     }
 
     fn curve_of(harness: &Harness<'_, State>) -> noodle_nodes::Curve {

@@ -45,6 +45,7 @@ mod sample;
 mod sample_hold;
 mod sampler;
 mod scope;
+mod script;
 mod spectral;
 mod stage;
 mod svf;
@@ -117,6 +118,10 @@ pub use sample::{Sample, SampleError, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
+pub use script::{
+    DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
+    SCRIPT_KEY, Script, ScriptPorts, check as check_script,
+};
 pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
     SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID, SpectralBlur, SpectralFilter,
@@ -187,6 +192,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Ladder);
     registry.register(Vca);
     registry.register(Math);
+    registry.register(Script);
     registry.register(Delay);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);

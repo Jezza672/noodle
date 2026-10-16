@@ -236,6 +236,55 @@ impl Token {
     }
 }
 
+/// Reads a number literal such as `0.5`, `.5` or `1e3` starting at `chars[*i]`
+/// and moves `*i` past it. Shared with the Script node's lexer.
+pub(crate) fn scan_number(chars: &[char], i: &mut usize) -> Result<f32, String> {
+    let start = *i;
+    while *i < chars.len() && (chars[*i].is_ascii_digit() || chars[*i] == '.') {
+        *i += 1;
+    }
+    // An exponent: e3, E-2. Not the constant `e`, which has no digits
+    // straight after it.
+    if *i < chars.len() && matches!(chars[*i], 'e' | 'E') {
+        let mut j = *i + 1;
+        if j < chars.len() && matches!(chars[j], '+' | '-') {
+            j += 1;
+        }
+        if j < chars.len() && chars[j].is_ascii_digit() {
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            *i = j;
+        }
+    }
+    let literal: String = chars[start..*i].iter().collect();
+    literal
+        .parse::<f32>()
+        .map_err(|_| format!("`{literal}` isn't a number"))
+}
+
+/// The one-argument functions Math and Script share.
+pub(crate) fn unary_function(name: &str) -> Option<fn(f32) -> f32> {
+    Some(match name {
+        "sin" => f32::sin,
+        "cos" => f32::cos,
+        "tan" => f32::tan,
+        "tanh" => f32::tanh,
+        "abs" => f32::abs,
+        "sqrt" => f32::sqrt,
+        "exp" => f32::exp,
+        "ln" => f32::ln,
+        "log2" => f32::log2,
+        "log10" => f32::log10,
+        "floor" => f32::floor,
+        "ceil" => f32::ceil,
+        "round" => f32::round,
+        "fract" => f32::fract,
+        "sign" => |x| if x == 0.0 { 0.0 } else { x.signum() },
+        _ => return None,
+    })
+}
+
 fn lex(text: &str) -> Result<Vec<Token>, String> {
     let chars: Vec<char> = text.chars().collect();
     let mut tokens = Vec::new();
@@ -245,28 +294,7 @@ fn lex(text: &str) -> Result<Vec<Token>, String> {
         if c.is_whitespace() {
             i += 1;
         } else if c.is_ascii_digit() || c == '.' {
-            let start = i;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            // An exponent: e3, E-2. Not the constant `e`, which has no digits
-            // straight after it.
-            if i < chars.len() && matches!(chars[i], 'e' | 'E') {
-                let mut j = i + 1;
-                if j < chars.len() && matches!(chars[j], '+' | '-') {
-                    j += 1;
-                }
-                if j < chars.len() && chars[j].is_ascii_digit() {
-                    while j < chars.len() && chars[j].is_ascii_digit() {
-                        j += 1;
-                    }
-                    i = j;
-                }
-            }
-            let literal: String = chars[start..i].iter().collect();
-            let number = literal
-                .parse::<f32>()
-                .map_err(|_| format!("`{literal}` isn't a number"))?;
+            let number = scan_number(&chars, &mut i)?;
             tokens.push(Token::Number(number));
         } else if c.is_ascii_alphabetic() || c == '_' {
             let start = i;
@@ -412,24 +440,7 @@ impl Parser {
     }
 
     fn call(&mut self, name: &str) -> Result<(), String> {
-        let unary: Option<fn(f32) -> f32> = match name {
-            "sin" => Some(f32::sin),
-            "cos" => Some(f32::cos),
-            "tan" => Some(f32::tan),
-            "tanh" => Some(f32::tanh),
-            "abs" => Some(f32::abs),
-            "sqrt" => Some(f32::sqrt),
-            "exp" => Some(f32::exp),
-            "ln" => Some(f32::ln),
-            "log2" => Some(f32::log2),
-            "log10" => Some(f32::log10),
-            "floor" => Some(f32::floor),
-            "ceil" => Some(f32::ceil),
-            "round" => Some(f32::round),
-            "fract" => Some(f32::fract),
-            "sign" => Some(|x| if x == 0.0 { 0.0 } else { x.signum() }),
-            _ => None,
-        };
+        let unary = unary_function(name);
         let (arity, op) = match (unary, name) {
             (Some(f), _) => (1, Op::Unary(f)),
             (None, "min") => (2, Op::Min),
