@@ -277,16 +277,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_library_anywhere_is_an_error_not_a_panic() {
-        // `None` searches the system for the library, which isn't there.
+    fn searching_the_system_for_the_library_never_panics() {
+        // Some machines have one (Windows ships `onnxruntime.dll`), so either
+        // answer is fine; what matters is that a miss is an error that says
+        // what to install. Loading a real one is harmless.
         if std::env::var("ORT_DYLIB_PATH").is_ok_and(|p| !p.is_empty()) {
             return;
         }
-        let error = OnnxSeparator::load_runtime(None).unwrap_err().to_string();
-        assert!(
-            error.contains("onnxruntime") && error.contains("Install"),
-            "{error}"
-        );
+        if let Err(error) = OnnxSeparator::load_runtime(None) {
+            let error = error.to_string();
+            assert!(
+                error.contains("onnxruntime") && error.contains("Install"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
