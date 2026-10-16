@@ -826,6 +826,35 @@ excepted, see ARCHITECTURE.md).
    mixes and reverb tails, which the synthesised drums and dry mixes do not
    test.
 
+## M10: Stems
+
+**Status:** Designed (CONTEXT.md, "Stems"; ADR 0006). Nothing built.
+
+AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
+sources are in the project folder `research/stem-warp/findings.md`. Three batches:
+
+1. **Ceiling experiment.** Before any model: with `noodle-eval songs --stems`, warp the
+   perfect stems of the generated songs (Beats for drums, Grain for the rest, plus the
+   residual), add them back, and score against the native render next to the whole-mix
+   modes and a harmonic/percussive baseline. If there is no clear gain, stop here. The ADR and
+   docs land with this batch.
+2. **Separation and Split to stems.** The separator trait (with a fake one for tests), the ONNX
+   backend, the consented weight download, a cancellable background job with progress, and
+   **Split to stems** on an audio clip: one new track under the source for each stem and for the
+   residual, the source clip left in place but muted, each new clip starting with a copy of the
+   source's clip tempo, beat markers and warp, stems written as WAVs in a project-relative folder, all
+   one undo step.
+3. **Stem warp mode.** A warp mode alongside Repitch, Grain and Beats. Choosing it separates in
+   the background into a hidden cache (clip content, model id and version), plays as Repitch
+   until ready, then warps each stem with a fixed mode (drums Beats; bass, vocals, other and the
+   residual Grain) and adds them back. Splitting afterwards copies from the cache. A per-stem
+   mode picker comes only if the evaluation shows the defaults are wrong. It ships only if the
+   evaluation shows a clear gain on most songs and the borrowed-truth clips.
+
+Out of scope for now: streaming separation, models other than HT-Demucs, and note-level
+warping. The note-level idea (neural note onsets placing Beats cuts inside a stem) is a later
+step, after Stem warp; true per-note audio extraction is not planned.
+
 ## Later
 
 - Spectral signal type.
