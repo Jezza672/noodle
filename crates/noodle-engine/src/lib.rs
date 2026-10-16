@@ -77,8 +77,8 @@ pub use runtime::{
 };
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use spectral::{
-    Analyzer, BINS, Bin, FFT_SIZE, HOP, SYNTH_LATENCY, SpectralBuf, SpectralIn, SpectralOut,
-    Synthesizer, bin_frequency, frame_capacity,
+    Analyzer, BINS, Bin, FFT_SIZE, HOP, SYNTH_LATENCY, SpectralBuf, SpectralDelay, SpectralIn,
+    SpectralOut, Synthesizer, bin_frequency, frame_capacity,
 };
 pub use telemetry::{
     BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level, MeterReader,

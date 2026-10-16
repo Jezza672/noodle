@@ -288,3 +288,66 @@ fn editing_an_unrelated_node_does_not_fade_a_compensated_graph() {
     // Two copies of a sine, so peaks sit near 2 unless a fade dips them.
     assert!(lowest > 1.0, "a swap faded the output: {lowest}");
 }
+
+/// White noise to a Cross's carrier directly, and to its modulator through a
+/// Latent node (an Analyze each), then Synthesize and out. `latency` is
+/// whole hops so the two paths' frames can match exactly.
+fn cross_of_unequal_paths(latency: i64) -> Graph {
+    Graph::from_parts(
+        vec![
+            (NodeId(1), Node::new("noodle.noise.white")),
+            (NodeId(2), Node::new("noodle.spectral.analyze")),
+            (
+                NodeId(3),
+                Node::new("test.latent")
+                    .with_config(Config::new().with("latency", Value::Int(latency))),
+            ),
+            (NodeId(4), Node::new("noodle.spectral.analyze")),
+            (NodeId(5), Node::new("noodle.spectral.cross")),
+            (NodeId(6), Node::new("noodle.spectral.synthesize")),
+            (NodeId(7), Node::new("noodle.io.output")),
+        ],
+        vec![
+            wire((1, "out"), (2, "in")),
+            wire((1, "out"), (3, "in")),
+            wire((3, "out"), (4, "in")),
+            wire((2, "spectrum"), (5, "carrier")),
+            wire((4, "spectrum"), (5, "modulator")),
+            wire((5, "out"), (6, "spectrum")),
+            wire((6, "out"), (7, "in")),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_cross_of_spectral_paths_of_unequal_latency_lines_them_up() {
+    // The carrier is the earlier path. Delayed to meet the modulator, its
+    // frames hold the same signal, so a full-mix Cross gives it back and the
+    // render is the noise on the timeline. Not waited for, the modulator's
+    // frames would be 1024 samples of noise behind the carrier's.
+    let settings = Settings {
+        max_frames: 100,
+        ..SETTINGS
+    };
+    let n = 12_000;
+    let crossed = render(&cross_of_unequal_paths(1_024), &registry(), settings, n).unwrap();
+    let plain = Graph::from_parts(
+        vec![
+            (NodeId(1), Node::new("noodle.noise.white")),
+            (NodeId(2), Node::new("noodle.io.output")),
+        ],
+        vec![wire((1, "out"), (2, "in"))],
+    )
+    .unwrap();
+    let noise = render(&plain, &registry(), settings, n).unwrap();
+    assert!(noise.samples.iter().any(|x| x.abs() > 0.05), "silent noise");
+    let worst = crossed
+        .samples
+        .iter()
+        .zip(&noise.samples)
+        .skip(2_500)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 1e-3, "worst difference {worst}");
+}

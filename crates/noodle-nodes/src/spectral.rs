@@ -651,8 +651,9 @@ impl Node for BlurNode {
 /// alone and 1 gives it the modulator's levels entirely; in between, the
 /// levels are blended on a decibel scale.
 ///
-/// The two spectra need not come from analysers that started together: the
-/// modulator's latest frame is used for each carrier frame.
+/// Paths of different latency into the two inputs are lined up by delay
+/// compensation (the earlier one's frames are held back), and the modulator's
+/// latest frame is used for each carrier frame.
 pub struct Cross;
 
 pub const CROSS_ID: &str = "noodle.spectral.cross";
