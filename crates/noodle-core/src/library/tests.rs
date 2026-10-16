@@ -708,3 +708,207 @@ fn a_template_keeps_a_nested_groups_level_but_not_its_mute() {
         "its mute does not"
     );
 }
+
+/// Fresh node IDs for `update_group`, which borrows the project.
+fn ids(project: &Project) -> impl FnMut() -> NodeId + use<> {
+    let mut next = project.next_node_id().0;
+    move || {
+        next += 1;
+        NodeId(next - 1)
+    }
+}
+
+/// The ID of the node of type `kind` inside `group`.
+fn inside(project: &Project, group: NodeId, kind: &str) -> NodeId {
+    let graph = project.graph();
+    graph
+        .descendants(group)
+        .into_iter()
+        .find(|&id| graph.node(id).unwrap().type_id == kind)
+        .unwrap()
+}
+
+#[test]
+fn updating_a_group_swaps_its_contents_and_keeps_its_place_wires_and_levels() {
+    let (mut project, mut history) = setup();
+    let old = synth(&mut project, &mut history, 800.0, false);
+    let first = GroupTemplate::from_group(project.graph(), old, "Synth").unwrap();
+    let newer = synth(&mut project, &mut history, 5000.0, true);
+    let second = GroupTemplate::from_group(project.graph(), newer, "Synth").unwrap();
+
+    let (copy, command) = first.instantiate(
+        "user:template:synth",
+        None,
+        Position { x: 50.0, y: 60.0 },
+        || project.new_node_id(),
+    );
+    history.apply(&mut project, command).unwrap();
+    // The copy is used and edited: a wire in and out, its own level, a
+    // changed cutoff and a preset on it.
+    let (source, sink) = (project.new_node_id(), project.new_node_id());
+    let output = inside(&project, copy, GROUP_OUTPUT);
+    let filter = inside(&project, copy, "filter");
+    history
+        .apply(
+            &mut project,
+            Command::Batch(vec![
+                Command::AddNode {
+                    id: source,
+                    node: Node::new("osc"),
+                },
+                Command::AddNode {
+                    id: sink,
+                    node: Node::new("filter"),
+                },
+                Command::Connect(Connection {
+                    from: Endpoint::new(source, "out"),
+                    to: Endpoint::new(copy, "pitch"),
+                }),
+                Command::Connect(Connection {
+                    from: Endpoint::new(copy, "out"),
+                    to: Endpoint::new(sink, "in"),
+                }),
+                Command::SetParam {
+                    node: output,
+                    key: control_key(GAIN, 1),
+                    value: Some(-3.0),
+                },
+                Command::SetParam {
+                    node: filter,
+                    key: "cutoff".into(),
+                    value: Some(1.0),
+                },
+                Command::SetPreset {
+                    node: copy,
+                    preset: Some("user:group:warm".into()),
+                },
+                Command::MoveNode {
+                    node: copy,
+                    position: Position { x: 70.0, y: 80.0 },
+                },
+            ]),
+        )
+        .unwrap();
+    let before = project.clone();
+
+    let (command, lanes) = second.update_group(&project, copy, ids(&project)).unwrap();
+    assert_eq!(lanes, 0);
+    history.apply(&mut project, command).unwrap();
+
+    let graph = project.graph();
+    let node = graph.node(copy).unwrap();
+    assert_eq!(node.position, Position { x: 70.0, y: 80.0 });
+    assert_eq!(node.template.as_deref(), Some("user:template:synth"));
+    assert_eq!(node.preset, None, "the preset described the old contents");
+    assert_eq!(graph.descendants(copy).len(), 4);
+    // The template's cutoff, not the edit.
+    let filter = inside(&project, copy, "filter");
+    assert_eq!(graph.node(filter).unwrap().params["cutoff"], 5000.0);
+    // The wires at the group's ports and its own level survive.
+    assert_eq!(
+        graph.source(&Endpoint::new(copy, "pitch")),
+        Some(&Endpoint::new(source, "out"))
+    );
+    assert_eq!(
+        graph.source(&Endpoint::new(sink, "in")),
+        Some(&Endpoint::new(copy, "out"))
+    );
+    let output = inside(&project, copy, GROUP_OUTPUT);
+    let params = &graph.node(output).unwrap().params;
+    assert_eq!(params[&control_key(GAIN, 1)], -3.0);
+    // The template's own mute and solo were stripped, so none appear.
+    assert!(!params.contains_key(&control_key(MUTE, 1)));
+    // The inside is wired as the template is.
+    let inner = GroupTemplate::from_group(graph, copy, "Synth").unwrap();
+    assert_eq!(inner.graph().connections().count(), 3);
+
+    history.undo(&mut project).unwrap();
+    assert_eq!(project, before);
+}
+
+#[test]
+fn updating_drops_wires_at_ports_the_template_no_longer_has() {
+    let (mut project, mut history) = setup();
+    let old = synth(&mut project, &mut history, 800.0, false);
+    let first = GroupTemplate::from_group(project.graph(), old, "Synth").unwrap();
+    // The newer version calls its input `note`.
+    let newer = synth(&mut project, &mut history, 800.0, false);
+    let input = inside(&project, newer, GROUP_INPUT);
+    history
+        .apply(
+            &mut project,
+            Command::SetConfig {
+                node: input,
+                key: crate::group::PORTS.into(),
+                value: Some(crate::group::ports_value(&[(1, "note".into())])),
+            },
+        )
+        .unwrap();
+    let second = GroupTemplate::from_group(project.graph(), newer, "Synth").unwrap();
+
+    let (copy, command) =
+        first.instantiate("user:template:synth", None, Position::default(), || {
+            project.new_node_id()
+        });
+    let source = project.new_node_id();
+    history.apply(&mut project, command).unwrap();
+    history
+        .apply(
+            &mut project,
+            Command::Batch(vec![
+                Command::AddNode {
+                    id: source,
+                    node: Node::new("osc"),
+                },
+                Command::Connect(Connection {
+                    from: Endpoint::new(source, "out"),
+                    to: Endpoint::new(copy, "pitch"),
+                }),
+            ]),
+        )
+        .unwrap();
+    let (command, _) = second.update_group(&project, copy, ids(&project)).unwrap();
+    history.apply(&mut project, command).unwrap();
+    let graph = project.graph();
+    assert_eq!(graph.group_ports(copy).inputs[0].name, "note");
+    assert_eq!(graph.source(&Endpoint::new(copy, "pitch")), None);
+}
+
+#[test]
+fn updating_counts_the_automation_lanes_it_removes_and_refuses_what_it_cannot_do() {
+    let (mut project, mut history) = setup();
+    let group = synth(&mut project, &mut history, 800.0, false);
+    let template = GroupTemplate::from_group(project.graph(), group, "Synth").unwrap();
+    let filter = inside(&project, group, "filter");
+    let lane = project.new_lane_id();
+    history
+        .apply(
+            &mut project,
+            Command::AddLane {
+                id: lane,
+                lane: crate::AutomationLane::new(Endpoint::new(filter, "cutoff"), Vec::new()),
+            },
+        )
+        .unwrap();
+    let (command, lanes) = template
+        .update_group(&project, group, ids(&project))
+        .unwrap();
+    assert_eq!(lanes, 1);
+    history.apply(&mut project, command).unwrap();
+    assert_eq!(project.lanes().count(), 0);
+
+    // Not onto something that isn't a group, nor from the hidden track.
+    let inner = inside(&project, group, "osc");
+    assert_eq!(
+        template
+            .update_group(&project, inner, || NodeId(999))
+            .unwrap_err(),
+        TemplateError::NotAGroup(inner)
+    );
+    assert_eq!(
+        track_template()
+            .update_group(&project, group, || NodeId(999))
+            .unwrap_err(),
+        TemplateError::NotUpdatable
+    );
+}
