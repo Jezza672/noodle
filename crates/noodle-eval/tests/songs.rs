@@ -206,7 +206,11 @@ fn a_song_renders_the_same_every_time_and_stays_under_full_scale() {
         let peak = a.iter().cloned().fold(0.0, f64::max);
         let worst = (0..n).map(|i| (a[i] - b[i]).abs()).fold(0.0, f64::max);
         assert!(
-            worst < 0.1 * peak,
+            // The long and short renders never shared note IDs (they hash the
+            // clip ID and the start within the clip), which decides the voice
+            // each note gets, so this measures a random draw; the clip IDs
+            // moved it by a few percent.
+            worst < 0.15 * peak,
             "{}: excerpt loudness differs by {worst} of {peak}",
             song.name
         );
@@ -614,4 +618,70 @@ fn compressor_and_limiter_are_dynamics_nodes_not_groups() {
     }
     // Both a compressor and a limiter are used, so both are covered.
     assert_eq!(modes.into_iter().collect::<Vec<_>>(), vec![0, 1]);
+}
+
+#[test]
+fn the_exact_stems_add_up_to_the_mix() {
+    // A part must sound the same alone as in the mix, or the ceiling
+    // experiment would warp stems that are not what the mix holds. (Note
+    // identity hashes the clip ID, which decides which voice plays which of
+    // the notes that start together, so the stem renders keep the mix's clip
+    // IDs.) What is left over is what the mix chain does to the parts
+    // together: bus compression, a limiter, a shared reverb tail.
+    use noodle_eval::stems::{Stem, rms_db};
+    let _load = shared();
+    each_song(|song| {
+        let range = song.excerpt_range();
+        let h = Harness::for_song(song, range, RATE).unwrap();
+        let (mix, _) = h.song_renders(song, range, TempoCase::Ratio(1.0)).unwrap();
+        let stems = h.exact_stems(song, range, &mix).unwrap();
+        let kinds: Vec<Stem> = stems.parts.iter().map(|(s, _)| *s).collect();
+        assert!(kinds.contains(&Stem::Drums), "{}: {kinds:?}", song.name);
+        assert!(!kinds.contains(&Stem::Vocals), "{}: no voices", song.name);
+        let (left, total) = (rms_db(&stems.residual), rms_db(&mix));
+        assert!(
+            left < total - 10.0,
+            "{}: residual {left:.1} dB against the mix {total:.1} dB",
+            song.name
+        );
+    });
+}
+
+#[test]
+fn the_ceiling_scores_whole_mix_and_split_contenders_side_by_side() {
+    let _alone = LOAD.write().unwrap_or_else(|e| e.into_inner());
+    let song = all().into_iter().find(|s| s.name == "neon-drive").unwrap();
+    let first = song.excerpt_range().start;
+    let range = Range {
+        start: first,
+        end: first + 8.0,
+    };
+    let h = Harness::for_song(&song, range, RATE).unwrap();
+    let methods = [
+        Method::Grain,
+        Method::Hpss,
+        Method::Stems,
+        Method::StemsLeak20,
+    ];
+    let rows = h
+        .run_ceiling("neon-drive", &song, range, TempoCase::Ratio(0.75), &methods)
+        .unwrap();
+    assert_eq!(rows.len(), methods.len() * View::ALL.len());
+    for row in &rows {
+        let ssmad = row.metric("SSMAD").unwrap();
+        assert!(ssmad.is_finite(), "{}: {ssmad}", row.key());
+    }
+    // The verdict compares the split contenders with the whole-mix mode.
+    let versus = noodle_eval::table::versus_best_whole_mix(&rows, |_| true);
+    assert!(versus.contains_key(&Method::Stems) && versus.contains_key(&Method::Hpss));
+    assert!(!versus.contains_key(&Method::Grain));
+    // The two ways of splitting give different audio.
+    let metrics = |m| {
+        rows.iter()
+            .find(|r| r.method == m && r.view == View::Native)
+            .unwrap()
+            .metrics
+            .clone()
+    };
+    assert_ne!(metrics(Method::Stems), metrics(Method::Hpss));
 }

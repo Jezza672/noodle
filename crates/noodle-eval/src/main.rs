@@ -216,21 +216,27 @@ fn probes(args: &[&str]) -> Result<(), String> {
 }
 
 const SONGS_HELP: &str =
-    "songs [--song NAME] [--tempo NAME] [--method NAME] [--full] [--stems] [--baseline FILE]
+    "songs [--song NAME] [--tempo NAME] [--method NAME] [--full] [--stems] [--ceiling | --verdict]
+       [--baseline FILE]
        [--update] [--export DIR]
   Warps the generated songs (crates/noodle-eval/songs) to each target tempo with
   each method and scores them. By default the 15 to 20 s excerpt that joins the
   CI gate; --full takes the whole song (rows are named NAME-full). --stems scores each
   part (instrument) of the song on its own instead of the mix, as NAME/PART, without
-  touching the committed baseline unless --update is given. Other options
+  touching the committed baseline unless --update is given. --ceiling is the M10
+  perfect-stem experiment: the mix warped whole (auto, grain, beats), by harmonic and
+  percussive split (hpss), and as the song's exact stems plus residual with none, 30,
+  20 and 10 dB of leakage between stems (stems, stems-30, ...), all scored against the
+  native mix, followed by a verdict; its baseline is baseline/ceiling.json. --verdict
+  prints that verdict again from the baseline, without running anything. Other options
   as for probes (--export writes <song>_source.wav, <song>_<tempo>_native.wav and so on);
   the default baseline is crates/noodle-eval/baseline/songs.json.";
 
 fn songs(args: &[&str]) -> Result<(), String> {
     let (mut song, mut tempo, mut method, mut full) = (None, None, None, false);
-    let mut stems = false;
+    let (mut stems, mut ceiling, mut verdict) = (false, false, false);
     let mut export = None;
-    let mut baseline = Path::new(env!("CARGO_MANIFEST_DIR")).join("baseline/songs.json");
+    let mut baseline = None;
     let mut update = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -247,8 +253,13 @@ fn songs(args: &[&str]) -> Result<(), String> {
             }
             "--full" => full = true,
             "--stems" => stems = true,
+            "--ceiling" => ceiling = true,
+            "--verdict" => {
+                ceiling = true;
+                verdict = true;
+            }
             "--export" => export = Some(PathBuf::from(value()?)),
-            "--baseline" => baseline = value()?.into(),
+            "--baseline" => baseline = Some(PathBuf::from(value()?)),
             "--update" => update = true,
             "--help" | "-h" => {
                 println!("{SONGS_HELP}");
@@ -258,7 +269,32 @@ fn songs(args: &[&str]) -> Result<(), String> {
         }
     }
     let cases = tempo.map_or(TempoCase::all(), |c| vec![c]);
-    let methods = method.map_or(Method::ALL.to_vec(), |m| vec![m]);
+    let methods = method.map_or(
+        if ceiling {
+            Method::CEILING.to_vec()
+        } else {
+            Method::ALL.to_vec()
+        },
+        |m| vec![m],
+    );
+    let baseline = baseline.unwrap_or_else(|| {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(if ceiling {
+            "baseline/ceiling.json"
+        } else {
+            "baseline/songs.json"
+        })
+    });
+    if verdict {
+        let text = std::fs::read_to_string(&baseline)
+            .map_err(|e| format!("{}: {e}", baseline.display()))?;
+        let rows = Baseline::from_json(&text)?.rows();
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|r| song.as_deref().is_none_or(|n| r.probe == n))
+            .collect();
+        print!("{}", table::format_ceiling(&rows));
+        return Ok(());
+    }
     let mut rows = Vec::new();
     let mut found = false;
     for s in noodle_eval::song::all() {
@@ -273,9 +309,21 @@ fn songs(args: &[&str]) -> Result<(), String> {
         };
         let mut harness = Harness::for_song(&s, range, 48_000).map_err(|e| e.to_string())?;
         harness.export.clone_from(&export);
+        if ceiling {
+            let source = s.render(&noodle_eval::tempo::steady(s.bpm), range, 48_000)?;
+            let stems = harness.exact_stems(&s, range, &source)?;
+            let names: Vec<&str> = stems.parts.iter().map(|(p, _)| p.name()).collect();
+            eprintln!(
+                "{name}: stems {names:?}, residual {:.1} dB against the mix {:.1} dB",
+                noodle_eval::stems::rms_db(&stems.residual),
+                noodle_eval::stems::rms_db(&source)
+            );
+        }
         for &c in &cases {
             eprintln!("{name} at {}", c.name());
-            rows.extend(if stems {
+            rows.extend(if ceiling {
+                harness.run_ceiling(&name, &s, range, c, &methods)?
+            } else if stems {
                 harness.run_stems(&name, &s, range, c, &methods)?
             } else {
                 harness.run_song(&name, &s, range, c, &methods)?
@@ -284,6 +332,9 @@ fn songs(args: &[&str]) -> Result<(), String> {
     }
     if !found {
         return Err("no such song".into());
+    }
+    if ceiling {
+        println!("{}", table::format_ceiling(&rows));
     }
     report(&rows, &baseline, update)
 }

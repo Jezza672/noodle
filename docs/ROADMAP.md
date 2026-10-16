@@ -841,7 +841,12 @@ included: Compressor, Limiter, Gate, Expander and variants).
 
 ## M10: Stems
 
-**Status:** Designed (CONTEXT.md, "Stems"; ADR 0006). Nothing built.
+**Status:** Batch 1 (the ceiling experiment) is done. Its result is a trade, not a clear gain:
+flawless stems clean up the spectrum (log-spectral distance 12 to 18% lower than Auto's, more
+with all stems in Beats) and cost transients (peakiness error 1.2 to 2.2 times Auto's), so the
+pooled error is level with Auto and Beats. That does not justify Stem warp as designed.
+Batches 2 and 3 are not
+started; see the result below before building them.
 
 AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
 sources are in the project folder `research/stem-warp/findings.md`. Three batches:
@@ -855,6 +860,37 @@ sources are in the project folder `research/stem-warp/findings.md`. Three batche
    so it also adds simulated leakage between stems to test the residual. The generated songs
    have no vocals, so the vocals default is untested by this batch. If there is no clear gain,
    stop here. The ADR and docs landed in #166.
+   **Result** (`noodle-eval songs --ceiling`, five songs, all nine tempo cases, baseline in
+   `baseline/ceiling.json`; `songs --verdict` reads it again and has the per-metric table). The
+   stems are exact: drums, bass and other (the songs have no vocals), rendered alone through the
+   mix's master chain. They add back to the mix to -70 dB or better on three songs; on
+   breakbeat-run and funk-engine the master bus compression leaves a residual 14 dB under the
+   mix, which is warped in Grain with the rest. Each stem warps at the true source tempo; the
+   default modes are Beats for the drums and Grain for the rest. Native view, median error over
+   Auto's, per metric (below 1 is better):
+   - Spectral fidelity improves: `log_distance_db` 0.88 with perfect stems, 0.87 at 20 dB of
+     leakage and 0.99 at 10 dB; `mfcc_delta_dist` 0.98; `smoothed_band_distance_db` 0.97.
+   - Transients get worse, and more with leakage: `flux_peakiness_abs_ln` 2.22 (perfect), 3.88
+     (20 dB), 3.66 (10 dB); `HPSTrRat_abs_ln` 1.45; `percussive_share_abs_ln` 1.14. Phase
+     (`SPhMW`, `MPhMW`) and timing are level.
+   - Pooled over all metrics the median is 1.00 against Auto and Beats alone and 0.98 against
+     Grain alone (1.02 against the best of the three per metric, an oracle). 30 / 20 / 10 dB of
+     leakage pool to 1.03 / 1.04 / 1.13 against that oracle; the harmonic/percussive split with
+     no model, 1.21.
+   - The control for mixing modes: exact stems all in Beats pool to 1.000 against that oracle
+     (0.986 against Auto, 0.993 against Beats), with `log_distance_db` 0.82 (better on every
+     cell) and transients closer (peakiness 1.18). All in Grain are worse (1.07). So the default
+     per-stem modes cost something, and Grain on the "other" stem is the part to doubt; a
+     per-stem mode choice is the one thing that could still make a gain, and it needs a design
+     of its own.
+   - By song (stems against the best whole-mix mode): rainy-lofi 0.94, glass-ambient 1.00,
+     neon-drive 1.14, funk-engine 1.04, breakbeat-run 1.09. Only rainy-lofi gains.
+
+   **Decision for the owner:** the gain is a few percent at best, depends on the song, and the
+   transient cost grows with any leakage, so do not build Stem warp (batch 3) as designed; it
+   would cost HT-Demucs, a downloaded model and a native runtime. Split to stems (batch 2) stands
+   on its own as an editing feature. Caveats: the songs have no vocals, flat leakage is a simple
+   stand-in for a real model's errors, and a real model's output was not tried.
 2. **Separation and Split to stems.** The separator trait in its own crate (added to
    CLAUDE.md's crate table), with a fake separator for tests, the ONNX backend, the consented weight
    download, a cancellable background job with progress, and **Split to stems** on an audio
