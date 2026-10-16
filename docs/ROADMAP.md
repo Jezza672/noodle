@@ -881,7 +881,7 @@ step, after Stem warp; true per-note audio extraction is not planned.
 ## Later
 
 - Spectral signal type.
-- AU hosting.
+- ~~AU hosting.~~ **Done** (macOS): effects, instruments and music effects, with ports, notes, state and the transport; editors are the follow-up. See "AU hosting" in ARCHITECTURE.md.
 - A scripting or expression node.
 - MIDI 2.0.
 - Surround and multichannel buses.

@@ -179,6 +179,15 @@ fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edi
     let Some(plugin) = session.plugin_of(id) else {
         return;
     };
+    if plugin.descriptor().format == noodle_plugins::PluginFormat::Au {
+        ui.label(
+            RichText::new(
+                "Audio Units have no editor window yet; set them through their parameters.",
+            )
+            .weak(),
+        );
+        return;
+    }
     let open = session.plugin_editor_open(id);
     let label = if open { "Close editor" } else { "Open editor" };
     if ui

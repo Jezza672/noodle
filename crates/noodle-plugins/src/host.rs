@@ -1,4 +1,4 @@
-//! Loading CLAP plugins (VST3 is in `vst3/`), with clack: the host's callbacks, and describing a
+//! Loading CLAP plugins (VST3 is in `vst3/`, AU in `au/`), with clack: the host's callbacks, and describing a
 //! plugin file for the scanner. Live instances belong to the shared plugin
 //! thread (see `thread.rs`).
 
@@ -266,8 +266,10 @@ fn text(bytes: Option<&std::ffi::CStr>) -> String {
 /// code (it instantiates each one to read its ports), so call it in the
 /// scanner's child process.
 pub fn describe_file(path: &Path) -> Result<Vec<Descriptor>, HostError> {
-    if PluginFormat::of_path(path) == PluginFormat::Vst3 {
-        return crate::vst3::describe_file(path);
+    match PluginFormat::of_path(path) {
+        PluginFormat::Vst3 => return crate::vst3::describe_file(path),
+        PluginFormat::Au => return crate::au::describe_file(path),
+        PluginFormat::Clap => {}
     }
     let entry = load_entry(path)?;
     let factory = entry
@@ -455,8 +457,10 @@ pub fn capture_state(
     plugin_id: &str,
     state: Option<&[u8]>,
 ) -> Result<Vec<u8>, HostError> {
-    if PluginFormat::of_path(path) == PluginFormat::Vst3 {
-        return crate::vst3::capture_state(path, plugin_id, state);
+    match PluginFormat::of_path(path) {
+        PluginFormat::Vst3 => return crate::vst3::capture_state(path, plugin_id, state),
+        PluginFormat::Au => return crate::au::capture_state(path, plugin_id, state),
+        PluginFormat::Clap => {}
     }
     crate::thread::capture_fresh(path, plugin_id, state)
 }

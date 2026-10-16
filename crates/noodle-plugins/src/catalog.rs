@@ -103,12 +103,27 @@ pub fn discover_in_with(
     cache_path: Option<&std::path::Path>,
     everything: bool,
 ) -> Discovery {
+    discover_files(dirs, false, command, cache_path, everything)
+}
+
+/// [`discover_in_with`], also listing the installed Audio Units (the system
+/// keeps those, so they aren't in any folder) where there are any.
+fn discover_files(
+    dirs: &[std::path::PathBuf],
+    audio_units: bool,
+    command: &ScanCommand,
+    cache_path: Option<&std::path::Path>,
+    everything: bool,
+) -> Discovery {
     let mut cache = if everything {
         ScanCache::default()
     } else {
         cache_path.map(ScanCache::load).unwrap_or_default()
     };
-    let found = find_plugin_files(dirs);
+    let mut found = find_plugin_files(dirs);
+    if audio_units {
+        found.extend(crate::au::component_files());
+    }
     let scanned = cache.refresh(command, &found);
     if let (Some(path), true) = (cache_path, scanned > 0 || cache.files.is_empty()) {
         // A cache that can't be saved only means scanning again next time.
@@ -133,8 +148,9 @@ pub fn discover() -> Discovery {
 pub fn discover_with(everything: bool) -> Discovery {
     let cache_path = ScanCache::default_path();
     match ScanCommand::current_exe() {
-        Ok(command) => discover_in_with(
+        Ok(command) => discover_files(
             &standard_dirs(),
+            true,
             &command,
             cache_path.as_deref(),
             everything,

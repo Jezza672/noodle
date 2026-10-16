@@ -40,7 +40,7 @@ use crate::descriptor::{
 };
 use crate::host::{Flags, Host};
 use crate::{PARAMS_KEY, STATE_KEY};
-use crate::{editor, sandbox, thread, vst3};
+use crate::{au, editor, sandbox, thread, vst3};
 
 /// While a wire drives a parameter, it's sampled this often (in frames).
 pub const PARAM_STEP: usize = 32;
@@ -307,6 +307,9 @@ impl PluginNodeType {
             _ => None,
         };
         let exposed = exposed_params(&self.descriptor, setup.config);
+        if self.descriptor.format == PluginFormat::Au {
+            return self.instantiate_au(setup, state, &exposed);
+        }
         if self.descriptor.format == PluginFormat::Vst3 {
             let loaded = vst3::load(
                 &self.path,
@@ -350,6 +353,54 @@ impl PluginNodeType {
         );
         node.latency = loaded.latency;
         Ok(Instance::realtime(node))
+    }
+}
+
+impl PluginNodeType {
+    /// Loads an Audio Unit into this process. (Without an editor: the unit's
+    /// parameters have ports, and a node's saved state is what it holds.)
+    #[cfg(target_os = "macos")]
+    fn instantiate_au(
+        &self,
+        setup: &Setup<'_>,
+        state: Option<Vec<u8>>,
+        exposed: &[&ParamDesc],
+    ) -> Result<Instance, NodeError> {
+        let pull = au::make_pull(&self.descriptor, setup.max_frames);
+        let shared = au::PullPtr(pull);
+        let buses = self.descriptor.audio_inputs.len();
+        let loaded = au::load(
+            &self.descriptor.id,
+            state,
+            setup.sample_rate,
+            setup.max_frames,
+            move |unit| au::connect_inputs(unit, &shared, buses),
+        );
+        match loaded {
+            Ok(loaded) => Ok(Instance::realtime(au::AuNode::new(
+                loaded,
+                pull,
+                &self.descriptor,
+                exposed,
+                setup.max_frames,
+            ))),
+            Err(error) => {
+                // SAFETY: made above; the failed load dropped its unit, so
+                // nothing refers to it now.
+                drop(unsafe { Box::from_raw(pull) });
+                Err(NodeError::config(error.to_string()))
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn instantiate_au(
+        &self,
+        _setup: &Setup<'_>,
+        _state: Option<Vec<u8>>,
+        _exposed: &[&ParamDesc],
+    ) -> Result<Instance, NodeError> {
+        Err(NodeError::config(au::unsupported().to_string()))
     }
 }
 
