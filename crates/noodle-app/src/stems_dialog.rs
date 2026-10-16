@@ -18,9 +18,10 @@ pub fn show(ctx: &egui::Context, session: &mut Session) {
         ui.heading("Download the stem model?");
         ui.add_space(6.0);
         ui.label(
-            "Splitting a clip into stems uses an AI model (HT-Demucs) that is not \
-             included with Noodle. It is downloaded once, can be several hundred \
-             megabytes, and is kept in:",
+            "Splitting a clip into stems uses an AI model (HT-Demucs, MIT licence) \
+             and Microsoft's ONNX Runtime to run it, neither of which is included \
+             with Noodle. They are downloaded once (the model is about 300 MB) and \
+             kept in:",
         );
         ui.label(egui::RichText::new(&folder).monospace().small());
         ui.add_space(4.0);

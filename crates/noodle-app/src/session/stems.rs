@@ -12,7 +12,7 @@ use noodle_core::group::PORT_NAME;
 use noodle_core::{Clip, ClipContent, ClipId, NodeId, Value};
 use noodle_engine::{Job, JobPanicked};
 use noodle_stems::{
-    DownloadError, ModelSpec, ModelStore, SplitError, SplitOutput, SplitRequest, split,
+    DownloadError, ModelSpec, ModelStore, RuntimeSpec, SplitError, SplitOutput, SplitRequest, split,
 };
 
 use super::*;
@@ -30,10 +30,19 @@ enum Source {
     Model {
         store: Option<ModelStore>,
         spec: ModelSpec,
+        /// ONNX Runtime for this platform, downloaded when the machine has none.
+        runtime: Option<RuntimeSpec>,
     },
     /// Whatever opens one: tests use a fake that needs no weights.
     #[cfg(test)]
     Custom(OpenSeparator),
+}
+
+/// What a split has to download first.
+#[derive(Default)]
+struct Downloads {
+    model: Option<(ModelStore, ModelSpec)>,
+    runtime: Option<(ModelStore, RuntimeSpec)>,
 }
 
 /// A split under way.
@@ -61,6 +70,7 @@ impl Stems {
             source: Source::Model {
                 store,
                 spec: ModelSpec::htdemucs(),
+                runtime: RuntimeSpec::current(),
             },
             run: None,
             asking: None,
@@ -69,12 +79,36 @@ impl Stems {
         }
     }
 
-    /// Whether the weights have to be downloaded before a split can start.
+    /// Whether something (the weights, or ONNX Runtime) has to be downloaded
+    /// before a split can start.
     fn needs_download(&self) -> bool {
         match &self.source {
-            Source::Model { store, spec } => store.as_ref().is_none_or(|s| !s.is_present(spec)),
+            Source::Model { store, spec, .. } => {
+                store.as_ref().is_none_or(|s| !s.is_present(spec)) || self.runtime_to_download()
+            }
             #[cfg(test)]
             Source::Custom(_) => false,
+        }
+    }
+
+    /// Whether ONNX Runtime has to be downloaded: none is in the model folder,
+    /// none loads from `ORT_DYLIB_PATH` or the system, and one can be had for
+    /// this platform.
+    fn runtime_to_download(&self) -> bool {
+        #[cfg(test)]
+        if self.skip_runtime_check {
+            return false;
+        }
+        match &self.source {
+            Source::Model {
+                store: Some(store),
+                runtime: Some(runtime),
+                ..
+            } => {
+                !store.has_runtime(runtime)
+                    && noodle_stems::OnnxSeparator::load_runtime(None).is_err()
+            }
+            _ => false,
         }
     }
 
@@ -107,6 +141,8 @@ impl Stems {
             return None;
         }
         match &self.source {
+            // Downloaded along with the weights.
+            Source::Model { .. } if self.runtime_to_download() => None,
             Source::Model { .. } => {
                 noodle_stems::OnnxSeparator::load_runtime(self.runtime_in_folder().as_deref())
                     .err()
@@ -120,15 +156,19 @@ impl Stems {
     /// Why the model can't be downloaded, if no address is set for it.
     fn cannot_download(&self) -> Option<String> {
         match &self.source {
-            Source::Model { store, spec } if spec.url.is_none() => Some(format!(
-                "The stem model isn't installed. Put {} in {}, or set {} to where it can be downloaded from",
-                spec.file,
-                store.as_ref().map_or_else(
-                    || "the Noodle data folder".to_owned(),
-                    |s| s.dir().display().to_string()
-                ),
-                noodle_stems::URL_VARIABLE,
-            )),
+            Source::Model { store, spec, .. }
+                if spec.url.is_none() && store.as_ref().is_none_or(|s| !s.is_present(spec)) =>
+            {
+                Some(format!(
+                    "The stem model isn't installed. Put {} in {}, or set {} to where it can be downloaded from",
+                    spec.file,
+                    store.as_ref().map_or_else(
+                        || "the Noodle data folder".to_owned(),
+                        |s| s.dir().display().to_string()
+                    ),
+                    noodle_stems::URL_VARIABLE,
+                ))
+            }
             Source::Model { .. } => None,
             #[cfg(test)]
             Source::Custom(_) => None,
@@ -137,31 +177,42 @@ impl Stems {
 
     /// What the job needs to get a separator, and the download it may have to
     /// make first.
-    fn job_parts(&self) -> Result<(OpenSeparator, Option<(ModelStore, ModelSpec)>), String> {
+    fn job_parts(&self) -> Result<(OpenSeparator, Downloads), String> {
         match &self.source {
-            Source::Model { store, spec } => {
+            Source::Model {
+                store,
+                spec,
+                runtime,
+            } => {
                 let store = store
                     .clone()
                     .ok_or("There is nowhere to keep the stem model on this computer")?;
-                let download = (!store.is_present(spec)).then(|| (store.clone(), spec.clone()));
+                let downloads = Downloads {
+                    model: (!store.is_present(spec)).then(|| (store.clone(), spec.clone())),
+                    runtime: runtime
+                        .clone()
+                        .filter(|_| self.runtime_to_download())
+                        .map(|r| (store.clone(), r)),
+                };
                 let (weights, spec) = (store.path(spec), spec.clone());
-                let runtime = [
-                    "libonnxruntime.so",
-                    "libonnxruntime.dylib",
-                    "onnxruntime.dll",
-                ]
-                .into_iter()
-                .map(|name| store.dir().join(name))
-                .find(|path| path.is_file());
                 let open: OpenSeparator = Arc::new(move || {
+                    // Looked for when opening, after any download.
+                    let runtime = [
+                        "libonnxruntime.so",
+                        "libonnxruntime.dylib",
+                        "onnxruntime.dll",
+                    ]
+                    .into_iter()
+                    .map(|name| store.dir().join(name))
+                    .find(|path| path.is_file());
                     noodle_stems::OnnxSeparator::open(&weights, runtime.as_deref(), spec.model_id())
                         .map(|s| Box::new(s) as Box<dyn noodle_stems::Separator>)
                         .map_err(|e| e.to_string())
                 });
-                Ok((open, download))
+                Ok((open, downloads))
             }
             #[cfg(test)]
-            Source::Custom(open) => Ok((open.clone(), None)),
+            Source::Custom(open) => Ok((open.clone(), Downloads::default())),
         }
     }
 }
@@ -228,7 +279,7 @@ impl Session {
         let Some(audio) = self.project.clip(clip).and_then(|c| c.as_audio()) else {
             return;
         };
-        let (open, download) = match self.stems.job_parts() {
+        let (open, downloads) = match self.stems.job_parts() {
             Ok(parts) => parts,
             Err(why) => {
                 self.message = Some(why);
@@ -244,16 +295,31 @@ impl Session {
             out_dir: dir.join(STEMS_DIR),
             name: name.clone(),
         };
-        // The download, when there is one, is the first part of the bar.
-        let share = if download.is_some() { 0.3 } else { 0.0 };
+        // The downloads, when there are any, are the first part of the bar: the
+        // runtime (a few to 70 MB) then the weights (over 300 MB).
+        let runtime_share = if downloads.runtime.is_some() {
+            0.03
+        } else {
+            0.0
+        };
+        let model_share = if downloads.model.is_some() { 0.27 } else { 0.0 };
+        let share = runtime_share + model_share;
+        let failed = |e: DownloadError| match e {
+            DownloadError::Cancelled => SplitError::Cancelled,
+            other => SplitError::Failed(other.to_string()),
+        };
         let job = Job::spawn(move |progress| {
-            if let Some((store, spec)) = download {
+            if let Some((store, spec)) = downloads.runtime {
                 store
-                    .download(&spec, &mut |f| progress.report(f * share).is_ok())
-                    .map_err(|e| match e {
-                        DownloadError::Cancelled => SplitError::Cancelled,
-                        other => SplitError::Failed(other.to_string()),
-                    })?;
+                    .download_runtime(&spec, &mut |f| progress.report(f * runtime_share).is_ok())
+                    .map_err(failed)?;
+            }
+            if let Some((store, spec)) = downloads.model {
+                store
+                    .download(&spec, &mut |f| {
+                        progress.report(runtime_share + f * model_share).is_ok()
+                    })
+                    .map_err(failed)?;
             }
             let mut separator = open().map_err(SplitError::Failed)?;
             split(&request, &mut *separator, &mut |f| {
@@ -755,6 +821,7 @@ mod tests {
         session.stems.source = Source::Model {
             store: Some(ModelStore::new(dir.path().join("models"))),
             spec,
+            runtime: None,
         };
         session.stems.skip_runtime_check = true;
         let before = session.project().clone();
@@ -779,6 +846,47 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_runtime_is_downloaded_with_the_weights_after_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, id, _) = rig(dir.path(), 0, 20_000);
+        let models = dir.path().join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        // The weights are here already; only the runtime is missing.
+        std::fs::write(models.join("test.onnx"), b"not a model").unwrap();
+        let mut runtime = RuntimeSpec::for_target("linux", "x86_64").unwrap();
+        // Nothing listens here: allowed, the download fails.
+        runtime.url = "http://127.0.0.1:1/onnxruntime.tgz".into();
+        session.stems.source = Source::Model {
+            store: Some(ModelStore::new(&models)),
+            spec: ModelSpec {
+                id: "test",
+                version: "1",
+                file: "test.onnx",
+                url: None,
+                sha256: None,
+            },
+            runtime: Some(runtime),
+        };
+        // Skip this when the machine has a runtime of its own.
+        if noodle_stems::OnnxSeparator::load_runtime(None).is_ok() {
+            return;
+        }
+        session.split_to_stems(id);
+        assert_eq!(
+            session.stems_consent(),
+            Some(id),
+            "asked before downloading"
+        );
+        session.allow_stem_download();
+        wait(&mut session);
+        assert!(
+            session.message().unwrap().contains("the download failed"),
+            "{:?}",
+            session.message()
+        );
+    }
+
+    #[test]
     fn without_weights_or_an_address_it_says_where_to_put_them() {
         let dir = tempfile::tempdir().unwrap();
         let (mut session, id, _) = rig(dir.path(), 0, 20_000);
@@ -791,6 +899,7 @@ mod tests {
                 url: None,
                 sha256: None,
             },
+            runtime: None,
         };
         session.split_to_stems(id);
         let message = session.message().unwrap();
@@ -821,6 +930,7 @@ mod tests {
                 url: Some("http://127.0.0.1:1/model.onnx".into()),
                 sha256: None,
             },
+            runtime: None,
         };
         session.split_to_stems(id);
         assert!(
@@ -851,6 +961,7 @@ mod tests {
                 url: None,
                 sha256: None,
             },
+            runtime: None,
         };
         session.split_to_stems(id);
         assert_eq!(session.stems_consent(), None, "present: no need to ask");
