@@ -841,7 +841,7 @@ included: Compressor, Limiter, Gate, Expander and variants).
 
 ## M10: Stems
 
-**Status:** Batch 2 (Split to stems) is in code and works end to end with a fake separator, but cannot be used by a person yet: there is no built-in weights address (the licence is unchecked; the address comes from `NOODLE_STEM_MODEL_URL`), no ONNX Runtime library is shipped on any platform, and the backend has not run real HT-Demucs weights. See ARCHITECTURE.md ("Stems"). Designed: CONTEXT.md, "Stems", and ADR 0006. Batch 1's result (PR #174) said Stem warp should not be built yet. Batch 3 is not started.
+**Status:** Batch 2 (Split to stems) is in code and works end to end with a fake separator, and downloads its weights (pinned Hugging Face export, MIT) and ONNX Runtime 1.22.0 (pinned GitHub release, MIT) on first use, after asking; the backend has not yet run the real HT-Demucs weights end to end, and there is no Intel Mac runtime. See ARCHITECTURE.md ("Stems"). Designed: CONTEXT.md, "Stems", and ADR 0006. Batch 1's result (PR #174) said Stem warp should not be built yet. Batch 3 is not started.
 
 AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
 sources are in the project folder `research/stem-warp/findings.md`. Three batches:
