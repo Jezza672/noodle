@@ -839,9 +839,10 @@ included: Compressor, Limiter, Gate, Expander and variants).
 
 ## M10: Stems
 
-**Status:** Batch 1 (the ceiling experiment) is done and its result is **no clear gain**: with
-flawless stems, Stem warp beats the best whole-mix mode on a median 3 to 4% less error (9% against
-Auto, what the app does today), and that disappears with 20 dB of leakage. Batches 2 and 3 are not
+**Status:** Batch 1 (the ceiling experiment) is done and its result is **no gain**: with
+flawless stems, Stem warp's median error is level with Auto and Beats (0.996 and 0.999 times
+theirs) and 3% lower than Grain's, and 20 dB of leakage between stems takes even that away.
+Batches 2 and 3 are not
 started; see the result below before building them.
 
 AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
@@ -857,23 +858,23 @@ sources are in the project folder `research/stem-warp/findings.md`. Three batche
    have no vocals, so the vocals default is untested by this batch. If there is no clear gain,
    stop here. The ADR and docs landed in #166.
    **Result** (`noodle-eval songs --ceiling`, five songs, all nine tempo cases, baseline in
-   `baseline/ceiling.json`, `songs --verdict` reads it again). The stems are exact: drums, bass
+   `baseline/ceiling.json`; `songs --verdict` reads it again). The stems are exact: drums, bass
    and other (the songs have no vocals), rendered with the mix's master chain; they add back to
-   the mix to better than -70 dB (-100 and lower on three songs). Each stem warps at the true
-   source tempo, Beats for the drums and Grain for the rest, residual in Grain. Native view,
-   median error over the best whole-mix mode of Auto, Grain and Beats, per metric (below 1 is
-   better): perfect stems 1.01 (beats it on 40% of cells), 30 dB leakage 1.02, 20 dB 1.05, 10 dB
-   1.18; harmonic/percussive split without a model 1.28. Against Auto alone: 0.93 for perfect
-   stems, 0.95 at 20 dB, 1.01 at 10 dB. By song, perfect stems gain on rainy-lofi (0.94 of the
-   best whole-mix error) and tie on funk-engine and glass-ambient, and lose on breakbeat-run
-   (1.03) and neon-drive (1.12). The mix quality of the existing modes is the limit, not the
-   separation: the "other" stem is mostly short synth notes, which Grain smears about as much as
-   it does in the mix. **Decision for the owner:** the gain is too small, and too uneven, to
-   justify HT-Demucs, a downloaded model and a native runtime for Stem warp. Split to stems
-   (batch 2) stands on its own as an editing feature, whatever batch 3 does. If batch 3 is
-   built anyway, test per-stem mode choice (Beats for plucked and arpeggiated "other"), since
-   fixed Grain on "other" is the likeliest reason for the small gain; the vocals default is
-   still untested.
+   the mix to better than -70 dB. Each stem warps at the true source tempo, Beats for the drums
+   and Grain for the rest, residual in Grain. Native view, median error over the best whole-mix
+   mode of Auto, Grain and Beats, per metric (below 1 is better): perfect stems 1.00 (they win
+   42% of the cells), 30 dB leakage 1.01, 20 dB 1.02, 10 dB 1.13; the harmonic/percussive split
+   with no model 1.20. Against each mode alone: Auto 0.996, Beats 0.999, Grain 0.971 for perfect
+   stems; Auto 1.000 at 20 dB and 1.10 at 10 dB. By song (against the best whole-mix mode):
+   rainy-lofi 0.94, glass-ambient 1.00, breakbeat-run 1.01, funk-engine 1.01, neon-drive 1.14.
+   The ceiling is low because the existing modes already do well on this material, and because
+   the "other" stem is mostly short synth notes, which Grain smears about as much as it does in
+   the mix. **Decision for the owner:** do not build Stem warp (batch 3) on this evidence; it
+   would cost HT-Demucs, a downloaded model and a native runtime for no measured gain. Split to
+   stems (batch 2) stands on its own as an editing feature. Caveats: the songs have no vocals
+   (the one stem a real model helps most), the stem modes are fixed (per-stem choice, such as
+   Beats on plucked "other" material, is untested), and flat leakage is a simple stand-in for a
+   real model's errors.
 2. **Separation and Split to stems.** The separator trait in its own crate (added to
    CLAUDE.md's crate table), with a fake separator for tests, the ONNX backend, the consented weight
    download, a cancellable background job with progress, and **Split to stems** on an audio
