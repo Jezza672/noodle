@@ -111,7 +111,10 @@ fn never_allocates(id: &str) -> bool {
         .iter()
         .map(|&shape| SignalBuffer::new(shape, FRAMES))
         .collect();
-    let mut output_buffer = SignalBuffer::new(output_shapes[0], FRAMES);
+    let mut output_buffers: Vec<_> = output_shapes
+        .iter()
+        .map(|&shape| SignalBuffer::new(shape, FRAMES))
+        .collect();
     let notes = layout.event_inputs.len();
     let ctx = Context {
         sample_rate: RATE,
@@ -162,7 +165,10 @@ fn never_allocates(id: &str) -> bool {
             assert_eq!(realtime(|| node.reset()), 0, "reset allocated or freed");
         }
         let inputs: Vec<SignalIn<'_>> = input_buffers.iter().map(|b| b.as_in(FRAMES)).collect();
-        let mut outputs: Vec<SignalOut<'_>> = vec![output_buffer.as_out(FRAMES)];
+        let mut outputs: Vec<SignalOut<'_>> = output_buffers
+            .iter_mut()
+            .map(|b| b.as_out(FRAMES))
+            .collect();
         let event_inputs: Vec<&[Event]> = (0..notes).map(|_| &events[..]).collect();
         let mut event_outputs: Vec<EventsOut<'_>> = Vec::new();
         let violations = realtime(|| {
@@ -179,7 +185,7 @@ fn never_allocates(id: &str) -> bool {
             );
         });
         assert_eq!(violations, 0, "{id}: block {block} allocated or freed");
-        let out = output_buffer.as_in(FRAMES);
+        let out = output_buffers[0].as_in(FRAMES);
         heard |= (0..out.shape().channels)
             .any(|channel| out.lane(0, channel).iter().any(|&s| s.abs() > 1e-6));
     }
