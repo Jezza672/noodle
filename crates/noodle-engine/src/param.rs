@@ -51,6 +51,8 @@ pub enum Unit {
     Decibels,
     Seconds,
     Semitones,
+    /// Degrees of angle, such as a panner's direction.
+    Degrees,
     /// Hundredths of a semitone.
     Cents,
     Percent,

@@ -704,6 +704,67 @@ milliseconds later than a direct one; the engine doesn't
 compensate for either. Neither callback allocates or resamples; dropping the
 extra's callback stops the thread.
 
+### Surround and multichannel buses
+
+The engine has always carried any number of channels per signal; surround adds
+the conventions and nodes that make them usable.
+
+- **Layouts** (`noodle-engine/src/channels.rs`, `ChannelLayout`): Mono, Stereo,
+  3.0, Quad, 5.1 and 7.1, each a list of `Speaker`s in WAV channel order (5.1
+  is L, R, C, LFE, Lb, Rb; 7.1 adds Ls, Rs). A signal's layout is implied by
+  its channel count (1, 2, 3, 4, 6, 8); other counts are plain channels with no
+  layout. A layout knows each speaker's azimuth (degrees from straight ahead,
+  positive to the right; the LFE has none), its WAV channel mask, and two
+  pure functions the nodes use: `pan_gains` (constant power between the two
+  speakers either side of a direction, a hard pan at the edges of a layout
+  with nothing behind, `spread` blending toward all speakers equally, never
+  to the LFE) and `convert_matrix` (the usual downmix recipe: shared
+  speakers pass, the centre of a layout without one goes to L and R at -3 dB,
+  a missing rear pair folds onto the other rear pair or onto the front on its
+  side at -3 dB, stereo into mono sums at -3 dB, the LFE dropped where there
+  is none, speakers the source lacks stay silent; no normalising).
+- **Nodes** (`noodle-nodes/src/surround.rs`). `Surround Pan`
+  (`noodle.util.surround_pan`; config `layout`, default 5.1; parameters
+  `azimuth` (wired signals move it along its range, so a full-scale LFO circles
+  the listener), `spread` and `lfe` (a send to the LFE in dB, off at its
+  minimum)) pans the average of its input channels per voice. `Convert Layout`
+  (`noodle.util.convert_layout`; config `layout`, default Stereo) converts
+  from the layout the input's channel count implies; a count with no layout is
+  a compile error. `Split Channels` and `Merge Channels`
+  (`noodle.util.split_channels`/`merge_channels`; config `channels`) take a
+  multichannel wire into one-channel outputs and back (the config is the
+  channel count, since it changes the ports). The properties panel shows the
+  layout as a drop-down. `Mix` needs equal channel counts or one (the
+  existing broadcast rule), so convert before mixing different layouts.
+- **Outputs.** An Output node's channel n goes to device channel n. A mono
+  signal now goes to the first two channels only (not the centre, LFE and
+  rears of a surround bus); a signal with fewer channels than the bus leaves
+  the rest silent, and extra channels are dropped. Plugin nodes keep their own
+  rule (a mono wire into a stereo port, any other mismatch an error), so a
+  surround mix goes through Convert Layout before a stereo plugin.
+- **Devices.** `AudioConfig::channels` opens the main device with that many
+  channels (the device's default, usually two, if `None`); `choose_config` takes
+  it as the first preference and refuses a count no configuration has
+  (`AudioError::UnsupportedChannels`) rather than guessing. The audio settings
+  have an "Output channels" drop-down (1, 2, 4, 6, 8 and the device's maximum),
+  `noodle play --channels N` the same, and the virtual output takes 1 to 8
+  (`testkit::virtual_audio()` stays stereo unless told otherwise), so a surround
+  render can be captured with no hardware. Extra devices still open at their
+  default channels.
+- **Export.** The export dialog has a Channels drop-down (a layout) and
+  `ExportChoice::layout` sets the render's channel count; WAV and FLAC take up
+  to 8. `noodle render --channels N` writes the same. Hound writes the
+  `WAVE_FORMAT_EXTENSIBLE` mask for N channels as the first N speaker bits,
+  which is right for 6 (5.1) but not for 4 (it says L R C LFE, not quad) or 8
+  (it says the wide 7.1); players mostly go by channel count.
+- **Meters.** The Mix node's and the meters' readings average a bus's
+  channels' power (peak is the loudest channel) and are not weighted by
+  layout.
+- **Not done:** per-speaker delay and level for room calibration, bass
+  management (a crossover to the LFE), ambisonics, binaural rendering, a
+  channel-mask field in exported WAVs matching the layout, and playing extra
+  devices as part of one surround bus.
+
 ### Live monitoring
 
 A track **armed for MIDI** (RM on its header, `Session::arm_kind`) plays live MIDI
@@ -1521,8 +1582,10 @@ built).
 - **Not yet:** editors (a Cocoa view factory or `AUViewController`; the
   properties panel says so, and state changes by wiring the parameter
   ports), AUv3 units that need asynchronous instantiation, and AUs outside the
-  system registry. The real-time test (`realtime.rs`) doesn't cover the AU
-  node, since units are Apple's code.
+  system registry. `tests/au_realtime.rs` (macOS) counts allocations on the
+  Rust side of the AU node (the delay with a wired parameter, the synth with
+  notes, a seek); what Apple's units do inside their render calls is their
+  code and not seen by Rust's allocator.
 
 ### VST3 hosting
 

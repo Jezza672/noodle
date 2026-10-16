@@ -1,0 +1,25 @@
+// A source circling a 5.1 room: a saw wave panned by Surround Pan, its azimuth
+// swept by an LFO (a full-scale signal circles the listener), then folded down
+// by Convert Layout (here to mono, so the golden render shows the level change
+// as it passes each speaker; use Stereo to listen). Remove the Convert Layout
+// and `noodle render --channels 6` writes a 5.1 WAV.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.osc.saw", params: {"frequency": 196.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.mod.lfo", params: {"rate": 6.0}, position: (x: 0.0, y: 160.0)),
+            3: (type: "noodle.util.surround_pan", params: {"lfe": 0.0}, config: {"layout": "5.1"}, position: (x: 220.0, y: 0.0)),
+            4: (type: "noodle.util.convert_layout", config: {"layout": "Mono"}, position: (x: 440.0, y: 0.0)),
+            5: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 660.0, y: 0.0)),
+            6: (type: "noodle.io.output", position: (x: 880.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "azimuth")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
+        ],
+    ),
+)

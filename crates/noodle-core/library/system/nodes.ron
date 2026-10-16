@@ -1388,6 +1388,107 @@
         ),
     )),
     NodePreset((
+        name: "Front Centre",
+        slug: "surround-pan-front-centre",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Behind",
+        slug: "surround-pan-behind",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 180.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Left Surround",
+        slug: "surround-pan-left-surround",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": -110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Right Surround",
+        slug: "surround-pan-right-surround",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Everywhere",
+        slug: "surround-pan-everywhere",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "lfe": -12.0,
+                "spread": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Mono",
+        slug: "convert-layout-to-mono",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Mono",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Stereo",
+        slug: "convert-layout-to-stereo",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Stereo",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Quad",
+        slug: "convert-layout-to-quad",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Quad",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To 5.1",
+        slug: "convert-layout-to-5-1",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "5.1",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To 7.1",
+        slug: "convert-layout-to-7-1",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "7.1",
+            },
+        ),
+    )),
+    NodePreset((
         name: "Full Level",
         slug: "vca-full-level",
         node_type: "noodle.util.vca",

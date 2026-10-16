@@ -909,4 +909,4 @@ stays as the one-line form.
 - Script node follow-ups: loops with a step limit, arrays or delay lines in
   scripts, MIDI/event ports.
 - MIDI 2.0.
-- Surround and multichannel buses.
+- ~~Surround and multichannel buses.~~ **Done**: channel layouts (mono to 7.1), Surround Pan, Convert Layout, Split and Merge Channels, a device channel count, multichannel export. See "Surround and multichannel buses" in ARCHITECTURE.md.

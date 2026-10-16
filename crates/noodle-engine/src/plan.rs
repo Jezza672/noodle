@@ -1411,13 +1411,15 @@ pub(crate) fn read_input(input: Interleaved<'_>, signal: &mut SignalOut<'_>) {
 }
 
 /// Adds a signal into the `count` channels of interleaved output that start
-/// at `first`. A mono signal goes to every channel; otherwise channel n goes
+/// at `first`. A mono signal goes to the first two channels (left and right,
+/// not the centre, LFE and rears of a surround bus); otherwise channel n goes
 /// to channel n, and voices are summed.
 fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize, first: usize, count: usize) {
     let shape = signal.shape();
     for channel in 0..count {
         let source = match shape.channels {
-            1 => 0,
+            1 if channel < 2 => 0,
+            1 => continue,
             n if channel < n => channel,
             _ => continue,
         };

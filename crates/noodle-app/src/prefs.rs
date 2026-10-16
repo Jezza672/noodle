@@ -150,6 +150,7 @@ mod tests {
                 input: InputChoice::Device("alsa:hw:CARD=Mic".into()),
                 sample_rate: Some(48_000),
                 buffer_size: Some(256),
+                channels: Some(6),
                 midi_input: Some("Keystation 49".into()),
                 threads: 2,
             },
@@ -205,7 +206,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;

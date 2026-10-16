@@ -426,6 +426,12 @@ fn config(
             }
             continue;
         }
+        if info.key == noodle_nodes::LAYOUT_KEY
+            && let Some(default) = noodle_nodes::default_layout(node_type.info().id)
+        {
+            layout_picker(ui, id, info, node, default, edits);
+            continue;
+        }
         if node_type.info().id == noodle_nodes::SCRIPT_ID && info.key == noodle_nodes::SCRIPT_KEY {
             script_editor(ui, id, info, node, edits);
             continue;
@@ -446,6 +452,44 @@ fn config(
         edits.extend(out.edit(id, info.key));
         out.response
             .on_hover_text("Changing this rebuilds the node, and may change its ports.");
+    }
+}
+
+/// The drop-down for a node's channel layout: one undo step per choice.
+fn layout_picker(
+    ui: &mut Ui,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    default: noodle_engine::ChannelLayout,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_engine::ChannelLayout;
+    let current = ChannelLayout::from_name(&info.get_text(&node.config)).unwrap_or(default);
+    let mut chosen = current;
+    ui.horizontal(|ui| {
+        let label = ui.label(info.name);
+        crate::widgets::Dropdown::from_id_salt((id, info.key))
+            .selected_text(crate::export_dialog::layout_label(current))
+            .show_ui(ui, |ui| {
+                for layout in ChannelLayout::ALL {
+                    ui.selectable_value(
+                        &mut chosen,
+                        layout,
+                        crate::export_dialog::layout_label(layout),
+                    );
+                }
+            })
+            .response
+            .labelled_by(label.id)
+            .on_hover_text("Changing this rebuilds the node, and changes its output's channels.");
+    });
+    if chosen != current {
+        edits.push(Edit::Apply(Command::SetConfig {
+            node: id,
+            key: info.key.to_owned(),
+            value: Some(noodle_core::Value::Text(chosen.name().to_owned())),
+        }));
     }
 }
 
@@ -1585,6 +1629,42 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run();
         assert_eq!(inputs(&harness, 1), Some(Value::Int(4)));
+    }
+
+    #[test]
+    fn the_layout_of_a_surround_node_is_chosen_from_a_list() {
+        let mut harness = harness([
+            Node::new("noodle.util.surround_pan"),
+            Node::new("noodle.util.convert_layout"),
+        ]);
+        let layout = |harness: &Harness<'_, State>, node| {
+            let graph = harness.state().session.project().graph();
+            graph
+                .node(NodeId(node))
+                .unwrap()
+                .config
+                .get("layout")
+                .cloned()
+        };
+        // An unset layout shows the node's default.
+        assert_eq!(
+            harness.get_by_label("Layout").value().unwrap_or_default(),
+            "5.1 (6 channels)"
+        );
+        harness.get_by_label("Layout").click();
+        harness.run();
+        harness.get_by_label("7.1 (8 channels)").click();
+        harness.run();
+        assert_eq!(layout(&harness, 1), Some(Value::Text("7.1".to_owned())));
+
+        // The next node's default is its own.
+        harness.state_mut().active = Some(NodeId(2));
+        harness.run_steps(2);
+        harness.get_by_label("Layout").click();
+        harness.run();
+        harness.get_by_label("Quad (4 channels)").click();
+        harness.run();
+        assert_eq!(layout(&harness, 2), Some(Value::Text("Quad".to_owned())));
     }
 
     #[test]

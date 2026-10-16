@@ -667,11 +667,18 @@ const VIRTUAL_BUFFER: u32 = 256;
 const VIRTUAL_RATE: u32 = 48_000;
 /// The smallest and largest buffer the virtual output takes, in frames.
 pub(crate) const VIRTUAL_BUFFERS: (u32, u32) = (16, 8192);
-/// The channels of the virtual output.
+/// The channels of the virtual output unless the settings say.
 const VIRTUAL_CHANNELS: usize = 2;
+/// The most channels the virtual output takes.
+pub(crate) const VIRTUAL_MAX_CHANNELS: usize = 8;
 
 impl VirtualClock {
-    fn start(mut writer: Box<DeviceWriter>, frames: u32, rate: u32) -> std::io::Result<Self> {
+    fn start(
+        mut writer: Box<DeviceWriter>,
+        frames: u32,
+        rate: u32,
+        channels: usize,
+    ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let tap = Arc::new(Mutex::<Option<Vec<f32>>>::new(None));
@@ -680,7 +687,7 @@ impl VirtualClock {
         let thread = std::thread::Builder::new()
             .name("noodle virtual output".into())
             .spawn(move || {
-                let mut buffer = vec![0.0f32; frames as usize * VIRTUAL_CHANNELS];
+                let mut buffer = vec![0.0f32; frames as usize * channels];
                 let mut next = Instant::now();
                 while !flag.load(Ordering::Relaxed) {
                     writer.write(&mut buffer);
@@ -984,12 +991,19 @@ fn open_playback(
             if rate == 0 {
                 return Err(AudioError::UnsupportedSampleRate(rate));
             }
+            let channels = choice.channels.map_or(VIRTUAL_CHANNELS, usize::from);
+            if !(1..=VIRTUAL_MAX_CHANNELS).contains(&channels) {
+                return Err(AudioError::UnsupportedChannels {
+                    wanted: channels as u16,
+                    max: VIRTUAL_MAX_CHANNELS as u16,
+                });
+            }
             (
                 host_id,
                 Target::Virtual { frames },
                 "Virtual (no sound)".to_owned(),
                 Some(VIRTUAL_OUTPUT.to_owned()),
-                VIRTUAL_CHANNELS,
+                channels,
                 rate,
             )
         } else {
@@ -1008,6 +1022,7 @@ fn open_playback(
                 device.default_output_config()?,
                 choice.sample_rate,
                 choice.buffer_size,
+                choice.channels,
             )?;
             let channels = usize::from(config.channels);
             let rate = config.sample_rate;
@@ -1179,13 +1194,13 @@ fn open_playback(
             stream.play()?;
             MainStream::Device(stream)
         }
-        Unstarted::Virtual(writer, frames) => {
-            MainStream::Virtual(VirtualClock::start(writer, frames, rate).map_err(|error| {
+        Unstarted::Virtual(writer, frames) => MainStream::Virtual(
+            VirtualClock::start(writer, frames, rate, main_channels).map_err(|error| {
                 AudioError::Virtual {
                     reason: error.to_string(),
                 }
-            })?)
-        }
+            })?,
+        ),
     };
     Ok((
         Playback {
@@ -1248,8 +1263,10 @@ fn open_extra(id: &str, rate: u32) -> Result<OpenedExtra, AudioError> {
     // The queue decouples the callbacks, so the device uses whatever buffer
     // size suits it.
     let default = device.default_output_config()?;
-    let Chosen { config, format } = match choose_config(&ranges, default, Some(rate), None) {
-        Err(AudioError::UnsupportedSampleRate(_)) => choose_config(&ranges, default, None, None)?,
+    let Chosen { config, format } = match choose_config(&ranges, default, Some(rate), None, None) {
+        Err(AudioError::UnsupportedSampleRate(_)) => {
+            choose_config(&ranges, default, None, None, None)?
+        }
         chosen => chosen?,
     };
     Ok(OpenedExtra {
@@ -1320,6 +1337,7 @@ fn open_input(
         Some(settings.sample_rate as u32),
         // The ring decouples the two callbacks, so the input can use
         // whatever buffer size suits it.
+        None,
         None,
     )?;
     let channels = usize::from(config.channels);
@@ -1993,6 +2011,38 @@ mod tests {
         let seconds = kept.len() as f32 / 2.0 / rate;
         assert_eq!(kept.len() % 2, 0);
         assert!(seconds > 0.15 && seconds < 0.45, "{seconds}");
+    }
+
+    #[test]
+    fn the_virtual_output_can_have_more_channels() {
+        let config = AudioConfig {
+            channels: Some(6),
+            ..virtual_config()
+        };
+        let (playback, _controller) = play(&config, 128).unwrap();
+        assert_eq!(playback.settings().channels, 6);
+        let tap = playback.virtual_capture().unwrap();
+        tap.start();
+        std::thread::sleep(Duration::from_millis(100));
+        let kept = tap.take();
+        assert!(
+            !kept.is_empty() && kept.len() % 6 == 0,
+            "{} samples",
+            kept.len()
+        );
+        for channels in [0, 9] {
+            let config = AudioConfig {
+                channels: Some(channels),
+                ..virtual_config()
+            };
+            assert!(
+                matches!(
+                    play(&config, 128),
+                    Err(AudioError::UnsupportedChannels { .. })
+                ),
+                "{channels}"
+            );
+        }
     }
 
     #[test]

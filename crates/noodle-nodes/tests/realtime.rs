@@ -78,9 +78,13 @@ struct Session {
 
 impl Session {
     fn new() -> Self {
+        Self::with_settings(SETTINGS)
+    }
+
+    fn with_settings(settings: Settings) -> Self {
         let mut registry = Registry::with_builtins();
         let telemetry = noodle_nodes::register_all(&mut registry);
-        let (mut controller, processor) = engine(SETTINGS).unwrap();
+        let (mut controller, processor) = engine(settings).unwrap();
         // So wired parameters are probed, as in the app.
         controller.set_telemetry(&telemetry);
         Self {
@@ -1472,4 +1476,83 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
     assert!(heard, "the patch never sounded");
+}
+
+#[test]
+fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
+    // A 5.1 engine: sine -> surround pan (azimuth swept by an LFO) -> split
+    // -> merge -> output, and the same pan through a downmix to stereo and
+    // an upmix back.
+    let surround = Settings {
+        channels: 6,
+        ..SETTINGS
+    };
+    let mut s = Session::with_settings(surround);
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let lfo = s.add(Node::new("noodle.mod.lfo").with_param("rate", 9.0));
+    let pan = s.add(
+        Node::new("noodle.util.surround_pan")
+            .with_param("azimuth", 150.0)
+            .with_param("lfe", 0.0),
+    );
+    let split = s.add(
+        Node::new("noodle.util.split_channels")
+            .with_config(Config::new().with("channels", Value::Int(6))),
+    );
+    let merge = s.add(
+        Node::new("noodle.util.merge_channels")
+            .with_config(Config::new().with("channels", Value::Int(6))),
+    );
+    let down = s.add(Node::new("noodle.util.convert_layout"));
+    let up = s.add(
+        Node::new("noodle.util.convert_layout")
+            .with_config(Config::new().with("layout", Value::Text("5.1".to_owned()))),
+    );
+    let mix = s
+        .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(2))));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", pan, "in");
+    s.wire(lfo, "out", pan, "azimuth");
+    s.wire(pan, "out", split, "in");
+    for i in 1..=6 {
+        s.wire(split, &format!("ch{i}"), merge, &format!("in{i}"));
+    }
+    s.wire(merge, "out", mix, "in1");
+    s.wire(pan, "out", down, "in");
+    s.wire(down, "out", up, "in");
+    s.wire(up, "out", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * surround.channels];
+    let mut channels_heard = [false; 6];
+    for round in 0..8 {
+        // Between blocks, on this thread: a layout the engine has fewer
+        // channels than (the extras are dropped at the output), then back.
+        if round % 2 == 1 {
+            s.edit(Command::SetConfig {
+                node: pan,
+                key: "layout".to_owned(),
+                value: Some(Value::Text("5.1".to_owned())),
+            });
+            s.update();
+            s.controller.maintain();
+        }
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                for frame in out.chunks(surround.channels) {
+                    for (heard, x) in channels_heard.iter_mut().zip(frame) {
+                        *heard |= x.abs() > 1e-3;
+                    }
+                }
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
+    assert!(
+        channels_heard.iter().all(|&h| h),
+        "every channel should have sounded: {channels_heard:?}"
+    );
 }

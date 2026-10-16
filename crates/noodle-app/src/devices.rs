@@ -226,6 +226,19 @@ impl DevicePicker {
         .on_hover_text("Smaller is quicker to respond, larger is safer from dropouts");
         ui.end_row();
 
+        let mut channels = self.draft.channels;
+        combo(ui, "Output channels", channels_label(channels), |ui| {
+            ui.selectable_value(&mut channels, None, channels_label(None));
+            for count in channel_counts(output_caps) {
+                ui.selectable_value(&mut channels, Some(count), channels_label(Some(count)));
+            }
+        })
+        .on_hover_text(
+            "How many channels to open the device with. Six plays a 5.1 mix and eight a 7.1 \
+             one; a mono or stereo signal fills the first two",
+        );
+        ui.end_row();
+
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         let mut threads = self.draft.threads;
         combo(ui, "Worker threads", threads_label(threads), |ui| {
@@ -242,6 +255,7 @@ impl DevicePicker {
 
         self.draft.sample_rate = rate;
         self.draft.buffer_size = buffer;
+        self.draft.channels = channels;
         self.draft.threads = threads;
         if output != self.draft.output || input != self.draft.input {
             self.draft.output = output;
@@ -265,8 +279,13 @@ impl DevicePicker {
             .draft
             .buffer_size
             .filter(|size| output.is_none() || buffer_sizes(output).contains(size));
+        let channels = self
+            .draft
+            .channels
+            .filter(|&count| output.is_none() || channel_counts(output).contains(&count));
         self.draft.sample_rate = rate;
         self.draft.buffer_size = buffer;
+        self.draft.channels = channels;
     }
 
     /// With input on and the rate left to the output, a warning when the
@@ -368,6 +387,32 @@ fn rate_label(rate: Option<u32>, default: Option<u32>) -> String {
         (None, Some(default)) => format!("Device default ({default} Hz)"),
         (None, None) => "Device default".into(),
     }
+}
+
+fn channels_label(channels: Option<u16>) -> String {
+    match channels {
+        None => "Device default".to_owned(),
+        Some(1) => "1 (mono)".to_owned(),
+        Some(2) => "2 (stereo)".to_owned(),
+        Some(4) => "4 (quad)".to_owned(),
+        Some(6) => "6 (5.1)".to_owned(),
+        Some(8) => "8 (7.1)".to_owned(),
+        Some(count) => count.to_string(),
+    }
+}
+
+/// The channel counts to offer: the usual layouts the output has room for,
+/// and its own maximum.
+fn channel_counts(output: Option<&Capabilities>) -> Vec<u16> {
+    let max = output.map_or(2, |caps| caps.max_channels);
+    let mut counts: Vec<u16> = [1, 2, 4, 6, 8]
+        .into_iter()
+        .filter(|&count| count <= max)
+        .collect();
+    if max > 8 || (max > 0 && !counts.contains(&max)) {
+        counts.push(max);
+    }
+    counts
 }
 
 fn buffer_label(frames: Option<u32>) -> String {
@@ -701,6 +746,20 @@ mod tests {
         assert_eq!(sample_rates(Some(&output), None), [44_100, 48_000, 96_000]);
         assert_eq!(sample_rates(None, Some(&input)), [48_000, 96_000, 192_000]);
         assert!(sample_rates(None, None).is_empty());
+    }
+
+    #[test]
+    fn channel_counts_offer_the_usual_layouts_up_to_the_devices_maximum() {
+        let with = |max| Capabilities {
+            max_channels: max,
+            ..caps(&[], None)
+        };
+        assert_eq!(channel_counts(None), [1, 2]);
+        assert_eq!(channel_counts(Some(&with(2))), [1, 2]);
+        assert_eq!(channel_counts(Some(&with(6))), [1, 2, 4, 6]);
+        assert_eq!(channel_counts(Some(&with(5))), [1, 2, 4, 5]);
+        assert_eq!(channel_counts(Some(&with(18))), [1, 2, 4, 6, 8, 18]);
+        assert_eq!(channels_label(Some(6)), "6 (5.1)");
     }
 
     #[test]

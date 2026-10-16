@@ -79,7 +79,9 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.util.script",
     "noodle.track.input",
     "noodle.util.mix",
+    "noodle.util.merge_channels",
     "noodle.util.reroute",
+    "noodle.util.split_channels",
     "noodle.view.meter",
     "noodle.view.scope",
 ];
