@@ -169,6 +169,26 @@ fn auto_without_a_detected_tempo_keeps_the_timeline_tempo_it_was_warped_at() {
 }
 
 #[test]
+fn auto_finds_the_tempo_of_the_probes_that_have_a_pulse() {
+    // Auto is imported at the source tempo, so a failed detection scores like
+    // a perfect one on the gated metrics. This is what catches it.
+    let h = harness();
+    for probe in [Probe::ClickTrain, Probe::NoiseBursts] {
+        let rows = h
+            .run(probe, TempoCase::Ratio(1.5), &[Method::Auto])
+            .unwrap();
+        let bpm = find(&rows, Method::Auto, View::Native)
+            .metric("detected_bpm")
+            .unwrap();
+        assert!(
+            (bpm - h.source_bpm).abs() < 0.01 * h.source_bpm,
+            "{probe:?}: detected {bpm}, source {}",
+            h.source_bpm
+        );
+    }
+}
+
+#[test]
 fn export_writes_the_source_native_warped_and_round_trip_renders() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness();

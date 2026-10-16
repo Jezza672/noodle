@@ -403,7 +403,7 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   stays, with its ID, place, label, name and the wires at its ports. Wires at
   a port the template no longer has are removed, the group's own gain, mute
   and solo are carried over by port name, and the applied preset is cleared.
-  Edits inside, and the automation lanes on nodes inside, are lost; the status
+  Edits inside, and the automation lanes on nodes inside (including lanes on the group's own gain and mute, which sit on its boundary nodes), are lost; the status
   bar says how many lanes. It is always an explicit choice (ADR 0005); nothing
   ever updates a group by itself. The hidden track template can't be applied
   this way.
