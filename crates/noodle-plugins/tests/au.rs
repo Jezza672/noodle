@@ -68,10 +68,10 @@ fn the_delay_is_described_from_the_unit() {
     assert_eq!(d.audio_outputs.len(), 1);
     assert_eq!(d.audio_outputs[0].channels, 2);
     let names: Vec<_> = d.params.iter().map(|p| p.name.as_str()).collect();
-    for wanted in ["Wet/Dry Mix", "Delay Time", "Feedback"] {
+    for wanted in ["Dry/Wet Mix", "Delay Time", "Feedback"] {
         assert!(names.contains(&wanted), "{wanted} in {names:?}");
     }
-    let mix = &d.params[names.iter().position(|n| *n == "Wet/Dry Mix").unwrap()];
+    let mix = &d.params[names.iter().position(|n| *n == "Dry/Wet Mix").unwrap()];
     assert_eq!((mix.min, mix.max), (0.0, 100.0));
 }
 
@@ -81,7 +81,8 @@ fn the_synth_is_an_instrument_with_a_note_port_and_no_audio_input() {
     assert!(d.instrument);
     assert_eq!(d.note_inputs, 1);
     assert!(d.audio_inputs.is_empty());
-    assert_eq!(d.audio_outputs.len(), 1);
+    // The synth has a main output bus and may have more.
+    assert!(!d.audio_outputs.is_empty());
 }
 
 #[test]
@@ -99,7 +100,7 @@ fn a_missing_unit_fails_to_scan_instead_of_crashing() {
 #[test]
 fn audio_goes_through_the_unit_and_its_parameters_have_ports() {
     let d = descriptor(DELAY);
-    let mix = param_port(&d, "Wet/Dry Mix");
+    let mix = param_port(&d, "Dry/Wet Mix");
     let mut h = harness(DELAY, &Config::new(), &[(0, Shape::STEREO)]);
     let signal = |i: usize| (i as f32 * 0.05).sin() * 0.5;
     let fill = |h: &mut Harness| {
@@ -137,7 +138,7 @@ fn audio_goes_through_the_unit_and_its_parameters_have_ports() {
 #[test]
 fn a_short_delay_echoes_the_input() {
     let d = descriptor(DELAY);
-    let (mix, time) = (param_port(&d, "Wet/Dry Mix"), param_port(&d, "Delay Time"));
+    let (mix, time) = (param_port(&d, "Dry/Wet Mix"), param_port(&d, "Delay Time"));
     let mut h = harness(DELAY, &Config::new(), &[(0, Shape::STEREO)]);
     h.set(mix, 100.0);
     h.set(time, 0.01);
@@ -244,5 +245,11 @@ fn the_node_type_takes_its_ports_from_the_unit() {
     assert!(node.info().id.starts_with("au."));
     let layout = NodeType::layout(node, &Config::new()).unwrap();
     assert_eq!(layout.event_inputs.len(), 1);
-    assert_eq!(layout.outputs.len(), 1);
+    assert!(!layout.outputs.is_empty());
+    assert_eq!(
+        layout.outputs.len(),
+        noodle_plugins::describe_file(&file_of(DLS)).unwrap()[0]
+            .audio_outputs
+            .len()
+    );
 }
