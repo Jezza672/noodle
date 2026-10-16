@@ -79,13 +79,16 @@ The panel below the arrangement for the selected clip: the piano roll for MIDI, 
 ## Stems
 
 **Stem**:
-One of the parts an AI model separates a clip's audio into (drums, bass, vocals, other). Stems are made once per clip, ahead of playback, and kept with the clip's analysis.
+One of the parts an AI model separates a clip's audio into (drums, bass, vocals, other). Stems are made once per clip, ahead of playback: as clips of their own (Split to stems) or in a cache (Stem warp).
 
 **Residual**:
 The clip's audio minus its stems, so that stems plus residual add back up to the clip. It holds whatever the model did not assign to a stem.
 
 **Split to stems**:
-An action on an audio clip that makes one new clip for each stem, and one for the residual, regardless of whether the clip is warped. It is one undo step.
+An action on an audio clip that makes one new clip for each stem, and one for the residual, regardless of whether the clip is warped. The source clip stays, muted. It is one undo step.
+
+**Clip mute**:
+A switch on a section that silences it without removing it, so it can be brought back. (New with Split to stems.)
 
 **Stem warp**:
 Warping a clip by warping each stem and the residual with the mode that suits it, then adding them back together.
