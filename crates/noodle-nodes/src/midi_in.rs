@@ -11,15 +11,19 @@
 //!
 //! Note-ons and note-offs become note events; everything else (controllers,
 //! pitch bend, aftertouch, program changes) passes on as raw MIDI events.
+//! MIDI 2.0 packets (see `noodle_io::ump`) are played too: 16-bit velocity,
+//! note pitch attributes, per-note pressure, pitch bend and controllers
+//! become note events and per-note expressions, and what is channel-wide is
+//! narrowed to the MIDI 1.0 messages the rest of the engine speaks.
 //! The note ID is made from the channel and key, so a note-off finds its
 //! note, and its top bit is set, which keeps it apart from the IDs notes in
 //! MIDI clips have.
 
 use noodle_engine::{
-    Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, ParamInfo, Ports, Setup,
+    Config, Context, Event, EventKind, Expression, Instance, Io, Layout, Node, NodeError, NodeInfo,
+    NodeType, NoteId, ParamInfo, Ports, Setup,
 };
-use noodle_io::{MidiBus, MidiReceiver, TimedMessage, now_micros};
+use noodle_io::{Attribute, Midi2, MidiBus, MidiReceiver, Packet, TimedPacket, now_micros};
 
 pub const MIDI_IN_ID: &str = "noodle.event.midi_in";
 
@@ -29,6 +33,10 @@ struct MidiInPorts {
     /// Only this channel is played; 0 plays them all.
     #[param("channel", "Channel", ParamInfo::new(0.0, 16.0, 0.0).smoothing(0.0))]
     channel: (),
+    /// What a MIDI 2.0 per-note pitch bend at its extreme bends by, in
+    /// semitones (MPE's default is 48).
+    #[param("note_bend", "Note bend", ParamInfo::new(0.0, 96.0, 48.0).smoothing(0.0))]
+    note_bend: (),
     #[event_output("out", "Events")]
     out: (),
 }
@@ -118,7 +126,14 @@ pub(crate) struct LiveMidi {
     /// The note IDs it makes are this with the channel and key.
     id_base: u32,
     /// A message taken from the queue that belongs to a later block.
-    pending: Option<TimedMessage>,
+    pending: Option<TimedPacket>,
+    /// Semitones a full per-note pitch bend moves a note.
+    note_bend: f32,
+    /// Per channel and key, the note's pitch from its attribute or Pitch 7.25
+    /// (semitones from the key) and its per-note bend. The `Pitch`
+    /// expression sent is their sum, whichever changed last.
+    pitch_base: Box<[[f32; 128]; 16]>,
+    pitch_bend: Box<[[f32; 128]; 16]>,
     /// When the previous block began, for the lack of a device saying so.
     previous_start: Option<u64>,
     /// Per channel, the keys that have a note-on and no note-off yet, one
@@ -136,6 +151,9 @@ impl LiveMidi {
             clock,
             id_base,
             pending: None,
+            note_bend: 48.0,
+            pitch_base: Box::new([[0.0; 128]; 16]),
+            pitch_bend: Box::new([[0.0; 128]; 16]),
             previous_start: None,
             held: [0; 16],
             ending: 0,
@@ -146,10 +164,16 @@ impl LiveMidi {
         NoteId(self.id_base | u32::from(channel) << 8 | u32::from(key))
     }
 
-    /// The event a message stands for.
-    fn translate(&mut self, [status, a, b]: [u8; 3]) -> EventKind {
+    /// Pushes the events a MIDI 1.0 message stands for. Returns false if the
+    /// buffer is full.
+    fn translate(
+        &mut self,
+        [status, a, b]: [u8; 3],
+        time: u32,
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) -> bool {
         let channel = status & 0x0F;
-        match status & 0xF0 {
+        let kind = match status & 0xF0 {
             0x90 if b > 0 => {
                 self.held[usize::from(channel)] |= 1 << a;
                 EventKind::NoteOn {
@@ -167,6 +191,146 @@ impl LiveMidi {
                 }
             }
             _ => EventKind::Midi([status, a, b]),
+        };
+        out.push(Event { time, kind }).is_ok()
+    }
+
+    /// The same for a MIDI 2.0 message. Returns false if the buffer filled.
+    fn translate2(
+        &mut self,
+        message: Midi2,
+        time: u32,
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) -> bool {
+        let unit = |v: u32| v as f32 / u32::MAX as f32;
+        // -1 to 1 around the centre of a 32-bit bend.
+        let signed = |v: u32| (f64::from(v) - 2_147_483_648.0) as f32 / 2_147_483_648.0;
+        let mut push = |kind| out.push(Event { time, kind }).is_ok();
+        match message {
+            Midi2::NoteOn {
+                channel,
+                key,
+                velocity,
+                attribute,
+            } => {
+                self.held[usize::from(channel)] |= 1 << key;
+                let note = self.note_id(channel, key);
+                let (c, k) = (usize::from(channel), usize::from(key));
+                self.pitch_base[c][k] = 0.0;
+                self.pitch_bend[c][k] = 0.0;
+                // A velocity of 0 is not a note-off here: it is the softest.
+                let velocity = f32::from(velocity.max(1)) / 65_535.0;
+                let on = EventKind::NoteOn {
+                    note,
+                    channel,
+                    key,
+                    velocity,
+                };
+                if !push(on) {
+                    return false;
+                }
+                match attribute {
+                    Attribute::Pitch(pitch) if (pitch - f32::from(key)).abs() > 1e-4 => {
+                        self.pitch_base[c][k] = pitch - f32::from(key);
+                        push(EventKind::Expression {
+                            note,
+                            expression: Expression::Pitch,
+                            value: self.pitch_base[c][k],
+                        })
+                    }
+                    _ => true,
+                }
+            }
+            Midi2::NoteOff {
+                channel,
+                key,
+                velocity,
+                ..
+            } => {
+                self.held[usize::from(channel)] &= !(1 << key);
+                push(EventKind::NoteOff {
+                    note: self.note_id(channel, key),
+                    velocity: f32::from(velocity) / 65_535.0,
+                })
+            }
+            Midi2::PolyPressure {
+                channel,
+                key,
+                value,
+            } => push(EventKind::Expression {
+                note: self.note_id(channel, key),
+                expression: Expression::Pressure,
+                value: unit(value),
+            }),
+            Midi2::PerNotePitchBend {
+                channel,
+                key,
+                value,
+            } => {
+                let (c, k) = (usize::from(channel), usize::from(key));
+                self.pitch_bend[c][k] = signed(value) * self.note_bend;
+                push(EventKind::Expression {
+                    note: self.note_id(channel, key),
+                    expression: Expression::Pitch,
+                    value: self.pitch_base[c][k] + self.pitch_bend[c][k],
+                })
+            }
+            Midi2::PerNoteController {
+                channel,
+                key,
+                registered: true,
+                index,
+                value,
+            } => {
+                let note = self.note_id(channel, key);
+                let (c, k) = (usize::from(channel), usize::from(key));
+                let (expression, value) = match index {
+                    // Modulation and brightness.
+                    1 | 74 => (Expression::Timbre, unit(value)),
+                    // Channel volume.
+                    7 => (Expression::Volume, unit(value)),
+                    10 => (Expression::Pan, unit(value) * 2.0 - 1.0),
+                    // Pitch 7.25: the note's pitch as key numbers with a
+                    // 25-bit fraction.
+                    3 => {
+                        self.pitch_base[c][k] =
+                            (f64::from(value) / f64::from(1u32 << 25) - f64::from(key)) as f32;
+                        (
+                            Expression::Pitch,
+                            self.pitch_base[c][k] + self.pitch_bend[c][k],
+                        )
+                    }
+                    _ => return true,
+                };
+                push(EventKind::Expression {
+                    note,
+                    expression,
+                    value,
+                })
+            }
+            // Assignable per-note controllers mean what their maker says,
+            // and a note's management flags change nothing the engine keeps.
+            Midi2::PerNoteController { .. } | Midi2::PerNoteManagement { .. } => true,
+            channel_wide => {
+                let mut narrowed = [[0; 3]; 4];
+                let count = channel_wide.to_midi1(&mut narrowed);
+                // A program change with a bank sends the bank first.
+                if let Midi2::Program {
+                    channel,
+                    bank: Some((msb, lsb)),
+                    ..
+                } = channel_wide
+                {
+                    for (index, value) in [(0, msb), (32, lsb)] {
+                        if !push(EventKind::Midi([0xB0 | channel, index, value])) {
+                            return false;
+                        }
+                    }
+                }
+                narrowed[..count]
+                    .iter()
+                    .all(|&message| push(EventKind::Midi(message)))
+            }
         }
     }
 
@@ -233,19 +397,23 @@ impl LiveMidi {
         // Events have to be in time order, and the bus can hand over two
         // messages out of order when the keyboard and a port send together.
         let mut last = 0;
-        while let Some((arrival, message)) = self.pending.take().or_else(|| self.input.pop_timed())
+        while let Some((arrival, packet)) = self.pending.take().or_else(|| self.input.pop_packet())
         {
             if limit.is_some_and(|limit| arrival >= limit) {
-                self.pending = Some((arrival, message));
+                self.pending = Some((arrival, packet));
                 break;
             }
-            let message_channel = message[0] & 0x0F;
+            let Some(message) = Incoming::of(packet) else {
+                // Not a channel voice message: utility, system and sysex
+                // packets, and statuses the engine has no use for.
+                continue;
+            };
+            let message_channel = message.channel();
             // A note-off for a note that is held always gets through, so
             // changing the channel can't leave it sounding.
-            let note_off =
-                message[0] & 0xF0 == 0x80 || (message[0] & 0xF0 == 0x90 && message[2] == 0);
-            let ends_held =
-                note_off && self.held[usize::from(message_channel)] >> message[1] & 1 == 1;
+            let ends_held = message
+                .note_off_key()
+                .is_some_and(|key| self.held[usize::from(message_channel)] >> key & 1 == 1);
             let wanted = channel.is_some_and(|wanted| wanted == 0 || message_channel + 1 == wanted);
             if !wanted && !ends_held {
                 continue;
@@ -253,7 +421,7 @@ impl LiveMidi {
             let time = frame_offset(arrival, start, ctx.sample_rate, ctx.frames).max(last);
             last = time;
             // Sound off (120) and all notes off (123) end what is held.
-            if message[0] & 0xF0 == 0xB0 && matches!(message[1], 120 | 123) {
+            if message.is_all_notes_off() {
                 self.ending |= 1 << message_channel;
                 if !self.flush_ending(out, time) {
                     // The controller itself is dropped with the rest of the
@@ -261,10 +429,57 @@ impl LiveMidi {
                     return;
                 }
             }
-            let kind = self.translate(message);
-            if out.push(Event { time, kind }).is_err() {
+            let fits = match message {
+                Incoming::One(bytes) => self.translate(bytes, time, out),
+                Incoming::Two(message) => self.translate2(message, time, out),
+            };
+            if !fits {
                 break;
             }
+        }
+    }
+}
+
+/// A channel voice message of either kind, which is all the node plays.
+#[derive(Clone, Copy)]
+enum Incoming {
+    One([u8; 3]),
+    Two(Midi2),
+}
+
+impl Incoming {
+    fn of(packet: Packet) -> Option<Incoming> {
+        packet
+            .as_midi1()
+            .map(Incoming::One)
+            .or_else(|| packet.as_midi2().map(Incoming::Two))
+    }
+
+    fn channel(&self) -> u8 {
+        match self {
+            Incoming::One(bytes) => bytes[0] & 0x0F,
+            Incoming::Two(message) => message.channel(),
+        }
+    }
+
+    /// The key of a note-off (a note-on with velocity 0 is one in MIDI 1.0).
+    fn note_off_key(&self) -> Option<u8> {
+        match *self {
+            Incoming::One([status, key, velocity]) => {
+                (status & 0xF0 == 0x80 || (status & 0xF0 == 0x90 && velocity == 0)).then_some(key)
+            }
+            Incoming::Two(Midi2::NoteOff { key, .. }) => Some(key),
+            Incoming::Two(_) => None,
+        }
+    }
+
+    fn is_all_notes_off(&self) -> bool {
+        match *self {
+            Incoming::One([status, controller, _]) => {
+                status & 0xF0 == 0xB0 && matches!(controller, 120 | 123)
+            }
+            Incoming::Two(Midi2::Controller { index, .. }) => matches!(index, 120 | 123),
+            Incoming::Two(_) => false,
         }
     }
 }
@@ -272,6 +487,7 @@ impl LiveMidi {
 impl Node for MidiInNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let wanted = io.inputs[MidiInPorts::CHANNEL].lane(0, 0)[0].round() as u8;
+        self.live.note_bend = io.inputs[MidiInPorts::NOTE_BEND].lane(0, 0)[0];
         let out = &mut io.event_outputs[MidiInPorts::OUT];
         self.live.process(ctx, Some(wanted), out);
     }
@@ -411,6 +627,271 @@ mod tests {
         // A block with nothing new is empty.
         h.run(16).unwrap();
         assert!(h.events(MidiInPorts::OUT).is_empty());
+    }
+
+    fn send2(bus: &MidiBus, message: Midi2) {
+        bus.send_packet(message.encode(0));
+    }
+
+    fn note_on2(channel: u8, key: u8, velocity: u16, attribute: Attribute) -> Midi2 {
+        Midi2::NoteOn {
+            channel,
+            key,
+            velocity,
+            attribute,
+        }
+    }
+
+    #[test]
+    fn midi2_notes_keep_their_16_bit_velocity_and_pitch_attribute() {
+        let (mut h, bus) = node();
+        send2(&bus, note_on2(1, 60, 0xFFFF, Attribute::None));
+        // Velocity 0 is not a note-off in MIDI 2.0: it is the softest note.
+        send2(&bus, note_on2(1, 61, 0, Attribute::None));
+        send2(&bus, note_on2(1, 62, 0x8000, Attribute::Pitch(62.5)));
+        send2(
+            &bus,
+            Midi2::NoteOff {
+                channel: 1,
+                key: 60,
+                velocity: 0x4000,
+                attribute: Attribute::None,
+            },
+        );
+        h.run(16).unwrap();
+        let events: Vec<EventKind> = h.events(MidiInPorts::OUT).iter().map(|e| e.kind).collect();
+        assert_eq!(
+            events[0],
+            EventKind::NoteOn {
+                note: note_id(1, 60),
+                channel: 1,
+                key: 60,
+                velocity: 1.0
+            }
+        );
+        assert!(
+            matches!(events[1], EventKind::NoteOn { key: 61, velocity, .. } if velocity > 0.0 && velocity < 1e-4)
+        );
+        assert!(matches!(
+            events[2],
+            EventKind::NoteOn { key: 62, velocity, .. } if (velocity - 0.5).abs() < 1e-4
+        ));
+        // The attribute puts the note half a semitone up.
+        assert_eq!(
+            events[3],
+            EventKind::Expression {
+                note: note_id(1, 62),
+                expression: Expression::Pitch,
+                value: 0.5
+            }
+        );
+        assert!(matches!(
+            events[4],
+            EventKind::NoteOff { note, velocity } if note == note_id(1, 60) && (velocity - 0.25).abs() < 1e-3
+        ));
+    }
+
+    #[test]
+    fn a_per_note_bend_adds_to_the_pitch_attribute_instead_of_replacing_it() {
+        let (mut h, bus) = node();
+        send2(&bus, note_on2(0, 62, 0x8000, Attribute::Pitch(62.5)));
+        // A controller starting a touch sends a centred bend.
+        let bend = |value| Midi2::PerNotePitchBend {
+            channel: 0,
+            key: 62,
+            value,
+        };
+        send2(&bus, bend(0x8000_0000));
+        // A quarter of the way up: 12 semitones at the default range of 48.
+        send2(&bus, bend(0xA000_0000));
+        // Pitch 7.25 sets a new base, which the bend still rides on.
+        send2(
+            &bus,
+            Midi2::PerNoteController {
+                channel: 0,
+                key: 62,
+                registered: true,
+                index: 3,
+                value: 63 << 25,
+            },
+        );
+        h.run(16).unwrap();
+        let pitches: Vec<f32> = h
+            .events(MidiInPorts::OUT)
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::Expression {
+                    expression: Expression::Pitch,
+                    value,
+                    ..
+                } => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pitches, vec![0.5, 0.5, 12.5, 13.0]);
+    }
+
+    #[test]
+    fn midi2_per_note_messages_become_expressions_on_their_note() {
+        let (mut h, bus) = node();
+        send2(&bus, note_on2(0, 60, 0x8000, Attribute::None));
+        send2(
+            &bus,
+            Midi2::PerNotePitchBend {
+                channel: 0,
+                key: 60,
+                value: 0xC000_0000, // halfway up
+            },
+        );
+        send2(
+            &bus,
+            Midi2::PolyPressure {
+                channel: 0,
+                key: 60,
+                value: u32::MAX,
+            },
+        );
+        for (index, value) in [(74, u32::MAX), (10, 0), (7, u32::MAX), (9, 5)] {
+            send2(
+                &bus,
+                Midi2::PerNoteController {
+                    channel: 0,
+                    key: 60,
+                    registered: true,
+                    index,
+                    value,
+                },
+            );
+        }
+        h.run(16).unwrap();
+        let expressions: Vec<(Expression, f32)> = h
+            .events(MidiInPorts::OUT)
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::Expression {
+                    note,
+                    expression,
+                    value,
+                } => {
+                    assert_eq!(note, note_id(0, 60));
+                    Some((expression, value))
+                }
+                _ => None,
+            })
+            .collect();
+        // The default note bend is 48 semitones; controller 9 is unknown.
+        assert_eq!(
+            expressions,
+            vec![
+                (Expression::Pitch, 24.0),
+                (Expression::Pressure, 1.0),
+                (Expression::Timbre, 1.0),
+                (Expression::Pan, -1.0),
+                (Expression::Volume, 1.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn midi2_channel_messages_are_narrowed_to_midi1() {
+        let (mut h, bus) = node();
+        send2(
+            &bus,
+            Midi2::Controller {
+                channel: 2,
+                index: 1,
+                value: 0x8000_0000,
+            },
+        );
+        send2(
+            &bus,
+            Midi2::PitchBend {
+                channel: 2,
+                value: 0x8000_0000,
+            },
+        );
+        send2(
+            &bus,
+            Midi2::Program {
+                channel: 2,
+                program: 5,
+                bank: Some((1, 2)),
+            },
+        );
+        send2(
+            &bus,
+            Midi2::Parameter {
+                channel: 2,
+                registered: true,
+                bank: 0,
+                index: 0,
+                value: 0x8000_0000,
+            },
+        );
+        // A packet that is not channel voice is dropped.
+        bus.send_packet(Packet::from_words(&[0x1000_0000]).unwrap());
+        h.run(16).unwrap();
+        let midi: Vec<[u8; 3]> = h
+            .events(MidiInPorts::OUT)
+            .iter()
+            .map(|e| match e.kind {
+                EventKind::Midi(m) => m,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            midi,
+            vec![
+                [0xB2, 1, 64],
+                [0xE2, 0, 64],
+                [0xB2, 0, 1],
+                [0xB2, 32, 2],
+                [0xC2, 5, 0],
+                [0xB2, 101, 0],
+                [0xB2, 100, 0],
+                [0xB2, 6, 64],
+                [0xB2, 38, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn midi2_notes_follow_the_channel_filter_and_all_notes_off() {
+        let (mut h, bus) = node();
+        send2(&bus, note_on2(0, 60, 0x8000, Attribute::None));
+        send2(&bus, note_on2(0, 64, 0x8000, Attribute::None));
+        send2(
+            &bus,
+            Midi2::Controller {
+                channel: 0,
+                index: 123,
+                value: 0,
+            },
+        );
+        h.run(16).unwrap();
+        let ended: Vec<u8> = h
+            .events(MidiInPorts::OUT)
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::NoteOff { note, .. } => Some(note.0 as u8),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ended, vec![60, 64]);
+        // Another channel is filtered out when `channel` asks for one.
+        h.set(MidiInPorts::CHANNEL, 2.0);
+        send2(&bus, note_on2(0, 60, 0x8000, Attribute::None));
+        send2(&bus, note_on2(1, 61, 0x8000, Attribute::None));
+        h.run(16).unwrap();
+        let keys: Vec<u8> = h
+            .events(MidiInPorts::OUT)
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::NoteOn { key, .. } => Some(key),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, vec![61]);
     }
 
     #[test]

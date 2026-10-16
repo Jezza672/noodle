@@ -161,6 +161,12 @@ impl<'a> SpectralIn<'a> {
         self.times[frame]
     }
 
+    /// Every lane of a frame, back to back: `shape().lanes() * BINS` bins.
+    pub(crate) fn frame_lanes(&self, frame: usize) -> &'a [Bin] {
+        let stride = self.shape.lanes() * BINS;
+        &self.data[frame * stride..(frame + 1) * stride]
+    }
+
     /// The bins of one lane of a frame, broadcasting like
     /// [`SignalIn::lane`]. Panics if the input has no frames.
     pub fn frame(&self, frame: usize, voice: usize, channel: usize) -> &'a [Bin] {
@@ -216,12 +222,108 @@ impl<'a> SpectralOut<'a> {
         Some(index)
     }
 
+    /// Every lane of frame `frame`, back to back, which must have been pushed.
+    pub(crate) fn frame_lanes_mut(&mut self, frame: usize) -> &mut [Bin] {
+        assert!(frame < self.buf.times.len(), "frame not pushed");
+        let stride = self.shape.lanes() * BINS;
+        &mut self.buf.data[frame * stride..(frame + 1) * stride]
+    }
+
     /// The bins of one lane of frame `frame`, which must have been pushed.
     pub fn frame_mut(&mut self, frame: usize, voice: usize, channel: usize) -> &mut [Bin] {
         assert!(frame < self.buf.times.len(), "frame not pushed");
         let lane = voice * self.shape.channels + channel;
         let start = (frame * self.shape.lanes() + lane) * BINS;
         &mut self.buf.data[start..start + BINS]
+    }
+}
+
+/// Holds a spectral signal back by a fixed number of samples, so the frames
+/// of an earlier path line up with those of a later one (delay compensation).
+/// A frame is stored with the time it is due and comes out in the block that
+/// time falls in, so any delay works, not only multiples of [`HOP`]. All room
+/// is allocated up front.
+#[derive(Debug)]
+pub struct SpectralDelay {
+    delay: u64,
+    stride: usize,
+    capacity: usize,
+    /// When each stored frame is due, in samples since the start (or reset).
+    due: Box<[u64]>,
+    data: Box<[Bin]>,
+    head: usize,
+    len: usize,
+    elapsed: u64,
+}
+
+impl SpectralDelay {
+    /// A delay of `delay` samples for frames of `lanes` lanes, in blocks of
+    /// up to `max_frames` samples.
+    pub fn new(lanes: usize, delay: usize, max_frames: usize) -> Self {
+        let capacity = delay / HOP + frame_capacity(max_frames) + 2;
+        let stride = lanes * BINS;
+        Self {
+            delay: delay as u64,
+            stride,
+            capacity,
+            due: vec![0; capacity].into_boxed_slice(),
+            data: vec![Bin::ZERO; capacity * stride].into_boxed_slice(),
+            head: 0,
+            len: 0,
+            elapsed: 0,
+        }
+    }
+
+    pub fn delay(&self) -> usize {
+        self.delay as usize
+    }
+
+    /// Forgets the frames held and starts counting from zero.
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+        self.elapsed = 0;
+    }
+
+    /// Takes over the frames `old` holds, if it is the same size.
+    pub fn continue_from(&mut self, old: &mut SpectralDelay) {
+        if self.delay == old.delay && self.stride == old.stride && self.capacity == old.capacity {
+            std::mem::swap(&mut self.due, &mut old.due);
+            std::mem::swap(&mut self.data, &mut old.data);
+            self.head = old.head;
+            self.len = old.len;
+            self.elapsed = old.elapsed;
+        }
+    }
+
+    /// Takes in this block's frames and writes the ones now due.
+    /// `frames` is the block's length in samples.
+    pub fn process(&mut self, input: &SpectralIn<'_>, frames: usize, out: &mut SpectralOut<'_>) {
+        debug_assert_eq!(input.shape().lanes() * BINS, self.stride);
+        for frame in 0..input.frames() {
+            if self.len == self.capacity {
+                // Can't happen with the room made, but never overwrite
+                // silently: the oldest frame goes.
+                self.head = (self.head + 1) % self.capacity;
+                self.len -= 1;
+            }
+            let slot = (self.head + self.len) % self.capacity;
+            self.due[slot] = self.elapsed + u64::from(input.time(frame)) + self.delay;
+            self.data[slot * self.stride..(slot + 1) * self.stride]
+                .copy_from_slice(input.frame_lanes(frame));
+            self.len += 1;
+        }
+        let end = self.elapsed + frames as u64;
+        while self.len > 0 && self.due[self.head] < end {
+            let time = self.due[self.head].saturating_sub(self.elapsed) as u32;
+            let Some(at) = out.push(time) else { break };
+            out.frame_lanes_mut(at).copy_from_slice(
+                &self.data[self.head * self.stride..(self.head + 1) * self.stride],
+            );
+            self.head = (self.head + 1) % self.capacity;
+            self.len -= 1;
+        }
+        self.elapsed = end;
     }
 }
 
@@ -426,6 +528,42 @@ impl Synthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spectral_delay_moves_frames_by_whole_samples_across_blocks() {
+        let shape = Shape::MONO;
+        let block = 100;
+        let delay = 1_300; // not a multiple of a hop or a block
+        let mut line = SpectralDelay::new(1, delay, block);
+        let mut source = SpectralBuf::new(1, block);
+        let mut dest = SpectralBuf::new(1, block);
+        let mut heard = Vec::new();
+        for b in 0..40u64 {
+            let start = b * block as u64;
+            let mut out = source.as_out(shape);
+            // A frame every hop, marked by its start time in bin 0.
+            for t in 0..block as u64 {
+                if (start + t).is_multiple_of(HOP as u64) {
+                    let at = out.push(t as u32).unwrap();
+                    out.frame_mut(at, 0, 0)[0] = Bin::new((start + t) as f32, 0.0);
+                }
+            }
+            let input = source.as_in(shape);
+            let mut out = dest.as_out(shape);
+            line.process(&input, block, &mut out);
+            let got = dest.as_in(shape);
+            for f in 0..got.frames() {
+                heard.push((
+                    start + u64::from(got.time(f)),
+                    got.frame(f, 0, 0)[0].re as u64,
+                ));
+            }
+        }
+        assert!(heard.len() > 5);
+        for (at, marked) in heard {
+            assert_eq!(at, marked + delay as u64);
+        }
+    }
 
     fn run(input: &[f32], block: usize) -> Vec<f32> {
         let shape = Shape::MONO;

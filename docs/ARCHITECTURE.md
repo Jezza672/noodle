@@ -339,9 +339,10 @@ There are two kinds of signal, plus a possible third later:
     input back to within float error at any block size
     (`tests/spectral.rs`). Lateness travels along spectral wires, so a latent
     plugin ahead of an Analyze, or two pairs in a row, are compensated for in
-    the dry paths beside them. Spectral wires get no delay lines of their own:
-    where spectral paths of different lateness meet (a Cross), the earlier
-    one's frames are used as they come.
+    the dry paths beside them. Spectral inputs are compensated like signal
+    inputs (see "Delay compensation"): where spectral paths of different
+    lateness meet (a Cross), the earlier one's frames are held back by a
+    `SpectralDelay` so both carry the same moment.
   - **Spectral nodes** (category Spectral, each frame in, one frame out, no
     delay of their own): `Spectral Gate` (bins under a threshold turned down,
     with a knee), `Spectral Filter` (band pass or stop between two
@@ -846,6 +847,29 @@ restart the audio.
 - **Channel filter.** A held note's note-off always gets through, so changing
   `channel` (which can be modulated) can't strand a note; all notes off ends
   the rest across blocks if the event buffer fills.
+
+- **MIDI 2.0.** The bus carries Universal MIDI Packets (`noodle_io::ump`):
+  type 2 (a MIDI 1.0 message) and type 4 (MIDI 2.0 channel voice, 64 bits);
+  `MidiBus::send` makes a type 2 packet, `send_packet` takes any, and
+  `PacketReader` splits a word stream. Receivers see packets
+  (`pop_packet`), or MIDI 1.0 messages narrowed from them (`pop_timed`, for
+  the take recorder). `Midi2` decodes and encodes type 4 and converts to
+  and from MIDI 1.0 with the specification's bit scaling (`widen`). `MIDI In`
+  plays MIDI 2.0 as follows: velocity is 16 bits (a note-on of 0 is the
+  softest note, not a note-off); a pitch attribute becomes a `Pitch`
+  expression (the fraction of a semitone from the key); poly pressure becomes
+  `Pressure`; per-note pitch bend becomes `Pitch`, scaled by the node's
+  `note_bend` parameter (semitones at the extreme, 48 by default as in MPE);
+  per-note registered controllers 1 and 74 become `Timbre`, 7 `Volume`, 10
+  `Pan` and 3 (pitch 7.25) `Pitch`; assignable ones and note management are
+  ignored. What is channel-wide (controllers, pitch bend, pressure, program
+  changes with their bank, registered and assignable parameters) is narrowed
+  to the raw MIDI 1.0 events the rest of the engine speaks, so it loses
+  resolution past 14 bits. Groups are merged and the `channel` parameter
+  filters channels as before. Not done: devices (midir delivers MIDI 1.0
+  bytes, so hardware is upgraded by the system if at all; packets come from
+  `send_packet`, tests and later sources), sysex and flex data, MIDI-CI, and
+  clips and events that carry 32-bit values past the node.
 
 ### MIDI clips
 
@@ -1823,7 +1847,11 @@ it gives every signal buffer an *arrival*: the slowest of its writer's inputs
 plus the writer's own latency. Where paths meet, the early ones get a
 `DelayLine` so everything lines up with the slowest:
 
-- a node with several signal inputs lines them up with each other;
+- a node with several signal inputs lines them up with each other, and
+  spectral inputs join in: a spectral input that arrives early gets a
+  `SpectralDelay` (a ring of whole frames, each stored with the time it is due,
+  so any delay works and not only multiples of the hop), writing a private
+  spectral buffer appended to the plan's like the signal lines' regions;
 - every *sink* (an Output node that plays, or a tap) lines up with the
   slowest sink, so two Output nodes on different devices stay in sync;
 - the lines read their source at the consumer's step and write a private region

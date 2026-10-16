@@ -2002,15 +2002,24 @@ mod tests {
         let tap = playback.virtual_capture().expect("a virtual output");
         std::thread::sleep(Duration::from_millis(60));
         assert!(tap.take().is_empty(), "nothing is kept until asked");
+        // The window is timed rather than assumed: a loaded machine can keep
+        // this thread asleep well past 300 ms (macOS CI once took 480 ms),
+        // and the output plays on meanwhile.
+        let began = Instant::now();
         tap.start();
         std::thread::sleep(Duration::from_millis(300));
         let kept = tap.take();
-        // A whole number of stereo frames, and about 300 ms of them at the
-        // output's pace (not flat out, not stalled).
+        let window = began.elapsed().as_secs_f32();
+        // A whole number of stereo frames, and as many of them as the window
+        // holds at the output's pace: not flat out (it may catch up a few
+        // blocks it was late with, never more), not stalled.
         let rate = playback.settings().sample_rate;
         let seconds = kept.len() as f32 / 2.0 / rate;
         assert_eq!(kept.len() % 2, 0);
-        assert!(seconds > 0.15 && seconds < 0.45, "{seconds}");
+        assert!(
+            seconds > window * 0.5 && seconds < window + 0.1,
+            "{seconds} s kept in {window} s"
+        );
     }
 
     #[test]
