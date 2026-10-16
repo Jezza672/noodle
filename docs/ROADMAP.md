@@ -893,8 +893,9 @@ spectral nodes). The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
 2. **Later in M11.** A spectrum display (a spectrogram or analyser node, fed by
    telemetry), more nodes (pitch shift and time stretch on frames, spectral
    compressor, convolution reverb from an impulse response, a noise-profile
-   denoiser), a choice of frame size (a config on Analyze that every spectral
-   node on the wire adopts), and delay compensation across spectral wires.
+   denoiser) and a choice of frame size (a config on Analyze that every
+   spectral node on the wire adopts). Delay compensation across spectral wires
+   is done (a `SpectralDelay` in front of an early spectral input).
 
 ## Scripting node (done)
 
@@ -903,10 +904,19 @@ node's ports, with state, `if`, the Math functions and `rand`. See
 ARCHITECTURE.md ("There are no synth nodes", the `Script` paragraph). Math
 stays as the one-line form.
 
+## MIDI 2.0 (done)
+
+Universal MIDI Packets on the MIDI bus (`noodle_io::ump`) and MIDI 2.0 channel
+voice messages played by `MIDI In`: 16-bit velocity, note pitch attributes,
+per-note pressure, pitch bend and controllers as note expressions, the rest
+narrowed to MIDI 1.0 events. See ARCHITECTURE.md, "MIDI input". Delay lines
+for spectral wires (`SpectralDelay`) came in the same batch.
+
 ## Later
 
 - ~~AU hosting.~~ **Done** (macOS): effects, instruments and music effects, with ports, notes, state and the transport; editors are the follow-up. See "AU hosting" in ARCHITECTURE.md.
 - Script node follow-ups: loops with a step limit, arrays or delay lines in
   scripts, MIDI/event ports.
-- MIDI 2.0.
+- MIDI 2.0 follow-ups: device input as UMP (midir delivers MIDI 1.0 bytes),
+  32-bit values end to end (events and clips), MIDI-CI.
 - Surround and multichannel buses.

@@ -16,14 +16,19 @@ use std::time::Instant;
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rtrb::{Consumer, Producer, RingBuffer};
 
+use crate::ump::Packet;
+
 /// One MIDI message of up to three bytes: a status byte and its data.
 /// Messages with one data byte (program change, channel pressure) have a
 /// zero in the last.
 pub type MidiMessage = [u8; 3];
 
-/// A message and when it arrived, in microseconds on the clock of
+/// A MIDI 1.0 message and when it arrived, in microseconds on the clock of
 /// [`now_micros`].
 pub type TimedMessage = (u64, MidiMessage);
+
+/// A packet (MIDI 1.0 or 2.0) and when it arrived.
+pub type TimedPacket = (u64, Packet);
 
 /// Microseconds since the first call, on a monotonic clock. Cheap and safe to
 /// call on the audio thread once it has been called anywhere before, which
@@ -95,11 +100,6 @@ impl AudioClock {
     }
 }
 
-/// Whether a message is a note-on or note-off.
-pub fn is_note(message: &MidiMessage) -> bool {
-    matches!(message[0] & 0xF0, 0x80 | 0x90)
-}
-
 /// Messages a subscriber can fall behind by before new ones are dropped.
 const QUEUE: usize = 1024;
 
@@ -142,7 +142,7 @@ pub struct MidiBus {
 }
 
 struct Subscriber {
-    producer: Producer<TimedMessage>,
+    producer: Producer<TimedPacket>,
     /// Only note-ons and note-offs are wanted.
     notes_only: bool,
 }
@@ -182,19 +182,30 @@ impl MidiBus {
         &self.clock
     }
 
-    /// Hands a message to every receiver. One that has fallen `QUEUE`
-    /// messages behind misses it. The time is read once the lock is held, so
-    /// two threads sending at once are stamped in the order they are queued.
+    /// Hands a MIDI 1.0 message to every receiver. One that has fallen
+    /// `QUEUE` messages behind misses it. The time is read once the lock is
+    /// held, so two threads sending at once are stamped in the order they are
+    /// queued.
     pub fn send(&self, message: MidiMessage) {
-        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        deliver(&mut subscribers, message, now_micros());
+        self.send_packet(Packet::midi1(0, message));
     }
 
     /// The same for a message that arrived at `micros` on the clock of
     /// [`now_micros`].
     pub fn send_at(&self, message: MidiMessage, micros: u64) {
+        self.send_packet_at(Packet::midi1(0, message), micros);
+    }
+
+    /// Hands a packet (MIDI 1.0 or 2.0) to every receiver.
+    pub fn send_packet(&self, packet: Packet) {
         let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        deliver(&mut subscribers, message, micros);
+        deliver(&mut subscribers, packet, now_micros());
+    }
+
+    /// The same for a packet that arrived at `micros`.
+    pub fn send_packet_at(&self, packet: Packet, micros: u64) {
+        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
+        deliver(&mut subscribers, packet, micros);
     }
 
     /// Releases every note on every channel (controller 123), for when the
@@ -213,27 +224,43 @@ impl MidiBus {
     }
 }
 
-fn deliver(subscribers: &mut Vec<Subscriber>, message: MidiMessage, micros: u64) {
-    let note = is_note(&message);
+fn deliver(subscribers: &mut Vec<Subscriber>, packet: Packet, micros: u64) {
+    let note = packet.is_note();
     subscribers.retain(|s| !s.producer.is_abandoned());
     for subscriber in subscribers.iter_mut() {
         if note || !subscriber.notes_only {
-            let _ = subscriber.producer.push((micros, message));
+            let _ = subscriber.producer.push((micros, packet));
         }
     }
 }
 
 /// The audio thread's end of a [`MidiBus`] subscription.
-pub struct MidiReceiver(Consumer<TimedMessage>);
+pub struct MidiReceiver(Consumer<TimedPacket>);
 
 impl MidiReceiver {
-    /// The oldest message not yet taken. Never blocks or allocates.
+    /// The oldest MIDI 1.0 message not yet taken. Never blocks or allocates.
     pub fn pop(&mut self) -> Option<MidiMessage> {
         self.pop_timed().map(|(_, message)| message)
     }
 
-    /// The same with the time the message arrived.
+    /// The same with the time the message arrived. This is lossy: MIDI 2.0
+    /// messages are narrowed to the first MIDI 1.0 message they make
+    /// ([`Packet::to_midi1`]; a parameter gives only its first controller, a
+    /// program change loses its bank) and packets with no MIDI 1.0 form are
+    /// skipped. It is for readers of notes, like the take recorder; use
+    /// [`pop_packet`](Self::pop_packet) for the rest.
     pub fn pop_timed(&mut self) -> Option<TimedMessage> {
+        loop {
+            let (at, packet) = self.0.pop().ok()?;
+            if let Some(message) = packet.to_midi1() {
+                return Some((at, message));
+            }
+        }
+    }
+
+    /// The oldest packet not yet taken, whatever it holds, with the time it
+    /// arrived.
+    pub fn pop_packet(&mut self) -> Option<TimedPacket> {
         self.0.pop().ok()
     }
 }

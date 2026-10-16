@@ -1237,6 +1237,61 @@ fn delay_compensation_never_allocates_through_plan_swaps_and_seeks() {
 }
 
 #[test]
+fn spectral_delay_lines_never_allocate_through_plan_swaps_and_seeks() {
+    // saw -> analyze -> cross.carrier, and saw -> latent -> analyze ->
+    // cross.modulator: the carrier's frames are held back to meet the
+    // modulator's. The latent path is cut and restored, so the delay comes
+    // and goes with each plan, and the transport jumps.
+    let mut s = Session::new();
+    s.registry.register(Latent);
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let latent = s.add(Node::new("test.latent"));
+    let a = s.add(Node::new("noodle.spectral.analyze"));
+    let b = s.add(Node::new("noodle.spectral.analyze"));
+    let cross = s.add(Node::new("noodle.spectral.cross"));
+    let synth = s.add(Node::new("noodle.spectral.synthesize"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", a, "in");
+    s.wire(saw, "out", latent, "in");
+    s.wire(latent, "out", b, "in");
+    s.wire(a, "spectrum", cross, "carrier");
+    s.wire(b, "spectrum", cross, "modulator");
+    s.wire(cross, "out", synth, "spectrum");
+    s.wire(synth, "out", output, "in");
+    s.update();
+    assert_eq!(s.controller.output_latency(), 100 + 2047);
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 300 * SETTINGS.channels];
+    for round in 0..8 {
+        let cut = round % 2 == 1;
+        if cut {
+            s.edit(Command::Disconnect {
+                input: Endpoint::new(b, "in"),
+            });
+        } else if round > 0 {
+            s.wire(latent, "out", b, "in");
+        }
+        s.update();
+        assert_eq!(
+            s.controller.output_latency(),
+            if cut { 2047 } else { 100 + 2047 }
+        );
+        if round % 3 == 2 {
+            transport.seek(noodle_core::Tick(1_000));
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+}
+
+#[test]
 fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     use noodle_io::Audio;
     use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
