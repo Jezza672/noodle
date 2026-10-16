@@ -228,3 +228,38 @@ fn spectral_and_audio_ports_do_not_connect() {
         .count();
     assert_eq!(mismatches, 2, "{diagnostics:?}");
 }
+
+#[test]
+fn lateness_follows_spectral_wires_through_two_pairs_in_a_row() {
+    // Analyze -> Synthesize twice: 2 x 2047 samples late. A dry copy mixed in
+    // beside it is held back by the whole of that, so the two add up to
+    // twice the sine on the timeline.
+    let graph = Graph::from_parts(
+        vec![
+            (NodeId(1), sine(440.0)),
+            (NodeId(2), Node::new("noodle.spectral.analyze")),
+            (NodeId(3), Node::new("noodle.spectral.synthesize")),
+            (NodeId(4), Node::new("noodle.spectral.analyze")),
+            (NodeId(5), Node::new("noodle.spectral.synthesize")),
+            (NodeId(6), Node::new("noodle.util.mix")),
+            (NodeId(7), Node::new("noodle.io.output")),
+        ],
+        vec![
+            wire((1, "out"), (2, "in")),
+            wire((2, "spectrum"), (3, "spectrum")),
+            wire((3, "out"), (4, "in")),
+            wire((4, "spectrum"), (5, "spectrum")),
+            wire((5, "out"), (6, "in1")),
+            wire((1, "out"), (6, "in2")),
+            wire((6, "out"), (7, "in")),
+        ],
+    )
+    .unwrap();
+    let s = settings(1, 100);
+    let wet = render(&graph, &registry(), s, 8_000).unwrap();
+    assert!(wet.diagnostics.is_empty(), "{:?}", wet.diagnostics);
+    let dry = render(&dry(), &registry(), s, 8_000).unwrap();
+    let doubled: Vec<f32> = dry.samples.iter().map(|x| 2.0 * x).collect();
+    let worst = worst_difference(&wet.samples, &doubled);
+    assert!(worst < 2e-3, "worst {worst}");
+}

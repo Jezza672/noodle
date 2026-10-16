@@ -337,9 +337,11 @@ There are two kinds of signal, plus a possible third later:
     `Node::latency`, so plugin delay compensation lines up a dry path mixed in
     beside the pair and offline renders and exports drop it. The pair gives the
     input back to within float error at any block size
-    (`tests/spectral.rs`). Delay compensation does not follow a spectral wire:
-    a latent plugin ahead of an Analyze delays the synthesised sound by its
-    latency on top.
+    (`tests/spectral.rs`). Lateness travels along spectral wires, so a latent
+    plugin ahead of an Analyze, or two pairs in a row, are compensated for in
+    the dry paths beside them. Spectral wires get no delay lines of their own:
+    where spectral paths of different lateness meet (a Cross), the earlier
+    one's frames are used as they come.
   - **Spectral nodes** (category Spectral, each frame in, one frame out, no
     delay of their own): `Spectral Gate` (bins under a threshold turned down,
     with a knee), `Spectral Filter` (band pass or stop between two

@@ -278,8 +278,13 @@ fn spectral_chains_never_allocate_even_while_editing() {
         }
         // A new node and a rewire swap the plan with spectral state in it.
         if round % 3 == 1 {
+            // A branch that runs: fresh spectral state in the new plan.
             let extra = s.add(Node::new("noodle.spectral.blur"));
+            let synth = s.add(Node::new("noodle.spectral.synthesize"));
+            let output = s.add(Node::new(OUTPUT_ID));
             s.wire(a, "spectrum", extra, "spectrum");
+            s.wire(extra, "out", synth, "spectrum");
+            s.wire(synth, "out", output, "in");
             s.update();
         }
         s.controller.maintain();

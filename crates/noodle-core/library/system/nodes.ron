@@ -1640,12 +1640,12 @@
         ),
     )),
     NodePreset((
-        name: "Slow Beating",
-        slug: "spectral-shift-slow-beating",
+        name: "One Bin Up",
+        slug: "spectral-shift-one-bin-up",
         node_type: "noodle.spectral.shift",
         values: (
             params: {
-                "shift": 3.0,
+                "shift": 24.0,
             },
         ),
     )),

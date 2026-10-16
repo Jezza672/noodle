@@ -898,7 +898,7 @@ fn table() -> Vec<Row> {
             "Low End Only",
             &[("low", 20.0), ("high", 250.0), ("mode", 0.0)],
         ),
-        row("noodle.spectral.shift", "Slow Beating", &[("shift", 3.0)]),
+        row("noodle.spectral.shift", "One Bin Up", &[("shift", 24.0)]),
         row("noodle.spectral.shift", "Bell-like", &[("shift", 90.0)]),
         row(
             "noodle.spectral.shift",

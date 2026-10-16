@@ -27,9 +27,10 @@ fn wrap_phase(x: f32) -> f32 {
     x - tau * (x / tau).round()
 }
 
-/// The value a parameter holds at `time`, for the first lane.
-fn param(inputs: &[SignalIn<'_>], port: usize, time: u32) -> f32 {
-    let lane = inputs[port].lane(0, 0);
+/// The value a parameter holds at `time`, for a voice (a mono parameter
+/// serves every voice).
+fn param(inputs: &[SignalIn<'_>], port: usize, voice: usize, time: u32) -> f32 {
+    let lane = inputs[port].lane(voice, 0);
     lane.get(time as usize)
         .or(lane.last())
         .copied()
@@ -38,8 +39,9 @@ fn param(inputs: &[SignalIn<'_>], port: usize, time: u32) -> f32 {
 
 /// Runs `f` on each frame of the first spectral input, writing the result as
 /// a frame of the first spectral output at the same time. `f` gets the
-/// frame's time, the lane, the bins in and the bins out (zero to begin with).
-fn map_frames(io: Io<'_, '_>, mut f: impl FnMut(u32, usize, &[Bin], &mut [Bin])) {
+/// frame's time, the voice, the lane, the bins in and the bins out (zero to
+/// begin with).
+fn map_frames(io: Io<'_, '_>, mut f: impl FnMut(u32, usize, usize, &[Bin], &mut [Bin])) {
     let Io {
         spectral_inputs,
         spectral_outputs,
@@ -56,6 +58,7 @@ fn map_frames(io: Io<'_, '_>, mut f: impl FnMut(u32, usize, &[Bin], &mut [Bin]))
                 let lane = voice * shape.channels + channel;
                 f(
                     time,
+                    voice,
                     lane,
                     input.frame(frame, voice, channel),
                     out.frame_mut(at, voice, channel),
@@ -266,10 +269,10 @@ struct GateNode;
 impl Node for GateNode {
     fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
-        map_frames(io, |time, _, input, out| {
-            let threshold = param(inputs, GatePorts::THRESHOLD, time);
-            let reduction = param(inputs, GatePorts::REDUCTION, time).max(0.0);
-            let knee = param(inputs, GatePorts::KNEE, time).max(0.0);
+        map_frames(io, |time, voice, _, input, out| {
+            let threshold = param(inputs, GatePorts::THRESHOLD, voice, time);
+            let reduction = param(inputs, GatePorts::REDUCTION, voice, time).max(0.0);
+            let knee = param(inputs, GatePorts::KNEE, voice, time).max(0.0);
             for (out, bin) in out.iter_mut().zip(input) {
                 let level = 20.0 * (bin.magnitude() + 1e-12).log10();
                 // How far above the bottom of the knee, 0 to 1.
@@ -354,10 +357,10 @@ impl Node for FilterNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
         let rate = ctx.sample_rate;
-        map_frames(io, |time, _, input, out| {
-            let low = param(inputs, FilterPorts::LOW, time);
-            let high = param(inputs, FilterPorts::HIGH, time);
-            let stop = param(inputs, FilterPorts::MODE, time) >= 0.5;
+        map_frames(io, |time, voice, _, input, out| {
+            let low = param(inputs, FilterPorts::LOW, voice, time);
+            let high = param(inputs, FilterPorts::HIGH, voice, time);
+            let stop = param(inputs, FilterPorts::MODE, voice, time) >= 0.5;
             for (j, (out, bin)) in out.iter_mut().zip(input).enumerate() {
                 let f = bin_frequency(j, rate);
                 if (f >= low && f <= high) != stop {
@@ -373,11 +376,12 @@ impl Node for FilterNode {
 /// Moves every frequency up or down by the same number of hertz, which is not
 /// the same as changing pitch: a note's partials at 100, 200 and 300 Hz
 /// shifted by 50 Hz sit at 150, 250 and 350 Hz and no longer form a harmonic
-/// series, so the sound turns bell-like and then metallic. Small shifts of a
-/// few hertz make a slow beating, a shift of a few tens of hertz a
-/// detuned, phasing thickness.
+/// series, so the sound turns bell-like and then metallic. A shift of one or
+/// two bins mixed back with the dry sound makes a detuned, phasing
+/// thickness.
 ///
-/// The shift is rounded to whole bins (about 21 Hz at 44.1 kHz).
+/// The shift is rounded to whole bins (about 23 Hz at 48 kHz), so a shift
+/// under half a bin (about 11 Hz) changes nothing.
 pub struct SpectralShift;
 
 pub const SPECTRAL_SHIFT_ID: &str = "noodle.spectral.shift";
@@ -414,35 +418,32 @@ impl NodeType for SpectralShift {
         Ok(ShiftPorts::layout())
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(ShiftNode { turn: 0.0 }))
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        let lanes = spectral_shape(setup, ShiftPorts::OUTPUTS).lanes();
+        Ok(Instance::realtime(ShiftNode {
+            turns: vec![0.0; lanes],
+        }))
     }
 }
 
 struct ShiftNode {
-    /// The phase every bin is turned by, in radians. A partial moved `k`
-    /// bins up has to advance `k` bins' worth of phase more each frame, which
-    /// is the same turn for all of them.
-    turn: f32,
+    /// The phase every bin of a lane is turned by, in radians. A partial
+    /// moved `k` bins up has to advance `k` bins' worth of phase more each
+    /// frame, which is the same turn for all of them.
+    turns: Vec<f32>,
 }
 
 impl Node for ShiftNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
         let bin_width = bin_frequency(1, ctx.sample_rate);
-        let mut turn = self.turn;
-        let mut last_time = None;
-        map_frames(io, |time, lane, input, out| {
-            let bins = (param(inputs, ShiftPorts::SHIFT, time) / bin_width).round() as isize;
-            // All lanes of a frame share one turn; advance it once per frame.
-            if last_time != Some(time) {
-                last_time = Some(time);
-                turn = wrap_phase(
-                    turn + std::f32::consts::TAU * bins as f32 * HOP as f32 / FFT_SIZE as f32,
-                );
-            }
-            let _ = lane;
-            let (sin, cos) = turn.sin_cos();
+        let turns = &mut self.turns;
+        map_frames(io, |time, voice, lane, input, out| {
+            let bins = (param(inputs, ShiftPorts::SHIFT, voice, time) / bin_width).round() as isize;
+            turns[lane] = wrap_phase(
+                turns[lane] + std::f32::consts::TAU * bins as f32 * HOP as f32 / FFT_SIZE as f32,
+            );
+            let (sin, cos) = turns[lane].sin_cos();
             for (j, bin) in input.iter().enumerate() {
                 let to = j as isize + bins;
                 if (0..BINS as isize).contains(&to) {
@@ -451,11 +452,10 @@ impl Node for ShiftNode {
                 }
             }
         });
-        self.turn = turn;
     }
 
     fn reset(&mut self) {
-        self.turn = 0.0;
+        self.turns.fill(0.0);
     }
 }
 
@@ -533,13 +533,16 @@ impl Node for FreezeNode {
     fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
         let lanes = &mut self.lanes;
-        map_frames(io, |time, lane, input, out| {
+        map_frames(io, |time, voice, lane, input, out| {
             let state = &mut lanes[lane];
-            let frozen = param(inputs, FreezePorts::FREEZE, time) >= 0.5;
+            let frozen = param(inputs, FreezePorts::FREEZE, voice, time) >= 0.5;
             if frozen {
                 for (j, out) in out.iter_mut().enumerate() {
                     state.phase[j] = wrap_phase(state.phase[j] + state.advance[j]);
                     *out = Bin::polar(state.magnitude[j], state.phase[j]);
+                    // So that unfreezing, and freezing again at once, measures
+                    // the partials' steps from where they are now.
+                    state.previous[j] = input[j].phase();
                 }
             } else {
                 for (j, bin) in input.iter().enumerate() {
@@ -617,8 +620,8 @@ impl Node for BlurNode {
     fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
         let levels = &mut self.levels;
-        map_frames(io, |time, lane, input, out| {
-            let amount = param(inputs, BlurPorts::AMOUNT, time).clamp(0.0, 0.999);
+        map_frames(io, |time, voice, lane, input, out| {
+            let amount = param(inputs, BlurPorts::AMOUNT, voice, time).clamp(0.0, 0.999);
             for ((out, bin), level) in out.iter_mut().zip(input).zip(&mut levels[lane]) {
                 *level = amount * *level + (1.0 - amount) * bin.magnitude();
                 let magnitude = bin.magnitude();
@@ -725,8 +728,8 @@ impl Node for CrossNode {
                 next += 1;
             }
             let Some(at) = out.push(time) else { break };
-            let mix = param(inputs, CrossPorts::MIX, time).clamp(0.0, 1.0);
             for voice in 0..shape.voices {
+                let mix = param(inputs, CrossPorts::MIX, voice, time).clamp(0.0, 1.0);
                 for channel in 0..shape.channels {
                     let lane = voice * shape.channels + channel;
                     let bins = out.frame_mut(at, voice, channel);
@@ -898,6 +901,44 @@ mod tests {
         let m = magnitudes(frames, last_frame(&frames));
         assert!((m[100] - 0.5).abs() < 0.02, "loud bin {}", m[100]);
         assert!(m[200] < 1e-5, "quiet bin {}", m[200]);
+    }
+
+    #[test]
+    fn each_voice_reads_its_own_parameter() {
+        // Two voices of the same quiet tone; the gate's threshold is high for
+        // voice 1 only (a polyphonic parameter), so only it is silenced.
+        let tone = sine_frames(100, 0.01, 6);
+        let shape = Shape::new(2, 1);
+        let mut h = Harness::with_spectral(
+            &SpectralGate,
+            &Config::new(),
+            &[(GatePorts::THRESHOLD, shape)],
+            &[shape],
+            RATE,
+            BLOCK,
+        )
+        .unwrap();
+        h.input(GatePorts::THRESHOLD, 6 * HOP)
+            .lane_mut(0, 0)
+            .fill(-80.0);
+        h.input(GatePorts::THRESHOLD, 6 * HOP)
+            .lane_mut(1, 0)
+            .fill(-20.0);
+        h.set(GatePorts::KNEE, 0.0);
+        let frames = tone.as_in(Shape::MONO);
+        let mut out = h.spectral_input(0);
+        for f in 0..frames.frames() {
+            let at = out.push(frames.time(f)).unwrap();
+            for voice in 0..2 {
+                out.frame_mut(at, voice, 0)
+                    .copy_from_slice(frames.frame(f, 0, 0));
+            }
+        }
+        h.run(6 * HOP).unwrap();
+        let result = h.spectral(0);
+        let last = result.frames() - 1;
+        assert!(result.frame(last, 0, 0)[100].magnitude() > 0.009);
+        assert!(result.frame(last, 1, 0)[100].magnitude() < 1e-4);
     }
 
     #[test]

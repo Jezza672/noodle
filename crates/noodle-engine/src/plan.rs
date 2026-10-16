@@ -588,6 +588,13 @@ pub(crate) fn build(
                 })
                 .collect(),
             outputs: scheduled.outputs.clone(),
+            spectral_inputs: scheduled
+                .spectral_inputs
+                .iter()
+                .flatten()
+                .copied()
+                .collect(),
+            spectral_outputs: scheduled.spectral_outputs.clone(),
             consumes: scheduled.phase != Phase::Input,
         });
         nodes.push(PlanNode {
@@ -1645,6 +1652,10 @@ struct SlotInfo {
     /// The buffer behind each signal input, if connected.
     inputs: Vec<Option<crate::BufferId>>,
     outputs: Vec<crate::BufferId>,
+    /// The connected spectral inputs and the spectral outputs. Lateness
+    /// travels along them, but they get no delay lines.
+    spectral_inputs: Vec<crate::SpectralBufferId>,
+    spectral_outputs: Vec<crate::SpectralBufferId>,
     /// False for the input half of a split node, which only reads its loop
     /// input and makes no output.
     consumes: bool,
@@ -1657,6 +1668,12 @@ struct SlotInfo {
 /// line so everything lines up with the slowest. Lines read their source at
 /// the consumer's step and write a private region added to the end of the
 /// pool, so the compiler's buffer reuse is untouched.
+///
+/// Lateness also travels along spectral wires, so a pair of Analyze and
+/// Synthesize after a latent plugin, or two pairs in a row, is as late as the
+/// whole path. Spectral wires get no delay lines: where spectral paths of
+/// different lateness meet (a Cross), the later one is not waited for, and
+/// the earlier one's frames are used as they come.
 ///
 /// Events aren't compensated, and a loop's own input never is (the loop
 /// already carries its delay). Returns the delay lines that can take over
@@ -1676,6 +1693,9 @@ fn compensate(
     // How late each buffer is, as of the step being looked at; buffers are
     // reused, so this follows the schedule.
     let mut arrival: HashMap<crate::BufferId, u32> = HashMap::new();
+    let mut spectral_arrival: HashMap<crate::SpectralBufferId, u32> = HashMap::new();
+    // The latest a step's spectral inputs arrive.
+    let mut spectral_slowest: Vec<u32> = Vec::with_capacity(slots.len());
     let mut input_arrival: Vec<Vec<Option<u32>>> = Vec::with_capacity(slots.len());
     let mut sink_latency = 0;
     for slot in slots {
@@ -1684,10 +1704,26 @@ fn compensate(
             .iter()
             .map(|b| b.map(|b| arrival.get(&b).copied().unwrap_or(0)))
             .collect();
-        let slowest = arrivals.iter().flatten().copied().max().unwrap_or(0);
+        let spectral = slot
+            .spectral_inputs
+            .iter()
+            .map(|b| spectral_arrival.get(b).copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        spectral_slowest.push(spectral);
+        let slowest = arrivals
+            .iter()
+            .flatten()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(spectral);
         if slot.consumes {
             for &b in &slot.outputs {
                 arrival.insert(b, slowest + slot.latency);
+            }
+            for &b in &slot.spectral_outputs {
+                spectral_arrival.insert(b, slowest + slot.latency);
             }
         }
         if slot.sink {
@@ -1705,7 +1741,13 @@ fn compensate(
         let target = if slot.sink {
             sink_latency
         } else {
-            arrivals.iter().flatten().copied().max().unwrap_or(0)
+            arrivals
+                .iter()
+                .flatten()
+                .copied()
+                .max()
+                .unwrap_or(0)
+                .max(spectral_slowest[index])
         };
         for (input, arrived) in arrivals.iter().enumerate() {
             let Some(arrived) = *arrived else { continue };
