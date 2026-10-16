@@ -829,6 +829,45 @@ excepted, see ARCHITECTURE.md).
    mixes and reverb tails, which the synthesised drums and dry mixes do not
    test.
 
+## M10: Stems
+
+**Status:** Designed (CONTEXT.md, "Stems"; ADR 0006). Nothing built.
+
+AI stem separation (HT-Demucs through ONNX Runtime), used two ways. Research and the
+sources are in the project folder `research/stem-warp/findings.md`. Three batches:
+
+1. **Ceiling experiment.** Before any model. `songs --stems` is not enough: `Harness::run_stems`
+   scores each part alone against that part's native render, and the song's parts are
+   instruments (Kick, Clap, ...), not drums, bass, vocals and other. This batch adds a mapping
+   from parts to stems and a new harness mode that warps each stem (Beats for drums, Grain for
+   the rest), adds the results and scores the sum against the native mix, next to the
+   whole-mix modes and a harmonic/percussive baseline. With perfect stems the residual is zero,
+   so it also adds simulated leakage between stems to test the residual. The generated songs
+   have no vocals, so the vocals default is untested by this batch. If there is no clear gain,
+   stop here. The ADR and docs landed in #166.
+2. **Separation and Split to stems.** The separator trait in its own crate (added to
+   CLAUDE.md's crate table), with a fake separator for tests, the ONNX backend, the consented weight
+   download, a cancellable background job with progress, and **Split to stems** on an audio
+   clip: one new track under the source for each stem and for the residual, named
+   "<clip> (drums)" and so on, stems written as WAVs in a project-relative folder, all one undo
+   step. Audio clips have no mute today (`AudioClip` has no such field), so this batch adds clip
+   mute, and the source clip stays in place, muted. Each new clip gets its own new warp copied
+   from the source's clip tempo, beat markers and warp settings (never the source's `WarpId`,
+   which would link them).
+3. **Stem warp mode.** A warp mode alongside Repitch, Grain and Beats. Choosing it separates in
+   the background into a hidden cache (clip content, model id and version) in the existing
+   per-user `CacheStore`, plays as Repitch until ready, then warps each stem with a fixed mode
+   (drums Beats; bass, vocals, other and the residual Grain) and adds them back. A change of model
+   or version acts like a `DSP_GENERATION` bump. Splitting afterwards copies from the cache. A
+   per-stem mode picker comes only if the evaluation shows the defaults are wrong. Prerequisite:
+   `eval/clips.csv` gets real mixes, vocals included, because the generated songs have none and
+   M8's borrowed-truth set is empty. It ships only if the evaluation shows a clear gain on most
+   songs and those clips.
+
+Out of scope for now: streaming separation, models other than HT-Demucs, and note-level
+warping. The note-level idea (neural note onsets placing Beats cuts inside a stem) is a later
+step, after Stem warp; true per-note audio extraction is not planned.
+
 ## Later
 
 - Spectral signal type.

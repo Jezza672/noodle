@@ -1,0 +1,9 @@
+# Stems come from a downloaded ONNX model behind a trait
+
+Separating a clip into stems uses an AI model (HT-Demucs: drums, bass, vocals, other) run through ONNX Runtime. The weights are not bundled: the app downloads them on first use, after the user agrees, and keeps them in the user data folder. The separator is a trait in its own crate, so the model and runtime can change, and tests use a small fake separator instead of the real weights.
+
+Stems are made once per clip, ahead of playback, and never in the audio path. Stem warp (a warp mode) keeps its stems in a cache keyed by the clip's content, the model id and version, and the cache is recomputable and not saved in the project. It lives in the existing per-user `CacheStore`, and a change of model or version acts like a `DSP_GENERATION` bump. Split to stems is a different thing: it writes real WAV files into a project-relative folder and creates ordinary clips, so the project stays self-contained and the clips can be edited and moved.
+
+We considered bundling the weights (hundreds of MB in every install and a licence question we have not settled), a pure-Rust runtime such as Burn with wgpu (no native library to ship, but no published timings for this model and a hard dependency on a working GPU API), and a streaming separator (it loses quality below a model-dependent latency, and our warps already render ahead of the playhead on a worker). ONNX Runtime has a measured result for HT-Demucs (about 21 s of CPU per minute of audio, the same quality as PyTorch).
+
+The cost is a native library to ship on three platforms, a download with a consent prompt, and a licence check on the weights before release. A Burn backend can be added behind the same trait if packaging the native library proves painful. Stem warp ships only if the evaluation shows a clear gain over the best whole-mix mode.
