@@ -365,8 +365,8 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
 - **System node presets** live in one generated file, `library/system/nodes.ron`
   (a table in `noodle-eval/src/song/node_presets.rs`, rewritten by
   `UPDATE_LIBRARY=1`). Every node has at least two, except those with nothing
-  to set and Dynamics, whose presets arrive with the Compressor, Limiter and
-  Gate batch (which removes its exemption); a test lists the exceptions.
+  to set; a test lists the exceptions. Dynamics has Compressor, Vocal
+  Compressor, Bus Glue, Limiter, Gate, Drum Gate, Expander and De-noise.
 - **Presets find ports by name.** Port layout comes from the node types,
   which `noodle-core` doesn't know, so the functions that need it take a
   closure; the app passes `Registry::layout_signature` (the sorted keys of
@@ -395,9 +395,19 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   Add menu (Shift+A) lists templates under Groups; right-click a group for
   "Save group to library...". `Edit::Library` saves to the user store and is
   not an undo step.
-- **Not yet.** Samples by content hash (ADR 0004) arrive with the Sampler in
-  batch B; nothing in batch A holds audio. No "update from template" action
-  (ADR 0005), and user track templates are later.
+- **Update from template.** Right-click a group made from a library template
+  (its `Node::template` names an entry the library still lists) for "Update
+  from <name>". `GroupTemplate::update_group` is one `Command::Batch`, one
+  undo step: it removes everything inside the group and adds the template's
+  current contents (new IDs, positions relative to the group). The group node
+  stays, with its ID, place, label, name and the wires at its ports. Wires at
+  a port the template no longer has are removed, the group's own gain, mute
+  and solo are carried over by port name, and the applied preset is cleared.
+  Edits inside, and the automation lanes on nodes inside (including lanes on the group's own gain and mute, which sit on its boundary nodes), are lost; the status
+  bar says how many lanes. It is always an explicit choice (ADR 0005); nothing
+  ever updates a group by itself. The hidden track template can't be applied
+  this way.
+- **Not yet.** User track templates.
 
 ### Instruments, dynamics and effects (M9)
 
@@ -427,7 +437,7 @@ These are primitives; instruments and racks built from them are groups.
   a node's latency before audio runs; it delays the audio and reports itself
   to delay compensation. Channels share one gain. Compressor, Limiter, Gate
   and Expander (and variants such as Vocal Compressor and Drum Gate) are
-  system *presets* of this one node (`library/system/dynamics.ron`), not
+  system *presets* of this one node (`library/system/nodes.ron`), not
   groups.
 - **Parametric EQ** (`noodle.effect.eq`) is `bands` (config, 1 to 8) RBJ
   biquads in series: bell, shelves, cuts and notch. Coefficients are computed
@@ -899,7 +909,9 @@ After a seek it renders three hops it throws away.
 
 Each band is **cut at transients**, and what is cut at differs. The worker finds
 two lists once per source and keeps them: the transients of the whole mix
-(`detect_onsets`) and those of its bass (`detect_bass_onsets`: the level of the
+(`detect_onsets`: a block's level against the average power of the 30 ms
+before it, not the quietest of two short blocks, which a low held chord's
+swinging block power fooled into an attack every few blocks) and those of its bass (`detect_bass_onsets`: the level of the
 low-passed audio, rising at once and falling over 40 ms, so that a low tone's
 swing isn't an attack). **Beats** cuts the mids and highs at the first list and
 the bass at the second; **Grain** cuts both at the bass's, so that a kick's body
@@ -961,7 +973,8 @@ editor sets it, as does the panel's Offset field and Detect
 a weak guess unless `TempoEstimate::is_clear`: onsets mostly on the beat, or a
 beat standing well above every other tempo's score; `Analysis::of` scores the
 bass onsets as well as all of them, since hats and arpeggios bury the beat in a
-full mix; Detect is enabled whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
+full mix, and the treble's (`detect_treble_onsets`) when neither is clear, for
+bells over a dark pad; Detect is enabled whenever there is any). Flags are picked as a set (`ClipEditor::selected`: click,
 Shift/Ctrl click, a box in the flags' row, Ctrl+A) and a picked group moves and
 is deleted as one edit. Each detected transient has a handle on the row under
 the brace; double-clicking it pins a marker where the transient plays now

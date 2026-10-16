@@ -959,10 +959,11 @@ mod tests {
         let threshold = param(&harness, "threshold").unwrap();
         assert!((threshold + 30.0).abs() < 1.0, "{threshold}");
 
-        // The attack point: 10 ms in, over a span of (0.04 + 0.4 + 0.01) · 1.1.
-        let span = 0.45 * 1.1;
-        // 63% of the way to the reduction at 0 dB, on a scale of 1.1 times it.
-        let height = 1.0 - 0.632 / 1.1;
+        // The attack point: 10 ms in, over a span of (0.04 + 0.4 + 0.01) · 1.5.
+        let span = 0.45 * 1.5;
+        // 63% of the way to the reduction at 0 dB (22.5 dB over the -30 dB
+        // threshold at 4:1), on a scale of 1.5 times the most it could be (30).
+        let height = 1.0 - 22.5 * 0.632 / 45.0;
         let from = at(0.54 + 0.46 * 0.01 / span, height);
         drag(&mut harness, from, at(0.54 + 0.46 * 0.05 / span, 0.5));
         let attack = param(&harness, "attack").unwrap();

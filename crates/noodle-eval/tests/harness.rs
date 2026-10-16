@@ -133,21 +133,23 @@ fn a_changing_tempo_warps_to_the_native_length_and_keeps_the_clicks_on_the_map()
 }
 
 #[test]
-fn auto_without_a_detected_tempo_leaves_the_clip_at_the_timeline_tempo() {
+fn auto_without_a_detected_tempo_keeps_the_timeline_tempo_it_was_warped_at() {
     // As in the app: no tempo found means the new warp starts at the
-    // timeline's tempo, so the clip is not stretched. It must not fall back to
-    // the source tempo, which would make a failed detection look right.
+    // timeline's tempo, so the clip is not stretched until the timeline's
+    // tempo changes.
     let h = harness();
-    let target = h.target(TempoCase::Ratio(1.5));
+    let at_import = noodle_eval::tempo::steady(h.source_bpm);
     let none = noodle_io::Analysis {
         onsets: vec![],
         tempo: None,
         grid: None,
         percussive: false,
     };
-    let (tempo, _) = noodle_eval::harness::auto_choice(&none, &target);
-    assert_eq!(tempo.points()[0].bpm, 165.0);
-    // And on a probe where detection fails, that shows in the score.
+    let (tempo, _) = noodle_eval::harness::auto_choice(&none, &at_import);
+    assert_eq!(tempo.points()[0].bpm, h.source_bpm);
+    // The tempo is changed afterwards, and the clip follows it in a
+    // pitch-keeping mode, like Grain does: a failed detection shows in
+    // `detected_bpm`, not as a clip that ignores the tempo change.
     let rows = h
         .run(
             Probe::HeldChord,
@@ -159,11 +161,31 @@ fn auto_without_a_detected_tempo_leaves_the_clip_at_the_timeline_tempo() {
     let grain = find(&rows, Method::Grain, View::Native);
     assert!(auto.metric("detected_bpm").unwrap().is_nan());
     assert!(
-        auto.metric("log_distance_db").unwrap() > 2.0 * grain.metric("log_distance_db").unwrap(),
+        auto.metric("log_distance_db").unwrap() < 1.5 * grain.metric("log_distance_db").unwrap(),
         "{:?} vs {:?}",
         auto.metrics,
         grain.metrics
     );
+}
+
+#[test]
+fn auto_finds_the_tempo_of_the_probes_that_have_a_pulse() {
+    // Auto is imported at the source tempo, so a failed detection scores like
+    // a perfect one on the gated metrics. This is what catches it.
+    let h = harness();
+    for probe in [Probe::ClickTrain, Probe::NoiseBursts] {
+        let rows = h
+            .run(probe, TempoCase::Ratio(1.5), &[Method::Auto])
+            .unwrap();
+        let bpm = find(&rows, Method::Auto, View::Native)
+            .metric("detected_bpm")
+            .unwrap();
+        assert!(
+            (bpm - h.source_bpm).abs() < 0.01 * h.source_bpm,
+            "{probe:?}: detected {bpm}, source {}",
+            h.source_bpm
+        );
+    }
 }
 
 #[test]

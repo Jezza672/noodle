@@ -2857,3 +2857,68 @@ fn right_clicking_a_group_saves_it_to_the_user_library() {
     h.state_mut().session.undo();
     assert!(!h.state().session.can_undo());
 }
+
+#[test]
+fn right_clicking_a_group_made_from_a_template_updates_it_from_the_template() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("kick".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    let group = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == GROUP)
+        .map(|(id, _)| id)
+        .expect("the group was added");
+    // A parameter inside, edited away from the template's value.
+    let (inner, key, original) = graph
+        .descendants(group)
+        .into_iter()
+        .find_map(|id| {
+            let (key, value) = graph.node(id)?.params.iter().next()?;
+            Some((id, key.clone(), *value))
+        })
+        .expect("the kick has parameters");
+    h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+        node: inner,
+        key: key.clone(),
+        value: Some(original + 1.0),
+    })]);
+    h.run();
+    let p = title(&h, group);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+    h.get_by_label("Update from Kick").click();
+    h.run();
+    let graph = h.state().session.project().graph();
+    let value = |graph: &noodle_core::Graph| {
+        let inner = graph
+            .descendants(group)
+            .into_iter()
+            .find(|&id| graph.node(id).is_some_and(|n| n.params.contains_key(&key)))
+            .unwrap();
+        graph.node(inner).unwrap().params[&key]
+    };
+    assert_eq!(value(graph), original, "back to the template's value");
+    assert!(h.state().editor.group_menu.is_none(), "the menu closed");
+    // One undo step puts the edit back.
+    h.state_mut().session.undo();
+    assert_eq!(value(h.state().session.project().graph()), original + 1.0);
+}
+
+#[test]
+fn a_group_with_no_template_has_no_update_item() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    let p = title(&h, group);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+    h.get_by_label("Save group to library...");
+    assert!(h.query_by_label_contains("Update from").is_none());
+}

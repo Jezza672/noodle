@@ -698,7 +698,7 @@ it non-destructively, and lend its groove to a second clip.
 
 ## M8: Warp evaluation
 
-**Status:** Designed (CONTEXT.md, "Warp evaluation"; ADR 0003). Batch 1 (the `noodle-eval` metrics crate), batch 2 (probes and harness, minus the CI gate), batch 3 (the five songs) and batch 4 (borrowed truth) are built. Batch 5 fixed tempo detection in full mixes (#141) and added `songs --stems`. Batch 4 is open on one item: `eval/clips.csv` has no clips yet, so the speech, instrument and mix cases are untried; only the probes have run against the reference stretchers. The metrics' validation against the listening-test dataset runs through `noodle-eval validate`, but the dataset itself (IEEE DataPort, login to download) has not been run yet, so **no metric gates CI**: the harness's tests check its wiring (time maps, lengths, that Repitch is told from a pitch-keeping mode, that each song's native render lines up with its source), and the committed baselines (`probes.json`, `songs.json`, `borrowed.json`) are a before and after.
+**Status:** Built, apart from what needs a person. Batches 1 to 5 landed earlier (metrics crate, probes and harness, the five songs, borrowed truth, tempo detection in full mixes). The closing batch added the **CI gate** (`noodle-eval/tests/gate.rs`): Noodle's modes on the probes (x0.75, x1.5 and the step) must be no worse than the worst reference stretcher's numbers in `baseline/borrowed.json` on each gated cell, except the cells listed in `baseline/gate.json`, which are worse today and may not get worse (`UPDATE_GATE=1` regenerates the list when cells improve). Only physical checks gate (where onsets land, pitch, loudness); the Roberts and Paliwal features stay out until `noodle-eval validate` has been run on the listening-test dataset (IEEE DataPort, a login). The closing batch also fixed the known detection misses: the onset detector no longer fires dozens of times on a held chord (a block is compared with the average of the 30 ms before it), and `glass-ambient` now gets its tempo from its bells (`detect_treble_onsets`). `funk-engine`'s beat phase can still be half a beat off: its onsets favour the off-beat in count and in loudness, so no rule over onsets can tell, and a downbeat model would be needed. **Needs a person:** CC0 clips for `eval/clips.csv` (`eval/fetch.sh --pin`), the IEEE DataPort download for `validate` and `fit`, and the macOS listening check.
 
 A dev tool that scores the warp methods, so a change to Grain, Beats or Repitch
 shows a before and after. Four batches:
@@ -741,7 +741,7 @@ shows a before and after. Four batches:
    instrument is a group node of primitive nodes. Nothing the songs needed was
    missing, so nothing was built for them; the drums are synthesised, since
    there is no sampler. Gaps found, filed as issues: tempo detection found nothing in
-   any of the five mixes (#141, fixed in batch 5: it now reads the bass onsets too and finds four of the five within 0.2%, on the excerpt and on the whole song; `glass-ambient`, with no drums, rightly gets none. The beat's phase is the most common position, and funk-engine's off-beat bass can put it half a beat off), the nodes have no tempo-synced echo or LFO
+   any of the five mixes (#141, fixed in batch 5: it now reads the bass onsets too and finds four of the five within 0.2%, on the excerpt and on the whole song; `glass-ambient` first got none and now gets its tempo from the bells in the treble. The beat's phase is the most common position, and funk-engine's off-beat bass can put it half a beat off), the nodes have no tempo-synced echo or LFO
    (#142), and there is no sampler or drum rack (#143). The excerpts go through the harness in tests that
    check wiring only, like the probes'. Stems are scored from batch 5 on, with `songs --stems`.)
 4. **Borrowed truth.** For audio we cannot generate: a fetch script for CC0
@@ -789,6 +789,14 @@ them); the system presets are group presets of the instrument templates. The
 design is in `CONTEXT.md` (Presets and the group library) and ADRs 0004 and
 0005.
 
+**Batch 6:** "Update from template" on a group made from a library template
+(right-click; replaces the inside, keeps wires at its ports and its own level,
+one undo step); see ARCHITECTURE.md. The same batch fixed #167: the eval
+harness warped Auto as if the project were already at the target tempo, so a
+clip with no detectable tempo (lone kick, sweep) was never stretched. Auto is
+now warped as a user does it (imported at the song's tempo, tempo changed
+afterwards), and it scores like Grain on those probes.
+
 **Batch 4 (more nodes and free automation tracks):** ten nodes (Envelope, a
 drawn curve played on a trigger with a multi-voice or single-voice setting;
 Distortion; Bitcrusher; Chorus; Phaser; Envelope Follower; Sample & Hold; Lag;
@@ -796,8 +804,8 @@ Comparator; Clock) and the Automation node, which turns a timeline lane into a
 0 to 1 signal wired to any input. The timeline's "+ Auto" button adds one and
 draws its lane in a row of its own. Batch 5 added the
 Envelope's length in beats (`time` Seconds or Beats, and `beats`), a curve
-preview on its body, and system presets for every node (`nodes.ron`; Dynamics
-excepted, see ARCHITECTURE.md).
+preview on its body, and system presets for every node (`nodes.ron`, Dynamics
+included: Compressor, Limiter, Gate, Expander and variants).
 
 1. **Library and presets.** Node presets (parameters and port-neutral config, same node
    type and port layout, one undo step, never touching wires, lanes, mute or

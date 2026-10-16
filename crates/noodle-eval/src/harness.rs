@@ -415,6 +415,7 @@ impl Harness {
         self.export_wav(&format!("{tag}_native"), &native)?;
         let mut rows = Vec::new();
         for &method in methods {
+<<<<<<< HEAD
             let (tempo, parts): (TempoCurve, Vec<(&[f32], WarpMode)>) = match splits.get(&method) {
                 Some(split) => (
                     TempoCurve::constant(self.source_bpm),
@@ -436,6 +437,12 @@ impl Harness {
                 );
             }
             let warped = crate::stems::sum(&forward);
+=======
+            let (tempo, mode) = self.choice(method, &analysis);
+            let warped = self
+                .warp(&source, tempo, mode, &target, frames)
+                .map_err(|e| format!("{name} {} {}: {e}", case.name(), method.name()))?;
+>>>>>>> origin/main
             self.export_wav(&format!("{tag}_{}_warped", method.name()), &warped)?;
             // Back to the source tempo: the clip's tempo is the target's.
             let back_tempo = TempoCurve::from_tempo_map(&target, Tick::ZERO, 0.0, seconds);
@@ -487,15 +494,17 @@ impl Harness {
 
     /// The clip tempo and mode `method` gives a clip: the true source tempo
     /// for the fixed modes, and for [`Method::Auto`] what `analysis` finds.
-    pub fn choice(
-        &self,
-        method: Method,
-        analysis: &Analysis,
-        target: &TempoMap,
-    ) -> (TempoCurve, WarpMode) {
+    ///
+    /// Auto is warped the way a user does it: the clip goes into a project
+    /// at the song's own tempo, where a failed detection leaves the clip at
+    /// the timeline's tempo, and the project's tempo is changed afterwards.
+    /// A clip with no tempo to find (a lone kick, a sweep) is then still
+    /// stretched by the tempo change, in the pitch-keeping mode it was given.
+    /// `detected_bpm` in the rows says when detection failed.
+    pub fn choice(&self, method: Method, analysis: &Analysis) -> (TempoCurve, WarpMode) {
         let fixed = |mode| (TempoCurve::constant(self.source_bpm), mode);
         match method {
-            Method::Auto => auto_choice(analysis, target),
+            Method::Auto => auto_choice(analysis, &steady(self.source_bpm)),
             Method::Grain => fixed(WarpMode::Grain),
             Method::Beats => fixed(WarpMode::Beats),
             Method::Repitch => fixed(WarpMode::Repitch),
@@ -558,7 +567,8 @@ impl Harness {
 
 /// The clip tempo and mode the app gives a freshly warped clip
 /// (`clip_panel::start_warp`): the detected tempo, or when there is none the
-/// timeline's, which the new warp starts at, so the clip is not stretched;
+/// tempo the timeline has as the clip is warped, so the clip is not stretched
+/// until the timeline's tempo changes;
 /// Beats for close transients and Grain for the rest.
 pub fn auto_choice(analysis: &Analysis, timeline: &TempoMap) -> (TempoCurve, WarpMode) {
     let tempo = TempoCurve::constant(

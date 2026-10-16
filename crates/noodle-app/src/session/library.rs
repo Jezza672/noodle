@@ -124,6 +124,34 @@ impl Session {
         })
     }
 
+    /// The library template a group was made from, if it is still there.
+    fn source_template(&self, group: NodeId) -> Option<(&str, &GroupTemplate)> {
+        let entry = self.project.graph().node(group)?.template.as_deref()?;
+        let (id, _) = self.library.templates().find(|(id, _)| *id == entry)?;
+        Some((id, self.library.template(id)?))
+    }
+
+    /// The command that replaces a group's contents with its template's
+    /// current version. Says in the status bar what it removes.
+    pub(super) fn update_from_template(
+        &mut self,
+        group: NodeId,
+    ) -> Result<noodle_core::Command, String> {
+        let (_, template) = self
+            .source_template(group)
+            .ok_or("its template is no longer in the library")?;
+        let name = template.name.clone();
+        let (command, lanes) = template
+            .update_group(&self.project, group, || self.new_node_id())
+            .map_err(|e| e.to_string())?;
+        self.message = Some(match lanes {
+            0 => format!("Updated from {name}"),
+            1 => format!("Updated from {name} (one automation lane was removed)"),
+            n => format!("Updated from {name} ({n} automation lanes were removed)"),
+        });
+        Ok(command)
+    }
+
     pub(super) fn library_edit(&mut self, edit: LibraryEdit) {
         let result = self.try_library_edit(edit);
         match result {
