@@ -17,6 +17,7 @@ pub mod library;
 pub mod music;
 pub mod node_presets;
 mod patch;
+pub mod samples;
 pub mod system;
 
 use crate::tempo::steady;
@@ -50,6 +51,8 @@ pub struct Part {
     /// What it plays in which section; a section it is not listed in is a
     /// rest.
     pub plays: Vec<(&'static str, Pattern)>,
+    /// Effects on the track, after its pan.
+    pub fx: Vec<kit::Fx>,
 }
 
 /// A whole song.
@@ -63,6 +66,8 @@ pub struct Song {
     /// The master level after the mixer, in decibels, which keeps the loudest
     /// moment of the song under full scale.
     pub master_db: f32,
+    /// Effects on the mix, before the master level.
+    pub master_fx: Vec<kit::Fx>,
     /// The excerpt that joins the CI gate: its first bar and how many bars.
     pub excerpt: (u32, u32),
 }
@@ -190,7 +195,8 @@ impl Song {
             0.0,
         );
         let out = p.add(spec(OUTPUT_ID), 14.0, 0.0);
-        p.connect((mix, "out"), (master, "in"));
+        let mixed = kit::chain(&mut p, &self.master_fx, (mix, "out"), 12.5, 1.0);
+        p.connect(mixed, (master, "in"));
         p.connect((master, "out"), (out, "in"));
 
         let mut sources = Vec::new();
@@ -260,7 +266,7 @@ impl Song {
         let rendered = render_project_with_clips(
             &project,
             &mut registry,
-            &std::env::temp_dir(),
+            samples::dir().parent().expect("a songs folder"),
             settings,
             frames,
         )
@@ -341,6 +347,11 @@ fn add_track(p: &mut Patch, part: &Part, index: usize) -> Track {
             p.connect((synth, "out"), (sum, "in"));
             p.connect((sum, "out"), (pan, "in"));
         }
+        Instrument::Rack(_) => {
+            let rack = kit::build(p, &part.instrument, 4.0, 1.0);
+            p.connect((input, MIDI), (rack, "notes"));
+            p.connect((rack, "out"), (pan, "in"));
+        }
         _ => {
             let mono = p.add(spec("noodle.event.mono"), 2.0, 1.0);
             let synth = kit::build(p, &part.instrument, 4.0, 1.0);
@@ -355,7 +366,8 @@ fn add_track(p: &mut Patch, part: &Part, index: usize) -> Track {
             p.connect((synth, "out"), (pan, "in"));
         }
     }
-    p.connect((pan, "out"), (output, "p1"));
+    let last = kit::chain(p, &part.fx, (pan, "out"), 9.0, 1.0);
+    p.connect(last, (output, "p1"));
     p.parent = None;
     Track { group, input }
 }

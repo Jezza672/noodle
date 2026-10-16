@@ -777,14 +777,17 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** batch 2 (the nodes) has landed: Sampler, Note Split, Dynamics,
-Parametric EQ, Reverb and Arpeggiator, with graphs for Dynamics and EQ and a
-"Load sample…" picker. Drum rack, the
-evaluation songs (batch 3) and node presets follow. Batch 1 (library and
+**Status:** batches 2 and 3 have landed: the nodes (Sampler, Note Split,
+Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
+and a "Load sample…" picker), and the warp evaluation songs, whose drums are a
+drum rack of committed samples (`noodle-eval/songs/samples`) and whose mixes
+run through Dynamics nodes set by the compressor and limiter node presets, a
+Parametric EQ and a Reverb. Batch 1 (library and
 presets) is done in code: it left out samples by content hash in the library
-(the Sampler's store now exists) and shipped no node presets (batch 5 added them); the system
-presets are group presets of the instrument templates. The design is in `CONTEXT.md` (Presets and the
-group library) and ADRs 0004 and 0005.
+(the Sampler's store now exists) and shipped no node presets (batch 5 added
+them); the system presets are group presets of the instrument templates. The
+design is in `CONTEXT.md` (Presets and the group library) and ADRs 0004 and
+0005.
 
 **Batch 4 (more nodes and free automation tracks):** ten nodes (Envelope, a
 drawn curve played on a trigger with a multi-voice or single-voice setting;

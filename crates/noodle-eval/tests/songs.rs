@@ -111,13 +111,17 @@ fn every_song_has_the_five_sections_a_sensible_tempo_and_a_gate_sized_excerpt() 
                     .any(|n| n.beat >= excerpt.start && n.beat < excerpt.end)
             })
             .count();
-        assert!(busy >= 5, "{}: only {busy} parts in the excerpt", song.name);
+        // The drums are one part, the rack.
+        assert!(busy >= 4, "{}: only {busy} parts in the excerpt", song.name);
     }
 }
 
 #[test]
 fn the_committed_projects_are_the_songs_and_they_play() {
     let update = std::env::var_os("UPDATE_SONGS").is_some();
+    if update {
+        noodle_eval::song::samples::write_all().unwrap();
+    }
     for song in all() {
         let path = songs_dir().join(format!("{}.ron", song.name));
         let text = song.source_project().to_ron();
@@ -409,7 +413,7 @@ fn every_instrument_is_a_group_of_primitive_nodes_with_its_controls_exposed() {
     use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, TRACK_INPUT};
     // No node of a song does a synth's job on its own: these are all the types
     // that appear, and all of them are building blocks.
-    const PRIMITIVES: [&str; 21] = [
+    const PRIMITIVES: [&str; 26] = [
         "noodle.osc.sine",
         "noodle.osc.saw",
         "noodle.osc.square",
@@ -424,6 +428,11 @@ fn every_instrument_is_a_group_of_primitive_nodes_with_its_controls_exposed() {
         "noodle.util.pan",
         "noodle.util.gain",
         "noodle.event.mono",
+        "noodle.event.note_split",
+        "noodle.instrument.sampler",
+        "noodle.effect.dynamics",
+        "noodle.effect.eq",
+        "noodle.effect.reverb",
         "noodle.poly.voices",
         "noodle.poly.voice_mix",
         "noodle.io.output",
@@ -461,13 +470,36 @@ fn every_instrument_is_a_group_of_primitive_nodes_with_its_controls_exposed() {
                 .unwrap_or_else(|| panic!("{}: {} has no instrument", song.name, part.name))
                 .0;
             let ports = graph.group_ports(synth);
-            for name in ["pitch", "gate", "velocity"] {
+            let rack = matches!(part.instrument, noodle_eval::song::kit::Instrument::Rack(_));
+            for name in if rack {
+                vec!["notes"]
+            } else {
+                vec!["pitch", "gate", "velocity"]
+            } {
                 assert!(
                     ports.input(name).is_some(),
                     "{} {}: {name}",
                     song.name,
                     part.name
                 );
+            }
+            if let noodle_eval::song::kit::Instrument::Rack(rack) = &part.instrument {
+                // Every slot's level, tune and pan are controls of the rack.
+                for (i, slot) in rack.slots.iter().enumerate() {
+                    let label = format!(
+                        "{} {}",
+                        noodle_eval::song::kit::drum_label(slot.drum),
+                        i + 1
+                    );
+                    for control in ["level", "tune", "pan"] {
+                        assert!(
+                            ports.input(&format!("{label} {control}")).is_some(),
+                            "{} {}: {label} {control}",
+                            song.name,
+                            part.name
+                        );
+                    }
+                }
             }
             assert!(ports.output("out").is_some());
             if matches!(part.instrument, noodle_eval::song::kit::Instrument::Tone(_)) {
@@ -534,4 +566,49 @@ fn every_part_makes_sound_on_its_own() {
             );
         }
     });
+}
+
+#[test]
+fn the_committed_samples_are_what_the_synthesis_makes() {
+    use noodle_eval::song::samples;
+    // Rendering twice can differ in the last bit between machines, so the
+    // file is compared by ear-level tolerance, not by hash.
+    let store = samples::store();
+    for (name, drum) in samples::needed() {
+        let made = samples::synthesize(drum);
+        let hash = samples::hash(&name);
+        let committed = store.get(&hash).unwrap_or_else(|| {
+            panic!("{name}: missing: UPDATE_SONGS=1 cargo test -p noodle-eval --test songs")
+        });
+        assert_eq!(committed.left.len(), made.samples.len(), "{name}");
+        let worst = committed
+            .left
+            .iter()
+            .zip(&made.samples)
+            .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 1e-3, "{name}: differs by {worst}");
+    }
+}
+
+#[test]
+fn compressor_and_limiter_are_dynamics_nodes_not_groups() {
+    use noodle_core::Value;
+    let mut modes = std::collections::BTreeSet::new();
+    for song in all() {
+        let project = song.source_project();
+        for (_, node) in project.graph().nodes() {
+            if node.type_id == "noodle.effect.dynamics" {
+                modes.insert(node.params.get("mode").copied().unwrap_or(0.0) as i32);
+            }
+            if let Some(Value::Text(name)) = node.config.get("name") {
+                assert!(
+                    name != "Compressor" && name != "Limiter",
+                    "{}: {name} is a Dynamics preset, not a group",
+                    song.name
+                );
+            }
+        }
+    }
+    // Both a compressor and a limiter are used, so both are covered.
+    assert_eq!(modes.into_iter().collect::<Vec<_>>(), vec![0, 1]);
 }

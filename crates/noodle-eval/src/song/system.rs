@@ -27,7 +27,7 @@ impl File {
     }
 }
 
-fn registry() -> Registry {
+pub(super) fn registry() -> Registry {
     let mut registry = Registry::with_builtins();
     let _ = noodle_nodes::register_library(&mut registry);
     registry
