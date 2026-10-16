@@ -102,11 +102,23 @@ pub(crate) fn component_files() -> Vec<PathBuf> {
 }
 
 fn find(id: ComponentId) -> Result<AudioComponent, HostError> {
-    installed()
-        .into_iter()
-        .find(|(_, found)| *found == id)
-        .map(|(component, _)| component)
-        .ok_or_else(|| HostError(format!("no Audio Unit {} is installed", id.to_text())))
+    let mut wanted = AudioComponentDescription {
+        componentType: id.kind,
+        componentSubType: id.subtype,
+        componentManufacturer: id.manufacturer,
+        componentFlags: 0,
+        componentFlagsMask: 0,
+    };
+    // SAFETY: a valid description; null starts the search.
+    let component = unsafe { AudioComponentFindNext(ptr::null_mut(), NonNull::from(&mut wanted)) };
+    if component.is_null() {
+        Err(HostError(format!(
+            "no Audio Unit {} is installed",
+            id.to_text()
+        )))
+    } else {
+        Ok(component)
+    }
 }
 
 /// An AU's version, as the scan cache's modification time: a plugin that
@@ -133,8 +145,15 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    pub fn set(&self, playing: bool, tempo: f64, beat: f64, sample: f64, signature: (u32, u32)) {
-        let numerator = f64::from(signature.0.max(1));
+    pub fn set(
+        &self,
+        playing: bool,
+        tempo: f64,
+        beat: f64,
+        sample: f64,
+        signature: (u32, u32),
+        bar_beat: f64,
+    ) {
         self.playing.store(playing, Ordering::Relaxed);
         self.tempo.store(tempo.to_bits(), Ordering::Relaxed);
         self.beat.store(beat.to_bits(), Ordering::Relaxed);
@@ -142,10 +161,7 @@ impl Transport {
         self.numerator.store(signature.0.max(1), Ordering::Relaxed);
         self.denominator
             .store(signature.1.max(1), Ordering::Relaxed);
-        self.bar_beat.store(
-            ((beat / numerator).floor() * numerator).to_bits(),
-            Ordering::Relaxed,
-        );
+        self.bar_beat.store(bar_beat.to_bits(), Ordering::Relaxed);
     }
 
     fn f64(slot: &AtomicU64) -> f64 {
@@ -663,23 +679,26 @@ pub fn describe_file(path: &Path) -> Result<Vec<Descriptor>, HostError> {
 }
 
 /// A unit made and set up, with the latency it reported.
-pub(crate) struct Loaded {
+pub(crate) struct Loaded<T> {
+    /// First, so it drops before `extra`, which its callbacks may point into.
     pub unit: Unit,
     pub latency: u32,
+    /// What `inputs` made for the unit's callbacks.
+    pub extra: T,
 }
 
 /// Makes the plugin `class_id`, restores `state`, and sets it up on the
 /// plugin thread. `inputs` is called with the new unit to set its input
 /// callbacks before it is initialised.
-pub(crate) fn load(
+pub(crate) fn load<T: Send + 'static>(
     class_id: &str,
     state: Option<Vec<u8>>,
     sample_rate: f32,
     max_frames: usize,
-    inputs: impl FnOnce(&Unit) -> Result<(), HostError> + Send + 'static,
-) -> Result<Loaded, HostError> {
+    inputs: impl FnOnce(&Unit) -> Result<T, HostError> + Send + 'static,
+) -> Result<Loaded<T>, HostError> {
     let class_id = class_id.to_owned();
-    thread::run_job(LOAD_TIMEOUT, move || -> Result<Loaded, HostError> {
+    thread::run_job(LOAD_TIMEOUT, move || -> Result<Loaded<T>, HostError> {
         let id = ComponentId::from_text(&class_id)
             .ok_or_else(|| HostError(format!("{class_id} isn't an Audio Unit ID")))?;
         let mut unit = Unit::new(id)?;
@@ -688,10 +707,14 @@ pub(crate) fn load(
         if let Some(state) = state {
             unit.load_state(&state)?;
         }
-        inputs(&unit)?;
+        let extra = inputs(&unit)?;
         unit.initialize(f64::from(sample_rate), max_frames)?;
         let latency = unit.latency(f64::from(sample_rate));
-        Ok(Loaded { unit, latency })
+        Ok(Loaded {
+            unit,
+            latency,
+            extra,
+        })
     })?
 }
 

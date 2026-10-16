@@ -19,7 +19,7 @@ use objc2_core_audio_types::{AudioBufferList, AudioTimeStamp, AudioTimeStampFlag
 use noodle_engine::{Context, EventKind, Io, Node};
 
 use crate::descriptor::{Descriptor, ParamDesc};
-use crate::node::{PARAM_STEP, param_range};
+use crate::node::{PARAM_STEP, bar_start, param_range};
 
 use super::midi_message;
 use super::plugin::{BufferList, Loaded, Unit};
@@ -122,10 +122,10 @@ pub(crate) struct AuNode {
 // SAFETY: the raw pointer is a box this node owns; the unit is `Send`.
 unsafe impl Send for AuNode {}
 
-/// The input buses' buffers for a descriptor, ready to share with the unit's
+/// The input buses' buffers for a descriptor, boxed for the unit's
 /// callbacks.
-pub(crate) fn make_pull(descriptor: &Descriptor, max_frames: usize) -> *mut Pull {
-    Box::into_raw(Box::new(Pull {
+fn make_pull(descriptor: &Descriptor, max_frames: usize) -> PullBox {
+    PullBox(Box::into_raw(Box::new(Pull {
         buses: descriptor
             .audio_inputs
             .iter()
@@ -135,31 +135,38 @@ pub(crate) fn make_pull(descriptor: &Descriptor, max_frames: usize) -> *mut Pull
                     .collect()
             })
             .collect(),
-    }))
+    })))
 }
 
-/// A `*mut Pull` that can move to the plugin thread with the closure that sets
-/// the callbacks up.
-pub(crate) struct PullPtr(pub *mut Pull);
-// SAFETY: only used to set the unit's callback data, on one thread.
-unsafe impl Send for PullPtr {}
-
-/// Points each input bus of `unit` at the pull buffers.
-pub(crate) fn connect_inputs(
-    unit: &Unit,
-    pull: &PullPtr,
-    buses: usize,
-) -> Result<(), crate::host::HostError> {
-    for bus in 0..buses as u32 {
-        unit.set_input_callback(bus, Some(pull_input), pull.0.cast())?;
-    }
-    Ok(())
+/// Makes and sets up the unit for `descriptor` on the plugin thread. The job
+/// makes the pull buffers and the loaded unit owns them, so a load that
+/// times out (the job keeps running, unwaited for) frees them with the unit
+/// instead of from under it.
+pub(crate) fn load(
+    descriptor: &Descriptor,
+    state: Option<Vec<u8>>,
+    sample_rate: f32,
+    max_frames: usize,
+) -> Result<Loaded<PullBox>, crate::host::HostError> {
+    let descriptor = descriptor.clone();
+    super::plugin::load(
+        &descriptor.id.clone(),
+        state,
+        sample_rate,
+        max_frames,
+        move |unit| {
+            let pull = make_pull(&descriptor, max_frames);
+            for bus in 0..descriptor.audio_inputs.len() as u32 {
+                unit.set_input_callback(bus, Some(pull_input), pull.0.cast())?;
+            }
+            Ok(pull)
+        },
+    )
 }
 
 impl AuNode {
     pub fn new(
-        loaded: Loaded,
-        pull: *mut Pull,
+        loaded: Loaded<PullBox>,
         descriptor: &Descriptor,
         exposed: &[&ParamDesc],
         max_frames: usize,
@@ -209,7 +216,7 @@ impl AuNode {
             steady: 0.0,
             latency: loaded.latency,
             takes_notes: id.takes_notes(),
-            pull: PullBox(pull),
+            pull: loaded.extra,
         }
     }
 
@@ -234,15 +241,18 @@ impl AuNode {
         let t = &ctx.transport;
         let advance = if t.playing { start as f64 } else { 0.0 };
         let rate = f64::from(ctx.sample_rate);
+        let beat = t.tick / 960.0 + advance / rate * t.bpm / 60.0;
+        let (numerator, denominator) = (
+            u32::from(t.signature.numerator),
+            u32::from(t.signature.denominator),
+        );
         self.unit.transport().set(
             t.playing,
             t.bpm,
-            t.tick / 960.0 + advance / rate * t.bpm / 60.0,
+            beat,
             t.position as f64 + advance,
-            (
-                u32::from(t.signature.numerator),
-                u32::from(t.signature.denominator),
-            ),
+            (numerator, denominator),
+            bar_start(beat, numerator as i32, denominator as i32),
         );
     }
 
@@ -385,17 +395,20 @@ impl AuNode {
                 midi_message(kind)
             }
             EventKind::NoteOff { note, velocity } => {
+                // A note we don't remember (never seen, or evicted) has no
+                // key to release: sending key 0 could cut a held one.
                 let found = self
                     .notes
                     .iter()
                     .position(|n| n.port == port && n.note == note.0)
                     .map(|i| self.notes.remove(i));
-                let (channel, key) = found.map_or((0, 0), |n| (n.channel, n.key));
-                Some([
-                    0x80 | (channel & 0x0f),
-                    key & 0x7f,
-                    (velocity.clamp(0.0, 1.0) * 127.0).round() as u8,
-                ])
+                found.map(|n| {
+                    [
+                        0x80 | (n.channel & 0x0f),
+                        n.key & 0x7f,
+                        (velocity.clamp(0.0, 1.0) * 127.0).round() as u8,
+                    ]
+                })
             }
             _ => midi_message(kind),
         };
@@ -437,7 +450,11 @@ impl Node for AuNode {
 
 /// The pull buffers, freed when the node is. A field declared after the unit,
 /// so the unit (which holds the pointer in its callbacks) is gone first.
-struct PullBox(*mut Pull);
+pub(crate) struct PullBox(*mut Pull);
+
+// SAFETY: a box of plain buffers; the unit only reads it while rendering on
+// whichever thread renders.
+unsafe impl Send for PullBox {}
 
 impl Drop for PullBox {
     fn drop(&mut self) {

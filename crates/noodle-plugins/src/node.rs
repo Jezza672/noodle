@@ -105,6 +105,14 @@ impl PluginNodeType {
     }
 }
 
+/// The start of the bar `beats` (quarter notes) is in, in quarter notes. A bar
+/// is `numerator` beats of a 1/`denominator` note each: 6/8 is three quarter
+/// notes long, 4/4 four and 2/2 four.
+pub(crate) fn bar_start(beats: f64, numerator: i32, denominator: i32) -> f64 {
+    let bar = f64::from(numerator.max(1)) * 4.0 / f64::from(denominator.max(1));
+    (beats / bar).floor() * bar
+}
+
 /// A parameter's range and default as the port has them: a plugin's own
 /// when it makes sense, else 0 to 1.
 pub(crate) fn param_range(min: f64, max: f64, default: f64) -> (f32, f32, f32) {
@@ -366,31 +374,14 @@ impl PluginNodeType {
         state: Option<Vec<u8>>,
         exposed: &[&ParamDesc],
     ) -> Result<Instance, NodeError> {
-        let pull = au::make_pull(&self.descriptor, setup.max_frames);
-        let shared = au::PullPtr(pull);
-        let buses = self.descriptor.audio_inputs.len();
-        let loaded = au::load(
-            &self.descriptor.id,
-            state,
-            setup.sample_rate,
+        let loaded = au::load(&self.descriptor, state, setup.sample_rate, setup.max_frames)
+            .map_err(|error| NodeError::config(error.to_string()))?;
+        Ok(Instance::realtime(au::AuNode::new(
+            loaded,
+            &self.descriptor,
+            exposed,
             setup.max_frames,
-            move |unit| au::connect_inputs(unit, &shared, buses),
-        );
-        match loaded {
-            Ok(loaded) => Ok(Instance::realtime(au::AuNode::new(
-                loaded,
-                pull,
-                &self.descriptor,
-                exposed,
-                setup.max_frames,
-            ))),
-            Err(error) => {
-                // SAFETY: made above; the failed load dropped its unit, so
-                // nothing refers to it now.
-                drop(unsafe { Box::from_raw(pull) });
-                Err(NodeError::config(error.to_string()))
-            }
-        }
+        )))
     }
 
     #[cfg(not(target_os = "macos"))]

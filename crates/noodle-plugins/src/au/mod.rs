@@ -37,11 +37,11 @@ mod node;
 mod plugin;
 
 #[cfg(target_os = "macos")]
-pub(crate) use node::{AuNode, PullPtr, connect_inputs, make_pull};
+pub(crate) use node::{AuNode, load};
 #[cfg(target_os = "macos")]
 pub use plugin::describe_file;
 #[cfg(target_os = "macos")]
-pub(crate) use plugin::{capture_state, component_files, load, stamp};
+pub(crate) use plugin::{capture_state, component_files, stamp};
 
 /// What starts the path of the virtual file an AU is listed as.
 pub(crate) const PATH_PREFIX: &str = "audiounit:";
