@@ -27,7 +27,7 @@ use crate::math::{scan_number, unary_function};
 ///
 /// - **Declarations** (at the top level) make the node's ports, in order:
 ///   `input x` is an audio input, `param p = 0.5 [0, 1]` a parameter (default
-///   and range optional; flags `log`, `hz`, `db`, `s`), `output y` an output.
+///   and range optional, the range being 0 to 1 unless given; flags `log`, `hz`, `db`, `s`), `output y` an output.
 ///   `state z = 0` is a variable that keeps its value from one sample to the
 ///   next (and starts at the value given, or 0).
 /// - **Statements:** `let k = expr` makes a variable for this sample, `y =
@@ -35,12 +35,14 @@ use crate::math::{scan_number, unary_function};
 ///   variable, and `if cond { ... } else { ... }` chooses. A statement ends
 ///   at a new line or a `;`. `//` starts a comment. An output not set in a
 ///   sample is 0.
+/// - **Truth:** any non-zero value is true, and so is NaN.
 /// - **Expressions** are as in the Math node, plus comparisons `< <= > >= ==
 ///   !=` (giving 1 or 0), `&&`, `||` and `!` (any non-zero value is true).
 /// - **Names:** `sr` (sample rate), `bpm`, `beat` (position in quarter
 ///   notes, still while the transport is stopped), `time` (seconds since the
-///   node started), `pi`, `tau`, `e`, and `rand()` (a noise sample between
-///   -1 and 1; the sequence is the same every run, and lanes share it).
+///   node started; an `f32`, so coarse after a few minutes: keep a phase in
+///   `state` rather than computing `sin(time * freq)`), `pi`, `tau`, `e`, and `rand()` (a noise sample between
+///   -1 and 1; the sequence is the same every run, and every voice and channel has its own).
 /// - **Functions:** those of Math, plus `db(x)` (decibels to gain), `mtof(n)`
 ///   (MIDI note to Hz) and `select(cond, a, b)`.
 ///
@@ -199,6 +201,12 @@ impl LaneKernel for ScriptKernel {
                 state.vars[slot] = value;
             }
             state.started = true;
+            // Each lane gets its own noise: mix the lane into the seed.
+            let lane = (lane.voice * 64 + lane.channel) as u32;
+            state.rng ^= lane.wrapping_mul(0x85EB_CA6B).rotate_left(13) | 1;
+            if state.rng == 0 {
+                state.rng = 1;
+            }
         }
         let Lane {
             inputs,
@@ -234,7 +242,7 @@ fn run_lane<const N: usize>(
 
     let rate = f64::from(ctx.sample_rate);
     let bpm = ctx.transport.bpm;
-    let beat0 = ctx.transport.tick / 960.0;
+    let beat0 = ctx.transport.tick / noodle_core::TICKS_PER_QUARTER as f64;
     let beat_step = if ctx.transport.playing {
         bpm / 60.0 / rate
     } else {
@@ -435,8 +443,8 @@ impl Program {
                 }
                 Op::JumpIfZero(target) => {
                     top -= 1;
-                    // `!(x != 0)` so that NaN counts as false.
-                    if !(stack[top] != 0.0) {
+                    // Zero is false; NaN, like everywhere else here, is true.
+                    if stack[top] == 0.0 {
                         pc = usize::from(target);
                     }
                 }
@@ -785,7 +793,7 @@ impl Parser {
                 if self.eat("=") {
                     default = Some(self.number()?);
                 }
-                let (mut min, mut max) = (-1_000_000.0, 1_000_000.0);
+                let (mut min, mut max) = (0.0, 1.0);
                 let ranged = self.eat("[");
                 if ranged {
                     min = self.number()?;
@@ -1199,6 +1207,36 @@ mod tests {
         assert!(mean.abs() < 0.1, "mean {mean}");
         assert!(samples.windows(2).any(|w| w[0] != w[1]));
         assert_eq!(a, run_with("output o\no = rand()", 2000, &[]));
+    }
+
+    #[test]
+    fn every_voice_and_channel_has_its_own_noise() {
+        let text = "input x\noutput o\no = rand() + x * 0";
+        let connected = [(0, Shape::new(2, 2))];
+        let mut h = Harness::new(&Script, &config(text), &connected, 48_000.0, 64).unwrap();
+        h.input(0, 64).fill(0.0);
+        h.run(64).unwrap();
+        let out = h.output(0);
+        let lanes = [(0, 0), (0, 1), (1, 0), (1, 1)];
+        for (i, a) in lanes.iter().enumerate() {
+            for b in &lanes[i + 1..] {
+                assert_ne!(out.lane(a.0, a.1), out.lane(b.0, b.1), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn nan_counts_as_true_everywhere_and_unranged_params_run_zero_to_one() {
+        let at = |e: &str| first(&format!("output o\no = {e}"));
+        assert_eq!(at("!(0 / 0)"), 0.0);
+        assert_eq!(at("(0 / 0) && 1"), 1.0);
+        assert_eq!(at("select(0 / 0, 5, 6)"), 5.0);
+        assert_eq!(first("output o\nif 0 / 0 { o = 5 } else { o = 6 }"), 5.0);
+        let layout = Script.layout(&config("param p\noutput o")).unwrap();
+        let noodle_engine::InputKind::Param(p) = &layout.inputs[0].kind else {
+            panic!("a parameter");
+        };
+        assert_eq!((p.min, p.max, p.default), (0.0, 1.0, 0.0));
     }
 
     #[test]

@@ -28,13 +28,13 @@ pub fn show(
     live: LiveParams<'_>,
 ) -> Vec<Edit> {
     let graph = session.project().graph();
+    let mut edits = pending_scripts(ui, session, active);
     let Some((id, node)) = active.and_then(|id| Some((id, graph.node(id)?))) else {
         ui.weak("Select a node to see its properties.");
-        return Vec::new();
+        return edits;
     };
     let node_type = session.registry().get(&node.type_id);
 
-    let mut edits = Vec::new();
     ui.horizontal(|ui| {
         // The freeze button sits at the right of the name, in the same row.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -440,6 +440,34 @@ fn config(
     }
 }
 
+/// Script text typed into a node that is no longer the active one (the user
+/// clicked another node while the box had focus, so the box never saw the focus
+/// leave): committed now, so it isn't lost.
+fn pending_scripts(ui: &Ui, session: &Session, active: Option<NodeId>) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    for (id, node) in session.project().graph().nodes() {
+        if Some(id) == active || node.type_id != noodle_nodes::SCRIPT_ID {
+            continue;
+        }
+        let pending_id = egui::Id::new((id, "script_pending"));
+        let Some(text) = ui.data_mut(|d| d.remove_temp::<String>(pending_id)) else {
+            continue;
+        };
+        let committed = match node.config.get(noodle_nodes::SCRIPT_KEY) {
+            Some(noodle_core::Value::Text(t)) if !t.trim().is_empty() => t.as_str(),
+            _ => noodle_nodes::DEFAULT_SCRIPT,
+        };
+        if text != committed {
+            edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: noodle_nodes::SCRIPT_KEY.to_owned(),
+                value: Some(noodle_core::Value::Text(text)),
+            }));
+        }
+    }
+    edits
+}
+
 /// The Script node's text: a code box that commits once it loses focus (the
 /// node is rebuilt then, and may get other ports), with the ports the text
 /// makes or what is wrong with it shown as it is typed.
@@ -518,6 +546,7 @@ let k = x * 2      this sample only
 y = k + z          (also += -= *= /=)
 if c { } else { }  comparisons give 1/0
 sr bpm beat time pi tau e
+(time is coarse late on: keep phase in state)
 rand()  select(c,a,b)  db()  mtof()
 sin cos tan tanh abs sqrt exp ln
 log2 log10 floor ceil round fract
@@ -1264,6 +1293,29 @@ mod tests {
             Some(Value::Text(text)) => Some(text.clone()),
             _ => None,
         }
+    }
+
+    #[test]
+    fn script_typed_into_a_node_is_kept_when_another_node_is_selected() {
+        let mut harness = harness([
+            Node::new("noodle.util.script"),
+            Node::new("noodle.osc.sine"),
+        ]);
+        harness.set_size(vec2(300.0, 700.0));
+        harness.run();
+        harness
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.run();
+        harness.event(egui::Event::Text("output o\no = 0.5".into()));
+        harness.run();
+        assert_eq!(script_of(&harness), None, "still being typed");
+        harness.state_mut().active = Some(NodeId(2));
+        harness.run();
+        harness.run();
+        assert_eq!(script_of(&harness).as_deref(), Some("output o\no = 0.5"));
     }
 
     #[test]
