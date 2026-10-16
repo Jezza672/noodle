@@ -2520,6 +2520,7 @@ dependencies = [
  "libc",
  "noodle-core",
  "noodle-macros",
+ "realfft",
  "rtrb",
 ]
 

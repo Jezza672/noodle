@@ -303,7 +303,63 @@ There are two kinds of signal, plus a possible third later:
     "MIDI input" below.
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
     node's event ports.
-- **Spectral:** may be added later, for FFT-frame processing.
+- **Spectral:** FFT frames, for processing a sound by its frequencies. Every
+  `HOP` (512) samples a spectral wire carries one frame per lane: `BINS`
+  (1025) complex bins from 0 Hz to Nyquist, an `FFT_SIZE` (2048) Hann window
+  of the last samples (`noodle_engine::spectral`). The frame size is the same
+  for the whole engine, which is what lets any spectral node feed any other
+  (decision in ADR 0007). Bins are scaled so a sine of amplitude `a` has
+  magnitude `a` on its bin.
+  - **In the graph:** spectral ports are their own kind (`Layout::spectral_input`
+    and `spectral_output`, drawn as violet squares and wires, and
+    `#[spectral_input]`/`#[spectral_output]` in `#[derive(Ports)]`). A spectral
+    wire only joins spectral ports (the compiler reports `KindMismatch`
+    otherwise). A node's spectral ports have a `Shape` (voices x channels,
+    one lane each) like audio: `NodeType::output_shapes` is given the signal
+    input shapes followed by the spectral input shapes and returns the signal
+    output shapes followed by the spectral output shapes, so the default gives
+    an Analyze the shape of its audio and a Synthesize the shape of its
+    spectrum. `Setup::input_shapes`/`output_shapes` carry both too. An
+    unconnected spectral input is an empty list of frames.
+  - **Frames in a block** are timestamped like events: `time` is the offset
+    within the block of the last sample the frame covers. A block holds
+    `max_frames / HOP + 2` frames at most (the buffer is sized once per plan,
+    like the signal pool, so nothing allocates on the audio thread), so a
+    4096-sample block holds eight and a 64-sample block usually none. A spectral
+    node is written like an event node: for each frame in, push a frame out at
+    the same time (`SpectralIn`, `SpectralOut`). Unlike events, a spectral
+    buffer is `lanes x BINS` bins per frame, and buffers are reused after their
+    last reader like signal buffers.
+  - **Analyze and Synthesize** (`noodle.spectral.analyze`,
+    `noodle.spectral.synthesize`) wrap `Analyzer` and `Synthesizer`. Analysis
+    adds no delay; synthesis (overlap-add of Hann-windowed inverse transforms)
+    sounds `SYNTH_LATENCY` (2047) samples late and reports it through
+    `Node::latency`, so plugin delay compensation lines up a dry path mixed in
+    beside the pair and offline renders and exports drop it. The pair gives the
+    input back to within float error at any block size
+    (`tests/spectral.rs`). Lateness travels along spectral wires, so a latent
+    plugin ahead of an Analyze, or two pairs in a row, are compensated for in
+    the dry paths beside them. Spectral wires get no delay lines of their own:
+    where spectral paths of different lateness meet (a Cross), the earlier
+    one's frames are used as they come.
+  - **Spectral nodes** (category Spectral, each frame in, one frame out, no
+    delay of their own): `Spectral Gate` (bins under a threshold turned down,
+    with a knee), `Spectral Filter` (band pass or stop between two
+    frequencies), `Spectral Shift` (every partial moved by the same number of
+    hertz, rounded to whole bins; the frames are turned by a phase that
+    advances `k` bins' worth per frame so the partials stay coherent),
+    `Spectral Freeze` (holds each bin's level and keeps advancing its phase at
+    the frequency it was caught at), `Spectral Blur` (smooths levels over time,
+    keeping the live phases) and `Cross` (the levels of a `modulator` spectrum
+    on a `carrier`, blended with `mix`; the modulator's latest frame is used
+    for each carrier frame, so the two analysers need not have started
+    together).
+  - **Caching:** a node's cache key covers its spectral inputs like its event
+    inputs, so a freeze across a spectral chain keys correctly. Offline nodes
+    take no spectral input.
+  - **Testing:** `Harness::with_spectral`, `spectral_input` and `spectral`
+    feed and read a node's spectral ports; `tests/spectral.rs` runs whole
+    graphs, `realtime.rs` checks chains for allocation.
 
 ### Synths are groups
 

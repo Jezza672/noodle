@@ -118,8 +118,9 @@ fn racked(mut song: Song) -> Song {
 }
 
 /// Gives each song its mix: a compressor on the drum bus, an EQ and a reverb
-/// on the master, chosen to suit it. A compressor over the whole mix would
-/// pump the bass the tempo detector listens to, so it sits on the drums.
+/// on the master, chosen to suit it. The mixes are as processed as a real
+/// one (a 30 Hz low cut, a compressor over the whole mix): the songs are
+/// benchmarks for the tempo detector, so they are never softened for it.
 fn mixed(mut song: Song) -> Song {
     // (type, frequency, gain, Q): 3 is a low cut, 4 a high cut, 2 a high shelf.
     let tidy = Fx::Eq(vec![(3, 30.0, 0.0, 0.7), (2, 9000.0, 1.0, 0.7)]);
@@ -146,11 +147,10 @@ fn mixed(mut song: Song) -> Song {
             ];
         }
         "breakbeat-run" => {
-            // Its sub bass is what the tempo detector hears, so no low cut.
             // Bus Glue adds make-up gain, so the master comes down to keep the
             // loudest moment under full scale.
             song.master_db -= 2.0;
-            song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
+            song.master_fx = vec![tidy, Fx::Dynamics("Compressor")];
             drums(&mut song, Fx::Dynamics("Bus Glue"));
         }
         "glass-ambient" => {
@@ -164,8 +164,7 @@ fn mixed(mut song: Song) -> Song {
             ];
         }
         "funk-engine" => {
-            // Like breakbeat-run, its mix is tempo-sensitive: no low cut.
-            song.master_fx = vec![Fx::Eq(vec![(2, 9000.0, 1.0, 0.7)])];
+            song.master_fx = vec![tidy, Fx::Dynamics("Compressor")];
             drums(&mut song, Fx::Dynamics("Compressor"));
         }
         other => panic!("no mix chosen for {other}"),

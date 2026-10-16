@@ -417,6 +417,8 @@ unsafe fn run_block(
             outputs: &mut b.outputs,
             event_inputs: &b.event_in_refs,
             event_outputs: &mut b.event_out_handles,
+            spectral_inputs: &[],
+            spectral_outputs: &mut [],
         },
     );
 

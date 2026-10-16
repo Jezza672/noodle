@@ -79,6 +79,8 @@ impl Node for GainNode {
             outputs,
             event_inputs,
             event_outputs,
+            spectral_inputs,
+            spectral_outputs,
         } = io;
         self.gain.process(
             ctx,
@@ -87,6 +89,8 @@ impl Node for GainNode {
                 outputs: &mut *outputs,
                 event_inputs,
                 event_outputs: &mut *event_outputs,
+                spectral_inputs,
+                spectral_outputs: &mut *spectral_outputs,
             },
         );
         let out = &mut outputs[OUT];

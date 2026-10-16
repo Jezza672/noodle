@@ -777,8 +777,10 @@ a number and fails the CI excerpt.
 
 ## M9: Library, presets and more nodes
 
-**Status:** batches 2 and 3 have landed: the nodes (Sampler, Note Split,
-Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
+**Status:** batch C (#156) restored the 30 Hz low cut and whole-mix compressor on
+funk-engine and breakbeat-run; the tempo detector copes with them since the
+M8 closing onset fixes, and a regression test covers it. Batches 2 and 3 have
+landed: the nodes (Sampler, Note Split, Dynamics, Parametric EQ, Reverb, Arpeggiator, with graphs for Dynamics and EQ
 and a "Load sample…" picker), and the warp evaluation songs, whose drums are a
 drum rack of committed samples (`noodle-eval/songs/samples`) and whose mixes
 run through Dynamics nodes set by the compressor and limiter node presets, a
@@ -898,9 +900,26 @@ Out of scope for now: streaming separation, models other than HT-Demucs, and not
 warping. The note-level idea (neural note onsets placing Beats cuts inside a stem) is a later
 step, after Stem warp; true per-note audio extraction is not planned.
 
+## M11: Spectral signals
+
+**Status:** batch 1 done in code (the signal type, Analyze and Synthesize and six
+spectral nodes). The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
+
+1. **The signal type and the first nodes (done).** A third wire kind that
+   carries FFT frames (one size for the whole engine, 2048 with a hop of 512),
+   its plumbing through the compiler, plan, test harness, derive macro and
+   editor (violet squares), `Analyze` and `Synthesize` (latency reported to
+   plugin delay compensation), `Spectral Gate`, `Spectral Filter`, `Spectral
+   Shift`, `Spectral Freeze`, `Spectral Blur`, `Cross`, node presets for each,
+   `examples/spectral-shift.ron` + golden, and the allocation test.
+2. **Later in M11.** A spectrum display (a spectrogram or analyser node, fed by
+   telemetry), more nodes (pitch shift and time stretch on frames, spectral
+   compressor, convolution reverb from an impulse response, a noise-profile
+   denoiser), a choice of frame size (a config on Analyze that every spectral
+   node on the wire adopts), and delay compensation across spectral wires.
+
 ## Later
 
-- Spectral signal type.
 - AU hosting.
 - A scripting or expression node.
 - MIDI 2.0.

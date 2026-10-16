@@ -461,3 +461,39 @@ fn chained_offline_nodes_and_freezes_render_upstream_first() {
     assert_eq!(report.rendered, [offline_kind(first), offline_kind(second)]);
     assert_close(&rig.play(true, None), &original, "reverse twice");
 }
+
+#[test]
+fn an_offline_node_after_a_spectral_chain_renders_again_when_the_chain_changes() {
+    let mut rig = setup("spectral");
+    let track = rig.add(1, TRACK_INPUT_ID);
+    let analyze = rig.add(2, "noodle.spectral.analyze");
+    let gate = rig.add(3, "noodle.spectral.gate");
+    let synth = rig.add(4, "noodle.spectral.synthesize");
+    let reverse = rig.add(5, REVERSE);
+    let out = rig.add(6, OUTPUT_ID);
+    rig.wire((track, "audio"), (analyze, "in"));
+    rig.wire((analyze, "spectrum"), (gate, "spectrum"));
+    rig.wire((gate, "out"), (synth, "spectrum"));
+    rig.wire((synth, "out"), (reverse, "in"));
+    rig.wire((reverse, "out"), (out, "in"));
+    let id = rig.project.new_clip_id();
+    let clip = Clip::audio(track, Tick(0), "tone.wav", FRAMES as u64);
+    rig.apply(Command::AddClip { id, clip });
+
+    assert_eq!(rig.freeze().rendered, [offline_kind(reverse)]);
+    assert!(rig.freeze().rendered.is_empty(), "nothing changed");
+
+    // A knob on a spectral node, upstream of the offline node only through
+    // spectral wires and the synthesizer.
+    rig.apply(Command::SetParam {
+        node: gate,
+        key: "threshold".into(),
+        value: Some(-20.0),
+    });
+    let plan = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    assert_eq!(
+        plan.state(offline_kind(reverse)),
+        Some(&TargetState::Missing)
+    );
+    assert_eq!(rig.freeze().rendered, [offline_kind(reverse)]);
+}
