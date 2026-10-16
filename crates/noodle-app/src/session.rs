@@ -67,6 +67,9 @@ pub enum Edit {
     /// Saves to or deletes from the user's library. Not an undo step: the
     /// project is untouched.
     Library(LibraryEdit),
+    /// Replaces the contents of a group with its library template's current
+    /// version. One undo step.
+    UpdateFromTemplate(NodeId),
 }
 
 /// The node types a session can use, and the hub their telemetry (meters,
@@ -973,6 +976,16 @@ impl Session {
                 Edit::Library(edit) => {
                     self.library_edit(edit);
                     continue;
+                }
+                Edit::UpdateFromTemplate(group) => {
+                    self.history.end_group();
+                    match self.update_from_template(group) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't update the group: {error}"));
+                            continue;
+                        }
+                    }
                 }
             };
             let this = Effect::of(&command);

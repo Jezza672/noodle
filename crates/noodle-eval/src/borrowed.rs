@@ -228,7 +228,7 @@ pub fn run(piece: &Piece, options: &Options) -> Result<(Vec<Row>, Vec<Note>), St
         };
         let mut contenders: Vec<(String, bool, Vec<f32>)> = Vec::new();
         for &method in &options.methods {
-            let (tempo, mode) = harness.choice(method, &analysis, &target);
+            let (tempo, mode) = harness.choice(method, &analysis);
             let warped = harness
                 .warp(&piece.source, tempo, mode, &target, frames)
                 .map_err(|e| format!("{} {name} {}: {e}", piece.name, method.name()))?;

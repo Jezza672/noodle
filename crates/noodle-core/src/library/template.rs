@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, parse_control_key};
-use crate::{Command, Connection, Endpoint, Graph, Node, NodeId, Position};
+use crate::group::{GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, control_key, parse_control_key};
+use crate::{Command, Connection, Endpoint, Graph, Node, NodeId, Position, Project};
 
 /// A saved group. Its nodes use their own IDs (the group itself is the one
 /// node with no parent), positions are relative to the group's, and it holds
@@ -35,6 +35,8 @@ pub enum TemplateError {
     /// A node's parent isn't a group in the template, or a wire joins nodes
     /// in different groups.
     Malformed(String),
+    /// A hidden template (the track) can't replace a group's contents.
+    NotUpdatable,
 }
 
 impl fmt::Display for TemplateError {
@@ -43,6 +45,7 @@ impl fmt::Display for TemplateError {
             Self::NotAGroup(id) => write!(f, "{id} isn't a group"),
             Self::BadRoot => write!(f, "a template needs exactly one group at its top"),
             Self::Malformed(why) => write!(f, "malformed template: {why}"),
+            Self::NotUpdatable => write!(f, "this template can't update a group"),
         }
     }
 }
@@ -176,18 +179,7 @@ impl GroupTemplate {
         mut new_id: impl FnMut() -> NodeId,
     ) -> (NodeId, Command) {
         let root = self.root();
-        let mut queue = VecDeque::from([root]);
-        let mut order = Vec::new();
-        while let Some(at) = queue.pop_front() {
-            order.push(at);
-            // BTreeMap order: lowest local ID first.
-            queue.extend(
-                self.nodes
-                    .iter()
-                    .filter(|(_, n)| n.parent == Some(at))
-                    .map(|(&id, _)| id),
-            );
-        }
+        let order = self.order();
         let ids: BTreeMap<NodeId, NodeId> = order.iter().map(|&old| (old, new_id())).collect();
         let mut commands = Vec::new();
         for old in &order {
@@ -204,13 +196,142 @@ impl GroupTemplate {
             }
             commands.push(Command::AddNode { id: ids[old], node });
         }
-        for c in &self.connections {
-            commands.push(Command::Connect(Connection {
-                from: Endpoint::new(ids[&c.from.node], c.from.port.clone()),
-                to: Endpoint::new(ids[&c.to.node], c.to.port.clone()),
-            }));
-        }
+        commands.extend(self.connect_all(&ids));
         (ids[&root], Command::Batch(commands))
+    }
+
+    /// The template's nodes breadth first from the group, lowest local ID
+    /// first among siblings: the order `instantiate` hands out IDs in.
+    fn order(&self) -> Vec<NodeId> {
+        let mut queue = VecDeque::from([self.root()]);
+        let mut order = Vec::new();
+        while let Some(at) = queue.pop_front() {
+            order.push(at);
+            queue.extend(
+                self.nodes
+                    .iter()
+                    .filter(|(_, n)| n.parent == Some(at))
+                    .map(|(&id, _)| id),
+            );
+        }
+        order
+    }
+
+    fn connect_all(&self, ids: &BTreeMap<NodeId, NodeId>) -> Vec<Command> {
+        self.connections
+            .iter()
+            .map(|c| {
+                Command::Connect(Connection {
+                    from: Endpoint::new(ids[&c.from.node], c.from.port.clone()),
+                    to: Endpoint::new(ids[&c.to.node], c.to.port.clone()),
+                })
+            })
+            .collect()
+    }
+
+    /// Replaces what is inside `group` with the template's current contents,
+    /// as one command ("update from template"). The group node itself stays:
+    /// its ID, place, label, name and the wires at its ports. What goes:
+    /// every node inside it (with its edits, wires, clips and automation
+    /// lanes) and the preset applied to it. What is carried over:
+    ///
+    /// - a wire at a port of the group whose name the template still has
+    ///   (wires at ports it dropped are removed);
+    /// - the group's own gain, mute and solo on a port the template still
+    ///   has, found by name.
+    ///
+    /// New IDs come from `new_id` in the order `instantiate` uses, without
+    /// the group. Returns how many automation lanes the update removes.
+    pub fn update_group(
+        &self,
+        project: &Project,
+        group: NodeId,
+        mut new_id: impl FnMut() -> NodeId,
+    ) -> Result<(Command, usize), TemplateError> {
+        if self.hidden {
+            return Err(TemplateError::NotUpdatable);
+        }
+        let graph = project.graph();
+        let old_root = graph.node(group).ok_or(TemplateError::NotAGroup(group))?;
+        if old_root.type_id != GROUP {
+            return Err(TemplateError::NotAGroup(group));
+        }
+        let root = self.root();
+        let order = self.order();
+        let mut ids: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        ids.insert(root, group);
+        for &old in order.iter().skip(1) {
+            ids.insert(old, new_id());
+        }
+
+        let template_graph = self.graph();
+        let new_ports = template_graph.group_ports(root);
+        let old_ports = graph.group_ports(group);
+        let mut commands = Vec::new();
+
+        // Wires at the group's own ports that no longer have a port.
+        for c in graph.connections() {
+            if c.to.node == group && new_ports.input(&c.to.port).is_none() {
+                commands.push(Command::Disconnect { input: c.to });
+            } else if c.from.node == group && new_ports.output(&c.from.port).is_none() {
+                commands.push(Command::Disconnect { input: c.to });
+            }
+        }
+
+        // Everything inside goes: the direct children take their contents
+        // with them.
+        let inside = graph.descendants(group);
+        let lanes = project
+            .lanes()
+            .filter(|(_, lane)| inside.contains(&lane.target.node))
+            .count();
+        for (id, _) in graph.children(Some(group)) {
+            commands.push(Command::RemoveNode { id });
+        }
+
+        let at = old_root.position;
+        for &old in order.iter().skip(1) {
+            let mut node = self.nodes[&old].clone();
+            node.position = Position {
+                x: node.position.x + at.x,
+                y: node.position.y + at.y,
+            };
+            node.parent = node.parent.map(|p| ids[&p]);
+            commands.push(Command::AddNode {
+                id: ids[&old],
+                node,
+            });
+        }
+        commands.extend(self.connect_all(&ids));
+
+        // The group's own controls, by port name.
+        for (old, new) in [
+            (&old_ports.inputs, &new_ports.inputs),
+            (&old_ports.outputs, &new_ports.outputs),
+        ] {
+            for port in old {
+                let Some(target) = new.iter().find(|p| p.name == port.name) else {
+                    continue;
+                };
+                let Some(node) = graph.node(port.node) else {
+                    continue;
+                };
+                for control in [GAIN, crate::group::MUTE, crate::group::SOLO] {
+                    if let Some(&value) = node.params.get(&control_key(control, port.id)) {
+                        commands.push(Command::SetParam {
+                            node: ids[&target.node],
+                            key: control_key(control, target.id),
+                            value: Some(value),
+                        });
+                    }
+                }
+            }
+        }
+        commands.push(Command::SetPreset {
+            node: group,
+            preset: None,
+        });
+        Ok((Command::Batch(commands), lanes))
     }
 }
 

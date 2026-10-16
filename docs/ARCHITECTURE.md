@@ -365,8 +365,8 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
 - **System node presets** live in one generated file, `library/system/nodes.ron`
   (a table in `noodle-eval/src/song/node_presets.rs`, rewritten by
   `UPDATE_LIBRARY=1`). Every node has at least two, except those with nothing
-  to set and Dynamics, whose presets arrive with the Compressor, Limiter and
-  Gate batch (which removes its exemption); a test lists the exceptions.
+  to set; a test lists the exceptions. Dynamics has Compressor, Vocal
+  Compressor, Bus Glue, Limiter, Gate, Drum Gate, Expander and De-noise.
 - **Presets find ports by name.** Port layout comes from the node types,
   which `noodle-core` doesn't know, so the functions that need it take a
   closure; the app passes `Registry::layout_signature` (the sorted keys of
@@ -395,9 +395,19 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   Add menu (Shift+A) lists templates under Groups; right-click a group for
   "Save group to library...". `Edit::Library` saves to the user store and is
   not an undo step.
-- **Not yet.** Samples by content hash (ADR 0004) arrive with the Sampler in
-  batch B; nothing in batch A holds audio. No "update from template" action
-  (ADR 0005), and user track templates are later.
+- **Update from template.** Right-click a group made from a library template
+  (its `Node::template` names an entry the library still lists) for "Update
+  from <name>". `GroupTemplate::update_group` is one `Command::Batch`, one
+  undo step: it removes everything inside the group and adds the template's
+  current contents (new IDs, positions relative to the group). The group node
+  stays, with its ID, place, label, name and the wires at its ports. Wires at
+  a port the template no longer has are removed, the group's own gain, mute
+  and solo are carried over by port name, and the applied preset is cleared.
+  Edits inside, and the automation lanes on nodes inside, are lost; the status
+  bar says how many lanes. It is always an explicit choice (ADR 0005); nothing
+  ever updates a group by itself. The hidden track template can't be applied
+  this way.
+- **Not yet.** User track templates.
 
 ### Instruments, dynamics and effects (M9)
 
@@ -427,7 +437,7 @@ These are primitives; instruments and racks built from them are groups.
   a node's latency before audio runs; it delays the audio and reports itself
   to delay compensation. Channels share one gain. Compressor, Limiter, Gate
   and Expander (and variants such as Vocal Compressor and Drum Gate) are
-  system *presets* of this one node (`library/system/dynamics.ron`), not
+  system *presets* of this one node (`library/system/nodes.ron`), not
   groups.
 - **Parametric EQ** (`noodle.effect.eq`) is `bands` (config, 1 to 8) RBJ
   biquads in series: bell, shelves, cuts and notch. Coefficients are computed

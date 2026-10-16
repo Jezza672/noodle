@@ -2198,7 +2198,13 @@ fn start_port_rename(
 }
 
 /// The menu over a right-clicked group.
-fn group_menu(ui: &egui::Ui, state: &mut EditorState, f: &Frame_<'_>, edits: &mut Vec<Edit>) {
+fn group_menu(
+    ui: &egui::Ui,
+    state: &mut EditorState,
+    f: &Frame_<'_>,
+    library: &noodle_core::library::Library,
+    edits: &mut Vec<Edit>,
+) {
     let Some(menu) = &mut state.group_menu else {
         return;
     };
@@ -2207,6 +2213,14 @@ fn group_menu(ui: &egui::Ui, state: &mut EditorState, f: &Frame_<'_>, edits: &mu
         return;
     }
     let default_name = layout::group_title(f.project.graph(), menu.group);
+    // The template the group was made from, if the library still lists it.
+    let source_name = f
+        .project
+        .graph()
+        .node(menu.group)
+        .and_then(|n| n.template.as_deref())
+        .and_then(|entry| library.templates().find(|(id, _)| *id == entry))
+        .map(|(_, t)| t.name.clone());
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("noodle-editor-group-menu"))
         .fixed_pos(menu.screen)
@@ -2216,6 +2230,19 @@ fn group_menu(ui: &egui::Ui, state: &mut EditorState, f: &Frame_<'_>, edits: &mu
                 None => {
                     if ui.button("Save group to library...").clicked() {
                         menu.name = Some(default_name.clone());
+                    }
+                    if let Some(name) = source_name.as_deref() {
+                        let text = format!("Update from {name}");
+                        if ui
+                            .button(text)
+                            .on_hover_text(
+                                "Replaces what is inside with the template's current version",
+                            )
+                            .clicked()
+                        {
+                            edits.push(Edit::UpdateFromTemplate(menu.group));
+                            close = true;
+                        }
                     }
                 }
                 Some(name) => {
@@ -2343,7 +2370,7 @@ fn popups(
         }
     }
 
-    group_menu(ui, state, f, edits);
+    group_menu(ui, state, f, inputs.library, edits);
 
     let Some(rename) = &mut state.rename else {
         return;
