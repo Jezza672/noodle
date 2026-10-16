@@ -95,7 +95,7 @@ refits; `--out MODEL.json` saves the model.
 (`harness.rs`) and prints their scores. The committed baseline is a before and
 after and never fails a build. The one gate is `tests/gate.rs`: on the probes
 (x0.75, x1.5, step) Noodle's physical checks (onset timing and drift, pitch,
-loudness) must be no worse than the worst reference stretcher's numbers in
+loudness) must be no worse than the worst reference stretcher's numbers (Rubber Band R2 alone on the changing cases) in
 `baseline/borrowed.json`, except the cells listed in `baseline/gate.json`, which
 are worse today and may not get worse. `UPDATE_GATE=1 cargo test -p noodle-eval
 --test gate` rewrites that list after a change that improves cells. The paper's
