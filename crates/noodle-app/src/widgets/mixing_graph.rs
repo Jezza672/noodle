@@ -98,35 +98,26 @@ fn y_out(y: f32) -> f32 {
     OUT_RANGE.0 + y.clamp(0.0, 1.0) * (OUT_RANGE.1 - OUT_RANGE.0)
 }
 
-/// Rounds up to the next 1, 2 or 5 times a power of ten, so a plot's axis
-/// keeps its scale through small changes instead of refitting on every one.
-fn nice_up(x: f32) -> f32 {
-    let x = x.max(1e-6);
-    let base = 10f32.powf(x.log10().floor());
-    [1.0, 2.0, 5.0, 10.0]
-        .into_iter()
-        .map(|m| m * base)
-        .find(|&v| v >= x * 0.999)
-        .unwrap_or(10.0 * base)
-}
-
 /// The time axis of the step response: the level steps up for `hold` and
 /// back down, over `span` seconds in all, with `depth` dB of reduction on the
-/// vertical axis. All three snap to round numbers, so editing a value does
-/// not rescale the plot and the editor can hold them still during a drag.
+/// vertical axis. `depth` comes from the most the node could reduce at any
+/// ratio, so turning the ratio up always moves the curve within a fixed axis.
+/// The editor keeps the layout while it still fits ([`AdsrLayout::keeps`]).
 pub(super) fn dynamics_layout(values: Values<'_>) -> AdsrLayout {
     let (attack, release) = (values("attack"), values("release"));
-    let hold = nice_up((4.0 * attack).max(0.02));
+    let hold = (4.0 * attack).max(0.02);
     let c = Curve::read(values);
-    let most = if c.mode.is_downward() {
-        c.reduction(IN_RANGE.0)
-    } else {
-        c.reduction(IN_RANGE.1)
+    let most = match c.mode {
+        DynamicsMode::Compressor | DynamicsMode::Limiter => {
+            reduction_db(DynamicsMode::Limiter, c.threshold, 1.0, c.knee, IN_RANGE.1)
+        }
+        DynamicsMode::Expander => reduction_db(c.mode, c.threshold, 100.0, c.knee, IN_RANGE.0),
+        DynamicsMode::Gate => reduction_db(c.mode, c.threshold, 1.0, c.knee, IN_RANGE.0),
     };
     AdsrLayout {
-        span: nice_up((hold + 4.0 * release + attack) * 1.1),
+        span: (hold + 4.0 * release + attack) * 1.5,
         hold,
-        depth: nice_up(most.max(6.0) * 1.1),
+        depth: most.max(6.0) * 1.5,
     }
 }
 
@@ -601,14 +592,51 @@ mod tests {
     }
 
     #[test]
-    fn small_edits_do_not_rescale_the_step_plot() {
-        let a = dynamics_layout(&values);
-        let nudged = |key: &str| match key {
-            "ratio" => 3.5,
-            "release" => 0.21,
-            _ => values(key),
-        };
-        assert_eq!(a, dynamics_layout(&nudged));
+    fn the_ratio_never_changes_the_layout_and_only_deepens_the_reduction() {
+        for threshold in [-12.0f32, -18.0, -24.0, -40.0] {
+            let mut last: Option<(AdsrLayout, f32)> = None;
+            for step in 0..=40 {
+                let ratio = 100f32.powf(step as f32 / 40.0);
+                let v = |key: &str| match key {
+                    "threshold" => threshold,
+                    "ratio" => ratio,
+                    _ => values(key),
+                };
+                let layout = dynamics_layout(&v);
+                let y = red_y(Curve::read(&v).reduction(IN_RANGE.1), layout);
+                if let Some((before, y_before)) = last {
+                    assert_eq!(before, layout, "threshold {threshold}, ratio {ratio}");
+                    assert!(
+                        y <= y_before + 1e-6,
+                        "{threshold} {ratio}: {y} > {y_before}"
+                    );
+                }
+                last = Some((layout, y));
+            }
+        }
+    }
+
+    #[test]
+    fn a_layout_is_kept_through_edits_that_stay_on_the_plot() {
+        let mut layout = dynamics_layout(&values);
+        let first = layout;
+        // Attack and release wander, never off the plot nor to under a quarter.
+        for (attack, release) in [(0.013, 0.2), (0.008, 0.24), (0.01, 0.17), (0.011, 0.25)] {
+            let v = |key: &str| match key {
+                "attack" => attack,
+                "release" => release,
+                _ => values(key),
+            };
+            let fit = dynamics_layout(&v);
+            if layout.keeps(fit) {
+                continue;
+            }
+            layout = fit;
+        }
+        assert_eq!(layout, first);
+        // Past the edge of the plot, it refits.
+        let long = |key: &str| if key == "release" { 3.0 } else { values(key) };
+        assert!(!layout.keeps(dynamics_layout(&long)));
     }
 
     #[test]

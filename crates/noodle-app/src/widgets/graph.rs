@@ -104,6 +104,20 @@ pub(super) struct AdsrLayout {
     pub(super) depth: f32,
 }
 
+impl AdsrLayout {
+    /// Whether this layout, drawn before, still suits `fit`, the layout the
+    /// values ask for now: what the values need fits (the fit has room to
+    /// spare, so a little growth is still inside the plot) and nothing has
+    /// shrunk to under a quarter of the axis. Keeping it stops the plot
+    /// rescaling as values are edited.
+    pub(super) fn keeps(&self, fit: AdsrLayout) -> bool {
+        let holds = |have: f32, want: f32, grow: f32| have * grow >= want && want >= have / 4.0;
+        holds(self.span, fit.span, 1.3)
+            && holds(self.hold, fit.hold, 2.0)
+            && holds(self.depth, fit.depth, 1.3)
+    }
+}
+
 /// Fits the whole envelope, with a little sustain and some room to grow.
 fn adsr_layout(values: Values<'_>) -> AdsrLayout {
     let (a, d, r) = (values("attack"), values("decay"), values("release"));
@@ -652,9 +666,17 @@ impl<'a> GraphEditor<'a> {
         let mut edits = Vec::new();
         let mut layout = layout_for(self.kind, self.values);
         let held = ui.data(|d| d.get_temp::<Option<Drag>>(drag_id)).flatten();
+        let shown_id = id.with("layout");
+        if self.kind == Kind::Dynamics
+            && let Some(shown) = ui.data(|d| d.get_temp::<AdsrLayout>(shown_id))
+            && shown.keeps(layout)
+        {
+            layout = shown;
+        }
         if let Some(drag) = held {
             layout = drag.layout;
         }
+        ui.data_mut(|d| d.insert_temp(shown_id, layout));
         let points = handles(self.kind, self.values, layout);
         let free = |h: &Handle| h.keys.iter().any(|key| (self.editable)(key));
         let nearest = |at: Pos2| {
