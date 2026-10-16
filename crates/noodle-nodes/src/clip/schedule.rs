@@ -636,6 +636,11 @@ impl ClipFeeds {
                     continue;
                 }
             };
+            // A muted section plays nothing, so it is neither scheduled nor
+            // read.
+            if audio.muted {
+                continue;
+            }
             let path = base.join(&audio.source);
             let info = match self.file_info(&path) {
                 Ok(info) => info,

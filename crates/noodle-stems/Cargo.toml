@@ -1,0 +1,21 @@
+[package]
+name = "noodle-stems"
+description = "Separating audio into stems: the separator trait, the model download and Split to stems."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# The ONNX Runtime backend. The runtime library itself is loaded when a
+# separator is opened, so building with this needs no native library.
+onnx = ["dep:ort"]
+
+[dependencies]
+noodle-io.workspace = true
+ort = { version = "=2.0.0-rc.14", optional = true, default-features = false, features = ["std", "load-dynamic"] }
+sha2 = "0.10"
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3.27.0"

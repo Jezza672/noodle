@@ -162,6 +162,14 @@ pub struct AudioClip {
     /// clip that doesn't loop) lasts as long as the window does once warped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<Tick>,
+    /// Whether the section is silenced. It stays where it is, so it can be
+    /// brought back; Split to stems mutes its source this way.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub muted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl AudioClip {
@@ -177,6 +185,7 @@ impl AudioClip {
             fade_out: 0,
             warp: None,
             extent: None,
+            muted: false,
         }
     }
 }

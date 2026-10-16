@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 mod export;
 mod library;
+mod stems;
 pub use export::ExportChoice;
 pub use library::LibraryEdit;
 
@@ -70,6 +71,9 @@ pub enum Edit {
     /// Replaces the contents of a group with its library template's current
     /// version. One undo step.
     UpdateFromTemplate(NodeId),
+    /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
+    /// an edit itself: the tracks arrive as one undo step when the job is done.
+    SplitToStems(noodle_core::ClipId),
 }
 
 /// The node types a session can use, and the hub their telemetry (meters,
@@ -247,6 +251,8 @@ pub struct Session {
     message: Option<String>,
     /// The export under way, if there is one.
     exporting: Option<export::Run>,
+    /// Split to stems: the separator and the split under way, if any.
+    stems: stems::Stems,
 }
 
 /// The settings frozen audio is rendered with when no stream is open.
@@ -449,6 +455,7 @@ impl Session {
             midi_watch: MidiWatch::default(),
             file_watch: FileWatch::default(),
             exporting: None,
+            stems: stems::Stems::new(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             parked: Tick(0),
@@ -977,6 +984,10 @@ impl Session {
                     self.library_edit(edit);
                     continue;
                 }
+                Edit::SplitToStems(clip) => {
+                    self.split_to_stems(clip);
+                    continue;
+                }
                 Edit::UpdateFromTemplate(group) => {
                     self.history.end_group();
                     match self.update_from_template(group) {
@@ -1384,6 +1395,7 @@ impl Session {
         self.watch_midi(Instant::now());
         self.watch_files(Instant::now());
         self.poll_export();
+        self.poll_split();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
         self.poll_plugin_hosts(Instant::now());

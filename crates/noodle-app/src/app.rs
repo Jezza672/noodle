@@ -484,6 +484,7 @@ impl App {
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
         self.export.show(ui.ctx(), &mut self.session);
+        crate::stems_dialog::show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
@@ -982,7 +983,7 @@ impl App {
         .on_hover_text("Add a button here that switches a node's On/Off setting");
     }
 
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let problems = self.session.diagnostics().len();
             match problems {
@@ -1013,6 +1014,21 @@ impl App {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, "No input")
                     .on_hover_text(problem);
+            }
+            if let Some((fraction, name)) = self.session.split_progress() {
+                ui.separator();
+                ui.label(format!("Splitting {name} into stems"));
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(120.0)
+                        .show_percentage(),
+                );
+                if ui.small_button("Cancel").clicked() {
+                    self.session.cancel_split();
+                }
+                // The bar moves without anything else repainting.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
             }
             if let Some(message) = self.session.message() {
                 ui.separator();

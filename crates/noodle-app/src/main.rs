@@ -24,6 +24,7 @@ mod properties;
 mod sample_view;
 mod session;
 mod snap;
+mod stems_dialog;
 mod tempo;
 #[cfg(test)]
 mod testkit;

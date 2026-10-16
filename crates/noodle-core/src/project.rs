@@ -884,6 +884,24 @@ mod tests {
     }
 
     #[test]
+    fn a_muted_clip_is_saved_muted_and_an_unmuted_one_says_nothing() {
+        let (mut project, mut history, _, id, _) = with_timeline();
+        assert!(!project.to_ron().contains("muted"));
+        let mut clip = project.clip(id).unwrap().clone();
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.muted = true;
+        apply(&mut project, &mut history, Command::SetClip { id, clip });
+        let text = project.to_ron();
+        assert!(text.contains("muted"));
+        let loaded = Project::from_ron(&text).unwrap();
+        assert!(loaded.clip(id).unwrap().as_audio().unwrap().muted);
+        history.undo(&mut project).unwrap();
+        assert!(!project.clip(id).unwrap().as_audio().unwrap().muted);
+    }
+
+    #[test]
     fn the_timeline_round_trips_through_ron() {
         let (mut project, mut history, player, clip, _) = with_timeline();
         let map = TempoMap::new(

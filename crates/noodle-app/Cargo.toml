@@ -11,6 +11,7 @@ noodle-engine.workspace = true
 noodle-nodes.workspace = true
 noodle-io.workspace = true
 noodle-plugins.workspace = true
+noodle-stems = { workspace = true, features = ["onnx"] }
 eframe = "0.36.2"
 rfd = "0.17.2"
 egui = "0.36.2"
