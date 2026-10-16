@@ -31,17 +31,28 @@ use syn::{Attribute, DeriveInput, Expr, Ident, LitStr, Token, parse_macro_input}
 ///   an offline layout, and `#[ports(nondeterministic)]` marks it so).
 /// - An index constant per field, named after it in upper case (`Ports::GAIN`).
 ///   Audio and parameter inputs share one index space, in field order, as do
-///   `output`, `event_input` and `event_output` ports among their own kind.
+///   `output`, `event_input`, `event_output`, `spectral_input` and
+///   `spectral_output` ports among their own kind.
 /// - `Ports::INPUTS`, `Ports::OUTPUTS`, `Ports::EVENT_INPUTS` and
-///   `Ports::EVENT_OUTPUTS`, the port counts.
+///   `Ports::EVENT_OUTPUTS`, `Ports::SPECTRAL_INPUTS` and `Ports::SPECTRAL_OUTPUTS`, the port counts.
 ///
 /// Field attributes: `#[input(key, name)]`, `#[param(key, name, ParamInfo)]`,
 /// `#[output(key, name)]`, `#[event_input(key, name)]` and
-/// `#[event_output(key, name)]`. Nodes whose ports depend on config, such as
+/// `#[event_output(key, name)]`, `#[spectral_input(key, name)]` and
+/// `#[spectral_output(key, name)]`. Nodes whose ports depend on config, such as
 /// Mix, build their `Layout` by hand instead.
 #[proc_macro_derive(
     Ports,
-    attributes(input, param, output, event_input, event_output, ports)
+    attributes(
+        input,
+        param,
+        output,
+        event_input,
+        event_output,
+        spectral_input,
+        spectral_output,
+        ports
+    )
 )]
 pub fn derive_ports(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -57,6 +68,8 @@ enum Kind {
     Output,
     EventInput,
     EventOutput,
+    SpectralInput,
+    SpectralOutput,
 }
 
 impl Kind {
@@ -72,6 +85,10 @@ impl Kind {
             Kind::EventInput
         } else if path.is_ident("event_output") {
             Kind::EventOutput
+        } else if path.is_ident("spectral_input") {
+            Kind::SpectralInput
+        } else if path.is_ident("spectral_output") {
+            Kind::SpectralOutput
         } else {
             return None;
         })
@@ -84,6 +101,8 @@ impl Kind {
             Kind::Output => 1,
             Kind::EventInput => 2,
             Kind::EventOutput => 3,
+            Kind::SpectralInput => 4,
+            Kind::SpectralOutput => 5,
         }
     }
 }
@@ -126,7 +145,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         })?;
     }
 
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 6];
     let mut ports = Vec::new();
     for field in &fields.named {
         let name = field.ident.clone().expect("named field");
@@ -187,11 +206,20 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             Kind::Output => quote!(.output(#key, #display)),
             Kind::EventInput => quote!(.event_input(#key, #display)),
             Kind::EventOutput => quote!(.event_output(#key, #display)),
+            Kind::SpectralInput => quote!(.spectral_input(#key, #display)),
+            Kind::SpectralOutput => quote!(.spectral_output(#key, #display)),
         }
     });
     let fields = ports.iter().map(|p| &p.name);
     let nondeterministic = nondeterministic.then(|| quote!(.nondeterministic()));
-    let [inputs, outputs, event_inputs, event_outputs] = counts;
+    let [
+        inputs,
+        outputs,
+        event_inputs,
+        event_outputs,
+        spectral_inputs,
+        spectral_outputs,
+    ] = counts;
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -212,6 +240,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             pub const OUTPUTS: usize = #outputs;
             pub const EVENT_INPUTS: usize = #event_inputs;
             pub const EVENT_OUTPUTS: usize = #event_outputs;
+            pub const SPECTRAL_INPUTS: usize = #spectral_inputs;
+            pub const SPECTRAL_OUTPUTS: usize = #spectral_outputs;
 
             /// The node's ports, in the order the constants index them.
             pub fn layout() -> ::noodle_engine::Layout {

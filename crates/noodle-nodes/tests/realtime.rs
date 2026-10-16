@@ -228,6 +228,80 @@ fn rendering_never_allocates_even_while_editing() {
     assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
 }
 
+/// sine → Analyze → gate → shift → blur → freeze → Cross (with a second,
+/// noise analysis as the modulator) → Synthesize → output.
+fn spectral_session() -> (Session, [NodeId; 4]) {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let noise = s.add(Node::new("noodle.noise.white"));
+    let (a, b) = (
+        s.add(Node::new("noodle.spectral.analyze")),
+        s.add(Node::new("noodle.spectral.analyze")),
+    );
+    let gate = s.add(Node::new("noodle.spectral.gate"));
+    let shift = s.add(Node::new("noodle.spectral.shift"));
+    let blur = s.add(Node::new("noodle.spectral.blur"));
+    let freeze = s.add(Node::new("noodle.spectral.freeze"));
+    let cross = s.add(Node::new("noodle.spectral.cross"));
+    let synth = s.add(Node::new("noodle.spectral.synthesize"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", a, "in");
+    s.wire(noise, "out", b, "in");
+    s.wire(a, "spectrum", gate, "spectrum");
+    s.wire(gate, "out", shift, "spectrum");
+    s.wire(shift, "out", blur, "spectrum");
+    s.wire(blur, "out", freeze, "spectrum");
+    s.wire(freeze, "out", cross, "carrier");
+    s.wire(b, "spectrum", cross, "modulator");
+    s.wire(cross, "out", synth, "spectrum");
+    s.wire(synth, "out", output, "in");
+    s.update();
+    (s, [shift, freeze, cross, a])
+}
+
+#[test]
+fn spectral_chains_never_allocate_even_while_editing() {
+    let (mut s, [shift, freeze, cross, a]) = spectral_session();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..8 {
+        for (node, key, value) in [
+            (shift, "shift", 40.0 * round as f32),
+            (freeze, "freeze", (round % 2) as f32),
+            (cross, "mix", round as f32 / 8.0),
+        ] {
+            s.edit(Command::SetParam {
+                node,
+                key: key.into(),
+                value: Some(value),
+            });
+            s.controller.set_param(node, key, value);
+        }
+        // A new node and a rewire swap the plan with spectral state in it.
+        if round % 3 == 1 {
+            // A branch that runs: fresh spectral state in the new plan.
+            let extra = s.add(Node::new("noodle.spectral.blur"));
+            let synth = s.add(Node::new("noodle.spectral.synthesize"));
+            let output = s.add(Node::new(OUTPUT_ID));
+            s.wire(a, "spectrum", extra, "spectrum");
+            s.wire(extra, "out", synth, "spectrum");
+            s.wire(synth, "out", output, "in");
+            s.update();
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the audio thread in round {round}"
+        );
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
+    assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
+}
+
 #[test]
 fn the_device_writer_never_allocates() {
     let (s, ..) = busy_session();

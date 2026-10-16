@@ -26,7 +26,10 @@ use std::fmt;
 
 use noodle_core::{Config, NodeId, Value};
 
-use crate::{Event, EventsOut, OfflineNode, ParamInfo, Shape, ShapeError, SignalIn, SignalOut};
+use crate::{
+    Event, EventsOut, OfflineNode, ParamInfo, Shape, ShapeError, SignalIn, SignalOut, SpectralIn,
+    SpectralOut,
+};
 
 /// Facts about a node type that never depend on config.
 #[derive(Clone, Copy, Debug)]
@@ -108,6 +111,12 @@ pub trait NodeType: Send + Sync + 'static {
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.
+    ///
+    /// A node with spectral ports gets the shapes of its spectral inputs
+    /// after those of its signal inputs, and returns the shapes of its
+    /// spectral outputs after those of its signal outputs. The default
+    /// therefore gives a spectral output the shape of the audio it came
+    /// from, and an audio output the shape of the spectrum it plays.
     fn output_shapes(
         &self,
         _config: &Config,
@@ -115,7 +124,10 @@ pub trait NodeType: Send + Sync + 'static {
         inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
         let shape = Shape::broadcast_all(inputs.iter().copied())?;
-        Ok(vec![shape; layout.outputs.len()])
+        Ok(vec![
+            shape;
+            layout.outputs.len() + layout.spectral_outputs.len()
+        ])
     }
 
     /// Runs off the audio thread, so it may allocate.
@@ -130,6 +142,9 @@ pub struct Layout {
     pub outputs: Vec<Port>,
     pub event_inputs: Vec<Port>,
     pub event_outputs: Vec<Port>,
+    /// Spectral (FFT frame) ports; see [`crate::spectral`](crate::Analyzer).
+    pub spectral_inputs: Vec<Port>,
+    pub spectral_outputs: Vec<Port>,
     pub mode: Mode,
     /// False if identical inputs can give different output, e.g. unseeded
     /// randomness. Nondeterministic nodes are never cached.
@@ -199,8 +214,10 @@ impl Layout {
         if let Some(&shown) = chosen.get(key) {
             return shown;
         }
-        let many = self.inputs.len() + self.event_inputs.len() > Self::MANY_PORTS
-            || self.outputs.len() + self.event_outputs.len() > Self::MANY_PORTS;
+        let many = self.inputs.len() + self.event_inputs.len() + self.spectral_inputs.len()
+            > Self::MANY_PORTS
+            || self.outputs.len() + self.event_outputs.len() + self.spectral_outputs.len()
+                > Self::MANY_PORTS;
         if !many {
             return true;
         }
@@ -230,6 +247,8 @@ impl Layout {
             outputs: Vec::new(),
             event_inputs: Vec::new(),
             event_outputs: Vec::new(),
+            spectral_inputs: Vec::new(),
+            spectral_outputs: Vec::new(),
             mode,
             deterministic: true,
         }
@@ -286,6 +305,24 @@ impl Layout {
         name: impl Into<Cow<'static, str>>,
     ) -> Self {
         self.event_outputs.push(port(key, name));
+        self
+    }
+
+    pub fn spectral_input(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.spectral_inputs.push(port(key, name));
+        self
+    }
+
+    pub fn spectral_output(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.spectral_outputs.push(port(key, name));
         self
     }
 
@@ -361,7 +398,9 @@ pub struct Setup<'a> {
     pub sample_rate: f32,
     /// The most frames any block will have.
     pub max_frames: usize,
+    /// The shapes of the signal inputs, then those of the spectral inputs.
     pub input_shapes: &'a [Shape],
+    /// The shapes of the signal outputs, then those of the spectral outputs.
     pub output_shapes: &'a [Shape],
     /// A seed for anything random. It's the same for this node on every run,
     /// so renders repeat exactly (and can be cached), but different for every
@@ -524,6 +563,8 @@ pub struct Io<'a, 'b> {
     pub outputs: &'a mut [SignalOut<'b>],
     pub event_inputs: &'a [&'a [Event]],
     pub event_outputs: &'a mut [EventsOut<'b>],
+    pub spectral_inputs: &'a [SpectralIn<'a>],
+    pub spectral_outputs: &'a mut [SpectralOut<'b>],
 }
 
 #[derive(Clone, Debug, PartialEq)]

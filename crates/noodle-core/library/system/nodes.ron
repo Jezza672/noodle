@@ -1580,6 +1580,166 @@
         ),
     )),
     NodePreset((
+        name: "Denoise",
+        slug: "spectral-gate-denoise",
+        node_type: "noodle.spectral.gate",
+        values: (
+            params: {
+                "knee": 9.0,
+                "reduction": 30.0,
+                "threshold": -55.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Loudest Partials Only",
+        slug: "spectral-gate-loudest-partials-only",
+        node_type: "noodle.spectral.gate",
+        values: (
+            params: {
+                "knee": 6.0,
+                "reduction": 80.0,
+                "threshold": -25.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Telephone Band",
+        slug: "spectral-filter-telephone-band",
+        node_type: "noodle.spectral.filter",
+        values: (
+            params: {
+                "high": 3400.0,
+                "low": 300.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Notch Out the Mids",
+        slug: "spectral-filter-notch-out-the-mids",
+        node_type: "noodle.spectral.filter",
+        values: (
+            params: {
+                "high": 2500.0,
+                "low": 800.0,
+                "mode": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Low End Only",
+        slug: "spectral-filter-low-end-only",
+        node_type: "noodle.spectral.filter",
+        values: (
+            params: {
+                "high": 250.0,
+                "low": 20.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "One Bin Up",
+        slug: "spectral-shift-one-bin-up",
+        node_type: "noodle.spectral.shift",
+        values: (
+            params: {
+                "shift": 24.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bell-like",
+        slug: "spectral-shift-bell-like",
+        node_type: "noodle.spectral.shift",
+        values: (
+            params: {
+                "shift": 90.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Down a Little",
+        slug: "spectral-shift-down-a-little",
+        node_type: "noodle.spectral.shift",
+        values: (
+            params: {
+                "shift": -40.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Held",
+        slug: "spectral-freeze-held",
+        node_type: "noodle.spectral.freeze",
+        values: (
+            params: {
+                "freeze": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Live",
+        slug: "spectral-freeze-live",
+        node_type: "noodle.spectral.freeze",
+        values: (
+            params: {
+                "freeze": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Soften",
+        slug: "spectral-blur-soften",
+        node_type: "noodle.spectral.blur",
+        values: (
+            params: {
+                "amount": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Haze",
+        slug: "spectral-blur-haze",
+        node_type: "noodle.spectral.blur",
+        values: (
+            params: {
+                "amount": 0.9,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Wash",
+        slug: "spectral-blur-wash",
+        node_type: "noodle.spectral.blur",
+        values: (
+            params: {
+                "amount": 0.98,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Full Vocode",
+        slug: "cross-full-vocode",
+        node_type: "noodle.spectral.cross",
+        values: (
+            params: {
+                "mix": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Half and Half",
+        slug: "cross-half-and-half",
+        node_type: "noodle.spectral.cross",
+        values: (
+            params: {
+                "mix": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Peak to Minus 1 dB",
         slug: "normalize-peak-to-minus-1-db",
         node_type: "noodle.offline.normalize",

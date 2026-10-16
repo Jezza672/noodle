@@ -267,6 +267,8 @@ mod tests {
                 outputs: &mut outputs,
                 event_inputs: &[],
                 event_outputs: &mut [],
+                spectral_inputs: &[],
+                spectral_outputs: &mut [],
             };
             self.click.process(&ctx, io);
             self.position += frames as u64;

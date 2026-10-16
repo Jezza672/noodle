@@ -41,6 +41,8 @@ pub enum PortKind {
     Audio,
     Param(ParamInfo),
     Event,
+    /// FFT frames, as between Analyze and Synthesize.
+    Spectral,
     /// A group's port that nothing is wired to on either side yet: it takes
     /// a wire of any kind, and becomes that kind once one is connected.
     Any,
@@ -57,9 +59,16 @@ impl PortKind {
             (self, input),
             (PortKind::Audio, PortKind::Audio | PortKind::Param(_))
                 | (PortKind::Event, PortKind::Event)
+                | (PortKind::Spectral, PortKind::Spectral)
                 | (PortKind::Any, PortKind::Audio | PortKind::Param(_))
-                | (PortKind::Any, PortKind::Event | PortKind::Any)
-                | (PortKind::Audio | PortKind::Event, PortKind::Any)
+                | (
+                    PortKind::Any,
+                    PortKind::Event | PortKind::Spectral | PortKind::Any
+                )
+                | (
+                    PortKind::Audio | PortKind::Event | PortKind::Spectral,
+                    PortKind::Any
+                )
         )
     }
 }
@@ -118,6 +127,7 @@ pub struct WireGeom {
     pub from: Pos2,
     pub to: Pos2,
     pub event: bool,
+    pub spectral: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -275,11 +285,27 @@ impl Scene {
                                         PortKind::Event,
                                     ));
                                 }
+                                for p in &layout.spectral_outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Spectral,
+                                    ));
+                                }
                                 // Note inputs first: they are the way into an
                                 // instrument, and a plugin can have hundreds of
                                 // parameters below them.
                                 for p in &layout.event_inputs {
                                     ports.push(port(Side::Input, &p.key, &p.name, PortKind::Event));
+                                }
+                                for p in &layout.spectral_inputs {
+                                    ports.push(port(
+                                        Side::Input,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Spectral,
+                                    ));
                                 }
                                 for p in &layout.inputs {
                                     // A parameter the user (or the node type)
@@ -465,6 +491,7 @@ impl Scene {
                 Some(WireGeom {
                     lane: None,
                     event: from.kind == PortKind::Event,
+                    spectral: from.kind == PortKind::Spectral,
                     from: from.socket,
                     to: to.socket,
                     connection,
@@ -485,6 +512,7 @@ impl Scene {
                 scene.wires.push(WireGeom {
                     lane: Some(lane),
                     event: false,
+                    spectral: false,
                     from: a,
                     to: b,
                     connection: Connection { from, to: target },
@@ -735,6 +763,8 @@ impl Kinds<'_> {
                 };
                 if layout.event_outputs.iter().any(|p| p.key == at.port) {
                     PortKind::Event
+                } else if layout.spectral_outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Spectral
                 } else if layout.outputs.iter().any(|p| p.key == at.port) {
                     PortKind::Audio
                 } else {
@@ -768,6 +798,8 @@ impl Kinds<'_> {
                 };
                 if layout.event_inputs.iter().any(|p| p.key == at.port) {
                     PortKind::Event
+                } else if layout.spectral_inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Spectral
                 } else if layout.inputs.iter().any(|p| p.key == at.port) {
                     PortKind::Audio
                 } else {
@@ -1683,5 +1715,49 @@ mod tests {
         assert!(!PortKind::Event.feeds(&param));
         assert!(!PortKind::Unknown.feeds(&PortKind::Audio));
         assert!(!PortKind::Audio.feeds(&PortKind::Unknown));
+        // Spectrum joins only spectrum (and a group port that is still any).
+        assert!(PortKind::Spectral.feeds(&PortKind::Spectral));
+        assert!(!PortKind::Spectral.feeds(&PortKind::Audio));
+        assert!(!PortKind::Spectral.feeds(&param));
+        assert!(!PortKind::Audio.feeds(&PortKind::Spectral));
+        assert!(!PortKind::Event.feeds(&PortKind::Spectral));
+        assert!(PortKind::Any.feeds(&PortKind::Spectral));
+        assert!(PortKind::Spectral.feeds(&PortKind::Any));
+    }
+
+    #[test]
+    fn spectral_ports_and_their_wires_are_spectral() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let analyze = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.spectral.analyze"),
+        );
+        let synth = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.spectral.synthesize"),
+        );
+        history
+            .apply(
+                &mut project,
+                Command::Connect(Connection {
+                    from: Endpoint::new(analyze, "spectrum"),
+                    to: Endpoint::new(synth, "spectrum"),
+                }),
+            )
+            .unwrap();
+        let scene = Scene::build(&project, &registry(), None);
+        assert_eq!(
+            kind_of(&scene, analyze, Side::Output, "spectrum"),
+            PortKind::Spectral
+        );
+        assert_eq!(
+            kind_of(&scene, synth, Side::Input, "spectrum"),
+            PortKind::Spectral
+        );
+        assert_eq!(kind_of(&scene, analyze, Side::Input, "in"), PortKind::Audio);
+        assert_eq!(kind_of(&scene, synth, Side::Output, "out"), PortKind::Audio);
+        assert!(scene.wires.iter().all(|w| w.spectral && !w.event));
     }
 }
