@@ -42,6 +42,7 @@ impl Dropdown {
     ) -> InnerResponse<Option<R>> {
         let id = ui.make_persistent_id(self.id);
         let open_id = id.with("open");
+        let width_id = id.with("width");
         let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
         let mut button = egui::Button::new(format!("{} ▾", self.text));
         if let Some(width) = self.width {
@@ -68,16 +69,25 @@ impl Dropdown {
                 .constrain(true)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(rect.width());
+                        // Rows never wrap, and the list never gets narrower
+                        // than it has been while open, so a hovered row
+                        // can't change its width and jump.
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        let widest = ui.data(|d| d.get_temp::<f32>(width_id)).unwrap_or(0.0);
+                        ui.set_min_width(rect.width().max(widest));
                         egui::ScrollArea::vertical()
                             .max_height(260.0)
                             .show(ui, |ui| {
                                 // Justified, so a row is the whole width.
-                                ui.with_layout(
-                                    egui::Layout::top_down_justified(egui::Align::LEFT),
-                                    add,
-                                )
-                                .inner
+                                let inner = ui
+                                    .with_layout(
+                                        egui::Layout::top_down_justified(egui::Align::LEFT),
+                                        add,
+                                    )
+                                    .inner;
+                                let width = ui.min_rect().width();
+                                ui.data_mut(|d| d.insert_temp(width_id, width.max(widest)));
+                                inner
                             })
                             .inner
                     })
@@ -98,7 +108,60 @@ impl Dropdown {
                 open = false;
             }
         }
-        ui.data_mut(|d| d.insert_temp(open_id, open));
+        ui.data_mut(|d| {
+            d.insert_temp(open_id, open);
+            if !open {
+                d.remove::<f32>(width_id);
+            }
+        });
         InnerResponse::new(inner, response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    const ITEMS: [&str; 3] = [
+        "Short",
+        "A rather long item that would wrap in a narrow list",
+        "Medium length item",
+    ];
+
+    #[derive(Default)]
+    struct State {
+        rows: Vec<egui::Rect>,
+    }
+
+    fn rig() -> egui_kittest::Harness<'static, State> {
+        crate::testkit::harness(State::default(), egui::vec2(220.0, 400.0), |ui, state| {
+            Dropdown::from_id_salt("t")
+                .selected_text("Short")
+                .width(60.0)
+                .show_ui(ui, |ui| {
+                    state.rows = ITEMS
+                        .iter()
+                        .map(|item| ui.selectable_label(false, *item).rect)
+                        .collect();
+                });
+        })
+    }
+
+    #[test]
+    fn rows_keep_their_size_and_stay_on_one_line_when_hovered() {
+        let mut h = rig();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        let before = h.state().rows.clone();
+        assert_eq!(before.len(), 3);
+        // One line each: no taller than a button.
+        let line = before[0].height();
+        assert!(before.iter().all(|r| (r.height() - line).abs() < 0.5));
+        for item in ITEMS {
+            h.get_by_label(item).hover();
+            h.run();
+            assert_eq!(h.state().rows, before, "hovering {item}");
+        }
     }
 }
