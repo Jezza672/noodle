@@ -7,13 +7,13 @@ use noodle_nodes::{ExportJobError, ExportReport, ExportRequest, RenderRequest, s
 
 /// Seconds a whole-project export runs past the last clip, for tails.
 const EXPORT_TAIL: f64 = 4.0;
-/// Channels in an export: the main output, as two.
-const EXPORT_CHANNELS: usize = 2;
-
 /// What the user chose in the export dialog.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExportChoice {
     pub format: ExportFormat,
+    /// The speakers the file is for: stereo, or a surround layout, whose
+    /// channels the Output nodes' signals fill in WAV order.
+    pub layout: noodle_engine::ChannelLayout,
     /// The part to write, from and to in seconds; `None` is the whole
     /// project, to the end of the last clip and a tail.
     pub range: Option<(f64, f64)>,
@@ -54,7 +54,7 @@ impl Session {
         let settings = Settings {
             sample_rate: rate,
             max_frames: FREEZE_SETTINGS.max_frames,
-            channels: EXPORT_CHANNELS,
+            channels: choice.layout.channels(),
         };
         let (start, end) = match choice.range {
             Some((from, to)) => (from.max(0.0), to),

@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use noodle_core::NodeId;
 
+use crate::ChannelLayout;
 use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
 use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
@@ -181,6 +182,11 @@ struct PlanNode {
     /// number of channels. `None` for an Output node that plays nothing
     /// (its device isn't open) and for every other node.
     bus: Option<(usize, usize)>,
+    /// For an Output node whose signal has more channels than its bus and
+    /// both name a layout: the downmix (rows are bus channels, columns signal
+    /// channels), so a 5.1 mix on a stereo bus folds down instead of losing
+    /// its centre and rears.
+    downmix: Option<Box<[f32]>>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
     /// Reports the signals wired into parameters, by input index.
@@ -607,6 +613,15 @@ pub(crate) fn build(
             spectral_outputs,
             is_output,
             bus,
+            downmix: bus.and_then(|(_, count)| {
+                let signal = scheduled.input_shapes.first()?.channels;
+                if signal <= count {
+                    return None;
+                }
+                let from = ChannelLayout::from_channels(signal)?;
+                let to = ChannelLayout::from_channels(count)?;
+                Some(ChannelLayout::convert_matrix(from, to).into_boxed_slice())
+            }),
             is_input: scheduled.node_type.info().id == INPUT_ID,
             probes,
             cpu: telemetry
@@ -1235,7 +1250,10 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         if fresh {
             out.fill(0.0);
         }
-        mix_into(inputs[0], out, channels, first, count);
+        match &node.downmix {
+            Some(matrix) => mix_matrix_into(inputs[0], matrix, out, channels, first, count),
+            None => mix_into(inputs[0], out, channels, first, count),
+        }
     }
 
     node.scratch.inputs = recycle(inputs);
@@ -1433,13 +1451,15 @@ pub(crate) fn read_input(input: Interleaved<'_>, signal: &mut SignalOut<'_>) {
 }
 
 /// Adds a signal into the `count` channels of interleaved output that start
-/// at `first`. A mono signal goes to every channel; otherwise channel n goes
+/// at `first`. A mono signal goes to the first two channels (left and right,
+/// not the centre, LFE and rears of a surround bus); otherwise channel n goes
 /// to channel n, and voices are summed.
 fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize, first: usize, count: usize) {
     let shape = signal.shape();
     for channel in 0..count {
         let source = match shape.channels {
-            1 => 0,
+            1 if channel < 2 => 0,
+            1 => continue,
             n if channel < n => channel,
             _ => continue,
         };
@@ -1447,6 +1467,32 @@ fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize, first: us
             let lane = signal.lane(voice, source);
             for (frame, sample) in lane.iter().enumerate() {
                 output[frame * channels + first + channel] += sample;
+            }
+        }
+    }
+}
+
+/// Adds a signal into the `count` channels of interleaved output that start at
+/// `first`, through `matrix` (one row per output channel, one column per
+/// signal channel), summing voices.
+fn mix_matrix_into(
+    signal: SignalIn<'_>,
+    matrix: &[f32],
+    output: &mut [f32],
+    channels: usize,
+    first: usize,
+    count: usize,
+) {
+    let shape = signal.shape();
+    for (channel, gains) in matrix.chunks(shape.channels).take(count).enumerate() {
+        for (source, &gain) in gains.iter().enumerate() {
+            if gain == 0.0 {
+                continue;
+            }
+            for voice in 0..shape.voices {
+                for (frame, sample) in signal.lane(voice, source).iter().enumerate() {
+                    output[frame * channels + first + channel] += sample * gain;
+                }
             }
         }
     }

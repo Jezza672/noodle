@@ -48,6 +48,7 @@ mod scope;
 mod script;
 mod spectral;
 mod stage;
+mod surround;
 mod svf;
 mod time_stretch;
 mod vca;
@@ -128,6 +129,10 @@ pub use spectral::{
     SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
 };
 pub use stage::GroupStage;
+pub use surround::{
+    CONVERT_LAYOUT_ID, ConvertLayout, LAYOUT_KEY, MERGE_CHANNELS_ID, MergeChannels,
+    SPLIT_CHANNELS_ID, SURROUND_PAN_ID, SplitChannels, SurroundPan, default_layout,
+};
 pub use svf::{SVF_ID, Svf, svf_response};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
@@ -181,6 +186,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Square);
     registry.register(Triangle);
     registry.register(Pan);
+    registry.register(SurroundPan);
+    registry.register(ConvertLayout);
+    registry.register(SplitChannels);
+    registry.register(MergeChannels);
     registry.register(WhiteNoise);
     registry.register(Gain::new(&telemetry));
     registry.register(Button);

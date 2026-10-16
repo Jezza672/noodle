@@ -12,6 +12,36 @@ pub struct Audio {
     pub sample_rate: u32,
 }
 
+/// Sets the channel mask of a WAV file hound wrote with more than two
+/// channels. Hound writes the first N speaker bits, which is right for 6
+/// (5.1) but names quad as L R C LFE and 7.1 as having front-centre pair
+/// speakers, so players that honour the mask would route the channels
+/// wrongly. For a channel count that names a [`ChannelLayout`], this writes
+/// that layout's mask over it. Files that are not in the extensible format
+/// (one or two channels) are left alone.
+pub fn set_wav_channel_mask(path: &Path, channels: usize) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let Some(layout) = noodle_engine::ChannelLayout::from_channels(channels) else {
+        return Ok(());
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    // RIFF header (12 bytes), then hound's `fmt ` chunk: its header (8), the
+    // format tag (2), then, in an extensible chunk, the channel mask at byte
+    // 40 of the file.
+    let mut head = [0u8; 44];
+    if file.read_exact(&mut head).is_err()
+        || &head[12..16] != b"fmt "
+        || u16::from_le_bytes([head[20], head[21]]) != 0xFFFE
+    {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(40))?;
+    file.write_all(&layout.wav_mask().to_le_bytes())
+}
+
 /// Writes 32-bit float WAV, which keeps every sample exactly.
 pub fn write_wav(
     path: &Path,
@@ -29,7 +59,8 @@ pub fn write_wav(
     for &sample in samples {
         writer.write_sample(sample)?;
     }
-    writer.finalize()
+    writer.finalize()?;
+    Ok(set_wav_channel_mask(path, channels)?)
 }
 
 /// Writes 32-bit float WAV a chunk at a time, for renders too long to hold in
@@ -40,6 +71,7 @@ pub struct WavStreamWriter {
     writer: Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>,
     partial: PathBuf,
     path: PathBuf,
+    channels: usize,
 }
 
 impl WavStreamWriter {
@@ -61,6 +93,7 @@ impl WavStreamWriter {
             writer: Some(hound::WavWriter::create(&partial, spec)?),
             partial,
             path: path.to_owned(),
+            channels,
         })
     }
 
@@ -75,6 +108,7 @@ impl WavStreamWriter {
 
     pub fn finish(mut self) -> Result<(), WavError> {
         self.writer.take().expect("finished twice").finalize()?;
+        set_wav_channel_mask(&self.partial, self.channels)?;
         std::fs::rename(&self.partial, &self.path)?;
         Ok(())
     }
@@ -112,6 +146,28 @@ pub fn read_wav(path: &Path) -> Result<Audio, WavError> {
 
 #[cfg(test)]
 mod tests {
+    /// The channel mask in a file's extensible `fmt ` chunk.
+    fn mask_of(path: &Path) -> u32 {
+        let bytes = std::fs::read(path).unwrap();
+        u32::from_le_bytes(bytes[40..44].try_into().unwrap())
+    }
+
+    #[test]
+    fn surround_files_carry_their_layouts_channel_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        for (channels, mask) in [(4, 0x33), (6, 0x3F), (8, 0x63F)] {
+            let path = dir.path().join(format!("{channels}.wav"));
+            write_wav(&path, &vec![0.1; channels * 10], channels, 48_000).unwrap();
+            assert_eq!(mask_of(&path), mask, "{channels} channels");
+            assert_eq!(read_wav(&path).unwrap().channels, channels);
+            let streamed = dir.path().join(format!("s{channels}.wav"));
+            let mut writer = WavStreamWriter::create(&streamed, channels, 48_000).unwrap();
+            writer.write(&vec![0.1; channels * 10]).unwrap();
+            writer.finish().unwrap();
+            assert_eq!(mask_of(&streamed), mask, "{channels} channels streamed");
+        }
+    }
+
     use super::*;
 
     fn temp(name: &str) -> std::path::PathBuf {

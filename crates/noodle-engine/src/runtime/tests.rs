@@ -552,6 +552,25 @@ fn plays_the_output_node_in_blocks() {
 }
 
 #[test]
+fn a_mono_signal_on_a_surround_bus_plays_left_and_right_only() {
+    let mut rig = Rig::new(Settings {
+        channels: 6,
+        ..SETTINGS
+    });
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.update();
+    assert_eq!(
+        rig.render(2),
+        [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+            1.0, 1.0, 0.0, 0.0, 0.0, 0.0
+        ]
+    );
+}
+
+#[test]
 fn unchanged_nodes_keep_their_state_across_updates() {
     let (mut rig, _) = counter_rig();
     assert_eq!(rig.render(4), [0.0, 1.0, 2.0, 3.0]);

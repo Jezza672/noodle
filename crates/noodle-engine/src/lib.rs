@@ -10,6 +10,7 @@ extern crate self as noodle_engine;
 mod automation;
 mod builtin;
 mod cache;
+mod channels;
 mod compile;
 mod denormals;
 mod event;
@@ -44,6 +45,7 @@ pub use cache::{
     Analysis, CacheEnv, InputOrigin, NodeAnalysis, Target, TargetKind, Uncacheable, analyze,
     output_key,
 };
+pub use channels::{ChannelLayout, MAX_LAYOUT_CHANNELS, Speaker};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
     ScheduledNode, SpectralBufferId, compile, compile_replacing, compile_with_lanes,

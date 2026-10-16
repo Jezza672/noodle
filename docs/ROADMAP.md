@@ -919,4 +919,4 @@ for spectral wires (`SpectralDelay`) came in the same batch.
   scripts, MIDI/event ports.
 - MIDI 2.0 follow-ups: device input as UMP (midir delivers MIDI 1.0 bytes),
   32-bit values end to end (events and clips), MIDI-CI.
-- Surround and multichannel buses.
+- ~~Surround and multichannel buses.~~ **Done**: channel layouts (mono to 7.1), Surround Pan, Convert Layout, Split and Merge Channels, a device channel count, multichannel export. See "Surround and multichannel buses" in ARCHITECTURE.md.

@@ -2638,6 +2638,7 @@ mod tests {
         sine_chain(&mut session, None);
         let whole = ExportChoice {
             format: ExportFormat::Wav16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             range: None,
         };
         assert!(
@@ -2647,6 +2648,7 @@ mod tests {
         );
         let empty = ExportChoice {
             format: ExportFormat::Wav16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             range: Some((2.0, 2.0)),
         };
         assert!(
@@ -2658,6 +2660,7 @@ mod tests {
         let path = dir.path().join("half.wav");
         let choice = ExportChoice {
             format: ExportFormat::Wav16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             range: Some((0.0, 0.5)),
         };
         session.start_export(path.clone(), choice).unwrap();
@@ -2679,6 +2682,113 @@ mod tests {
     }
 
     #[test]
+    fn a_surround_export_writes_every_channel_of_the_layout() {
+        use noodle_engine::ChannelLayout;
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        // A sine panned to the centre speaker of the default 5.1.
+        sine_chain(&mut session, Some(noodle_nodes::SURROUND_PAN_ID));
+        let path = dir.path().join("surround.wav");
+        let choice = ExportChoice {
+            format: ExportFormat::WavFloat,
+            layout: ChannelLayout::Surround51,
+            range: Some((0.0, 0.25)),
+        };
+        session.start_export(path.clone(), choice).unwrap();
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        let audio = noodle_io::decode_file(&path).unwrap();
+        assert_eq!(audio.channels, 6);
+        assert_eq!(audio.samples.len(), 12_000 * 6);
+        let peak = |channel: usize| {
+            audio
+                .samples
+                .iter()
+                .skip(channel)
+                .step_by(6)
+                .fold(0.0f32, |peak, x| peak.max(x.abs()))
+        };
+        assert!(peak(2) > 0.05, "centre {}", peak(2));
+        for channel in [0, 1, 3, 4, 5] {
+            assert_eq!(peak(channel), 0.0, "channel {channel}");
+        }
+
+        // A stereo project exported as 5.1 fills the front pair only.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache2"));
+        sine_chain(&mut session, Some("noodle.util.pan"));
+        let path = dir.path().join("stereo-in-51.wav");
+        session.start_export(path.clone(), choice).unwrap();
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        let audio = noodle_io::decode_file(&path).unwrap();
+        assert_eq!(audio.channels, 6);
+        let peak = |channel: usize| {
+            audio
+                .samples
+                .iter()
+                .skip(channel)
+                .step_by(6)
+                .fold(0.0f32, |peak, x| peak.max(x.abs()))
+        };
+        assert!(peak(0) > 0.05 && peak(1) > 0.05);
+        assert!((2..6).all(|channel| peak(channel) == 0.0));
+    }
+
+    #[test]
+    fn exporting_to_a_narrower_layout_folds_the_mix_down() {
+        use noodle_engine::ChannelLayout;
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let peak = |path: &std::path::Path, channels: usize| {
+            let audio = noodle_io::decode_file(path).unwrap();
+            assert_eq!(audio.channels, channels);
+            audio.samples.iter().fold(0.0f32, |p, x| p.max(x.abs()))
+        };
+        let export = |session: &mut Session, name: &str, layout| {
+            let path = dir.path().join(name);
+            let choice = ExportChoice {
+                format: ExportFormat::WavFloat,
+                layout,
+                range: Some((0.0, 0.25)),
+            };
+            session.start_export(path.clone(), choice).unwrap();
+            until(session, "the export finishes", |s| {
+                s.export_progress().is_none()
+            });
+            path
+        };
+
+        // A sine panned hard right, exported as mono: the right channel is
+        // not lost.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, Some("noodle.util.pan"));
+        let pan = NodeId(3);
+        session.edit(vec![Edit::Apply(Command::SetParam {
+            node: pan,
+            key: "pan".into(),
+            value: Some(1.0),
+        })]);
+        let path = export(&mut session, "mono.wav", ChannelLayout::Mono);
+        assert!(peak(&path, 1) > 0.05);
+
+        // The default 5.1 pan puts everything in the centre; as stereo it
+        // folds into both ears instead of vanishing.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache2"));
+        sine_chain(&mut session, Some(noodle_nodes::SURROUND_PAN_ID));
+        let path = export(&mut session, "stereo.wav", ChannelLayout::Stereo);
+        assert!(peak(&path, 2) > 0.05);
+    }
+
+    #[test]
     fn an_export_includes_offline_nodes_and_can_be_cancelled() {
         use noodle_io::ExportFormat;
 
@@ -2688,6 +2798,7 @@ mod tests {
         sine_chain(&mut session, Some("noodle.offline.reverse"));
         let choice = ExportChoice {
             format: ExportFormat::Flac16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             // Inside the 30 s the offline node is rendered over.
             range: Some((1.0, 2.0)),
         };
@@ -3118,6 +3229,7 @@ mod tests {
             input: noodle_io::InputChoice::Default,
             sample_rate: Some(96_000),
             buffer_size: Some(64),
+            channels: Some(6),
             midi_input: Some("Keys".into()),
             threads: 3,
         };

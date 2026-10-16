@@ -117,6 +117,10 @@ struct DeviceArgs {
     /// Frames per device callback.
     #[arg(long)]
     buffer_size: Option<u32>,
+    /// Channels to open the output with, for surround (6 is 5.1, 8 is 7.1)
+    /// or a multichannel interface. The device's default if not given.
+    #[arg(long)]
+    channels: Option<u16>,
 }
 
 impl DeviceArgs {
@@ -131,6 +135,7 @@ impl DeviceArgs {
             },
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
+            channels: self.channels,
             midi_input: None,
             threads: 0,
         }
