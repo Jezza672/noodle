@@ -19,7 +19,8 @@ use crate::render::TAP_ID;
 use crate::{
     BlockWriter, Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource,
     Instance, Io, MAX_LATENCY, Node, NodeError, ParamInfo, ParamKind, ParamWriter, Phase, Problem,
-    Schedule, Settings, Setup, Shape, SignalIn, SignalOut, Telemetry,
+    Schedule, Settings, Setup, Shape, SignalIn, SignalOut, SpectralBuf, SpectralIn, SpectralOut,
+    Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -117,6 +118,7 @@ pub(crate) struct Plan {
     /// divided by `max_frames`. See [`SignalOut::set_silent`].
     silent: Box<[bool]>,
     events: Vec<Vec<Event>>,
+    spectral: Vec<SpectralBuf>,
     /// `max_frames` zeros, for the placeholder a split node's other half
     /// sees where its loop input (or everything else) is.
     zeros: Box<[f32]>,
@@ -169,6 +171,9 @@ struct PlanNode {
     outputs: Vec<View>,
     event_inputs: Vec<Option<usize>>,
     event_outputs: Vec<usize>,
+    /// The buffer behind each spectral input and the input's shape.
+    spectral_inputs: Vec<Option<(usize, Shape)>>,
+    spectral_outputs: Vec<(usize, Shape)>,
     /// An Output node, whose input is mixed into the device output.
     is_output: bool,
     /// Where an Output node mixes to: the first output channel and the
@@ -228,6 +233,8 @@ struct Scratch {
     outputs: Vec<SignalOut<'static>>,
     event_inputs: Vec<&'static [Event]>,
     event_outputs: Vec<EventsOut<'static>>,
+    spectral_inputs: Vec<SpectralIn<'static>>,
+    spectral_outputs: Vec<SpectralOut<'static>>,
 }
 
 /// Builds a plan from a schedule, instantiating every node that can't carry
@@ -307,6 +314,7 @@ pub(crate) fn build(
     // known even though buffers are reused.
     let mut signal_writers = HashMap::new();
     let mut event_writers = HashMap::new();
+    let mut spectral_writers = HashMap::new();
     let mut wiring: Vec<(NodeId, Sources)> = Vec::with_capacity(schedule.nodes.len());
     let mut carried_ids = HashSet::new();
     // The slot of each split node's output half, for its input half to find.
@@ -463,6 +471,12 @@ pub(crate) fn build(
                     .iter()
                     .map(|e| e.and_then(|e| event_writers.get(&e).copied())),
             )
+            .chain(
+                scheduled
+                    .spectral_inputs
+                    .iter()
+                    .map(|s| s.and_then(|s| spectral_writers.get(&s).copied())),
+            )
             .collect();
         let owner = input_half.then(|| output_halves[&id]);
         if let Some(owner) = owner {
@@ -481,6 +495,9 @@ pub(crate) fn build(
         for (port, &e) in scheduled.event_outputs.iter().enumerate() {
             event_writers.insert(e, (id, port));
         }
+        for (port, &b) in scheduled.spectral_outputs.iter().enumerate() {
+            spectral_writers.insert(b, (id, port));
+        }
 
         let outputs: Vec<View> = scheduled
             .outputs
@@ -494,11 +511,28 @@ pub(crate) fn build(
             .map(|e| e.map(|e| e.0))
             .collect();
         let event_outputs: Vec<usize> = scheduled.event_outputs.iter().map(|e| e.0).collect();
+        // The spectral shapes follow the signal shapes.
+        let signals_in = scheduled.layout.inputs.len();
+        let signals_out = scheduled.layout.outputs.len();
+        let spectral_inputs: Vec<Option<(usize, Shape)>> = scheduled
+            .spectral_inputs
+            .iter()
+            .zip(&scheduled.input_shapes[signals_in..])
+            .map(|(b, &shape)| b.map(|b| (b.0, shape)))
+            .collect();
+        let spectral_outputs: Vec<(usize, Shape)> = scheduled
+            .spectral_outputs
+            .iter()
+            .zip(&scheduled.output_shapes[signals_out..])
+            .map(|(b, &shape)| (b.0, shape))
+            .collect();
         let scratch = Scratch {
             inputs: Vec::with_capacity(inputs.len()),
             outputs: Vec::with_capacity(outputs.len()),
             event_inputs: Vec::with_capacity(event_inputs.len()),
             event_outputs: Vec::with_capacity(event_outputs.len()),
+            spectral_inputs: Vec::with_capacity(spectral_inputs.len()),
+            spectral_outputs: Vec::with_capacity(spectral_outputs.len()),
         };
 
         let probes: Vec<(usize, ParamWriter)> = telemetry
@@ -564,6 +598,8 @@ pub(crate) fn build(
             outputs,
             event_inputs,
             event_outputs,
+            spectral_inputs,
+            spectral_outputs,
             is_output,
             bus,
             is_input: scheduled.node_type.info().id == INPUT_ID,
@@ -584,6 +620,7 @@ pub(crate) fn build(
             },
         });
     }
+    let spectral_lanes = schedule.spectral_lanes;
     let delay_migrations = compensate(
         &mut nodes,
         &slot_info,
@@ -625,6 +662,10 @@ pub(crate) fn build(
         zeros: vec![0.0; max_frames].into_boxed_slice(),
         events: (0..schedule.event_buffers)
             .map(|_| Vec::with_capacity(EVENT_CAPACITY))
+            .collect(),
+        spectral: spectral_lanes
+            .iter()
+            .map(|&lanes| SpectralBuf::new(lanes, max_frames))
             .collect(),
         values,
         offsets: offsets_in,
@@ -910,6 +951,7 @@ impl Plan {
             pool: self.pool.as_mut_ptr(),
             silent: self.silent.as_mut_ptr(),
             events: self.events.as_mut_ptr(),
+            spectral: self.spectral.as_mut_ptr(),
             values: self.values.as_ptr(),
             offsets: self.offsets.as_mut_ptr(),
             zeros: &self.zeros,
@@ -961,6 +1003,7 @@ struct Frame<'a> {
     pool: *mut f32,
     silent: *mut bool,
     events: *mut Vec<Event>,
+    spectral: *mut SpectralBuf,
     values: *const ValueInput,
     offsets: *mut OffsetInput,
     zeros: &'a [f32],
@@ -1010,6 +1053,7 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         pool,
         silent,
         events,
+        spectral,
         values,
         offsets,
         zeros,
@@ -1039,6 +1083,9 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
                 for &buffer in &node.event_outputs {
                     (*events.add(buffer)).clear();
                 }
+                for &(buffer, _) in &node.spectral_outputs {
+                    (*spectral.add(buffer)).clear();
+                }
             }
         }
         return false;
@@ -1047,6 +1094,10 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
     let mut outputs: Vec<SignalOut<'_>> = recycle(mem::take(&mut node.scratch.outputs));
     let mut event_inputs: Vec<&[Event]> = recycle(mem::take(&mut node.scratch.event_inputs));
     let mut event_outputs: Vec<EventsOut<'_>> = recycle(mem::take(&mut node.scratch.event_outputs));
+    let mut spectral_inputs: Vec<SpectralIn<'_>> =
+        recycle(mem::take(&mut node.scratch.spectral_inputs));
+    let mut spectral_outputs: Vec<SpectralOut<'_>> =
+        recycle(mem::take(&mut node.scratch.spectral_outputs));
 
     for delay in &mut node.delays {
         // SAFETY: the source buffer is one of this node's inputs, so it holds
@@ -1090,6 +1141,15 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
                 .iter()
                 .map(|&b| EventsOut::new(&mut *events.add(b))),
         );
+        spectral_inputs.extend(node.spectral_inputs.iter().map(|input| match input {
+            Some((b, shape)) => (*spectral.add(*b)).as_in(*shape),
+            None => SpectralIn::empty(),
+        }));
+        spectral_outputs.extend(
+            node.spectral_outputs
+                .iter()
+                .map(|&(b, shape)| SpectralOut::new(&mut *spectral.add(b), shape)),
+        );
     }
 
     for (index, probe) in &node.probes {
@@ -1104,6 +1164,8 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         outputs: &mut outputs,
         event_inputs: &event_inputs,
         event_outputs: &mut event_outputs,
+        spectral_inputs: &spectral_inputs,
+        spectral_outputs: &mut spectral_outputs,
     };
     // A split node's input half runs the instance of its output half, which
     // is earlier.
@@ -1156,6 +1218,8 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
     node.scratch.outputs = recycle(outputs);
     node.scratch.event_inputs = recycle(event_inputs);
     node.scratch.event_outputs = recycle(event_outputs);
+    node.scratch.spectral_inputs = recycle(spectral_inputs);
+    node.scratch.spectral_outputs = recycle(spectral_outputs);
     panicked
 }
 
@@ -1174,6 +1238,7 @@ fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput]) -> StepGraph {
     }
     let mut pool: HashMap<usize, Track> = HashMap::new();
     let mut events: HashMap<usize, Track> = HashMap::new();
+    let mut spectral: HashMap<usize, Track> = HashMap::new();
     let mut waits: Vec<Vec<usize>> = Vec::with_capacity(nodes.len());
     for (step, node) in nodes.iter().enumerate() {
         let mut wait = Vec::new();
@@ -1203,9 +1268,17 @@ fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput]) -> StepGraph {
         );
         let event_reads: Vec<usize> = node.event_inputs.iter().flatten().copied().collect();
         let event_writes = &node.event_outputs;
+        let spectral_reads: Vec<usize> = node
+            .spectral_inputs
+            .iter()
+            .flatten()
+            .map(|&(b, _)| b)
+            .collect();
+        let spectral_writes: Vec<usize> = node.spectral_outputs.iter().map(|&(b, _)| b).collect();
         for (tracks, reads, writes) in [
             (&mut pool, &reads[..], &writes[..]),
             (&mut events, &event_reads[..], &event_writes[..]),
+            (&mut spectral, &spectral_reads[..], &spectral_writes[..]),
         ] {
             for &key in reads {
                 let track = tracks.entry(key).or_default();

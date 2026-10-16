@@ -1581,8 +1581,8 @@ fn stroke(
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     for wire in &f.scene.wires {
-        // Reroutes only pass audio, so they can't go on an event wire.
-        if action == StrokeAction::Reroute && wire.event {
+        // Reroutes only pass audio, so they can't go on an event or spectral wire.
+        if action == StrokeAction::Reroute && (wire.event || wire.spectral) {
             continue;
         }
         let line = wire::flatten(wire::curve(wire.from, wire.to));

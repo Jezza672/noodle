@@ -243,6 +243,8 @@ fn never_allocates(
                     outputs: &mut outputs,
                     event_inputs: &event_inputs,
                     event_outputs: &mut event_outputs,
+                    spectral_inputs: &[],
+                    spectral_outputs: &mut [],
                 },
             );
         });
@@ -374,6 +376,8 @@ fn flood(path: std::path::PathBuf) {
                     outputs: &mut outs,
                     event_inputs: &event_inputs,
                     event_outputs: &mut event_outputs,
+                    spectral_inputs: &[],
+                    spectral_outputs: &mut [],
                 },
             );
         });

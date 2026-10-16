@@ -114,6 +114,8 @@ pub fn wires(
             colors::ACTIVE
         } else if wire.event {
             colors::EVENT_WIRE
+        } else if wire.spectral {
+            colors::SPECTRAL_WIRE
         } else if selected {
             colors::WIRE_SELECTED
         } else {
@@ -495,6 +497,17 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
                 colors::EVENT_SOCKET,
                 outline,
             ));
+        }
+        // A square, for frames of spectrum.
+        PortKind::Spectral => {
+            let r = radius * 0.9;
+            painter.rect(
+                Rect::from_center_size(center, Vec2::splat(2.0 * r)),
+                1.0,
+                colors::SPECTRAL_SOCKET,
+                outline,
+                egui::StrokeKind::Middle,
+            );
         }
         ref kind => {
             let fill = match kind {

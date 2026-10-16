@@ -141,3 +141,10 @@ One node that routes MIDI notes to its outputs by note range and velocity range.
 
 **Hidden template**:
 A group template that the library does not list and the Add menu does not offer; the app instantiates it itself. A track is one, made only by Add track.
+
+**Spectrum**:
+A signal made of FFT frames instead of samples: every 512 samples, one frame of 1025 complex bins per lane, from a 2048-sample window. It is its own kind of wire, drawn violet. Analyze makes one from audio and Synthesize turns it back. See ADR 0007.
+
+**Frame (spectral)**:
+One set of bins of a Spectrum, stamped with the offset in the block where its window ends. A spectral node pushes one frame out for each frame in.
+

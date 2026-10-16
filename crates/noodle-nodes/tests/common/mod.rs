@@ -247,6 +247,8 @@ impl Rig {
                 outputs: &mut outputs,
                 event_inputs: &[],
                 event_outputs: &mut events,
+                spectral_inputs: &[],
+                spectral_outputs: &mut [],
             },
         );
     }
