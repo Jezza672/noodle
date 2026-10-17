@@ -1657,6 +1657,7 @@ fn midi_control_never_allocates_on_midi1_and_midi2_controllers() {
     let diagnostics = controller.update_project(&project, &registry);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
 
+    let transport = controller.transport();
     let mut out = vec![0.0; 128 * SETTINGS.channels];
     for round in 0..16u32 {
         library.midi.send([0xB0, 1, (round * 8) as u8 & 127]);
@@ -1675,6 +1676,8 @@ fn midi_control_never_allocates_on_midi1_and_midi2_controllers() {
         ] {
             library.midi.send_packet(message.encode(0));
         }
+        // A jump resets the nodes.
+        transport.seek(noodle_core::Tick(480 * i64::from(round)));
         controller.maintain();
         let violations = realtime(|| {
             for _ in 0..4 {

@@ -20,7 +20,8 @@ struct ControlPorts {
     #[event_input("in", "Events")]
     events: (),
     /// A controller number (0 to 127), 128 for pitch bend or 129 for channel
-    /// pressure.
+    /// pressure. Controllers 32 to 63 are the low halves of 0 to 31 and are
+    /// read through those.
     #[param("control", "Control", ParamInfo::new(0.0, 129.0, 1.0).smoothing(0.0))]
     control: (),
     /// 0 reads every channel; 1 to 16 only that channel.
@@ -59,8 +60,8 @@ impl NodeType for MidiControl {
 #[derive(Default)]
 struct ControlNode {
     /// The high and low 7 bits of controllers 0 to 31 (MIDI 1.0 pairs).
-    msb: Box<[[u8; 32]; 16]>,
-    lsb: Box<[[u8; 32]; 16]>,
+    msb: [[u8; 32]; 16],
+    lsb: [[u8; 32]; 16],
     /// Which pairs have sent a low half; until one does, the high half
     /// alone is the 7-bit value.
     has_lsb: [u32; 16],
@@ -102,6 +103,8 @@ impl ControlNode {
                         let value = f32::from(b & 127) / 127.0;
                         if index < 32 {
                             self.msb[c][index] = b & 127;
+                            // A new high half starts its low half over.
+                            self.lsb[c][index] = 0;
                         } else if index < 64 {
                             self.lsb[c][index - 32] = b & 127;
                             self.has_lsb[c] |= 1 << (index - 32);
@@ -184,7 +187,12 @@ impl Node for ControlNode {
     }
 
     fn reset(&mut self) {
-        *self = Self::default();
+        // In place: this runs on the audio thread.
+        self.msb.fill([0; 32]);
+        self.lsb.fill([0; 32]);
+        self.has_lsb = [0; 16];
+        self.target = 0.0;
+        self.current = 0.0;
     }
 }
 

@@ -332,11 +332,23 @@ const HARMONY_HOP: f64 = 0.05;
 /// Seconds each side of a frame's boundary that [`harmony_change`] compares.
 const HARMONY_WINDOW: f64 = 0.2;
 
+/// The result of [`harmony_change`]: the frames and where they really fall,
+/// since the hop and window are whole samples of the reduced rate and so
+/// differ a little from their nominal seconds (and the error adds up over a
+/// long file).
+struct Harmony {
+    change: Vec<f32>,
+    /// Seconds between frames.
+    hop: f64,
+    /// Seconds from a frame's start to the boundary of its two windows.
+    window: f64,
+}
+
 /// How much the harmony changes at each `HARMONY_HOP` seconds: one minus the
 /// cosine of the pitch-class profiles of the window before and the window after.
 /// A chord or a bass note changes on a strong beat, which a pattern of hits
 /// can't tell from the off-beat.
-fn harmony_change(mono: &[f32], rate: u32) -> Vec<f32> {
+fn harmony_change(mono: &[f32], rate: u32) -> Harmony {
     // 4 kHz is plenty for notes up to B6 and keeps the work small.
     let step = (rate as usize / 4_000).max(1);
     let low_rate = rate as f32 / step as f32;
@@ -376,13 +388,18 @@ fn harmony_change(mono: &[f32], rate: u32) -> Vec<f32> {
         chroma
     };
     let frames = low.len().saturating_sub(2 * half) / hop;
-    (0..frames)
+    let change = (0..frames)
         .map(|f| {
             let a = profile(f * hop);
             let b = profile(f * hop + half);
             1.0 - a.iter().zip(&b).map(|(x, y)| x * y).sum::<f32>()
         })
-        .collect()
+        .collect();
+    Harmony {
+        change,
+        hop: hop as f64 / f64::from(low_rate),
+        window: half as f64 / f64::from(low_rate),
+    }
 }
 
 /// How much more the harmony must change on the other grid for it to take
@@ -399,14 +416,15 @@ const MIN_CHANGE: f64 = 0.05;
 /// start on, the mean change at those beats is taken; `phase` is kept unless
 /// the other grid's best is clearly higher. Audio with no change of harmony
 /// (clicks, one held chord) keeps `phase`.
-fn downbeat_phase(change: &[f32], bpm: f64, phase: f64) -> f64 {
+fn downbeat_phase(harmony: &Harmony, bpm: f64, phase: f64) -> f64 {
+    let change = &harmony.change;
     let beat = 60.0 / bpm;
     let bar_start_change = |phase: f64| {
         let (mut sum, mut count) = ([0.0f64; 4], [0usize; 4]);
         let mut t = phase * beat;
         for k in 0usize.. {
             // A frame is centred on the boundary of its two windows.
-            let frame = ((t - HARMONY_WINDOW) / HARMONY_HOP).round();
+            let frame = ((t - harmony.window) / harmony.hop).round();
             if frame >= change.len() as f64 {
                 break;
             }
@@ -812,17 +830,23 @@ mod tests {
 
     /// Clicks on the off-beats only, over a pad whose chord changes every
     /// bar from `start` seconds on.
-    fn off_beat_clicks(bpm: f64, bars: usize, chords: bool) -> Vec<f32> {
+    fn off_beat_clicks(bpm: f64, bars: usize, chords: bool, rate: u32) -> Vec<f32> {
         let beat = 60.0 / bpm;
         let seconds = (bars * 4) as f64 * beat;
-        let at: Vec<f64> = (0..bars * 4).map(|k| (k as f64 + 0.5) * beat).collect();
-        let mut out = clicks(&at, seconds);
+        let mut out = vec![0.0f32; (seconds * f64::from(rate)) as usize];
+        for k in 0..bars * 4 {
+            let start = ((k as f64 + 0.5) * beat * f64::from(rate)) as usize;
+            for i in 0..(rate as usize / 4).min(out.len() - start) {
+                let x = i as f32 / rate as f32;
+                out[start + i] += (x * 200.0 * std::f32::consts::TAU).sin() * (-x * 25.0).exp();
+            }
+        }
         if chords {
             let roots = [196.0f32, 261.63, 233.08, 146.83];
             for (i, x) in out.iter_mut().enumerate() {
-                let t = i as f64 / f64::from(RATE);
+                let t = i as f64 / f64::from(rate);
                 let root = roots[(t / (4.0 * beat)) as usize % 4];
-                let tau = std::f32::consts::TAU * i as f32 / RATE as f32;
+                let tau = std::f32::consts::TAU * i as f32 / rate as f32;
                 *x += 0.1 * ((tau * root).sin() + (tau * root * 1.498).sin());
             }
         }
@@ -833,15 +857,40 @@ mod tests {
     /// changes on the bar says where the beat really is.
     #[test]
     fn the_harmony_tells_the_beat_from_the_off_beat() {
-        let without = Analysis::of(&off_beat_clicks(110.0, 16, false), RATE);
+        let without = Analysis::of(&off_beat_clicks(110.0, 16, false, RATE), RATE);
         assert!(
             (without.grid.unwrap().phase + 0.5).abs() < 0.05,
             "{:?}",
             without.grid
         );
-        let with = Analysis::of(&off_beat_clicks(110.0, 16, true), RATE);
+        let with = Analysis::of(&off_beat_clicks(110.0, 16, true, RATE), RATE);
         let phase = with.grid.unwrap().phase;
         assert!(phase.abs() < 0.05, "{phase}");
+    }
+
+    /// The frames' time is their real spacing: at 44.1 kHz the hop is 200
+    /// samples of 4009 Hz, not 0.05 s, and a nominal reading would put a
+    /// change at 60 s some 0.14 s early.
+    #[test]
+    fn harmony_frames_are_timed_by_their_real_hop() {
+        let rate = 44_100u32;
+        let tau = std::f32::consts::TAU;
+        let x: Vec<f32> = (0..rate as usize * 80)
+            .map(|i| {
+                let hz = if i < rate as usize * 60 { 220.0 } else { 330.0 };
+                (tau * hz * i as f32 / rate as f32).sin()
+            })
+            .collect();
+        let harmony = harmony_change(&x, rate);
+        let peak = harmony
+            .change
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap()
+            .0;
+        let at = peak as f64 * harmony.hop + harmony.window;
+        assert!((at - 60.0).abs() < 0.06, "{at}");
     }
 
     #[test]
