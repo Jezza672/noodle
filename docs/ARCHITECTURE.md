@@ -1184,21 +1184,35 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   first output `[1, 4, 2, 343980]`, so the STFT and its inverse are inside the
   graph, as in the Mixxx HT-Demucs export) and refuses any other with that
   signature spelled out; exports that keep the STFT outside (two inputs, a
-  frequency and a time output) are not supported. Which exact file and SHA the
-  built-in address will point at is still to be chosen. Verified against ONNX
-  Runtime 1.29 with tiny stand-in models of that signature
+  frequency and a time output) are not supported. The built-in address is Hugging Face `adowu/htdemucs-onnx` (MIT, an
+  export of Demucs's MIT-licensed HT-Demucs; the Demucs README and LICENSE are MIT),
+  `htdemucs.onnx`, 316 MB, pinned to one commit and to its SHA-256, whose
+  signature is exactly the one above. Verified against ONNX
+  Runtime 1.22.0 (the pinned download) with tiny stand-in models of that signature
   (`tests/runtime.rs`, which runs only where `NOODLE_TEST_ORT_DIR` names a folder
   with the library and the models; CI skips it), **not against real weights**.
   Memory: a split holds about ten copies of the clip's audio at once (the decode,
   the mix, four stems at the model rate and five parts at the source rate), around
   1 GB for five minutes of stereo.
-- **Weights.** Not bundled. `ModelStore` keeps them in the `models` folder of the
-  user data directory; `download` streams to a `.partial` file, checks a SHA-256
-  if one is known, and renames, so a cancelled or failed download leaves nothing.
-  The address comes from `NOODLE_STEM_MODEL_URL` (and `NOODLE_STEM_MODEL_SHA256`)
-  until the weights' licence is settled and an address can be built in. The app
-  asks first (a dialog), and says where to put the file by hand when there is no
-  address.
+- **Weights and runtime.** Neither is bundled; both are downloaded, once, after
+  the app asks (a dialog that names both). `ModelStore` keeps them in the `models`
+  folder of the user data directory; a download streams to a `.partial` file,
+  checks its SHA-256, and renames, so a cancelled or failed download leaves
+  nothing. The weights come from the pinned address above
+  (`NOODLE_STEM_MODEL_URL` and `NOODLE_STEM_MODEL_SHA256` point at another export
+  instead). ONNX Runtime 1.22.0 (MIT, Microsoft; well above `ort`'s minimum of 1.17, and the stand-in model tests pass against it) comes from its GitHub release
+  archive for the platform (Linux x64 and arm64, macOS arm64, Windows x64; no
+  Intel Mac, which Microsoft stopped building), pinned by SHA-256, and only the one
+  library is kept (`RuntimeSpec`, `download_runtime`). It is kept in
+  `models/onnxruntime-<version>/`, so bumping the pin downloads the new one. It is
+  skipped only when that is already there or `ORT_DYLIB_PATH` is set: the system's
+  own library is never probed, because `ort` keeps the first library it loads for
+  the whole process (even one it refuses), which would shadow the pinned runtime
+  (Windows ships an unpinned `onnxruntime.dll`). A library put in the model folder
+  by hand still works. There
+  is no release build of Noodle yet, so nothing is packaged with it; when there
+  is, shipping the library beside the app makes the download unnecessary. The
+  two downloads are the first 30% of the split's progress bar.
 - **`split`.** Decodes the source up to the end of the clip's window, makes it
   stereo at the separator's rate, separates, and brings the stems back to the
   source's rate and length. The residual is the source minus the stems *as
