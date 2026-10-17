@@ -50,7 +50,7 @@ pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
     ScheduledNode, SpectralBufferId, compile, compile_replacing, compile_with_lanes,
 };
-pub use event::{Event, EventKind, EventsOut, Expression, NoteId};
+pub use event::{ChannelControl, Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
 pub use job::{Job, JobPanicked};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};

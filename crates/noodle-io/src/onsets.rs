@@ -327,6 +327,108 @@ fn fit_beat(times: &[f64], bpm: f64) -> (f64, f64) {
     (bpm, phase)
 }
 
+/// Seconds between the frames of [`harmony_change`].
+const HARMONY_HOP: f64 = 0.05;
+/// Seconds each side of a frame's boundary that [`harmony_change`] compares.
+const HARMONY_WINDOW: f64 = 0.2;
+
+/// How much the harmony changes at each `HARMONY_HOP` seconds: one minus the
+/// cosine of the pitch-class profiles of the window before and the window after.
+/// A chord or a bass note changes on a strong beat, which a pattern of hits
+/// can't tell from the off-beat.
+fn harmony_change(mono: &[f32], rate: u32) -> Vec<f32> {
+    // 4 kHz is plenty for notes up to B6 and keeps the work small.
+    let step = (rate as usize / 4_000).max(1);
+    let low_rate = rate as f32 / step as f32;
+    let low: Vec<f32> = mono
+        .chunks(step)
+        .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+        .collect();
+    let half = (HARMONY_WINDOW * f64::from(low_rate)) as usize;
+    let hop = ((HARMONY_HOP * f64::from(low_rate)) as usize).max(1);
+    // One resonator per note from C2 to B6.
+    let notes: Vec<(f32, usize)> = (36..96)
+        .map(|n| (440.0 * 2f32.powf((n as f32 - 69.0) / 12.0), n % 12))
+        .collect();
+    let profile = |from: usize| -> [f32; 12] {
+        let mut chroma = [0.0f32; 12];
+        let window = &low[from..(from + half).min(low.len())];
+        for &(hz, class) in &notes {
+            let w = std::f32::consts::TAU * hz / low_rate;
+            let coeff = 2.0 * w.cos();
+            let (mut s1, mut s2) = (0.0f32, 0.0f32);
+            for (i, x) in window.iter().enumerate() {
+                // A Hann window keeps a neighbouring note's leak down.
+                let h = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / half as f32).cos();
+                let s0 = x * h + coeff * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            let power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+            chroma[class] += power.max(0.0).sqrt();
+        }
+        let norm = chroma.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 1e-9 {
+            for v in &mut chroma {
+                *v /= norm;
+            }
+        }
+        chroma
+    };
+    let frames = low.len().saturating_sub(2 * half) / hop;
+    (0..frames)
+        .map(|f| {
+            let a = profile(f * hop);
+            let b = profile(f * hop + half);
+            1.0 - a.iter().zip(&b).map(|(x, y)| x * y).sum::<f32>()
+        })
+        .collect()
+}
+
+/// How much more the harmony must change on the other grid for it to take
+/// the beat.
+const DOWNBEAT_MARGIN: f64 = 1.2;
+/// The least change (a cosine distance) that counts as a change of chord.
+const MIN_CHANGE: f64 = 0.05;
+
+/// The beat's phase (as in [`TempoEstimate::phase`]), told apart from the
+/// off-beat half a beat away by the harmony: a chord or a bass note changes
+/// on a strong beat (the first of a bar most often), and onsets alone can't
+/// say, where a syncopated bass line sits on the off-beat as often as on the
+/// beat. For each of the two grids, and each of the four beats a bar can
+/// start on, the mean change at those beats is taken; `phase` is kept unless
+/// the other grid's best is clearly higher. Audio with no change of harmony
+/// (clicks, one held chord) keeps `phase`.
+fn downbeat_phase(change: &[f32], bpm: f64, phase: f64) -> f64 {
+    let beat = 60.0 / bpm;
+    let bar_start_change = |phase: f64| {
+        let (mut sum, mut count) = ([0.0f64; 4], [0usize; 4]);
+        let mut t = phase * beat;
+        for k in 0usize.. {
+            // A frame is centred on the boundary of its two windows.
+            let frame = ((t - HARMONY_WINDOW) / HARMONY_HOP).round();
+            if frame >= change.len() as f64 {
+                break;
+            }
+            if frame >= 0.0 {
+                sum[k % 4] += f64::from(change[frame as usize]);
+                count[k % 4] += 1;
+            }
+            t += beat;
+        }
+        (0..4)
+            .map(|i| sum[i] / count[i].max(1) as f64)
+            .fold(0.0, f64::max)
+    };
+    let other = phase + if phase < 0.0 { 0.5 } else { -0.5 };
+    let (here, there) = (bar_start_change(phase), bar_start_change(other));
+    if there > MIN_CHANGE && there > here * DOWNBEAT_MARGIN {
+        other
+    } else {
+        phase
+    }
+}
+
 /// How much of a file is listened to for transients: a long recording is
 /// analysed from its start only, to keep the work and memory bounded.
 pub const ANALYSIS_SECONDS: f64 = 120.0;
@@ -372,10 +474,15 @@ impl Analysis {
         // The treble speaks only when the full band and the bass found no
         // clear tempo: bells over a dark pad, where those see nothing.
         let found = best_grid(estimate_grid(&onsets), bass_grid);
-        let grid = found
+        let mut grid = found
             .filter(TempoEstimate::is_clear)
             .or(treble_grid.filter(TempoEstimate::is_clear))
             .or(found);
+        // Whether the beat or the off-beat between two beats is the beat:
+        // onsets can tie (funk), the harmony says.
+        if let Some(g) = grid.as_mut() {
+            g.phase = downbeat_phase(&harmony_change(mono, rate), g.bpm, g.phase);
+        }
         Self {
             tempo: grid.filter(TempoEstimate::is_clear).map(|g| g.bpm),
             grid,
@@ -701,6 +808,40 @@ mod tests {
                 assert!((tempo - bpm).abs() / bpm < 0.002, "{label}: {tempo}");
             }
         }
+    }
+
+    /// Clicks on the off-beats only, over a pad whose chord changes every
+    /// bar from `start` seconds on.
+    fn off_beat_clicks(bpm: f64, bars: usize, chords: bool) -> Vec<f32> {
+        let beat = 60.0 / bpm;
+        let seconds = (bars * 4) as f64 * beat;
+        let at: Vec<f64> = (0..bars * 4).map(|k| (k as f64 + 0.5) * beat).collect();
+        let mut out = clicks(&at, seconds);
+        if chords {
+            let roots = [196.0f32, 261.63, 233.08, 146.83];
+            for (i, x) in out.iter_mut().enumerate() {
+                let t = i as f64 / f64::from(RATE);
+                let root = roots[(t / (4.0 * beat)) as usize % 4];
+                let tau = std::f32::consts::TAU * i as f32 / RATE as f32;
+                *x += 0.1 * ((tau * root).sin() + (tau * root * 1.498).sin());
+            }
+        }
+        out
+    }
+
+    /// Onsets only on the off-beat put the beat half a beat off; a chord that
+    /// changes on the bar says where the beat really is.
+    #[test]
+    fn the_harmony_tells_the_beat_from_the_off_beat() {
+        let without = Analysis::of(&off_beat_clicks(110.0, 16, false), RATE);
+        assert!(
+            (without.grid.unwrap().phase + 0.5).abs() < 0.05,
+            "{:?}",
+            without.grid
+        );
+        let with = Analysis::of(&off_beat_clicks(110.0, 16, true), RATE);
+        let phase = with.grid.unwrap().phase;
+        assert!(phase.abs() < 0.05, "{phase}");
     }
 
     #[test]

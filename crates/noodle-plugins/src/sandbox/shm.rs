@@ -213,9 +213,9 @@ impl WireEvent {
                     .position(|e| *e == expression)
                     .unwrap_or_default() as u8;
             }
-            EventKind::Midi(bytes) => {
+            EventKind::Midi(_) | EventKind::Channel { .. } => {
                 wire.kind = 3;
-                wire.midi = bytes;
+                wire.midi = event.kind.midi1().unwrap_or_default();
             }
         }
         wire

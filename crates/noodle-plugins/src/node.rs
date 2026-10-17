@@ -763,8 +763,10 @@ impl ClapNode {
                     f64::from(value),
                 ));
             }
-            EventKind::Midi(data) => {
-                self.in_events.push(&MidiEvent::new(time, port, data));
+            other @ (EventKind::Midi(_) | EventKind::Channel { .. }) => {
+                if let Some(data) = other.midi1() {
+                    self.in_events.push(&MidiEvent::new(time, port, data));
+                }
             }
         }
     }

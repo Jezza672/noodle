@@ -67,6 +67,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.spectral.analyze",
     "noodle.spectral.synthesize",
     "noodle.event.mono",
+    "noodle.event.control",
     "noodle.group.stage",
     "noodle.input.button",
     "noodle.internal.automation",

@@ -204,7 +204,7 @@ impl Node for NoteSplitNode {
                 EventKind::NoteOff { note, .. } | EventKind::Expression { note, .. } => {
                     self.lookup(note)
                 }
-                EventKind::Midi(_) => {
+                EventKind::Midi(_) | EventKind::Channel { .. } => {
                     ((1 << self.outputs) - 1) | (u32::from(self.rest) << self.outputs)
                 }
             };

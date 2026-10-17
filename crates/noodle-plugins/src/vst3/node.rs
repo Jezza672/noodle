@@ -487,7 +487,11 @@ impl Vst3Node {
                     f64::from(value.clamp(0.0, 1.0)),
                 ));
             }
-            EventKind::Midi(data) => self.push_midi(port, time, data),
+            other @ (EventKind::Midi(_) | EventKind::Channel { .. }) => {
+                if let Some(data) = other.midi1() {
+                    self.push_midi(port, time, data);
+                }
+            }
         }
     }
 

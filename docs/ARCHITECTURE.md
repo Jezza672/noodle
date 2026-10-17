@@ -283,6 +283,11 @@ There are two kinds of signal, plus a possible third later:
     (Hz), `gate` and `velocity` signals, falling back to an earlier held note
     on release and holding its pitch after the last so an envelope's release
     stays in tune. The track input's `midi` output is also an events port.
+    `MIDI Control` (`noodle.event.control`) turns a controller (0 to 127),
+    pitch bend (128) or channel pressure (129) on a channel (0 = any) into a
+    signal (0 to 1, pitch bend -1 to 1) with a `glide`; MIDI 2.0 values arrive
+    at 32 bits (as far as an `f32` signal holds them), a MIDI 1.0 controller
+    pair (n and n+32) at 14 bits, a single controller at 7.
     `Voices` (`noodle.poly.voices`) plays many notes at once: its `voices`
     config (1 to 64, default 8; config because it is the outputs' shape) sets
     the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per
@@ -869,14 +874,17 @@ restart the audio.
   `note_bend` parameter (semitones at the extreme, 48 by default as in MPE);
   per-note registered controllers 1 and 74 become `Timbre`, 7 `Volume`, 10
   `Pan` and 3 (pitch 7.25) `Pitch`; assignable ones and note management are
-  ignored. What is channel-wide (controllers, pitch bend, pressure, program
-  changes with their bank, registered and assignable parameters) is narrowed
-  to the raw MIDI 1.0 events the rest of the engine speaks, so it loses
-  resolution past 14 bits. Groups are merged and the `channel` parameter
-  filters channels as before. Not done: devices (midir delivers MIDI 1.0
+  ignored. What is channel-wide: controllers, pitch bend and channel pressure go
+  on as `EventKind::Channel { channel, control, value }` with the full 32-bit
+  value (`EventKind::midi1` narrows one to the MIDI 1.0 message for plugin
+  hosts, AU and the sandbox, which speak 7 and 14 bits); program changes with
+  their bank, registered and assignable parameters are narrowed to the raw MIDI 1.0
+  events the rest of the engine speaks. Groups are merged and the `channel`
+  parameter filters channels as before. Not done: devices (midir delivers MIDI 1.0
   bytes, so hardware is upgraded by the system if at all; packets come from
-  `send_packet`, tests and later sources), sysex and flex data, MIDI-CI, and
-  clips and events that carry 32-bit values past the node.
+  `send_packet`, tests and later sources), sysex and flex data, MIDI-CI
+  (it needs a MIDI 2.0 device to talk to), and MIDI clips with 32-bit values
+  (a note's velocity is already an `f32`).
 
 ### MIDI clips
 

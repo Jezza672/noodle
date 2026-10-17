@@ -12,6 +12,7 @@ mod chorus;
 mod clip;
 mod clock;
 mod comparator;
+mod control;
 mod curve;
 mod delay;
 mod distortion;
@@ -74,6 +75,9 @@ pub use clip::{
 };
 pub use clock::{CLOCK_ID, Clock, DIVISION_TICKS, DIVISIONS as CLOCK_DIVISIONS};
 pub use comparator::{COMPARATOR_ID, Comparator};
+pub use control::{
+    MIDI_CONTROL_ID, MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
+};
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
 pub use distortion::{DISTORTION_ID, Distortion, SHAPES as DISTORTION_SHAPES, shaper};
@@ -230,6 +234,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Phaser);
     registry.register(Key);
     registry.register(MonoNote);
+    registry.register(MidiControl);
     registry.register(NoteSplit);
     registry.register(Arpeggiator);
     registry.register(Voices);
