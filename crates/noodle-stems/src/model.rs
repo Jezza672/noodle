@@ -216,9 +216,18 @@ impl ModelStore {
         self.path(spec).is_file()
     }
 
+    /// Where the runtime library is kept: in a folder named for its version,
+    /// so a newer pinned version is downloaded rather than shadowed by an
+    /// older one that is already here.
+    pub fn runtime_path(&self, spec: &RuntimeSpec) -> PathBuf {
+        self.dir
+            .join(format!("onnxruntime-{RUNTIME_VERSION}"))
+            .join(spec.file)
+    }
+
     /// Whether the runtime library is here already.
     pub fn has_runtime(&self, spec: &RuntimeSpec) -> bool {
-        self.dir.join(spec.file).is_file()
+        self.runtime_path(spec).is_file()
     }
 
     /// Downloads ONNX Runtime's archive, checks it, and keeps the library from
@@ -229,10 +238,11 @@ impl ModelStore {
         spec: &RuntimeSpec,
         progress: &mut dyn FnMut(f32) -> bool,
     ) -> Result<PathBuf, DownloadError> {
-        std::fs::create_dir_all(&self.dir)?;
-        let archive = self.dir.join("onnxruntime-archive.partial");
-        let partial = self.dir.join(format!("{}.partial", spec.file));
-        let target = self.dir.join(spec.file);
+        let target = self.runtime_path(spec);
+        let folder = target.parent().unwrap_or(&self.dir);
+        std::fs::create_dir_all(folder)?;
+        let archive = folder.join("onnxruntime-archive.partial");
+        let partial = folder.join(format!("{}.partial", spec.file));
         let result = fetch(&spec.url, &archive, Some(spec.sha256), progress)
             .and_then(|()| extract(spec, &archive, &partial));
         let _ = std::fs::remove_file(&archive);
@@ -504,7 +514,10 @@ mod tests {
         let path = store.download_runtime(&spec, &mut |_| true).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), library);
         assert!(store.has_runtime(&spec));
-        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        let folder = store.runtime_path(&spec);
+        let left: Vec<_> = std::fs::read_dir(folder.parent().unwrap())
+            .unwrap()
+            .collect();
         assert_eq!(left.len(), 1, "only the library is kept: {left:?}");
     }
 
@@ -549,7 +562,12 @@ mod tests {
         spec.sha256 = "00".repeat(32).leak();
         let error = store.download_runtime(&spec, &mut |_| true).unwrap_err();
         assert!(matches!(error, DownloadError::WrongChecksum), "{error}");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(!store.has_runtime(&spec));
+        let folder = store.runtime_path(&spec);
+        assert_eq!(
+            std::fs::read_dir(folder.parent().unwrap()).unwrap().count(),
+            0
+        );
     }
 
     #[test]

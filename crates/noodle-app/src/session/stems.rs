@@ -38,6 +38,27 @@ enum Source {
     Custom(OpenSeparator),
 }
 
+/// Whether `ORT_DYLIB_PATH` names a runtime to use instead of the pinned one.
+fn ort_path_set() -> bool {
+    std::env::var("ORT_DYLIB_PATH").is_ok_and(|p| !p.is_empty())
+}
+
+/// The runtime in `store`: the pinned download, else a library put in the
+/// folder by hand.
+fn runtime_in(store: &ModelStore, spec: Option<&RuntimeSpec>) -> Option<PathBuf> {
+    let pinned = spec.map(|r| store.runtime_path(r));
+    pinned.filter(|p| p.is_file()).or_else(|| {
+        [
+            "libonnxruntime.so",
+            "libonnxruntime.dylib",
+            "onnxruntime.dll",
+        ]
+        .into_iter()
+        .map(|name| store.dir().join(name))
+        .find(|path| path.is_file())
+    })
+}
+
 /// What a split has to download first.
 #[derive(Default)]
 struct Downloads {
@@ -91,9 +112,12 @@ impl Stems {
         }
     }
 
-    /// Whether ONNX Runtime has to be downloaded: none is in the model folder,
-    /// none loads from `ORT_DYLIB_PATH` or the system, and one can be had for
-    /// this platform.
+    /// Whether ONNX Runtime has to be downloaded: the pinned one is not in the
+    /// model folder and `ORT_DYLIB_PATH` doesn't name one. The system's own
+    /// library is never probed: `ort` keeps whatever it loads first for the
+    /// whole process (even one it refuses), which would shadow the pinned
+    /// runtime, and a machine like a Windows one ships an unpinned
+    /// `onnxruntime.dll` of its own.
     fn runtime_to_download(&self) -> bool {
         #[cfg(test)]
         if self.skip_runtime_check {
@@ -104,27 +128,21 @@ impl Stems {
                 store: Some(store),
                 runtime: Some(runtime),
                 ..
-            } => {
-                !store.has_runtime(runtime)
-                    && noodle_stems::OnnxSeparator::load_runtime(None).is_err()
-            }
+            } => !store.has_runtime(runtime) && !ort_path_set(),
             _ => false,
         }
     }
 
-    /// The ONNX Runtime library in the model folder, if one was put there.
+    /// The ONNX Runtime library to open the model with: the pinned download,
+    /// else one put in the model folder by hand. `None` leaves it to
+    /// `ORT_DYLIB_PATH` and the system.
     fn runtime_in_folder(&self) -> Option<PathBuf> {
         match &self.source {
             Source::Model {
-                store: Some(store), ..
-            } => [
-                "libonnxruntime.so",
-                "libonnxruntime.dylib",
-                "onnxruntime.dll",
-            ]
-            .into_iter()
-            .map(|name| store.dir().join(name))
-            .find(|path| path.is_file()),
+                store: Some(store),
+                runtime,
+                ..
+            } => runtime_in(store, runtime.as_ref()),
             _ => None,
         }
     }
@@ -194,17 +212,10 @@ impl Stems {
                         .filter(|_| self.runtime_to_download())
                         .map(|r| (store.clone(), r)),
                 };
-                let (weights, spec) = (store.path(spec), spec.clone());
+                let (weights, spec, pinned) = (store.path(spec), spec.clone(), runtime.clone());
                 let open: OpenSeparator = Arc::new(move || {
                     // Looked for when opening, after any download.
-                    let runtime = [
-                        "libonnxruntime.so",
-                        "libonnxruntime.dylib",
-                        "onnxruntime.dll",
-                    ]
-                    .into_iter()
-                    .map(|name| store.dir().join(name))
-                    .find(|path| path.is_file());
+                    let runtime = runtime_in(&store, pinned.as_ref());
                     noodle_stems::OnnxSeparator::open(&weights, runtime.as_deref(), spec.model_id())
                         .map(|s| Box::new(s) as Box<dyn noodle_stems::Separator>)
                         .map_err(|e| e.to_string())
@@ -867,10 +878,8 @@ mod tests {
             },
             runtime: Some(runtime),
         };
-        // Skip this when the machine has a runtime of its own.
-        if noodle_stems::OnnxSeparator::load_runtime(None).is_ok() {
-            return;
-        }
+        // The system's own runtime (if any) is never consulted, so this holds
+        // on every machine.
         session.split_to_stems(id);
         assert_eq!(
             session.stems_consent(),

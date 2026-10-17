@@ -1188,7 +1188,7 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   export of Demucs's MIT-licensed HT-Demucs; the Demucs README and LICENSE are MIT),
   `htdemucs.onnx`, 316 MB, pinned to one commit and to its SHA-256, whose
   signature is exactly the one above. Verified against ONNX
-  Runtime 1.29 with tiny stand-in models of that signature
+  Runtime 1.22.0 (the pinned download) with tiny stand-in models of that signature
   (`tests/runtime.rs`, which runs only where `NOODLE_TEST_ORT_DIR` names a folder
   with the library and the models; CI skips it), **not against real weights**.
   Memory: a split holds about ten copies of the clip's audio at once (the decode,
@@ -1200,11 +1200,16 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   checks its SHA-256, and renames, so a cancelled or failed download leaves
   nothing. The weights come from the pinned address above
   (`NOODLE_STEM_MODEL_URL` and `NOODLE_STEM_MODEL_SHA256` point at another export
-  instead). ONNX Runtime 1.22.0 (MIT, Microsoft) comes from its GitHub release
+  instead). ONNX Runtime 1.22.0 (MIT, Microsoft; well above `ort`'s minimum of 1.17, and the stand-in model tests pass against it) comes from its GitHub release
   archive for the platform (Linux x64 and arm64, macOS arm64, Windows x64; no
   Intel Mac, which Microsoft stopped building), pinned by SHA-256, and only the one
-  library is kept (`RuntimeSpec`, `download_runtime`). It is skipped when one is
-  already in the model folder, or loads from `ORT_DYLIB_PATH` or the system. There
+  library is kept (`RuntimeSpec`, `download_runtime`). It is kept in
+  `models/onnxruntime-<version>/`, so bumping the pin downloads the new one. It is
+  skipped only when that is already there or `ORT_DYLIB_PATH` is set: the system's
+  own library is never probed, because `ort` keeps the first library it loads for
+  the whole process (even one it refuses), which would shadow the pinned runtime
+  (Windows ships an unpinned `onnxruntime.dll`). A library put in the model folder
+  by hand still works. There
   is no release build of Noodle yet, so nothing is packaged with it; when there
   is, shipping the library beside the app makes the download unnecessary. The
   two downloads are the first 30% of the split's progress bar.
