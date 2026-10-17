@@ -151,7 +151,7 @@ pub(crate) fn midi_message(kind: &EventKind) -> Option<[u8; 3]> {
             ..
         } => Some([0x90 | (channel & 0x0f), key & 0x7f, velocity(v)]),
         EventKind::NoteOff { .. } => None,
-        EventKind::Midi(data) => Some(data),
+        EventKind::Midi(_) | EventKind::Channel { .. } => kind.midi1(),
         EventKind::Expression { .. } => None,
     }
 }

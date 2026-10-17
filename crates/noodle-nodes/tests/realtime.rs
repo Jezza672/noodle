@@ -1620,3 +1620,70 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
         "every channel should have sounded: {channels_heard:?}"
     );
 }
+
+#[test]
+fn midi_control_never_allocates_on_midi1_and_midi2_controllers() {
+    use noodle_io::Midi2;
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (input, control, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    for (id, node) in [
+        (input, Node::new(noodle_nodes::MIDI_IN_ID)),
+        (
+            control,
+            Node::new(noodle_nodes::MIDI_CONTROL_ID).with_param("control", 128.0),
+        ),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    for (from, port, to, to_port) in [
+        (input, "out", control, "in"),
+        (control, "out", output, "in"),
+    ] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    for round in 0..16u32 {
+        library.midi.send([0xB0, 1, (round * 8) as u8 & 127]);
+        library.midi.send([0xB0, 33, 5]);
+        library.midi.send([0xE0, 0, (round * 4) as u8 & 127]);
+        for message in [
+            Midi2::PitchBend {
+                channel: 0,
+                value: round.wrapping_mul(0x1000_0000),
+            },
+            Midi2::Controller {
+                channel: 1,
+                index: 74,
+                value: round.wrapping_mul(0x0F00_0000),
+            },
+        ] {
+            library.midi.send_packet(message.encode(0));
+        }
+        // A jump resets the nodes.
+        transport.seek(noodle_core::Tick(480 * i64::from(round)));
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}

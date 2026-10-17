@@ -20,8 +20,8 @@
 //! MIDI clips have.
 
 use noodle_engine::{
-    Config, Context, Event, EventKind, Expression, Instance, Io, Layout, Node, NodeError, NodeInfo,
-    NodeType, NoteId, ParamInfo, Ports, Setup,
+    ChannelControl, Config, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
+    NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, Setup,
 };
 use noodle_io::{Attribute, Midi2, MidiBus, MidiReceiver, Packet, TimedPacket, now_micros};
 
@@ -311,6 +311,25 @@ impl LiveMidi {
             // Assignable per-note controllers mean what their maker says,
             // and a note's management flags change nothing the engine keeps.
             Midi2::PerNoteController { .. } | Midi2::PerNoteManagement { .. } => true,
+            Midi2::Controller {
+                channel,
+                index,
+                value,
+            } => push(EventKind::Channel {
+                channel,
+                control: ChannelControl::Controller(index),
+                value,
+            }),
+            Midi2::PitchBend { channel, value } => push(EventKind::Channel {
+                channel,
+                control: ChannelControl::PitchBend,
+                value,
+            }),
+            Midi2::ChannelPressure { channel, value } => push(EventKind::Channel {
+                channel,
+                control: ChannelControl::Pressure,
+                value,
+            }),
             channel_wide => {
                 let mut narrowed = [[0; 3]; 4];
                 let count = channel_wide.to_midi1(&mut narrowed);
@@ -793,6 +812,51 @@ mod tests {
     }
 
     #[test]
+    fn midi2_controllers_bend_and_pressure_keep_their_32_bits() {
+        let (mut h, bus) = node();
+        for (value, control) in [
+            (0x1234_5678, ChannelControl::Controller(74)),
+            (0x8000_0001, ChannelControl::PitchBend),
+            (0xFEDC_BA98, ChannelControl::Pressure),
+        ] {
+            send2(
+                &bus,
+                match control {
+                    ChannelControl::Controller(index) => Midi2::Controller {
+                        channel: 3,
+                        index,
+                        value,
+                    },
+                    ChannelControl::PitchBend => Midi2::PitchBend { channel: 3, value },
+                    ChannelControl::Pressure => Midi2::ChannelPressure { channel: 3, value },
+                },
+            );
+        }
+        h.run(16).unwrap();
+        let kinds: Vec<EventKind> = h.events(MidiInPorts::OUT).iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                EventKind::Channel {
+                    channel: 3,
+                    control: ChannelControl::Controller(74),
+                    value: 0x1234_5678
+                },
+                EventKind::Channel {
+                    channel: 3,
+                    control: ChannelControl::PitchBend,
+                    value: 0x8000_0001
+                },
+                EventKind::Channel {
+                    channel: 3,
+                    control: ChannelControl::Pressure,
+                    value: 0xFEDC_BA98
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn midi2_channel_messages_are_narrowed_to_midi1() {
         let (mut h, bus) = node();
         send2(
@@ -834,10 +898,7 @@ mod tests {
         let midi: Vec<[u8; 3]> = h
             .events(MidiInPorts::OUT)
             .iter()
-            .map(|e| match e.kind {
-                EventKind::Midi(m) => m,
-                other => panic!("{other:?}"),
-            })
+            .map(|e| e.kind.midi1().unwrap_or_else(|| panic!("{:?}", e.kind)))
             .collect();
         assert_eq!(
             midi,

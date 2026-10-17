@@ -30,8 +30,56 @@ pub enum EventKind {
         expression: Expression,
         value: f32,
     },
+    /// A channel-wide MIDI 2.0 message at its full 32-bit resolution
+    /// (controller, pitch bend, channel pressure). Nodes that only speak
+    /// MIDI 1.0 (plugins) get [`EventKind::midi1`].
+    Channel {
+        channel: u8,
+        control: ChannelControl,
+        value: u32,
+    },
     /// A raw MIDI 1.0 message, for anything not covered above.
     Midi([u8; 3]),
+}
+
+impl EventKind {
+    /// The MIDI 1.0 message this event narrows to, for what has one:
+    /// [`EventKind::Midi`] as it is and [`EventKind::Channel`] with its value
+    /// cut to 7 bits (14 for a pitch bend), as the specification scales down.
+    pub fn midi1(&self) -> Option<[u8; 3]> {
+        match *self {
+            EventKind::Midi(data) => Some(data),
+            EventKind::Channel {
+                channel,
+                control,
+                value,
+            } => {
+                let channel = channel & 0x0F;
+                Some(match control {
+                    ChannelControl::Controller(index) => {
+                        [0xB0 | channel, index & 0x7F, (value >> 25) as u8]
+                    }
+                    ChannelControl::Pressure => [0xD0 | channel, (value >> 25) as u8, 0],
+                    ChannelControl::PitchBend => {
+                        let bend = value >> 18;
+                        [0xE0 | channel, bend as u8 & 0x7F, (bend >> 7) as u8 & 0x7F]
+                    }
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What a [`EventKind::Channel`] event sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChannelControl {
+    /// A controller, by number (0 to 127).
+    Controller(u8),
+    /// Pitch bend; the centre is `0x8000_0000`.
+    PitchBend,
+    /// Channel pressure (aftertouch).
+    Pressure,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
