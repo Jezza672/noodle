@@ -502,7 +502,7 @@
                 config: {"sample": ""},
             ),
             (
-                params: {"pan": -0.13333333},
+                params: {"pan": -0.13333334},
             ),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
@@ -512,7 +512,7 @@
                 params: {"pan": 0.1},
             ),
             (
-                params: {"pan": 0.03333333},
+                params: {"pan": 0.033333335},
             ),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
@@ -552,7 +552,7 @@
                 params: {"pan": 0.0},
             ),
             (
-                params: {"pan": 0.13333333},
+                params: {"pan": 0.13333334},
             ),
             (),
         ],

@@ -534,13 +534,13 @@ fn drum_rack(db: f32, spread: f32) -> Instrument {
                 sample: String::new(),
                 drum,
                 key,
-                // Cymbals and hats sit under the rest in the quiet preset.
+                // Hats and cymbals sit at `db`; the rest at 0 dB.
                 db: if matches!(drum, Drum::Hat { .. }) {
                     db
                 } else {
                     0.0
                 },
-                pan: pan * if spread == 0.0 { 0.0 } else { spread / 0.6 },
+                pan: pan * spread / 0.6,
             })
             .collect(),
     })

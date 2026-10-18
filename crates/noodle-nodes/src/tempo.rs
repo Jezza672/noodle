@@ -15,8 +15,8 @@ use crate::clock::{DIVISION_TICKS, DIVISIONS};
 /// slider is an offset (Delay's `time`, the LFO's `rate`) moves the slider
 /// along its travel instead of setting it, so for those put a Math node
 /// between: the Tempo Echo and Tempo Tremolo templates show it. A parameter
-/// that is set by its wire (a Math input, a Lag's time) takes them as they
-/// are.
+/// that is set by its wire (a Math input) takes them as they are; a Lag's
+/// `rise` and `fall` are offset sliders too and need the same conversion.
 ///
 /// It reads the tempo at the start of the block, so a tempo change reaches
 /// it at the next block, as for Clock and the Metronome. The outputs move in
