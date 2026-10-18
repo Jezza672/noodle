@@ -6,7 +6,7 @@ It becomes an instrument.
 
 **Status:** batch 5 is done: the `Delay` node and feedback loops (the
 compiler runs a loop-breaking node in two steps, see "Feedback loops" in
-ARCHITECTURE.md), `Voices` taking a `busy` input from the ADSR's new `active`
+the docs/architecture/ files (index: ../ARCHITECTURE.md)), `Voices` taking a `busy` input from the ADSR's new `active`
 output so a voice is retired when its envelope ends, and a fade before a voice
 steal (`steal_fade`, with a `fade` gain output). `examples/feedback-echo.ron`
 is new, and `examples/poly-synth.ron` and `examples/subtractive-synth.ron` use
@@ -15,7 +15,7 @@ with min and max ticks) had already landed in batch 1. M3's code is complete;
 what is owed is a real-hardware MIDI check and a listening test on the Mac.
 Batch 4 is done: silence skipping and finished-voice skipping
 (per-lane silence flags, `Skip` and `is_idle` on `LaneKernel`, a `tail` on
-`Voices`; see "Silence skipping" in ARCHITECTURE.md), and the rest of the
+`Voices`; see "Silence skipping" in the docs/architecture/ files (index: ../ARCHITECTURE.md)), and the rest of the
 synthesis nodes: `Square` and `Triangle` band-limited oscillators, a `Ladder`
 filter, a `Pan` and a `Math` node (arithmetic on four inputs from a typed
 expression), with `examples/subtractive-synth.ron` (the synth
@@ -28,7 +28,7 @@ render); the ADSR now recomputes only its moving times, and offsetting wires
 convert held lanes once. (Stealing was hard until batch 5, which fades.)
 Batch 2 is done: MIDI input (a port chosen in the audio settings
 dialog, the `MIDI In` node), MIDI clips on tracks, and a piano roll (see "MIDI
-input" and "MIDI clips" in ARCHITECTURE.md), with `examples/midi-clip.ron` and
+input" and "MIDI clips" in the docs/architecture/ files (index: ../ARCHITECTURE.md)), with `examples/midi-clip.ron` and
 its golden render. Batch 1 is done: the port derive macro (`noodle-macros`), events
 as a signal type with the `Key` and `Mono Note` nodes, the ADSR, LFO and VCA
 nodes, a general-purpose Remap node (input range to output range along a
@@ -107,8 +107,8 @@ play it from a MIDI keyboard and from a MIDI clip.
 ## Live playing without the transport (done)
 
 Requested by Jeremy: play a graph from a MIDI instrument without starting the
-timeline. The design is in [ADR 0001](adr/0001-engine-runs-independently-of-the-transport.md)
-and "The engine and the transport" in ARCHITECTURE.md. Done in one batch: the
+timeline. The design is in [ADR 0001](../adr/0001-engine-runs-independently-of-the-transport.md)
+and "The engine and the transport" in the docs/architecture/ files (index: ../ARCHITECTURE.md). Done in one batch: the
 engine starts with the app and the toolbar's Audio toggle turns it off; Play,
 Stop and rewind only move the transport; an armed track plays live MIDI
 through its own synth (live monitoring); and a failed output falls back to

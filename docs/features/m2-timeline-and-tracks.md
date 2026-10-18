@@ -136,7 +136,7 @@ and several Output nodes each tied to one device). All of this theme is done.
   general mechanism that other node types can use later.
 - **Done.** **Meters on mixer inputs.** Each input channel of a Mixer node shows a
   level meter inside the node, next to its port (and the mixer view's strips
-  get the same meters, which ARCHITECTURE.md notes are missing). The Mixer
+  get the same meters, which the docs/architecture/ files (index: ../ARCHITECTURE.md) notes are missing). The Mixer
   node would report per-channel peak and RMS through the telemetry hub, like
   the Meter node, with one channel per input. Reporting must stay
   allocation-free, and `realtime.rs` is extended to cover it. The spare input
@@ -151,7 +151,7 @@ and several Output nodes each tied to one device). All of this theme is done.
   (View > Outputs). The engine renders one buffer for all the devices'
   channels and the main device's callback hands the rest to the other devices'
   streams through queues; see "Playing on several devices" in
-  ARCHITECTURE.md. A device whose samples play sooner than the main
+  the docs/architecture/ files (index: ../ARCHITECTURE.md). A device whose samples play sooner than the main
   device's is held back by the difference so the two sound together (up to
   about a sixth of a second; a device slower than the main one can't be caught
   up). **Done:** an extra device that runs at another sample rate than the main
@@ -173,7 +173,7 @@ and several Output nodes each tied to one device). All of this theme is done.
   view. The playhead can already be set while stopped, so this is a key
   binding plus a scroll-into-view call. **Now.**
 - Clip waveforms (25) are **already done** (see "Files and waveforms" in
-  ARCHITECTURE.md), and need no work.
+  the docs/architecture/ files (index: ../ARCHITECTURE.md)), and need no work.
 
 **Node editor polish (M1 follow-ups).**
 

@@ -17,4 +17,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [m10-stems.md](m10-stems.md) | M10: Stems |
 | [m11-spectral-signals.md](m11-spectral-signals.md) | M11: Spectral signals |
 | [tempo-sync-and-drum-rack.md](tempo-sync-and-drum-rack.md) | Tempo sync and the drum rack |
-| [scripting-and-midi2.md](scripting-and-midi2.md) | Scripting node (done) |
+| [scripting-and-midi2.md](scripting-and-midi2.md) | Scripting node, MIDI 2.0 and later follow-ups |

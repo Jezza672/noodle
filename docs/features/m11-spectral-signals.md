@@ -3,7 +3,7 @@
 Delivered. This is the record of what was planned and built; open work is in [ROADMAP.md](../ROADMAP.md), the design in [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 **Status:** batch 1 done in code (the signal type, Analyze and Synthesize and six
-spectral nodes), and the spectrum display. The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
+spectral nodes), and the spectrum display. The design is the docs/architecture/ files (index: ../ARCHITECTURE.md) ("Spectral") and ADR 0007.
 
 1. **The signal type and the first nodes (done).** A third wire kind that
    carries FFT frames (one size for the whole engine, 2048 with a hop of 512),

@@ -65,7 +65,7 @@ hit-testing and wire code, so they go in one PR, alongside the M2 app work.
 ## Backlog: modulation display (M3)
 
 **Done** (M3 batch 1). How it was settled is in "Modulating a parameter" and
-"Parameter widgets" in ARCHITECTURE.md. The decision differs from the
+"Parameter widgets" in the docs/architecture/ files (index: ../ARCHITECTURE.md). The decision differs from the
 proposal below in one way: offsetting in slider space is a per-parameter
 setting (`ParamInfo::offset()`), not the rule for every wire, because many
 ports take an exact value (pitch, gates, automation lanes, a Mix input), so

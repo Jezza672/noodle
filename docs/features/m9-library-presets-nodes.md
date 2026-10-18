@@ -18,7 +18,7 @@ design is in `CONTEXT.md` (Presets and the group library) and ADRs 0004 and
 
 **Batch 6:** "Update from template" on a group made from a library template
 (right-click; replaces the inside, keeps wires at its ports and its own level,
-one undo step); see ARCHITECTURE.md. The same batch fixed #167: the eval
+one undo step); see the docs/architecture/ files (index: ../ARCHITECTURE.md). The same batch fixed #167: the eval
 harness warped Auto as if the project were already at the target tempo, so a
 clip with no detectable tempo (lone kick, sweep) was never stretched. Auto is
 now warped as a user does it (imported at the song's tempo, tempo changed

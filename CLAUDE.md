@@ -12,7 +12,7 @@ you need, not all of them.
 | What is left to do | [docs/ROADMAP.md](docs/ROADMAP.md) (open work only) |
 | What was built, per milestone, with PR numbers | [docs/features/](docs/features/README.md) |
 | What each crate is, where its tests are | [docs/crates.md](docs/crates.md) |
-| Domain terms | `CONTEXT.md` |
+| Domain terms | `CONTEXT.md`, [docs/agents/domain.md](docs/agents/domain.md) |
 | Why a decision was made | [docs/adr/](docs/adr/) (read the ones near your area) |
 | Issues and labels | [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md), [triage-labels.md](docs/agents/triage-labels.md) |
 

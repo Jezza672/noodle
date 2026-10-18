@@ -50,4 +50,5 @@ need a person and hardware, plus a few deliberately deferred items.
 - **Virtual output:** remember the live-monitoring toggle between launches and
   retry the saved device when it returns.
 - **VST3:** an editor window on Linux (the app makes none).
+- **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
 - **Flaky test** #138 stays open (no recurrence).
