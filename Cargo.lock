@@ -2672,6 +2672,7 @@ dependencies = [
  "noodle-core",
  "noodle-engine",
  "noodle-io",
+ "realfft",
  "rtrb",
  "tempfile",
 ]

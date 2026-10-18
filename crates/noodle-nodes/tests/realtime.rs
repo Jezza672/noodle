@@ -1687,3 +1687,72 @@ fn midi_control_never_allocates_on_midi1_and_midi2_controllers() {
         assert_eq!(violations, 0, "allocated in round {round}");
     }
 }
+
+#[test]
+fn a_script_with_loops_arrays_and_events_never_allocates() {
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (input, script, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    // Keeps the last 16 keys in an array, sums them in a loop, and passes
+    // every note on a fifth up.
+    let text = "events in notes\nevents out played\noutput out\narray keys[16]\nstate at\n\
+                if notes_on { keys[at] = notes_key; at = (at + 1) % len(keys); note_on(played, notes_key + 7, notes_velocity) }\n\
+                if notes_off { note_off(played, notes_key + 7) }\n\
+                let sum = 0\nfor i in 0 to len(keys) { sum += keys[i] }\nout = sum / 2000";
+    for (id, node) in [
+        (input, Node::new(noodle_nodes::MIDI_IN_ID)),
+        (script, Node::new("noodle.util.script")),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    Command::SetConfig {
+        node: script,
+        key: "script".to_owned(),
+        value: Some(Value::Text(text.to_owned())),
+    }
+    .apply(&mut project)
+    .unwrap();
+    for (from, port, to, to_port) in [
+        (input, "out", script, "notes"),
+        (script, "out", output, "in"),
+    ] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16u8 {
+        // A chord, then releases, then a jump that resets the node.
+        for key in 0..4 {
+            library.midi.send([0x90, 40 + round + key, 100]);
+        }
+        library.midi.send([0x80, 40 + round, 0]);
+        if round % 4 == 3 {
+            transport.seek(noodle_core::Tick(480 * i64::from(round)));
+        }
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(heard, "the keys were summed");
+}

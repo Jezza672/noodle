@@ -370,7 +370,7 @@ fn playing_a_looping_section_across_its_seams_and_flipping_the_preview_never_tou
 
 #[test]
 fn playing_midi_clips_and_taking_in_edits_never_touches_the_allocator() {
-    let mut rig = Rig::new("realtime-midi");
+    let mut rig = Rig::blocking("realtime-midi");
     let notes: Vec<(i64, i64, u8)> = (0..32).map(|i| (i * 240, 700, 40 + i as u8)).collect();
     let clip = rig.add_midi_clip(0, 8, &notes);
     rig.settle();

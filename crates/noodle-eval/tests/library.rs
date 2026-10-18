@@ -85,6 +85,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.util.split_channels",
     "noodle.view.meter",
     "noodle.view.scope",
+    "noodle.view.spectrum",
 ];
 
 /// Every built-in node has presets (bar a few), each fits a node of its type
