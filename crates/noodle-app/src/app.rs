@@ -1063,9 +1063,10 @@ impl App {
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
                     match self.session.save() {
+                        // Clean now, so the action runs without asking again.
                         Saved::Yes => {
                             self.confirming = None;
-                            self.run(ctx, action);
+                            actions.push(action);
                         }
                         // The dialog stays open, with the error in the
                         // status bar, so nothing is lost.
