@@ -388,9 +388,11 @@ log hz`, `output y`), `state` variables that last between samples, `let`
 locals, assignments, `if`/`else` and the Math functions plus `rand()`, `db()`,
 `mtof()` and `select()`, with `sr`, `bpm`, `beat` and `time` readable.
 `array buf[480]` is memory per lane (8192 values in all, indices wrap, so a
-counting write head makes a delay line) and `for i in 0 to 8 { }` loops with
+write head kept with `% len(buf)` makes a delay line; an `f32` head that
+counts up for ever stops at 2^24 samples) and `for i in 0 to 8 { }` loops with
 ends fixed in the text (whole numbers or `len(buf)`; 256 trips, 1024 steps for
-nested loops), so a script is still bounded and safe on the audio thread.
+nested loops, and 32768 ops a sample counting every pass, checked when the
+script is read), so a script is still bounded and safe on the audio thread.
 `events in notes` gives `notes_on`, `notes_off`, `notes_key` and
 `notes_velocity` (one event per sample; a chord's notes arrive on consecutive
 samples, a queue of 64 carries the overflow into the next block, via
@@ -2478,7 +2480,8 @@ the spread, one undo step per drag; a wired parameter isn't set).
 An Output node has a `routing` setting: for each channel of its signal, the
 device channel (from 1) it plays on, or `-` for none (`3 4 1 2` swaps the pairs
 of a quad signal). Empty keeps channel n on channel n. The plan turns it into
-the same matrix the downmix uses. The properties panel lists the speakers of a
+the same matrix the downmix uses, and replaces the downmix: a routing
+says where every channel goes, and a channel it doesn't list plays nowhere. The properties panel lists the speakers of a
 chosen layout, each with a drop-down of output channels.
 
 ## Testing

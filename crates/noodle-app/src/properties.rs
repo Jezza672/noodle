@@ -579,7 +579,8 @@ fn routing_editor(
     ui.label(
         RichText::new(
             "Which output channel each channel of the signal plays on. Channels that \
-             are off, or past the device's channels, play nowhere.",
+             are off, or past the device's channels, play nowhere, and a routing \
+             replaces the usual fold-down of a wide signal onto a narrow device.",
         )
         .weak()
         .small(),
@@ -1089,6 +1090,12 @@ fn panner(
             own
         }
     };
+    let range = |key: &str| {
+        params
+            .iter()
+            .find(|(input, _)| input.key == key)
+            .map_or((0.0, 1.0), |p| (p.1.min, p.1.max))
+    };
     let default = noodle_nodes::default_layout(&node.type_id).unwrap_or(ChannelLayout::Stereo);
     let layout = node
         .config
@@ -1106,6 +1113,7 @@ fn panner(
             value("spread"),
             (!wired("azimuth"), !wired("spread")),
         )
+        .ranges(range("azimuth"), range("spread"))
         .show(ui),
     );
 }

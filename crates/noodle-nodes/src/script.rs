@@ -4,7 +4,7 @@
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, EventsOut, Instance, Lane, LaneInputs,
     LaneKernel, LaneOutputs, Layout, NodeError, NodeInfo, NodeType, NoteId, ParamInfo, PerLane,
-    Setup, Unit,
+    Setup, Shape, Unit,
 };
 
 use crate::math::{scan_number, unary_function};
@@ -38,14 +38,17 @@ use crate::math::{scan_number, unary_function};
 ///   sample is 0.
 /// - **Arrays:** `array buf[480]` (or `array buf[8] = 0.5` to fill it) is
 ///   memory that lasts between samples, one copy per voice and channel, with
-///   at most [`ARRAY_TOTAL`] values in all. `buf[i]` reads and writes it (also
+///   at most [`ARRAY_TOTAL`] values in all (keep a head in `state` wrapped, not
+///   counting up for ever: an `f32` stops counting at 16 million). `buf[i]` reads and writes it (also
 ///   `+=` and the like); the index is rounded down and wraps round the array,
-///   so a write head that only counts up makes a delay line. `len(buf)` is
+///   so a write head that wraps (`head = (head + 1) % len(buf)`)
+///   makes a delay line. `len(buf)` is
 ///   the length.
 /// - **Loops:** `for i in 0 to 8 { ... }` runs the block with `i` from 0 to 7.
 ///   The ends are whole numbers or `len(buf)`, so the number of steps is known
 ///   when the script is read: a loop runs at most 256 times, and loops inside
-///   loops at most 1024 steps all told. `i` can't be set.
+///   loops at most 1024 steps all told, and a script at most 32768 ops a
+///   sample counting every pass. `i` can't be set.
 /// - **Events:** `events in notes` is an event input and `events out played`
 ///   an event output. An input gives the variables `notes_on` and
 ///   `notes_off` (1 in the sample a note starts or ends, else 0),
@@ -109,6 +112,8 @@ pub const MAX_EVENT_PORTS: usize = 4;
 const MAX_TRIPS: usize = 256;
 /// The most steps of a loop and the loops inside it.
 const MAX_STEPS: usize = 1024;
+/// The most ops a sample may run, counting every pass of every loop.
+const MAX_WORK: usize = 32_768;
 /// Events waiting for a sample to arrive on, per event input.
 const QUEUE: usize = 64;
 /// The most note-ons remembered, to give a note-off its key.
@@ -193,13 +198,21 @@ impl NodeType for Script {
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let program = Self::program(setup.config)?;
+        let shape = setup.output_shapes.first().copied().unwrap_or(Shape::MONO);
+        let per_lane = program.array_len();
         let feeds = program
             .event_in
             .iter()
             .map(|_| Feed::new(setup.max_frames))
             .collect();
         Ok(Instance::realtime(PerLane::new(
-            ScriptKernel { program, feeds },
+            ScriptKernel {
+                program,
+                feeds,
+                memory: vec![0.0; per_lane * shape.lanes()],
+                per_lane,
+                channels: shape.channels,
+            },
             setup,
         )))
     }
@@ -218,6 +231,12 @@ struct ScriptKernel {
     program: Program,
     /// What each event input delivers, sample by sample, in this block.
     feeds: Vec<Feed>,
+    /// The arrays of every lane, `per_lane` values each, lane by lane (voice
+    /// by voice, channels within). Sized when the node is built, so a script
+    /// without arrays holds none.
+    memory: Vec<f32>,
+    per_lane: usize,
+    channels: usize,
 }
 
 /// An event waiting to arrive, or arrived: `kind` is 0 for none, 1 for a
@@ -225,6 +244,9 @@ struct ScriptKernel {
 #[derive(Clone, Copy, Default)]
 struct Queued {
     kind: u8,
+    /// Whether `key` is known: a note-off whose note-on has been forgotten
+    /// leaves the key alone.
+    has_key: bool,
     key: f32,
     velocity: f32,
     time: u32,
@@ -240,7 +262,7 @@ struct Feed {
     /// The event arriving in each sample of the block.
     delivered: Vec<Queued>,
     /// (note id, key) of the latest note-ons, for the keys of note-offs.
-    notes: [(u32, u8); REMEMBERED],
+    notes: [Option<(u32, u8)>; REMEMBERED],
     next_note: usize,
 }
 
@@ -251,9 +273,17 @@ impl Feed {
             head: 0,
             len: 0,
             delivered: vec![Queued::default(); max_frames],
-            notes: [(u32::MAX, 0); REMEMBERED],
+            notes: [None; REMEMBERED],
             next_note: 0,
         }
+    }
+
+    /// Forgets the queued events and the notes remembered.
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+        self.notes = [None; REMEMBERED];
+        self.next_note = 0;
     }
 
     fn fill(&mut self, frames: usize, events: &[Event]) {
@@ -267,20 +297,22 @@ impl Feed {
                     velocity,
                     ..
                 } => {
-                    self.notes[self.next_note] = (note.0, key);
+                    self.notes[self.next_note] = Some((note.0, key));
                     self.next_note = (self.next_note + 1) % REMEMBERED;
                     Queued {
                         kind: 1,
+                        has_key: true,
                         key: f32::from(key),
                         velocity,
                         time: event.time,
                     }
                 }
                 EventKind::NoteOff { note, velocity } => {
-                    let key = self.notes.iter().find(|n| n.0 == note.0).map_or(0, |n| n.1);
+                    let key = self.notes.iter().flatten().find(|n| n.0 == note.0);
                     Queued {
                         kind: 2,
-                        key: f32::from(key),
+                        has_key: key.is_some(),
+                        key: key.map_or(0.0, |n| f32::from(n.1)),
                         velocity,
                         time: event.time,
                     }
@@ -310,7 +342,6 @@ impl Feed {
 /// before they are written), the sample count and the noise generator.
 struct ScriptState {
     vars: [f32; MAX_VARS],
-    array: [f32; ARRAY_TOTAL],
     /// False until the `state` variables have their starting values.
     started: bool,
     samples: u64,
@@ -321,7 +352,6 @@ impl Default for ScriptState {
     fn default() -> Self {
         Self {
             vars: [0.0; MAX_VARS],
-            array: [0.0; ARRAY_TOTAL],
             started: false,
             samples: 0,
             rng: 0x9E37_79B9,
@@ -332,6 +362,13 @@ impl Default for ScriptState {
 impl LaneKernel for ScriptKernel {
     type State = ScriptState;
 
+    fn reset(&mut self) {
+        self.memory.fill(0.0);
+        for feed in &mut self.feeds {
+            feed.clear();
+        }
+    }
+
     fn begin_block(&mut self, ctx: &Context, events: &[&[Event]]) {
         for (feed, events) in self.feeds.iter_mut().zip(events) {
             feed.fill(ctx.frames, events);
@@ -340,12 +377,14 @@ impl LaneKernel for ScriptKernel {
 
     fn process_lane(&mut self, state: &mut ScriptState, ctx: &Context, lane: Lane<'_, '_>) {
         let program = &self.program;
+        let at = (lane.voice * self.channels + lane.channel) * self.per_lane;
+        let array = &mut self.memory[at..at + self.per_lane];
         if !state.started {
             for &(slot, value) in &program.starts {
                 state.vars[slot] = value;
             }
             for decl in &program.arrays {
-                state.array[decl.offset..decl.offset + decl.len].fill(decl.fill);
+                array[decl.offset..decl.offset + decl.len].fill(decl.fill);
             }
             state.started = true;
             // Each lane gets its own noise: mix the lane into the seed.
@@ -371,15 +410,15 @@ impl LaneKernel for ScriptKernel {
         let feeds = &self.feeds;
         let (inputs, outputs) = (&inputs, &mut outputs);
         match program.outputs.len() {
-            0 => run_lane::<0>(program, feeds, state, ctx, inputs, outputs, sink),
-            1 => run_lane::<1>(program, feeds, state, ctx, inputs, outputs, sink),
-            2 => run_lane::<2>(program, feeds, state, ctx, inputs, outputs, sink),
-            3 => run_lane::<3>(program, feeds, state, ctx, inputs, outputs, sink),
-            4 => run_lane::<4>(program, feeds, state, ctx, inputs, outputs, sink),
-            5 => run_lane::<5>(program, feeds, state, ctx, inputs, outputs, sink),
-            6 => run_lane::<6>(program, feeds, state, ctx, inputs, outputs, sink),
-            7 => run_lane::<7>(program, feeds, state, ctx, inputs, outputs, sink),
-            _ => run_lane::<8>(program, feeds, state, ctx, inputs, outputs, sink),
+            0 => run_lane::<0>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            1 => run_lane::<1>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            2 => run_lane::<2>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            3 => run_lane::<3>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            4 => run_lane::<4>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            5 => run_lane::<5>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            6 => run_lane::<6>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            7 => run_lane::<7>(program, feeds, array, state, ctx, inputs, outputs, sink),
+            _ => run_lane::<8>(program, feeds, array, state, ctx, inputs, outputs, sink),
         }
     }
 }
@@ -388,6 +427,7 @@ impl LaneKernel for ScriptKernel {
 fn run_lane<const N: usize>(
     program: &Program,
     feeds: &[Feed],
+    array: &mut [f32],
     state: &mut ScriptState,
     ctx: &Context,
     inputs: &LaneInputs<'_>,
@@ -427,7 +467,9 @@ fn run_lane<const N: usize>(
             state.vars[decl.slots[0]] = f32::from(arrived.kind == 1);
             state.vars[decl.slots[1]] = f32::from(arrived.kind == 2);
             if arrived.kind != 0 {
-                state.vars[decl.slots[2]] = arrived.key;
+                if arrived.has_key {
+                    state.vars[decl.slots[2]] = arrived.key;
+                }
                 state.vars[decl.slots[3]] = arrived.velocity;
             }
         }
@@ -437,13 +479,7 @@ fn run_lane<const N: usize>(
             outs: &mut *event_outputs,
             frame: i as u32,
         };
-        program.run(
-            &mut state.vars,
-            &mut state.array,
-            &env,
-            &mut state.rng,
-            &mut sink,
-        );
+        program.run(&mut state.vars, array, &env, &mut state.rng, &mut sink);
         for (out, &slot) in outs.iter_mut().zip(&program.output_slots) {
             out[i] = state.vars[slot];
         }
@@ -541,6 +577,13 @@ impl ArrayDecl {
 }
 
 #[derive(Debug)]
+struct LoopInfo {
+    start: usize,
+    end: usize,
+    trips: usize,
+}
+
+#[derive(Debug)]
 struct EventInDecl {
     name: String,
     /// The variables `_on`, `_off`, `_key` and `_velocity`.
@@ -574,6 +617,8 @@ struct Program {
     /// Starting values of the `state` variables.
     starts: Vec<(usize, f32)>,
     arrays: Vec<ArrayDecl>,
+    /// Every `for` loop: the ops it spans and how many times it runs.
+    loops: Vec<LoopInfo>,
     event_in: Vec<EventInDecl>,
     event_out: Vec<String>,
 }
@@ -589,7 +634,31 @@ impl Program {
         if program.max_depth() > DEPTH {
             return Err("an expression is too deeply nested".into());
         }
+        let work = program.work();
+        if work > MAX_WORK {
+            return Err(format!(
+                "the loops do too much work: about {work} steps a sample, at most {MAX_WORK}"
+            ));
+        }
         Ok(program)
+    }
+
+    /// The values the arrays hold in all.
+    fn array_len(&self) -> usize {
+        self.arrays.last().map_or(0, |a| a.offset + a.len)
+    }
+
+    /// The most ops a sample can run: every op counted once for each time the
+    /// loops around it run.
+    fn work(&self) -> usize {
+        (0..self.ops.len())
+            .map(|i| {
+                self.loops
+                    .iter()
+                    .filter(|l| l.start <= i && i <= l.end)
+                    .fold(1usize, |work, l| work.saturating_mul(l.trips.max(1)))
+            })
+            .fold(0usize, usize::saturating_add)
     }
 
     /// The most values the program holds on its stack at once.
@@ -617,7 +686,7 @@ impl Program {
     fn run(
         &self,
         vars: &mut [f32; MAX_VARS],
-        array: &mut [f32; ARRAY_TOTAL],
+        array: &mut [f32],
         env: &Env,
         rng: &mut u32,
         sink: &mut Sink<'_, '_>,
@@ -934,6 +1003,7 @@ impl Parser {
                 output_slots: Vec::new(),
                 starts: Vec::new(),
                 arrays: Vec::new(),
+                loops: Vec::new(),
                 event_in: Vec::new(),
                 event_out: Vec::new(),
             },
@@ -1286,7 +1356,7 @@ impl Parser {
         let exit = ops.len();
         ops.push(Op::JumpIfZero(0));
         self.block()?;
-        let Ok(top) = u16::try_from(top) else {
+        let Ok(top16) = u16::try_from(top) else {
             return self.err("the script is too long");
         };
         let ops = &mut self.program.ops;
@@ -1294,7 +1364,13 @@ impl Parser {
         ops.push(Op::Push(1.0));
         ops.push(Op::Add);
         ops.push(Op::Store(slot));
-        ops.push(Op::Jump(top));
+        ops.push(Op::Jump(top16));
+        let end = ops.len() - 1;
+        self.program.loops.push(LoopInfo {
+            start: top,
+            end,
+            trips,
+        });
         self.patch(exit)?;
         self.vars.truncate(scope);
         self.steps = outer;
@@ -1908,7 +1984,7 @@ mod tests {
             state head
             y = line[head]
             line[head] = x
-            head += 1
+            head = (head + 1) % len(line)
         ";
         let mut h =
             Harness::new(&Script, &config(text), &[(0, Shape::MONO)], 48_000.0, 10).unwrap();
@@ -2030,6 +2106,36 @@ mod tests {
         h.run(4).unwrap();
         let second: Vec<u32> = h.events(0).iter().map(|e| e.time).collect();
         assert_eq!(second, [0, 1, 2, 3], "the rest follow, in order");
+    }
+
+    #[test]
+    fn loops_are_limited_by_the_work_they_do_not_only_their_trips() {
+        let body = |n: usize| "o += 1\n".repeat(n);
+        // 200 trips of 100 statements is 20000 passes of two ops or more.
+        let heavy = format!("output o\nfor i in 0 to 200 {{\n{}}}", body(100));
+        let error = Program::compile(&heavy).err().expect("too much work");
+        assert!(error.contains("too much work"), "{error}");
+        let light = format!("output o\nfor i in 0 to 100 {{\n{}}}", body(5));
+        assert!(Program::compile(&light).is_ok());
+        // Loops one after another add up.
+        let many: String = (0..6)
+            .map(|k| format!("for i{k} in 0 to 200 {{\n{}}}\n", body(10)))
+            .collect();
+        assert!(Program::compile(&format!("output o\n{many}")).is_err());
+    }
+
+    #[test]
+    fn a_note_off_for_a_forgotten_note_leaves_the_key_and_a_reset_forgets_notes() {
+        let text = "events in n\noutput k\nif n_on { k = n_key }\nif n_off { k = -1 - n_key }";
+        let mut h = Harness::new(&Script, &config(text), &[], 48_000.0, 4).unwrap();
+        // A note-off for a note never seen: the key is unchanged (0).
+        h.send_events(0, &[note_off(1, 99)]);
+        h.run(4).unwrap();
+        assert_eq!(h.output(0).lane(0, 0), &[0.0, -1.0, 0.0, 0.0]);
+        // One that was seen reports its key.
+        h.send_events(0, &[note_on(0, 5, 60, 1.0), note_off(2, 5)]);
+        h.run(4).unwrap();
+        assert_eq!(h.output(0).lane(0, 0), &[60.0, 0.0, -61.0, 0.0]);
     }
 
     #[test]

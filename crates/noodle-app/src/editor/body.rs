@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use egui::epaint::PathShape;
-use egui::{Painter, Pos2, Rect, Stroke, Vec2};
+use egui::{Painter, Pos2, Rect, Stroke, Vec2, pos2};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::OUTPUT_ID;
@@ -509,18 +509,31 @@ pub fn spectrum(painter: &Painter, area: Rect, zoom: f32, trace: Option<&Spectru
         peaks,
         Stroke::new(zoom.max(1.0), colors::TEXT_WEAK),
     ));
-    let mut fill = vec![Pos2::new(area.left(), area.bottom())];
-    fill.extend(
-        trace
-            .curve()
-            .iter()
-            .enumerate()
-            .map(|(k, &db)| point(k, db)),
-    );
-    fill.push(Pos2::new(area.right(), area.bottom()));
-    painter.add(PathShape::convex_polygon(
-        fill,
-        colors::SCOPE_TRACE.gamma_multiply(0.35),
+    // One quad per column: a curve with dips isn't a convex polygon.
+    let curve: Vec<Pos2> = trace
+        .curve()
+        .iter()
+        .enumerate()
+        .map(|(k, &db)| point(k, db))
+        .collect();
+    let mut mesh = egui::Mesh::default();
+    let tint = colors::SCOPE_TRACE.gamma_multiply(0.35);
+    for pair in curve.windows(2) {
+        let base = mesh.vertices.len() as u32;
+        for p in [
+            pos2(pair[0].x, area.bottom()),
+            pair[0],
+            pair[1],
+            pos2(pair[1].x, area.bottom()),
+        ] {
+            mesh.colored_vertex(p, tint);
+        }
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base, base + 2, base + 3);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    painter.add(PathShape::line(
+        curve,
         Stroke::new(zoom.max(1.0), colors::SCOPE_TRACE),
     ));
 }

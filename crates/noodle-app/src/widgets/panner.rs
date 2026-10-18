@@ -124,8 +124,9 @@ pub struct PannerEditor<'a> {
     spread: f32,
     /// Whether each of the two parameters can be set (neither is wired).
     editable: (bool, bool),
-    /// The ranges of the azimuth and spread.
+    /// The ranges of the azimuth and spread, as the node's parameters have.
     azimuth_range: (f32, f32),
+    spread_range: (f32, f32),
     label: &'a str,
 }
 
@@ -144,8 +145,16 @@ impl<'a> PannerEditor<'a> {
             spread,
             editable,
             azimuth_range: (-180.0, 180.0),
+            spread_range: (0.0, 1.0),
             label: "Surround panner",
         }
+    }
+
+    /// Sets the ranges the azimuth and spread can be dragged through.
+    pub fn ranges(mut self, azimuth: (f32, f32), spread: (f32, f32)) -> Self {
+        self.azimuth_range = azimuth;
+        self.spread_range = spread;
+        self
     }
 
     pub fn show(self, ui: &mut Ui) -> Vec<Edit> {
@@ -189,7 +198,9 @@ impl<'a> PannerEditor<'a> {
                 edits.push(Edit::Drag(Command::SetParam {
                     node: self.node,
                     key: "spread".to_owned(),
-                    value: Some(spread),
+                    value: Some(
+                        self.spread_range.0 + spread * (self.spread_range.1 - self.spread_range.0),
+                    ),
                 }));
             }
         };

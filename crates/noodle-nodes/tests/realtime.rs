@@ -1702,7 +1702,7 @@ fn a_script_with_loops_arrays_and_events_never_allocates() {
     // Keeps the last 16 keys in an array, sums them in a loop, and passes
     // every note on a fifth up.
     let text = "events in notes\nevents out played\noutput out\narray keys[16]\nstate at\n\
-                if notes_on { keys[at] = notes_key; at += 1; note_on(played, notes_key + 7, notes_velocity) }\n\
+                if notes_on { keys[at] = notes_key; at = (at + 1) % len(keys); note_on(played, notes_key + 7, notes_velocity) }\n\
                 if notes_off { note_off(played, notes_key + 7) }\n\
                 let sum = 0\nfor i in 0 to len(keys) { sum += keys[i] }\nout = sum / 2000";
     for (id, node) in [

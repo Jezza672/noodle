@@ -17,6 +17,10 @@ pub trait LaneKernel: Send + 'static {
     /// inputs. For a kernel whose lanes all read the same events.
     fn begin_block(&mut self, _ctx: &Context, _events: &[&[Event]]) {}
 
+    /// Called when the node is reset (a jump of the transport), after the
+    /// lanes' states have been. For memory the kernel keeps for its lanes.
+    fn reset(&mut self) {}
+
     /// Same real-time rules as [`Node::process`].
     fn process_lane(&mut self, state: &mut Self::State, ctx: &Context, lane: Lane<'_, '_>);
 
@@ -192,6 +196,7 @@ impl<K: LaneKernel> Node for PerLane<K> {
 
     fn reset(&mut self) {
         self.states.fill_with(K::State::default);
+        self.kernel.reset();
     }
 
     fn silenced_by(&self, constants: &[Option<f32>]) -> bool {
