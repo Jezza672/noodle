@@ -2454,6 +2454,33 @@ one. It keeps no
 state of its own: it reads the capture the editor already reads from the
 telemetry hub (`EditorState::scope_view`).
 
+### Spectrum view and the surround panner
+
+The `Spectrum` node (`noodle.view.spectrum`, category Views) is a Scope that
+is read as frequencies: the audio thread only sends samples (voices summed,
+the same telemetry channel as the Scope), and `SpectrumAnalyser`
+(`noodle-nodes/src/spectrum.rs`) works on the UI thread: a Hann-windowed
+4096-sample FFT, scaled so a full-scale sine reads 0 dB, folded onto 128
+log-spaced columns from 20 Hz to 20 kHz (the loudest bin where a column spans
+several, interpolated where it falls between two). `Bodies` keeps a
+`SpectrumTrace` per node (the curve falling at 60 dB/s after a rise, held peaks,
+and 120 columns of history at 30 a second); the node's body draws the curve and
+the properties panel adds the spectrogram. It needs the engine's sample rate
+(`Session::engine_sample_rate`). The spectral wire itself (ADR 0007) still has
+no viewer; a Synthesize into a Spectrum shows what a spectral chain does.
+
+A Surround Pan node shows a panner (`widgets/panner.rs`): the layout's
+speakers around a ring, each dot sized by the gain `pan_gains` gives it, and
+the source at the azimuth's angle, nearer the middle as `spread` grows. In the
+properties panel the source can be dragged (angle sets the azimuth, distance
+the spread, one undo step per drag; a wired parameter isn't set).
+
+An Output node has a `routing` setting: for each channel of its signal, the
+device channel (from 1) it plays on, or `-` for none (`3 4 1 2` swaps the pairs
+of a quad signal). Empty keeps channel n on channel n. The plan turns it into
+the same matrix the downmix uses. The properties panel lists the speakers of a
+chosen layout, each with a drop-down of output channels.
+
 ## Testing
 
 - **Golden renders:** render test graphs offline and compare against stored

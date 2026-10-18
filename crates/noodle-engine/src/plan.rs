@@ -14,7 +14,7 @@ use std::time::Instant;
 use noodle_core::NodeId;
 
 use crate::ChannelLayout;
-use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
+use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_routing};
 use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
@@ -185,7 +185,8 @@ struct PlanNode {
     /// For an Output node whose signal has more channels than its bus and
     /// both name a layout: the downmix (rows are bus channels, columns signal
     /// channels), so a 5.1 mix on a stereo bus folds down instead of losing
-    /// its centre and rears.
+    /// its centre and rears. For one with a `routing`: that routing as a
+    /// matrix of the same shape.
     downmix: Option<Box<[f32]>>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
@@ -615,6 +616,19 @@ pub(crate) fn build(
             bus,
             downmix: bus.and_then(|(_, count)| {
                 let signal = scheduled.input_shapes.first()?.channels;
+                // A routing the node sets decides where every channel goes.
+                if is_output
+                    && let Ok(routes) = parse_routing(&OUTPUT_ROUTING.get_text(&scheduled.config))
+                    && !routes.is_empty()
+                {
+                    let mut matrix = vec![0.0; count * signal];
+                    for (source, dest) in routes.iter().enumerate().take(signal) {
+                        if let Some(dest) = dest.filter(|&d| d < count) {
+                            matrix[dest * signal + source] = 1.0;
+                        }
+                    }
+                    return Some(matrix.into_boxed_slice());
+                }
                 if signal <= count {
                     return None;
                 }

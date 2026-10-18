@@ -571,6 +571,67 @@ fn a_mono_signal_on_a_surround_bus_plays_left_and_right_only() {
 }
 
 #[test]
+fn an_output_routing_sends_each_channel_where_it_says() {
+    let mut rig = Rig::new(Settings {
+        channels: 6,
+        ..SETTINGS
+    });
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("5".into())),
+    });
+    assert!(rig.update().is_empty());
+    // The one channel plays on channel 5 and nowhere else, not on L and R.
+    assert_eq!(
+        rig.render(2),
+        [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0
+        ]
+    );
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("-".into())),
+    });
+    assert!(rig.update().is_empty());
+    rig.render(2 * FADE);
+    assert!(rig.render(2).iter().all(|&x| x == 0.0), "routed nowhere");
+    // A channel past the bus plays nowhere either.
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("7".into())),
+    });
+    assert!(rig.update().is_empty());
+    rig.render(2 * FADE);
+    assert!(rig.render(2).iter().all(|&x| x == 0.0));
+}
+
+#[test]
+fn a_routing_that_is_not_channel_numbers_is_a_problem() {
+    let mut rig = Rig::new(SETTINGS);
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("left right".into())),
+    });
+    assert!(!rig.update().is_empty());
+    assert_eq!(
+        crate::parse_routing("2, 1 - off 0").unwrap(),
+        [Some(1), Some(0), None, None, None]
+    );
+    assert!(crate::parse_routing("1 x").is_err());
+}
+
+#[test]
 fn unchanged_nodes_keep_their_state_across_updates() {
     let (mut rig, _) = counter_rig();
     assert_eq!(rig.render(4), [0.0, 1.0, 2.0, 3.0]);

@@ -124,11 +124,6 @@ pub use sample::{Sample, SampleError, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
-pub use spectrum::{
-    FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
-    SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
-    columns_from_bins,
-};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
     SCRIPT_KEY, Script, ScriptPorts, check as check_script,
@@ -137,6 +132,11 @@ pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
     SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID, SpectralBlur, SpectralFilter,
     SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
+};
+pub use spectrum::{
+    FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
+    SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
+    columns_from_bins,
 };
 pub use stage::GroupStage;
 pub use surround::{

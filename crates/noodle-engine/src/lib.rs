@@ -38,8 +38,9 @@ mod transport;
 
 pub use automation::{AUTOMATION_ID, INTERNAL_CATEGORY, Lanes};
 pub use builtin::{
-    INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, OUTPUT_DEVICE, OUTPUT_DEVICE_KEY,
-    OUTPUT_ID, Output, output_devices,
+    INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, MAX_ROUTES, OUTPUT_DEVICE,
+    OUTPUT_DEVICE_KEY, OUTPUT_ID, OUTPUT_ROUTING, OUTPUT_ROUTING_KEY, Output, output_devices,
+    parse_routing,
 };
 pub use cache::{
     Analysis, CacheEnv, InputOrigin, NodeAnalysis, Target, TargetKind, Uncacheable, analyze,

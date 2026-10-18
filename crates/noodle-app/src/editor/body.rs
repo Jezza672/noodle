@@ -16,7 +16,7 @@ use noodle_engine::OUTPUT_ID;
 use noodle_engine::{
     BlockStats, CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry,
 };
-use noodle_nodes::{ENVELOPE_ID, METERED, SCOPE_ID, SPECTRUM_ID};
+use noodle_nodes::{ENVELOPE_ID, METERED, SCOPE_ID, SPECTRUM_ID, SURROUND_PAN_ID};
 
 use crate::theme::editor as colors;
 use crate::widgets::{GraphKind, Live};
@@ -25,7 +25,7 @@ use crate::widgets::{GraphKind, Live};
 pub fn height(type_id: &str) -> f32 {
     match type_id {
         id if METERED.contains(&id) => 30.0,
-        SCOPE_ID | OUTPUT_ID | SPECTRUM_ID => 80.0,
+        SCOPE_ID | OUTPUT_ID | SPECTRUM_ID | SURROUND_PAN_ID => 80.0,
         ENVELOPE_ID => 56.0,
         id if GraphKind::of(id).is_some() => 56.0,
         _ => 0.0,
@@ -34,8 +34,9 @@ pub fn height(type_id: &str) -> f32 {
 
 /// Draws a node's body into `rect`, the space [`height`] reserved, in screen
 /// points. Scale anything drawn by `zoom`. `values` gives the node's
-/// parameters, for the bodies that draw what they do; `curve` is an Envelope
-/// node's drawn curve, as its config text.
+/// parameters, for the bodies that draw what they do; `curve` is the config
+/// text a body draws from: an Envelope node's drawn curve, a Surround Pan's
+/// layout name.
 #[allow(clippy::too_many_arguments)]
 pub fn paint(
     painter: &Painter,
@@ -58,6 +59,20 @@ pub fn paint(
         ),
         SCOPE_ID | OUTPUT_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
         SPECTRUM_ID => spectrum(painter, area, zoom, bodies.spectra.get(&node)),
+        SURROUND_PAN_ID => {
+            let layout = noodle_engine::ChannelLayout::from_name(curve)
+                .or_else(|| noodle_nodes::default_layout(type_id))
+                .unwrap_or(noodle_engine::ChannelLayout::Stereo);
+            crate::widgets::panner::paint(
+                painter,
+                area,
+                zoom,
+                layout,
+                values("azimuth"),
+                values("spread"),
+                false,
+            );
+        }
         ENVELOPE_ID => envelope(painter, area, zoom, curve),
         id => {
             if let Some(kind) = GraphKind::of(id) {
@@ -423,8 +438,8 @@ impl SpectrumTrace {
             } else {
                 self.peak_age[k] += dt;
                 if self.peak_age[k] > SPECTRUM_PEAK_HOLD_SECONDS {
-                    self.peaks[k] = (self.peaks[k] - SPECTRUM_PEAK_FALL_DB_PER_SECOND * dt)
-                        .max(self.curve[k]);
+                    self.peaks[k] =
+                        (self.peaks[k] - SPECTRUM_PEAK_FALL_DB_PER_SECOND * dt).max(self.curve[k]);
                 }
             }
         }
@@ -477,7 +492,7 @@ pub fn spectrum(painter: &Painter, area: Rect, zoom: f32, trace: Option<&Spectru
     let Some(trace) = trace else {
         return;
     };
-    let n = trace.curve.len();
+    let n = trace.curve().len();
     let point = |k: usize, db: f32| {
         Pos2::new(
             area.left() + area.width() * k as f32 / (n - 1) as f32,
@@ -485,7 +500,7 @@ pub fn spectrum(painter: &Painter, area: Rect, zoom: f32, trace: Option<&Spectru
         )
     };
     let peaks: Vec<Pos2> = trace
-        .peaks
+        .peaks()
         .iter()
         .enumerate()
         .map(|(k, &db)| point(k, db))
@@ -495,7 +510,13 @@ pub fn spectrum(painter: &Painter, area: Rect, zoom: f32, trace: Option<&Spectru
         Stroke::new(zoom.max(1.0), colors::TEXT_WEAK),
     ));
     let mut fill = vec![Pos2::new(area.left(), area.bottom())];
-    fill.extend(trace.curve.iter().enumerate().map(|(k, &db)| point(k, db)));
+    fill.extend(
+        trace
+            .curve()
+            .iter()
+            .enumerate()
+            .map(|(k, &db)| point(k, db)),
+    );
     fill.push(Pos2::new(area.right(), area.bottom()));
     painter.add(PathShape::convex_polygon(
         fill,
@@ -1012,13 +1033,22 @@ mod tests {
         let telemetry = Telemetry::new();
         let rate = 48_000.0;
         let mut writer = telemetry.open_scope(id, 2, 16_384);
-        let tone = |hz: f32| move |f: usize, _c: usize| (std::f32::consts::TAU * hz * f as f32 / rate).sin();
+        let tone = |hz: f32| {
+            move |f: usize, _c: usize| (std::f32::consts::TAU * hz * f as f32 / rate).sin()
+        };
         writer.write(8192, tone(1000.0));
 
         let mut bodies = Bodies::default();
         // Nothing is analysed until the engine's rate is known.
         bodies.update(&telemetry, &project, 0.02);
-        assert!(bodies.spectrum(id).unwrap().curve().iter().all(|&db| db < -80.0));
+        assert!(
+            bodies
+                .spectrum(id)
+                .unwrap()
+                .curve()
+                .iter()
+                .all(|&db| db < -80.0)
+        );
         bodies.set_sample_rate(rate);
         bodies.update(&telemetry, &project, 0.02);
         let trace = bodies.spectrum(id).unwrap();

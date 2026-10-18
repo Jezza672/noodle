@@ -49,6 +49,42 @@ pub const OUTPUT_DEVICE_KEY: &str = "device";
 /// The device an Output node plays on.
 pub const OUTPUT_DEVICE: ConfigInfo = ConfigInfo::text(OUTPUT_DEVICE_KEY, "Device");
 
+/// The config key of an Output node's speaker routing.
+pub const OUTPUT_ROUTING_KEY: &str = "routing";
+
+/// Where each channel of an Output node's signal plays on its device: for
+/// each signal channel in order, the device channel (counting from 1) or `-`
+/// for none, such as `3 4 1 2` to swap the pairs of a quad signal. Empty means
+/// the usual: channel n plays on channel n, and a mono signal on the first two.
+pub const OUTPUT_ROUTING: ConfigInfo = ConfigInfo::text(OUTPUT_ROUTING_KEY, "Routing");
+
+/// The most signal channels a routing lists.
+pub const MAX_ROUTES: usize = 32;
+
+/// Reads an Output node's routing: the device channel (from 0) of each signal
+/// channel, `None` where it plays nowhere. Entries are separated by spaces or
+/// commas.
+pub fn parse_routing(text: &str) -> Result<Vec<Option<usize>>, String> {
+    let mut routes = Vec::new();
+    for entry in text.split([' ', ',', '\t']).filter(|e| !e.is_empty()) {
+        if routes.len() == MAX_ROUTES {
+            return Err(format!("a routing lists at most {MAX_ROUTES} channels"));
+        }
+        routes.push(match entry {
+            "-" | "off" | "0" => None,
+            n => match n.parse::<usize>() {
+                Ok(channel) => Some(channel - 1),
+                Err(_) => {
+                    return Err(format!(
+                        "routing entries are channel numbers or `-`, not \"{n}\""
+                    ));
+                }
+            },
+        });
+    }
+    Ok(routes)
+}
+
 /// The devices that Output nodes in `graph` are tied to, each once, in
 /// order. Output nodes with no device play on the main output and aren't
 /// listed.
@@ -71,11 +107,12 @@ impl NodeType for Output {
     }
 
     fn config(&self) -> &[ConfigInfo] {
-        static CONFIG: [ConfigInfo; 1] = [OUTPUT_DEVICE];
+        static CONFIG: [ConfigInfo; 2] = [OUTPUT_DEVICE, OUTPUT_ROUTING];
         &CONFIG
     }
 
-    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+    fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
+        parse_routing(&OUTPUT_ROUTING.get_text(config)).map_err(NodeError::config)?;
         Ok(Layout::realtime().input("in", "In"))
     }
 

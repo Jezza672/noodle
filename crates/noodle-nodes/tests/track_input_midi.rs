@@ -164,7 +164,7 @@ fn nothing_plays_while_the_transport_stands_still() {
 #[test]
 fn an_auditioned_key_sounds_on_its_own_track_even_when_stopped() {
     let mut rig = rig("midi-audition");
-    let other = Rig::new("midi-audition-other");
+    let other = Rig::blocking("midi-audition-other");
     rig.feeds.audition(rig.id, 62, true);
     let events = rig.run_events(0, BLOCK, false);
     assert_eq!(events.len(), 1, "{events:?}");

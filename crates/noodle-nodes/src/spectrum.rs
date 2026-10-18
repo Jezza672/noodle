@@ -169,7 +169,8 @@ pub fn columns_from_bins(bins: &[f32], sample_rate: f32, columns: &mut [f32]) {
     let n = columns.len();
     let bin_hz = sample_rate / WINDOW as f32;
     // How far a column's neighbours are, as a frequency ratio.
-    let step = (HIGH_HZ.min(sample_rate * 0.5) / LOW_HZ).powf(1.0 / n.saturating_sub(1).max(1) as f32);
+    let step =
+        (HIGH_HZ.min(sample_rate * 0.5) / LOW_HZ).powf(1.0 / n.saturating_sub(1).max(1) as f32);
     let half = step.sqrt();
     let last = bins.len() - 1;
     for (k, out) in columns.iter_mut().enumerate() {

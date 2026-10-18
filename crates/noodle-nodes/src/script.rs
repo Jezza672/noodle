@@ -1168,10 +1168,7 @@ impl Parser {
     fn events_declaration(&mut self) -> Result<(), String> {
         let direction = self.name("`in` or `out`")?;
         let name = self.name("a name")?;
-        if reserved(&name)
-            || self.lookup(&name).is_some()
-            || self.names_port_or_array(&name)
-        {
+        if reserved(&name) || self.lookup(&name).is_some() || self.names_port_or_array(&name) {
             return self.err(format!("`{name}` is a built-in name or already used"));
         }
         match direction.as_str() {
@@ -1211,7 +1208,9 @@ impl Parser {
         let len = self.number()?;
         self.expect("]")?;
         if len.fract() != 0.0 || len < 1.0 {
-            return self.err(format!("`{name}`'s length must be a whole number, 1 or more"));
+            return self.err(format!(
+                "`{name}`'s length must be a whole number, 1 or more"
+            ));
         }
         let len = len as usize;
         if self.array_total + len > ARRAY_TOTAL {
@@ -1309,7 +1308,9 @@ impl Parser {
         self.expect("(")?;
         let name = self.name("an event output")?;
         let Some(port) = self.program.event_out.iter().position(|e| *e == name) else {
-            return self.err(format!("`{name}` is not an event output (`events out {name}`)"));
+            return self.err(format!(
+                "`{name}` is not an event output (`events out {name}`)"
+            ));
         };
         self.expect(",")?;
         self.expression(0)?;
@@ -1596,8 +1597,8 @@ impl Parser {
 mod tests {
     use super::*;
     use noodle_core::Value;
+    use noodle_engine::Shape;
     use noodle_engine::testing::Harness;
-    use noodle_engine::{Shape};
 
     fn config(text: &str) -> Config {
         let mut config = Config::new();
@@ -1873,7 +1874,10 @@ mod tests {
         let text = "output o\nlet sum = 0\nfor i in 1 to 5 { sum += i }\no = sum";
         assert_eq!(first(text), 10.0);
         // An empty range runs nothing, and nested loops multiply.
-        assert_eq!(first("output o\nlet n = 7\nfor i in 3 to 3 { n = 0 }\no = n"), 7.0);
+        assert_eq!(
+            first("output o\nlet n = 7\nfor i in 3 to 3 { n = 0 }\no = n"),
+            7.0
+        );
         let nested = "output o\nlet n = 0\nfor i in 0 to 4 { for j in 0 to 5 { n += 1 } }\no = n";
         assert_eq!(first(nested), 20.0);
         // The loop variable is gone after the loop and can't be set.
@@ -1893,9 +1897,7 @@ mod tests {
             assert!(Program::compile(text).is_err(), "{text:?}");
         }
         assert!(Program::compile("output o\nfor i in 0 to 256 { }").is_ok());
-        assert!(
-            Program::compile("output o\nfor i in 0 to 32 { for j in 0 to 32 { } }").is_ok()
-        );
+        assert!(Program::compile("output o\nfor i in 0 to 32 { for j in 0 to 32 { } }").is_ok());
     }
 
     #[test]
@@ -1910,7 +1912,8 @@ mod tests {
             line[head] = x
             head += 1
         ";
-        let mut h = Harness::new(&Script, &config(text), &[(0, Shape::MONO)], 48_000.0, 10).unwrap();
+        let mut h =
+            Harness::new(&Script, &config(text), &[(0, Shape::MONO)], 48_000.0, 10).unwrap();
         for (i, v) in h.input(0, 10).lane_mut(0, 0).iter_mut().enumerate() {
             *v = (i + 1) as f32;
         }
@@ -1921,7 +1924,10 @@ mod tests {
         let text = "output o\narray a[3]\nfor i in 0 to len(a) { a[i] = i + 1 }\no = a[-1] * 100 + a[4] * 10 + a[2.9]";
         assert_eq!(first(text), 3.0 * 100.0 + 2.0 * 10.0 + 3.0);
         // Compound assignment, a fill value, and one array per lane.
-        assert_eq!(first("output o\narray a[2] = 5\na[1] += 2\no = a[0] + a[1]"), 12.0);
+        assert_eq!(
+            first("output o\narray a[2] = 5\na[1] += 2\no = a[0] + a[1]"),
+            12.0
+        );
         let out = run_with("output o\narray a[1]\na[0] += 1\no = a[0]", 3, &[]);
         assert_eq!(out[0], [1.0, 2.0, 3.0]);
     }
@@ -1983,7 +1989,10 @@ mod tests {
         assert_eq!(layout.event_inputs.len(), 1);
         assert_eq!(layout.event_outputs.len(), 1);
         let ports = check(text).unwrap();
-        assert_eq!((ports.event_inputs, ports.event_outputs), (vec!["notes".to_owned()], vec!["played".to_owned()]));
+        assert_eq!(
+            (ports.event_inputs, ports.event_outputs),
+            (vec!["notes".to_owned()], vec!["played".to_owned()])
+        );
         let mut h = Harness::new(&Script, &config(text), &[], 48_000.0, 8).unwrap();
         // A chord at one instant, then its release.
         h.send_events(
@@ -2003,7 +2012,10 @@ mod tests {
                 note_off(6, 67),
             ]
         );
-        assert_eq!(h.output(0).lane(0, 0), &[0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+        assert_eq!(
+            h.output(0).lane(0, 0),
+            &[0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+        );
     }
 
     #[test]

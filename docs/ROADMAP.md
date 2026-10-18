@@ -881,7 +881,7 @@ step, after Stem warp; true per-note audio extraction is not planned.
 ## M11: Spectral signals
 
 **Status:** batch 1 done in code (the signal type, Analyze and Synthesize and six
-spectral nodes). The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
+spectral nodes), and the spectrum display. The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
 
 1. **The signal type and the first nodes (done).** A third wire kind that
    carries FFT frames (one size for the whole engine, 2048 with a hop of 512),
@@ -890,8 +890,10 @@ spectral nodes). The design is ARCHITECTURE.md ("Spectral") and ADR 0007.
    plugin delay compensation), `Spectral Gate`, `Spectral Filter`, `Spectral
    Shift`, `Spectral Freeze`, `Spectral Blur`, `Cross`, node presets for each,
    `examples/spectral-shift.ron` + golden, and the allocation test.
-2. **Later in M11.** A spectrum display (a spectrogram or analyser node, fed by
-   telemetry), more nodes (pitch shift and time stretch on frames, spectral
+2. **A spectrum display (done).** The `Spectrum` view node: an analyser curve
+   with held peaks on the node and in the properties panel, with a spectrogram
+   there too (the analysis runs on the UI thread, fed by the Scope's
+   telemetry). Still to do in M11: more nodes (pitch shift and time stretch on frames, spectral
    compressor, convolution reverb from an impulse response, a noise-profile
    denoiser) and a choice of frame size (a config on Analyze that every
    spectral node on the wire adopts). Delay compensation across spectral wires
@@ -919,4 +921,4 @@ for spectral wires (`SpectralDelay`) came in the same batch.
 - ~~MIDI 2.0 follow-ups.~~ 32-bit controller, bend and pressure events and a `MIDI Control` node are **done**. Still open and blocked on hardware or the MIDI library: device input as UMP (midir delivers MIDI 1.0 bytes) and MIDI-CI.
 - ~~Downbeat model.~~ **Done**: the beat and the off-beat are told apart by where the harmony changes (chroma novelty), so `funk-engine`'s phase is right.
 - AU leftovers (MIDI output from AU instruments, editors, AUv3 async instantiation) need a real Mac or a unit that exercises them; CI's Apple units don't.
-- ~~Surround and multichannel buses.~~ **Done**: channel layouts (mono to 7.1), Surround Pan, Convert Layout, Split and Merge Channels, a device channel count, multichannel export. See "Surround and multichannel buses" in ARCHITECTURE.md.
+- ~~Surround and multichannel buses.~~ **Done**: channel layouts (mono to 7.1), Surround Pan, Convert Layout, Split and Merge Channels, a device channel count, multichannel export. See "Surround and multichannel buses" in ARCHITECTURE.md. The panner display (a draggable source among the speakers) and per-speaker routing on the Output node came after.

@@ -358,7 +358,10 @@ fn boxed(
                 .or(default)
                 .unwrap_or(0.0)
         };
-        let curve = match graph.node(node.id).and_then(|n| n.config.get("curve")) {
+        let curve = match graph
+            .node(node.id)
+            .and_then(|n| n.config.get("curve").or_else(|| n.config.get("layout")))
+        {
             Some(noodle_core::Value::Text(text)) => text.clone(),
             _ => String::new(),
         };
