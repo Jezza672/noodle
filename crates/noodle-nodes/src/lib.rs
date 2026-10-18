@@ -52,6 +52,7 @@ mod spectrum;
 mod stage;
 mod surround;
 mod svf;
+mod tempo;
 mod time_stretch;
 mod vca;
 mod voice_mix;
@@ -144,6 +145,7 @@ pub use surround::{
     SPLIT_CHANNELS_ID, SURROUND_PAN_ID, SplitChannels, SurroundPan, default_layout,
 };
 pub use svf::{SVF_ID, Svf, svf_response};
+pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
@@ -234,6 +236,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Comparator);
     registry.register(Automation);
     registry.register(Clock);
+    registry.register(Tempo);
     registry.register(Distortion);
     registry.register(Bitcrusher);
     registry.register(Chorus);

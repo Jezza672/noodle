@@ -54,7 +54,10 @@ fn every_system_preset_fits_its_template() {
             .collect();
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }
-    assert_eq!(templates, 8, "the instruments and the subtractive voice");
+    assert_eq!(
+        templates, 11,
+        "the instruments, the subtractive voice, two synced effects and the rack"
+    );
     assert!(
         library
             .all()

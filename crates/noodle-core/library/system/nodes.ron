@@ -537,6 +537,46 @@
         ),
     )),
     NodePreset((
+        name: "Quarter Notes",
+        slug: "tempo-quarter-notes",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eighth Notes",
+        slug: "tempo-eighth-notes",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Dotted Eighths",
+        slug: "tempo-dotted-eighths",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 14.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bar",
+        slug: "tempo-bar",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Compressor",
         slug: "dynamics-compressor",
         node_type: "noodle.effect.dynamics",

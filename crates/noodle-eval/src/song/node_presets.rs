@@ -278,6 +278,10 @@ fn table() -> Vec<Row> {
             "Bar",
             &[("rate", 0.0), ("width", 0.1)],
         ),
+        row("noodle.mod.tempo", "Quarter Notes", &[("division", 2.0)]),
+        row("noodle.mod.tempo", "Eighth Notes", &[("division", 3.0)]),
+        row("noodle.mod.tempo", "Dotted Eighths", &[("division", 14.0)]),
+        row("noodle.mod.tempo", "Bar", &[("division", 0.0)]),
         // Effects.
         // Dynamics.
         row(
