@@ -71,6 +71,9 @@ pub struct App {
     /// An action to run once Save As succeeds, when the user chose to save an
     /// untitled project before it.
     after_save: Option<Action>,
+    /// An action the user chose to run without saving, run once the dialog
+    /// that asked is done drawing (a file dialog can't open inside it).
+    discarding: Option<Action>,
     /// Set once the user has agreed to close despite unsaved changes.
     closing: bool,
     /// The title last sent to the window, so it's only sent when it changes.
@@ -176,6 +179,7 @@ impl App {
             export: ExportDialog::default(),
             confirming: None,
             after_save: None,
+            discarding: None,
             closing: false,
             title: String::new(),
             dragging: false,
@@ -517,6 +521,9 @@ impl App {
             };
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(wait));
+        }
+        if let Some(action) = self.discarding.take() {
+            self.run(ui.ctx(), action);
         }
         for action in actions {
             self.request(ui.ctx(), action);
@@ -1073,7 +1080,7 @@ impl App {
                 }
                 if ui.button("Don't Save").clicked() {
                     self.confirming = None;
-                    self.run(ctx, action);
+                    self.discarding = Some(action);
                 }
                 if ui.button("Cancel").clicked() {
                     self.confirming = None;
