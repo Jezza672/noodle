@@ -8,7 +8,7 @@
 //! the audio streams ahead of the playhead, so nothing in
 //! [`Node::process`] opens a file, allocates, frees or waits.
 //!
-//! What plays at each sample follows the rule in `docs/ARCHITECTURE.md`: one
+//! What plays at each sample follows the rule in `docs/architecture/` (see "Time warping" and the track input): one
 //! audio clip at a time, the one that started last, with no crossfade but the
 //! clip's own fades. On top of that the node declicks itself: it fades out
 //! when the transport stops, fades in when it starts or jumps, and dips (out

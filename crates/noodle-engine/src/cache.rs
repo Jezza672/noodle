@@ -1,6 +1,6 @@
 //! Cache keys and cacheability: which nodes' output is a pure function of the
 //! timeline, and what to call a render of it. See "Caching" in
-//! docs/ARCHITECTURE.md.
+//! docs/architecture/caching.md.
 //!
 //! [`analyze`] compiles the project as the live engine would, except that
 //! offline nodes stay in, then walks the schedule once, upstream first. Each

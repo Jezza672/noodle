@@ -29,7 +29,7 @@ pub struct Project {
     next_lane_id: u64,
     track_order: Vec<NodeId>,
     /// Nodes and groups whose output plays from a cached render (see
-    /// "Caching" in docs/ARCHITECTURE.md).
+    /// "Caching" in docs/architecture/caching.md).
     frozen: BTreeSet<NodeId>,
 }
 
