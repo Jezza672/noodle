@@ -1,6 +1,6 @@
 //! Time as the project document counts it: ticks, and the tempo map that
 //! turns them into audio samples. See "Time and transport" in
-//! docs/ARCHITECTURE.md.
+//! docs/architecture/data-model.md.
 
 use std::fmt;
 

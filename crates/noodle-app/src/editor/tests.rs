@@ -1726,7 +1726,7 @@ fn deleting_a_group_removes_what_is_inside_and_undo_brings_it_back() {
 /// Tab still enters and leaves a group with another widget in the window.
 /// This does not prove the `tab: true` focus filter: kittest delivers Tab to
 /// the editor either way, so that line needs a manual Tab press in the real
-/// window (see ARCHITECTURE.md).
+/// window (see docs/architecture/ui.md).
 #[test]
 fn tab_enters_and_leaves_a_group_with_another_widget_present() {
     let mut h = rig_with(true);

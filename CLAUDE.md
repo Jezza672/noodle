@@ -1,16 +1,24 @@
 # Working on Noodle
 
 Noodle is a node-based DAW written in Rust: a Blender-compositor-style node
-editor for audio, with a timeline. Read these before changing anything:
+editor for audio, with a timeline. This file is an index. Read the one file
+you need, not all of them.
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how it works and the rules
-  each part follows.
-- [docs/ROADMAP.md](docs/ROADMAP.md): milestones, and the **Status** line on
-  the current one.
+## Where things live
+
+| Need | Read |
+|---|---|
+| How it works, the rules, which file covers what | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), then one file in [docs/architecture/](docs/architecture/) |
+| What is left to do | [docs/ROADMAP.md](docs/ROADMAP.md) (open work only) |
+| What was built, per milestone, with PR numbers | [docs/features/](docs/features/README.md) |
+| What each crate is, where its tests are | [docs/crates.md](docs/crates.md) |
+| Domain terms | `CONTEXT.md` |
+| Why a decision was made | [docs/adr/](docs/adr/) (read the ones near your area) |
+| Issues and labels | [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md), [triage-labels.md](docs/agents/triage-labels.md) |
 
 Settled decisions (Rust + egui, one global graph, GPLv3, polyphony as a voice
-dimension, config vs parameters) are recorded in those docs. Don't reopen them
-unless the user does.
+dimension, config vs parameters) are in those docs. Don't reopen them unless
+the user does.
 
 ## Build and test
 
@@ -42,21 +50,6 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   ALSA at a null device with `printf 'pcm.!default { type null }\n' >
   ~/.asoundrc` (and delete it after).
 
-## Crates
-
-| Crate | What it is |
-|---|---|
-| `noodle-core` | Project document: graph, commands with undo, RON files. No DSP. `library/`: group templates, node and group presets, topology, the system and user stores; `library/system/*.ron` are generated (`UPDATE_LIBRARY=1 cargo test -p noodle-eval --test library`). |
-| `noodle-engine` | Node API, compiler, plans, `Controller`/`Processor`, offline `render`. `channels.rs`: `ChannelLayout` (mono to 7.1: speakers, pan gains, convert matrices). `spectral.rs`: the spectral wire's frames, `Analyzer` and `Synthesizer` (ADR 0007). |
-| `noodle-macros` | `#[derive(Ports)]`: a node's `Layout` and port-index constants from one declaration. Re-exported as `noodle_engine::Ports`. |
-| `noodle-nodes` | Built-in nodes, including the track input (`clip.rs`, which plays a track's audio clips). Integration tests: `realtime.rs`, `golden.rs`, `track_input.rs`, `track_input_realtime.rs`, `track_input_midi.rs`, `warped_clips.rs` (Repitch playback), `stretched_clips.rs` and `stretched_playback.rs` (Grain and Beats, offline and live), `benches/warp.rs` (stretcher speed), `midi_input.rs`, `spectral.rs` (whole graphs through Analyze and Synthesize), `offline_clips.rs`, `export.rs`, `m2_acceptance.rs`, `parallel.rs` (worker threads; counts allocations on every thread, so it is one test function), `profile.rs`. `render_project_with_clips` renders a project with audio clips offline. |
-| `noodle-io` | WAV files, file decoding (`decode.rs`), transient detection (`onsets.rs`), resampling, waveform peaks and clip streaming from disk (`stream.rs`), device listing and choice (`devices.rs`, including the virtual output's ID), WAV and FLAC export writing (`export.rs`), output through cpal (`DeviceWriter`, `play`) and input (`input.rs`), MIDI input through midir (`midi.rs`: ports and the `MidiBus` the MIDI In nodes read). |
-| `noodle-plugins` | Plugins can run in host processes (`sandbox/`; `tests/sandbox.rs` kills and freezes the host; `noodle-plugin-scan` is a host too). CLAP hosting through clack, AU hosting on macOS through AudioToolbox (`au/`, virtual `audiounit:<id>` files; `tests/au.rs` uses Apple's own units, `tests/au_unsupported.rs` checks the other systems) and VST3 hosting through the `vst3` bindings (`vst3/`; `examples/test_vst3.rs` is its test plugin, `tests/real_vst3.rs` uses real ones; install `dpf-plugins-vst3 dragonfly-reverb-vst3` too): scanning in a child process (`scan.rs`), plugin nodes (`node.rs`, `host.rs`), the `Catalog` that registers them, the shared plugin thread (`thread.rs`) and editor windows (`window/`). `examples/test_plugin.rs` is a small CLAP plugin the tests load; `tests/real_plugins.rs` uses real ones if installed (`apt-get install dpf-plugins-clap lsp-plugins-clap dragonfly-reverb-clap xvfb`; editors need `xvfb-run`). After editing the example plugin run `cargo build -p noodle-plugins --examples`: `cargo test --test x` doesn't rebuild it. |
-| `noodle-eval` | Warp quality metrics (M8): Roberts and Paliwal features (`phasiness.rs`, `spectral.rs`, `transient.rs`) plus onset timing and drift (`timing.rs`), pitch (`pitch.rs`), BS.1770 loudness (`level.rs`) and stereo (`stereo.rs`). Callers give the `TimeMap` from the song's known source and target tempo maps. `evaluate` scores a reference/test pair. `probe.rs` (short controlled signals, rendered natively at any tempo map), `song/` (the five generated songs: patterns, instruments as groups of primitive nodes, the project builder; `songs/*.ron` are their projects, kept in step by `tests/songs.rs`), `tempo.rs` (the target tempo grid), `harness.rs` (warps a probe through the real engine and scores it native, source and round trip) and `table.rs` (rank summary, diff against `baseline/probes.json`), `tests/gate.rs` (the CI gate on the probes against the reference numbers in `baseline/borrowed.json`; `baseline/gate.json` lists the cells that are worse today, `UPDATE_GATE=1` rewrites it), `refs.rs` and `borrowed.rs` (borrowed truth: reference stretchers Rubber Band, SoundTouch and Signalsmith, their measured delay removed, scores against their spread; clips from `eval/local` and `eval/fetch.sh`, `baseline/borrowed.json`). The `noodle-eval` binary has `compare`, `validate` (correlation with the TSM listening-test dataset), `probes`, `songs` and `borrowed`; see its README. Dev tool; nothing else depends on it. |
-| `noodle-stems` | Stem separation (M10): the `Separator` trait, `FakeSeparator` for tests, the ONNX backend (`onnx.rs`, loads the runtime library at open), the weight download (`model.rs`), and `split` (`split.rs`: writes the stems and residual as WAVs). Used by the app (`session/stems.rs`). |
-| `noodle-cli` | The `noodle` command: `render`, `play` (reloads the file when it changes) and `devices`. |
-| `noodle-app` | The egui app (M1). `session.rs` owns the project, undo, files and audio; views return `Edit`s. Tests use `egui_kittest`; user actions (drag, click, double click, key press, wheel, dropped files) come from `testkit.rs`, never from a per-module copy. |
-
 ## Rules the code relies on
 
 - **Real-time safety.** Nothing reachable from `Processor::process` may
@@ -73,8 +66,9 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   `Layout` by hand.
 - **Output nodes are mixed at their step in the schedule**, not at the end of
   the block, because buffers are reused after their last reader.
-- **Docs move with code.** If a change alters something ARCHITECTURE.md or
-  ROADMAP.md describes, update them in the same PR.
+- **Docs move with code.** If a change alters something a doc under `docs/`
+  describes, update it in the same PR. Finished work leaves ROADMAP.md and goes
+  into the matching file in `docs/features/`.
 
 ## How the user wants work done
 
@@ -106,26 +100,3 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   landed, what the tests caught, and what's next.
 - **The user** knows Rust, C++ and TypeScript, so explain design trade-offs
   rather than basics.
-
-## What's next
-
-1. **M1 is in progress,** split into parallel streams, each with its own
-   branch and PR: app shell, node editor, parameter widgets and properties,
-   telemetry with scope and meter nodes, and audio input with a device
-   picker. The roadmap's M1 status line says what has landed.
-2. **When the user is back:** run the batched macOS checks on their Mac
-   (tests on the latest main, and a `noodle play` listening test).
-
-## Agent skills
-
-### Issue tracker
-
-Issues live in GitHub Issues for `Jezza672/noodle`. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
