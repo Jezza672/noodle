@@ -901,7 +901,7 @@ spectral nodes), and the spectrum display. The design is ARCHITECTURE.md ("Spect
 
 ## Tempo sync and the drum rack
 
-**Status:** designed (ADR 0008). Closes #142 and #143, which turned out to be half
+**Status:** designed (ADRs 0008 and 0009). Closes #142 and #143, which turned out to be half
 built already: the Sampler and Note Split came with M9 batch B, and the songs'
 drums are a rack of them.
 
