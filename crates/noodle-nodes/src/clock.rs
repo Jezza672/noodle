@@ -23,12 +23,17 @@ pub struct Clock;
 pub const CLOCK_ID: &str = "noodle.generator.clock";
 
 /// The divisions, in the order of the `rate` choice.
-pub const DIVISIONS: [&str; 10] = [
-    "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/2T", "1/4T", "1/8T", "1/16T",
+///
+/// The Tempo node shares this table. New divisions go at the end, so a saved
+/// choice keeps its meaning.
+pub const DIVISIONS: [&str; 17] = [
+    "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/2T", "1/4T", "1/8T", "1/16T", "4/1", "2/1",
+    "1/2D", "1/4D", "1/8D", "1/16D", "1/32T",
 ];
 /// Each division's length in ticks (960 to a quarter note), for 4/4.
-pub const DIVISION_TICKS: [f64; 10] = [
-    3840.0, 1920.0, 960.0, 480.0, 240.0, 120.0, 1280.0, 640.0, 320.0, 160.0,
+pub const DIVISION_TICKS: [f64; 17] = [
+    3840.0, 1920.0, 960.0, 480.0, 240.0, 120.0, 1280.0, 640.0, 320.0, 160.0, 15360.0, 7680.0,
+    2880.0, 1440.0, 720.0, 360.0, 80.0,
 ];
 
 #[derive(Ports)]

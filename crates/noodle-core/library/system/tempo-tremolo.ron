@@ -1,0 +1,162 @@
+[
+    Template((
+        name: "Tempo Tremolo",
+        slug: "tempo-tremolo",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Tempo Tremolo"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:division\n3:depth\n4:shape"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.mod.tempo",
+                params: {"division": 3.0},
+                position: (x: 220.0, y: 130.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.util.math",
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+                position: (x: 330.0, y: 130.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.mod.lfo",
+                params: {"rate": 0.01, "shape": 0.0},
+                position: (x: 440.0, y: 130.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.math",
+                params: {"a": 0.7},
+                config: {"expr": "1 - a * (0.5 - 0.5 * b)"},
+                position: (x: 660.0, y: 130.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.util.vca",
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 3, port: "division"),
+            ),
+            (
+                from: (node: 3, port: "rate"),
+                to: (node: 4, port: "a"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "rate"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 5, port: "shape"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 6, port: "a"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 7, port: "in"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "level"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 8, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Eighth Tremolo",
+        slug: "tempo-tremolo-eighth-tremolo",
+        topology: "157b630efc4971d0",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+            ),
+            (
+                params: {"a": 0.7},
+                config: {"expr": "1 - a * (0.5 - 0.5 * b)"},
+            ),
+            (
+                params: {"rate": 0.01, "shape": 0.0},
+            ),
+            (
+                params: {"division": 3.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Slow Swell",
+        slug: "tempo-tremolo-slow-swell",
+        topology: "157b630efc4971d0",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+            ),
+            (
+                params: {"a": 0.5},
+                config: {"expr": "1 - a * (0.5 - 0.5 * b)"},
+            ),
+            (
+                params: {"rate": 0.01, "shape": 0.0},
+            ),
+            (
+                params: {"division": 1.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Choppy Gate",
+        slug: "tempo-tremolo-choppy-gate",
+        topology: "157b630efc4971d0",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+            ),
+            (
+                params: {"a": 0.9},
+                config: {"expr": "1 - a * (0.5 - 0.5 * b)"},
+            ),
+            (
+                params: {"rate": 0.01, "shape": 3.0},
+            ),
+            (
+                params: {"division": 4.0},
+            ),
+        ],
+    )),
+]

@@ -8,10 +8,10 @@
 //! and changed. Each preset is another instrument of the same shape, taken
 //! as the values of every node inside.
 
-use super::kit::{self, Drum, Env, Filter, Instrument, Osc, Tone, Wave, env};
-use super::patch::Patch;
+use super::kit::{self, Drum, Env, Filter, Instrument, Osc, Rack, Slot, Tone, Wave, env};
+use super::patch::{Patch, spec};
 use noodle_core::library::{GroupPreset, GroupTemplate, Item};
-use noodle_core::{Command, History, NodeId, Project};
+use noodle_core::{Command, History, NodeId, Project, Value};
 use noodle_engine::Registry;
 
 /// One file of the system library: a template and its presets.
@@ -39,8 +39,11 @@ struct Family {
     file: &'static str,
     name: &'static str,
     slug: &'static str,
-    voices: Vec<(&'static str, Instrument)>,
+    voices: Vec<(&'static str, Build)>,
 }
+
+/// Builds one variant of a family's group in a scratch patch.
+type Build = Box<dyn Fn(&mut Patch) -> NodeId>;
 
 fn tone_family(
     file: &'static str,
@@ -51,7 +54,14 @@ fn tone_family(
         file,
         name,
         slug: file,
-        voices,
+        voices: voices
+            .into_iter()
+            .map(|(preset, instrument)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| kit::build(p, &instrument, 0.0, 0.0));
+                (preset, build)
+            })
+            .collect(),
     }
 }
 
@@ -270,18 +280,276 @@ fn families() -> Vec<Family> {
                 ),
             ],
         ),
+        effect_family(
+            "tempo-echo",
+            "Tempo Echo",
+            [
+                ("Dotted Eighth", 14.0, -8.0, -6.0),
+                ("Eighth Echo", 3.0, -9.0, -6.0),
+                ("Quarter Slap", 2.0, -14.0, -8.0),
+                ("Long Tail", 1.0, -5.0, -7.0),
+            ]
+            .into_iter()
+            .map(|(name, division, feedback, wet)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| tempo_echo(p, division, feedback, wet));
+                (name, build)
+            })
+            .collect(),
+        ),
+        effect_family(
+            "tempo-tremolo",
+            "Tempo Tremolo",
+            [
+                ("Eighth Tremolo", 3.0, 0.7, 0.0),
+                ("Slow Swell", 1.0, 0.5, 0.0),
+                ("Choppy Gate", 4.0, 0.9, 3.0),
+            ]
+            .into_iter()
+            .map(|(name, division, depth, shape)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| tempo_tremolo(p, division, depth, shape));
+                (name, build)
+            })
+            .collect(),
+        ),
+        tone_family(
+            "drum-rack",
+            "Drum Rack",
+            vec![
+                ("General MIDI", drum_rack(0.0, 0.0)),
+                ("Wide Kit", drum_rack(-2.0, 0.6)),
+                ("Quiet Cymbals", drum_rack(-8.0, 0.2)),
+            ],
+        ),
     ]
 }
 
-/// The instrument built alone in a scratch project, returned with it.
-fn built(instrument: &Instrument) -> (Project, NodeId) {
-    let (mut project, mut history) = (Project::new(), History::new());
-    let group = kit::build(
-        &mut Patch::new(&mut project, &mut history),
-        instrument,
-        0.0,
+fn effect_family(
+    file: &'static str,
+    name: &'static str,
+    voices: Vec<(&'static str, Build)>,
+) -> Family {
+    Family {
+        file,
+        name,
+        slug: file,
+        voices,
+    }
+}
+
+/// An echo whose time is a division of the beat: Tempo into a Lag into a
+/// Delay, which feeds back through a Gain, and a wet Mix. Its inputs are `in`,
+/// `division` (the Tempo's choice), `feedback` (decibels) and `wet`
+/// (decibels); its output is `out`.
+fn tempo_echo(p: &mut Patch, division: f32, feedback: f32, wet: f32) -> NodeId {
+    let group = p.enter("Tempo Echo", 0.0, 0.0);
+    let audio = p.input("in", 0.0);
+    let choice = p.input("division", 1.0);
+    let repeats = p.input("feedback", 2.0);
+    let level = p.input("wet", 3.0);
+    let tempo = p.add(
+        spec("noodle.mod.tempo").param("division", division),
+        1.0,
+        1.0,
+    );
+    p.connect(choice, (tempo, "division"));
+    // A wire into Delay's `time` moves the slider along its travel (0 to 2 s)
+    // rather than setting it, so seconds go through a Math node to a fraction
+    // of that, onto a slider left at 0. The Lag turns a tempo change into a
+    // glide, so the delay line is not jumped (ADR 0008).
+    let travel = p.add(
+        spec("noodle.util.math").config("expr", Value::Text("a / 2".into())),
+        2.0,
+        1.0,
+    );
+    p.connect((tempo, "time"), (travel, "a"));
+    let smooth = p.add(
+        spec("noodle.mod.lag")
+            .param("rise", 0.05)
+            .param("fall", 0.05),
+        2.5,
+        1.0,
+    );
+    p.connect((travel, "out"), (smooth, "in"));
+    let feed = p.add(
+        spec("noodle.util.mix").config("inputs", Value::Int(2)),
+        2.0,
         0.0,
     );
+    p.connect(audio, (feed, "in1"));
+    let delay = p.add(spec("noodle.util.delay").param("time", 0.0), 3.0, 0.0);
+    p.connect((feed, "out"), (delay, "in"));
+    p.connect((smooth, "out"), (delay, "time"));
+    let back = p.add(spec("noodle.util.gain").param("gain", feedback), 3.0, 2.0);
+    p.connect((delay, "out"), (back, "in"));
+    p.connect(repeats, (back, "gain"));
+    p.connect((back, "out"), (feed, "in2"));
+    let blend = p.add(
+        spec("noodle.util.mix")
+            .config("inputs", Value::Int(2))
+            .param("gain2", wet),
+        4.0,
+        0.0,
+    );
+    p.connect(audio, (blend, "in1"));
+    p.connect((delay, "out"), (blend, "in2"));
+    p.connect(level, (blend, "gain2"));
+    let out = p.output("out", 5.0, 0.0);
+    p.connect((blend, "out"), out);
+    p.leave(group);
+    group
+}
+
+/// A tremolo whose rate is a division of the beat: Tempo into an LFO, turned
+/// into a gain that dips by `depth`, on a VCA. Its inputs are `in`,
+/// `division`, `depth` (0 to 1) and `shape` (the LFO's choice); its output is
+/// `out`.
+fn tempo_tremolo(p: &mut Patch, division: f32, depth: f32, shape: f32) -> NodeId {
+    let group = p.enter("Tempo Tremolo", 0.0, 0.0);
+    let audio = p.input("in", 0.0);
+    let choice = p.input("division", 1.0);
+    let amount = p.input("depth", 2.0);
+    let wave = p.input("shape", 3.0);
+    let tempo = p.add(
+        spec("noodle.mod.tempo").param("division", division),
+        1.0,
+        1.0,
+    );
+    p.connect(choice, (tempo, "division"));
+    // As for the echo, a wire moves the LFO's rate slider along its travel
+    // (0.01 to 100 Hz, logarithmic), so hertz become a fraction of that
+    // range, onto a slider left at 0.01.
+    let travel = p.add(
+        spec("noodle.util.math").config("expr", Value::Text("ln(a * 100) / ln(10000)".into())),
+        1.5,
+        1.0,
+    );
+    p.connect((tempo, "rate"), (travel, "a"));
+    let lfo = p.add(
+        spec("noodle.mod.lfo")
+            .param("rate", 0.01)
+            .param("shape", shape),
+        2.0,
+        1.0,
+    );
+    p.connect((travel, "out"), (lfo, "rate"));
+    p.connect(wave, (lfo, "shape"));
+    // The LFO swings between -1 and 1; the gain between 1 - depth and 1.
+    let gain = p.add(
+        spec("noodle.util.math")
+            .config("expr", Value::Text("1 - a * (0.5 - 0.5 * b)".into()))
+            .param("a", depth),
+        3.0,
+        1.0,
+    );
+    p.connect(amount, (gain, "a"));
+    p.connect((lfo, "out"), (gain, "b"));
+    let vca = p.add(spec("noodle.util.vca"), 4.0, 0.0);
+    p.connect(audio, (vca, "in"));
+    p.connect((gain, "out"), (vca, "level"));
+    let out = p.output("out", 5.0, 0.0);
+    p.connect((vca, "out"), out);
+    p.leave(group);
+    group
+}
+
+/// The Drum Rack with no samples (they are picked per slot after adding it):
+/// eight slots on General MIDI keys, at `db` and spread by `pan`.
+fn drum_rack(db: f32, spread: f32) -> Instrument {
+    let slots = [
+        (
+            Drum::Kick {
+                base: 48.0,
+                sweep: 120.0,
+                decay: 0.3,
+            },
+            36,
+            0.0,
+        ),
+        (
+            Drum::Snare {
+                tone: 190.0,
+                noise: 2200.0,
+                decay: 0.2,
+            },
+            38,
+            0.1,
+        ),
+        (
+            Drum::Hat {
+                cutoff: 7500.0,
+                decay: 0.045,
+            },
+            42,
+            -0.5,
+        ),
+        (
+            Drum::Hat {
+                cutoff: 6000.0,
+                decay: 0.22,
+            },
+            46,
+            0.5,
+        ),
+        (
+            Drum::Clap {
+                cutoff: 1500.0,
+                decay: 0.16,
+            },
+            39,
+            0.0,
+        ),
+        (
+            Drum::Kick {
+                base: 90.0,
+                sweep: 60.0,
+                decay: 0.3,
+            },
+            45,
+            -0.4,
+        ),
+        (
+            Drum::Snare {
+                tone: 250.0,
+                noise: 1500.0,
+                decay: 0.25,
+            },
+            50,
+            0.4,
+        ),
+        (
+            Drum::Hat {
+                cutoff: 5000.0,
+                decay: 0.6,
+            },
+            49,
+            0.3,
+        ),
+    ];
+    Instrument::Rack(Rack {
+        slots: slots
+            .into_iter()
+            .map(|(drum, key, pan)| Slot {
+                sample: String::new(),
+                drum,
+                key,
+                // Cymbals and hats sit under the rest in the quiet preset.
+                db: if matches!(drum, Drum::Hat { .. }) {
+                    db
+                } else {
+                    0.0
+                },
+                pan: pan * if spread == 0.0 { 0.0 } else { spread / 0.6 },
+            })
+            .collect(),
+    })
+}
+
+/// The variant built alone in a scratch project, returned with it.
+fn built(build: &Build) -> (Project, NodeId) {
+    let (mut project, mut history) = (Project::new(), History::new());
+    let group = build(&mut Patch::new(&mut project, &mut history));
     (project, group)
 }
 
@@ -291,8 +559,8 @@ pub fn files() -> Vec<File> {
     for family in families() {
         let mut items = Vec::new();
         let mut key = None;
-        for (i, (preset, instrument)) in family.voices.iter().enumerate() {
-            let (project, group) = built(instrument);
+        for (i, (preset, build)) in family.voices.iter().enumerate() {
+            let (project, group) = built(build);
             if i == 0 {
                 let mut template = GroupTemplate::from_group(project.graph(), group, family.name)
                     .expect("an instrument is a group");

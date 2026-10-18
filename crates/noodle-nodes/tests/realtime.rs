@@ -1424,6 +1424,7 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
             .with_param("shape", 3.0),
     );
     let compare = s.add(Node::new("noodle.mod.comparator"));
+    let tempo = s.add(Node::new("noodle.mod.tempo"));
     let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 4.0));
     let multi = s.add(Node::new("noodle.mod.envelope").with_param("length", 0.1));
     let single = s.add(
@@ -1444,6 +1445,7 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
     let follower = s.add(Node::new("noodle.mod.follower"));
     let automation = s.add(Node::new("noodle.mod.automation"));
     let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(tempo, "rate", lfo, "rate");
     s.wire(lfo, "out", compare, "in");
     s.wire(compare, "out", multi, "trigger");
     s.wire(clock, "out", single, "trigger");
