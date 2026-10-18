@@ -21,11 +21,15 @@ use crate::widgets::{
 /// the editor reads it once a frame.
 pub type LiveParams<'a> = &'a dyn Fn(NodeId, &str) -> Option<Live>;
 
-pub fn show(
+/// What a Spectrum node last measured, if it has.
+pub type Spectra<'a> = &'a dyn Fn(NodeId) -> Option<&'a crate::editor::SpectrumTrace>;
+
+pub fn show<'a>(
     ui: &mut Ui,
     session: &Session,
     active: Option<NodeId>,
     live: LiveParams<'_>,
+    spectra: Spectra<'a>,
 ) -> Vec<Edit> {
     let graph = session.project().graph();
     let mut edits = pending_scripts(ui, session, active);
@@ -53,6 +57,9 @@ pub fn show(
     problems(ui, session, id);
     presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
+    if node.type_id == noodle_nodes::SPECTRUM_ID {
+        spectrum_views(ui, session, spectra(id));
+    }
     match node_type {
         Some(node_type) => {
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
@@ -66,6 +73,25 @@ pub fn show(
         }
     }
     edits
+}
+
+/// A Spectrum node's curve and spectrogram at full width, with the frequency
+/// axis marked.
+fn spectrum_views(ui: &mut Ui, session: &Session, trace: Option<&crate::editor::SpectrumTrace>) {
+    if !session.engine_running() {
+        ui.weak("The engine is off, so there is nothing to measure.");
+    }
+    let width = ui.available_width();
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(width, 150.0), egui::Sense::hover());
+    crate::editor::draw_spectrum(&painter, response.rect, trace);
+    response.on_hover_text("Loudness by frequency (20 Hz to 20 kHz, log), 0 dB at the top. The thin line holds recent peaks.");
+    ui.label(RichText::new("20 Hz  ·  100  ·  1 k  ·  10 k  ·  20 kHz").small().weak());
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(width, 100.0), egui::Sense::hover());
+    crate::editor::draw_spectrogram(&painter, response.rect, trace);
+    response.on_hover_text("Spectrogram: the last few seconds, newest on the right, low frequencies at the bottom.");
+    ui.add_space(4.0);
 }
 
 /// The Presets control: pick a preset that fits, save the values as a user
@@ -561,15 +587,19 @@ fn script_editor(
     }
     match noodle_nodes::check_script(&text) {
         Ok(ports) => {
-            ui.label(
-                RichText::new(format!(
-                    "Inputs: {}. Outputs: {}.",
-                    ports.inputs.join(", "),
-                    ports.outputs.join(", ")
-                ))
-                .weak()
-                .small(),
+            let mut summary = format!(
+                "Inputs: {}. Outputs: {}.",
+                ports.inputs.join(", "),
+                ports.outputs.join(", ")
             );
+            if !ports.event_inputs.is_empty() || !ports.event_outputs.is_empty() {
+                summary += &format!(
+                    " Events in: {}. Events out: {}.",
+                    ports.event_inputs.join(", "),
+                    ports.event_outputs.join(", ")
+                );
+            }
+            ui.label(RichText::new(summary).weak().small());
         }
         Err(error) => {
             ui.colored_label(crate::theme::MUTE, error);
@@ -598,6 +628,11 @@ state z = 0        keeps its value
 let k = x * 2      this sample only
 y = k + z          (also += -= *= /=)
 if c { } else { }  comparisons give 1/0
+array a[64] = 0    memory; a[i] wraps round
+for i in 0 to 8 { } fixed length; len(a)
+events in n        n_on n_off n_key n_velocity
+events out m       note_on(m, key, vel)
+                   note_off(m, key)
 sr bpm beat time pi tau e
 (time is coarse late on: keep phase in state)
 rand()  select(c,a,b)  db()  mtof()
@@ -986,7 +1021,7 @@ mod tests {
             active: Some(NodeId(1)),
         };
         crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
-            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            let edits = show(ui, &state.session, state.active, &|_, _| None, &|_| None);
             state.session.edit(edits);
         })
     }
@@ -1323,6 +1358,14 @@ mod tests {
         harness.drop_at(rect.center() + vec2(50.0, 0.0));
         harness.run();
         assert_eq!(param(&harness, "frequency"), None);
+    }
+
+    #[test]
+    fn a_spectrum_node_shows_its_views_and_says_when_the_engine_is_off() {
+        let harness = harness([Node::new(noodle_nodes::SPECTRUM_ID)]);
+        harness.get_by_label("Spectrum");
+        harness.get_by_label_contains("nothing to measure");
+        harness.get_by_label_contains("20 kHz");
     }
 
     #[test]
@@ -1814,7 +1857,7 @@ mod tests {
             active: Some(group),
         };
         let mut h = crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
-            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            let edits = show(ui, &state.session, state.active, &|_, _| None, &|_| None);
             state.session.edit(edits);
         });
         h.run();

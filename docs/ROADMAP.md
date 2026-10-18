@@ -915,8 +915,7 @@ for spectral wires (`SpectralDelay`) came in the same batch.
 ## Later
 
 - ~~AU hosting.~~ **Done** (macOS): effects, instruments and music effects, with ports, notes, state and the transport; editors are the follow-up. See "AU hosting" in ARCHITECTURE.md.
-- Script node follow-ups: loops with a step limit, arrays or delay lines in
-  scripts, MIDI/event ports.
+- ~~Script node follow-ups.~~ **Done**: bounded `for` loops, arrays (delay lines) and event ports (note in, note out).
 - ~~MIDI 2.0 follow-ups.~~ 32-bit controller, bend and pressure events and a `MIDI Control` node are **done**. Still open and blocked on hardware or the MIDI library: device input as UMP (midir delivers MIDI 1.0 bytes) and MIDI-CI.
 - ~~Downbeat model.~~ **Done**: the beat and the off-beat are told apart by where the harmony changes (chroma novelty), so `funk-engine`'s phase is right.
 - AU leftovers (MIDI output from AU instruments, editors, AUv3 async instantiation) need a real Mac or a unit that exercises them; CI's Apple units don't.

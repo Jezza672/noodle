@@ -386,14 +386,24 @@ postfix program when the node is built and run on a fixed stack per sample.
 config declares the node's ports (`input x`, `param cutoff = 1000 [20, 20000]
 log hz`, `output y`), `state` variables that last between samples, `let`
 locals, assignments, `if`/`else` and the Math functions plus `rand()`, `db()`,
-`mtof()` and `select()`, with `sr`, `bpm`, `beat` and `time` readable. There are
-no loops, so a script is bounded and safe on the audio thread. The text is
-parsed to a postfix program with forward-only jumps when the node is built
-(a mistake fails the node with its line number), and each lane keeps its
-variables in a fixed array, so nothing allocates. The script shapes ports, so
+`mtof()` and `select()`, with `sr`, `bpm`, `beat` and `time` readable.
+`array buf[480]` is memory per lane (8192 values in all, indices wrap, so a
+counting write head makes a delay line) and `for i in 0 to 8 { }` loops with
+ends fixed in the text (whole numbers or `len(buf)`; 256 trips, 1024 steps for
+nested loops), so a script is still bounded and safe on the audio thread.
+`events in notes` gives `notes_on`, `notes_off`, `notes_key` and
+`notes_velocity` (one event per sample; a chord's notes arrive on consecutive
+samples, a queue of 64 carries the overflow into the next block, via
+`LaneKernel::begin_block`) and `events out played` takes `note_on(played, key,
+velocity)` and `note_off(played, key)`; events have no voices, so the first
+voice and channel's lane sends. The text is
+parsed to a postfix program (jumps forward for `if`, back for `for`) when the
+node is built (a mistake fails the node with its line number), and each lane
+keeps its variables and arrays in fixed arrays, so nothing allocates. The script shapes ports, so
 it is config, and it has no node presets (a preset keeps its node's ports). The
 properties panel edits it as a code box that commits on losing focus, showing
-the ports it makes or the error as you type. `examples/script-fold.ron` is one.
+the ports it makes or the error as you type. `examples/script-fold.ron` and
+`script-comb.ron` (an array delay line and a loop) are two.
 `Delay` (`noodle.util.delay`) delays its input by `time` (seconds, up to 2,
 interpolated linearly, offset-style modulation so an LFO can sweep it) and
 outputs only the delayed signal; an echo is a Mix, the Delay and a Gain wired

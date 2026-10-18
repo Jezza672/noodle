@@ -374,9 +374,13 @@ impl App {
                     ui.separator();
                 }
                 let editor = &self.editor;
-                edits.extend(properties::show(ui, &self.session, active, &|node, key| {
-                    editor.param_live(node, key)
-                }));
+                edits.extend(properties::show(
+                    ui,
+                    &self.session,
+                    active,
+                    &|node, key| editor.param_live(node, key),
+                    &|node| editor.spectrum(node),
+                ));
                 self.session.edit(edits);
             });
 

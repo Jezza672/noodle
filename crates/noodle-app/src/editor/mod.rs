@@ -158,11 +158,21 @@ impl Default for EditorState {
     }
 }
 
-pub use body::{MeterAxis, MeterChannel};
+pub use body::{MeterAxis, MeterChannel, SpectrumTrace};
 
 /// Draws one level as a bar in `area`.
 pub fn draw_level(painter: &egui::Painter, area: Rect, level: &MeterChannel, axis: MeterAxis) {
     body::meter(painter, area, 1.0, std::slice::from_ref(level), axis);
+}
+
+/// Draws a Spectrum node's curve in `area`, as the node draws it on the canvas.
+pub fn draw_spectrum(painter: &egui::Painter, area: Rect, trace: Option<&SpectrumTrace>) {
+    body::spectrum(painter, area, 1.0, trace);
+}
+
+/// Draws a Spectrum node's spectrogram in `area`.
+pub fn draw_spectrogram(painter: &egui::Painter, area: Rect, trace: Option<&SpectrumTrace>) {
+    body::spectrogram(painter, area, trace);
 }
 
 /// Draws a scope's capture in `area`, as the node draws it on the canvas.
@@ -215,6 +225,11 @@ impl EditorState {
 
     pub fn set_show_cpu(&mut self, on: bool) {
         self.bodies.set_show_cpu(on);
+    }
+
+    /// What a Spectrum node last measured.
+    pub fn spectrum(&self, node: NodeId) -> Option<&SpectrumTrace> {
+        self.bodies.spectrum(node)
     }
 
     /// What a scope node last captured, for a view of it elsewhere.
@@ -431,6 +446,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
     }
+    state
+        .bodies
+        .set_sample_rate(session.engine_sample_rate().unwrap_or(0.0));
     state
         .bodies
         .update(session.telemetry(), session.project(), dt);

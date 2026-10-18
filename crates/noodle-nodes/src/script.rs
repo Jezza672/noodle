@@ -2,17 +2,18 @@
 //! parameters and memory of its own.
 
 use noodle_engine::{
-    Config, ConfigInfo, Context, Instance, Lane, LaneInputs, LaneKernel, LaneOutputs, Layout,
-    NodeError, NodeInfo, NodeType, ParamInfo, PerLane, Setup, Unit,
+    Config, ConfigInfo, Context, Event, EventKind, EventsOut, Instance, Lane, LaneInputs,
+    LaneKernel, LaneOutputs, Layout, NodeError, NodeInfo, NodeType, NoteId, ParamInfo, PerLane,
+    Setup, Unit,
 };
 
 use crate::math::{scan_number, unary_function};
 
 /// Runs the program in its `script` setting once per sample, per voice and
 /// channel. The language is small on purpose: numbers, a few dozen maths
-/// functions, variables that last between samples, and `if`. There are no
-/// loops, so a script always finishes in a bounded time and is safe to run on
-/// the audio thread.
+/// functions, variables that last between samples, arrays, `if` and loops
+/// whose length is fixed in the text. A script always finishes in a bounded
+/// time, so it is safe to run on the audio thread.
 ///
 /// ```text
 /// // A one-pole low-pass filter with its cutoff as a parameter.
@@ -35,6 +36,24 @@ use crate::math::{scan_number, unary_function};
 ///   variable, and `if cond { ... } else { ... }` chooses. A statement ends
 ///   at a new line or a `;`. `//` starts a comment. An output not set in a
 ///   sample is 0.
+/// - **Arrays:** `array buf[480]` (or `array buf[8] = 0.5` to fill it) is
+///   memory that lasts between samples, one copy per voice and channel, with
+///   at most [`ARRAY_TOTAL`] values in all. `buf[i]` reads and writes it (also
+///   `+=` and the like); the index is rounded down and wraps round the array,
+///   so a write head that only counts up makes a delay line. `len(buf)` is
+///   the length.
+/// - **Loops:** `for i in 0 to 8 { ... }` runs the block with `i` from 0 to 7.
+///   The ends are whole numbers or `len(buf)`, so the number of steps is known
+///   when the script is read: a loop runs at most 256 times, and loops inside
+///   loops at most 1024 steps all told. `i` can't be set.
+/// - **Events:** `events in notes` is an event input and `events out played`
+///   an event output. An input gives the variables `notes_on` and
+///   `notes_off` (1 in the sample a note starts or ends, else 0),
+///   `notes_key` and `notes_velocity` (those of the latest note event). One
+///   event arrives per sample, so events at the same instant arrive on
+///   consecutive samples, in order. `note_on(played, key, velocity)` and
+///   `note_off(played, key)` send notes (a note's identity is its key). Events
+///   have no voices, so only the first voice and channel's lane sends.
 /// - **Truth:** any non-zero value is true, and so is NaN.
 /// - **Expressions** are as in the Math node, plus comparisons `< <= > >= ==
 ///   !=` (giving 1 or 0), `&&`, `||` and `!` (any non-zero value is true).
@@ -80,6 +99,20 @@ pub const MAX_OUTPUTS: usize = 8;
 const MAX_OPS: usize = 4096;
 /// The deepest the evaluation stack can get, so it can live on the stack.
 const DEPTH: usize = 32;
+/// The most values the arrays of one lane hold altogether.
+pub const ARRAY_TOTAL: usize = 8192;
+/// The most arrays.
+const MAX_ARRAYS: usize = 16;
+/// The most event inputs, and event outputs.
+pub const MAX_EVENT_PORTS: usize = 4;
+/// The most times one loop runs.
+const MAX_TRIPS: usize = 256;
+/// The most steps of a loop and the loops inside it.
+const MAX_STEPS: usize = 1024;
+/// Events waiting for a sample to arrive on, per event input.
+const QUEUE: usize = 64;
+/// The most note-ons remembered, to give a note-off its key.
+const REMEMBERED: usize = 32;
 /// The deepest the parser recurses (brackets and nested `if`s), so a hostile
 /// text can't overflow the stack.
 const NESTING: usize = 48;
@@ -92,6 +125,8 @@ pub fn check(text: &str) -> Result<ScriptPorts, String> {
     Ok(ScriptPorts {
         inputs: program.inputs.iter().map(|i| i.key.clone()).collect(),
         outputs: program.outputs.clone(),
+        event_inputs: program.event_in.iter().map(|e| e.name.clone()).collect(),
+        event_outputs: program.event_out.clone(),
     })
 }
 
@@ -100,6 +135,8 @@ pub fn check(text: &str) -> Result<ScriptPorts, String> {
 pub struct ScriptPorts {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    pub event_inputs: Vec<String>,
+    pub event_outputs: Vec<String>,
 }
 
 fn effective(text: &str) -> &str {
@@ -145,13 +182,24 @@ impl NodeType for Script {
         for output in &program.outputs {
             layout = layout.output(output.clone(), title(output));
         }
+        for event in &program.event_in {
+            layout = layout.event_input(event.name.clone(), title(&event.name));
+        }
+        for event in &program.event_out {
+            layout = layout.event_output(event.clone(), title(event));
+        }
         Ok(layout)
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let program = Self::program(setup.config)?;
+        let feeds = program
+            .event_in
+            .iter()
+            .map(|_| Feed::new(setup.max_frames))
+            .collect();
         Ok(Instance::realtime(PerLane::new(
-            ScriptKernel { program },
+            ScriptKernel { program, feeds },
             setup,
         )))
     }
@@ -168,12 +216,101 @@ fn title(key: &str) -> String {
 
 struct ScriptKernel {
     program: Program,
+    /// What each event input delivers, sample by sample, in this block.
+    feeds: Vec<Feed>,
+}
+
+/// An event waiting to arrive, or arrived: `kind` is 0 for none, 1 for a
+/// note-on and 2 for a note-off.
+#[derive(Clone, Copy, Default)]
+struct Queued {
+    kind: u8,
+    key: f32,
+    velocity: f32,
+    time: u32,
+}
+
+/// One event input's events, handed out one to a sample so that a chord
+/// arrives as consecutive samples and none is lost. All lanes read the same
+/// schedule. Nothing here allocates after the node is built.
+struct Feed {
+    queue: [Queued; QUEUE],
+    head: usize,
+    len: usize,
+    /// The event arriving in each sample of the block.
+    delivered: Vec<Queued>,
+    /// (note id, key) of the latest note-ons, for the keys of note-offs.
+    notes: [(u32, u8); REMEMBERED],
+    next_note: usize,
+}
+
+impl Feed {
+    fn new(max_frames: usize) -> Self {
+        Self {
+            queue: [Queued::default(); QUEUE],
+            head: 0,
+            len: 0,
+            delivered: vec![Queued::default(); max_frames],
+            notes: [(u32::MAX, 0); REMEMBERED],
+            next_note: 0,
+        }
+    }
+
+    fn fill(&mut self, frames: usize, events: &[Event]) {
+        let frames = frames.min(self.delivered.len());
+        self.delivered[..frames].fill(Queued::default());
+        for event in events {
+            let queued = match event.kind {
+                EventKind::NoteOn {
+                    note,
+                    key,
+                    velocity,
+                    ..
+                } => {
+                    self.notes[self.next_note] = (note.0, key);
+                    self.next_note = (self.next_note + 1) % REMEMBERED;
+                    Queued {
+                        kind: 1,
+                        key: f32::from(key),
+                        velocity,
+                        time: event.time,
+                    }
+                }
+                EventKind::NoteOff { note, velocity } => {
+                    let key = self.notes.iter().find(|n| n.0 == note.0).map_or(0, |n| n.1);
+                    Queued {
+                        kind: 2,
+                        key: f32::from(key),
+                        velocity,
+                        time: event.time,
+                    }
+                }
+                _ => continue,
+            };
+            if self.len < QUEUE {
+                self.queue[(self.head + self.len) % QUEUE] = queued;
+                self.len += 1;
+            }
+        }
+        for frame in 0..frames {
+            if self.len > 0 && self.queue[self.head].time as usize <= frame {
+                self.delivered[frame] = self.queue[self.head];
+                self.head = (self.head + 1) % QUEUE;
+                self.len -= 1;
+            }
+        }
+        // What didn't fit in this block arrives at the start of the next.
+        for k in 0..self.len {
+            self.queue[(self.head + k) % QUEUE].time = 0;
+        }
+    }
 }
 
 /// One lane's memory: every variable (the state ones are the only ones read
 /// before they are written), the sample count and the noise generator.
 struct ScriptState {
     vars: [f32; MAX_VARS],
+    array: [f32; ARRAY_TOTAL],
     /// False until the `state` variables have their starting values.
     started: bool,
     samples: u64,
@@ -184,6 +321,7 @@ impl Default for ScriptState {
     fn default() -> Self {
         Self {
             vars: [0.0; MAX_VARS],
+            array: [0.0; ARRAY_TOTAL],
             started: false,
             samples: 0,
             rng: 0x9E37_79B9,
@@ -194,11 +332,20 @@ impl Default for ScriptState {
 impl LaneKernel for ScriptKernel {
     type State = ScriptState;
 
+    fn begin_block(&mut self, ctx: &Context, events: &[&[Event]]) {
+        for (feed, events) in self.feeds.iter_mut().zip(events) {
+            feed.fill(ctx.frames, events);
+        }
+    }
+
     fn process_lane(&mut self, state: &mut ScriptState, ctx: &Context, lane: Lane<'_, '_>) {
         let program = &self.program;
         if !state.started {
             for &(slot, value) in &program.starts {
                 state.vars[slot] = value;
+            }
+            for decl in &program.arrays {
+                state.array[decl.offset..decl.offset + decl.len].fill(decl.fill);
             }
             state.started = true;
             // Each lane gets its own noise: mix the lane into the seed.
@@ -209,36 +356,50 @@ impl LaneKernel for ScriptKernel {
             }
         }
         let Lane {
+            voice,
+            channel,
             inputs,
             mut outputs,
-            ..
+            event_outputs,
         } = lane;
+        // Events have no voices: the first lane speaks for the node.
+        let sink = if voice == 0 && channel == 0 {
+            event_outputs
+        } else {
+            &mut []
+        };
+        let feeds = &self.feeds;
+        let (inputs, outputs) = (&inputs, &mut outputs);
         match program.outputs.len() {
-            1 => run_lane::<1>(program, state, ctx, &inputs, &mut outputs),
-            2 => run_lane::<2>(program, state, ctx, &inputs, &mut outputs),
-            3 => run_lane::<3>(program, state, ctx, &inputs, &mut outputs),
-            4 => run_lane::<4>(program, state, ctx, &inputs, &mut outputs),
-            5 => run_lane::<5>(program, state, ctx, &inputs, &mut outputs),
-            6 => run_lane::<6>(program, state, ctx, &inputs, &mut outputs),
-            7 => run_lane::<7>(program, state, ctx, &inputs, &mut outputs),
-            _ => run_lane::<8>(program, state, ctx, &inputs, &mut outputs),
+            0 => run_lane::<0>(program, feeds, state, ctx, inputs, outputs, sink),
+            1 => run_lane::<1>(program, feeds, state, ctx, inputs, outputs, sink),
+            2 => run_lane::<2>(program, feeds, state, ctx, inputs, outputs, sink),
+            3 => run_lane::<3>(program, feeds, state, ctx, inputs, outputs, sink),
+            4 => run_lane::<4>(program, feeds, state, ctx, inputs, outputs, sink),
+            5 => run_lane::<5>(program, feeds, state, ctx, inputs, outputs, sink),
+            6 => run_lane::<6>(program, feeds, state, ctx, inputs, outputs, sink),
+            7 => run_lane::<7>(program, feeds, state, ctx, inputs, outputs, sink),
+            _ => run_lane::<8>(program, feeds, state, ctx, inputs, outputs, sink),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_lane<const N: usize>(
     program: &Program,
+    feeds: &[Feed],
     state: &mut ScriptState,
     ctx: &Context,
     inputs: &LaneInputs<'_>,
     outputs: &mut LaneOutputs<'_, '_>,
+    event_outputs: &mut [EventsOut<'_>],
 ) {
     let mut ins: [&[f32]; MAX_INPUTS] = [&[]; MAX_INPUTS];
     for (k, slice) in ins.iter_mut().enumerate().take(program.inputs.len()) {
         *slice = inputs.get(k);
     }
     let mut outs = outputs.get_disjoint_mut(std::array::from_fn::<usize, N, _>(|i| i));
-    let frames = outs.iter().map(|o| o.len()).min().unwrap_or(0);
+    let frames = outs.iter().map(|o| o.len()).min().unwrap_or(ctx.frames);
 
     let rate = f64::from(ctx.sample_rate);
     let bpm = ctx.transport.bpm;
@@ -261,14 +422,51 @@ fn run_lane<const N: usize>(
         for &slot in &program.output_slots {
             state.vars[slot] = 0.0;
         }
+        for (decl, feed) in program.event_in.iter().zip(feeds) {
+            let arrived = feed.delivered.get(i).copied().unwrap_or_default();
+            state.vars[decl.slots[0]] = f32::from(arrived.kind == 1);
+            state.vars[decl.slots[1]] = f32::from(arrived.kind == 2);
+            if arrived.kind != 0 {
+                state.vars[decl.slots[2]] = arrived.key;
+                state.vars[decl.slots[3]] = arrived.velocity;
+            }
+        }
         env.beat = (beat0 + i as f64 * beat_step) as f32;
         env.time = ((state.samples + i as u64) as f64 / rate) as f32;
-        program.run(&mut state.vars, &env, &mut state.rng);
+        let mut sink = Sink {
+            outs: &mut *event_outputs,
+            frame: i as u32,
+        };
+        program.run(
+            &mut state.vars,
+            &mut state.array,
+            &env,
+            &mut state.rng,
+            &mut sink,
+        );
         for (out, &slot) in outs.iter_mut().zip(&program.output_slots) {
             out[i] = state.vars[slot];
         }
     }
     state.samples += frames as u64;
+}
+
+/// Where a script's events go, and in which sample.
+struct Sink<'a, 'b> {
+    outs: &'a mut [EventsOut<'b>],
+    frame: u32,
+}
+
+impl Sink<'_, '_> {
+    fn send(&mut self, port: u8, kind: EventKind) {
+        if let Some(out) = self.outs.get_mut(usize::from(port)) {
+            // A full buffer drops the event.
+            let _ = out.push(Event {
+                time: self.frame,
+                kind,
+            });
+        }
+    }
 }
 
 /// What a sample can read besides its inputs and variables.
@@ -289,6 +487,16 @@ enum Op {
     Beat,
     Time,
     Rand,
+    /// Copies the top of the stack.
+    Dup,
+    /// Replaces an index with the array's value there.
+    LoadIdx(u8),
+    /// Pops a value and an index and stores the value in the array.
+    StoreIdx(u8),
+    /// Pops a velocity and a key and sends a note-on.
+    EmitOn(u8),
+    /// Pops a key and sends a note-off.
+    EmitOff(u8),
     Neg,
     Not,
     Add,
@@ -318,6 +526,28 @@ enum Op {
 }
 
 #[derive(Debug)]
+struct ArrayDecl {
+    name: String,
+    offset: usize,
+    len: usize,
+    fill: f32,
+}
+
+impl ArrayDecl {
+    /// Where `index` (rounded down, wrapping round) is in the lane's memory.
+    fn at(&self, index: f32) -> usize {
+        self.offset + (index.floor() as i64).rem_euclid(self.len as i64) as usize
+    }
+}
+
+#[derive(Debug)]
+struct EventInDecl {
+    name: String,
+    /// The variables `_on`, `_off`, `_key` and `_velocity`.
+    slots: [usize; 4],
+}
+
+#[derive(Debug)]
 struct ParamDecl {
     min: f32,
     max: f32,
@@ -343,13 +573,16 @@ struct Program {
     output_slots: Vec<usize>,
     /// Starting values of the `state` variables.
     starts: Vec<(usize, f32)>,
+    arrays: Vec<ArrayDecl>,
+    event_in: Vec<EventInDecl>,
+    event_out: Vec<String>,
 }
 
 impl Program {
     fn compile(text: &str) -> Result<Self, String> {
         let mut parser = Parser::new(lex(text)?);
         parser.program()?;
-        if parser.program.outputs.is_empty() {
+        if parser.program.outputs.is_empty() && parser.program.event_out.is_empty() {
             return Err("a script needs an output, such as `output out`".into());
         }
         let program = parser.program;
@@ -364,11 +597,16 @@ impl Program {
         let (mut depth, mut max) = (0usize, 0usize);
         for op in &self.ops {
             match op {
-                Op::Push(_) | Op::Load(_) | Op::Sr | Op::Bpm | Op::Beat | Op::Time | Op::Rand => {
-                    depth += 1
-                }
-                Op::Neg | Op::Not | Op::Unary(_) | Op::Jump(_) => {}
-                Op::Clamp | Op::Mix | Op::Select => depth -= 2,
+                Op::Push(_)
+                | Op::Load(_)
+                | Op::Sr
+                | Op::Bpm
+                | Op::Beat
+                | Op::Time
+                | Op::Rand
+                | Op::Dup => depth += 1,
+                Op::Neg | Op::Not | Op::Unary(_) | Op::Jump(_) | Op::LoadIdx(_) => {}
+                Op::Clamp | Op::Mix | Op::Select | Op::StoreIdx(_) | Op::EmitOn(_) => depth -= 2,
                 _ => depth -= 1,
             }
             max = max.max(depth);
@@ -376,7 +614,14 @@ impl Program {
         max
     }
 
-    fn run(&self, vars: &mut [f32; MAX_VARS], env: &Env, rng: &mut u32) {
+    fn run(
+        &self,
+        vars: &mut [f32; MAX_VARS],
+        array: &mut [f32; ARRAY_TOTAL],
+        env: &Env,
+        rng: &mut u32,
+        sink: &mut Sink<'_, '_>,
+    ) {
         let mut stack = [0.0f32; DEPTH];
         let mut top = 0;
         let mut pc = 0;
@@ -420,6 +665,43 @@ impl Program {
                     *rng = x;
                     stack[top] = (x >> 8) as f32 / 8_388_608.0 - 1.0;
                     top += 1;
+                }
+                Op::Dup => {
+                    stack[top] = stack[top - 1];
+                    top += 1;
+                }
+                Op::LoadIdx(a) => {
+                    stack[top - 1] = array[self.arrays[usize::from(a)].at(stack[top - 1])];
+                }
+                Op::StoreIdx(a) => {
+                    let (index, value) = (stack[top - 2], stack[top - 1]);
+                    top -= 2;
+                    array[self.arrays[usize::from(a)].at(index)] = value;
+                }
+                Op::EmitOn(port) => {
+                    let (key, velocity) = (stack[top - 2], stack[top - 1]);
+                    top -= 2;
+                    let key = key.clamp(0.0, 127.0) as u8;
+                    sink.send(
+                        port,
+                        EventKind::NoteOn {
+                            note: NoteId(u32::from(key)),
+                            channel: 0,
+                            key,
+                            velocity: velocity.clamp(0.0, 1.0),
+                        },
+                    );
+                }
+                Op::EmitOff(port) => {
+                    top -= 1;
+                    let key = stack[top].clamp(0.0, 127.0) as u8;
+                    sink.send(
+                        port,
+                        EventKind::NoteOff {
+                            note: NoteId(u32::from(key)),
+                            velocity: 0.0,
+                        },
+                    );
                 }
                 Op::Neg => stack[top - 1] = -stack[top - 1],
                 Op::Not => stack[top - 1] = f32::from(stack[top - 1] == 0.0),
@@ -584,6 +866,10 @@ struct Parser {
     vars: Vec<Var>,
     next_slot: usize,
     depth: usize,
+    /// How many times the loops around the statement being read run in all.
+    steps: usize,
+    /// Values in the arrays so far.
+    array_total: usize,
 }
 
 /// (binding power, right-associative, op) of a binary operator.
@@ -611,12 +897,13 @@ fn binary(symbol: &str) -> Option<(u8, bool, Op)> {
 /// `-(a^2)`.
 const PREFIX: u8 = 6;
 
-const KEYWORDS: [&str; 8] = [
-    "input", "param", "output", "state", "let", "if", "else", "rand",
+const KEYWORDS: [&str; 13] = [
+    "input", "param", "output", "state", "let", "if", "else", "rand", "array", "events", "for",
+    "note_on", "note_off",
 ];
 const CONSTANTS: [&str; 7] = ["sr", "bpm", "beat", "time", "pi", "tau", "e"];
-const FUNCTIONS: [&str; 9] = [
-    "min", "max", "pow", "atan2", "clamp", "mix", "select", "db", "mtof",
+const FUNCTIONS: [&str; 10] = [
+    "min", "max", "pow", "atan2", "clamp", "mix", "select", "db", "mtof", "len",
 ];
 
 fn reserved(name: &str) -> bool {
@@ -646,10 +933,15 @@ impl Parser {
                 input_slots: Vec::new(),
                 output_slots: Vec::new(),
                 starts: Vec::new(),
+                arrays: Vec::new(),
+                event_in: Vec::new(),
+                event_out: Vec::new(),
             },
             vars: Vec::new(),
             next_slot: 0,
             depth: 0,
+            steps: 1,
+            array_total: 0,
         }
     }
 
@@ -733,7 +1025,7 @@ impl Parser {
         if reserved(name) {
             return self.err(format!("`{name}` is a built-in name"));
         }
-        if self.vars.iter().any(|v| v.name == name) {
+        if self.vars.iter().any(|v| v.name == name) || self.names_port_or_array(name) {
             return self.err(format!("`{name}` is already used"));
         }
         if self.next_slot >= MAX_VARS {
@@ -749,13 +1041,29 @@ impl Parser {
         Ok(slot)
     }
 
+    /// Whether an array or an event port already has the name.
+    fn names_port_or_array(&self, name: &str) -> bool {
+        let program = &self.program;
+        program.arrays.iter().any(|a| a.name == name)
+            || program.event_in.iter().any(|e| e.name == name)
+            || program.event_out.iter().any(|e| e == name)
+    }
+
+    fn array(&self, name: &str) -> Option<u8> {
+        self.program
+            .arrays
+            .iter()
+            .position(|a| a.name == name)
+            .map(|k| k as u8)
+    }
+
     fn statement(&mut self, top: bool) -> Result<(), String> {
         if self.program.ops.len() > MAX_OPS {
             return self.err("the script is too long");
         }
         let name = self.name("a statement")?;
         match name.as_str() {
-            "input" | "param" | "output" | "state" => {
+            "input" | "param" | "output" | "state" | "array" | "events" => {
                 if !top {
                     return self.err(format!("`{name}` goes at the top level, not in a block"));
                 }
@@ -770,6 +1078,8 @@ impl Parser {
                 self.program.ops.push(Op::Store(slot));
             }
             "if" => self.if_statement()?,
+            "for" => self.for_statement()?,
+            "note_on" | "note_off" => self.note_statement(name == "note_on")?,
             _ => self.assignment(&name)?,
         }
         match self.peek() {
@@ -782,6 +1092,11 @@ impl Parser {
     }
 
     fn declaration(&mut self, keyword: &str) -> Result<(), String> {
+        match keyword {
+            "events" => return self.events_declaration(),
+            "array" => return self.array_declaration(),
+            _ => {}
+        }
         let name = self.name("a name")?;
         match keyword {
             "input" => {
@@ -849,6 +1164,168 @@ impl Parser {
         Ok(())
     }
 
+    /// `events in name` or `events out name`.
+    fn events_declaration(&mut self) -> Result<(), String> {
+        let direction = self.name("`in` or `out`")?;
+        let name = self.name("a name")?;
+        if reserved(&name)
+            || self.lookup(&name).is_some()
+            || self.names_port_or_array(&name)
+        {
+            return self.err(format!("`{name}` is a built-in name or already used"));
+        }
+        match direction.as_str() {
+            "in" => {
+                if self.program.event_in.len() >= MAX_EVENT_PORTS {
+                    return self.err(format!("at most {MAX_EVENT_PORTS} event inputs"));
+                }
+                let mut slots = [0; 4];
+                for (slot, suffix) in slots.iter_mut().zip(["on", "off", "key", "velocity"]) {
+                    *slot = usize::from(self.declare(&format!("{name}_{suffix}"), Kind::Input)?);
+                }
+                self.program.event_in.push(EventInDecl { name, slots });
+            }
+            "out" => {
+                if self.program.event_out.len() >= MAX_EVENT_PORTS {
+                    return self.err(format!("at most {MAX_EVENT_PORTS} event outputs"));
+                }
+                self.program.event_out.push(name);
+            }
+            other => {
+                return self.err(format!("expected `in` or `out`, found `{other}`"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `array name[length]`, optionally `= fill`.
+    fn array_declaration(&mut self) -> Result<(), String> {
+        let name = self.name("a name")?;
+        if reserved(&name) || self.lookup(&name).is_some() || self.names_port_or_array(&name) {
+            return self.err(format!("`{name}` is a built-in name or already used"));
+        }
+        if self.program.arrays.len() >= MAX_ARRAYS {
+            return self.err(format!("at most {MAX_ARRAYS} arrays"));
+        }
+        self.expect("[")?;
+        let len = self.number()?;
+        self.expect("]")?;
+        if len.fract() != 0.0 || len < 1.0 {
+            return self.err(format!("`{name}`'s length must be a whole number, 1 or more"));
+        }
+        let len = len as usize;
+        if self.array_total + len > ARRAY_TOTAL {
+            return self.err(format!("arrays hold at most {ARRAY_TOTAL} values in all"));
+        }
+        let fill = if self.eat("=") { self.number()? } else { 0.0 };
+        self.program.arrays.push(ArrayDecl {
+            name,
+            offset: self.array_total,
+            len,
+            fill,
+        });
+        self.array_total += len;
+        Ok(())
+    }
+
+    /// `name[index]` after the name: pushes the index and checks the bracket.
+    fn index(&mut self) -> Result<(), String> {
+        self.expect("[")?;
+        self.expression(0)?;
+        self.expect("]")
+    }
+
+    /// A whole number or `len(array)`, for the ends of a loop.
+    fn bound(&mut self) -> Result<i64, String> {
+        if matches!(self.peek(), Some(Tok::Name(n)) if n == "len") {
+            self.at += 1;
+            self.expect("(")?;
+            let name = self.name("an array")?;
+            let Some(a) = self.array(&name) else {
+                return self.err(format!("`{name}` is not an array"));
+            };
+            self.expect(")")?;
+            return Ok(self.program.arrays[usize::from(a)].len as i64);
+        }
+        let n = self.number()?;
+        if n.fract() != 0.0 || n.abs() > 1e6 {
+            return self.err("the ends of a loop are whole numbers");
+        }
+        Ok(n as i64)
+    }
+
+    /// `for i in 0 to 8 { ... }`
+    fn for_statement(&mut self) -> Result<(), String> {
+        let var = self.name("a loop variable")?;
+        for word in ["in"] {
+            if self.name(&format!("`{word}`"))? != word {
+                self.at -= 1;
+                return self.err(format!("expected `{word}` after `{var}`"));
+            }
+        }
+        let from = self.bound()?;
+        if self.name("`to`")? != "to" {
+            self.at -= 1;
+            return self.err("expected `to` between the ends of the loop");
+        }
+        let to = self.bound()?;
+        let trips = (to - from).max(0) as usize;
+        if trips > MAX_TRIPS || self.steps.saturating_mul(trips.max(1)) > MAX_STEPS {
+            return self.err(format!(
+                "a loop runs at most {MAX_TRIPS} times, and loops inside loops {MAX_STEPS} steps in all"
+            ));
+        }
+        let outer = self.steps;
+        self.steps *= trips.max(1);
+        let scope = self.vars.len();
+        let slot = self.declare(&var, Kind::Input)?;
+        let ops = &mut self.program.ops;
+        ops.push(Op::Push(from as f32));
+        ops.push(Op::Store(slot));
+        let top = ops.len();
+        ops.push(Op::Load(slot));
+        ops.push(Op::Push(to as f32));
+        ops.push(Op::Lt);
+        let exit = ops.len();
+        ops.push(Op::JumpIfZero(0));
+        self.block()?;
+        let Ok(top) = u16::try_from(top) else {
+            return self.err("the script is too long");
+        };
+        let ops = &mut self.program.ops;
+        ops.push(Op::Load(slot));
+        ops.push(Op::Push(1.0));
+        ops.push(Op::Add);
+        ops.push(Op::Store(slot));
+        ops.push(Op::Jump(top));
+        self.patch(exit)?;
+        self.vars.truncate(scope);
+        self.steps = outer;
+        Ok(())
+    }
+
+    /// `note_on(out, key, velocity)` or `note_off(out, key)`.
+    fn note_statement(&mut self, on: bool) -> Result<(), String> {
+        self.expect("(")?;
+        let name = self.name("an event output")?;
+        let Some(port) = self.program.event_out.iter().position(|e| *e == name) else {
+            return self.err(format!("`{name}` is not an event output (`events out {name}`)"));
+        };
+        self.expect(",")?;
+        self.expression(0)?;
+        if on {
+            self.expect(",")?;
+            self.expression(0)?;
+        }
+        self.expect(")")?;
+        self.program.ops.push(if on {
+            Op::EmitOn(port as u8)
+        } else {
+            Op::EmitOff(port as u8)
+        });
+        Ok(())
+    }
+
     fn add_input(&mut self, key: String, slot: u8, param: Option<ParamDecl>) -> Result<(), String> {
         if self.program.inputs.len() >= MAX_INPUTS {
             return self.err(format!("at most {MAX_INPUTS} inputs and parameters"));
@@ -863,6 +1340,9 @@ impl Parser {
     }
 
     fn assignment(&mut self, name: &str) -> Result<(), String> {
+        if let Some(array) = self.array(name) {
+            return self.array_assignment(name, array);
+        }
         let Some(var) = self.lookup(name) else {
             return self.err(format!("unknown name `{name}`"));
         };
@@ -893,6 +1373,33 @@ impl Parser {
             self.expression(0)?;
         }
         self.program.ops.push(Op::Store(slot));
+        Ok(())
+    }
+
+    fn array_assignment(&mut self, name: &str, array: u8) -> Result<(), String> {
+        self.index()?;
+        let compound = match self.peek() {
+            Some(Tok::Symbol("=")) => None,
+            Some(Tok::Symbol("+=")) => Some(Op::Add),
+            Some(Tok::Symbol("-=")) => Some(Op::Sub),
+            Some(Tok::Symbol("*=")) => Some(Op::Mul),
+            Some(Tok::Symbol("/=")) => Some(Op::Div),
+            Some(other) => {
+                let other = other.describe();
+                return self.err(format!("expected `=` after `{name}[...]`, found {other}"));
+            }
+            None => return self.err(format!("expected `=` after `{name}[...]` at the end")),
+        };
+        self.at += 1;
+        if let Some(op) = compound {
+            self.program.ops.push(Op::Dup);
+            self.program.ops.push(Op::LoadIdx(array));
+            self.expression(0)?;
+            self.program.ops.push(op);
+        } else {
+            self.expression(0)?;
+        }
+        self.program.ops.push(Op::StoreIdx(array));
         Ok(())
     }
 
@@ -1014,6 +1521,12 @@ impl Parser {
                 if self.peek() == Some(&Tok::Symbol("(")) {
                     self.at += 1;
                     self.call(&name)?;
+                } else if let Some(array) = self.array(&name) {
+                    if self.peek() != Some(&Tok::Symbol("[")) {
+                        return self.err(format!("`{name}` is an array: use `{name}[index]`"));
+                    }
+                    self.index()?;
+                    self.program.ops.push(Op::LoadIdx(array));
                 } else if let Some(var) = self.lookup(&name) {
                     let slot = var.slot;
                     self.program.ops.push(Op::Load(slot));
@@ -1040,6 +1553,16 @@ impl Parser {
     }
 
     fn call(&mut self, name: &str) -> Result<(), String> {
+        if name == "len" {
+            let array = self.name("an array")?;
+            let Some(a) = self.array(&array) else {
+                return self.err(format!("`{array}` is not an array"));
+            };
+            self.expect(")")?;
+            let len = self.program.arrays[usize::from(a)].len;
+            self.program.ops.push(Op::Push(len as f32));
+            return Ok(());
+        }
         let (arity, op) = match (unary_function(name), name) {
             (Some(f), _) => (1, Op::Unary(f)),
             (None, "db") => (1, Op::Unary(db_to_gain)),
@@ -1073,8 +1596,8 @@ impl Parser {
 mod tests {
     use super::*;
     use noodle_core::Value;
-    use noodle_engine::Shape;
     use noodle_engine::testing::Harness;
+    use noodle_engine::{Shape};
 
     fn config(text: &str) -> Config {
         let mut config = Config::new();
@@ -1343,6 +1866,178 @@ mod tests {
     fn a_bad_script_fails_the_node_with_a_message() {
         let error = Script.layout(&config("output o\no = +")).err().unwrap();
         assert!(error.to_string().contains("Script"), "{error}");
+    }
+
+    #[test]
+    fn a_loop_runs_its_block_for_each_whole_number() {
+        let text = "output o\nlet sum = 0\nfor i in 1 to 5 { sum += i }\no = sum";
+        assert_eq!(first(text), 10.0);
+        // An empty range runs nothing, and nested loops multiply.
+        assert_eq!(first("output o\nlet n = 7\nfor i in 3 to 3 { n = 0 }\no = n"), 7.0);
+        let nested = "output o\nlet n = 0\nfor i in 0 to 4 { for j in 0 to 5 { n += 1 } }\no = n";
+        assert_eq!(first(nested), 20.0);
+        // The loop variable is gone after the loop and can't be set.
+        assert!(Program::compile("output o\nfor i in 0 to 2 { }\no = i").is_err());
+        assert!(Program::compile("output o\nfor i in 0 to 2 { i = 5 }").is_err());
+    }
+
+    #[test]
+    fn loops_are_bounded_when_the_script_is_read() {
+        for text in [
+            "output o\nfor i in 0 to 257 { }",
+            "output o\nfor i in 0 to 100 { for j in 0 to 11 { } }",
+            "output o\nfor i in 0 to 2.5 { }",
+            "output o\nfor i in 0 to n { }",
+            "output o\nfor i of 0 to 2 { }",
+        ] {
+            assert!(Program::compile(text).is_err(), "{text:?}");
+        }
+        assert!(Program::compile("output o\nfor i in 0 to 256 { }").is_ok());
+        assert!(
+            Program::compile("output o\nfor i in 0 to 32 { for j in 0 to 32 { } }").is_ok()
+        );
+    }
+
+    #[test]
+    fn arrays_remember_wrap_and_make_a_delay_line() {
+        // A four-sample delay: write the input, read what was written four ago.
+        let text = "
+            input x
+            output y
+            array line[4]
+            state head
+            y = line[head]
+            line[head] = x
+            head += 1
+        ";
+        let mut h = Harness::new(&Script, &config(text), &[(0, Shape::MONO)], 48_000.0, 10).unwrap();
+        for (i, v) in h.input(0, 10).lane_mut(0, 0).iter_mut().enumerate() {
+            *v = (i + 1) as f32;
+        }
+        h.run(10).unwrap();
+        let out = h.output(0).lane(0, 0).to_vec();
+        assert_eq!(out, [0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        // Indices round down and wrap, negatives included.
+        let text = "output o\narray a[3]\nfor i in 0 to len(a) { a[i] = i + 1 }\no = a[-1] * 100 + a[4] * 10 + a[2.9]";
+        assert_eq!(first(text), 3.0 * 100.0 + 2.0 * 10.0 + 3.0);
+        // Compound assignment, a fill value, and one array per lane.
+        assert_eq!(first("output o\narray a[2] = 5\na[1] += 2\no = a[0] + a[1]"), 12.0);
+        let out = run_with("output o\narray a[1]\na[0] += 1\no = a[0]", 3, &[]);
+        assert_eq!(out[0], [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn array_mistakes_are_reported() {
+        for (text, wanted) in [
+            ("output o\narray a[0]", "whole number"),
+            ("output o\narray a[2.5]", "whole number"),
+            ("output o\narray a[5000]\narray b[5000]", "at most"),
+            ("output o\narray a[2]\no = a", "is an array"),
+            ("output o\narray a[2]\no = a[0", "expected `]`"),
+            ("output o\narray a[2]\nlet a = 1", "already used"),
+            ("output o\no = len(zz)", "not an array"),
+            ("output o\nzz[0] = 1", "unknown name"),
+        ] {
+            let error = Program::compile(text)
+                .err()
+                .unwrap_or_else(|| panic!("{text:?} should fail"));
+            assert!(error.contains(wanted), "{text:?}: {error}");
+        }
+    }
+
+    fn note_on(time: u32, id: u32, key: u8, velocity: f32) -> Event {
+        Event {
+            time,
+            kind: EventKind::NoteOn {
+                note: NoteId(id),
+                channel: 0,
+                key,
+                velocity,
+            },
+        }
+    }
+
+    fn note_off(time: u32, id: u32) -> Event {
+        Event {
+            time,
+            kind: EventKind::NoteOff {
+                note: NoteId(id),
+                velocity: 0.0,
+            },
+        }
+    }
+
+    #[test]
+    fn event_inputs_arrive_one_to_a_sample_and_event_outputs_send_notes() {
+        // Transposes up a fifth, and counts the starts as a signal.
+        let text = "
+            events in notes
+            events out played
+            output starts
+            state n
+            if notes_on { note_on(played, notes_key + 7, notes_velocity); n += 1 }
+            if notes_off { note_off(played, notes_key + 7) }
+            starts = n
+        ";
+        let layout = Script.layout(&config(text)).unwrap();
+        assert_eq!(layout.event_inputs.len(), 1);
+        assert_eq!(layout.event_outputs.len(), 1);
+        let ports = check(text).unwrap();
+        assert_eq!((ports.event_inputs, ports.event_outputs), (vec!["notes".to_owned()], vec!["played".to_owned()]));
+        let mut h = Harness::new(&Script, &config(text), &[], 48_000.0, 8).unwrap();
+        // A chord at one instant, then its release.
+        h.send_events(
+            0,
+            &[
+                note_on(2, 1, 60, 0.5),
+                note_on(2, 2, 64, 0.75),
+                note_off(6, 1),
+            ],
+        );
+        h.run(8).unwrap();
+        assert_eq!(
+            h.events(0),
+            vec![
+                note_on(2, 67, 67, 0.5),
+                note_on(3, 71, 71, 0.75),
+                note_off(6, 67),
+            ]
+        );
+        assert_eq!(h.output(0).lane(0, 0), &[0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn events_that_do_not_fit_arrive_in_the_next_block() {
+        let text = "events in ev\nevents out o\noutput x\nif ev_on { note_on(o, ev_key, 1) }";
+        let mut h = Harness::new(&Script, &config(text), &[], 48_000.0, 4).unwrap();
+        // Six notes at the last frame of a four-frame block.
+        let chord: Vec<Event> = (0..6).map(|k| note_on(3, k, 40 + k as u8, 1.0)).collect();
+        h.send_events(0, &chord);
+        h.run(4).unwrap();
+        let first: Vec<u32> = h.events(0).iter().map(|e| e.time).collect();
+        assert_eq!(first, [3]);
+        h.send_events(0, &[]);
+        h.run(4).unwrap();
+        let second: Vec<u32> = h.events(0).iter().map(|e| e.time).collect();
+        assert_eq!(second, [0, 1, 2, 3], "the rest follow, in order");
+    }
+
+    #[test]
+    fn event_mistakes_are_reported() {
+        for (text, wanted) in [
+            ("output o\nnote_on(p, 60, 1)", "not an event output"),
+            ("events out p\nnote_on(p, 60)", "expected `,`"),
+            ("events up p\noutput o", "expected `in` or `out`"),
+            ("events in p\nevents out p\noutput o", "already used"),
+            ("events in p\noutput p_on", "already used"),
+        ] {
+            let error = Program::compile(text)
+                .err()
+                .unwrap_or_else(|| panic!("{text:?} should fail"));
+            assert!(error.contains(wanted), "{text:?}: {error}");
+        }
+        // A script of event ports alone is a script.
+        assert!(Program::compile("events in a\nevents out b").is_ok());
     }
 
     #[test]

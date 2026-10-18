@@ -1167,6 +1167,13 @@ impl Session {
         self.audio.is_some()
     }
 
+    /// The sample rate the engine runs at, while it runs.
+    pub fn engine_sample_rate(&self) -> Option<f32> {
+        self.audio
+            .as_ref()
+            .map(|audio| audio.controller.settings().sample_rate)
+    }
+
     /// Why the engine isn't on what was chosen, if it isn't: it fell back to
     /// the system default output, or to the virtual output, which plays to
     /// nowhere. Lasts as long as the engine runs.

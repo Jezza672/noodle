@@ -16,7 +16,7 @@ use noodle_engine::OUTPUT_ID;
 use noodle_engine::{
     BlockStats, CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry,
 };
-use noodle_nodes::{ENVELOPE_ID, METERED, SCOPE_ID};
+use noodle_nodes::{ENVELOPE_ID, METERED, SCOPE_ID, SPECTRUM_ID};
 
 use crate::theme::editor as colors;
 use crate::widgets::{GraphKind, Live};
@@ -25,7 +25,7 @@ use crate::widgets::{GraphKind, Live};
 pub fn height(type_id: &str) -> f32 {
     match type_id {
         id if METERED.contains(&id) => 30.0,
-        SCOPE_ID | OUTPUT_ID => 80.0,
+        SCOPE_ID | OUTPUT_ID | SPECTRUM_ID => 80.0,
         ENVELOPE_ID => 56.0,
         id if GraphKind::of(id).is_some() => 56.0,
         _ => 0.0,
@@ -57,6 +57,7 @@ pub fn paint(
             MeterAxis::Horizontal,
         ),
         SCOPE_ID | OUTPUT_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
+        SPECTRUM_ID => spectrum(painter, area, zoom, bodies.spectra.get(&node)),
         ENVELOPE_ID => envelope(painter, area, zoom, curve),
         id => {
             if let Some(kind) = GraphKind::of(id) {
@@ -93,6 +94,9 @@ pub struct Bodies {
     reader: Option<MeterReader>,
     meters: HashMap<NodeId, Vec<MeterChannel>>,
     scopes: HashMap<NodeId, ScopeView>,
+    spectra: HashMap<NodeId, SpectrumTrace>,
+    /// The engine's sample rate, for the spectra.
+    sample_rate: f32,
     /// What each wired parameter has been doing, by (node, port key).
     params: HashMap<(NodeId, String), ParamWindow>,
     /// Seconds since the first update, for the windows.
@@ -199,6 +203,7 @@ impl Bodies {
         let reader = &*self.reader.get_or_insert_with(|| telemetry.meter_reader());
         self.meters.retain(|&id, _| graph.node(id).is_some());
         self.scopes.retain(|&id, _| graph.node(id).is_some());
+        self.spectra.retain(|&id, _| graph.node(id).is_some());
 
         // Every wired parameter. Reading one takes its range since the last
         // read, so this is the only reader: the properties panel asks `Bodies`.
@@ -256,9 +261,25 @@ impl Bodies {
                         *view = scope_view();
                     }
                 }
+                SPECTRUM_ID => {
+                    let trace = self.spectra.entry(id).or_default();
+                    if self.sample_rate > 0.0 {
+                        trace.update(telemetry, id, self.sample_rate, dt);
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// Tells the spectra the engine's sample rate (0 when none runs).
+    pub fn set_sample_rate(&mut self, rate: f32) {
+        self.sample_rate = rate;
+    }
+
+    /// What a Spectrum node last measured.
+    pub fn spectrum(&self, node: NodeId) -> Option<&SpectrumTrace> {
+        self.spectra.get(&node)
     }
 
     /// The levels a mixer node's inputs last reported, one per input.
@@ -324,8 +345,204 @@ impl Bodies {
         self.show_cpu
             || !self.meters.is_empty()
             || !self.scopes.is_empty()
+            || !self.spectra.is_empty()
             || !self.params.is_empty()
     }
+}
+
+/// Columns across a spectrum display.
+const SPECTRUM_COLUMNS: usize = 128;
+/// How fast a spectrum's curve falls, in dB per second; it rises at once.
+const SPECTRUM_FALL_DB_PER_SECOND: f32 = 60.0;
+/// How fast a held peak falls once its hold has run out.
+const SPECTRUM_PEAK_FALL_DB_PER_SECOND: f32 = 15.0;
+/// How long a held peak stays, in seconds.
+const SPECTRUM_PEAK_HOLD_SECONDS: f32 = 1.5;
+/// Spectrogram columns per second, and how many it keeps.
+const SPECTROGRAM_RATE: f32 = 30.0;
+const SPECTROGRAM_COLUMNS: usize = 120;
+
+/// What one Spectrum node shows: the analysed input as a curve over a log
+/// frequency axis with held peaks, and a spectrogram of how it has changed.
+pub struct SpectrumTrace {
+    analyser: noodle_nodes::SpectrumAnalyser,
+    view: ScopeView,
+    mono: Vec<f32>,
+    /// dB per display column, falling smoothly after a rise.
+    curve: Vec<f32>,
+    peaks: Vec<f32>,
+    peak_age: Vec<f32>,
+    /// Recent curves, oldest first, one per spectrogram column.
+    history: VecDeque<Vec<f32>>,
+    since_column: f32,
+    sample_rate: f32,
+}
+
+impl Default for SpectrumTrace {
+    fn default() -> Self {
+        let floor = noodle_nodes::SPECTRUM_FLOOR_DB;
+        Self {
+            analyser: noodle_nodes::SpectrumAnalyser::new(),
+            view: ScopeView::tail(noodle_nodes::SPECTRUM_WINDOW),
+            mono: Vec::new(),
+            curve: vec![floor; SPECTRUM_COLUMNS],
+            peaks: vec![floor; SPECTRUM_COLUMNS],
+            peak_age: vec![0.0; SPECTRUM_COLUMNS],
+            history: VecDeque::new(),
+            since_column: 0.0,
+            sample_rate: 48_000.0,
+        }
+    }
+}
+
+impl SpectrumTrace {
+    fn update(&mut self, telemetry: &Telemetry, node: NodeId, sample_rate: f32, dt: f32) {
+        let floor = noodle_nodes::SPECTRUM_FLOOR_DB;
+        self.sample_rate = sample_rate;
+        self.mono.clear();
+        if telemetry.read_scope(node, &mut self.view) {
+            let channels = self.view.channels().max(1);
+            self.mono.extend(
+                self.view
+                    .samples()
+                    .chunks_exact(channels)
+                    .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+            );
+        }
+        let mut fresh = vec![floor; SPECTRUM_COLUMNS];
+        if !self.mono.is_empty() {
+            let bins = self.analyser.analyse(&self.mono);
+            noodle_nodes::columns_from_bins(bins, sample_rate, &mut fresh);
+        }
+        let fall = SPECTRUM_FALL_DB_PER_SECOND * dt;
+        for (k, &now) in fresh.iter().enumerate() {
+            self.curve[k] = now.max(self.curve[k] - fall).max(floor);
+            if self.curve[k] >= self.peaks[k] {
+                self.peaks[k] = self.curve[k];
+                self.peak_age[k] = 0.0;
+            } else {
+                self.peak_age[k] += dt;
+                if self.peak_age[k] > SPECTRUM_PEAK_HOLD_SECONDS {
+                    self.peaks[k] = (self.peaks[k] - SPECTRUM_PEAK_FALL_DB_PER_SECOND * dt)
+                        .max(self.curve[k]);
+                }
+            }
+        }
+        self.since_column += dt;
+        if self.since_column >= 1.0 / SPECTROGRAM_RATE {
+            self.since_column = 0.0;
+            if self.history.len() == SPECTROGRAM_COLUMNS {
+                self.history.pop_front();
+            }
+            self.history.push_back(self.curve.clone());
+        }
+    }
+
+    /// dB at each display column of the curve, quietest first by frequency.
+    pub fn curve(&self) -> &[f32] {
+        &self.curve
+    }
+
+    /// The held peaks, as `curve`.
+    pub fn peaks(&self) -> &[f32] {
+        &self.peaks
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+}
+
+/// Where `db` sits between the floor and 0 dB, from 0 to 1.
+fn spectrum_fraction(db: f32) -> f32 {
+    let floor = noodle_nodes::SPECTRUM_FLOOR_DB;
+    ((db - floor) / -floor).clamp(0.0, 1.0)
+}
+
+/// The spectrum as a filled curve on a log frequency axis, with faint lines
+/// at 100 Hz, 1 kHz and 10 kHz and the held peaks as a thin line.
+pub fn spectrum(painter: &Painter, area: Rect, zoom: f32, trace: Option<&SpectrumTrace>) {
+    painter.rect_filled(area, 2.0 * zoom, colors::BODY);
+    let rate = trace.map_or(48_000.0, SpectrumTrace::sample_rate);
+    let (low, high) = (
+        noodle_nodes::SPECTRUM_LOW_HZ,
+        noodle_nodes::SPECTRUM_HIGH_HZ.min(rate * 0.5),
+    );
+    for hz in [100.0, 1000.0, 10_000.0] {
+        if hz < high {
+            let x = area.left() + area.width() * (hz / low).ln() / (high / low).ln();
+            painter.vline(x, area.y_range(), Stroke::new(zoom, colors::SCOPE_AXIS));
+        }
+    }
+    let Some(trace) = trace else {
+        return;
+    };
+    let n = trace.curve.len();
+    let point = |k: usize, db: f32| {
+        Pos2::new(
+            area.left() + area.width() * k as f32 / (n - 1) as f32,
+            area.bottom() - area.height() * spectrum_fraction(db),
+        )
+    };
+    let peaks: Vec<Pos2> = trace
+        .peaks
+        .iter()
+        .enumerate()
+        .map(|(k, &db)| point(k, db))
+        .collect();
+    painter.add(PathShape::line(
+        peaks,
+        Stroke::new(zoom.max(1.0), colors::TEXT_WEAK),
+    ));
+    let mut fill = vec![Pos2::new(area.left(), area.bottom())];
+    fill.extend(trace.curve.iter().enumerate().map(|(k, &db)| point(k, db)));
+    fill.push(Pos2::new(area.right(), area.bottom()));
+    painter.add(PathShape::convex_polygon(
+        fill,
+        colors::SCOPE_TRACE.gamma_multiply(0.35),
+        Stroke::new(zoom.max(1.0), colors::SCOPE_TRACE),
+    ));
+}
+
+/// A colour for a level, dark at the floor through blue and orange to
+/// near white at 0 dB.
+fn heat(fraction: f32) -> egui::Color32 {
+    const STOPS: [(f32, [f32; 3]); 5] = [
+        (0.0, [12.0, 12.0, 24.0]),
+        (0.35, [40.0, 50.0, 140.0]),
+        (0.6, [150.0, 60.0, 150.0]),
+        (0.8, [240.0, 140.0, 40.0]),
+        (1.0, [255.0, 245.0, 200.0]),
+    ];
+    let f = fraction.clamp(0.0, 1.0);
+    let i = STOPS.iter().rposition(|s| s.0 <= f).unwrap_or(0).min(3);
+    let (a, b) = (STOPS[i], STOPS[i + 1]);
+    let t = (f - a.0) / (b.0 - a.0);
+    let channel = |c: usize| (a.1[c] + (b.1[c] - a.1[c]) * t) as u8;
+    egui::Color32::from_rgb(channel(0), channel(1), channel(2))
+}
+
+/// The spectrogram: time runs left to right, frequency up the side.
+pub fn spectrogram(painter: &Painter, area: Rect, trace: Option<&SpectrumTrace>) {
+    painter.rect_filled(area, 2.0, colors::BODY);
+    let Some(trace) = trace else {
+        return;
+    };
+    let mut mesh = egui::Mesh::default();
+    let cell_w = area.width() / SPECTROGRAM_COLUMNS as f32;
+    let cell_h = area.height() / SPECTRUM_COLUMNS as f32;
+    let first = SPECTROGRAM_COLUMNS - trace.history.len();
+    for (t, column) in trace.history.iter().enumerate() {
+        let x = area.left() + (first + t) as f32 * cell_w;
+        for (k, &db) in column.iter().enumerate() {
+            let y = area.bottom() - (k + 1) as f32 * cell_h;
+            mesh.add_colored_rect(
+                Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w + 0.5, cell_h + 0.5)),
+                heat(spectrum_fraction(db)),
+            );
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// The bottom of a meter's scale, in dB.
@@ -779,6 +996,65 @@ mod tests {
         .unwrap();
         bodies.update(&telemetry, &project, 0.016);
         assert_eq!(bodies.param_live(gain, "gain"), None);
+    }
+
+    #[test]
+    fn a_spectrum_node_shows_where_its_input_has_energy_and_forgets_it_when_silent() {
+        let mut project = Project::new();
+        let id = project.new_node_id();
+        Command::AddNode {
+            id,
+            node: Node::new(SPECTRUM_ID),
+        }
+        .apply(&mut project)
+        .unwrap();
+        assert!(height(SPECTRUM_ID) > 0.0);
+        let telemetry = Telemetry::new();
+        let rate = 48_000.0;
+        let mut writer = telemetry.open_scope(id, 2, 16_384);
+        let tone = |hz: f32| move |f: usize, _c: usize| (std::f32::consts::TAU * hz * f as f32 / rate).sin();
+        writer.write(8192, tone(1000.0));
+
+        let mut bodies = Bodies::default();
+        // Nothing is analysed until the engine's rate is known.
+        bodies.update(&telemetry, &project, 0.02);
+        assert!(bodies.spectrum(id).unwrap().curve().iter().all(|&db| db < -80.0));
+        bodies.set_sample_rate(rate);
+        bodies.update(&telemetry, &project, 0.02);
+        let trace = bodies.spectrum(id).unwrap();
+        let loudest = (0..trace.curve().len())
+            .max_by(|&a, &b| trace.curve()[a].total_cmp(&trace.curve()[b]))
+            .unwrap();
+        let hz = noodle_nodes::column_frequency(loudest, trace.curve().len(), rate);
+        assert!((hz / 1000.0).log2().abs() < 1.0 / 12.0, "{hz}");
+        assert!(trace.curve()[loudest] > -3.0);
+        assert!(trace.peaks()[loudest] >= trace.curve()[loudest]);
+        assert!(bodies.is_live());
+
+        // Later and quiet, the curve falls rather than jumping, and the peak
+        // is held.
+        writer.write(8192, |_, _| 0.0);
+        writer.write(8192, |_, _| 0.0);
+        bodies.update(&telemetry, &project, 0.1);
+        let trace = bodies.spectrum(id).unwrap();
+        assert!(trace.curve()[loudest] < -3.0 && trace.curve()[loudest] > -20.0);
+        assert!(trace.peaks()[loudest] > -3.0, "the peak is held");
+
+        // Drawing it, with and without data, produces shapes.
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 60.0));
+            spectrum(&painter, rect, 1.0, bodies.spectrum(id));
+            spectrum(&painter, rect, 1.0, None);
+            spectrogram(&painter, rect, bodies.spectrum(id));
+        });
+        assert!(output.shapes.len() >= 5);
+        std::mem::forget(output.textures_delta);
+
+        Command::RemoveNode { id }.apply(&mut project).unwrap();
+        bodies.update(&telemetry, &project, 0.02);
+        assert!(bodies.spectrum(id).is_none());
     }
 
     #[test]

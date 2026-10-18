@@ -48,6 +48,7 @@ mod sampler;
 mod scope;
 mod script;
 mod spectral;
+mod spectrum;
 mod stage;
 mod surround;
 mod svf;
@@ -123,6 +124,11 @@ pub use sample::{Sample, SampleError, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
+pub use spectrum::{
+    FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
+    SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
+    columns_from_bins,
+};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
     SCRIPT_KEY, Script, ScriptPorts, check as check_script,
@@ -246,6 +252,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(GroupStage);
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
+    registry.register(Spectrum::new(&telemetry));
     let midi = noodle_io::MidiBus::new();
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
