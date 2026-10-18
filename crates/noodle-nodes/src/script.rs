@@ -1256,11 +1256,9 @@ impl Parser {
     /// `for i in 0 to 8 { ... }`
     fn for_statement(&mut self) -> Result<(), String> {
         let var = self.name("a loop variable")?;
-        for word in ["in"] {
-            if self.name(&format!("`{word}`"))? != word {
-                self.at -= 1;
-                return self.err(format!("expected `{word}` after `{var}`"));
-            }
+        if self.name("`in`")? != "in" {
+            self.at -= 1;
+            return self.err(format!("expected `in` after `{var}`"));
         }
         let from = self.bound()?;
         if self.name("`to`")? != "to" {
