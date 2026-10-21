@@ -22,6 +22,7 @@ mod eq;
 mod export;
 mod follower;
 mod freeze;
+mod fundamental;
 mod gain;
 mod ladder;
 mod lag;
@@ -44,6 +45,7 @@ mod reverb;
 mod reverse;
 mod sample;
 mod sample_hold;
+mod sample_input;
 mod sampler;
 mod scope;
 mod script;
@@ -101,6 +103,7 @@ pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
     spawn_freeze,
 };
+pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
@@ -121,8 +124,9 @@ pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
 pub use reverse::Reverse;
-pub use sample::{Sample, SampleError, SampleStore};
+pub use sample::{Sample, SampleError, SampleRef, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
+pub use sample_input::{SAMPLE_INPUT_ID, SampleInput};
 pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
@@ -237,6 +241,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Automation);
     registry.register(Clock);
     registry.register(Tempo);
+    registry.register(SampleInput);
     registry.register(Distortion);
     registry.register(Bitcrusher);
     registry.register(Chorus);

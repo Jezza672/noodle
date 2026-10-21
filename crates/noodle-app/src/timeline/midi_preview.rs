@@ -30,7 +30,7 @@ pub fn draw(painter: &Painter, axis: Axis<'_>, full: Rect, start: Tick, midi: &M
     // Centre the notes' range in the block.
     let slack = f32::from(span - (high - low + 1)) / 2.0;
     let ink = Color32::BLACK.gamma_multiply(0.6);
-    for note in &midi.notes {
+    for note in &midi.played() {
         let x0 = axis.x(Tick(start.0 + note.start.0));
         let x1 = axis
             .x(Tick(start.0 + note.start.0 + note.length.0))

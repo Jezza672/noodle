@@ -52,6 +52,20 @@ pub struct Request {
     pub length: u64,
     /// The file's peaks, which identify the load of the file this is for.
     pub file: Arc<Peaks>,
+    /// Where the section sits on the timeline, to draw a stand-in render
+    /// where it was worked out rather than stretched to the section's new
+    /// size. Not part of what is rendered.
+    pub span: (Tick, Tick),
+}
+
+/// A render to draw, and whether it is the one asked for.
+pub struct Shown {
+    pub peaks: Arc<Peaks>,
+    /// The ticks the peaks were worked out for. Only a stand-in for an edit
+    /// that is still being rendered is drawn there: the current render fills
+    /// the section.
+    pub span: (Tick, Tick),
+    pub current: bool,
 }
 
 impl Request {
@@ -73,6 +87,13 @@ impl Request {
         }
         hasher.finish()
     }
+}
+
+/// The last render a section had.
+struct Kept {
+    peaks: Arc<Peaks>,
+    span: (Tick, Tick),
+    seen: Instant,
 }
 
 enum Entry {
@@ -118,7 +139,7 @@ type Done = (u64, u64, Outcome);
 pub struct WarpedWaves {
     entries: HashMap<u64, Slot>,
     /// The last render each section had, for while its next one is worked out.
-    previous: HashMap<ClipId, (Arc<Peaks>, Instant)>,
+    previous: HashMap<ClipId, Kept>,
     jobs: Sender<Job>,
     done: Receiver<Done>,
     next_seq: u64,
@@ -193,7 +214,14 @@ impl WarpedWaves {
     /// The peaks of the section `request` describes as it plays, once they
     /// have been rendered; asks for the render the first time. While it is
     /// worked out, the section's previous render stands in for it.
+    #[cfg(test)]
     pub fn get(&mut self, ctx: &egui::Context, request: &Request) -> Option<Arc<Peaks>> {
+        self.shown(ctx, request).map(|shown| shown.peaks)
+    }
+
+    /// [`get`](Self::get), with where the peaks belong and whether they are
+    /// the render of `request` itself.
+    pub fn shown(&mut self, ctx: &egui::Context, request: &Request) -> Option<Shown> {
         self.collect();
         let now = Instant::now();
         let key = request.key();
@@ -204,8 +232,19 @@ impl WarpedWaves {
                 match &slot.entry {
                     Entry::Ready { peaks, .. } => {
                         let peaks = peaks.clone();
-                        self.previous.insert(request.clip, (peaks.clone(), now));
-                        return Some(peaks);
+                        self.previous.insert(
+                            request.clip,
+                            Kept {
+                                peaks: peaks.clone(),
+                                span: request.span,
+                                seen: now,
+                            },
+                        );
+                        return Some(Shown {
+                            peaks,
+                            span: request.span,
+                            current: true,
+                        });
                     }
                     Entry::Failed => return None,
                     Entry::Working { .. } => {}
@@ -233,9 +272,13 @@ impl WarpedWaves {
                 });
             }
         }
-        self.previous.get_mut(&request.clip).map(|(peaks, seen)| {
-            *seen = now;
-            peaks.clone()
+        self.previous.get_mut(&request.clip).map(|kept| {
+            kept.seen = now;
+            Shown {
+                peaks: kept.peaks.clone(),
+                span: kept.span,
+                current: false,
+            }
         })
     }
 
@@ -252,7 +295,7 @@ impl WarpedWaves {
             self.entries
                 .retain(|key, slot| asked.contains(key) || slot.seen >= oldest_kept);
         }
-        self.previous.retain(|_, (_, seen)| seen.elapsed() < grace);
+        self.previous.retain(|_, kept| kept.seen.elapsed() < grace);
         *self.wanted.lock().unwrap() = asked;
     }
 
@@ -459,6 +502,7 @@ mod tests {
                 channels: 1,
                 sample_rate: RATE,
             })),
+            span: (Tick::ZERO, Tick(1920)),
         }
     }
 
@@ -607,6 +651,17 @@ mod tests {
         waves.end_frame();
         let next = wait_for(&mut waves, &ctx, &edited);
         assert!(!Arc::ptr_eq(&first, &next));
+        // The stand-in knows where it was worked out, so a resize can draw it
+        // there instead of stretching it to the new size.
+        let mut resized = edited.clone();
+        resized.warp.mode = WarpMode::Beats;
+        resized.span = (Tick::ZERO, Tick(960));
+        let stand_in = waves.shown(&ctx, &resized).expect("the stand-in");
+        assert!(!stand_in.current);
+        assert_eq!(stand_in.span, (Tick::ZERO, Tick(1920)));
+        let done = wait_for(&mut waves, &ctx, &resized);
+        let current = waves.shown(&ctx, &resized).unwrap();
+        assert!(current.current && Arc::ptr_eq(&current.peaks, &done));
         // A different section has no such stand-in.
         let mut other = edited.clone();
         other.clip = ClipId(2);

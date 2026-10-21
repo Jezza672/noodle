@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod carry;
 mod clip_editor;
 mod clip_panel;
 mod devices;
@@ -21,6 +22,7 @@ mod pill_buttons;
 mod plugin_browser;
 mod prefs;
 mod properties;
+mod sample_drop;
 mod sample_view;
 mod session;
 mod snap;

@@ -326,3 +326,31 @@ fn live_notes_use_ids_of_their_own() {
     // Apart from the MIDI In node's (top bit), a clip's, and the piano roll's.
     assert_eq!(note.0 & 0xF000_0000, 0x2000_0000);
 }
+
+#[test]
+fn a_looping_clip_plays_its_loop_again_until_it_ends() {
+    let mut rig = rig("midi-loop");
+    // A four beat clip at the start whose first beat is the loop.
+    let id = rig.add_midi_clip(0, 4, &[(0, 240, 60), (480, 240, 62), (1500, 100, 71)]);
+    rig.edit_clip(id, |clip| {
+        let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.set_loop(noodle_core::Tick(0), noodle_core::Tick(960));
+        midi.loop_on = true;
+    });
+    rig.settle();
+    let events = run(&mut rig, 0, 5 * BEAT, true);
+    let on: Vec<_> = events
+        .iter()
+        .filter(|e| e.1)
+        .map(|&(t, _, key)| (t, key))
+        .collect();
+    // Four passes of the beat; the note after the loop's end never plays.
+    let expect: Vec<_> = (0..4)
+        .flat_map(|b| [(b * BEAT, 60), (b * BEAT + BEAT / 2, 62)])
+        .collect();
+    assert_eq!(on, expect);
+    // Every note-on has its note-off.
+    assert_eq!(events.iter().filter(|e| !e.1).count(), expect.len());
+}

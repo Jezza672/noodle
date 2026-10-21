@@ -7,7 +7,7 @@ use noodle_engine::{
     NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, Setup, Shape, Unit,
 };
 
-use crate::sample::{Sample, SampleStore};
+use crate::sample::{Sample, SampleRef, SampleStore};
 
 /// Plays one sample when a note arrives, at the pitch of the note relative to
 /// `root`, up to 16 notes at once. The output is stereo (a mono sample is the
@@ -16,6 +16,13 @@ use crate::sample::{Sample, SampleStore};
 /// The sample is config, by content hash (see [`SampleStore`]): it is the
 /// audio, not a parameter, and can't be modulated. If the store has no sample
 /// with that hash the node is silent.
+///
+/// **Sample input.** The `sample` option is also an optional sample input.
+/// When a sample wire is connected (from a Sample node, through any groups) it
+/// overrides the option: the compiler writes what the wire carries, a
+/// [`SampleRef`], into the option. A reference can name a window of the
+/// sample, which then plays as if it were the whole sample, so `start`, `end`
+/// and the loop points are fractions of the window.
 ///
 /// **Region.** `start` and `end` are fractions of the sample. A note plays
 /// from `start` to `end`.
@@ -63,6 +70,8 @@ static CONFIG: [ConfigInfo; 1] = [ConfigInfo::text(SAMPLE_KEY, "Sample")];
 struct SamplerPorts {
     #[event_input("in", "Notes")]
     notes: (),
+    #[sample_input("sample", "Sample")]
+    sample_in: (),
     #[param("root", "Root", ParamInfo::new(0.0, 127.0, DEFAULT_ROOT).smoothing(0.0))]
     root: (),
     #[param(
@@ -141,7 +150,7 @@ impl NodeType for Sampler {
     ) -> Result<(), noodle_engine::Uncacheable> {
         // The hash in the config keys the sound. A sample that can't be found
         // renders as silence, and must not be remembered as the answer.
-        let hash = CONFIG[0].get_text(config);
+        let hash = SampleRef::parse(&CONFIG[0].get_text(config)).hash;
         if !hash.is_empty() && self.store.get(&hash).is_none() {
             return Err(noodle_engine::Uncacheable::Because(format!(
                 "the sample {} is missing",
@@ -152,8 +161,11 @@ impl NodeType for Sampler {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        let hash = CONFIG[0].get_text(setup.config);
-        let sample = self.store.get(&hash);
+        let reference = SampleRef::parse(&CONFIG[0].get_text(setup.config));
+        let sample = self
+            .store
+            .get(&reference.hash)
+            .map(|sample| sample.window(reference.start, reference.end));
         Ok(Instance::realtime(SamplerNode {
             sample,
             sample_rate: setup.sample_rate,

@@ -108,6 +108,16 @@ pub trait NodeType: Send + Sync + 'static {
         Ok(())
     }
 
+    /// The sample a sample output port carries, as the text its receiver is
+    /// given: a content hash, optionally followed by `:start:end`, a window
+    /// as fractions of the sample (see `noodle_nodes::SampleRef`). The
+    /// compiler writes it into the config of the node wired to the port, under
+    /// the receiving sample input's key, in place of whatever was set there.
+    /// `None` is no sample, which the receiver treats as silence.
+    fn sample_output(&self, _config: &Config, _key: &str) -> Option<String> {
+        None
+    }
+
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.
@@ -145,6 +155,11 @@ pub struct Layout {
     /// Spectral (FFT frame) ports; see [`crate::spectral`](crate::Analyzer).
     pub spectral_inputs: Vec<Port>,
     pub spectral_outputs: Vec<Port>,
+    /// Sample ports carry a reference to a sample, not signal. The compiler
+    /// resolves them before scheduling (see [`NodeType::sample_output`]), so
+    /// they have no buffers and no place in the shapes.
+    pub sample_inputs: Vec<Port>,
+    pub sample_outputs: Vec<Port>,
     pub mode: Mode,
     /// False if identical inputs can give different output, e.g. unseeded
     /// randomness. Nondeterministic nodes are never cached.
@@ -249,6 +264,8 @@ impl Layout {
             event_outputs: Vec::new(),
             spectral_inputs: Vec::new(),
             spectral_outputs: Vec::new(),
+            sample_inputs: Vec::new(),
+            sample_outputs: Vec::new(),
             mode,
             deterministic: true,
         }
@@ -323,6 +340,24 @@ impl Layout {
         name: impl Into<Cow<'static, str>>,
     ) -> Self {
         self.spectral_outputs.push(port(key, name));
+        self
+    }
+
+    pub fn sample_input(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.sample_inputs.push(port(key, name));
+        self
+    }
+
+    pub fn sample_output(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.sample_outputs.push(port(key, name));
         self
     }
 

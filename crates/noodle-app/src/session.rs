@@ -216,6 +216,8 @@ pub struct Session {
     /// Where the playhead is while no stream is open, so it can be set and
     /// read when stopped, and playing starts from it.
     parked: Tick,
+    /// The transport's loop. Session state, so it isn't in the project file.
+    loop_region: LoopRegion,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
     /// The project as it was last saved or loaded, to tell whether it has
@@ -459,6 +461,7 @@ impl Session {
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             parked: Tick(0),
+            loop_region: LoopRegion::default(),
             path: None,
             dirty: false,
             next_id: Cell::new(0),
@@ -1085,7 +1088,7 @@ impl Session {
     }
 
     /// Points the store at `samples` beside the file and writes every sample
-    /// a Sampler names into it, so a project saved anywhere takes its sounds
+    /// a Sampler or Sample node names into it, so a project saved anywhere takes its sounds
     /// along.
     fn save_samples(&mut self) {
         self.samples.set_dir(self.base().join("samples"));
@@ -1093,11 +1096,19 @@ impl Session {
             .project
             .graph()
             .nodes()
-            .filter(|(_, node)| node.type_id == noodle_nodes::SAMPLER_ID)
+            .filter(|(_, node)| {
+                matches!(
+                    node.type_id.as_str(),
+                    noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
+                )
+            })
             .filter_map(|(_, node)| match node.config.get("sample") {
-                Some(noodle_core::Value::Text(hash)) if !hash.is_empty() => Some(hash.clone()),
+                Some(noodle_core::Value::Text(text)) => {
+                    Some(noodle_nodes::SampleRef::parse(text).hash)
+                }
                 _ => None,
             })
+            .filter(|hash| !hash.is_empty())
             .collect();
         for hash in hashes {
             if let Err(error) = self.samples.save(&hash) {
@@ -1263,6 +1274,10 @@ impl Session {
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
                     audio.controller.set_tempo_map(self.project.tempo_map());
+                    audio
+                        .controller
+                        .transport()
+                        .set_loop(self.loop_region.active());
                     // Carry on from where the playhead was left.
                     if self.parked != Tick(0) {
                         audio.controller.transport().seek(self.parked);
@@ -1325,6 +1340,20 @@ impl Session {
             } else {
                 transport.stop();
             }
+        }
+    }
+
+    /// The transport's loop: whether it is on and the span it repeats.
+    pub fn loop_region(&self) -> LoopRegion {
+        self.loop_region
+    }
+
+    /// Turns the loop on or off and sets its span. Takes effect at once, even
+    /// while playing.
+    pub fn set_loop(&mut self, region: LoopRegion) {
+        self.loop_region = region;
+        if let Some(audio) = &self.audio {
+            audio.controller.transport().set_loop(region.active());
         }
     }
 
@@ -2039,6 +2068,33 @@ fn edits_warp(command: &Command) -> bool {
     }
 }
 
+/// The transport's loop: a span of the timeline that playback repeats while
+/// `on`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoopRegion {
+    pub on: bool,
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl Default for LoopRegion {
+    /// Off, over the first four bars of 4/4.
+    fn default() -> Self {
+        Self {
+            on: false,
+            start: Tick(0),
+            end: Tick(16 * noodle_core::TICKS_PER_QUARTER),
+        }
+    }
+}
+
+impl LoopRegion {
+    /// The span the engine loops, when it is on.
+    pub fn active(self) -> Option<(Tick, Tick)> {
+        self.on.then_some((self.start, self.end))
+    }
+}
+
 /// What a command means for the engine.
 #[derive(Default, Debug, PartialEq)]
 struct Effect {
@@ -2069,6 +2125,14 @@ impl Effect {
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}
+            // Solo is read when the project is compiled: it mutes the other
+            // tracks' stages, which no parameter reaches.
+            Command::SetParam { key, .. }
+                if noodle_core::group::parse_control_key(key)
+                    .is_some_and(|(control, _)| control == noodle_core::group::SOLO) =>
+            {
+                self.structural = true;
+            }
             Command::SetParam {
                 node,
                 key,
@@ -3478,6 +3542,13 @@ mod tests {
         let param = |value| (node, "gain".to_owned(), value);
 
         assert_eq!(Effect::of(&moved), Effect::default());
+        // Solo mutes other tracks' stages, so it recompiles.
+        let solo = Command::SetParam {
+            node,
+            key: "solo.1".into(),
+            value: Some(1.0),
+        };
+        assert!(Effect::of(&solo).structural);
         assert_eq!(
             Effect::of(&set(Some(-6.0))),
             Effect {

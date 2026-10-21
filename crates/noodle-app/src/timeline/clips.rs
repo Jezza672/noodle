@@ -4,7 +4,7 @@
 //! A clip starts at a tick but is as long as its audio, so its end depends on
 //! the tempo map. Trims turn the tick the user dragged to back into frames.
 
-use noodle_core::{AudioClip, Clip, ClipContent, ClipWarp, MidiClip, TempoMap, Tick};
+use noodle_core::{AudioClip, Clip, ClipContent, ClipWarp, MIN_LOOP_LEN, MidiClip, TempoMap, Tick};
 
 pub use super::warped::Pass;
 use super::warped::Section;
@@ -168,17 +168,20 @@ pub fn trim_end(
 ) -> Option<Clip> {
     if let Some(midi) = clip.as_midi() {
         let length = (edge.0 - clip.start.0).max(MIN_MIDI_LENGTH);
-        // Notes that start past the new end are cut off with it.
+        // Notes that start past the new end are cut off with it, unless the
+        // clip loops: its loop is made longer and shorter by this edge, and
+        // the notes have to be there when it is made longer again.
         let notes = midi
             .notes
             .iter()
-            .filter(|note| note.start.0 < length)
+            .filter(|note| midi.loop_on || note.start.0 < length)
             .copied()
             .collect();
         return Some(Clip {
             content: ClipContent::Midi(MidiClip {
                 length: Tick(length),
                 notes,
+                ..midi.clone()
             }),
             ..clip.clone()
         });
@@ -223,12 +226,26 @@ fn trim_midi_start(clip: &Clip, midi: &MidiClip, edge: Tick) -> Clip {
             })
         })
         .collect();
+    let mut trimmed = MidiClip {
+        length: Tick(end - start),
+        notes,
+        ..midi.clone()
+    };
+    if trimmed.loop_on {
+        // The loop stays on the same notes, so it moves with them; what the
+        // cut takes off its front is gone, and a cut past its end ends it.
+        let from = midi.loop_start.0 - delta;
+        let to = midi.loop_end().0 - delta;
+        if to - from.max(0) < MIN_LOOP_LEN {
+            trimmed.loop_on = false;
+        } else {
+            trimmed.loop_start = Tick(from.max(0));
+            trimmed.loop_len = Tick(to - from.max(0));
+        }
+    }
     Clip {
         start: Tick(start),
-        content: ClipContent::Midi(MidiClip {
-            length: Tick(end - start),
-            notes,
-        }),
+        content: ClipContent::Midi(trimmed),
         ..clip.clone()
     }
 }
@@ -339,7 +356,8 @@ pub fn split(
             }
             let mut before = Vec::new();
             let mut after = Vec::new();
-            for note in &midi.notes {
+            // A looping clip is split as it sounds, into two that don't loop.
+            for note in &midi.played() {
                 let end = note.start.0 + note.length.0;
                 if note.start.0 < cut {
                     before.push(noodle_core::MidiNote {
@@ -361,6 +379,8 @@ pub fn split(
                     content: ClipContent::Midi(MidiClip {
                         length: Tick(cut),
                         notes: before,
+                        loop_on: false,
+                        ..midi.clone()
                     }),
                     ..clip.clone()
                 },
@@ -369,6 +389,8 @@ pub fn split(
                     content: ClipContent::Midi(MidiClip {
                         length: Tick(midi.length.0 - cut),
                         notes: after,
+                        loop_on: false,
+                        ..midi.clone()
                     }),
                     ..clip.clone()
                 },
@@ -959,5 +981,65 @@ mod tests {
         let slipped = slip(&map(), &original, -4_800, RATE, Some(50_000), None).unwrap();
         assert_eq!(audio(&slipped).offset, 26_000);
         assert!(slip(&map(), &midi_clip(0, 960, &[]), 10, RATE, None, None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+    use noodle_core::{MidiNote, NodeId};
+
+    fn looping() -> Clip {
+        let mut clip = Clip::midi(NodeId(1), Tick(960), Tick(3840));
+        let ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.notes = vec![MidiNote::new(Tick(960), Tick(100), 60)];
+        midi.loop_on = true;
+        midi.loop_start = Tick(960);
+        midi.loop_len = Tick(960);
+        clip
+    }
+
+    #[test]
+    fn shortening_a_looping_clip_keeps_notes_past_the_end() {
+        let mut clip = looping();
+        let ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.notes.push(MidiNote::new(Tick(3000), Tick(100), 62));
+        let out = trim_end(
+            &TempoMap::default(),
+            &clip,
+            Tick(960 + 1920),
+            48000,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.as_midi().unwrap().notes.len(), 2);
+    }
+
+    #[test]
+    fn trimming_the_start_moves_the_loop_with_its_notes() {
+        let clip = looping();
+        let out = trim_midi_start(&clip, clip.as_midi().unwrap(), Tick(960 + 480));
+        let midi = out.as_midi().unwrap();
+        assert!(midi.loop_on);
+        assert_eq!((midi.loop_start, midi.loop_len), (Tick(480), Tick(960)));
+        // A cut past the loop's end ends the loop.
+        let out = trim_midi_start(&clip, clip.as_midi().unwrap(), Tick(960 + 2000));
+        assert!(!out.as_midi().unwrap().loop_on);
+    }
+
+    #[test]
+    fn splitting_a_looping_clip_keeps_what_sounds() {
+        let clip = looping();
+        let (a, b) = split(&TempoMap::default(), &clip, Tick(960 + 2000), 48000, None).unwrap();
+        let (a, b) = (a.as_midi().unwrap(), b.as_midi().unwrap());
+        assert!(!a.loop_on && !b.loop_on);
+        // Notes at 960, 1920 and 2880; the one at 1920 runs across the cut.
+        assert_eq!(a.notes.len(), 2);
+        assert_eq!(b.notes.len(), 2);
     }
 }
