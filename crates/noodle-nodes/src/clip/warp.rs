@@ -136,6 +136,29 @@ impl WarpMap {
         Self { knots }
     }
 
+    /// This map with `head_out` output frames (reading `head_src` source
+    /// frames) before its start and `tail_out` (reading `tail_src`) after its
+    /// end, so a section can play a little more of the file at either end at
+    /// the speed it already had there.
+    pub fn extended(&self, head_out: f64, head_src: f64, tail_out: f64, tail_src: f64) -> Self {
+        let mut knots: Vec<(f64, f64)> = Vec::with_capacity(self.knots.len() + 2);
+        if head_out > 0.0 && head_src > 0.0 {
+            knots.push((0.0, 0.0));
+        }
+        let (dx, dy) = if knots.is_empty() {
+            (0.0, 0.0)
+        } else {
+            (head_out, head_src)
+        };
+        knots.extend(self.knots.iter().map(|&(o, s)| (o + dx, s + dy)));
+        knots[0] = (0.0, 0.0);
+        if tail_out > 0.0 && tail_src > 0.0 {
+            let (o, s) = *knots.last().expect("a map has knots");
+            knots.push((o + tail_out, s + tail_src));
+        }
+        Self { knots }
+    }
+
     /// How many source frames the section's window has.
     pub fn source_len(&self) -> f64 {
         self.knots[self.knots.len() - 1].1

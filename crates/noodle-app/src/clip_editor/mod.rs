@@ -25,6 +25,7 @@ use noodle_core::{
     TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
 };
 
+mod gain_line;
 mod plain;
 
 use crate::clip_panel;

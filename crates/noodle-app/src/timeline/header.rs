@@ -1,23 +1,20 @@
-//! The track headers: a name, mute and solo buttons and a gain slider, which
+//! The track headers: a name, arm, mute and solo buttons, which
 //! show and set the controls on the track group's boundary nodes.
 //!
 //! A track is a group, and its clips are played by the track input node
-//! inside it. Gain and mute live on the group's first output node (its first
-//! input node if it has no output), and are written there. Solo counts if
-//! either boundary node has it, so turning it off clears it on all of them.
+//! inside it. Mute is the track input's parameter, which the engine applies
+//! at the group's outputs; there is no track gain (a clip has its own). Solo
+//! lives on the group's boundary nodes and counts if either has it, so
+//! turning it off clears it on all of them.
 
 use std::collections::BTreeSet;
 
-use egui::{Align, Layout, Pos2, Rect, RichText, Slider, Stroke, UiBuilder, vec2};
+use egui::{Align, Layout, Pos2, Rect, RichText, Stroke, UiBuilder, vec2};
 use noodle_core::group::{self, Controls};
 use noodle_core::{Command, Graph, NodeId, Value};
 
 use crate::session::Edit;
 use crate::theme::timeline as colors;
-
-/// The slider's range, in decibels: what the group stage takes, and what the
-/// mixer's faders cover, so a gain set in one shows in the other.
-const GAIN_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
 
 /// The group's config setting that holds the track's name; the mixer reads
 /// the same one.
@@ -43,7 +40,6 @@ fn stored_name(graph: &Graph, group: NodeId) -> Option<String> {
 /// left doing nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Automated {
-    pub gain: bool,
     pub mute: bool,
 }
 
@@ -56,9 +52,8 @@ pub struct TrackControls {
     /// and the ID of the port on it they belong to.
     pub node: NodeId,
     pub port: u32,
-    /// Where gain and mute are set: the parameters of the track input that
-    /// feeds the group output, or else the group output's own.
-    pub gain_target: (NodeId, String),
+    /// Where mute is set: the track input's parameter, or else the group
+    /// output's own if something else is wired to that.
     pub mute_target: (NodeId, String),
     pub controls: Controls,
     /// Silent because another track is soloed.
@@ -82,7 +77,6 @@ pub fn controls_for(
     Some(TrackControls {
         node: port.node,
         port: port.id,
-        gain_target: graph.control_target(group, group::GAIN)?,
         mute_target: graph.control_target(group, group::MUTE)?,
         controls: graph.group_controls(group),
         muted_by_solo: muted_by_solo.contains(&group),
@@ -291,7 +285,6 @@ pub fn show(
     let Some(TrackControls {
         node,
         port,
-        gain_target,
         mute_target,
         controls,
         armed_audio,
@@ -339,39 +332,6 @@ pub fn show(
                 port,
                 !controls.solo,
             )));
-        }
-        let mut gain = controls.gain_db;
-        ui.spacing_mut().slider_width = (ui.available_width() - 6.0).max(20.0);
-        let slider = ui
-            .add_enabled(
-                !automated.gain,
-                Slider::new(&mut gain, GAIN_RANGE)
-                    .show_value(false)
-                    .smart_aim(false),
-            )
-            .on_hover_text(if automated.gain {
-                AUTOMATED.to_owned()
-            } else {
-                format!("Gain {:+.1} dB (double-click to reset)", gain)
-            })
-            .on_disabled_hover_text(AUTOMATED);
-        // A slider only senses drags, so its response never reports a double
-        // click; ask the pointer instead.
-        let double = !automated.gain
-            && slider.contains_pointer()
-            && ui.input(|i| {
-                i.pointer
-                    .button_double_clicked(egui::PointerButton::Primary)
-            });
-        if double {
-            // Written, not removed: a control that has been set keeps its stage in
-            // the compiled graph, so resetting it can't change the graph's shape.
-            edits.push(Edit::Apply(set(gain_target.0, &gain_target.1, Some(0.0))));
-        } else if slider.changed() {
-            edits.push(Edit::Drag(set(gain_target.0, &gain_target.1, Some(gain))));
-        }
-        if slider.drag_stopped() {
-            edits.push(Edit::EndDrag);
         }
     });
     changes
