@@ -68,6 +68,9 @@ fn rig() -> (H, ClipId) {
                 rig.seeks.extend(out.seek);
                 rig.notices.extend(out.notice);
                 rig.picks.extend(out.pick);
+                if let Some(region) = out.set_loop {
+                    rig.session.set_loop(region);
+                }
                 rig.opened.extend(out.open_midi);
                 for (track, kind, on) in out.arm {
                     rig.session.arm_kind(track, kind, on);
@@ -926,29 +929,34 @@ fn a_file_that_cant_be_read_below_the_tracks_makes_no_track() {
     assert_eq!(h.state().notices.len(), 1);
 }
 
+/// Where an import from the File menu would go with the playhead at `at`.
+fn import_target(h: &H, at: Tick) -> super::Target {
+    let state = h.state();
+    state
+        .timeline
+        .import_target(state.session.project(), at)
+        .expect("there is a track")
+}
+
 #[test]
-fn the_import_button_prefers_the_highlighted_track_over_a_selected_clip() {
+fn the_import_target_prefers_the_highlighted_track_over_a_selected_clip() {
     let (mut h, id) = rig();
     h.state_mut().playhead = Some(Tick(480));
     h.run();
     // The clip is on the first track; the second track's header is picked.
     h.state_mut().timeline.selected = std::collections::BTreeSet::from([id]);
     h.state_mut().timeline.selected_track = Some(NodeId(2));
-    h.get_by_label("Import audio…").click();
-    h.run();
-    let target = h.state().picks.last().copied().unwrap();
+    let target = import_target(&h, Tick(480));
     assert_eq!((target.track, target.at), (NodeId(2), Tick(480)));
 }
 
 #[test]
-fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
+fn the_import_target_is_the_selected_clips_track_at_the_playhead() {
     let (mut h, id) = rig();
     h.state_mut().playhead = Some(Tick(960));
     h.run();
     // Nothing selected: the first track.
-    h.get_by_label("Import audio…").click();
-    h.run();
-    let first = h.state().picks.last().copied().unwrap();
+    let first = import_target(&h, Tick(960));
     assert_eq!((first.track, first.at), (NodeId(1), Tick(960)));
     // Moving the clip to the second lane and selecting it points the import there.
     drag_by(
@@ -958,9 +966,7 @@ fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
         Grab::Body,
         Vec2::new(0.0, 64.0),
     );
-    h.get_by_label("Import audio…").click();
-    h.run();
-    assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
+    assert_eq!(import_target(&h, Tick(960)).track, NodeId(2));
 }
 
 fn type_and_press(h: &mut H, text: &str, key: Key) {
@@ -1776,5 +1782,76 @@ fn the_axis_is_linear_in_seconds_so_slow_bars_are_wider() {
     assert_eq!(axis.x(Tick(7680)) - axis.x(Tick(3840)), 400.0);
     for tick in [0, 100, 3840, 5000, 9999] {
         assert_eq!(axis.tick(axis.x(Tick(tick))), Tick(tick));
+    }
+}
+
+#[test]
+fn the_loop_toggle_turns_the_transport_loop_on_and_off() {
+    let (mut h, _) = rig();
+    assert!(!h.state().session.loop_region().on);
+    h.get_by_label("⟲").click();
+    h.run();
+    let region = h.state().session.loop_region();
+    assert!(region.on && region.start < region.end);
+    h.get_by_label("⟲").click();
+    h.run();
+    assert!(!h.state().session.loop_region().on);
+}
+
+#[test]
+fn the_corner_has_no_import_button() {
+    let (h, _) = rig();
+    assert!(h.query_by_label("Import audio…").is_none());
+}
+
+#[test]
+fn dragging_a_headers_bottom_edge_resizes_the_track() {
+    let (mut h, _) = rig();
+    let first = NodeId(1);
+    assert_eq!(
+        h.state().timeline.lane_height(first),
+        super::colors::LANE_HEIGHT
+    );
+    let edge = Pos2::new(
+        60.0,
+        8.0 + super::colors::RULER_HEIGHT + super::colors::LANE_HEIGHT - 2.0,
+    );
+    drag_between(&mut h, Modifiers::NONE, edge, edge + Vec2::new(0.0, 30.0));
+    let grown = h.state().timeline.lane_height(first);
+    assert!(
+        (grown - (super::colors::LANE_HEIGHT + 30.0)).abs() < 8.0,
+        "{grown}"
+    );
+    // The other track keeps its height.
+    assert_eq!(
+        h.state().timeline.lane_height(NodeId(2)),
+        super::colors::LANE_HEIGHT
+    );
+    // And it can't be dragged away to nothing.
+    let edge = Pos2::new(60.0, 8.0 + super::colors::RULER_HEIGHT + grown - 2.0);
+    drag_between(&mut h, Modifiers::NONE, edge, edge - Vec2::new(0.0, 300.0));
+    assert!(h.state().timeline.lane_height(first) >= super::MIN_LANE);
+}
+
+#[test]
+fn alt_scroll_zooms_every_track_vertically() {
+    let (mut h, _) = rig();
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::NONE
+    };
+    h.hover_at(Pos2::new(500.0, 100.0));
+    h.event(Event::ModifiersChanged(alt));
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: Vec2::new(0.0, 100.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: alt,
+    });
+    h.step();
+    let zoom = h.state().timeline.v_zoom;
+    assert!(zoom > 1.0, "{zoom}");
+    for track in [NodeId(1), NodeId(2)] {
+        assert!(h.state().timeline.lane_height(track) > super::colors::LANE_HEIGHT);
     }
 }

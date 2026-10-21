@@ -123,21 +123,27 @@ pub fn with_input(graph: &Graph, mut new_id: impl FnMut() -> NodeId) -> (Command
 /// Its output is wired by hand to whatever the signal should drive.
 pub fn automation_command(graph: &Graph, node: NodeId, lane: LaneId) -> Command {
     let below = graph.nodes().map(|(_, n)| n.position.y).fold(0.0, f32::max);
-    let point = AutomationPoint {
-        tick: Tick::ZERO,
-        value: 0.0,
-        curve: Curve::Linear,
-    };
     Command::Batch(vec![
         Command::AddNode {
             id: node,
             node: Node::new(AUTOMATION_NODE_ID).at(0.0, below + GAP),
         },
-        Command::AddLane {
-            id: lane,
-            lane: AutomationLane::new(Endpoint::new(node, AUTOMATION_VALUE), vec![point]),
-        },
+        automation_lane(node, lane),
     ])
+}
+
+/// The lane on an Automation node's value that holds 0 until points are
+/// drawn: the node's track in the sequencer.
+pub fn automation_lane(node: NodeId, lane: LaneId) -> Command {
+    let point = AutomationPoint {
+        tick: Tick::ZERO,
+        value: 0.0,
+        curve: Curve::Linear,
+    };
+    Command::AddLane {
+        id: lane,
+        lane: AutomationLane::new(Endpoint::new(node, AUTOMATION_VALUE), vec![point]),
+    }
 }
 
 #[cfg(test)]
