@@ -71,11 +71,10 @@ fn rig() -> (H, ClipId) {
             |ui, rig: &mut Rig| {
                 // What the last frame asked for is what this one was run for.
                 if rig.edited {
-                    rig.repaint_for_edits &= ui
-                        .ctx()
-                        .repaint_causes()
-                        .iter()
-                        .any(|cause| cause.file.ends_with("timeline/mod.rs"));
+                    rig.repaint_for_edits &=
+                        ui.ctx().repaint_causes().iter().any(|cause| {
+                            cause.file.replace('\\', "/").ends_with("timeline/mod.rs")
+                        });
                 }
                 let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
                 rig.edited = !out.edits.is_empty();
