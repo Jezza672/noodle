@@ -99,6 +99,17 @@ before the start, keys and velocities in range).
   clip, start and key, so editing other notes while it sounds doesn't cut it;
   if the note itself is moved, resized or removed, the old one ends at once.
   At most 128 notes sound at once on a track.
+- **Looping.** A clip has `loop_on`, `loop_start` and `loop_len` (ticks from the
+  clip's start; at least a sixteenth of a beat). Looped, it plays from its
+  start to the loop's end, then the loop section again until the clip's end.
+  Notes before the loop's start are a lead-in that plays once, notes starting
+  after the loop's end never play, and a note is cut at the loop's end on
+  every pass. `MidiClip::played` works the notes out (the first pass plus
+  `repeats`) and both the scheduler and the arrangement preview use it, so
+  what is drawn is what sounds. Trimming a looping clip's end keeps notes
+  past it (the loop can grow back); trimming its start moves the loop with
+  its notes (and ends it if the cut passes it); splitting a looping clip
+  gives two that don't loop, holding the notes as they sound.
 - **Stopping and jumping.** When the transport stops, or a block doesn't
   continue from the one before (a seek or the loop's wrap), every sounding
   note gets a note-off at the start of that block, so nothing hangs. Playing
@@ -109,6 +120,12 @@ before the start, keys and velocities in range).
   sound (the ones before the new start are cut off or shortened) instead of
   shifting them with the edge. The lane's right-click menu has *New MIDI
   clip*, a bar long at the beat nearest the click.
+- **Loop controls.** The piano roll's toolbar has a Loop checkbox (the whole
+  clip at first) and, while looping, the loop's start and length in beats.
+  The ruler shows the loop as a brace: drag its ends to resize and its body to
+  slide it, on the snap grid. Later passes are drawn faintly in the grid and
+  the time after the loop's end is dimmed. Audio clips' loops are the warp's
+  loop region (M7), not these fields.
 - **The piano roll** opens below the arrangement when a MIDI clip is
   double-clicked. Dragging on empty space draws a note, dragging a note moves
   it (in time and pitch, a whole selection together), dragging its right end

@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NodeId, Tick, WarpId};
+use crate::{NodeId, TICKS_PER_QUARTER, Tick, WarpId};
 
 /// Identifies a clip within a project. Like node IDs, clip IDs aren't reused
 /// within a session.
@@ -43,7 +43,25 @@ pub struct MidiClip {
     pub length: Tick,
     /// Not in any particular order; the engine sorts what it plays.
     pub notes: Vec<MidiNote>,
+    /// Whether the clip repeats a section of itself: it plays from its start
+    /// to the end of the loop, then the loop section again and again until
+    /// the clip's end. Notes after the loop's end don't play.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loop_on: bool,
+    /// Where the loop section starts, from the start of the clip.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub loop_start: Tick,
+    /// How long the loop section is; at least [`MIN_LOOP_LEN`] while looping.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub loop_len: Tick,
 }
+
+fn is_zero(tick: &Tick) -> bool {
+    *tick == Tick::ZERO
+}
+
+/// The shortest loop a MIDI clip may have: a sixteenth of a beat.
+pub const MIN_LOOP_LEN: i64 = TICKS_PER_QUARTER / 16;
 
 /// One note in a MIDI clip.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,7 +103,93 @@ impl MidiClip {
         Self {
             length,
             notes: Vec::new(),
+            loop_on: false,
+            loop_start: Tick::ZERO,
+            loop_len: Tick::ZERO,
         }
+    }
+
+    /// The first tick after the loop section.
+    pub fn loop_end(&self) -> Tick {
+        Tick(self.loop_start.0 + self.loop_len.0)
+    }
+
+    /// Turns looping on over the whole clip (or keeps the section the clip
+    /// had the last time it looped, if it still fits), or off.
+    pub fn set_looping(&mut self, on: bool) {
+        self.loop_on = on;
+        if on && (self.loop_len.0 < MIN_LOOP_LEN || self.loop_start.0 >= self.length.0) {
+            self.loop_start = Tick::ZERO;
+            self.loop_len = self.length;
+        }
+    }
+
+    /// The loop section, put right: inside the clip and at least
+    /// [`MIN_LOOP_LEN`] long.
+    pub fn set_loop(&mut self, start: Tick, end: Tick) {
+        let start = start.0.clamp(0, (self.length.0 - MIN_LOOP_LEN).max(0));
+        self.loop_start = Tick(start);
+        self.loop_len =
+            Tick((end.0 - start).clamp(MIN_LOOP_LEN, (self.length.0 - start).max(MIN_LOOP_LEN)));
+    }
+
+    /// The notes of the later passes through the loop, as they sound: each
+    /// note that starts in the loop section, shifted by whole loops and cut
+    /// at the loop's end, until the clip's end. Empty when not looping.
+    pub fn repeats(&self) -> Vec<MidiNote> {
+        let mut out = Vec::new();
+        if !self.loop_on || self.loop_len.0 < MIN_LOOP_LEN {
+            return out;
+        }
+        let (from, end) = (self.loop_start.0, self.loop_end().0);
+        let in_loop: Vec<&MidiNote> = self
+            .notes
+            .iter()
+            .filter(|n| n.start.0 >= from && n.start.0 < end)
+            .collect();
+        let mut shift = self.loop_len.0;
+        while from + shift < self.length.0 {
+            for note in &in_loop {
+                let start = note.start.0 + shift;
+                if start >= self.length.0 {
+                    continue;
+                }
+                out.push(MidiNote {
+                    start: Tick(start),
+                    length: Tick(note.length.0.min(end - note.start.0)),
+                    ..**note
+                });
+            }
+            shift += self.loop_len.0;
+        }
+        out
+    }
+
+    /// Every note as it sounds, in clip time: the first pass (cut at the
+    /// loop's end, and the notes past it dropped, if the clip loops) then the
+    /// repeats. Notes starting past the clip's end are left out; one that
+    /// runs past it is cut by whoever plays it.
+    pub fn played(&self) -> Vec<MidiNote> {
+        let mut out: Vec<MidiNote> = Vec::with_capacity(self.notes.len());
+        for note in &self.notes {
+            if note.start.0 >= self.length.0 {
+                continue;
+            }
+            if self.loop_on && self.loop_len.0 >= MIN_LOOP_LEN {
+                let end = self.loop_end().0;
+                if note.start.0 >= end {
+                    continue;
+                }
+                out.push(MidiNote {
+                    length: Tick(note.length.0.min(end - note.start.0)),
+                    ..*note
+                });
+            } else {
+                out.push(*note);
+            }
+        }
+        out.extend(self.repeats());
+        out
     }
 
     /// Gives each note whose id repeats an earlier one's a new id, so ids are
@@ -117,6 +221,9 @@ impl MidiClip {
     fn problem(&self) -> Option<&'static str> {
         if self.length <= Tick::ZERO {
             return Some("it is empty");
+        }
+        if self.loop_on && (self.loop_start < Tick::ZERO || self.loop_len.0 < MIN_LOOP_LEN) {
+            return Some("its loop starts before the clip or is too short");
         }
         for note in &self.notes {
             if note.start < Tick::ZERO {
@@ -259,5 +366,119 @@ impl AudioClip {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn looping(length: i64, from: i64, len: i64, notes: &[(i64, i64, u8)]) -> MidiClip {
+        let mut clip = MidiClip::new(Tick(length));
+        clip.notes = notes
+            .iter()
+            .map(|&(s, l, k)| MidiNote::new(Tick(s), Tick(l), k))
+            .collect();
+        clip.loop_on = true;
+        clip.loop_start = Tick(from);
+        clip.loop_len = Tick(len);
+        clip
+    }
+
+    fn shape(notes: Vec<MidiNote>) -> Vec<(i64, i64, u8)> {
+        let mut out: Vec<_> = notes
+            .iter()
+            .map(|n| (n.start.0, n.length.0, n.key))
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_clip_that_does_not_loop_plays_its_notes_once() {
+        let mut clip = looping(3840, 0, 960, &[(0, 480, 60), (4000, 10, 61)]);
+        clip.loop_on = false;
+        // A note past the clip's end is left out.
+        assert_eq!(shape(clip.played()), [(0, 480, 60)]);
+    }
+
+    #[test]
+    fn a_loop_repeats_its_section_until_the_clips_end() {
+        // Loop beats 1..2 of a four beat clip. The first note is a lead-in
+        // that plays once; the one after the loop never plays.
+        let clip = looping(
+            3840,
+            960,
+            960,
+            &[(0, 480, 59), (960, 480, 60), (2000, 100, 61)],
+        );
+        assert_eq!(
+            shape(clip.played()),
+            [
+                (0, 480, 59),
+                (960, 480, 60),
+                (1920, 480, 60),
+                (2880, 480, 60)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_note_is_cut_at_the_loops_end_on_every_pass() {
+        let clip = looping(2880, 0, 960, &[(480, 960, 60)]);
+        assert_eq!(
+            shape(clip.played()),
+            [(480, 480, 60), (1440, 480, 60), (2400, 480, 60)]
+        );
+    }
+
+    #[test]
+    fn the_last_repeat_is_not_started_past_the_clips_end() {
+        let clip = looping(1500, 0, 960, &[(0, 100, 60), (800, 100, 62)]);
+        assert_eq!(
+            shape(clip.played()),
+            [(0, 100, 60), (800, 100, 62), (960, 100, 60)]
+        );
+    }
+
+    #[test]
+    fn turning_looping_on_loops_the_whole_clip() {
+        let mut clip = MidiClip::new(Tick(3840));
+        clip.set_looping(true);
+        assert!(clip.loop_on);
+        assert_eq!((clip.loop_start, clip.loop_len), (Tick(0), Tick(3840)));
+        clip.set_loop(Tick(960), Tick(1920));
+        clip.set_looping(false);
+        clip.set_looping(true);
+        assert_eq!((clip.loop_start, clip.loop_len), (Tick(960), Tick(960)));
+    }
+
+    #[test]
+    fn set_loop_keeps_the_section_in_the_clip_and_not_tiny() {
+        let mut clip = MidiClip::new(Tick(3840));
+        clip.set_loop(Tick(-50), Tick(100000));
+        assert_eq!((clip.loop_start, clip.loop_len), (Tick(0), Tick(3840)));
+        clip.set_loop(Tick(960), Tick(960));
+        assert_eq!(clip.loop_len, Tick(MIN_LOOP_LEN));
+    }
+
+    #[test]
+    fn a_loop_that_is_too_short_is_a_problem() {
+        let mut clip = looping(3840, 0, 960, &[]);
+        assert_eq!(MidiClip::problem(&clip), None);
+        clip.loop_len = Tick(MIN_LOOP_LEN - 1);
+        assert!(clip.problem().is_some());
+        // Not looping, the loop's numbers don't matter.
+        clip.loop_on = false;
+        assert_eq!(clip.problem(), None);
+    }
+
+    #[test]
+    fn the_loop_survives_a_round_trip_and_an_old_file_has_none() {
+        let clip = looping(3840, 960, 1920, &[(0, 10, 60)]);
+        let text = ron::to_string(&clip).unwrap();
+        assert_eq!(ron::from_str::<MidiClip>(&text).unwrap(), clip);
+        let old = ron::from_str::<MidiClip>("(length: 960, notes: [])").unwrap();
+        assert!(!old.loop_on);
     }
 }
