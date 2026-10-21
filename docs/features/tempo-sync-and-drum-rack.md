@@ -17,7 +17,7 @@ drums are a rack of them.
    their baselines do not change; putting a synced echo in them is a decision for
    the evaluation, not for this batch.
 
-## Node editor polish (#204, #206, #207, #210)
+## Node editor polish (#204, #206, #207)
 
 - **Group output meters.** A group's output ports always keep their
   `noodle.group.stage` in the compiled graph (and so in a freeze's cache), and
@@ -28,5 +28,3 @@ drums are a rack of them.
 - **Note names.** `Unit::Note` shows a MIDI note number with its name (`60 C4`)
   and accepts names (`C4`, `f#3`, `Db2`) when typed. Note Split's `low` and
   `high` use it.
-- **BPM to Length.** `noodle.mod.bpm_length`: `bpm` and `division` in, `time`
-  and `rate` out, like Tempo for any BPM.

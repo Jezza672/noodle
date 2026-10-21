@@ -84,7 +84,7 @@ struct TempoNode;
 
 /// The length of `division` at `bpm`, in seconds.
 #[inline]
-pub(crate) fn seconds(division: f32, bpm: f64) -> f32 {
+fn seconds(division: f32, bpm: f64) -> f32 {
     let division = (division.round().max(0.0) as usize).min(DIVISIONS.len() - 1);
     (DIVISION_TICKS[division] / TICKS_PER_QUARTER * 60.0 / bpm.max(1.0)) as f32
 }
