@@ -1819,3 +1819,68 @@ fn a_node_feeding_a_node_that_is_off_stops_until_it_is_on_again() {
     assert_eq!(rig.render(4), [1.0; 4]);
     assert!(runs.load(Ordering::Relaxed) > on);
 }
+
+mod monitor_in_groups {
+    use super::*;
+    use crate::monitor::{Monitor, apply, is_monitor_config};
+    use noodle_core::group::{MUTE, control_key, group_nodes};
+    use noodle_core::{Connection, Endpoint, History, Node, NodeId};
+    use std::collections::BTreeSet;
+
+    /// A sine folded into a group, and the output node holding the group's
+    /// port.
+    fn grouped_counter() -> (Project, History, NodeId, NodeId, NodeId) {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let sine = project.new_node_id();
+        let add = Command::AddNode {
+            id: sine,
+            node: Node::new("counter"),
+        };
+        history.apply(&mut project, add).unwrap();
+        // Something downstream, so the group gets an output port.
+        let out = project.new_node_id();
+        let add = Command::AddNode {
+            id: out,
+            node: Node::new(OUTPUT_ID),
+        };
+        history.apply(&mut project, add).unwrap();
+        let wire = Command::Connect(Connection {
+            from: Endpoint::new(sine, "out"),
+            to: Endpoint::new(out, "in"),
+        });
+        history.apply(&mut project, wire).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[sine], || project.new_node_id()).unwrap();
+        history.apply(&mut project, command).unwrap();
+        let output = project.graph().group_ports(group).outputs[0].node;
+        (project, history, sine, group, output)
+    }
+
+    fn taps(project: &Project, node: NodeId) -> usize {
+        let graph = project.graph();
+        let flat = crate::flatten::flatten(graph);
+        let monitor = Monitor {
+            nodes: vec![node],
+            ..Monitor::default()
+        };
+        let registry = registry(&Arc::new(AtomicUsize::new(0)));
+        apply(graph, &flat, &BTreeSet::new(), &registry, &monitor, None)
+            .nodes()
+            .filter(|(_, n)| is_monitor_config(&n.config))
+            .count()
+    }
+
+    #[test]
+    fn a_node_inside_a_muted_group_is_not_tapped() {
+        let (mut project, mut history, sine, group, output) = grouped_counter();
+        assert_eq!((taps(&project, sine), taps(&project, group)), (1, 1));
+        let mute = Command::SetParam {
+            node: output,
+            key: control_key(MUTE, 1),
+            value: Some(1.0),
+        };
+        history.apply(&mut project, mute).unwrap();
+        assert_eq!((taps(&project, sine), taps(&project, group)), (0, 1));
+    }
+}

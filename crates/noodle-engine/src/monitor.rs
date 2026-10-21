@@ -4,9 +4,9 @@
 //! hands the compiler a [`Monitor`], and after flattening it adds a hidden
 //! Output node per monitored node, wired to that node's first signal output.
 //! The tap is therefore what the node really sends on: for a group, the
-//! output after its gain, mute and solo stage, so a muted track is silent in
-//! the monitor too. (A node inside a group is tapped before the group's own
-//! stage.) Hidden Outputs are marked with [`MONITOR_KEY`] so they sum onto a
+//! output after its gain, mute and solo stage, and a node inside a muted
+//! group, or one soloing leaves out, is not tapped at all, so the monitor is
+//! silent whenever the mix is. Hidden Outputs are marked with [`MONITOR_KEY`] so they sum onto a
 //! device other Output nodes already play on, instead of being refused as a
 //! second owner.
 
@@ -114,6 +114,16 @@ fn source(
     id: NodeId,
 ) -> Option<Endpoint> {
     let node = original.node(id)?;
+    // A node inside a muted group, or one soloing leaves out, plays nothing
+    // in the mix, so it plays nothing in the monitor either.
+    let mut parent = node.parent;
+    let left_out = original.solo_muted();
+    while let Some(group) = parent {
+        if original.group_controls(group).mute || left_out.contains(&group) {
+            return None;
+        }
+        parent = original.node(group)?.parent;
+    }
     if node.type_id == GROUP {
         return crate::flatten::group_first_output(original, keep, id);
     }

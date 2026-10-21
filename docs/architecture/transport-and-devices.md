@@ -139,7 +139,7 @@ bar (default: the main output, saved in the preferences). It is session state
   node (marked with the `monitor` config key) per monitored node, wired to the
   node's flat output. For a group that is the output after its gain, mute and
   solo stage, so a node that is not sounding in the mix is silent in the
-  monitor too. (A node inside a group is tapped before that group's stage.)
+  monitor too. A node inside a group that is muted, or that solo leaves out, is not tapped at all.
   Hidden Outputs sum onto a device other Output nodes play on, instead of
   being refused as a second owner. Offline renders never include a monitor.
 - **Clicks.** Plain: monitor that node alone, summed into the mix; again
