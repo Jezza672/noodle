@@ -72,6 +72,11 @@ pub struct TimelineState {
     /// How far the view is scrolled, in screen points.
     scroll_x: f32,
     scroll_y: f32,
+    /// Vertical zoom: a factor on every track's lane height (Alt+scroll).
+    v_zoom: f32,
+    /// The lane heights tracks were dragged to, before vertical zoom. A track
+    /// not here has the default.
+    lane_heights: std::collections::BTreeMap<NodeId, f32>,
     selected: BTreeSet<ClipId>,
     /// The track (its input node) whose header was last clicked.
     selected_track: Option<NodeId>,
@@ -117,6 +122,8 @@ impl Default for TimelineState {
             pps: 120.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
+            v_zoom: 1.0,
+            lane_heights: Default::default(),
             selected: BTreeSet::new(),
             selected_track: None,
             drag: None,
@@ -147,6 +154,23 @@ impl Default for TimelineState {
 }
 
 impl TimelineState {
+    /// How tall `track`'s own lane is, with vertical zoom.
+    fn lane_height(&self, track: NodeId) -> f32 {
+        let own = self
+            .lane_heights
+            .get(&track)
+            .copied()
+            .unwrap_or(colors::LANE_HEIGHT);
+        own * self.v_zoom
+    }
+
+    /// Drags `track`'s lane taller by `dy` screen points.
+    fn resize_track(&mut self, track: NodeId, dy: f32) {
+        let own = self.lane_height(track) + dy;
+        self.lane_heights
+            .insert(track, (own / self.v_zoom).clamp(MIN_LANE, MAX_LANE));
+    }
+
     /// Forgets clips that no longer exist, e.g. after an undo.
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
@@ -394,6 +418,8 @@ pub struct Output {
     pub notice: Option<String>,
     /// They asked to import audio from a file: where it should go.
     pub pick: Option<Target>,
+    /// They changed the transport's loop.
+    pub set_loop: Option<crate::session::LoopRegion>,
     /// Tracks whose record-arm button was pressed, with the state asked for.
     pub arm: Vec<(NodeId, crate::session::ArmKind, bool)>,
     /// A MIDI clip they double-clicked, to open in the piano roll.
@@ -420,7 +446,8 @@ pub fn show(
     let project = session.project();
     state.retain_existing(project);
     let tracks = tracks(project);
-    let rows = automation::Rows::new(project, &tracks);
+    let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
+    let rows = automation::Rows::new(project, &tracks, &heights);
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -527,12 +554,13 @@ pub fn show(
     let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> = Default::default();
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
-        if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
+        let lane_height = rows.lane_height(index);
+        if top > content.bottom() || top + lane_height < content.top() {
             continue;
         }
         let colour = colors::track_colour(index);
         if let Some(take) = &take {
-            let drawn = take::draw(&painter, axis, top, take, track, |n| {
+            let drawn = take::draw(&painter, axis, top, lane_height, take, track, |n| {
                 let mut cached = take_wave.borrow_mut();
                 match &*cached {
                     Some((columns, peaks)) if *columns == n => peaks.clone(),
@@ -565,7 +593,7 @@ pub fn show(
                 Pos2::new(axis.x(clip.start), top + 3.0),
                 Pos2::new(
                     axis.x(end).max(axis.x(clip.start) + 2.0),
-                    top + colors::LANE_HEIGHT - 3.0,
+                    top + lane_height - 3.0,
                 ),
             );
             let visible = full.intersect(content);
@@ -1249,6 +1277,7 @@ pub fn show(
         vec2(colors::HEADER_WIDTH - 12.0, colors::RULER_HEIGHT - 6.0),
     );
     let mut pick = None;
+    let set_loop = loop_controls(ui, corner, map, session.loop_region());
     let import = |state: &TimelineState, notice: &mut Option<String>| {
         let target = state.import_target(project, playhead.unwrap_or(Tick::ZERO));
         if target.is_none() {
@@ -1256,12 +1285,6 @@ pub fn show(
         }
         target
     };
-    if ui
-        .put(corner, egui::Button::new("Import audio…").small())
-        .clicked()
-    {
-        pick = import(state, &mut notice);
-    }
     // Right-click on empty lane space offers it there.
     if background.secondary_clicked() {
         state.menu_at = background.interact_pointer_pos();
@@ -1341,18 +1364,88 @@ pub fn show(
         seek,
         notice,
         pick,
+        set_loop,
         arm,
         open_midi,
         open_audio,
     }
 }
 
+/// The first tick of 1-based `bar`, through the signature changes.
+fn bar_tick(map: &noodle_core::TempoMap, bar: u32) -> Tick {
+    let target = bar.saturating_sub(1);
+    let signatures = map.signatures();
+    let mut tick = 0;
+    for (i, change) in signatures.iter().enumerate() {
+        let end = signatures.get(i + 1).map_or(u32::MAX, |next| next.bar);
+        let bars = target.min(end).saturating_sub(change.bar);
+        tick += i64::from(bars) * change.signature.ticks_per_bar();
+        if target < end {
+            break;
+        }
+    }
+    Tick(tick)
+}
+
+/// The loop toggle and its start and end bars, in the ruler's corner.
+/// Returns the new loop if they changed it.
+fn loop_controls(
+    ui: &mut egui::Ui,
+    corner: Rect,
+    map: &noodle_core::TempoMap,
+    current: crate::session::LoopRegion,
+) -> Option<crate::session::LoopRegion> {
+    let mut region = current;
+    let bar_of = |tick: Tick| map.position(tick).bar + 1;
+    let (mut start, mut end) = (bar_of(current.start), bar_of(current.end));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let toggle = egui::Button::new("⟲").small().selected(current.on);
+            if ui
+                .add(toggle)
+                .on_hover_text("Loop the transport between the two bars")
+                .clicked()
+            {
+                region.on = !current.on;
+            }
+            fn field(value: &mut u32, min: u32) -> egui::DragValue<'_> {
+                egui::DragValue::new(value).range(min..=9999).speed(0.1)
+            }
+            if ui
+                .add(field(&mut start, 1))
+                .on_hover_text("Loop start (bar)")
+                .changed()
+            {
+                end = end.max(start + 1);
+            }
+            ui.label("–");
+            ui.add(field(&mut end, 2)).on_hover_text("Loop end (bar)");
+        });
+    });
+    region.start = bar_tick(map, start);
+    region.end = bar_tick(map, end.max(start + 1));
+    (region != current).then_some(region)
+}
+
 /// Scrolling and zooming, while the pointer is over the arrangement.
 /// `extent` is in seconds.
 fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tall: f32, extent: f32) {
-    let (scroll, zoom, pointer) =
-        ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
-    if zoom != 1.0 {
+    let (scroll, zoom, pointer, alt) = ui.input(|i| {
+        (
+            i.smooth_scroll_delta,
+            i.zoom_delta(),
+            i.pointer.hover_pos(),
+            i.modifiers.alt,
+        )
+    });
+    if alt && scroll.y != 0.0 {
+        // Keep the row under the pointer where it is.
+        let anchor_y = pointer.map_or(content.top(), |p| p.y.max(content.top()));
+        let at = (anchor_y - content.top() + state.scroll_y) / state.v_zoom;
+        state.v_zoom = (state.v_zoom * (scroll.y / 200.0).exp()).clamp(MIN_V_ZOOM, MAX_V_ZOOM);
+        state.scroll_y = at * state.v_zoom - (anchor_y - content.top());
+    } else if zoom != 1.0 {
         // Keep the time under the pointer where it is.
         let anchor_x = pointer.map_or(content.left(), |p| p.x.max(content.left()));
         let seconds = (anchor_x - content.left() + state.scroll_x) / state.pps;
@@ -1384,6 +1477,15 @@ struct Handles<'a> {
 /// Size of a fade handle, and how far in from the clip's edge it sits when
 /// there is no fade.
 const HANDLE: f32 = 10.0;
+
+/// How tall the strip on a track header's bottom edge is that drags to resize.
+const GRIP: f32 = 6.0;
+/// The range of a track's own lane height, before vertical zoom.
+const MIN_LANE: f32 = 32.0;
+const MAX_LANE: f32 = 400.0;
+/// The range of the vertical zoom (Alt+scroll).
+const MIN_V_ZOOM: f32 = 0.5;
+const MAX_V_ZOOM: f32 = 4.0;
 
 /// Draws a clip's fades and the handles that drag them. Dragging one is an
 /// undo group like any other drag.
@@ -1809,7 +1911,7 @@ fn draw_headers(
         let top = content.top() - scroll_y + rows.top(index);
         let lane = Rect::from_min_size(
             Pos2::new(column.left(), top),
-            vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
+            vec2(colors::HEADER_WIDTH, rows.lane_height(index)),
         );
         let block_bottom = top + rows.height(index);
         if block_bottom < column.top() || lane.top() > column.bottom() {
@@ -1848,6 +1950,19 @@ fn draw_headers(
             automated,
             &mut state.renaming,
         );
+        // The lane's bottom edge drags to resize the track. Inside the lane, since
+        // the next header is drawn over anything below it.
+        let grip = Rect::from_min_size(
+            Pos2::new(lane.left(), lane.bottom() - GRIP),
+            vec2(lane.width(), GRIP),
+        );
+        let resize = ui.interact(grip, ui.id().with(("resize", input)), Sense::drag());
+        if resize.hovered() || resize.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resize.dragged() {
+            state.resize_track(input, resize.drag_delta().y);
+        }
         edits.extend(changes.edits);
         arm.extend(changes.arm_audio.map(|on| (input, ArmKind::Audio, on)));
         arm.extend(changes.arm_midi.map(|on| (input, ArmKind::Midi, on)));
@@ -1894,7 +2009,21 @@ fn draw_headers(
         );
         let refused = automation::refused(lane);
         let label = automation::label(project, lane);
-        edits.extend(automation::header(ui, row, id, &label, refused));
+        // Removing an Automation node's lane removes the node too, so the
+        // graph and the sequencer don't disagree. Removing a node takes its
+        // lanes with it.
+        let source =
+            automation::is_automation_node(project, lane.target.node).then_some(lane.target.node);
+        edits.extend(
+            automation::header(ui, row, id, &label, refused)
+                .into_iter()
+                .map(|edit| match (edit, source) {
+                    (Edit::Apply(Command::RemoveLane { .. }), Some(node)) => {
+                        Edit::Apply(Command::RemoveNode { id: node })
+                    }
+                    (edit, _) => edit,
+                }),
+        );
     }
     if renaming_group.is_some() && !renaming_seen {
         state.renaming = None;

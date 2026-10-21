@@ -648,6 +648,34 @@ fn shift_a_searches_and_adds_at_the_pointer() {
     assert!(h.state().editor.search.is_none());
 }
 
+#[test]
+fn an_automation_node_added_in_the_graph_gets_its_track_in_one_undo_step() {
+    let mut h = rig();
+    let before = h.state().session.project().graph().nodes().count();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("automation".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let project = h.state().session.project();
+    let node = project
+        .graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+        .map(|(id, _)| id)
+        .expect("an Automation node was added");
+    let value = noodle_core::Endpoint::new(node, noodle_nodes::AUTOMATION_VALUE);
+    assert!(
+        project.lane_for(&value).is_some(),
+        "and a lane on its value"
+    );
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(project.graph().nodes().count(), before);
+    assert_eq!(project.lanes().count(), 0);
+}
+
 /// A node type whose new nodes start with a setting, as plugin nodes with
 /// many parameters do.
 struct StartsWithConfig;
