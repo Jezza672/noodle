@@ -81,6 +81,12 @@ pub struct TimelineState {
     /// The track (its input node) whose header was last clicked.
     selected_track: Option<NodeId>,
     drag: Option<Drag>,
+    /// A box being dragged over empty space to select the clips it touches.
+    band: Option<Band>,
+    /// The clips last copied or cut, as they were.
+    clipboard: Vec<Clip>,
+    /// An edit-menu command for the next frame to carry out.
+    pending: Option<ClipAction>,
     /// Where the arrangement was last right-clicked.
     menu_at: Option<Pos2>,
     /// The tick the ruler last asked for, while the button is held.
@@ -121,6 +127,9 @@ impl Default for TimelineState {
             selected: BTreeSet::new(),
             selected_track: None,
             drag: None,
+            band: None,
+            clipboard: Vec::new(),
+            pending: None,
             menu_at: None,
             last_seek: None,
             sources: Sources::default(),
@@ -286,6 +295,43 @@ impl TimelineState {
     }
 }
 
+/// What the Edit menu, the keys and the clips' menus can do with clips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipAction {
+    Copy,
+    Cut,
+    /// Puts the clipboard's clips at the playhead.
+    Paste,
+    /// Copies the selected clips to just after themselves.
+    Duplicate,
+}
+
+impl TimelineState {
+    /// Asks for `action` to be done to the selection on the next frame.
+    pub fn request(&mut self, action: ClipAction) {
+        self.pending = Some(action);
+    }
+
+    /// Whether there are selected clips to copy, cut or duplicate.
+    pub fn can_copy(&self) -> bool {
+        !self.selected.is_empty()
+    }
+
+    /// Whether there is anything to paste.
+    pub fn can_paste(&self) -> bool {
+        !self.clipboard.is_empty()
+    }
+}
+
+/// A selection box, in the arrangement's own coordinates (points from the
+/// top left of the lanes, scrolled with them) so it stays put as the view moves.
+struct Band {
+    from: Vec2,
+    to: Vec2,
+    /// What was selected before it, kept when Shift was held.
+    base: BTreeSet<ClipId>,
+}
+
 /// A clip being moved or trimmed. Each frame's edit is worked out from the
 /// clips as they were when the drag began, so snapping can't accumulate error.
 struct Drag {
@@ -294,6 +340,9 @@ struct Drag {
     /// Every clip the drag moves, as it was at the start.
     originals: Vec<(ClipId, Clip)>,
     press_x: f32,
+    /// Whether `originals` are copies the drag made, leaving the clips it
+    /// started with where they were.
+    copied: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -401,7 +450,7 @@ pub fn show(
     let rows = automation::Rows::new(project, &tracks, &heights);
     let map = project.tempo_map();
 
-    let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+    let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     // The tempo lane, when it is shown, sits between the ruler and the tracks.
     let lane_height = if state.show_tempo {
         tempo_lane::HEIGHT
@@ -497,6 +546,8 @@ pub fn show(
     let mut open_midi = None;
     let mut open_audio = None;
     let mut hit_clip = false;
+    // Where each clip was drawn, for the selection box.
+    let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
     let clips_before = state.selected.clone();
     let take = session.take_preview();
     // Every audio-armed track shows the same waveform: work it out once.
@@ -549,6 +600,7 @@ pub fn show(
             if visible.width() <= 0.0 || visible.height() <= 0.0 {
                 continue;
             }
+            drawn.push((id, visible));
             #[cfg(test)]
             state.clip_rects.insert(id, visible);
             let response =
@@ -580,28 +632,7 @@ pub fn show(
                 };
                 let copying = mode == Mode::Move && ui.input(|i| i.modifiers.command);
                 let mut grabbed = id;
-                let originals = if copying {
-                    // The copies are what the drag moves; the originals stay.
-                    // Added in the drag's own undo step.
-                    let mut next = project.next_clip_id();
-                    let mut copies = Vec::new();
-                    for &sel in &state.selected {
-                        let Some(clip) = project.clip(sel) else {
-                            continue;
-                        };
-                        if sel == id {
-                            grabbed = next;
-                        }
-                        edits.push(Edit::Drag(Command::AddClip {
-                            id: next,
-                            clip: clip.clone(),
-                        }));
-                        copies.push((next, clip.clone()));
-                        next.0 += 1;
-                    }
-                    state.selected = copies.iter().map(|(copy, _)| *copy).collect();
-                    copies
-                } else if mode == Mode::Move {
+                let mut originals = if mode == Mode::Move {
                     state
                         .selected
                         .iter()
@@ -611,11 +642,21 @@ pub fn show(
                     state.selected = BTreeSet::from([id]);
                     vec![(id, clip.clone())]
                 };
+                if copying {
+                    // The copies are what the drag moves; the originals stay.
+                    // Added in the drag's own undo step.
+                    let copies = copies_of(project, &originals, grabbed);
+                    edits.extend(copies.adds);
+                    originals = copies.copies;
+                    grabbed = copies.grabbed;
+                    state.selected = originals.iter().map(|(copy, _)| *copy).collect();
+                }
                 state.drag = Some(Drag {
                     mode,
                     grabbed,
                     originals,
                     press_x: press.x,
+                    copied: copying,
                 });
             } else if response.double_clicked() && clip.as_midi().is_some() {
                 state.selected = BTreeSet::from([id]);
@@ -631,6 +672,28 @@ pub fn show(
                 } else {
                     state.selected = BTreeSet::from([id]);
                 }
+            }
+            // Pressing Ctrl/Cmd partway through a move drops copies where the
+            // clips began and carries on with those.
+            if response.dragged()
+                && ui.input(|i| i.modifiers.command)
+                && let Some(drag) = state.drag.as_mut()
+                && drag.mode == Mode::Move
+                && !drag.copied
+            {
+                let copies = copies_of(project, &drag.originals, drag.grabbed);
+                // The clips go back where they were, as the drag began.
+                edits.extend(drag.originals.iter().map(|(id, original)| {
+                    Edit::Drag(Command::SetClip {
+                        id: *id,
+                        clip: original.clone(),
+                    })
+                }));
+                edits.extend(copies.adds);
+                state.selected = copies.copies.iter().map(|(copy, _)| *copy).collect();
+                drag.originals = copies.copies;
+                drag.grabbed = copies.grabbed;
+                drag.copied = true;
             }
             if response.dragged()
                 && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
@@ -659,8 +722,11 @@ pub fn show(
                 edits.push(Edit::EndDrag);
             }
 
-            if let Some(audio) = audio {
-                response.context_menu(|ui| {
+            if response.secondary_clicked() && !selected {
+                state.selected = BTreeSet::from([id]);
+            }
+            response.context_menu(|ui| {
+                if let Some(audio) = audio {
                     let mute = if audio.muted { "Unmute" } else { "Mute" };
                     if ui.button(mute).clicked() {
                         ui.close();
@@ -676,8 +742,19 @@ pub fn show(
                         ui.close();
                         edits.push(Edit::SplitToStems(id));
                     }
-                });
-            }
+                    ui.separator();
+                }
+                for (action, label) in [
+                    (ClipAction::Cut, "Cut"),
+                    (ClipAction::Copy, "Copy"),
+                    (ClipAction::Duplicate, "Duplicate"),
+                ] {
+                    if ui.button(label).clicked() {
+                        ui.close();
+                        state.pending = Some(action);
+                    }
+                }
+            });
 
             let painter = ui.painter_at(visible);
             // A muted section stays where it is but is drawn faded.
@@ -756,23 +833,25 @@ pub fn show(
                                             offset: audio.offset,
                                             length: audio.length,
                                             file: peaks.clone(),
+                                            span: (clip.start, end),
                                         };
-                                        state.warped_waves.get(ui.ctx(), &request)
+                                        state.warped_waves.shown(ui.ctx(), &request)
                                     });
                                 match rendered {
                                     Some(rendered) => {
+                                        let area = warped_area(axis, full, &rendered);
                                         let played = waveform::Clip {
-                                            peaks: &rendered,
+                                            peaks: &rendered.peaks,
                                             ..wave
                                         };
                                         waveform::draw_range(
                                             &painter,
                                             &mut state.waveforms,
                                             (id, 3),
-                                            full,
-                                            visible,
+                                            area,
+                                            area.intersect(visible),
                                             &played,
-                                            (0, rendered.frames()),
+                                            (0, rendered.peaks.frames()),
                                         )
                                     }
                                     None => waveform::draw(
@@ -847,6 +926,8 @@ pub fn show(
             }
         }
     }
+
+    select_by_box(ui, state, &background, content, &drawn);
 
     // Clips and automation points share the Delete key, so picking one
     // drops the other from the selection.
@@ -957,36 +1038,94 @@ pub fn show(
                 edits.push(Edit::Apply(Command::Batch(commands)));
             }
         }
-        if copy_key && !state.selected.is_empty() {
-            let chosen: Vec<(ClipId, Clip)> = state
-                .selected
-                .iter()
-                .filter_map(|&id| Some((id, project.clip(id)?.clone())))
-                .collect();
-            let first = chosen
-                .iter()
-                .map(|(_, c)| c.start)
-                .min()
-                .unwrap_or_default();
+        let (key_copy, key_cut, key_paste) = ui.input_mut(|i| {
+            // Egui turns the chords into events, and the clipboard's text into
+            // a paste only when it has some, so a copy leaves a note there.
+            let event = |wanted: fn(&egui::Event) -> bool, i: &egui::InputState| {
+                i.events.iter().any(wanted)
+            };
+            let copy = event(|e| matches!(e, egui::Event::Copy), i);
+            let cut = event(|e| matches!(e, egui::Event::Cut), i);
+            let paste = event(|e| matches!(e, egui::Event::Paste(_)), i);
+            (
+                i.consume_key(egui::Modifiers::COMMAND, Key::C) | copy,
+                i.consume_key(egui::Modifiers::COMMAND, Key::X) | cut,
+                i.consume_key(egui::Modifiers::COMMAND, Key::V) | paste,
+            )
+        });
+        state.pending = state.pending.take().or(if key_cut {
+            Some(ClipAction::Cut)
+        } else if key_copy {
+            Some(ClipAction::Copy)
+        } else if key_paste {
+            Some(ClipAction::Paste)
+        } else if copy_key {
+            Some(ClipAction::Duplicate)
+        } else {
+            None
+        });
+    }
+    // The Edit menu and the clips' menus ask for these too, with the pointer
+    // elsewhere.
+    if !ui.ctx().egui_wants_keyboard_input()
+        && let Some(action) = state.pending.take()
+    {
+        let rate_of = |state: &mut TimelineState, clip: &Clip| {
+            clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                state
+                    .sources
+                    .get(ui.ctx(), directory.as_deref(), &audio.source)
+                    .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+            })
+        };
+        let chosen: Vec<(ClipId, Clip)> = state
+            .selected
+            .iter()
+            .filter_map(|&id| Some((id, project.clip(id)?.clone())))
+            .collect();
+        if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
+            state.clipboard = chosen.iter().map(|(_, clip)| clip.clone()).collect();
+            ui.ctx().copy_text(format!("{} clips", chosen.len()));
+            if action == ClipAction::Cut {
+                let removals = chosen
+                    .iter()
+                    .map(|&(id, _)| Command::RemoveClip { id })
+                    .collect();
+                state.selected.clear();
+                edits.push(Edit::Apply(Command::Batch(removals)));
+            }
+        }
+        if action == ClipAction::Paste && !state.clipboard.is_empty() {
+            // On the selected track if the clips come from one, else where
+            // they came from.
+            let track = state.selected_track.or_else(|| {
+                let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
+                tracks.next().filter(|first| tracks.all(|t| t == *first))
+            });
+            let (command, pasted) = paste(
+                project,
+                &state.clipboard,
+                playhead.unwrap_or(Tick::ZERO),
+                track,
+            );
+            if let Some(command) = command {
+                state.selected = pasted;
+                edits.push(Edit::Apply(command));
+            }
+        }
+        if action == ClipAction::Duplicate && !chosen.is_empty() {
             let last = chosen
                 .iter()
                 .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
                 .max()
                 .unwrap_or_default();
-            let shift = Tick((last.0 - first.0).max(1));
-            let mut next = project.next_clip_id();
-            let mut commands = Vec::new();
-            let mut copies = BTreeSet::new();
-            for (_, clip) in chosen {
-                commands.push(Command::AddClip {
-                    id: next,
-                    clip: clips::moved(&clip, Tick(clip.start.0 + shift.0)),
-                });
-                copies.insert(next);
-                next.0 += 1;
+            let clipboard: Vec<Clip> = chosen.into_iter().map(|(_, clip)| clip).collect();
+            let (command, copies) = paste(project, &clipboard, last, None);
+            // The earliest copy goes at `last`: just after the others.
+            if let Some(command) = command {
+                state.selected = copies;
+                edits.push(Edit::Apply(command));
             }
-            state.selected = copies;
-            edits.push(Edit::Apply(Command::Batch(commands)));
         }
     }
 
@@ -1177,6 +1316,23 @@ pub fn show(
             }));
             open_midi = Some(id);
         }
+        let paste_here = ui.add_enabled(!state.clipboard.is_empty(), egui::Button::new("Paste"));
+        if paste_here.clicked() {
+            ui.close();
+            let at = state.menu_at.filter(|p| content.contains(*p));
+            let (tick, track) = match at {
+                Some(at) if !tracks.is_empty() => (
+                    axis.snap(axis.tick(at.x).max(Tick::ZERO)),
+                    Some(tracks[rows.track_at(at.y - content.top() + state.scroll_y)]),
+                ),
+                _ => (playhead.unwrap_or(Tick::ZERO), None),
+            };
+            let (command, pasted) = paste(project, &state.clipboard, tick, track);
+            if let Some(command) = command {
+                state.selected = pasted;
+                edits.push(Edit::Apply(command));
+            }
+        }
         if ui.button("Import audio…").clicked() {
             ui.close();
             let on_lane = state.menu_at.filter(|p| content.contains(*p));
@@ -1198,6 +1354,11 @@ pub fn show(
         }
     });
     state.warped_waves.end_frame();
+    // An edit shows in the next frame, which nothing else would ask for once
+    // the pointer stops: the clip would sit behind the mouse.
+    if !edits.is_empty() || state.band.is_some() {
+        ui.ctx().request_repaint();
+    }
     Output {
         edits,
         seek,
@@ -1399,6 +1560,7 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
                 grabbed: id,
                 originals: vec![(id, clip.clone())],
                 press_x: x,
+                copied: false,
             });
         }
         if response.dragged()
@@ -1430,6 +1592,150 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
         painter.rect_filled(rect, 2.0, fill);
     }
     edits
+}
+
+/// Where to draw a warped section's render within `full`, its rectangle. The
+/// render of the section as it is fills it. While an edit is rendered, the
+/// last render stays where it was worked out: a section resized meanwhile
+/// shows more or less of it, not all of it squeezed into the new width.
+fn warped_area(axis: Axis, full: Rect, shown: &warped_waves::Shown) -> Rect {
+    if shown.current {
+        return full;
+    }
+    Rect::from_min_max(
+        Pos2::new(axis.x(shown.span.0), full.top()),
+        Pos2::new(axis.x(shown.span.1), full.bottom()),
+    )
+}
+
+/// The command that puts copies of `clips` with the earliest at `at`, and the
+/// IDs of the copies. They keep their tracks, unless they all came from one and
+/// `track` says where to put them. A track that is gone drops its clips.
+fn paste(
+    project: &Project,
+    clips: &[Clip],
+    at: Tick,
+    track: Option<NodeId>,
+) -> (Option<Command>, BTreeSet<ClipId>) {
+    let Some(first) = clips.iter().map(|clip| clip.start.0).min() else {
+        return (None, BTreeSet::new());
+    };
+    let one_track = clips.iter().all(|clip| clip.node == clips[0].node);
+    let mut next = project.next_clip_id();
+    let mut commands = Vec::new();
+    let mut pasted = BTreeSet::new();
+    for clip in clips {
+        let node = track.filter(|_| one_track).unwrap_or(clip.node);
+        if project.graph().node(node).is_none() {
+            continue;
+        }
+        let mut copy = clips::moved(clip, Tick(at.0 + clip.start.0 - first));
+        copy.node = node;
+        commands.push(Command::AddClip {
+            id: next,
+            clip: copy,
+        });
+        pasted.insert(next);
+        next.0 += 1;
+    }
+    let command = (!commands.is_empty()).then_some(Command::Batch(commands));
+    (command, pasted)
+}
+
+/// Selects the clips a box dragged over empty space touches; Shift keeps what
+/// was selected before.
+fn select_by_box(
+    ui: &egui::Ui,
+    state: &mut TimelineState,
+    background: &egui::Response,
+    content: Rect,
+    drawn: &[(ClipId, Rect)],
+) {
+    let (scroll_x, scroll_y) = (state.scroll_x, state.scroll_y);
+    let local = |p: Pos2| {
+        vec2(
+            p.x - content.left() + scroll_x,
+            p.y - content.top() + scroll_y,
+        )
+    };
+    let screen = |v: Vec2| {
+        Pos2::new(
+            v.x + content.left() - scroll_x,
+            v.y + content.top() - scroll_y,
+        )
+    };
+    if background.drag_started()
+        && let Some(press) = ui
+            .input(|i| i.pointer.press_origin())
+            .filter(|p| content.contains(*p))
+    {
+        let base = if ui.input(|i| i.modifiers.shift) {
+            state.selected.clone()
+        } else {
+            BTreeSet::new()
+        };
+        state.band = Some(Band {
+            from: local(press),
+            to: local(press),
+            base,
+        });
+    }
+    let Some(band) = state.band.as_mut() else {
+        return;
+    };
+    if background.drag_stopped() || !ui.input(|i| i.pointer.any_down()) {
+        state.band = None;
+        return;
+    }
+    if let Some(pos) = background.interact_pointer_pos() {
+        band.to = local(pos);
+    }
+    let rect = Rect::from_two_pos(screen(band.from), screen(band.to));
+    let mut chosen = band.base.clone();
+    chosen.extend(
+        drawn
+            .iter()
+            .filter(|(_, clip)| clip.intersects(rect))
+            .map(|(id, _)| *id),
+    );
+    let painter = ui.painter_at(content);
+    painter.rect_filled(rect, 0.0, colors::SELECTED.gamma_multiply(0.15));
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, colors::SELECTED),
+        StrokeKind::Inside,
+    );
+    state.selected = chosen;
+}
+
+/// Copies of dragged clips, and the edits that add them.
+struct Copies {
+    adds: Vec<Edit>,
+    copies: Vec<(ClipId, Clip)>,
+    /// The copy of the grabbed clip.
+    grabbed: ClipId,
+}
+
+fn copies_of(project: &Project, originals: &[(ClipId, Clip)], grabbed: ClipId) -> Copies {
+    let mut next = project.next_clip_id();
+    let mut copies = Copies {
+        adds: Vec::new(),
+        copies: Vec::new(),
+        grabbed,
+    };
+    for (id, clip) in originals {
+        if *id == grabbed {
+            copies.grabbed = next;
+        }
+        copies.adds.push(Edit::Drag(Command::AddClip {
+            id: next,
+            clip: clip.clone(),
+        }));
+        copies.copies.push((next, clip.clone()));
+        next.0 += 1;
+    }
+    copies
 }
 
 /// Whether a press at `x` on a clip spanning `full` moves it or trims an edge.
