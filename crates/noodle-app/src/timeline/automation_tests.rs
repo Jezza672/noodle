@@ -508,7 +508,11 @@ fn an_automation_node_in_a_tracks_group_shows_under_that_track() {
     );
     let project = h.state().session.project();
     let tracks = super::tracks(project);
-    let rows = super::automation::Rows::new(project, &tracks);
+    let rows = super::automation::Rows::new(
+        project,
+        &tracks,
+        &vec![super::colors::LANE_HEIGHT; tracks.len()],
+    );
     assert_eq!(rows.lanes(0), [id]);
     assert!(rows.free_lanes().is_empty());
     assert_eq!(
@@ -546,4 +550,21 @@ fn click(h: &mut H, pos: Pos2) {
 
 fn drag(h: &mut H, path: &[Pos2]) {
     testkit::drag(h, Modifiers::NONE, path);
+}
+
+#[test]
+fn removing_a_free_tracks_lane_removes_its_node_too() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (node, id) = free_lane(&h);
+    h.get_by_label("×").click();
+    h.run();
+    assert!(lane(&h, id).is_none());
+    assert!(h.state().session.project().graph().node(node).is_none());
+    // One undo brings both back.
+    h.state_mut().session.undo();
+    h.run();
+    assert!(h.state().session.project().graph().node(node).is_some());
+    assert!(lane(&h, id).is_some());
 }

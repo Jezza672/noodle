@@ -115,3 +115,12 @@ through its own synth (live monitoring); and a failed output falls back to
 the system default and then to the new virtual output, which can also be
 picked in the audio settings as "Virtual (no sound)". Not done: remembering
 the toggle between launches, and retrying the saved device when it returns.
+
+## MIDI clip looping (done)
+
+MIDI clips can loop (#196): `loop_on`, `loop_start` and `loop_len` on
+`MidiClip`, a Loop checkbox with start and length in the piano roll's toolbar,
+and a draggable loop brace on its ruler. The playback rules are in
+[midi-and-recording](../architecture/midi-and-recording.md). Tests:
+`noodle-core` `clip.rs` (how the notes repeat), `track_input_midi.rs` (the
+events), `piano_roll/tests.rs` (the controls and brace).

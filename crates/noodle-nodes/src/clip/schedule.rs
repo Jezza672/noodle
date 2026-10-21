@@ -525,7 +525,7 @@ fn schedule_notes(
 ) {
     let at = |ticks: i64| table.sample_at_tick(noodle_core::Tick(clip.start.0 + ticks));
     let clip_end = at(midi.length.0);
-    for note in &midi.notes {
+    for note in &midi.played() {
         let start = at(note.start.0);
         if start >= clip_end {
             continue;

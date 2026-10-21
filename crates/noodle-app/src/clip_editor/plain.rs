@@ -8,6 +8,7 @@ use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, vec2}
 use noodle_core::{AudioClip, Clip, ClipContent, ClipId, Command, Tick};
 use noodle_io::Peaks;
 
+use super::curve;
 use super::{ClipEditor, MAX_COLUMNS, MAX_PPB, MIN_PPB, RULER};
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
@@ -113,11 +114,21 @@ pub(super) fn show(
 
     let painter = ui.painter_at(body);
     painter.rect_filled(wave, 0.0, colors::BACKGROUND);
+    // Zoomed in to a few frames a screen, the samples themselves are drawn.
+    let seconds = |x: f32| f64::from((x - axis.origin) / axis.pps) + offset_secs;
+    let frames = |x: f32| (seconds(x) * rate).clamp(0.0, file_frames as f64) as u64;
+    let (first, last) = (frames(wave.left()), frames(wave.right()) + 1);
+    let samples = if (last - first) as f32 <= 2.0 * wave.width() {
+        curve::window(&mut state.samples, &loaded.path, first, last, file_frames)
+    } else {
+        None
+    };
     draw_waveform(
         &painter,
         wave,
         axis,
         loaded.peaks.as_deref(),
+        samples.map(|s| (s, (first, last))),
         rate,
         offset_secs,
         audio.gain,
@@ -238,11 +249,13 @@ pub(super) fn slipped(original: &Clip, seconds: f32, rate: f64, file_frames: u64
 }
 
 /// The file's peaks across the window, one column per pixel.
+#[allow(clippy::too_many_arguments)]
 fn draw_waveform(
     painter: &egui::Painter,
     wave: Rect,
     axis: Axis,
     peaks: Option<&Peaks>,
+    samples: Option<(&curve::Samples, (u64, u64))>,
     rate: f64,
     offset_secs: f64,
     gain: f32,
@@ -260,16 +273,22 @@ fn draw_waveform(
     if v1 - v0 < 0.5 || x1 <= x0 {
         return;
     }
+    let ink = theme::ACCENT.gamma_multiply(0.55);
+    if let Some((samples, frames)) = samples
+        && axis.pps / rate as f32 >= curve::CURVE_AT
+    {
+        curve::draw(painter, wave, samples, frames, gain, ink, |f| {
+            axis.x(f / rate - offset_secs)
+        });
+        return;
+    }
     let across =
         |x: f32| (f64::from((x - x0) / (x1 - x0)) * frames as f64).clamp(0.0, frames as f64);
     let columns = ((v1 - v0).ceil() as usize).clamp(1, MAX_COLUMNS);
     let (start, end) = (across(v0).round() as u64, across(v1).round() as u64);
     let middle = wave.center().y;
     let half = wave.height() / 2.0 - 2.0;
-    let stroke = Stroke::new(
-        (v1 - v0) / columns as f32,
-        theme::ACCENT.gamma_multiply(0.55),
-    );
+    let stroke = Stroke::new((v1 - v0) / columns as f32, ink);
     for (i, peak) in peaks.columns(None, start, end, columns).iter().enumerate() {
         let x = v0 + (i as f32 + 0.5) * (v1 - v0) / columns as f32;
         let (min, max) = (

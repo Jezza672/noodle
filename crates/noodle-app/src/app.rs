@@ -38,6 +38,12 @@ const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F);
 const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
 /// Turns the computer keyboard into a MIDI source, as in Ableton.
 const KEYBOARD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::M);
+/// Shown in the Edit menu. The arrangement handles the keys itself, with the
+/// pointer over it, so these are not in [`SHORTCUTS`].
+const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
+const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
+const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
+const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
 /// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
@@ -140,6 +146,8 @@ enum Action {
     /// Asks where the export the dialog chose is to be written.
     StartExport,
     DeleteSelection,
+    /// Cuts, copies, pastes or duplicates arrangement clips.
+    Clips(timeline::ClipAction),
     ArrangeNodes,
     /// Fits the node editor's view around the whole graph at this level.
     FitGraph,
@@ -402,6 +410,9 @@ impl App {
                 if let Some(notice) = out.notice {
                     self.session.notify(notice);
                 }
+                if let Some(region) = out.set_loop {
+                    self.session.set_loop(region);
+                }
                 if let Some(target) = out.pick {
                     self.import_audio(target);
                 }
@@ -652,6 +663,26 @@ impl App {
                 self.session.can_redo(),
                 Action::Redo,
             );
+            ui.separator();
+            let clips = self.timeline.can_copy();
+            for (text, shortcut, enabled, action) in [
+                ("Cut", &CUT, clips, timeline::ClipAction::Cut),
+                ("Copy", &COPY, clips, timeline::ClipAction::Copy),
+                (
+                    "Paste",
+                    &PASTE,
+                    self.timeline.can_paste(),
+                    timeline::ClipAction::Paste,
+                ),
+                (
+                    "Duplicate",
+                    &DUPLICATE,
+                    clips,
+                    timeline::ClipAction::Duplicate,
+                ),
+            ] {
+                item(ui, text, Some(shortcut), enabled, Action::Clips(action));
+            }
             ui.separator();
             let selected = self.editor.has_selection();
             item(
@@ -1262,6 +1293,7 @@ impl App {
                 self.editor.request_fit();
                 ctx.request_repaint();
             }
+            Action::Clips(action) => self.timeline.request(action),
             Action::DeleteSelection => {
                 if let Some(edit) = self.editor.delete_selection() {
                     self.session.edit([edit]);
