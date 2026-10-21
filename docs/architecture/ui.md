@@ -141,7 +141,10 @@ It has these views:
     whose runs are drawn separately, show the file's own waveform). The worker
     keeps the last file it decoded, so the steps of an edit do not read it
     again. There is no on-disk cache of it: a render is cheap next to
-    the stretcher's speed, and the engine itself stretches live.
+    the stretcher's speed, and the engine itself stretches live. A render that
+    is still being worked out is drawn where it was worked out (the render
+    knows its span in ticks), so resizing a section shows more or less of it
+    instead of squeezing it into the new width.
   - **Seconds on the x axis**: time is linear, so a clip is as wide as its
     audio is long. In a slower section a bar lasts longer, so its bar lines
     sit further apart. Every tick/x conversion (clips, automation, tempo
@@ -154,14 +157,34 @@ It has these views:
     divisions of the beat); Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
+  - **Selecting.** Dragging over empty lane space draws a box and selects
+    the clips it touches (Shift keeps the earlier selection).
   - **Copying.** Ctrl/Cmd-dragging a clip adds copies in the drag's own undo
-    step and moves those, leaving the originals. With a clip selected,
+    step and moves those, leaving the originals. Pressing Ctrl/Cmd after a
+    move has begun puts the clips back, adds copies and carries on with those.
+    Cmd+C, Cmd+X and Cmd+V (with the pointer over the arrangement, or from the
+    Edit menu and the clips' right-click menu) fill a clipboard of clips kept
+    in the timeline's state and paste it, earliest clip at the playhead, on the
+    clips' own tracks or on the selected track when they all came from one;
+    right-clicking a lane pastes at that point. Cmd+D duplicates the selection
+    just after itself. Each is one undo step. With a clip selected,
     Ctrl/Cmd+Left and Right take the playhead to the start of the earliest
     selected clip or the end of the latest, scrolling to keep it in view.
   - **Fades** are dragged by the handles on a clip's top corners (clips too
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
+  - **Carrying out of the timeline** (`carry.rs`). Dragging an audio clip's
+    body, or a track header, out of the timeline's area carries it: the clip
+    goes back where it was, a label follows the pointer, and letting go
+    over a view hands that view the drop. Over a Sampler (its node, or the
+    sample section of the properties panel) a clip sets the sample, `start` and
+    `end` from the part of the file the clip plays, and the root from the
+    sample's pitch, as one undo step. Over empty canvas a clip makes a `Sample`
+    node there, holding the same part of the file (a snapshot: the clip can
+    change afterwards). A track dropped on the canvas places the track's group
+    node there, if it is at the level being edited. The Sample node's own
+    properties take a clip dropped on them too.
   - **Adding audio.** Dropping files on a lane, or Import audio (the button
     in the corner and File → Import Audio…, which open a file dialog and
     target the highlighted track (its header picked), else the selected

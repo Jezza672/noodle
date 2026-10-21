@@ -27,6 +27,8 @@ const WORKERS: usize = 2;
 /// A file that could be read.
 #[derive(Clone)]
 pub struct Loaded {
+    /// Where the file is, for reading samples out of it.
+    pub path: PathBuf,
     pub source: Source,
     /// `None` while the waveform is still being worked out.
     pub peaks: Option<Arc<Peaks>>,
@@ -209,6 +211,7 @@ impl Sources {
         };
         let info = decoder.info();
         let loaded = Loaded {
+            path: path.clone(),
             source: Source {
                 sample_rate: info.sample_rate,
                 frames: info.frames,

@@ -72,10 +72,21 @@ pub struct TimelineState {
     /// How far the view is scrolled, in screen points.
     scroll_x: f32,
     scroll_y: f32,
+    /// Vertical zoom: a factor on every track's lane height (Alt+scroll).
+    v_zoom: f32,
+    /// The lane heights tracks were dragged to, before vertical zoom. A track
+    /// not here has the default.
+    lane_heights: std::collections::BTreeMap<NodeId, f32>,
     selected: BTreeSet<ClipId>,
     /// The track (its input node) whose header was last clicked.
     selected_track: Option<NodeId>,
     drag: Option<Drag>,
+    /// A box being dragged over empty space to select the clips it touches.
+    band: Option<Band>,
+    /// The clips last copied or cut, as they were.
+    clipboard: Vec<Clip>,
+    /// An edit-menu command for the next frame to carry out.
+    pending: Option<ClipAction>,
     /// Where the arrangement was last right-clicked.
     menu_at: Option<Pos2>,
     /// The tick the ruler last asked for, while the button is held.
@@ -111,9 +122,14 @@ impl Default for TimelineState {
             pps: 120.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
+            v_zoom: 1.0,
+            lane_heights: Default::default(),
             selected: BTreeSet::new(),
             selected_track: None,
             drag: None,
+            band: None,
+            clipboard: Vec::new(),
+            pending: None,
             menu_at: None,
             last_seek: None,
             sources: Sources::default(),
@@ -138,6 +154,23 @@ impl Default for TimelineState {
 }
 
 impl TimelineState {
+    /// How tall `track`'s own lane is, with vertical zoom.
+    fn lane_height(&self, track: NodeId) -> f32 {
+        let own = self
+            .lane_heights
+            .get(&track)
+            .copied()
+            .unwrap_or(colors::LANE_HEIGHT);
+        own * self.v_zoom
+    }
+
+    /// Drags `track`'s lane taller by `dy` screen points.
+    fn resize_track(&mut self, track: NodeId, dy: f32) {
+        let own = self.lane_height(track) + dy;
+        self.lane_heights
+            .insert(track, (own / self.v_zoom).clamp(MIN_LANE, MAX_LANE));
+    }
+
     /// Forgets clips that no longer exist, e.g. after an undo.
     fn retain_existing(&mut self, project: &Project) {
         self.selected.retain(|&id| project.clip(id).is_some());
@@ -262,6 +295,43 @@ impl TimelineState {
     }
 }
 
+/// What the Edit menu, the keys and the clips' menus can do with clips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipAction {
+    Copy,
+    Cut,
+    /// Puts the clipboard's clips at the playhead.
+    Paste,
+    /// Copies the selected clips to just after themselves.
+    Duplicate,
+}
+
+impl TimelineState {
+    /// Asks for `action` to be done to the selection on the next frame.
+    pub fn request(&mut self, action: ClipAction) {
+        self.pending = Some(action);
+    }
+
+    /// Whether there are selected clips to copy, cut or duplicate.
+    pub fn can_copy(&self) -> bool {
+        !self.selected.is_empty()
+    }
+
+    /// Whether there is anything to paste.
+    pub fn can_paste(&self) -> bool {
+        !self.clipboard.is_empty()
+    }
+}
+
+/// A selection box, in the arrangement's own coordinates (points from the
+/// top left of the lanes, scrolled with them) so it stays put as the view moves.
+struct Band {
+    from: Vec2,
+    to: Vec2,
+    /// What was selected before it, kept when Shift was held.
+    base: BTreeSet<ClipId>,
+}
+
 /// A clip being moved or trimmed. Each frame's edit is worked out from the
 /// clips as they were when the drag began, so snapping can't accumulate error.
 struct Drag {
@@ -270,6 +340,9 @@ struct Drag {
     /// Every clip the drag moves, as it was at the start.
     originals: Vec<(ClipId, Clip)>,
     press_x: f32,
+    /// Whether `originals` are copies the drag made, leaving the clips it
+    /// started with where they were.
+    copied: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -345,6 +418,8 @@ pub struct Output {
     pub notice: Option<String>,
     /// They asked to import audio from a file: where it should go.
     pub pick: Option<Target>,
+    /// They changed the transport's loop.
+    pub set_loop: Option<crate::session::LoopRegion>,
     /// Tracks whose record-arm button was pressed, with the state asked for.
     pub arm: Vec<(NodeId, crate::session::ArmKind, bool)>,
     /// A MIDI clip they double-clicked, to open in the piano roll.
@@ -371,10 +446,11 @@ pub fn show(
     let project = session.project();
     state.retain_existing(project);
     let tracks = tracks(project);
-    let rows = automation::Rows::new(project, &tracks);
+    let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
+    let rows = automation::Rows::new(project, &tracks, &heights);
     let map = project.tempo_map();
 
-    let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+    let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     // The tempo lane, when it is shown, sits between the ruler and the tracks.
     let lane_height = if state.show_tempo {
         tempo_lane::HEIGHT
@@ -470,18 +546,21 @@ pub fn show(
     let mut open_midi = None;
     let mut open_audio = None;
     let mut hit_clip = false;
+    // Where each clip was drawn, for the selection box.
+    let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
     let clips_before = state.selected.clone();
     let take = session.take_preview();
     // Every audio-armed track shows the same waveform: work it out once.
     let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> = Default::default();
     for (index, &track) in tracks.iter().enumerate() {
         let top = lane_top(index);
-        if top > content.bottom() || top + colors::LANE_HEIGHT < content.top() {
+        let lane_height = rows.lane_height(index);
+        if top > content.bottom() || top + lane_height < content.top() {
             continue;
         }
         let colour = colors::track_colour(index);
         if let Some(take) = &take {
-            let drawn = take::draw(&painter, axis, top, take, track, |n| {
+            let drawn = take::draw(&painter, axis, top, lane_height, take, track, |n| {
                 let mut cached = take_wave.borrow_mut();
                 match &*cached {
                     Some((columns, peaks)) if *columns == n => peaks.clone(),
@@ -514,13 +593,14 @@ pub fn show(
                 Pos2::new(axis.x(clip.start), top + 3.0),
                 Pos2::new(
                     axis.x(end).max(axis.x(clip.start) + 2.0),
-                    top + colors::LANE_HEIGHT - 3.0,
+                    top + lane_height - 3.0,
                 ),
             );
             let visible = full.intersect(content);
             if visible.width() <= 0.0 || visible.height() <= 0.0 {
                 continue;
             }
+            drawn.push((id, visible));
             #[cfg(test)]
             state.clip_rects.insert(id, visible);
             let response =
@@ -552,28 +632,7 @@ pub fn show(
                 };
                 let copying = mode == Mode::Move && ui.input(|i| i.modifiers.command);
                 let mut grabbed = id;
-                let originals = if copying {
-                    // The copies are what the drag moves; the originals stay.
-                    // Added in the drag's own undo step.
-                    let mut next = project.next_clip_id();
-                    let mut copies = Vec::new();
-                    for &sel in &state.selected {
-                        let Some(clip) = project.clip(sel) else {
-                            continue;
-                        };
-                        if sel == id {
-                            grabbed = next;
-                        }
-                        edits.push(Edit::Drag(Command::AddClip {
-                            id: next,
-                            clip: clip.clone(),
-                        }));
-                        copies.push((next, clip.clone()));
-                        next.0 += 1;
-                    }
-                    state.selected = copies.iter().map(|(copy, _)| *copy).collect();
-                    copies
-                } else if mode == Mode::Move {
+                let mut originals = if mode == Mode::Move {
                     state
                         .selected
                         .iter()
@@ -583,11 +642,21 @@ pub fn show(
                     state.selected = BTreeSet::from([id]);
                     vec![(id, clip.clone())]
                 };
+                if copying {
+                    // The copies are what the drag moves; the originals stay.
+                    // Added in the drag's own undo step.
+                    let copies = copies_of(project, &originals, grabbed);
+                    edits.extend(copies.adds);
+                    originals = copies.copies;
+                    grabbed = copies.grabbed;
+                    state.selected = originals.iter().map(|(copy, _)| *copy).collect();
+                }
                 state.drag = Some(Drag {
                     mode,
                     grabbed,
                     originals,
                     press_x: press.x,
+                    copied: copying,
                 });
             } else if response.double_clicked() && clip.as_midi().is_some() {
                 state.selected = BTreeSet::from([id]);
@@ -604,18 +673,61 @@ pub fn show(
                     state.selected = BTreeSet::from([id]);
                 }
             }
+            // Pressing Ctrl/Cmd partway through a move drops copies where the
+            // clips began and carries on with those.
+            if response.dragged()
+                && ui.input(|i| i.modifiers.command)
+                && let Some(drag) = state.drag.as_mut()
+                && drag.mode == Mode::Move
+                && !drag.copied
+            {
+                let copies = copies_of(project, &drag.originals, drag.grabbed);
+                // The clips go back where they were, as the drag began.
+                edits.extend(drag.originals.iter().map(|(id, original)| {
+                    Edit::Drag(Command::SetClip {
+                        id: *id,
+                        clip: original.clone(),
+                    })
+                }));
+                edits.extend(copies.adds);
+                state.selected = copies.copies.iter().map(|(copy, _)| *copy).collect();
+                drag.originals = copies.copies;
+                drag.grabbed = copies.grabbed;
+                drag.copied = true;
+            }
             if response.dragged()
                 && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
             {
                 let free = ui.input(|i| i.modifiers.alt);
                 let lane = rows.track_at(pos.y - content.top() + state.scroll_y);
                 let target = tracks[lane];
+                // Dragged out of the timeline, an audio clip is carried to a
+                // Sampler or the graph, and stays where it was.
+                let pointer = ui.input(|i| i.pointer.latest_pos()).unwrap_or(pos);
+                let carried = drag.mode == Mode::Move && audio.is_some() && !rect.contains(pointer);
+                let (x, target) = if carried {
+                    let home = drag
+                        .originals
+                        .iter()
+                        .find(|(id, _)| *id == drag.grabbed)
+                        .map_or(target, |(_, clip)| clip.node);
+                    crate::carry::carrying(
+                        ui.ctx(),
+                        crate::carry::Item::Clip(drag.grabbed),
+                        pointer,
+                        "Sample",
+                    );
+                    (drag.press_x, home)
+                } else {
+                    crate::carry::cancel(ui.ctx());
+                    (pos.x, target)
+                };
                 let command = drag_command(
                     drag,
                     DragInput {
                         map,
                         axis,
-                        x: pos.x,
+                        x,
                         free,
                         target,
                         source,
@@ -629,10 +741,16 @@ pub fn show(
             if response.drag_stopped() {
                 state.drag = None;
                 edits.push(Edit::EndDrag);
+                if let Some((item, at)) = crate::carry::carried(ui.ctx()) {
+                    crate::carry::release(ui.ctx(), item, at);
+                }
             }
 
-            if let Some(audio) = audio {
-                response.context_menu(|ui| {
+            if response.secondary_clicked() && !selected {
+                state.selected = BTreeSet::from([id]);
+            }
+            response.context_menu(|ui| {
+                if let Some(audio) = audio {
                     let mute = if audio.muted { "Unmute" } else { "Mute" };
                     if ui.button(mute).clicked() {
                         ui.close();
@@ -648,8 +766,19 @@ pub fn show(
                         ui.close();
                         edits.push(Edit::SplitToStems(id));
                     }
-                });
-            }
+                    ui.separator();
+                }
+                for (action, label) in [
+                    (ClipAction::Cut, "Cut"),
+                    (ClipAction::Copy, "Copy"),
+                    (ClipAction::Duplicate, "Duplicate"),
+                ] {
+                    if ui.button(label).clicked() {
+                        ui.close();
+                        state.pending = Some(action);
+                    }
+                }
+            });
 
             let painter = ui.painter_at(visible);
             // A muted section stays where it is but is drawn faded.
@@ -728,23 +857,25 @@ pub fn show(
                                             offset: audio.offset,
                                             length: audio.length,
                                             file: peaks.clone(),
+                                            span: (clip.start, end),
                                         };
-                                        state.warped_waves.get(ui.ctx(), &request)
+                                        state.warped_waves.shown(ui.ctx(), &request)
                                     });
                                 match rendered {
                                     Some(rendered) => {
+                                        let area = warped_area(axis, full, &rendered);
                                         let played = waveform::Clip {
-                                            peaks: &rendered,
+                                            peaks: &rendered.peaks,
                                             ..wave
                                         };
                                         waveform::draw_range(
                                             &painter,
                                             &mut state.waveforms,
                                             (id, 3),
-                                            full,
-                                            visible,
+                                            area,
+                                            area.intersect(visible),
                                             &played,
-                                            (0, rendered.frames()),
+                                            (0, rendered.peaks.frames()),
                                         )
                                     }
                                     None => waveform::draw(
@@ -820,6 +951,8 @@ pub fn show(
         }
     }
 
+    select_by_box(ui, state, &background, content, &drawn);
+
     // Clips and automation points share the Delete key, so picking one
     // drops the other from the selection.
     if state.selected != clips_before && !state.selected.is_empty() {
@@ -849,6 +982,7 @@ pub fn show(
     // its widget's `drag_stopped`, which would leave its undo group open.
     if state.drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
         state.drag = None;
+        crate::carry::cancel(ui.ctx());
         if !edits.contains(&Edit::EndDrag) {
             edits.push(Edit::EndDrag);
         }
@@ -929,36 +1063,94 @@ pub fn show(
                 edits.push(Edit::Apply(Command::Batch(commands)));
             }
         }
-        if copy_key && !state.selected.is_empty() {
-            let chosen: Vec<(ClipId, Clip)> = state
-                .selected
-                .iter()
-                .filter_map(|&id| Some((id, project.clip(id)?.clone())))
-                .collect();
-            let first = chosen
-                .iter()
-                .map(|(_, c)| c.start)
-                .min()
-                .unwrap_or_default();
+        let (key_copy, key_cut, key_paste) = ui.input_mut(|i| {
+            // Egui turns the chords into events, and the clipboard's text into
+            // a paste only when it has some, so a copy leaves a note there.
+            let event = |wanted: fn(&egui::Event) -> bool, i: &egui::InputState| {
+                i.events.iter().any(wanted)
+            };
+            let copy = event(|e| matches!(e, egui::Event::Copy), i);
+            let cut = event(|e| matches!(e, egui::Event::Cut), i);
+            let paste = event(|e| matches!(e, egui::Event::Paste(_)), i);
+            (
+                i.consume_key(egui::Modifiers::COMMAND, Key::C) | copy,
+                i.consume_key(egui::Modifiers::COMMAND, Key::X) | cut,
+                i.consume_key(egui::Modifiers::COMMAND, Key::V) | paste,
+            )
+        });
+        state.pending = state.pending.take().or(if key_cut {
+            Some(ClipAction::Cut)
+        } else if key_copy {
+            Some(ClipAction::Copy)
+        } else if key_paste {
+            Some(ClipAction::Paste)
+        } else if copy_key {
+            Some(ClipAction::Duplicate)
+        } else {
+            None
+        });
+    }
+    // The Edit menu and the clips' menus ask for these too, with the pointer
+    // elsewhere.
+    if !ui.ctx().egui_wants_keyboard_input()
+        && let Some(action) = state.pending.take()
+    {
+        let rate_of = |state: &mut TimelineState, clip: &Clip| {
+            clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                state
+                    .sources
+                    .get(ui.ctx(), directory.as_deref(), &audio.source)
+                    .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+            })
+        };
+        let chosen: Vec<(ClipId, Clip)> = state
+            .selected
+            .iter()
+            .filter_map(|&id| Some((id, project.clip(id)?.clone())))
+            .collect();
+        if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
+            state.clipboard = chosen.iter().map(|(_, clip)| clip.clone()).collect();
+            ui.ctx().copy_text(format!("{} clips", chosen.len()));
+            if action == ClipAction::Cut {
+                let removals = chosen
+                    .iter()
+                    .map(|&(id, _)| Command::RemoveClip { id })
+                    .collect();
+                state.selected.clear();
+                edits.push(Edit::Apply(Command::Batch(removals)));
+            }
+        }
+        if action == ClipAction::Paste && !state.clipboard.is_empty() {
+            // On the selected track if the clips come from one, else where
+            // they came from.
+            let track = state.selected_track.or_else(|| {
+                let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
+                tracks.next().filter(|first| tracks.all(|t| t == *first))
+            });
+            let (command, pasted) = paste(
+                project,
+                &state.clipboard,
+                playhead.unwrap_or(Tick::ZERO),
+                track,
+            );
+            if let Some(command) = command {
+                state.selected = pasted;
+                edits.push(Edit::Apply(command));
+            }
+        }
+        if action == ClipAction::Duplicate && !chosen.is_empty() {
             let last = chosen
                 .iter()
                 .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
                 .max()
                 .unwrap_or_default();
-            let shift = Tick((last.0 - first.0).max(1));
-            let mut next = project.next_clip_id();
-            let mut commands = Vec::new();
-            let mut copies = BTreeSet::new();
-            for (_, clip) in chosen {
-                commands.push(Command::AddClip {
-                    id: next,
-                    clip: clips::moved(&clip, Tick(clip.start.0 + shift.0)),
-                });
-                copies.insert(next);
-                next.0 += 1;
+            let clipboard: Vec<Clip> = chosen.into_iter().map(|(_, clip)| clip).collect();
+            let (command, copies) = paste(project, &clipboard, last, None);
+            // The earliest copy goes at `last`: just after the others.
+            if let Some(command) = command {
+                state.selected = copies;
+                edits.push(Edit::Apply(command));
             }
-            state.selected = copies;
-            edits.push(Edit::Apply(Command::Batch(commands)));
         }
     }
 
@@ -1110,6 +1302,7 @@ pub fn show(
         vec2(colors::HEADER_WIDTH - 12.0, colors::RULER_HEIGHT - 6.0),
     );
     let mut pick = None;
+    let set_loop = loop_controls(ui, corner, map, session.loop_region());
     let import = |state: &TimelineState, notice: &mut Option<String>| {
         let target = state.import_target(project, playhead.unwrap_or(Tick::ZERO));
         if target.is_none() {
@@ -1117,12 +1310,6 @@ pub fn show(
         }
         target
     };
-    if ui
-        .put(corner, egui::Button::new("Import audio…").small())
-        .clicked()
-    {
-        pick = import(state, &mut notice);
-    }
     // Right-click on empty lane space offers it there.
     if background.secondary_clicked() {
         state.menu_at = background.interact_pointer_pos();
@@ -1154,6 +1341,23 @@ pub fn show(
             }));
             open_midi = Some(id);
         }
+        let paste_here = ui.add_enabled(!state.clipboard.is_empty(), egui::Button::new("Paste"));
+        if paste_here.clicked() {
+            ui.close();
+            let at = state.menu_at.filter(|p| content.contains(*p));
+            let (tick, track) = match at {
+                Some(at) if !tracks.is_empty() => (
+                    axis.snap(axis.tick(at.x).max(Tick::ZERO)),
+                    Some(tracks[rows.track_at(at.y - content.top() + state.scroll_y)]),
+                ),
+                _ => (playhead.unwrap_or(Tick::ZERO), None),
+            };
+            let (command, pasted) = paste(project, &state.clipboard, tick, track);
+            if let Some(command) = command {
+                state.selected = pasted;
+                edits.push(Edit::Apply(command));
+            }
+        }
         if ui.button("Import audio…").clicked() {
             ui.close();
             let on_lane = state.menu_at.filter(|p| content.contains(*p));
@@ -1175,23 +1379,98 @@ pub fn show(
         }
     });
     state.warped_waves.end_frame();
+    // An edit shows in the next frame, which nothing else would ask for once
+    // the pointer stops: the clip would sit behind the mouse.
+    if !edits.is_empty() || state.band.is_some() {
+        ui.ctx().request_repaint();
+    }
     Output {
         edits,
         seek,
         notice,
         pick,
+        set_loop,
         arm,
         open_midi,
         open_audio,
     }
 }
 
+/// The first tick of 1-based `bar`, through the signature changes.
+fn bar_tick(map: &noodle_core::TempoMap, bar: u32) -> Tick {
+    let target = bar.saturating_sub(1);
+    let signatures = map.signatures();
+    let mut tick = 0;
+    for (i, change) in signatures.iter().enumerate() {
+        let end = signatures.get(i + 1).map_or(u32::MAX, |next| next.bar);
+        let bars = target.min(end).saturating_sub(change.bar);
+        tick += i64::from(bars) * change.signature.ticks_per_bar();
+        if target < end {
+            break;
+        }
+    }
+    Tick(tick)
+}
+
+/// The loop toggle and its start and end bars, in the ruler's corner.
+/// Returns the new loop if they changed it.
+fn loop_controls(
+    ui: &mut egui::Ui,
+    corner: Rect,
+    map: &noodle_core::TempoMap,
+    current: crate::session::LoopRegion,
+) -> Option<crate::session::LoopRegion> {
+    let mut region = current;
+    let bar_of = |tick: Tick| map.position(tick).bar + 1;
+    let (mut start, mut end) = (bar_of(current.start), bar_of(current.end));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let toggle = egui::Button::new("⟲").small().selected(current.on);
+            if ui
+                .add(toggle)
+                .on_hover_text("Loop the transport between the two bars")
+                .clicked()
+            {
+                region.on = !current.on;
+            }
+            fn field(value: &mut u32, min: u32) -> egui::DragValue<'_> {
+                egui::DragValue::new(value).range(min..=9999).speed(0.1)
+            }
+            if ui
+                .add(field(&mut start, 1))
+                .on_hover_text("Loop start (bar)")
+                .changed()
+            {
+                end = end.max(start + 1);
+            }
+            ui.label("–");
+            ui.add(field(&mut end, 2)).on_hover_text("Loop end (bar)");
+        });
+    });
+    region.start = bar_tick(map, start);
+    region.end = bar_tick(map, end.max(start + 1));
+    (region != current).then_some(region)
+}
+
 /// Scrolling and zooming, while the pointer is over the arrangement.
 /// `extent` is in seconds.
 fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, tall: f32, extent: f32) {
-    let (scroll, zoom, pointer) =
-        ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
-    if zoom != 1.0 {
+    let (scroll, zoom, pointer, alt) = ui.input(|i| {
+        (
+            i.smooth_scroll_delta,
+            i.zoom_delta(),
+            i.pointer.hover_pos(),
+            i.modifiers.alt,
+        )
+    });
+    if alt && scroll.y != 0.0 {
+        // Keep the row under the pointer where it is.
+        let anchor_y = pointer.map_or(content.top(), |p| p.y.max(content.top()));
+        let at = (anchor_y - content.top() + state.scroll_y) / state.v_zoom;
+        state.v_zoom = (state.v_zoom * (scroll.y / 200.0).exp()).clamp(MIN_V_ZOOM, MAX_V_ZOOM);
+        state.scroll_y = at * state.v_zoom - (anchor_y - content.top());
+    } else if zoom != 1.0 {
         // Keep the time under the pointer where it is.
         let anchor_x = pointer.map_or(content.left(), |p| p.x.max(content.left()));
         let seconds = (anchor_x - content.left() + state.scroll_x) / state.pps;
@@ -1223,6 +1502,15 @@ struct Handles<'a> {
 /// Size of a fade handle, and how far in from the clip's edge it sits when
 /// there is no fade.
 const HANDLE: f32 = 10.0;
+
+/// How tall the strip on a track header's bottom edge is that drags to resize.
+const GRIP: f32 = 6.0;
+/// The range of a track's own lane height, before vertical zoom.
+const MIN_LANE: f32 = 32.0;
+const MAX_LANE: f32 = 400.0;
+/// The range of the vertical zoom (Alt+scroll).
+const MIN_V_ZOOM: f32 = 0.5;
+const MAX_V_ZOOM: f32 = 4.0;
 
 /// Draws a clip's fades and the handles that drag them. Dragging one is an
 /// undo group like any other drag.
@@ -1297,6 +1585,7 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
                 grabbed: id,
                 originals: vec![(id, clip.clone())],
                 press_x: x,
+                copied: false,
             });
         }
         if response.dragged()
@@ -1328,6 +1617,150 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
         painter.rect_filled(rect, 2.0, fill);
     }
     edits
+}
+
+/// Where to draw a warped section's render within `full`, its rectangle. The
+/// render of the section as it is fills it. While an edit is rendered, the
+/// last render stays where it was worked out: a section resized meanwhile
+/// shows more or less of it, not all of it squeezed into the new width.
+fn warped_area(axis: Axis, full: Rect, shown: &warped_waves::Shown) -> Rect {
+    if shown.current {
+        return full;
+    }
+    Rect::from_min_max(
+        Pos2::new(axis.x(shown.span.0), full.top()),
+        Pos2::new(axis.x(shown.span.1), full.bottom()),
+    )
+}
+
+/// The command that puts copies of `clips` with the earliest at `at`, and the
+/// IDs of the copies. They keep their tracks, unless they all came from one and
+/// `track` says where to put them. A track that is gone drops its clips.
+fn paste(
+    project: &Project,
+    clips: &[Clip],
+    at: Tick,
+    track: Option<NodeId>,
+) -> (Option<Command>, BTreeSet<ClipId>) {
+    let Some(first) = clips.iter().map(|clip| clip.start.0).min() else {
+        return (None, BTreeSet::new());
+    };
+    let one_track = clips.iter().all(|clip| clip.node == clips[0].node);
+    let mut next = project.next_clip_id();
+    let mut commands = Vec::new();
+    let mut pasted = BTreeSet::new();
+    for clip in clips {
+        let node = track.filter(|_| one_track).unwrap_or(clip.node);
+        if project.graph().node(node).is_none() {
+            continue;
+        }
+        let mut copy = clips::moved(clip, Tick(at.0 + clip.start.0 - first));
+        copy.node = node;
+        commands.push(Command::AddClip {
+            id: next,
+            clip: copy,
+        });
+        pasted.insert(next);
+        next.0 += 1;
+    }
+    let command = (!commands.is_empty()).then_some(Command::Batch(commands));
+    (command, pasted)
+}
+
+/// Selects the clips a box dragged over empty space touches; Shift keeps what
+/// was selected before.
+fn select_by_box(
+    ui: &egui::Ui,
+    state: &mut TimelineState,
+    background: &egui::Response,
+    content: Rect,
+    drawn: &[(ClipId, Rect)],
+) {
+    let (scroll_x, scroll_y) = (state.scroll_x, state.scroll_y);
+    let local = |p: Pos2| {
+        vec2(
+            p.x - content.left() + scroll_x,
+            p.y - content.top() + scroll_y,
+        )
+    };
+    let screen = |v: Vec2| {
+        Pos2::new(
+            v.x + content.left() - scroll_x,
+            v.y + content.top() - scroll_y,
+        )
+    };
+    if background.drag_started()
+        && let Some(press) = ui
+            .input(|i| i.pointer.press_origin())
+            .filter(|p| content.contains(*p))
+    {
+        let base = if ui.input(|i| i.modifiers.shift) {
+            state.selected.clone()
+        } else {
+            BTreeSet::new()
+        };
+        state.band = Some(Band {
+            from: local(press),
+            to: local(press),
+            base,
+        });
+    }
+    let Some(band) = state.band.as_mut() else {
+        return;
+    };
+    if background.drag_stopped() || !ui.input(|i| i.pointer.any_down()) {
+        state.band = None;
+        return;
+    }
+    if let Some(pos) = background.interact_pointer_pos() {
+        band.to = local(pos);
+    }
+    let rect = Rect::from_two_pos(screen(band.from), screen(band.to));
+    let mut chosen = band.base.clone();
+    chosen.extend(
+        drawn
+            .iter()
+            .filter(|(_, clip)| clip.intersects(rect))
+            .map(|(id, _)| *id),
+    );
+    let painter = ui.painter_at(content);
+    painter.rect_filled(rect, 0.0, colors::SELECTED.gamma_multiply(0.15));
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, colors::SELECTED),
+        StrokeKind::Inside,
+    );
+    state.selected = chosen;
+}
+
+/// Copies of dragged clips, and the edits that add them.
+struct Copies {
+    adds: Vec<Edit>,
+    copies: Vec<(ClipId, Clip)>,
+    /// The copy of the grabbed clip.
+    grabbed: ClipId,
+}
+
+fn copies_of(project: &Project, originals: &[(ClipId, Clip)], grabbed: ClipId) -> Copies {
+    let mut next = project.next_clip_id();
+    let mut copies = Copies {
+        adds: Vec::new(),
+        copies: Vec::new(),
+        grabbed,
+    };
+    for (id, clip) in originals {
+        if *id == grabbed {
+            copies.grabbed = next;
+        }
+        copies.adds.push(Edit::Drag(Command::AddClip {
+            id: next,
+            clip: clip.clone(),
+        }));
+        copies.copies.push((next, clip.clone()));
+        next.0 += 1;
+    }
+    copies
 }
 
 /// Whether a press at `x` on a clip spanning `full` moves it or trims an edge.
@@ -1503,7 +1936,7 @@ fn draw_headers(
         let top = content.top() - scroll_y + rows.top(index);
         let lane = Rect::from_min_size(
             Pos2::new(column.left(), top),
-            vec2(colors::HEADER_WIDTH, colors::LANE_HEIGHT),
+            vec2(colors::HEADER_WIDTH, rows.lane_height(index)),
         );
         let block_bottom = top + rows.height(index);
         if block_bottom < column.top() || lane.top() > column.bottom() {
@@ -1542,6 +1975,19 @@ fn draw_headers(
             automated,
             &mut state.renaming,
         );
+        // The lane's bottom edge drags to resize the track. Inside the lane, since
+        // the next header is drawn over anything below it.
+        let grip = Rect::from_min_size(
+            Pos2::new(lane.left(), lane.bottom() - GRIP),
+            vec2(lane.width(), GRIP),
+        );
+        let resize = ui.interact(grip, ui.id().with(("resize", input)), Sense::drag());
+        if resize.hovered() || resize.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resize.dragged() {
+            state.resize_track(input, resize.drag_delta().y);
+        }
         edits.extend(changes.edits);
         arm.extend(changes.arm_audio.map(|on| (input, ArmKind::Audio, on)));
         arm.extend(changes.arm_midi.map(|on| (input, ArmKind::Midi, on)));
@@ -1588,7 +2034,21 @@ fn draw_headers(
         );
         let refused = automation::refused(lane);
         let label = automation::label(project, lane);
-        edits.extend(automation::header(ui, row, id, &label, refused));
+        // Removing an Automation node's lane removes the node too, so the
+        // graph and the sequencer don't disagree. Removing a node takes its
+        // lanes with it.
+        let source =
+            automation::is_automation_node(project, lane.target.node).then_some(lane.target.node);
+        edits.extend(
+            automation::header(ui, row, id, &label, refused)
+                .into_iter()
+                .map(|edit| match (edit, source) {
+                    (Edit::Apply(Command::RemoveLane { .. }), Some(node)) => {
+                        Edit::Apply(Command::RemoveNode { id: node })
+                    }
+                    (edit, _) => edit,
+                }),
+        );
     }
     if renaming_group.is_some() && !renaming_seen {
         state.renaming = None;
@@ -1601,7 +2061,21 @@ fn draw_headers(
         let line_y = blocks
             .get(slot)
             .map_or_else(|| blocks.last().map_or(content.top(), |b| b.1), |b| b.0);
-        if drag.released {
+        let pointer = Pos2::new(drag.x, drag.y);
+        let group = session.project().graph().node(input).and_then(|n| n.parent);
+        if let Some(group) = group.filter(|_| !rect.contains(pointer)) {
+            // Carried out of the timeline, to the graph.
+            if drag.released {
+                crate::carry::release(ui.ctx(), crate::carry::Item::Track(group), pointer);
+            } else {
+                crate::carry::carrying(
+                    ui.ctx(),
+                    crate::carry::Item::Track(group),
+                    pointer,
+                    "Track",
+                );
+            }
+        } else if drag.released {
             edits.extend(reorder(session.project(), tracks, input, slot));
         } else {
             ui.painter_at(column).hline(

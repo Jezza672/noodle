@@ -96,7 +96,7 @@ pub struct EditorState {
     /// back. Keyed by the group, `None` for the top level.
     views: BTreeMap<Option<NodeId>, View>,
     /// Where the canvas was last drawn, on screen.
-    canvas: Rect,
+    pub(crate) canvas: Rect,
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
@@ -109,6 +109,9 @@ pub struct EditorState {
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
+    /// Something carried out of the timeline and let go of over the canvas,
+    /// until the app takes it.
+    dropped: Option<Dropped>,
     /// Set by View → Fit Graph, done on the next frame like arranging.
     fit_requested: bool,
     /// A node whose view was asked for with a double-click, until the app
@@ -151,6 +154,7 @@ impl Default for EditorState {
             bodies: body::Bodies::default(),
             clipboard: None,
             arrange_requested: false,
+            dropped: None,
             fit_requested: false,
             view_request: None,
             open_request: None,
@@ -183,7 +187,29 @@ pub fn draw_scope(painter: &egui::Painter, area: Rect, view: Option<&noodle_engi
     body::scope(painter, area, 1.0, view);
 }
 
+/// What was let go of over the canvas, and where it landed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dropped {
+    pub item: crate::carry::Item,
+    pub on: DropOn,
+    /// The level being edited: the group, or `None` for the top.
+    pub group: Option<NodeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DropOn {
+    /// On a Sampler node.
+    Sampler(NodeId),
+    /// On the canvas, at this point in graph coordinates.
+    Canvas(Pos2),
+}
+
 impl EditorState {
+    /// What was dropped on the canvas since the last call, if anything.
+    pub fn take_dropped(&mut self) -> Option<Dropped> {
+        self.dropped.take()
+    }
+
     /// Asks for the nodes to be auto-arranged (see [`arrange`]) on the next
     /// frame: the selection, or everything if nothing is selected.
     pub fn request_arrange(&mut self) {
@@ -301,7 +327,7 @@ impl EditorState {
         }
     }
 
-    fn select_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
+    pub(crate) fn select_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
         self.selected = nodes.into_iter().collect();
         self.active = self.selected.iter().next_back().copied();
         self.selected_frames.clear();
@@ -566,6 +592,23 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         order,
         frame_order,
     };
+
+    if let Some(drop) = crate::carry::drop_in(ui.ctx(), canvas) {
+        crate::carry::take_drop(ui.ctx());
+        let sampler = match hit(&f, drop.at) {
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => project
+                .graph()
+                .node(id)
+                .is_some_and(|n| n.type_id == noodle_nodes::SAMPLER_ID)
+                .then_some(id),
+            _ => None,
+        };
+        state.dropped = Some(Dropped {
+            item: drop.item,
+            on: sampler.map_or(DropOn::Canvas(f.t.to_graph(drop.at)), DropOn::Sampler),
+            group: state.group,
+        });
+    }
 
     pointer(ui, state, &f, &response, &mut inputs, &mut edits);
     // Not mid-drag, in the editor (its gestures are all canvas drags) or in
@@ -1652,7 +1695,7 @@ fn stroke(
     let mut commands = Vec::new();
     for wire in &f.scene.wires {
         // Reroutes only pass audio, so they can't go on an event or spectral wire.
-        if action == StrokeAction::Reroute && (wire.event || wire.spectral) {
+        if action == StrokeAction::Reroute && (wire.event || wire.spectral || wire.sample) {
             continue;
         }
         let line = wire::flatten(wire::curve(wire.from, wire.to));
@@ -2406,7 +2449,22 @@ fn popups(
                             }
                             node.config = group::ports_config(&[]);
                         }
-                        edits.push(Edit::Apply(Command::AddNode { id, node }));
+                        // An Automation node gets its track in the sequencer
+                        // in the same undo step.
+                        let add = Command::AddNode { id, node };
+                        edits.push(Edit::Apply(
+                            if type_id == noodle_nodes::AUTOMATION_NODE_ID {
+                                Command::Batch(vec![
+                                    add,
+                                    crate::timeline::add_track::automation_lane(
+                                        id,
+                                        f.project.next_lane_id(),
+                                    ),
+                                ])
+                            } else {
+                                add
+                            },
+                        ));
                         state.select_only([id]);
                     }
                     Choice::Template(entry) => {

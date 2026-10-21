@@ -9,6 +9,7 @@
 //! Clicking a key on the keyboard plays it on the clip's track (see
 //! [`Output::audition`]).
 
+mod looping;
 mod notes;
 
 use std::collections::BTreeSet;
@@ -72,6 +73,8 @@ pub struct PianoRoll {
     step: i64,
     selected: BTreeSet<u32>,
     drag: Option<Drag>,
+    /// A drag on the loop brace on the ruler.
+    loop_drag: Option<looping::LoopDrag>,
     /// The key being auditioned from the keyboard.
     sounding: Option<u8>,
     /// A key that was down when the roll closed, still to be let go.
@@ -117,6 +120,7 @@ impl Default for PianoRoll {
             step: 240,
             selected: BTreeSet::new(),
             drag: None,
+            loop_drag: None,
             sounding: None,
             release: None,
             last_length: None,
@@ -293,6 +297,8 @@ pub fn show(
         "Drag to draw · Alt: no snap · Delete removes",
         |ui| {
             ui.label(format!("Snap: {}", crate::snap::label(state.step)));
+            ui.separator();
+            looping::controls(ui, &mut out, id, clip, midi);
         },
     );
     if closed {
@@ -527,6 +533,20 @@ pub fn show(
     }
 
     draw_notes(ui, axes, midi, &state.selected);
+    looping::draw_repeats(ui, axes, midi);
+    looping::draw_lines(ui, axes, midi);
+    let step = if free { 1 } else { state.step };
+    looping::brace(
+        ui,
+        state,
+        &mut out,
+        id,
+        clip,
+        midi,
+        ruler_rect,
+        axes,
+        &|t| notes::snap(t, step),
+    );
 
     // The velocity lane, with a bar per note.
     draw_velocity(ui, state, &mut out, id, clip, midi, velocity_rect, axes);

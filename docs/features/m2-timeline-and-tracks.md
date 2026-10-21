@@ -234,3 +234,21 @@ Metronome node and the metronome button.
   beats from the start of the time signature in force (`Transport::signature_start`),
   so the clicks and the bar accent stay on the meter's grid after a change
   of meter (from the next block, like a tempo change).
+
+## Track controls and automation sync
+
+- **Done.** Solo mutes the other tracks again. A solo change is a recompile
+  (`Effect::add` treats a `solo.N` parameter as structural), because solo is
+  read when the project is flattened and no parameter reaches the other
+  tracks' stages.
+- **Done.** Tracks resize by dragging the bottom edge of the header (32 to 400
+  points), and Alt+scroll zooms every track's height (0.5x to 4x). Both are
+  view state in `TimelineState`, not in the project.
+- **Done.** The Import audio button in the ruler corner is gone (File menu and
+  the lane menu still import). In its place: a loop toggle and the loop's start
+  and end bars. The loop is session state (`LoopRegion`), sent to the
+  transport's `set_loop`; it is not saved with the project.
+- **Done.** Automation tracks and Automation nodes stay in step: `+ Auto`
+  already made the node and its lane in one undo step; adding an Automation
+  node in the node editor now adds its lane too, and removing an Automation
+  track's lane removes the node.
