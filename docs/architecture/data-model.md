@@ -50,7 +50,7 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Boundary parameters.** Every port carries gain (dB), mute and solo as
     parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
     `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten
-    keeps a port as a `noodle.group.stage` node, under the port's
+    keeps a port as a `noodle.group.stage` node (a group's output ports always do, for their meters), under the port's
     `stage_id` (a node ID no project node can have, built from the boundary
     node's ID and the port's), and points a lane or a wire aimed at the
     port's gain or mute at it, once its gain or mute has been set at all

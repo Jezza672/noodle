@@ -56,6 +56,8 @@ pub enum Unit {
     /// Hundredths of a semitone.
     Cents,
     Percent,
+    /// A MIDI note number, shown with its name (60 is C4).
+    Note,
 }
 
 #[derive(Clone, Debug, PartialEq)]

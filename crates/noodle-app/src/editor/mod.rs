@@ -596,7 +596,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         _ => None,
     });
     let mut fields = params::Fields::new(ui, canvas, front);
-    draw::nodes(&painter, &f, state, &problems, |node| {
+    draw::nodes(&painter, &f, state, &problems, front, |node| {
         fields.show(&f, &state.bodies, node, &mut edits);
     });
     fields.finish(&mut edits);

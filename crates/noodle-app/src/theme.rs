@@ -101,6 +101,8 @@ pub mod editor {
     /// A selected node's outline: the accent.
     pub const SELECTED: Color32 = Color32::from_rgb(200, 241, 105);
     /// The active node's outline: the one the properties panel shows.
+    /// The outline of the node under the pointer.
+    pub const HOVERED: Color32 = Color32::from_rgb(120, 140, 180);
     pub const ACTIVE: Color32 = Color32::from_rgb(255, 255, 255);
     pub const PROBLEM: Color32 = Color32::from_rgb(255, 90, 79);
     /// A node using a fair share of the audio thread's time.

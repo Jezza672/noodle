@@ -281,6 +281,16 @@ fn table() -> Vec<Row> {
         row("noodle.mod.tempo", "Quarter Notes", &[("division", 2.0)]),
         row("noodle.mod.tempo", "Eighth Notes", &[("division", 3.0)]),
         row("noodle.mod.tempo", "Dotted Eighths", &[("division", 14.0)]),
+        row(
+            "noodle.mod.bpm_length",
+            "Beat at 120",
+            &[("bpm", 120.0), ("division", 2.0)],
+        ),
+        row(
+            "noodle.mod.bpm_length",
+            "Eighth at 90",
+            &[("bpm", 90.0), ("division", 3.0)],
+        ),
         row("noodle.mod.tempo", "Bar", &[("division", 0.0)]),
         // Effects.
         // Dynamics.

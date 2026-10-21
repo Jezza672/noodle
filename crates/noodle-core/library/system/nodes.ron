@@ -567,6 +567,28 @@
         ),
     )),
     NodePreset((
+        name: "Beat at 120",
+        slug: "bpm-to-length-beat-at-120",
+        node_type: "noodle.mod.bpm_length",
+        values: (
+            params: {
+                "bpm": 120.0,
+                "division": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eighth at 90",
+        slug: "bpm-to-length-eighth-at-90",
+        node_type: "noodle.mod.bpm_length",
+        values: (
+            params: {
+                "bpm": 90.0,
+                "division": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Bar",
         slug: "tempo-bar",
         node_type: "noodle.mod.tempo",
