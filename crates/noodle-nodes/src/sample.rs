@@ -289,22 +289,22 @@ impl SampleStore {
         Some(sample)
     }
 
-    /// The key number (fractional, 69 is A 440) of the sample's fundamental,
-    /// from its first moments (see [`crate::fundamental()`]), or `None` if the
-    /// sample isn't there or has no clear pitch. Remembered by hash.
-    pub fn pitch(&self, hash: &str) -> Option<f32> {
-        if let Some(&found) = self.inner.lock().unwrap().pitch.get(hash) {
+    /// The key number (fractional, 69 is A 440) of the fundamental of the part
+    /// of a sample `reference` names, from its first moments (see
+    /// [`crate::fundamental()`]), or `None` if the sample isn't there or has no
+    /// clear pitch. Remembered by reference.
+    pub fn pitch(&self, reference: &SampleRef) -> Option<f32> {
+        let cache_key = reference.to_text();
+        if let Some(&found) = self.inner.lock().unwrap().pitch.get(&cache_key) {
             return found;
         }
-        let sample = self.get(hash)?;
+        let sample = self
+            .get(&reference.hash)?
+            .window(reference.start, reference.end);
         let found =
             crate::fundamental::fundamental(&sample.left, &sample.right, sample.sample_rate)
                 .and_then(crate::fundamental::key_of);
-        self.inner
-            .lock()
-            .unwrap()
-            .pitch
-            .insert(hash.to_owned(), found);
+        self.inner.lock().unwrap().pitch.insert(cache_key, found);
         found
     }
 
@@ -381,11 +381,21 @@ mod tests {
             .map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / 44_100.0).sin())
             .collect();
         let hash = store.insert(&audio(tone, 1));
-        assert!((store.pitch(&hash).unwrap() - 69.0).abs() < 0.1);
+        assert!((store.pitch(&SampleRef::whole(&hash)).unwrap() - 69.0).abs() < 0.1);
         assert!(store.inner.lock().unwrap().pitch.contains_key(&hash));
+        // A window of the same sample is its own entry.
+        assert!(
+            store
+                .pitch(&SampleRef {
+                    hash: hash.clone(),
+                    start: 0.0,
+                    end: 0.5
+                })
+                .is_some()
+        );
         let silence = store.insert(&audio(vec![0.0; 44_100], 1));
-        assert_eq!(store.pitch(&silence), None);
-        assert_eq!(store.pitch("missing"), None);
+        assert_eq!(store.pitch(&SampleRef::whole(&silence)), None);
+        assert_eq!(store.pitch(&SampleRef::whole("missing")), None);
     }
 
     #[test]

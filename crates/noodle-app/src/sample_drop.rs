@@ -44,11 +44,7 @@ pub fn from_clip(session: &Session, clip: ClipId) -> Result<Dropped, String> {
 /// The fundamental of the part of a sample a reference names, from its first
 /// moments.
 pub fn pitch_of(session: &Session, reference: &SampleRef) -> Option<f32> {
-    let store = session.samples();
-    let sample = store.get(&reference.hash)?;
-    let window = sample.window(reference.start, reference.end);
-    noodle_nodes::fundamental(&window.left, &window.right, window.sample_rate)
-        .and_then(noodle_nodes::key_of)
+    session.samples().pitch(reference)
 }
 
 /// Rounds a root to hundredths of a semitone, so the stored value reads well.
@@ -65,7 +61,13 @@ pub fn choose(session: &Session, node: NodeId, hash: &str) -> Command {
         key: SAMPLE_KEY.to_owned(),
         value: Some(Value::Text(hash.to_owned())),
     }];
-    commands.extend(window_and_root(session, node, &SampleRef::whole(hash)));
+    commands.extend(
+        pitch_of(session, &SampleRef::whole(hash)).map(|key| Command::SetParam {
+            node,
+            key: "root".into(),
+            value: Some(root_value(key)),
+        }),
+    );
     Command::Batch(commands)
 }
 
@@ -96,12 +98,4 @@ pub fn onto_sampler(node: NodeId, dropped: &Dropped) -> Command {
         value: Some(root_value(key)),
     }));
     Command::Batch(commands)
-}
-
-fn window_and_root(session: &Session, node: NodeId, reference: &SampleRef) -> Option<Command> {
-    pitch_of(session, reference).map(|key| Command::SetParam {
-        node,
-        key: "root".into(),
-        value: Some(root_value(key)),
-    })
 }
