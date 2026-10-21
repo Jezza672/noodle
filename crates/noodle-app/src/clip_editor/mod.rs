@@ -25,6 +25,7 @@ use noodle_core::{
     TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
 };
 
+mod curve;
 mod plain;
 
 use crate::clip_panel;
@@ -48,7 +49,7 @@ const GRAB_HANDLE: f32 = 5.0;
 /// How close, in points, a transient has to be to pull a new marker onto it.
 const SNAP_TO_TRANSIENT: f32 = 10.0;
 const MIN_PPB: f32 = 4.0;
-const MAX_PPB: f32 = 600.0;
+const MAX_PPB: f32 = 250_000.0;
 /// The height the panel opens at.
 pub const DEFAULT_HEIGHT: f32 = 240.0;
 const MAX_COLUMNS: usize = 4096;
@@ -118,6 +119,8 @@ pub struct ClipEditor {
     slip: Option<plain::Slip>,
     /// Whether the last frame drew an unwarped clip (in seconds, not beats).
     plain: bool,
+    /// The samples under the view, read when zoomed far in.
+    samples: Option<curve::Samples>,
     #[cfg(test)]
     geometry: Option<Geometry>,
     #[cfg(test)]
@@ -157,6 +160,7 @@ impl Default for ClipEditor {
             menu_at: None,
             slip: None,
             plain: false,
+            samples: None,
             #[cfg(test)]
             geometry: None,
             #[cfg(test)]
@@ -399,7 +403,23 @@ pub fn show(
     }
     let onsets: &[f64] = loaded.analysis.as_ref().map_or(&[], |a| &a.onsets);
 
-    draw_waveform(&painter, wave, axis, warp, loaded, rate, file_secs);
+    let (lo, hi) = (
+        (warp
+            .seconds_at_beat(axis.beat(wave.left()))
+            .clamp(0.0, file_secs)
+            * rate) as u64,
+        (warp
+            .seconds_at_beat(axis.beat(wave.right()))
+            .clamp(0.0, file_secs)
+            * rate) as u64
+            + 1,
+    );
+    let samples = if (hi - lo) as f32 <= 2.0 * wave.width() {
+        curve::window(&mut state.samples, &loaded.path, lo, hi)
+    } else {
+        None
+    };
+    draw_waveform(&painter, wave, axis, warp, loaded, samples, rate, file_secs);
     draw_window(&painter, wave, axis, warp, audio.offset, audio.length, rate);
     draw_ruler(&painter, ruler, wave, axis, warp.grid_offset);
     draw_handles(&painter, handles, wave, axis, warp, onsets);
@@ -648,15 +668,22 @@ pub fn show(
 }
 
 fn navigate(ui: &egui::Ui, state: &mut ClipEditor, area: Rect, beats: (f64, f64)) {
-    let (scroll, zoom, pointer) =
-        ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
+    let (scroll, zoom, pointer, middle) = ui.input(|i| {
+        (
+            i.smooth_scroll_delta,
+            i.zoom_delta(),
+            i.pointer.hover_pos(),
+            i.pointer.middle_down().then(|| i.pointer.delta().x),
+        )
+    });
     if zoom != 1.0 {
         let anchor = pointer.map_or(area.left(), |p| p.x.max(area.left()));
         let beat = (anchor - area.left() + state.scroll_x) / state.ppb;
         state.ppb = (state.ppb * zoom).clamp(MIN_PPB, MAX_PPB);
         state.scroll_x = beat * state.ppb - (anchor - area.left());
     } else {
-        state.scroll_x -= scroll.x;
+        // The wheel pans along the time axis; so does a middle-button drag.
+        state.scroll_x -= scroll.x + scroll.y + middle.unwrap_or(0.0);
     }
     let (lo, hi) = (
         beats.0 as f32 * state.ppb - 12.0,
@@ -933,12 +960,14 @@ fn drag_step(drag: &Drag, beat: f64, snapped: f64, free: bool) -> Option<ClipWar
 /// The waveform as warped: the audio between two bends of the warp (markers,
 /// tempo changes, the ends of the file) is a straight stretch, drawn one pixel
 /// column per peak.
+#[allow(clippy::too_many_arguments)]
 fn draw_waveform(
     painter: &egui::Painter,
     wave: Rect,
     axis: Axis,
     warp: &ClipWarp,
     loaded: &Loaded,
+    samples: Option<&curve::Samples>,
     rate: f64,
     file_secs: f64,
 ) {
@@ -971,6 +1000,15 @@ fn draw_waveform(
             continue;
         }
         let across = |x: f32| a + (b - a) * f64::from((x - x0) / (x1 - x0));
+        if let Some(samples) = samples
+            && (x1 - x0) / ((b - a) * rate) as f32 >= curve::CURVE_AT
+        {
+            let frames = ((across(v0) * rate) as u64, (across(v1) * rate) as u64 + 1);
+            curve::draw(painter, wave, samples, frames, 1.0, ink, |f| {
+                x0 + (f / rate - a) as f32 / (b - a) as f32 * (x1 - x0)
+            });
+            continue;
+        }
         let (from, to) = ((across(v0) * rate) as u64, (across(v1) * rate) as u64);
         let columns = ((v1 - v0).ceil() as usize).clamp(1, MAX_COLUMNS);
         let stroke = Stroke::new((v1 - v0) / columns as f32, ink);

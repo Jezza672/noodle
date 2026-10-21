@@ -93,3 +93,13 @@ Out of scope for now: pitch shifting, warping MIDI clips, a spectral mode.
 **Done when:** you can drop a loop recorded at another tempo, pin its
 transients to the grid, hear it follow tempo changes without dropouts, quantise
 it non-destructively, and lend its groove to a second clip.
+
+## Clip editor navigation and sample curve
+
+The clip editor pans with the wheel (or a middle-button drag) and zooms with
+Ctrl+scroll or a pinch, around the pointer, down to a few pixels per frame.
+Zoomed in until a frame is 1.5 px wide, the waveform switches from peak columns
+to a line through the file's actual samples (read from the file for the
+visible stretch, `clip_editor/curve.rs`), with a dot on each sample from 4 px
+per frame. Dragging the waveform slides it against the beat lines (the grid
+offset). Editing the curve is not built.
