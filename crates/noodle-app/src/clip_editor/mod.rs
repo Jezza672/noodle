@@ -415,7 +415,7 @@ pub fn show(
             + 1,
     );
     let samples = if (hi - lo) as f32 <= 2.0 * wave.width() {
-        curve::window(&mut state.samples, &loaded.path, lo, hi)
+        curve::window(&mut state.samples, &loaded.path, lo, hi, file_frames)
     } else {
         None
     };

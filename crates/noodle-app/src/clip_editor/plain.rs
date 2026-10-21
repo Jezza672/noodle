@@ -119,7 +119,7 @@ pub(super) fn show(
     let frames = |x: f32| (seconds(x) * rate).clamp(0.0, file_frames as f64) as u64;
     let (first, last) = (frames(wave.left()), frames(wave.right()) + 1);
     let samples = if (last - first) as f32 <= 2.0 * wave.width() {
-        curve::window(&mut state.samples, &loaded.path, first, last)
+        curve::window(&mut state.samples, &loaded.path, first, last, file_frames)
     } else {
         None
     };

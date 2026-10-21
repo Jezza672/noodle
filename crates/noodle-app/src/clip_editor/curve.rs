@@ -17,12 +17,14 @@ const DOTS_AT: f32 = 4.0;
 pub(super) struct Samples {
     path: PathBuf,
     start: u64,
+    /// The end of the range asked for, which is past `mono` when the file ended first or the read failed.
+    end: u64,
     mono: Vec<f32>,
 }
 
 impl Samples {
     fn covers(&self, path: &Path, from: u64, to: u64) -> bool {
-        self.path == path && self.start <= from && to <= self.start + self.mono.len() as u64
+        self.path == path && self.start <= from && to <= self.end
     }
 
     /// The sample at `frame`, if the stretch has it.
@@ -40,12 +42,26 @@ pub(super) fn window<'a>(
     path: &Path,
     from: u64,
     to: u64,
+    file_frames: u64,
 ) -> Option<&'a Samples> {
+    let to = to.min(file_frames);
     if !cache.as_ref().is_some_and(|c| c.covers(path, from, to)) {
         let margin = to.saturating_sub(from);
-        *cache = read(path, from.saturating_sub(margin), to.saturating_add(margin));
+        let (a, b) = (
+            from.saturating_sub(margin),
+            to.saturating_add(margin).min(file_frames),
+        );
+        // A failed read is kept as an empty stretch, so it isn't retried every frame.
+        *cache = Some(read(path, a, b).unwrap_or(Samples {
+            path: path.to_owned(),
+            start: a,
+            end: b,
+            mono: Vec::new(),
+        }));
     }
-    cache.as_ref().filter(|c| c.covers(path, from, to))
+    cache
+        .as_ref()
+        .filter(|c| c.covers(path, from, to) && !c.mono.is_empty())
 }
 
 fn read(path: &Path, from: u64, to: u64) -> Option<Samples> {
@@ -78,6 +94,7 @@ fn read(path: &Path, from: u64, to: u64) -> Option<Samples> {
     Some(Samples {
         path: path.to_owned(),
         start,
+        end: to,
         mono,
     })
 }
@@ -123,12 +140,23 @@ mod tests {
         let ramp: Vec<f32> = (0..20_000).map(|i| i as f32 / 20_000.0).collect();
         noodle_io::write_wav(&path, &ramp, 1, 48_000).unwrap();
         let mut cache = None;
-        let samples = window(&mut cache, &path, 5_000, 5_100).unwrap();
+        let samples = window(&mut cache, &path, 5_000, 5_100, 20_000).unwrap();
         assert!((samples.at(5_050).unwrap() - 5_050.0 / 20_000.0).abs() < 1e-3);
         // Past the end of what was read there is nothing to draw.
         assert!(samples.at(19_999 + 10).is_none());
         let start = cache.as_ref().unwrap().start;
-        window(&mut cache, &path, 5_010, 5_090).unwrap();
+        window(&mut cache, &path, 5_010, 5_090, 20_000).unwrap();
         assert_eq!(cache.as_ref().unwrap().start, start);
+        // A view reaching past the last frame is read once, not on every frame.
+        window(&mut cache, &path, 19_900, 20_001, 20_000).unwrap();
+        let end = cache.as_ref().unwrap().start;
+        window(&mut cache, &path, 19_900, 20_001, 20_000).unwrap();
+        assert_eq!(cache.as_ref().unwrap().start, end);
+        // So is a file that can't be read.
+        let gone = dir.path().join("gone.wav");
+        assert!(window(&mut cache, &gone, 0, 100, 20_000).is_none());
+        let kept = cache.as_ref().unwrap() as *const Samples;
+        assert!(window(&mut cache, &gone, 0, 100, 20_000).is_none());
+        assert!(std::ptr::eq(kept, cache.as_ref().unwrap()));
     }
 }
