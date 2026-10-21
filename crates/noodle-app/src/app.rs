@@ -402,6 +402,9 @@ impl App {
                 if let Some(notice) = out.notice {
                     self.session.notify(notice);
                 }
+                if let Some(region) = out.set_loop {
+                    self.session.set_loop(region);
+                }
                 if let Some(target) = out.pick {
                     self.import_audio(target);
                 }

@@ -2354,7 +2354,22 @@ fn popups(
                             }
                             node.config = group::ports_config(&[]);
                         }
-                        edits.push(Edit::Apply(Command::AddNode { id, node }));
+                        // An Automation node gets its track in the sequencer
+                        // in the same undo step.
+                        let add = Command::AddNode { id, node };
+                        edits.push(Edit::Apply(
+                            if type_id == noodle_nodes::AUTOMATION_NODE_ID {
+                                Command::Batch(vec![
+                                    add,
+                                    crate::timeline::add_track::automation_lane(
+                                        id,
+                                        f.project.next_lane_id(),
+                                    ),
+                                ])
+                            } else {
+                                add
+                            },
+                        ));
                         state.select_only([id]);
                     }
                     Choice::Template(entry) => {
