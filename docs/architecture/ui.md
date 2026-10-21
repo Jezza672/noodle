@@ -174,6 +174,17 @@ It has these views:
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
+  - **Carrying out of the timeline** (`carry.rs`). Dragging an audio clip's
+    body, or a track header, out of the timeline's area carries it: the clip
+    goes back where it was, a label follows the pointer, and letting go
+    over a view hands that view the drop. Over a Sampler (its node, or the
+    sample section of the properties panel) a clip sets the sample, `start` and
+    `end` from the part of the file the clip plays, and the root from the
+    sample's pitch, as one undo step. Over empty canvas a clip makes a `Sample`
+    node there, holding the same part of the file (a snapshot: the clip can
+    change afterwards). A track dropped on the canvas places the track's group
+    node there, if it is at the level being edited. The Sample node's own
+    properties take a clip dropped on them too.
   - **Adding audio.** Dropping files on a lane, or Import audio (the button
     in the corner and File → Import Audio…, which open a file dialog and
     target the highlighted track (its header picked), else the selected

@@ -19,3 +19,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [tempo-sync-and-drum-rack.md](tempo-sync-and-drum-rack.md) | Tempo sync and the drum rack |
 | [timeline-clip-editing.md](timeline-clip-editing.md) | Timeline clip editing |
 | [scripting-and-midi2.md](scripting-and-midi2.md) | Scripting node, MIDI 2.0 and later follow-ups |
+| [sample-routing.md](sample-routing.md) | Sample routing |

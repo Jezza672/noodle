@@ -1,6 +1,7 @@
 # Signals
 
-There are two kinds of signal, plus a possible third later:
+The kinds of signal are audio, events, spectral frames and a wire that carries a
+reference to a sample instead of signal:
 
 - **Audio:** f32 samples shaped `[voices][channels][frames]`. Normal signals
   have `voices = 1`. Shapes **broadcast** the way arrays do in numpy: in each
@@ -111,3 +112,19 @@ There are two kinds of signal, plus a possible third later:
   - **Testing:** `Harness::with_spectral`, `spectral_input` and `spectral`
     feed and read a node's spectral ports; `tests/spectral.rs` runs whole
     graphs, `realtime.rs` checks chains for allocation.
+- **Sample:** a reference to a sample, not signal: a content hash (ADR 0004)
+  and optionally a window of it, as fractions (`SampleRef`, `hash` or
+  `hash:start:end`). Sample ports are `Layout::sample_inputs` and
+  `sample_outputs` (`#[sample_input]` and `#[sample_output]` in `Ports`,
+  drawn as orange triangles). They have no buffers and no place in the shapes:
+  the compiler resolves them before it schedules anything (`resolve_samples` in
+  `compile.rs`), by asking the source node type for what its output carries
+  (`NodeType::sample_output`) and writing that text into the receiving node's
+  config under the input's key, replacing what was there, then dropping the
+  wire. So a wired sample overrides the option it stands for, a group's
+  boundary needs nothing special (groups are flattened first, and a boundary
+  port takes any kind), and the config feeds the node's cache key like any
+  other. A wire from a node with no sample sets the option empty (silence).
+  `Sample` (`noodle.instrument.sample`) holds a `SampleRef` as its `sample`
+  option and outputs it; the Sampler's `sample` is its input, and a window
+  plays as if it were the whole sample.

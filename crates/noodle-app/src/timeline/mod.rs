@@ -701,12 +701,33 @@ pub fn show(
                 let free = ui.input(|i| i.modifiers.alt);
                 let lane = rows.track_at(pos.y - content.top() + state.scroll_y);
                 let target = tracks[lane];
+                // Dragged out of the timeline, an audio clip is carried to a
+                // Sampler or the graph, and stays where it was.
+                let pointer = ui.input(|i| i.pointer.latest_pos()).unwrap_or(pos);
+                let carried = drag.mode == Mode::Move && audio.is_some() && !rect.contains(pointer);
+                let (x, target) = if carried {
+                    let home = drag
+                        .originals
+                        .iter()
+                        .find(|(id, _)| *id == drag.grabbed)
+                        .map_or(target, |(_, clip)| clip.node);
+                    crate::carry::carrying(
+                        ui.ctx(),
+                        crate::carry::Item::Clip(drag.grabbed),
+                        pointer,
+                        "Sample",
+                    );
+                    (drag.press_x, home)
+                } else {
+                    crate::carry::cancel(ui.ctx());
+                    (pos.x, target)
+                };
                 let command = drag_command(
                     drag,
                     DragInput {
                         map,
                         axis,
-                        x: pos.x,
+                        x,
                         free,
                         target,
                         source,
@@ -720,6 +741,9 @@ pub fn show(
             if response.drag_stopped() {
                 state.drag = None;
                 edits.push(Edit::EndDrag);
+                if let Some((item, at)) = crate::carry::carried(ui.ctx()) {
+                    crate::carry::release(ui.ctx(), item, at);
+                }
             }
 
             if response.secondary_clicked() && !selected {
@@ -958,6 +982,7 @@ pub fn show(
     // its widget's `drag_stopped`, which would leave its undo group open.
     if state.drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
         state.drag = None;
+        crate::carry::cancel(ui.ctx());
         if !edits.contains(&Edit::EndDrag) {
             edits.push(Edit::EndDrag);
         }
@@ -2036,7 +2061,21 @@ fn draw_headers(
         let line_y = blocks
             .get(slot)
             .map_or_else(|| blocks.last().map_or(content.top(), |b| b.1), |b| b.0);
-        if drag.released {
+        let pointer = Pos2::new(drag.x, drag.y);
+        let group = session.project().graph().node(input).and_then(|n| n.parent);
+        if let Some(group) = group.filter(|_| !rect.contains(pointer)) {
+            // Carried out of the timeline, to the graph.
+            if drag.released {
+                crate::carry::release(ui.ctx(), crate::carry::Item::Track(group), pointer);
+            } else {
+                crate::carry::carrying(
+                    ui.ctx(),
+                    crate::carry::Item::Track(group),
+                    pointer,
+                    "Track",
+                );
+            }
+        } else if drag.released {
             edits.extend(reorder(session.project(), tracks, input, slot));
         } else {
             ui.painter_at(column).hline(

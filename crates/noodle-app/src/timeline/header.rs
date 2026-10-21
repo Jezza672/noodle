@@ -157,7 +157,8 @@ pub struct Changes {
 /// A header being dragged by its background.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeaderDrag {
-    /// The pointer's screen y.
+    /// The pointer's screen position.
+    pub x: f32,
     pub y: f32,
     /// The button was let go, so the track lands here.
     pub released: bool,
@@ -194,6 +195,7 @@ pub fn show(
         && let Some(pos) = background.interact_pointer_pos()
     {
         changes.drag = Some(HeaderDrag {
+            x: pos.x,
             y: pos.y,
             released: background.drag_stopped(),
         });
