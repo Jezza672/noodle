@@ -141,7 +141,10 @@ It has these views:
     whose runs are drawn separately, show the file's own waveform). The worker
     keeps the last file it decoded, so the steps of an edit do not read it
     again. There is no on-disk cache of it: a render is cheap next to
-    the stretcher's speed, and the engine itself stretches live.
+    the stretcher's speed, and the engine itself stretches live. A render that
+    is still being worked out is drawn where it was worked out (the render
+    knows its span in ticks), so resizing a section shows more or less of it
+    instead of squeezing it into the new width.
   - **Seconds on the x axis**: time is linear, so a clip is as wide as its
     audio is long. In a slower section a bar lasts longer, so its bar lines
     sit further apart. Every tick/x conversion (clips, automation, tempo
@@ -154,8 +157,17 @@ It has these views:
     divisions of the beat); Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
+  - **Selecting.** Dragging over empty lane space draws a box and selects
+    the clips it touches (Shift keeps the earlier selection).
   - **Copying.** Ctrl/Cmd-dragging a clip adds copies in the drag's own undo
-    step and moves those, leaving the originals. With a clip selected,
+    step and moves those, leaving the originals. Pressing Ctrl/Cmd after a
+    move has begun puts the clips back, adds copies and carries on with those.
+    Cmd+C, Cmd+X and Cmd+V (with the pointer over the arrangement, or from the
+    Edit menu and the clips' right-click menu) fill a clipboard of clips kept
+    in the timeline's state and paste it, earliest clip at the playhead, on the
+    clips' own tracks or on the selected track when they all came from one;
+    right-clicking a lane pastes at that point. Cmd+D duplicates the selection
+    just after itself. Each is one undo step. With a clip selected,
     Ctrl/Cmd+Left and Right take the playhead to the start of the earliest
     selected clip or the end of the latest, scrolling to keep it in view.
   - **Fades** are dragged by the handles on a clip's top corners (clips too
