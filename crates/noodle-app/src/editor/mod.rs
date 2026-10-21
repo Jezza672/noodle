@@ -121,6 +121,8 @@ pub struct EditorState {
     port_menu: Option<group::GroupPort>,
     /// Which nodes are frozen or offline, and how their renders are doing.
     freeze: BTreeMap<NodeId, Badge>,
+    /// The nodes whose monitor button is lit, from the session.
+    monitored: Vec<NodeId>,
 }
 
 /// Nodes, the wires between them and frames, as copied.
@@ -154,6 +156,7 @@ impl Default for EditorState {
             open_request: None,
             port_menu: None,
             freeze: BTreeMap::new(),
+            monitored: Vec::new(),
         }
     }
 }
@@ -442,6 +445,8 @@ enum Hit {
 pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Vec<Edit> {
     let dt = ui.input(|i| i.stable_dt);
     state.freeze.clone_from(session.freeze_badges());
+    state.monitored.clear();
+    state.monitored.extend_from_slice(session.monitored());
     if session.freeze_pending() {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -707,6 +712,30 @@ fn navigate(
     }
 }
 
+/// The monitor button in a node's header, in graph units, if the node has an
+/// audio output to listen to.
+fn monitor_button(project: &Project, node: &layout::NodeGeom) -> Option<Rect> {
+    let boundary = project
+        .graph()
+        .node(node.id)
+        .is_none_or(|n| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT));
+    let audio_out = node
+        .ports
+        .iter()
+        .any(|p| p.side == Side::Output && p.kind == PortKind::Audio);
+    if node.reroute || node.error.is_some() || boundary || !audio_out {
+        return None;
+    }
+    let header = node.header();
+    Some(Rect::from_center_size(
+        header.right_center() - Vec2::new(MONITOR_BUTTON.x / 2.0 + 8.0, 0.0),
+        MONITOR_BUTTON,
+    ))
+}
+
+/// How big the monitor button is, in graph units.
+const MONITOR_BUTTON: Vec2 = Vec2::new(14.0, 14.0);
+
 /// How close to one of `node`'s sockets counts as on it, in screen points.
 /// Smaller when zoomed out, so neighbouring sockets don't overlap and a
 /// reroute keeps a middle that can be grabbed to move it.
@@ -914,7 +943,15 @@ fn pointer(
     if response.clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
-        click(state, f, p, modifiers);
+        if let Some(node) = monitor_button_at(f, p) {
+            edits.push(Edit::Monitor {
+                node,
+                command: modifiers.command,
+                shift: modifiers.shift,
+            });
+        } else {
+            click(state, f, p, modifiers);
+        }
     }
     if response.secondary_clicked()
         && let Some(p) = latest
@@ -978,6 +1015,21 @@ fn pointer(
             _ => {}
         }
     }
+}
+
+/// The node whose monitor button is under the screen point `p`.
+fn monitor_button_at(f: &Frame_<'_>, p: Pos2) -> Option<NodeId> {
+    let g = f.t.to_graph(p);
+    // Topmost node first, so a button under another node can't be pressed.
+    let node = f
+        .order
+        .iter()
+        .rev()
+        .map(|&i| &f.scene.nodes[i])
+        .find(|node| node.rect.contains(g))?;
+    monitor_button(f.project, node)
+        .filter(|button| button.contains(g))
+        .map(|_| node.id)
 }
 
 /// The wire under the screen point `p`, the nearest if several are in reach.

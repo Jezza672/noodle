@@ -218,6 +218,21 @@ pub(crate) fn group_outputs(
     sources
 }
 
+/// The node output in the flat graph that feeds a group's first output (its
+/// stage's, if it has one), which is what monitoring the group listens to.
+pub(crate) fn group_first_output(
+    graph: &Graph,
+    keep: &BTreeSet<NodeId>,
+    group: NodeId,
+) -> Option<Endpoint> {
+    let stages = stages(graph, keep);
+    let port = graph.group_ports(group).outputs.into_iter().next()?;
+    if stages.contains_key(&port.stage()) {
+        return Some(Endpoint::new(port.stage(), STAGE_OUT));
+    }
+    resolve(graph, &stages, &Endpoint::new(port.node, port.key()))
+}
+
 /// Follows an input's wire back through group boundaries to the real node
 /// that produces its signal, or `None` if the chain ends at an unconnected
 /// group input or output, or loops. A stage ends the chain too: it is the

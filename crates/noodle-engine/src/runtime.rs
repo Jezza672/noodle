@@ -21,7 +21,9 @@ pub use crate::plan::Bus;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo, PlanShape};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
-use crate::{Context, Diagnostic, Lanes, Registry, Replacements, TapSpec, Telemetry, Transport};
+use crate::{
+    Context, Diagnostic, Lanes, Monitor, Registry, Replacements, TapSpec, Telemetry, Transport,
+};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
 /// making a new engine.
@@ -99,6 +101,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         cells: Cells::new(),
         telemetry: None,
         buses: None,
+        monitor: None,
         control: control.clone(),
         tempo_map: TempoMap::default(),
         tempo_out,
@@ -160,6 +163,8 @@ pub struct Controller {
     /// The devices sharing the output channels. `None` sends every Output
     /// node to all of them, as in an offline render.
     buses: Option<Vec<Bus>>,
+    /// A node being listened to, added to every plan (see [`Monitor`]).
+    monitor: Option<Monitor>,
     control: Arc<TransportControl>,
     tempo_map: TempoMap,
     tempo_out: Producer<Box<TempoTable>>,
@@ -193,6 +198,12 @@ impl Controller {
         }
         self.buses = Some(buses);
         Ok(())
+    }
+
+    /// Listens to `monitor`'s nodes from the next update on, or stops
+    /// listening if it's `None`. Offline renders never include it.
+    pub fn set_monitor(&mut self, monitor: Option<Monitor>) {
+        self.monitor = monitor;
     }
 
     /// The tempo map the engine is using.
@@ -288,8 +299,15 @@ impl Controller {
         options: &Options<'_>,
     ) -> Vec<Diagnostic> {
         self.free_returned();
+        let main = self
+            .buses
+            .as_deref()
+            .and_then(|buses| buses.first())
+            .map(|bus| bus.device.as_str())
+            .filter(|device| !device.is_empty());
         let options = &Options {
             independent_buffers: self.parallel,
+            monitor: self.monitor.as_ref().map(|monitor| (monitor, main)),
             ..*options
         };
         let (schedule, mut diagnostics) = compile_with(graph, lanes, registry, options);

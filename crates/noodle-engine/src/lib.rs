@@ -17,6 +17,7 @@ mod event;
 mod flatten;
 mod job;
 mod lane;
+mod monitor;
 mod node;
 mod offline;
 mod parallel;
@@ -55,6 +56,7 @@ pub use event::{ChannelControl, Event, EventKind, EventsOut, Expression, NoteId}
 pub use flatten::flatten;
 pub use job::{Job, JobPanicked};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
+pub use monitor::{MONITOR_KEY, Monitor};
 pub use node::{
     ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, MAX_LATENCY, Mode, Node,
     NodeError, NodeInfo, NodeType, Port, Setup, Transport,

@@ -332,6 +332,32 @@ fn box_select_takes_the_nodes_it_touches() {
 }
 
 #[test]
+fn the_monitor_button_monitors_without_selecting() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let out = add(&mut h, Node::new(OUTPUT_ID).at(250.0, 0.0));
+    h.run();
+    let button = |h: &H, node| {
+        let geom = scene(h).node(node).unwrap().clone();
+        let at = super::monitor_button(h.state().session.project(), &geom);
+        at.map(|rect| screen(h, rect.center()))
+    };
+    // An Output has no audio out to listen to.
+    assert!(button(&h, out).is_none());
+    let p = button(&h, sine).expect("a sine has a monitor button");
+    click(&mut h, p, Modifiers::NONE);
+    assert_eq!(h.state().session.monitored(), [sine]);
+    assert!(h.state().editor.selected.is_empty());
+    click(&mut h, p, Modifiers::NONE);
+    assert!(h.state().session.monitored().is_empty());
+    click(&mut h, p, Modifiers::COMMAND);
+    assert_eq!(
+        h.state().session.monitor_mode(),
+        crate::session::MonitorMode::Exclusive
+    );
+}
+
+#[test]
 fn clicking_selects_and_shift_toggles() {
     let mut h = rig();
     let a = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));

@@ -119,6 +119,26 @@ impl OutputsView {
         })
     }
 
+    /// Lists the devices if they never were.
+    pub fn ensure_listed(&mut self, host: Option<&str>) {
+        if self.devices.is_none() {
+            self.refresh(host);
+        }
+    }
+
+    /// The output devices last listed (none before the first listing).
+    pub fn devices(&self) -> &[DeviceInfo] {
+        self.listed()
+    }
+
+    /// The name of the listed device `id`.
+    pub fn device_name(&self, id: &str) -> Option<String> {
+        self.listed()
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.name.clone())
+    }
+
     /// The output devices last listed.
     fn listed(&self) -> &[DeviceInfo] {
         match &self.devices {

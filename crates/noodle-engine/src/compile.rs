@@ -322,6 +322,8 @@ pub(crate) struct Options<'a> {
     pub replacements: Option<&'a Replacements>,
     /// Sinks to watch outputs with. The graph is cut down to what feeds them.
     pub taps: &'a [TapSpec],
+    /// A monitor to add, and the main device's ID for matching its device.
+    pub monitor: Option<(&'a crate::Monitor, Option<&'a str>)>,
 }
 
 /// [`compile_with_lanes`], also replacing outputs and adding taps.
@@ -335,8 +337,17 @@ pub(crate) fn compile_with(
     let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
     let retargeted = crate::automation::retarget_lanes(graph, lanes);
     let lanes: Vec<_> = retargeted.iter().map(|(id, lane)| (*id, lane)).collect();
+    let original = graph;
     let graph = crate::flatten::flatten_keeping(graph, &keep);
-    let graph = &*crate::automation::add_lanes(&graph, &lanes, registry, &mut diagnostics);
+    let monitored;
+    let graph = match options.monitor {
+        Some((monitor, main)) => {
+            monitored = crate::monitor::apply(original, &graph, &keep, registry, monitor, main);
+            &monitored
+        }
+        None => &*graph,
+    };
+    let graph = &*crate::automation::add_lanes(graph, &lanes, registry, &mut diagnostics);
     let no_replacements = Replacements::new();
     let rewritten = crate::replace::rewrite(
         graph,
