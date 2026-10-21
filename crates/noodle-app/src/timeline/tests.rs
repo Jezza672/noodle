@@ -1778,3 +1778,94 @@ fn the_axis_is_linear_in_seconds_so_slow_bars_are_wider() {
         assert_eq!(axis.tick(axis.x(Tick(tick))), Tick(tick));
     }
 }
+
+/// A right-click on the ruler `bars` bars and a little along from the left
+/// of the lanes (240 points a bar at the rig's zoom and 120 bpm).
+fn right_click_ruler(h: &mut H, x: f32) {
+    click_with(
+        h,
+        PointerButton::Secondary,
+        Modifiers::NONE,
+        Pos2::new(x, 10.0),
+    );
+}
+
+fn signatures(h: &H) -> Vec<(u32, String)> {
+    h.state()
+        .session
+        .project()
+        .tempo_map()
+        .signatures()
+        .iter()
+        .map(|s| (s.bar, s.signature.to_string()))
+        .collect()
+}
+
+#[test]
+fn the_ruler_menu_adds_a_tempo_change_at_the_nearest_bar() {
+    let (mut h, _) = rig();
+    // A little before bar 2, which is at 150 + 240.
+    right_click_ruler(&mut h, 150.0 + 240.0 - 30.0);
+    h.get_by_label("Add tempo change at bar 2").click();
+    h.run();
+    let map = h.state().session.project().tempo_map();
+    let changes: Vec<_> = map.tempos().iter().map(|t| (t.tick.0, t.bpm)).collect();
+    assert_eq!(changes, vec![(0, 120.0), (3840, 120.0)]);
+    assert!(h.state().seeks.is_empty(), "a right-click doesn't seek");
+    h.state_mut().session.undo();
+    assert_eq!(
+        h.state().session.project().tempo_map().tempos().len(),
+        1,
+        "one undo step"
+    );
+}
+
+#[test]
+fn the_ruler_menu_adds_a_time_signature_change_with_a_marker() {
+    let (mut h, _) = rig();
+    right_click_ruler(&mut h, 150.0 + 2.0 * 240.0 + 20.0);
+    h.get_by_label("Add time signature change at bar 3 ⏵")
+        .click();
+    h.run();
+    h.get_by_label("3/4").click();
+    h.run();
+    assert_eq!(
+        signatures(&h),
+        vec![(0, "4/4".to_string()), (2, "3/4".to_string())]
+    );
+    h.run();
+    assert!(
+        h.state().timeline.drawn_text.contains(&"3/4".to_string()),
+        "the marker is drawn"
+    );
+}
+
+#[test]
+fn right_clicking_a_marker_changes_or_removes_it() {
+    let (mut h, _) = rig();
+    let three = noodle_core::TimeSignature {
+        numerator: 3,
+        denominator: 4,
+    };
+    let (map, _) =
+        crate::tempo::with_signature_at(h.state().session.project().tempo_map(), 1, three).unwrap();
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetTempoMap(map))]);
+    h.run();
+    // The marker is at bar 1, 150 + 240.
+    right_click_ruler(&mut h, 150.0 + 240.0 + 2.0);
+    h.get_by_label("Change time signature ⏵").click();
+    h.run();
+    h.get_by_label("6/8").click();
+    h.run();
+    assert_eq!(
+        signatures(&h),
+        vec![(0, "4/4".to_string()), (1, "6/8".to_string())]
+    );
+    // Bar 1 is still 4/4 long, so the marker hasn't moved.
+    right_click_ruler(&mut h, 150.0 + 240.0 + 2.0);
+    h.get_by_label("Remove time signature change").click();
+    h.run();
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
+}

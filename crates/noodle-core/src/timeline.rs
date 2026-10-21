@@ -257,6 +257,32 @@ impl TempoMap {
         unreachable!("a tempo map has a tempo")
     }
 
+    /// The tick the downbeat of `bar` (counting from 0) falls on.
+    pub fn bar_start(&self, bar: u32) -> Tick {
+        let mut ticks = 0i64;
+        for (i, change) in self.signatures.iter().enumerate() {
+            let per_bar = change.signature.ticks_per_bar();
+            let end = self.signatures.get(i + 1).map_or(u32::MAX, |next| next.bar);
+            if bar < end {
+                return Tick(ticks + i64::from(bar - change.bar) * per_bar);
+            }
+            ticks += i64::from(end - change.bar) * per_bar;
+        }
+        unreachable!("the last signature runs forever")
+    }
+
+    /// The bar whose downbeat is nearest `tick`; a tie goes to the later bar.
+    /// Ticks before the start are bar 0.
+    pub fn nearest_bar(&self, tick: Tick) -> u32 {
+        let bar = self.position(tick).bar;
+        let (before, after) = (self.bar_start(bar), self.bar_start(bar + 1));
+        if tick.0 - before.0 < after.0 - tick.0 {
+            bar
+        } else {
+            bar + 1
+        }
+    }
+
     /// Where `tick` falls in the bars. Ticks before the start are at the start.
     pub fn position(&self, tick: Tick) -> MusicalPosition {
         let mut remaining = tick.0.max(0);
@@ -382,6 +408,26 @@ mod tests {
                 tick: 0
             }
         );
+    }
+
+    #[test]
+    fn bars_start_where_the_signatures_put_them() {
+        // Two bars of 4/4, then 6/8, which has bars of 2880 ticks.
+        let map = TempoMap::new(
+            vec![tempo(0, 100.0)],
+            vec![signature(0, 4, 4), signature(2, 6, 8)],
+        )
+        .unwrap();
+        let starts: Vec<i64> = (0..5).map(|bar| map.bar_start(bar).0).collect();
+        assert_eq!(starts, vec![0, 3840, 7680, 10_560, 13_440]);
+        for bar in 0..5 {
+            let start = map.bar_start(bar);
+            assert_eq!(map.position(start).bar, bar);
+            assert_eq!(map.nearest_bar(start), bar);
+        }
+        assert_eq!(map.nearest_bar(Tick(3840 + 1919)), 1);
+        assert_eq!(map.nearest_bar(Tick(3840 + 1920)), 2);
+        assert_eq!(map.nearest_bar(Tick(-500)), 0);
     }
 
     #[test]

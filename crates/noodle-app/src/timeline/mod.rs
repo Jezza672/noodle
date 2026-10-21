@@ -15,6 +15,7 @@ pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
 mod midi_preview;
+mod ruler_menu;
 mod sources;
 mod take;
 mod tempo_lane;
@@ -27,7 +28,8 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use egui::{
-    Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
+    Align2, Color32, CursorIcon, FontId, Key, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind,
+    Vec2, vec2,
 };
 use noodle_core::{Clip, ClipId, Command, Endpoint, LaneId, NodeId, Project, TempoMap, Tick};
 
@@ -90,6 +92,7 @@ pub struct TimelineState {
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
+    ruler_menu: ruler_menu::State,
     #[cfg(test)]
     clip_rects: HashMap<ClipId, Rect>,
     #[cfg(test)]
@@ -123,6 +126,7 @@ impl Default for TimelineState {
             automation: automation::State::default(),
             show_tempo: false,
             tempo: tempo_lane::State::default(),
+            ruler_menu: ruler_menu::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
             #[cfg(test)]
@@ -1045,8 +1049,15 @@ pub fn show(
         }
     }
     let scrub = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
+    let _markers = ruler_menu::draw_markers(ui, ruler, map, axis);
+    #[cfg(test)]
+    state.drawn_text.extend(_markers);
+    edits.extend(ruler_menu::show(&mut state.ruler_menu, &scrub, map, axis));
+    // Only the primary button scrubs; the secondary opens the menu.
+    let secondary = ui.input(|i| i.pointer.button_down(PointerButton::Secondary));
     let wanted = scrub
         .interact_pointer_pos()
+        .filter(|_| !secondary)
         .filter(|_| scrub.clicked() || scrub.dragged() || scrub.is_pointer_button_down_on())
         .map(|pos| {
             let tick = axis.tick(pos.x).max(Tick::ZERO);

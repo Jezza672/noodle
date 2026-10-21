@@ -3,7 +3,7 @@
 //! should become (or `None` if that is no change or not a valid map); the
 //! caller makes it a [`Command::SetTempoMap`](noodle_core::Command).
 
-use noodle_core::{TempoChange, TempoMap, Tick, TimeSignature};
+use noodle_core::{SignatureChange, TempoChange, TempoMap, Tick, TimeSignature};
 
 /// Two tempos closer than this are the same.
 const SAME_BPM: f64 = 1e-6;
@@ -78,6 +78,39 @@ pub fn with_signature(map: &TempoMap, signature: TimeSignature) -> Option<TempoM
         return None;
     }
     signatures[0].signature = signature;
+    TempoMap::new(map.tempos().to_vec(), signatures).ok()
+}
+
+/// The map in `signature` from the start of `bar` on, until the next
+/// change. A change already at `bar` is replaced. Returns the map and the
+/// place of the change among the signature changes, or `None` if the
+/// signature already holds at `bar`.
+pub fn with_signature_at(
+    map: &TempoMap,
+    bar: u32,
+    signature: TimeSignature,
+) -> Option<(TempoMap, usize)> {
+    let mut signatures = map.signatures().to_vec();
+    let at = signatures.partition_point(|s| s.bar < bar);
+    if signatures.get(at).is_some_and(|s| s.bar == bar) {
+        signatures[at].signature = signature;
+    } else {
+        if signatures[at - 1].signature == signature {
+            return None;
+        }
+        signatures.insert(at, SignatureChange { bar, signature });
+    }
+    let new = TempoMap::new(map.tempos().to_vec(), signatures).ok()?;
+    (new != *map).then_some((new, at))
+}
+
+/// The map without time signature change `index`. The first can't be removed.
+pub fn signature_removed(map: &TempoMap, index: usize) -> Option<TempoMap> {
+    if index == 0 || index >= map.signatures().len() {
+        return None;
+    }
+    let mut signatures = map.signatures().to_vec();
+    signatures.remove(index);
     TempoMap::new(map.tempos().to_vec(), signatures).ok()
 }
 
@@ -165,5 +198,45 @@ mod tests {
         assert_eq!(new.signatures()[0].signature, sig);
         assert_eq!(new.tempos(), m.tempos());
         assert_eq!(with_signature(&new, sig), None);
+    }
+
+    #[test]
+    fn a_signature_change_is_added_in_order_or_replaces_the_one_there() {
+        let three = TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        };
+        let six = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        let m = map();
+        let (added, at) = with_signature_at(&m, 4, three).unwrap();
+        assert_eq!((added.signatures().len(), at), (2, 1));
+        assert_eq!(added.signatures()[1].bar, 4);
+        let (later, at) = with_signature_at(&added, 8, six).unwrap();
+        assert_eq!((later.signatures().len(), at), (3, 2));
+        let (replaced, at) = with_signature_at(&later, 4, six).unwrap();
+        assert_eq!((replaced.signatures().len(), at), (3, 1));
+        assert_eq!(replaced.signatures()[1].signature, six);
+        // The signature already holding there is no change; bar 0 replaces
+        // the first.
+        assert_eq!(with_signature_at(&m, 4, TimeSignature::COMMON), None);
+        assert_eq!(with_signature_at(&added, 4, three), None);
+        let (first, at) = with_signature_at(&m, 0, three).unwrap();
+        assert_eq!((first.signatures().len(), at), (1, 0));
+        assert_eq!(first.signatures()[0].signature, three);
+    }
+
+    #[test]
+    fn the_first_signature_cant_be_removed() {
+        let three = TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        };
+        let (m, _) = with_signature_at(&map(), 4, three).unwrap();
+        assert_eq!(signature_removed(&m, 0), None);
+        assert_eq!(signature_removed(&m, 1).unwrap().signatures().len(), 1);
+        assert_eq!(signature_removed(&m, 5), None);
     }
 }

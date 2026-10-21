@@ -210,3 +210,6 @@ These are primitives; instruments and racks built from them are groups.
   along its travel instead of setting it, so the synced templates put a Math node
   between (seconds divided by Delay's 2 s range, hertz as a log fraction of the
   LFO's range) and leave the slider at its minimum.
+  Beat Length (`noodle.mod.beat_length`) is the same for any tempo: a `bpm`
+  parameter (wire a tempo into it; a wire sets its value) and a `division`, with
+  the same `time` and `rate` outputs.
