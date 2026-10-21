@@ -31,15 +31,16 @@ use syn::{Attribute, DeriveInput, Expr, Ident, LitStr, Token, parse_macro_input}
 ///   an offline layout, and `#[ports(nondeterministic)]` marks it so).
 /// - An index constant per field, named after it in upper case (`Ports::GAIN`).
 ///   Audio and parameter inputs share one index space, in field order, as do
-///   `output`, `event_input`, `event_output`, `spectral_input` and
-///   `spectral_output` ports among their own kind.
+///   `output`, `event_input`, `event_output`, `spectral_input`,
+///   `spectral_output`, `sample_input` and `sample_output` ports among their own kind.
 /// - `Ports::INPUTS`, `Ports::OUTPUTS`, `Ports::EVENT_INPUTS` and
 ///   `Ports::EVENT_OUTPUTS`, `Ports::SPECTRAL_INPUTS` and `Ports::SPECTRAL_OUTPUTS`, the port counts.
 ///
 /// Field attributes: `#[input(key, name)]`, `#[param(key, name, ParamInfo)]`,
 /// `#[output(key, name)]`, `#[event_input(key, name)]` and
 /// `#[event_output(key, name)]`, `#[spectral_input(key, name)]` and
-/// `#[spectral_output(key, name)]`. Nodes whose ports depend on config, such as
+/// `#[spectral_output(key, name)]`, `#[sample_input(key, name)]` and
+/// `#[sample_output(key, name)]`. Nodes whose ports depend on config, such as
 /// Mix, build their `Layout` by hand instead.
 #[proc_macro_derive(
     Ports,
@@ -51,6 +52,8 @@ use syn::{Attribute, DeriveInput, Expr, Ident, LitStr, Token, parse_macro_input}
         event_output,
         spectral_input,
         spectral_output,
+        sample_input,
+        sample_output,
         ports
     )
 )]
@@ -70,6 +73,8 @@ enum Kind {
     EventOutput,
     SpectralInput,
     SpectralOutput,
+    SampleInput,
+    SampleOutput,
 }
 
 impl Kind {
@@ -89,6 +94,10 @@ impl Kind {
             Kind::SpectralInput
         } else if path.is_ident("spectral_output") {
             Kind::SpectralOutput
+        } else if path.is_ident("sample_input") {
+            Kind::SampleInput
+        } else if path.is_ident("sample_output") {
+            Kind::SampleOutput
         } else {
             return None;
         })
@@ -103,6 +112,8 @@ impl Kind {
             Kind::EventOutput => 3,
             Kind::SpectralInput => 4,
             Kind::SpectralOutput => 5,
+            Kind::SampleInput => 6,
+            Kind::SampleOutput => 7,
         }
     }
 }
@@ -145,7 +156,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         })?;
     }
 
-    let mut counts = [0usize; 6];
+    let mut counts = [0usize; 8];
     let mut ports = Vec::new();
     for field in &fields.named {
         let name = field.ident.clone().expect("named field");
@@ -208,6 +219,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             Kind::EventOutput => quote!(.event_output(#key, #display)),
             Kind::SpectralInput => quote!(.spectral_input(#key, #display)),
             Kind::SpectralOutput => quote!(.spectral_output(#key, #display)),
+            Kind::SampleInput => quote!(.sample_input(#key, #display)),
+            Kind::SampleOutput => quote!(.sample_output(#key, #display)),
         }
     });
     let fields = ports.iter().map(|p| &p.name);
@@ -219,6 +232,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         event_outputs,
         spectral_inputs,
         spectral_outputs,
+        sample_inputs,
+        sample_outputs,
     ] = counts;
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -242,6 +257,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             pub const EVENT_OUTPUTS: usize = #event_outputs;
             pub const SPECTRAL_INPUTS: usize = #spectral_inputs;
             pub const SPECTRAL_OUTPUTS: usize = #spectral_outputs;
+            pub const SAMPLE_INPUTS: usize = #sample_inputs;
+            pub const SAMPLE_OUTPUTS: usize = #sample_outputs;
 
             /// The node's ports, in the order the constants index them.
             pub fn layout() -> ::noodle_engine::Layout {

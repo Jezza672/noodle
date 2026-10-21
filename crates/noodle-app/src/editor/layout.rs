@@ -43,6 +43,8 @@ pub enum PortKind {
     Event,
     /// FFT frames, as between Analyze and Synthesize.
     Spectral,
+    /// A reference to a sample (a Sample node's output, a Sampler's input).
+    Sample,
     /// A group's port that nothing is wired to on either side yet: it takes
     /// a wire of any kind, and becomes that kind once one is connected.
     Any,
@@ -60,13 +62,14 @@ impl PortKind {
             (PortKind::Audio, PortKind::Audio | PortKind::Param(_))
                 | (PortKind::Event, PortKind::Event)
                 | (PortKind::Spectral, PortKind::Spectral)
+                | (PortKind::Sample, PortKind::Sample)
                 | (PortKind::Any, PortKind::Audio | PortKind::Param(_))
                 | (
                     PortKind::Any,
-                    PortKind::Event | PortKind::Spectral | PortKind::Any
+                    PortKind::Event | PortKind::Spectral | PortKind::Sample | PortKind::Any
                 )
                 | (
-                    PortKind::Audio | PortKind::Event | PortKind::Spectral,
+                    PortKind::Audio | PortKind::Event | PortKind::Spectral | PortKind::Sample,
                     PortKind::Any
                 )
         )
@@ -128,6 +131,7 @@ pub struct WireGeom {
     pub to: Pos2,
     pub event: bool,
     pub spectral: bool,
+    pub sample: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +297,14 @@ impl Scene {
                                         PortKind::Spectral,
                                     ));
                                 }
+                                for p in &layout.sample_outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Sample,
+                                    ));
+                                }
                                 // Note inputs first: they are the way into an
                                 // instrument, and a plugin can have hundreds of
                                 // parameters below them.
@@ -305,6 +317,14 @@ impl Scene {
                                         &p.key,
                                         &p.name,
                                         PortKind::Spectral,
+                                    ));
+                                }
+                                for p in &layout.sample_inputs {
+                                    ports.push(port(
+                                        Side::Input,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Sample,
                                     ));
                                 }
                                 for p in &layout.inputs {
@@ -492,6 +512,7 @@ impl Scene {
                     lane: None,
                     event: from.kind == PortKind::Event,
                     spectral: from.kind == PortKind::Spectral,
+                    sample: from.kind == PortKind::Sample,
                     from: from.socket,
                     to: to.socket,
                     connection,
@@ -513,6 +534,7 @@ impl Scene {
                     lane: Some(lane),
                     event: false,
                     spectral: false,
+                    sample: false,
                     from: a,
                     to: b,
                     connection: Connection { from, to: target },
@@ -765,6 +787,8 @@ impl Kinds<'_> {
                     PortKind::Event
                 } else if layout.spectral_outputs.iter().any(|p| p.key == at.port) {
                     PortKind::Spectral
+                } else if layout.sample_outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Sample
                 } else if layout.outputs.iter().any(|p| p.key == at.port) {
                     PortKind::Audio
                 } else {
@@ -800,6 +824,8 @@ impl Kinds<'_> {
                     PortKind::Event
                 } else if layout.spectral_inputs.iter().any(|p| p.key == at.port) {
                     PortKind::Spectral
+                } else if layout.sample_inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Sample
                 } else if layout.inputs.iter().any(|p| p.key == at.port) {
                     PortKind::Audio
                 } else {
