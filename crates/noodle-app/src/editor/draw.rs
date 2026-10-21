@@ -116,6 +116,8 @@ pub fn wires(
             colors::EVENT_WIRE
         } else if wire.spectral {
             colors::SPECTRAL_WIRE
+        } else if wire.sample {
+            colors::SAMPLE_WIRE
         } else if selected {
             colors::WIRE_SELECTED
         } else {
@@ -511,6 +513,20 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
                 outline,
                 egui::StrokeKind::Middle,
             );
+        }
+        // A triangle, for a reference to a sample.
+        PortKind::Sample => {
+            let r = radius * 1.2;
+            let points = vec![
+                center + Vec2::new(-r, -r * 0.9),
+                center + Vec2::new(r, 0.0),
+                center + Vec2::new(-r, r * 0.9),
+            ];
+            painter.add(PathShape::convex_polygon(
+                points,
+                colors::SAMPLE_SOCKET,
+                outline,
+            ));
         }
         ref kind => {
             let fill = match kind {

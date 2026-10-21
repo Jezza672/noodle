@@ -87,6 +87,74 @@ impl Sample {
     }
 }
 
+/// A reference to a sample, or to a window of one: what a sample wire carries.
+/// As text it is the hash alone, or `hash:start:end` with the window as
+/// fractions of the sample (see [`NodeType::sample_output`](noodle_engine::NodeType::sample_output)).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampleRef {
+    pub hash: String,
+    pub start: f32,
+    pub end: f32,
+}
+
+impl SampleRef {
+    /// The whole sample.
+    pub fn whole(hash: impl Into<String>) -> Self {
+        Self {
+            hash: hash.into(),
+            start: 0.0,
+            end: 1.0,
+        }
+    }
+
+    /// Reads the text form. A window that is missing or doesn't parse is the
+    /// whole sample.
+    pub fn parse(text: &str) -> Self {
+        let mut parts = text.split(':');
+        let hash = parts.next().unwrap_or_default().to_owned();
+        let number = |p: Option<&str>| p.and_then(|p| p.parse::<f32>().ok());
+        match (number(parts.next()), number(parts.next())) {
+            (Some(start), Some(end)) if start.is_finite() && end.is_finite() => Self {
+                hash,
+                start: start.clamp(0.0, 1.0),
+                end: end.clamp(0.0, 1.0),
+            },
+            _ => Self::whole(hash),
+        }
+    }
+
+    pub fn is_whole(&self) -> bool {
+        self.start <= 0.0 && self.end >= 1.0
+    }
+
+    pub fn to_text(&self) -> String {
+        if self.is_whole() {
+            self.hash.clone()
+        } else {
+            format!("{}:{}:{}", self.hash, self.start, self.end)
+        }
+    }
+}
+
+impl Sample {
+    /// The part of the sample between two fractions of it, as a sample of its
+    /// own. The whole sample is shared, not copied.
+    pub fn window(self: &Arc<Self>, start: f32, end: f32) -> Arc<Sample> {
+        let frames = self.frames();
+        let a = ((start.clamp(0.0, 1.0) as f64) * frames as f64).round() as usize;
+        let b = ((end.clamp(0.0, 1.0) as f64) * frames as f64).round() as usize;
+        if a == 0 && b >= frames {
+            return Arc::clone(self);
+        }
+        let b = b.max(a);
+        Arc::new(Sample {
+            left: self.left[a..b].into(),
+            right: self.right[a..b].into(),
+            sample_rate: self.sample_rate,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum SampleError {
     Decode(DecodeError),
@@ -129,6 +197,9 @@ struct Inner {
     /// every frame does not read the disk every frame. Forgotten when the
     /// folder changes or a sample comes in.
     missing: std::collections::HashSet<String>,
+    /// The fundamental found for a hash, `None` if it has no pitch. The
+    /// audio behind a hash never changes, so this is never stale.
+    pitch: HashMap<String, Option<f32>>,
 }
 
 /// Samples by content hash. Clones share the store.
@@ -218,6 +289,25 @@ impl SampleStore {
         Some(sample)
     }
 
+    /// The key number (fractional, 69 is A 440) of the sample's fundamental,
+    /// from its first moments (see [`crate::fundamental()`]), or `None` if the
+    /// sample isn't there or has no clear pitch. Remembered by hash.
+    pub fn pitch(&self, hash: &str) -> Option<f32> {
+        if let Some(&found) = self.inner.lock().unwrap().pitch.get(hash) {
+            return found;
+        }
+        let sample = self.get(hash)?;
+        let found =
+            crate::fundamental::fundamental(&sample.left, &sample.right, sample.sample_rate)
+                .and_then(crate::fundamental::key_of);
+        self.inner
+            .lock()
+            .unwrap()
+            .pitch
+            .insert(hash.to_owned(), found);
+        found
+    }
+
     /// Writes the sample to the folder as `<hash>.wav` (kept if already
     /// there).
     pub fn save(&self, hash: &str) -> Result<PathBuf, SampleError> {
@@ -254,6 +344,48 @@ mod tests {
         assert_eq!(a, store.insert(&audio(vec![0.1, 0.2, 0.3], 1)));
         assert_ne!(a, store.insert(&audio(vec![0.1, 0.2, 0.4], 1)));
         assert_eq!(a.len(), 64);
+    }
+
+    #[test]
+    fn a_reference_round_trips_through_its_text() {
+        let whole = SampleRef::whole("abc");
+        assert_eq!(whole.to_text(), "abc");
+        assert_eq!(SampleRef::parse("abc"), whole);
+        let part = SampleRef {
+            hash: "abc".into(),
+            start: 0.25,
+            end: 0.75,
+        };
+        assert_eq!(SampleRef::parse(&part.to_text()), part);
+        assert_eq!(SampleRef::parse("abc:x:y"), whole);
+        assert_eq!(SampleRef::parse(""), SampleRef::whole(""));
+    }
+
+    #[test]
+    fn a_window_is_the_part_between_the_fractions() {
+        let sample = Arc::new(Sample::from_audio(&audio(
+            (0..100).map(|i| i as f32).collect(),
+            1,
+        )));
+        let part = sample.window(0.25, 0.5);
+        assert_eq!(part.frames(), 25);
+        assert_eq!(part.left[0], 25.0);
+        assert!(Arc::ptr_eq(&sample, &sample.window(0.0, 1.0)));
+        assert_eq!(sample.window(0.6, 0.2).frames(), 0);
+    }
+
+    #[test]
+    fn the_pitch_of_a_hash_is_found_once() {
+        let store = SampleStore::new();
+        let tone: Vec<f32> = (0..44_100)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / 44_100.0).sin())
+            .collect();
+        let hash = store.insert(&audio(tone, 1));
+        assert!((store.pitch(&hash).unwrap() - 69.0).abs() < 0.1);
+        assert!(store.inner.lock().unwrap().pitch.contains_key(&hash));
+        let silence = store.insert(&audio(vec![0.0; 44_100], 1));
+        assert_eq!(store.pitch(&silence), None);
+        assert_eq!(store.pitch("missing"), None);
     }
 
     #[test]

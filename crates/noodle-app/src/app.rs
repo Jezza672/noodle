@@ -487,6 +487,9 @@ impl App {
                 self.session.edit(edits);
                 self.open_requested_view();
             });
+        if let Some(dropped) = self.editor.take_dropped() {
+            self.dropped_on_graph(dropped);
+        }
 
         self.confirm_dialog(ui.ctx(), &mut actions);
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
@@ -510,6 +513,7 @@ impl App {
             self.session.edit([Edit::EndDrag]);
         }
         self.dragging = dragging;
+        crate::carry::expire(ui.ctx());
         self.update_title(ui.ctx());
         if self.session.engine_running() {
             // Keeps health checks and plan freeing going while idle, and the
@@ -1335,6 +1339,69 @@ impl App {
         let name = self.session.project().clip(id)?.as_audio()?.source.clone();
         let directory = self.session.directory().map(std::path::Path::to_path_buf);
         self.timeline.source(ctx, directory.as_deref(), &name)
+    }
+
+    /// A clip or a track carried out of the timeline and let go of over the
+    /// graph. A clip dropped on a Sampler gives it the clip's part of the
+    /// file; on the canvas it becomes a Sample node holding the same.
+    /// A track is placed where it lands, if it is at the level being edited.
+    fn dropped_on_graph(&mut self, dropped: editor::Dropped) {
+        use crate::carry::Item;
+        use noodle_core::{Command, Config, Node, Position, Value};
+        match dropped.item {
+            Item::Clip(clip) => {
+                let sample = match crate::sample_drop::from_clip(&self.session, clip) {
+                    Ok(sample) => sample,
+                    Err(notice) => return self.session.notify(notice),
+                };
+                match dropped.on {
+                    editor::DropOn::Sampler(node) => {
+                        let command = crate::sample_drop::onto_sampler(node, &sample);
+                        self.session.edit([crate::session::Edit::Apply(command)]);
+                    }
+                    editor::DropOn::Canvas(at) => {
+                        let id = self.session.new_node_id();
+                        let mut node = Node::new(noodle_nodes::SAMPLE_INPUT_ID)
+                            .with_config(Config::new().with(
+                                noodle_nodes::SAMPLE_KEY,
+                                Value::Text(sample.reference.to_text()),
+                            ))
+                            .at(at.x, at.y);
+                        node.parent = dropped.group;
+                        self.session
+                            .edit([crate::session::Edit::Apply(Command::AddNode { id, node })]);
+                        self.editor.select_only([id]);
+                    }
+                }
+            }
+            Item::Track(group) => {
+                let at = match dropped.on {
+                    editor::DropOn::Canvas(at) => at,
+                    editor::DropOn::Sampler(node) => {
+                        let p = self
+                            .session
+                            .project()
+                            .graph()
+                            .node(node)
+                            .map(|n| n.position);
+                        p.map_or(egui::Pos2::ZERO, |p| egui::pos2(p.x, p.y))
+                    }
+                };
+                let graph = self.session.project().graph();
+                if graph.node(group).map(|n| n.parent) != Some(dropped.group) {
+                    return self.session.notify(
+                        "That track is in another group. Open its level to place it.".into(),
+                    );
+                }
+                let position = Position { x: at.x, y: at.y };
+                self.session
+                    .edit([crate::session::Edit::Apply(Command::MoveNode {
+                        node: group,
+                        position,
+                    })]);
+                self.editor.select_only([group]);
+            }
+        }
     }
 
     fn import_audio(&mut self, target: timeline::Target) {
@@ -2451,5 +2518,229 @@ mod tests {
         h.state_mut().session.undo();
         let node = h.state().session.project().graph().node(id).unwrap();
         assert!(!node.params.contains_key("start"));
+    }
+
+    /// An app saved in a temp folder with one track holding a clip of a
+    /// 440 Hz tone, from a quarter of the file for a quarter of it, and the
+    /// folder to keep alive. Returns the clip and the window it should give.
+    fn clip_rig() -> (
+        Harness<'static, App>,
+        noodle_core::ClipId,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let tone: Vec<f32> = (0..48_000)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin())
+            .collect();
+        noodle_io::write_wav(&dir.path().join("tone.wav"), &tone, 1, 48_000).unwrap();
+        let mut app = empty();
+        assert!(app.session.save_as(&dir.path().join("p.ron")));
+        let track = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: track,
+            node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+        })]);
+        let id = app.session.project().next_clip_id();
+        let mut clip = noodle_core::Clip::audio(track, noodle_core::Tick(0), "tone.wav", 12_000);
+        if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+            audio.offset = 12_000;
+        }
+        app.session
+            .edit([Edit::Apply(Command::AddClip { id, clip })]);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 800.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        (h, id, dir)
+    }
+
+    /// Drags the clip out of the timeline to `to`.
+    fn carry_clip(h: &mut Harness<'static, App>, id: noodle_core::ClipId, to: egui::Pos2) {
+        let from = h
+            .state()
+            .timeline
+            .clip_rect(id)
+            .expect("the clip is drawn")
+            .center();
+        crate::testkit::drag_between(h, egui::Modifiers::NONE, from, to);
+        h.run();
+    }
+
+    fn on_canvas(h: &Harness<'static, App>, graph: egui::Pos2) -> egui::Pos2 {
+        let editor = &h.state().editor;
+        editor.view.on(editor.canvas).to_screen(graph)
+    }
+
+    #[test]
+    fn a_clip_dragged_onto_the_canvas_becomes_a_sample_node_and_stays_put() {
+        let (mut h, clip, _dir) = clip_rig();
+        let before = h.state().session.project().clip(clip).unwrap().clone();
+        let to = on_canvas(&h, egui::pos2(200.0, 150.0));
+        carry_clip(&mut h, clip, to);
+        let project = h.state().session.project();
+        assert_eq!(project.clip(clip), Some(&before), "the clip did not move");
+        let (_, node) = project
+            .graph()
+            .nodes()
+            .find(|(_, n)| n.type_id == noodle_nodes::SAMPLE_INPUT_ID)
+            .expect("a Sample node");
+        let reference = match node.config.get(noodle_nodes::SAMPLE_KEY) {
+            Some(noodle_core::Value::Text(t)) => noodle_nodes::SampleRef::parse(t),
+            other => panic!("{other:?}"),
+        };
+        assert!((reference.start - 0.25).abs() < 1e-4, "{reference:?}");
+        assert!((reference.end - 0.5).abs() < 1e-4, "{reference:?}");
+        assert!((node.position.x - 200.0).abs() < 8.0 && (node.position.y - 150.0).abs() < 8.0);
+    }
+
+    #[test]
+    fn a_clip_dragged_onto_a_sampler_sets_its_sample_window_and_root_in_one_undo_step() {
+        let (mut h, clip, _dir) = clip_rig();
+        let sampler = noodle_core::NodeId(10);
+        h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+            id: sampler,
+            node: Node::new(noodle_nodes::SAMPLER_ID).at(300.0, 200.0),
+        })]);
+        h.run();
+        let to = on_canvas(&h, egui::pos2(300.0, 200.0)) + egui::vec2(20.0, 10.0);
+        carry_clip(&mut h, clip, to);
+        let node = h
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(sampler)
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            node.config.get(noodle_nodes::SAMPLE_KEY),
+            Some(noodle_core::Value::Text(t)) if t.len() == 64
+        ));
+        assert!(
+            (node.params["start"] - 0.25).abs() < 1e-4,
+            "{:?}",
+            node.params
+        );
+        assert!((node.params["end"] - 0.5).abs() < 1e-4, "{:?}", node.params);
+        // A 440 Hz tone is key 69.
+        assert!(
+            (node.params["root"] - 69.0).abs() < 0.1,
+            "{:?}",
+            node.params
+        );
+        assert!(
+            !h.state()
+                .session
+                .project()
+                .graph()
+                .nodes()
+                .any(|(_, n)| n.type_id == noodle_nodes::SAMPLE_INPUT_ID)
+        );
+        h.state_mut().session.undo();
+        let node = h.state().session.project().graph().node(sampler).unwrap();
+        assert!(node.params.is_empty() && node.config.get(noodle_nodes::SAMPLE_KEY).is_none());
+    }
+
+    #[test]
+    fn a_clip_let_go_inside_the_timeline_is_an_ordinary_move() {
+        let (mut h, clip, _dir) = clip_rig();
+        let from = h.state().timeline.clip_rect(clip).unwrap().center();
+        crate::testkit::drag_between(
+            &mut h,
+            egui::Modifiers::NONE,
+            from,
+            from + egui::vec2(40.0, 0.0),
+        );
+        h.run();
+        let project = h.state().session.project();
+        assert!(project.clip(clip).unwrap().start > noodle_core::Tick(0));
+        assert!(
+            !project
+                .graph()
+                .nodes()
+                .any(|(_, n)| n.type_id == noodle_nodes::SAMPLE_INPUT_ID)
+        );
+    }
+
+    #[test]
+    fn a_track_dragged_onto_the_canvas_is_placed_there() {
+        let (mut h, _, _dir) = clip_rig();
+        h.state_mut().session.edit([Edit::Apply(
+            noodle_core::group::create_track(None, noodle_core::Position { x: 0.0, y: 0.0 }, {
+                let mut next = 20;
+                move || {
+                    next += 1;
+                    noodle_core::NodeId(next)
+                }
+            })
+            .1,
+        )]);
+        h.run();
+        let group = h
+            .state()
+            .session
+            .project()
+            .graph()
+            .nodes()
+            .find(|(_, n)| n.type_id == noodle_core::group::GROUP)
+            .map(|(id, _)| id)
+            .expect("a track group");
+        // The rig's own bare track is the first lane; the group is the second.
+        let header = h.get_by_label("Track 2").rect();
+        let to = on_canvas(&h, egui::pos2(400.0, 250.0));
+        crate::testkit::drag_between(
+            &mut h,
+            egui::Modifiers::NONE,
+            header.left_bottom() + egui::vec2(4.0, 12.0),
+            to,
+        );
+        h.run();
+        let at = h
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(group)
+            .unwrap()
+            .position;
+        assert!(
+            (at.x - 400.0).abs() < 8.0 && (at.y - 250.0).abs() < 8.0,
+            "{at:?}"
+        );
+    }
+
+    #[test]
+    fn a_clip_dragged_onto_the_sample_in_the_properties_panel_sets_the_selected_sampler() {
+        let (mut h, clip, _dir) = clip_rig();
+        let sampler = noodle_core::NodeId(10);
+        h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+            id: sampler,
+            node: Node::new(noodle_nodes::SAMPLER_ID).at(300.0, 200.0),
+        })]);
+        h.state_mut().editor.selected.insert(sampler);
+        h.state_mut().editor.active = Some(sampler);
+        h.run();
+        // Selecting the clip puts its own panel above the Sampler's settings,
+        // so click it first and aim at where the settings are then.
+        let at = h.state().timeline.clip_rect(clip).unwrap().center();
+        crate::testkit::click(&mut h, at, egui::Modifiers::NONE);
+        h.run();
+        h.state_mut().editor.selected.insert(sampler);
+        h.state_mut().editor.active = Some(sampler);
+        h.run();
+        let to = h.get_by_label("Load sample…").rect().center();
+        carry_clip(&mut h, clip, to);
+        let node = h.state().session.project().graph().node(sampler).unwrap();
+        assert!(
+            (node.params["start"] - 0.25).abs() < 1e-4,
+            "{:?}",
+            node.params
+        );
+        assert!(
+            (node.params["root"] - 69.0).abs() < 0.1,
+            "{:?}",
+            node.params
+        );
     }
 }

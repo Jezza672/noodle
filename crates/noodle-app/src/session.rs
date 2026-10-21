@@ -1085,7 +1085,7 @@ impl Session {
     }
 
     /// Points the store at `samples` beside the file and writes every sample
-    /// a Sampler names into it, so a project saved anywhere takes its sounds
+    /// a Sampler or Sample node names into it, so a project saved anywhere takes its sounds
     /// along.
     fn save_samples(&mut self) {
         self.samples.set_dir(self.base().join("samples"));
@@ -1093,11 +1093,19 @@ impl Session {
             .project
             .graph()
             .nodes()
-            .filter(|(_, node)| node.type_id == noodle_nodes::SAMPLER_ID)
+            .filter(|(_, node)| {
+                matches!(
+                    node.type_id.as_str(),
+                    noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
+                )
+            })
             .filter_map(|(_, node)| match node.config.get("sample") {
-                Some(noodle_core::Value::Text(hash)) if !hash.is_empty() => Some(hash.clone()),
+                Some(noodle_core::Value::Text(text)) => {
+                    Some(noodle_nodes::SampleRef::parse(text).hash)
+                }
                 _ => None,
             })
+            .filter(|hash| !hash.is_empty())
             .collect();
         for hash in hashes {
             if let Err(error) = self.samples.save(&hash) {
