@@ -51,4 +51,10 @@ need a person and hardware, plus a few deliberately deferred items.
   retry the saved device when it returns.
 - **VST3:** an editor window on Linux (the app makes none).
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
+- **Clip and sample editor parity.** The audio pane is shared (#231), but the
+  rest of "anything on a clip works on a sample" is open: a gain envelope for
+  a Sampler (it has only a gain parameter), a playhead from the Sampler's
+  voices (needs position telemetry from the audio thread), warp and beat
+  markers for a sample (a warp hangs off clips today), and a loop on an
+  unwarped clip (the loop lives in the warp).
 - **Flaky test** #138 stays open (no recurrence).
