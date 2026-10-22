@@ -87,7 +87,7 @@ pub use spectral::{
 };
 pub use telemetry::{
     BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level, MeterReader,
-    MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,
+    MeterWriter, ParamReading, ParamWriter, PositionWriter, ScopeView, ScopeWriter, Telemetry,
 };
 pub use tempo::TempoTable;
 pub use transport::TransportControl;

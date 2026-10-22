@@ -2,9 +2,11 @@
 
 use std::sync::Arc;
 
+use noodle_core::{ClipWarp, GainPoint, WarpAxis, gain_points_from_text};
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
-    NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, Setup, Shape, Unit,
+    NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, PositionWriter, Setup, Shape,
+    Telemetry, Unit,
 };
 
 use crate::sample::{Sample, SampleRef, SampleStore};
@@ -43,15 +45,35 @@ use crate::sample::{Sample, SampleRef, SampleStore};
 ///
 /// **Level.** A note's velocity scales it linearly, then `gain`.
 ///
+/// **Gain envelope.** The `gain_env` setting is a [`GainPoint`] list (text,
+/// see [`noodle_core::gain_points_to_text`]) whose ticks count millionths of
+/// the sample, so the points stay on the audio however the region is moved.
+/// Between points the level moves in a straight line in dB, and it holds
+/// before the first and after the last. It multiplies `gain`. Empty is flat.
+///
+/// **Warp.** The `warp` setting holds a [`ClipWarp`] (text) that times the
+/// sample the way a clip's is timed, in Repitch mode (the pitch follows the
+/// speed, as with `keytrack`; the other modes play as Repitch here). The
+/// sample's own tempo and markers say where each moment falls in beats, and
+/// with *follow tempo* on a note plays them at the project's tempo, so a loop
+/// recorded at 90 bpm plays in time at 120. Without a warp the sample plays at
+/// its own speed. The warp's loop region is not used: the Sampler's own loop
+/// parameters decide what repeats.
+///
+/// **Playhead.** Where each voice is in the sample is reported to the
+/// [`Telemetry`] hub (see [`Telemetry::read_positions`]), for the sample view.
+///
 /// When all 16 voices are in use the oldest is cut for the new note.
 pub struct Sampler {
     store: SampleStore,
+    telemetry: Telemetry,
 }
 
 impl Sampler {
-    pub fn new(store: &SampleStore) -> Self {
+    pub fn new(store: &SampleStore, telemetry: &Telemetry) -> Self {
         Self {
             store: store.clone(),
+            telemetry: telemetry.clone(),
         }
     }
 }
@@ -64,7 +86,20 @@ pub const DEFAULT_ROOT: f32 = 60.0;
 /// The setting that names the sample, by hash.
 pub const SAMPLE_KEY: &str = "sample";
 
-static CONFIG: [ConfigInfo; 1] = [ConfigInfo::text(SAMPLE_KEY, "Sample")];
+/// The setting that holds the gain envelope.
+pub const GAIN_ENV_KEY: &str = "gain_env";
+
+/// The setting that holds the warp.
+pub const WARP_KEY: &str = "warp";
+
+/// How many millionths of the sample a gain point's tick counts.
+pub const GAIN_ENV_SCALE: f64 = 1_000_000.0;
+
+static CONFIG: [ConfigInfo; 3] = [
+    ConfigInfo::text(SAMPLE_KEY, "Sample"),
+    ConfigInfo::text(GAIN_ENV_KEY, "Gain envelope"),
+    ConfigInfo::text(WARP_KEY, "Warp"),
+];
 
 #[derive(Ports)]
 struct SamplerPorts {
@@ -166,9 +201,15 @@ impl NodeType for Sampler {
             .store
             .get(&reference.hash)
             .map(|sample| sample.window(reference.start, reference.end));
+        let points = gain_points_from_text(&CONFIG[1].get_text(setup.config));
+        let warp = ClipWarp::from_text(&CONFIG[2].get_text(setup.config)).map(|w| Play::new(&w));
         Ok(Instance::realtime(SamplerNode {
             sample,
             sample_rate: setup.sample_rate,
+            envelope: Envelope::new(&points),
+            warp,
+            beats_per_second: 2.0,
+            positions: self.telemetry.open_positions(setup.node, VOICES),
             voices: [Voice::default(); VOICES],
             clock: 0,
             left: vec![0.0; setup.max_frames].into_boxed_slice(),
@@ -193,6 +234,8 @@ struct Voice {
     /// Fade gain, 1 until the release.
     fade: f32,
     fade_step: f32,
+    /// The piece of the warp the voice was last in.
+    piece: usize,
     /// The region and loop in source frames, from the note's start.
     end: f64,
     loop_range: Option<(f64, f64)>,
@@ -200,9 +243,103 @@ struct Voice {
     age: u64,
 }
 
+/// The gain envelope as a table of linear gains across the sample.
+struct Envelope {
+    table: Option<Box<[f32]>>,
+}
+
+const ENVELOPE_STEPS: usize = 1024;
+
+impl Envelope {
+    fn new(points: &[GainPoint]) -> Self {
+        if points.is_empty() {
+            return Self { table: None };
+        }
+        let db_at = |tick: f64| {
+            let after = points.partition_point(|p| p.tick.0 as f64 <= tick);
+            match (
+                after.checked_sub(1).map(|i| points[i]),
+                points.get(after).copied(),
+            ) {
+                (Some(a), Some(b)) => {
+                    let t = (tick - a.tick.0 as f64) / ((b.tick.0 - a.tick.0) as f64).max(1.0);
+                    a.db + (b.db - a.db) * t as f32
+                }
+                (Some(p), None) | (None, Some(p)) => p.db,
+                (None, None) => 0.0,
+            }
+        };
+        let table = (0..=ENVELOPE_STEPS)
+            .map(|i| {
+                let tick = i as f64 / ENVELOPE_STEPS as f64 * GAIN_ENV_SCALE;
+                10f32.powf(db_at(tick) / 20.0)
+            })
+            .collect();
+        Self { table: Some(table) }
+    }
+
+    /// The gain at `fraction` of the sample.
+    fn at(&self, fraction: f64) -> f32 {
+        let Some(table) = &self.table else {
+            return 1.0;
+        };
+        let x = fraction.clamp(0.0, 1.0) * ENVELOPE_STEPS as f64;
+        let i = (x as usize).min(ENVELOPE_STEPS - 1);
+        let t = (x - i as f64) as f32;
+        table[i] + (table[i + 1] - table[i]) * t
+    }
+}
+
+/// A warp reduced to what playing it needs: how fast each stretch of the
+/// sample goes.
+struct Play {
+    /// (source second the piece begins at, output per source second).
+    pieces: Vec<(f64, f64)>,
+    /// Whether the output is timeline beats (follow tempo) or seconds.
+    beats: bool,
+}
+
+impl Play {
+    fn new(warp: &ClipWarp) -> Self {
+        let curve = warp.curve();
+        Self {
+            pieces: curve.pieces(),
+            beats: curve.axis == WarpAxis::Beats,
+        }
+    }
+
+    /// Source seconds per second of playing, in the piece of `seconds`.
+    /// `piece` is where the voice was, which makes the usual forward step a
+    /// comparison; a jump (a loop) searches.
+    fn speed(&self, piece: &mut usize, seconds: f64, beats_per_second: f64) -> f64 {
+        let at = |i: usize| self.pieces.get(i).map(|p| p.0);
+        if !(at(*piece).is_some_and(|from| from <= seconds)
+            && at(*piece + 1).is_none_or(|to| seconds < to))
+        {
+            *piece = self
+                .pieces
+                .partition_point(|p| p.0 <= seconds)
+                .saturating_sub(1);
+        }
+        let out_per_source = self.pieces[*piece].1.max(1e-6);
+        let rate = if self.beats { beats_per_second } else { 1.0 };
+        (rate / out_per_source).clamp(MIN_SPEED, MAX_SPEED)
+    }
+}
+
+/// The slowest and fastest a warp plays a sample, as a multiple of its own
+/// speed (the clip warp's limits).
+const MIN_SPEED: f64 = 1.0 / 16.0;
+const MAX_SPEED: f64 = 32.0;
+
 struct SamplerNode {
     sample: Option<Arc<Sample>>,
     sample_rate: f32,
+    envelope: Envelope,
+    warp: Option<Play>,
+    /// The tempo, in beats a second, as of the block.
+    beats_per_second: f64,
+    positions: PositionWriter,
     voices: [Voice; VOICES],
     clock: u64,
     left: Box<[f32]>,
@@ -295,6 +432,7 @@ impl SamplerNode {
             releasing: false,
             fade: 1.0,
             fade_step: 0.0,
+            piece: 0,
             end,
             loop_range,
             one_shot: s.one_shot,
@@ -340,19 +478,35 @@ impl SamplerNode {
         }
     }
 
+    /// Tells the telemetry hub where each voice is.
+    fn report(&self) {
+        let len = self.sample.as_ref().map_or(0, |s| s.frames()) as f64;
+        for (i, v) in self.voices.iter().enumerate() {
+            let at = (v.active && len > 0.0).then(|| (v.pos / len) as f32);
+            self.positions.write(i, at);
+        }
+        self.positions.publish();
+    }
+
     /// Adds every voice's output for frames `from..to` of the block.
     fn render(&mut self, from: usize, to: usize) {
         let Some(sample) = &self.sample else { return };
         let len = sample.frames();
+        let (envelope, warp, tempo) = (&self.envelope, &self.warp, self.beats_per_second);
+        let per_second = 1.0 / f64::from(sample.sample_rate.max(1));
         for v in self.voices.iter_mut().filter(|v| v.active) {
-            let step = v.step * (v.bend / 12.0).exp2();
+            let bent = v.step * (v.bend / 12.0).exp2();
             for i in from..to {
                 if v.pos >= v.end || v.pos < 0.0 {
                     v.active = false;
                     break;
                 }
+                let step = match warp {
+                    Some(play) => bent * play.speed(&mut v.piece, v.pos * per_second, tempo),
+                    None => bent,
+                };
                 let (l, r) = read(sample, len, v.pos);
-                let gain = v.level * v.fade;
+                let gain = v.level * v.fade * envelope.at(v.pos / len as f64);
                 self.left[i] += l * gain;
                 self.right[i] += r * gain;
                 v.pos += step;
@@ -400,11 +554,13 @@ impl Node for SamplerNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let settings = Settings::read(&io);
         let frames = ctx.frames;
+        self.beats_per_second = ctx.transport.bpm / 60.0;
         let idle = self.voices.iter().all(|v| !v.active);
         if idle && io.event_inputs[SamplerPorts::NOTES].is_empty() {
             for channel in 0..2 {
                 io.outputs[SamplerPorts::OUT].silence(0, channel);
             }
+            self.report();
             return;
         }
         self.left[..frames].fill(0.0);
@@ -420,6 +576,7 @@ impl Node for SamplerNode {
         let out = &mut io.outputs[SamplerPorts::OUT];
         out.lane_mut(0, 0).copy_from_slice(&self.left[..frames]);
         out.lane_mut(0, 1).copy_from_slice(&self.right[..frames]);
+        self.report();
     }
 
     fn reset(&mut self) {
@@ -474,7 +631,14 @@ mod tests {
     }
 
     fn harness(store: &SampleStore, config: &Config) -> Harness {
-        Harness::new(&Sampler::new(store), config, &[], RATE, 256).unwrap()
+        Harness::new(
+            &Sampler::new(store, &Telemetry::new()),
+            config,
+            &[],
+            RATE,
+            256,
+        )
+        .unwrap()
     }
 
     fn left(h: &Harness) -> Vec<f32> {
@@ -583,6 +747,118 @@ mod tests {
         h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
         h.run(256).unwrap();
         assert!(left(&h).iter().all(|&x| x == 0.0));
+    }
+
+    fn with(config: &Config, key: &str, text: String) -> Config {
+        let mut config = config.clone();
+        config.set(key, Value::Text(text));
+        config
+    }
+
+    #[test]
+    fn a_gain_envelope_scales_the_level_along_the_sample() {
+        let (store, config) = ramp(100);
+        // A flat envelope is a level.
+        let flat = with(
+            &config,
+            GAIN_ENV_KEY,
+            noodle_core::gain_points_to_text(&[GainPoint {
+                tick: noodle_core::Tick(500_000),
+                db: -6.0206,
+            }]),
+        );
+        let mut h = harness(&store, &flat);
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        assert!((left(&h)[40] - 0.040 * 0.5).abs() < 1e-4);
+
+        // Straight in dB from nothing at the start to -40 dB at the end.
+        let fade = with(
+            &config,
+            GAIN_ENV_KEY,
+            noodle_core::gain_points_to_text(&[
+                GainPoint {
+                    tick: noodle_core::Tick(0),
+                    db: 0.0,
+                },
+                GainPoint {
+                    tick: noodle_core::Tick(1_000_000),
+                    db: -40.0,
+                },
+            ]),
+        );
+        let mut h = harness(&store, &fade);
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        let out = left(&h);
+        assert!((out[10] - 0.010 * 10f32.powf(-4.0 / 20.0)).abs() < 1e-4);
+        assert!((out[50] - 0.050 * 0.1).abs() < 1e-4, "-20 dB halfway");
+    }
+
+    #[test]
+    fn a_warp_follows_the_tempo_or_not() {
+        let (store, config) = ramp(1_000);
+        let at = |warp: &ClipWarp| with(&config, WARP_KEY, warp.to_text());
+        // The sample is a beat a second; the harness plays at 120 bpm, two.
+        let mut following = harness(&store, &at(&ClipWarp::at_tempo(60.0)));
+        following.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        following.run(256).unwrap();
+        assert!((left(&following)[10] - 0.020).abs() < 1e-4, "twice as fast");
+
+        let natural = ClipWarp {
+            tempo_conversion: false,
+            ..ClipWarp::at_tempo(60.0)
+        };
+        let mut still = harness(&store, &at(&natural));
+        still.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        still.run(256).unwrap();
+        assert!((left(&still)[10] - 0.010).abs() < 1e-4, "its own speed");
+    }
+
+    #[test]
+    fn markers_slow_the_stretch_between_them() {
+        let (store, config) = ramp(1_000);
+        let mut warp = ClipWarp {
+            tempo_conversion: false,
+            ..ClipWarp::at_tempo(120.0)
+        };
+        // A millisecond in, the next millisecond is given four times the
+        // beats it has: it plays at half speed.
+        for (seconds, beat) in [(0.001, 0.002), (0.002, 0.006)] {
+            warp.set_marker(noodle_core::WarpMarker { seconds, beat });
+        }
+        let mut h = harness(&store, &with(&config, WARP_KEY, warp.to_text()));
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        let out = left(&h);
+        assert!((out[30] - 0.030).abs() < 1e-4, "natural before the marker");
+        // 48 frames in, then half speed: frame 48 + k at output 48 + 2k.
+        assert!((out[48 + 20] - 0.058).abs() < 1e-4, "{}", out[68]);
+        // Half speed for 96 output frames (48 of the sample), then natural
+        // again from source frame 96.
+        assert!((out[144 + 10] - 0.106).abs() < 1e-4, "{}", out[154]);
+    }
+
+    #[test]
+    fn each_voice_reports_its_place_in_the_sample() {
+        let (store, config) = ramp(1_000);
+        let telemetry = Telemetry::new();
+        let mut h =
+            Harness::new(&Sampler::new(&store, &telemetry), &config, &[], RATE, 256).unwrap();
+        let nobody = noodle_core::NodeId(0);
+        h.run(64).unwrap();
+        assert!(telemetry.read_positions(nobody).is_empty(), "silent");
+        h.send_events(
+            SamplerPorts::NOTES,
+            &[on(0, 1, 60, 1.0), on(100, 2, 60, 1.0)],
+        );
+        h.run(200).unwrap();
+        let at = telemetry.read_positions(nobody);
+        assert_eq!(at.len(), 2);
+        assert!(
+            (at[0] - 0.2).abs() < 1e-3 && (at[1] - 0.1).abs() < 1e-3,
+            "{at:?}"
+        );
     }
 
     #[test]

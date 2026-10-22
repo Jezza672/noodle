@@ -34,6 +34,9 @@ pub struct Loaded {
     pub peaks: Option<Arc<Peaks>>,
     /// The transients and tempo found along with the waveform.
     pub analysis: Option<Arc<Analysis>>,
+    /// The audio itself, when it is in memory (a Sampler's sample) and `path`
+    /// names nothing.
+    pub memory: Option<Arc<noodle_nodes::Sample>>,
 }
 
 /// Reads the whole file once for its waveform, and the start of it for its
@@ -218,6 +221,7 @@ impl Sources {
             },
             peaks: None,
             analysis: None,
+            memory: None,
         };
         let modified = modified(&path);
         Self::submit(&self.jobs, path.clone(), modified, ctx);

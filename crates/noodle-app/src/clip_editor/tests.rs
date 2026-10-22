@@ -7,6 +7,7 @@ use egui_kittest::kittest::Queryable;
 use noodle_core::{Clip, ClipId, ClipWarp, Command, LoopRegion, Node, NodeId, Tick, WarpMarker};
 use noodle_io::write_wav;
 
+use super::subject::Subject;
 use super::*;
 use crate::clip_panel::{self, ClipPanel};
 use crate::session::{Edit, Nodes, Session};
@@ -346,9 +347,11 @@ fn the_clip_panel_chooses_the_mode_and_the_switches() {
             std::mem::replace(h.state_mut(), blank_rig()),
         );
     panel.run();
-    panel.get_by_label("Follow tempo").click();
-    panel.run();
     panel.get_by_label("Warp markers").click();
+    panel.run();
+    // With the tempo not followed either, the clip plays as recorded, and the
+    // panel is the unwarped one (which still has the loop).
+    panel.get_by_label("Follow tempo").click();
     panel.run();
     panel.get_by_label("Loop").click();
     panel.run();
@@ -960,4 +963,250 @@ fn dragging_the_waveform_moves_the_audio_on_screen_with_the_beat_lines_and_clip_
     // The click followed the pointer by a quarter of a beat to the left.
     let moved = (click(&h) - click0) / geometry(&h).ppb;
     assert!((moved + 0.25).abs() < 0.02, "{moved}");
+}
+
+// Loops on unwarped clips.
+
+fn loop_seconds(h: &H) -> Option<(f64, f64)> {
+    let rig = h.state();
+    rig.session
+        .project()
+        .warp_of(rig.clip)
+        .and_then(|(_, w)| w.loop_seconds())
+}
+
+fn set_clip_loop(h: &mut H, seconds: (f64, f64)) {
+    let rig = h.state_mut();
+    let command = Subject::Clip(rig.clip).set_loop(
+        rig.session.project(),
+        clip_panel::Span {
+            rate: RATE,
+            frames: 4 * u64::from(RATE),
+        },
+        Some(seconds),
+    );
+    apply(h, command);
+    h.run();
+}
+
+#[test]
+fn the_toolbar_loops_an_unwarped_clip_without_warping_it() {
+    let mut h = plain_rig();
+    assert!(loop_seconds(&h).is_none());
+    h.get_by_label("Loop").click();
+    h.run();
+    // The loop is the lit part, counted at a fast tempo so it can be short,
+    // and the clip still plays as recorded and is drawn in seconds.
+    let (from, to) = loop_seconds(&h).expect("the clip loops");
+    assert!(from.abs() < 1e-9 && (to - 2.0).abs() < 1e-9, "{from} {to}");
+    let (_, warp) = h.state().session.project().warp_of(h.state().clip).unwrap();
+    assert!(warp.is_natural() && warp.tempo.points()[0].bpm == 240.0);
+    assert!(h.state().editor.plain_geometry().is_some());
+    assert!(h.state().editor.plain, "still the seconds view");
+    // Off again.
+    h.get_by_label("Loop").click();
+    h.run();
+    assert!(loop_seconds(&h).is_none());
+}
+
+#[test]
+fn pulling_a_loop_end_of_an_unwarped_clip_moves_the_loop() {
+    let mut h = plain_rig();
+    set_clip_loop(&mut h, (0.5, 1.5));
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    let y = g.wave.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.window + g.pps * 1.5, y),
+        Pos2::new(g.window + g.pps * 1.0, y),
+    );
+    let (from, to) = loop_seconds(&h).unwrap();
+    assert!(
+        (from - 0.5).abs() < 0.01 && (to - 1.0).abs() < 0.02,
+        "{from} {to}"
+    );
+    // The loop can't be pulled shorter than the engine plays one.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.window + g.pps * 1.0, y),
+        Pos2::new(g.window + g.pps * 0.2, y),
+    );
+    let (from, to) = loop_seconds(&h).unwrap();
+    assert!(to - from >= 0.249, "{from} {to}");
+    // One undo step for the drag.
+    h.state_mut().session.undo();
+    let (_, undone) = loop_seconds(&h).unwrap();
+    assert!((undone - 1.0).abs() < 0.02, "{undone}");
+}
+
+#[test]
+fn slipping_an_unwarped_clip_takes_its_loop_along() {
+    let mut h = plain_rig();
+    set_clip_loop(&mut h, (0.5, 1.5));
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    let from = Pos2::new(g.window + g.pps * 1.8, g.wave.center().y);
+    // Half a second to the left: the part moves 0.5 s on in the file.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        from,
+        from - Vec2::new(g.pps * 0.5, 0.0),
+    );
+    let (a, b) = loop_seconds(&h).unwrap();
+    assert!((a - 1.0).abs() < 0.02 && (b - 2.0).abs() < 0.02, "{a} {b}");
+    assert!((offset(&h) as i64 - i64::from(RATE) / 2).abs() < i64::from(RATE) / 50);
+}
+
+// A Sampler's sample in the same editor.
+
+struct SampleRig {
+    session: Session,
+    editor: ClipEditor,
+    node: NodeId,
+}
+
+type S = Harness<'static, SampleRig>;
+
+/// A Sampler holding the four seconds of clicks, with its editor open.
+fn sample_rig() -> S {
+    let mut session = Session::new(Nodes::all());
+    let hash = session.samples().insert(&noodle_io::Audio {
+        samples: clicks(),
+        channels: 1,
+        sample_rate: RATE,
+    });
+    let node = NodeId(1);
+    session.edit([
+        Edit::Apply(Command::AddNode {
+            id: node,
+            node: Node::new(noodle_nodes::SAMPLER_ID),
+        }),
+        Edit::Apply(Command::SetConfig {
+            node,
+            key: noodle_nodes::SAMPLE_KEY.to_owned(),
+            value: Some(noodle_core::Value::Text(hash)),
+        }),
+    ]);
+    let mut editor = ClipEditor::default();
+    editor.open_sampler(node);
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(900.0, 260.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, rig: &mut SampleRig| {
+                let loaded = crate::sample_view::loaded(ui.ctx(), &rig.session, rig.node);
+                let out = show(ui, &mut rig.editor, &rig.session, loaded.as_ref(), None);
+                rig.session.edit(out.edits);
+            },
+            SampleRig {
+                session,
+                editor,
+                node,
+            },
+        );
+    h.run();
+    h
+}
+
+fn node_of(h: &S) -> noodle_core::Node {
+    let rig = h.state();
+    rig.session
+        .project()
+        .graph()
+        .node(rig.node)
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn a_sample_has_the_clip_editors_toolbar_and_loops_from_it() {
+    let mut h = sample_rig();
+    h.get_by_label("Sample editor · 4.00 s at 48000 Hz");
+    assert!(!node_of(&h).params.contains_key("loop"));
+    h.get_by_label("Loop").click();
+    h.run();
+    let node = node_of(&h);
+    assert_eq!(node.params["loop"], 1.0);
+    assert!(
+        !node.params.contains_key("loop_end"),
+        "the whole part: the default"
+    );
+    h.get_by_label("Loop").click();
+    h.run();
+    assert_eq!(node_of(&h).params["loop"], 0.0);
+}
+
+#[test]
+fn a_sample_takes_gain_points_like_a_clip() {
+    let mut h = sample_rig();
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    double_click(
+        &mut h,
+        Pos2::new(
+            g.window + g.pps * 1.0,
+            super::gain_line::y_of(g.wave, -12.0),
+        ),
+    );
+    let node = node_of(&h);
+    let Some(noodle_core::Value::Text(text)) = node.config.get(noodle_nodes::GAIN_ENV_KEY) else {
+        panic!("no envelope in {:?}", node.config);
+    };
+    let points = noodle_core::gain_points_from_text(text);
+    assert_eq!(points.len(), 1);
+    // A second of four is a quarter of the sample.
+    assert!((points[0].tick.0 - 250_000).abs() < 3_000, "{points:?}");
+    assert!((points[0].db + 12.0).abs() < 0.5);
+    wait_out_double_click_s(&mut h);
+    // One undo takes it away again.
+    h.state_mut().session.undo();
+    assert!(node_of(&h).config.get(noodle_nodes::GAIN_ENV_KEY).is_none());
+}
+
+fn wait_out_double_click_s(h: &mut S) {
+    for _ in 0..30 {
+        h.step();
+    }
+}
+
+#[test]
+fn a_sample_is_warped_from_the_toolbar_and_edited_on_beats() {
+    let mut h = sample_rig();
+    assert!(h.state().editor.plain);
+    h.get_by_label("Warp").click();
+    h.run();
+    let node = node_of(&h);
+    let Some(noodle_core::Value::Text(text)) = node.config.get(noodle_nodes::WARP_KEY) else {
+        panic!("no warp in {:?}", node.config);
+    };
+    let warp = ClipWarp::from_text(text).expect("a warp");
+    assert!(warp.tempo_conversion, "follows the tempo");
+    // The editor changed to the beat view, where a double-click on the
+    // waveform pins a marker.
+    h.run();
+    assert!(!h.state().editor.plain);
+    wait_out_double_click_s(&mut h);
+    let g = h.state().editor.geometry().expect("the beat view is drawn");
+    double_click(&mut h, Pos2::new(g.x(1.75), g.wave.center().y));
+    let node = node_of(&h);
+    let Some(noodle_core::Value::Text(text)) = node.config.get(noodle_nodes::WARP_KEY) else {
+        panic!("no warp");
+    };
+    assert_eq!(ClipWarp::from_text(text).unwrap().markers.len(), 1);
+}
+
+#[test]
+fn a_sample_shows_a_playhead_for_each_sounding_voice() {
+    let mut h = sample_rig();
+    assert!(h.state().editor.playheads().is_empty());
+    let node = h.state().node;
+    let writer = h.state().session.telemetry().open_positions(node, 4);
+    writer.write(0, Some(0.25));
+    writer.write(1, Some(0.5));
+    writer.publish();
+    h.step();
+    h.step();
+    // A quarter and a half of four seconds.
+    assert_eq!(h.state().editor.playheads(), [1.0, 2.0]);
 }

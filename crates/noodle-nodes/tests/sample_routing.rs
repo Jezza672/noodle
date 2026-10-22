@@ -18,7 +18,7 @@ const SETTINGS: Settings = Settings {
 fn registry(store: &SampleStore) -> Registry {
     let mut registry = Registry::with_builtins();
     let _ = register_library(&mut registry);
-    registry.replace(Sampler::new(store));
+    registry.replace(Sampler::new(store, &noodle_engine::Telemetry::new()));
     registry
 }
 

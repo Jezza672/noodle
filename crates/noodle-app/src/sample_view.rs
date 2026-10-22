@@ -1,72 +1,19 @@
-//! The Sampler's sample, drawn: a small preview in the properties panel and,
-//! on a double-click, a panel of its own (where the piano roll and the clip
-//! editor open). The panel is the clip editor's audio pane
-//! ([`crate::clip_editor::pane`]), so a sample zooms, pans, slips, trims and
-//! loops the way a clip does; here the gestures set the Sampler's `start`,
-//! `end` and loop parameters.
+//! The Sampler's sample, drawn small in the properties panel. A double-click
+//! opens it in the clip editor ([`crate::clip_editor`]), the editor clips use,
+//! with the same zoom, trim, loop, gain envelope, warp and playhead; this
+//! module supplies what the editor needs to know about the sample.
 
 use std::sync::Arc;
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, vec2};
-use noodle_core::{Command, Node, NodeId};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, vec2};
+use noodle_core::{Node, NodeId};
 use noodle_nodes::{SAMPLE_KEY, SAMPLER_ID, Sample};
 
-use crate::clip_editor::pane::{self, CurveSource, Edge, Gesture, MIN_SECONDS};
-use crate::session::{Edit, Session};
+use crate::clip_editor::pane::{self, Edge};
+use crate::session::Session;
 use crate::theme::{self, timeline as colors};
-use crate::toolbar;
-
-/// The height the panel opens at.
-pub const DEFAULT_HEIGHT: f32 = 220.0;
-
-/// Which sample the panel shows, and how it is zoomed.
-#[derive(Default)]
-pub struct SampleView {
-    node: Option<NodeId>,
-    view: pane::View,
-    /// The Sampler's region when a slip began.
-    slip: Option<Region>,
-}
-
-impl SampleView {
-    pub fn open(&mut self, node: NodeId) {
-        if self.node != Some(node) {
-            self.view.drop_grab();
-            self.slip = None;
-            self.view.focus = true;
-        }
-        self.node = Some(node);
-    }
-
-    pub fn close(&mut self) {
-        self.node = None;
-        self.view.drop_grab();
-        self.slip = None;
-    }
-
-    /// Points per second.
-    #[cfg(test)]
-    pub fn zoom(&self) -> f32 {
-        self.view.ppb
-    }
-
-    #[cfg(test)]
-    pub fn scroll(&self) -> f32 {
-        self.view.scroll_x
-    }
-
-    /// The Sampler node shown, if the panel is open.
-    pub fn node(&self) -> Option<NodeId> {
-        self.node
-    }
-
-    /// Closes the panel if its node has gone.
-    pub fn retain_existing(&mut self, session: &Session) {
-        if self.node.is_some_and(|id| sampler(session, id).is_none()) {
-            self.close();
-        }
-    }
-}
+use crate::timeline::Loaded;
+use crate::timeline::clips::Source;
 
 /// A Sampler node in the project.
 fn sampler(session: &Session, id: NodeId) -> Option<&Node> {
@@ -141,7 +88,7 @@ pub fn contents(session: &Session, id: NodeId) -> Option<(String, Arc<Sample>, R
 pub fn draw_preview(ui: &Ui, rect: Rect, hash: &str, sample: &Sample, region: Region) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, colors::BACKGROUND);
-    let peaks = pane::peaks_of(ui, hash, sample);
+    let peaks = pane::peaks_of(ui.ctx(), hash, sample);
     let n = (rect.width().ceil() as usize).clamp(1, 4096);
     let (middle, half) = (rect.center().y, rect.height() / 2.0 - 2.0);
     let stroke = Stroke::new(rect.width() / n as f32, theme::ACCENT.gamma_multiply(0.7));
@@ -195,169 +142,37 @@ pub fn take_request(ctx: &egui::Context) -> Option<NodeId> {
     ctx.data_mut(|d| d.remove_temp::<Option<NodeId>>(request_id()).flatten())
 }
 
-#[cfg(test)]
-pub(crate) type Geometry = (Rect, pane::Axis);
-
-/// `value` (a fraction) for `edge`, kept inside the sample (the loop's ends,
-/// inside the region) and on the right side of its partner.
-fn clamped(region: Region, edge: Edge, value: f32, min: f32) -> f32 {
-    let (lo, hi) = match edge {
-        Edge::Start => (0.0, region.end - min),
-        Edge::End => (region.start + min, 1.0),
-        Edge::LoopStart => (
-            region.start,
-            region.looping.map_or(region.end, |l| l.1) - min,
-        ),
-        Edge::LoopEnd => (
-            region.looping.map_or(region.start, |l| l.0) + min,
-            region.end,
-        ),
-    };
-    value.clamp(lo.min(hi), hi)
-}
-
-/// Draws the panel for the open Sampler and returns what the user did.
-pub fn show(ui: &mut Ui, view: &mut SampleView, session: &Session) -> Vec<Edit> {
-    let mut edits = Vec::new();
-    view.retain_existing(session);
-    let Some(id) = view.node else {
-        return edits;
-    };
-    let rect = ui.available_rect_before_wrap();
-    ui.allocate_rect(rect, Sense::hover());
-    let toolbar_rect = Rect::from_min_size(rect.min, vec2(rect.width(), toolbar::HEIGHT));
-    let title = match contents(session, id) {
-        Some((_, sample, _)) => format!(
-            "Sample · {:.2} s at {} Hz",
-            sample.frames() as f32 / sample.sample_rate.max(1) as f32,
-            sample.sample_rate
-        ),
-        None => "Sample".to_owned(),
-    };
-    let closed = toolbar::show(
-        ui,
-        toolbar_rect,
-        &title,
-        "Drag the start and end to pick the part that plays · drag the audio to slide it under them · Ctrl+scroll zooms, scroll pans · loop markers show when Loop is on",
-        |_| {},
-    );
-    if closed {
-        if view.view.drop_grab() {
-            edits.push(Edit::EndDrag);
+/// What the clip editor needs to know about the sample of the Sampler `id`:
+/// the audio in memory, its waveform and its transients (worked out once per
+/// sample).
+pub fn loaded(ctx: &egui::Context, session: &Session, id: NodeId) -> Option<Loaded> {
+    let (hash, sample, _) = contents(session, id)?;
+    let peaks = pane::peaks_of(ctx, &hash, &sample);
+    let key = egui::Id::new(("sample analysis", &hash));
+    let analysis = match ctx.data(|d| d.get_temp::<Arc<noodle_io::Analysis>>(key)) {
+        Some(found) => found,
+        None => {
+            let limit = (f64::from(sample.sample_rate) * noodle_io::ANALYSIS_SECONDS) as usize;
+            let mono: Vec<f32> = sample
+                .left
+                .iter()
+                .zip(sample.right.iter())
+                .take(limit)
+                .map(|(l, r)| (l + r) * 0.5)
+                .collect();
+            let found = Arc::new(noodle_io::Analysis::of(&mono, sample.sample_rate));
+            ctx.data_mut(|d| d.insert_temp(key, found.clone()));
+            found
         }
-        view.close();
-        return edits;
-    }
-    let body = Rect::from_min_max(Pos2::new(rect.left(), toolbar_rect.bottom()), rect.max)
-        .shrink2(vec2(8.0, 6.0));
-    let Some((hash, sample, region)) = contents(session, id) else {
-        ui.painter().text(
-            body.center(),
-            Align2::CENTER_CENTER,
-            "This Sampler has no sample loaded",
-            FontId::proportional(13.0),
-            colors::TEXT_WEAK,
-        );
-        return edits;
     };
-    let frames = sample.frames() as u64;
-    let rate = f64::from(sample.sample_rate.max(1));
-    let total = frames as f64 / rate;
-    let secs = |f: f32| f64::from(f) * total;
-    let peaks = pane::peaks_of(ui, &hash, &sample);
-    let out = pane::show(
-        ui,
-        &mut view.view,
-        body,
-        &pane::Spec {
-            peaks: Some(&peaks),
-            curve: CurveSource::Memory(&sample),
-            rate,
-            frames,
-            zero: 0.0,
-            lit: (secs(region.start), secs(region.end)),
-            looping: region.looping.map(|(a, b)| (secs(a), secs(b))),
-            gain: 1.0,
-            playhead: None,
+    Some(Loaded {
+        path: std::path::PathBuf::new(),
+        source: Source {
+            sample_rate: sample.sample_rate,
+            frames: Some(sample.frames() as u64),
         },
-    );
-    #[cfg(test)]
-    ui.data_mut(|d| {
-        d.insert_temp::<Geometry>(egui::Id::new("sample view body"), (out.wave, out.axis))
-    });
-    let min = (MIN_SECONDS / total.max(MIN_SECONDS)) as f32;
-    let set = |edge: Edge, value: f32| {
-        Edit::Drag(Command::SetParam {
-            node: id,
-            key: key(edge).to_owned(),
-            value: Some(value),
-        })
-    };
-    for gesture in out.gestures {
-        match gesture {
-            Gesture::Begin => view.slip = Some(region),
-            Gesture::Edge(edge, at) => {
-                let value = clamped(region, edge, (at / total.max(1e-9)) as f32, min);
-                edits.push(set(edge, value));
-                // The loop stays inside the region: pushed along by an edge.
-                if let (Some((a, b)), Edge::Start | Edge::End) = (region.looping, edge) {
-                    let (lo, hi) = if edge == Edge::Start {
-                        (value, region.end)
-                    } else {
-                        (region.start, value)
-                    };
-                    let (na, nb) = (a.clamp(lo, hi), b.clamp(lo, hi));
-                    if na != a {
-                        edits.push(set(Edge::LoopStart, na));
-                    }
-                    if nb != b {
-                        edits.push(set(Edge::LoopEnd, nb));
-                    }
-                }
-            }
-            Gesture::Slip(seconds) => {
-                // The audio follows the pointer, so the region moves the
-                // other way (loop ends with it), stopping at the sample's ends.
-                if let Some(original) = view.slip {
-                    let by = -seconds / total.max(1e-9) as f32;
-                    let (mut lo, mut hi) = (original.start, original.end);
-                    if let Some((a, b)) = original.looping {
-                        lo = lo.min(a);
-                        hi = hi.max(b);
-                    }
-                    let by = by.clamp(-lo, 1.0 - hi);
-                    edits.push(set(Edge::Start, original.start + by));
-                    edits.push(set(Edge::End, original.end + by));
-                    if let Some((a, b)) = original.looping {
-                        edits.push(set(Edge::LoopStart, a + by));
-                        edits.push(set(Edge::LoopEnd, b + by));
-                    }
-                }
-            }
-            Gesture::Release => {
-                view.slip = None;
-                edits.push(Edit::EndDrag);
-            }
-        }
-    }
-    edits
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_loop_stays_inside_the_region_and_markers_on_their_own_side() {
-        let region = Region {
-            start: 0.2,
-            end: 0.8,
-            looping: Some((0.3, 0.6)),
-        };
-        assert_eq!(clamped(region, Edge::Start, -1.0, 0.001), 0.0);
-        assert_eq!(clamped(region, Edge::End, 2.0, 0.001), 1.0);
-        assert_eq!(clamped(region, Edge::LoopStart, 0.0, 0.001), 0.2);
-        assert_eq!(clamped(region, Edge::LoopEnd, 1.0, 0.001), 0.8);
-        assert_eq!(clamped(region, Edge::LoopStart, 0.7, 0.001), 0.6 - 0.001);
-    }
+        peaks: Some(peaks),
+        analysis: Some(analysis),
+        memory: Some(sample),
+    })
 }

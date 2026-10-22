@@ -127,7 +127,7 @@ pub use reverse::Reverse;
 pub use sample::{Sample, SampleError, SampleRef, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sample_input::{SAMPLE_INPUT_ID, SampleInput};
-pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
+pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
@@ -265,7 +265,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     let samples = SampleStore::new();
-    registry.register(Sampler::new(&samples));
+    registry.register(Sampler::new(&samples, &telemetry));
     Library {
         telemetry,
         clips,

@@ -1305,16 +1305,38 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     // from the first sampler) -> EQ -> reverb -> output.
     let mut s = Session::new();
     let store = SampleStore::new();
-    s.registry.replace(Sampler::new(&store));
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
     let hash = store.insert(&Audio {
         samples: (0..4800).map(|i| (i as f32 * 0.07).sin() * 0.5).collect(),
         channels: 1,
         sample_rate: 48_000,
     });
+    // Both play a gain envelope and a warp with a marker, at the project's
+    // tempo.
+    let mut warp = noodle_core::ClipWarp::at_tempo(90.0);
+    for (seconds, beat) in [(0.02, 0.05), (0.05, 0.2)] {
+        warp.set_marker(noodle_core::WarpMarker { seconds, beat });
+    }
+    let envelope = noodle_core::gain_points_to_text(&[
+        noodle_core::GainPoint {
+            tick: noodle_core::Tick(100_000),
+            db: -12.0,
+        },
+        noodle_core::GainPoint {
+            tick: noodle_core::Tick(700_000),
+            db: 3.0,
+        },
+    ]);
     let sampler = |s: &mut Session| {
         s.add(
             Node::new("noodle.instrument.sampler")
-                .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash.clone())))
+                .with_config(
+                    Config::new()
+                        .with(SAMPLE_KEY, Value::Text(hash.clone()))
+                        .with(noodle_nodes::GAIN_ENV_KEY, Value::Text(envelope.clone()))
+                        .with(noodle_nodes::WARP_KEY, Value::Text(warp.to_text())),
+                )
                 .with_param("mode", 1.0)
                 .with_param("loop", 1.0)
                 .with_param("loop_start", 0.2)

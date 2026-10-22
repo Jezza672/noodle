@@ -128,22 +128,49 @@ piece and the fade-out on the last, held to the last pass.
 timeline's trims, fades, split and slip of a warped section work in warped beats
 (`timeline/warped.rs`). While a marker is dragged the session turns the preview
 on (and off at the end of the drag); the node dips (declick) when it flips.
-A clip that isn't warped opens too (`clip_editor/plain.rs`): its file on a
-seconds ruler with the part the clip plays lit, where dragging the waveform
-slips the audio under the clip (a `SetClip` of the offset, one undo step),
-pulling either edge of the lit part trims the clip (the timeline's
-`trim_start`/`trim_end`), and a Warp button turns the beat editing on.
-That seconds-axis view is `clip_editor/pane.rs`, shared with the Sampler's
-sample: a clip and a sample are the same thing to it (a lit stretch of a
-file, optionally with a loop inside), so zoom, pan, the sample curve when
-zoomed in, slip and edge pulls behave the same on both. The caller turns the
-pane's `Gesture`s into edits: `plain.rs` into `SetClip`, `sample_view.rs`
-into the node's `start`, `end` and loop parameters. Beat warping, the gain
-envelope and the playhead belong to a clip's place on the timeline, so only
-clips have them. The toolbar over the piano roll, the clip editor and the
-sample view is `toolbar.rs`: a title and a Close button that stay in view
-however long the hint is. The Sampler's sample (`sample_view.rs`) is drawn as
-a preview in its properties, and a double-click opens it in the same slot.
+
+**One editor for clips and samples.** A clip and a Sampler's sample are the same
+thing to the editor: a stretch of a file with a gain envelope, an optional warp
+and a loop. `clip_editor/subject.rs` is the seam. A `Subject` is a clip or a
+Sampler node, and `Subject::read`, `warp_edit`, `section_edit`, `set_audio`,
+`slide`, `set_gain_points` and `set_loop` give the editor, `clip_panel.rs` and
+the properties panel one set of commands whichever it is editing. A clip keeps
+its parts in the project (section, warp). A Sampler keeps the scalar ones as
+parameters (`start`, `end`, `loop`, `loop_start`, `loop_end`, fractions of the
+sample, so they can still be modulated) and the rest as config text: `warp` (a
+`ClipWarp`, `ClipWarp::to_text`) and `gain_env` (gain points, whose ticks count
+millionths of the sample, so they stay on the audio when the region moves).
+A Sampler's loop is a sustain loop in the sample's own seconds, so it stays in
+the parameters; the warped view sees it as the warp's `loop_region` (when it is
+at least a beat long) and writes drags of it back to the parameters. The
+Sampler plays its warp as Repitch only (see `sampler.rs`: the warp's curve says
+how fast each stretch of the sample goes, with *follow tempo* on that is the
+transport's tempo); Grain and Beats need the worker lanes that only a track
+input has.
+
+A clip or sample that is **natural** (`ClipWarp::is_natural`: no tempo
+conversion and no markers in play, or no warp at all) opens in the seconds view
+(`clip_editor/plain.rs`): its file on a seconds ruler with the part that plays
+lit, where dragging the waveform slips the audio under it, pulling either edge
+of the lit part trims it (a clip through the timeline's `trim_start`/`trim_end`,
+a Sampler's `start` and `end`), the loop's ends can be pulled, the gain envelope
+is drawn on top (double-click adds a point), a playhead follows the transport
+(a clip) or each sounding voice (a Sampler, from `Telemetry::read_positions`),
+and a Warp button turns the beat editing on. A loop on an unwarped clip is a
+natural warp (conversion off, clip tempo `LOOP_TEMPO`, 240 bpm, so a beat is a
+quarter second and the loop can be as short as the engine plays one) holding
+the `loop_region`; the clip still plays at its own speed and is drawn in
+seconds. Changing the tempo (`Warp`, Detect, Tap) keeps the loop at the same
+seconds of the file.
+
+That seconds-axis view is `clip_editor/pane.rs`; it knows nothing of clips or
+Samplers and emits `Gesture`s that `plain.rs` turns into commands. The toolbar
+over the piano roll and the editor is `toolbar.rs`: a title and a Close button
+that stay in view however long the hint is. A Sampler's sample is drawn as a
+preview in its properties (`sample_view.rs`, with the Warp section from
+`clip_panel::sampler_warp`), and a double-click opens it in the clip editor's
+slot. The warped (beat) view does not draw the gain envelope, for clips or
+samples.
 
 **Grid offset and the clip editor's gestures.** `ClipWarp::grid_offset` slides a
 clip's beat lines (not its markers or tempo) by a number of beats, so the lines

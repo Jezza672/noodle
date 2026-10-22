@@ -362,6 +362,9 @@ fn sample_picker(
     }
     ui.label(RichText::new(status).weak());
     crate::sample_view::preview(ui, session, id, 64.0);
+    if node.type_id == noodle_nodes::SAMPLER_ID {
+        crate::clip_panel::sampler_warp(ui, session, id, edits);
+    }
     let error_id = egui::Id::new((id, "sample_error"));
     if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
         ui.colored_label(crate::theme::MUTE, error);
@@ -506,6 +509,15 @@ fn config(
                     value: None,
                 }));
             }
+            continue;
+        }
+        // Edited in the sample editor and the Warp section above.
+        if node_type.info().id == noodle_nodes::SAMPLER_ID
+            && matches!(
+                info.key,
+                noodle_nodes::GAIN_ENV_KEY | noodle_nodes::WARP_KEY
+            )
+        {
             continue;
         }
         if info.key == noodle_nodes::LAYOUT_KEY
