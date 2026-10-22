@@ -17,7 +17,7 @@ drums are a rack of them.
    their baselines do not change; putting a synced echo in them is a decision for
    the evaluation, not for this batch.
 
-## Node editor polish (#204, #206, #207)
+## Node editor polish (#204, #206, #207, #225)
 
 - **Group output meters.** A group's output ports always keep their
   `noodle.group.stage` in the compiled graph (and so in a freeze's cache), and
@@ -28,3 +28,7 @@ drums are a rack of them.
 - **Note names.** `Unit::Note` shows a MIDI note number with its name (`60 C4`)
   and accepts names (`C4`, `f#3`, `Db2`) when typed. Note Split's `low` and
   `high` use it.
+- **Remove unused ports (#225).** Ctrl+double-click a node, or right-click it,
+  to drop its unused ports in one undo step (`spare::remove_unused_ports`): a
+  Mixer's inputs past the last wired one, and a group's (or its input or output
+  node's) ports with no wire outside or inside. Other nodes are unaffected.
