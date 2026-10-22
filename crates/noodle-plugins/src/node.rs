@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
 use clack_host::events::event_types::{
@@ -326,6 +327,7 @@ impl PluginNodeType {
             loaded.take_processor().into(),
             loaded.key,
             loaded.latency,
+            Arc::clone(&loaded.flags),
             setup.max_frames,
         )))
     }
@@ -422,6 +424,8 @@ struct ClapFormat {
     steady: u64,
     /// The latency the plugin reported when it was activated, in samples.
     latency: u32,
+    /// Set by the plugin's `request_process` and `request_flush`.
+    flags: Arc<Flags>,
 }
 
 type ClapNode = Bridge<ClapFormat>;
@@ -432,6 +436,7 @@ fn clap_node(
     processor: PluginAudioProcessor<Host>,
     key: u64,
     latency: u32,
+    flags: Arc<Flags>,
     max_frames: usize,
 ) -> ClapNode {
     let channels = |ports: &[crate::descriptor::AudioPort]| -> Vec<u32> {
@@ -473,6 +478,7 @@ fn clap_node(
         transport: None,
         steady: 0,
         latency,
+        flags,
     };
     Bridge::new(
         format,
@@ -488,7 +494,8 @@ impl Format for ClapFormat {
     fn begin(&mut self, _n: usize) -> bool {
         self.in_events.clear();
         self.out_events.clear();
-        false
+        // The plugin wants a call (an edit in its editor), which wakes it.
+        self.flags.process_requested.swap(false, Ordering::AcqRel)
     }
 
     fn param(&mut self, slot: usize, at: usize, value: f32) {

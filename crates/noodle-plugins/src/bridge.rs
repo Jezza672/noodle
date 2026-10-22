@@ -143,11 +143,14 @@ pub(crate) enum Status {
     Continue,
     /// The format has no word on it either way.
     Unknown,
+    /// Every output is silent this block, which says nothing about the next
+    /// (a delay between echoes is silent). The plugin is done once its tail,
+    /// in frames, has gone by with nothing coming in.
+    SilentTail(u32),
     /// It is done if its outputs are all zero (CLAP's `ContinueIfNotQuiet`).
     MaybeQuiet,
     /// It needs nothing more until something comes in: input, a note or a
-    /// parameter change (CLAP's `Sleep`; every output flagged silent in VST3
-    /// and AU).
+    /// parameter change (CLAP's `Sleep`).
     Sleep,
     /// The call failed: the outputs are zeros.
     Failed,
@@ -366,9 +369,13 @@ impl<F: Format> Bridge<F> {
         let done = match status {
             Status::Sleep => true,
             Status::MaybeQuiet => output_zero,
-            Status::Unknown => {
+            Status::Unknown | Status::SilentTail(_) => {
                 self.zero_frames = if output_zero { self.zero_frames + n } else { 0 };
-                self.zero_frames as f32 >= QUIET_SECONDS * ctx.sample_rate
+                let limit = match status {
+                    Status::SilentTail(tail) => tail as f32,
+                    _ => QUIET_SECONDS * ctx.sample_rate,
+                };
+                self.zero_frames as f32 >= limit
             }
             Status::Continue | Status::Failed => false,
         };
@@ -605,5 +612,103 @@ mod tests {
         );
         ctx.transport.playing = false;
         assert_eq!(musical_position(&ctx, 24_000, 0).beats, 0.0);
+    }
+
+    /// A format whose plugin writes `script[call]` (a constant) on its calls
+    /// and answers with `status`, counting the calls.
+    struct Scripted {
+        script: Vec<f32>,
+        status: Status,
+        calls: usize,
+    }
+
+    impl Format for Scripted {
+        fn begin(&mut self, _n: usize) -> bool {
+            false
+        }
+        fn param(&mut self, _slot: usize, _at: usize, _value: f32) {}
+        fn note(&mut self, _port: usize, _event: &Event, _at: usize, _key: Option<(u8, u8)>) {}
+        fn transport(&mut self, _position: &Position) {}
+        fn process(&mut self, n: usize, buffers: &mut Buffers) -> Status {
+            let value = self.script.get(self.calls).copied().unwrap_or(0.0);
+            self.calls += 1;
+            buffers.outputs[0].channels[0][..n].fill(value);
+            self.status
+        }
+        fn drain_note_outputs(&mut self, _emit: &mut dyn FnMut(usize, u32, EventKind)) {}
+        fn latency(&self) -> u32 {
+            0
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// Runs `blocks` blocks of silence in; returns the plugin's calls and the
+    /// samples out of each block's first frame.
+    fn run_silence(script: Vec<f32>, status: Status, blocks: usize) -> (usize, Vec<f32>) {
+        use noodle_engine::{Shape, SignalBuffer};
+        const FRAMES: usize = 256;
+        let format = Scripted {
+            script,
+            status,
+            calls: 0,
+        };
+        let mut bridge = Bridge::new(
+            format,
+            Buffers::new([1], [1], FRAMES),
+            Vec::new(),
+            0,
+            false,
+            FRAMES,
+        );
+        let ctx = Context {
+            sample_rate: 48_000.0,
+            frames: FRAMES,
+            transport: Transport::default(),
+        };
+        let mut input = SignalBuffer::new(Shape::MONO, FRAMES);
+        let mut output = SignalBuffer::new(Shape::MONO, FRAMES);
+        let mut heard = Vec::new();
+        for _ in 0..blocks {
+            input.as_out(FRAMES).silence(0, 0);
+            let inputs = [input.as_in(FRAMES)];
+            let mut outputs = [output.as_out(FRAMES)];
+            bridge.process(
+                &ctx,
+                Io {
+                    inputs: &inputs,
+                    outputs: &mut outputs,
+                    event_inputs: &[],
+                    event_outputs: &mut [],
+                    spectral_inputs: &[],
+                    spectral_outputs: &mut [],
+                },
+            );
+            heard.push(output.as_in(FRAMES).lane(0, 0)[0]);
+        }
+        (bridge.format.calls, heard)
+    }
+
+    #[test]
+    fn a_silent_block_between_echoes_does_not_put_a_plugin_to_sleep() {
+        // Silent blocks flagged (as VST3 and AU do), then an echo at call 3.
+        let script = vec![0.0, 0.0, 0.0, 0.5, 0.0];
+        for status in [Status::Unknown, Status::SilentTail(48_000)] {
+            let (calls, heard) = run_silence(script.clone(), status, 5);
+            assert_eq!(calls, 5, "{status:?}: called every block");
+            assert_eq!(heard[3], 0.5, "{status:?}: the echo arrived");
+        }
+    }
+
+    #[test]
+    fn a_plugin_is_left_alone_once_its_tail_has_gone_by() {
+        // A tail of 512 frames is two blocks of silence in and out.
+        let (calls, _) = run_silence(vec![], Status::SilentTail(512), 40);
+        assert_eq!(calls, 2);
+        // Sleep is taken at its word at once.
+        let (calls, _) = run_silence(vec![], Status::Sleep, 40);
+        assert_eq!(calls, 1);
+        // No word: the 4 s timeout (750 blocks of 256 frames).
+        let (calls, _) = run_silence(vec![], Status::Unknown, 900);
+        assert_eq!(calls, 750);
     }
 }

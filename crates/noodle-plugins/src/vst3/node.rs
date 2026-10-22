@@ -352,8 +352,8 @@ impl Format for Vst3Format {
         if result != kResultOk {
             return Status::Failed;
         }
-        // The buses the plugin says it left silent. All of them means it has
-        // nothing to say until something comes in.
+        // The buses the plugin says it left silent. All of them is this block
+        // only: it is done once its tail has gone by.
         let mut all = !buffers.outputs.is_empty();
         for (bus, buffer) in buffers.outputs.iter_mut().zip(&self.out_buffers) {
             bus.silent = buffer.silenceFlags;
@@ -364,7 +364,14 @@ impl Format for Vst3Format {
             };
             all &= buffer.silenceFlags & wanted == wanted;
         }
-        if all { Status::Sleep } else { Status::Unknown }
+        if !all {
+            return Status::Unknown;
+        }
+        // SAFETY: a plugin that is processing; the call only reads.
+        match unsafe { plugin.processor.getTailSamples() } {
+            tail if tail == kInfiniteTail => Status::Continue,
+            tail => Status::SilentTail(tail),
+        }
     }
 
     fn drain_note_outputs(&mut self, emit: &mut dyn FnMut(usize, u32, EventKind)) {

@@ -46,10 +46,12 @@ following is written once.
   [feedback-and-silence.md](feedback-and-silence.md)). It goes quiet when every
   audio input lane is silent, no note or parameter change arrived, and the
   plugin has said it is done: CLAP returned `Sleep` (or `ContinueIfNotQuiet`
-  with all-zero output), every VST3 output bus set all its `silenceFlags`, or the
-  AU's render set `OutputIsSilence`. A format that says nothing (VST3 and AU
-  with their flags unset) is taken to be done after 4 seconds of silence in and
-  exact zeros out, which a delay line with a longer echo would be cut short by.
+  with all-zero output). A silent output buffer is not that word (a delay is
+  silent between echoes), so VST3, whose output buses are all flagged silent,
+  is done once its `getTailSamples` have gone by with silence in and out
+  (`kInfiniteTail` never), and AU, and any plugin that says nothing, after 4
+  seconds of silence in and exact zeros out, which a delay line with a longer
+  echo would be cut short by (AU's `TailTime` is not read yet).
   A plugin with note outputs never goes quiet. While quiet the bridge writes
   zeros, flags every output lane silent and keeps the steady-time counter
   advancing; any non-silent input, note, parameter change or editor edit wakes
@@ -59,7 +61,9 @@ following is written once.
   calls (`noodle_test_process_calls`) for `tests/quiet.rs`.
 - **Liveness.** A plugin node type does not set `always_runs`, so a plugin runs
   only while something it feeds reaches an Output, like any other node.
-  (Its editor's own meters therefore freeze for a plugin nothing listens to.)
+  (Its editor's own meters therefore freeze for a plugin nothing listens to, and
+  a VST3 editor's edits wait in the queue until the plugin is wired, as they are
+  applied inside `process`.)
 - **Sandboxed plugins** don't use the bridge in the proxy (it ships buffers to
   the host process), but the host process runs a normal node, so the silence
   flags it sends back are real.
