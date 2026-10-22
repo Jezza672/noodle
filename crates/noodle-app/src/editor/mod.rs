@@ -122,6 +122,8 @@ pub struct EditorState {
     open_request: Option<NodeId>,
     /// The group port a right-click landed on, which its menu removes.
     port_menu: Option<group::GroupPort>,
+    /// The node the context menu offers to remove unused ports of.
+    unused_menu: Option<NodeId>,
     /// Which nodes are frozen or offline, and how their renders are doing.
     freeze: BTreeMap<NodeId, Badge>,
 }
@@ -157,6 +159,7 @@ impl Default for EditorState {
             view_request: None,
             open_request: None,
             port_menu: None,
+            unused_menu: None,
             freeze: BTreeMap::new(),
         }
     }
@@ -639,7 +642,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         _ => None,
     });
     let mut fields = params::Fields::new(ui, canvas, front);
-    draw::nodes(&painter, &f, state, &problems, |node| {
+    draw::nodes(&painter, &f, state, &problems, front, |node| {
         fields.show(&f, &state.bodies, node, &mut edits);
     });
     fields.finish(&mut edits);
@@ -936,20 +939,38 @@ fn pointer(
     if response.secondary_clicked() {
         state.port_menu = latest.and_then(|p| boundary_port_at(f, p));
     }
+    if response.secondary_clicked() {
+        state.unused_menu = latest.and_then(|p| match hit(f, p) {
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) if !is_group(f.project, id) => {
+                spare::remove_unused_ports(f.project, id).map(|_| id)
+            }
+            _ => None,
+        });
+    }
     let port = state.port_menu.clone();
+    let unused = state.unused_menu;
     let mut remove = false;
-    response.context_menu(|ui| match &port {
-        Some(port) => {
-            if ui
+    let mut remove_unused = false;
+    response.context_menu(|ui| {
+        if let Some(port) = &port
+            && ui
                 .button(format!("Remove port \"{}\"", port.name))
                 .clicked()
-            {
-                remove = true;
-                ui.close();
-            }
+        {
+            remove = true;
+            ui.close();
         }
-        None => ui.close(),
+        if unused.is_some() && ui.button("Remove unused ports").clicked() {
+            remove_unused = true;
+            ui.close();
+        }
+        if port.is_none() && unused.is_none() {
+            ui.close();
+        }
     });
+    if remove_unused && let Some(node) = state.unused_menu.take() {
+        edits.extend(spare::remove_unused_ports(f.project, node).map(Edit::Apply));
+    }
     if remove && let Some(port) = state.port_menu.take() {
         edits.extend(spare::remove_group_port(f.project, &port).map(Edit::Apply));
     }
@@ -973,7 +994,16 @@ fn pointer(
             focused: false,
         });
     }
+    // Ctrl+double-click removes a node's unused ports; anywhere else it does
+    // nothing, so it can't open or rename by mistake.
     if response.double_clicked_by(PointerButton::Primary)
+        && modifiers.command
+        && let Some(p) = latest
+    {
+        if let Hit::Node(id) = hit(f, p) {
+            edits.extend(spare::remove_unused_ports(f.project, id).map(Edit::Apply));
+        }
+    } else if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
         match hit(f, p) {
@@ -2291,6 +2321,14 @@ fn group_menu(
                 None => {
                     if ui.button("Save group to library...").clicked() {
                         menu.name = Some(default_name.clone());
+                    }
+                    if spare::remove_unused_ports(f.project, menu.group).is_some()
+                        && ui.button("Remove unused ports").clicked()
+                    {
+                        edits.extend(
+                            spare::remove_unused_ports(f.project, menu.group).map(Edit::Apply),
+                        );
+                        close = true;
                     }
                     if let Some(name) = source_name.as_deref() {
                         let text = format!("Update from {name}");

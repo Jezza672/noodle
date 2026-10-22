@@ -337,6 +337,67 @@ pub fn remove_group_port(project: &Project, port: &GroupPort) -> Option<Command>
     Some(Command::Batch(commands))
 }
 
+/// Removes what is unused on `node`, as one command: for a mixer, the inputs
+/// past the last wired one (and its gain or mute); for a group, or a group's
+/// input or output node, each port with no wire to it outside or inside the
+/// group. `None` for any other node, or when nothing is unused.
+pub fn remove_unused_ports(project: &Project, node: NodeId) -> Option<Command> {
+    let graph = project.graph();
+    let found = graph.node(node)?;
+    let group = match found.type_id.as_str() {
+        MIXER => {
+            let used = (mixer_used(graph, node) as i64).max(1);
+            if mixer_inputs(found) <= used {
+                return None;
+            }
+            return Some(Command::SetConfig {
+                node,
+                key: MIXER_INPUTS.into(),
+                value: Some(Value::Int(used)),
+            });
+        }
+        crate::group::GROUP => node,
+        GROUP_INPUT | GROUP_OUTPUT => found.parent?,
+        _ => return None,
+    };
+    let ports = graph.group_ports(group);
+    let boundary_only = found.type_id != crate::group::GROUP;
+    let mut scratch = project.clone();
+    let mut commands = Vec::new();
+    for (side, list) in [(Side::Input, &ports.inputs), (Side::Output, &ports.outputs)] {
+        for port in list {
+            if boundary_only && port.node != node {
+                continue;
+            }
+            let graph = scratch.graph();
+            let outside = Endpoint::new(group, port.name.clone());
+            let keys = [
+                port.key(),
+                port.control_key(crate::group::GAIN),
+                port.control_key(crate::group::MUTE),
+            ];
+            let used = graph.connections().any(|c| {
+                let outer = match side {
+                    Side::Input => c.to == outside,
+                    Side::Output => c.from == outside,
+                };
+                outer
+                    || (c.from.node == port.node && c.from.port == port.key())
+                    || (c.to.node == port.node && keys.contains(&c.to.port))
+            });
+            if used {
+                continue;
+            }
+            if let Some(command) = remove_group_port(&scratch, port)
+                && command.clone().apply(&mut scratch).is_ok()
+            {
+                commands.push(command);
+            }
+        }
+    }
+    (!commands.is_empty()).then_some(Command::Batch(commands))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +468,50 @@ mod tests {
         let port = list.into_iter().find(|port| port.name == name).unwrap();
         assert_eq!(port.key(), key);
         (port.node, port.id)
+    }
+
+    #[test]
+    fn unused_mixer_inputs_are_dropped_to_the_last_wired() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let (mix, src) = (mixer(&mut p, &mut h), add(&mut p, &mut h, Node::new("s")));
+        let raise = prepare_mixer_input(p.graph(), mix, "in5").remove(0);
+        h.apply(&mut p, raise).unwrap();
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(src, "out"), Endpoint::new(mix, "in2")),
+        )
+        .unwrap();
+        let command = remove_unused_ports(&p, mix).unwrap();
+        h.apply(&mut p, command).unwrap();
+        assert_eq!(mixer_inputs(p.graph().node(mix).unwrap()), 2);
+        assert!(remove_unused_ports(&p, mix).is_none());
+    }
+
+    #[test]
+    fn only_unwired_group_ports_are_removed_in_one_step() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let group = add(&mut p, &mut h, Node::new(GROUP));
+        let src = add(&mut p, &mut h, Node::new("s"));
+        let (a, _) = port(&mut p, &mut h, group, Side::Input, "a");
+        port(&mut p, &mut h, group, Side::Input, "b");
+        port(&mut p, &mut h, group, Side::Output, "o");
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(src, "out"), Endpoint::new(group, "a")),
+        )
+        .unwrap();
+        let command = remove_unused_ports(&p, group).unwrap();
+        h.apply(&mut p, command).unwrap();
+        let ports = p.graph().group_ports(group);
+        assert_eq!(
+            (ports.inputs.len(), ports.outputs.len()),
+            (1, 0),
+            "{ports:?}"
+        );
+        assert_eq!(ports.inputs[0].node, a);
+        assert!(remove_unused_ports(&p, group).is_none());
+        h.undo(&mut p).unwrap();
+        assert_eq!(p.graph().group_ports(group).inputs.len(), 2);
     }
 
     #[test]

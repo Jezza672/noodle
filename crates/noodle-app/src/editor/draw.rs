@@ -2,7 +2,7 @@
 
 use egui::epaint::{CornerRadius, CubicBezierShape, PathShape, StrokeKind};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
-use noodle_core::Endpoint;
+use noodle_core::{Endpoint, NodeId};
 use noodle_engine::{BlockStats, CpuReading};
 
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
@@ -139,6 +139,7 @@ pub fn nodes(
     f: &Frame_<'_>,
     state: &EditorState,
     problems: &Problems,
+    hovered: Option<NodeId>,
     mut then: impl FnMut(&NodeGeom),
 ) {
     for &i in &f.order {
@@ -150,6 +151,8 @@ pub fn nodes(
             Stroke::new(1.5, colors::ACTIVE)
         } else if state.selected.contains(&node.id) {
             Stroke::new(1.5, colors::SELECTED)
+        } else if hovered == Some(node.id) {
+            Stroke::new(1.5, colors::HOVERED)
         } else {
             Stroke::new(1.0, colors::NODE_OUTLINE)
         };

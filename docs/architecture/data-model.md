@@ -50,13 +50,13 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Boundary parameters.** Every port carries gain (dB), mute and solo as
     parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
     `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten
-    keeps a port as a `noodle.group.stage` node, under the port's
+    keeps a port as a `noodle.group.stage` node (a group's output ports always do, for their meters), under the port's
     `stage_id` (a node ID no project node can have, built from the boundary
     node's ID and the port's), and points a lane or a wire aimed at the
     port's gain or mute at it, once its gain or mute has been set at all
     (even back to its default), is wired, or it is muted, and drops the rest.
-    So a group nobody has touched costs nothing and renders bit-for-bit like
-    the flat patch, and a touched one costs a stage that is exact at unity.
+    So a group nobody has touched costs nothing on its inputs, a stage at each
+    output (for the meter) that is exact at unity, and a touched one costs a stage that is exact at unity.
     The stage stays once set because adding or removing a node in the audible
     path makes the engine fade the whole output out and in (5 ms each way):
     the first touch of a control on a group costs that one fade, and after

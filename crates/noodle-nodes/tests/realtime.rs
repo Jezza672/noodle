@@ -591,10 +591,10 @@ fn muting_a_track_whose_stage_is_in_place_does_not_dip_the_others() {
     // The stage already exists, so muting is a parameter change.
     let lowest = lowest_peak_across(true, mute);
     assert!(lowest > 0.3, "the playing track dipped to {lowest}");
-    // The first touch adds the stage, which fades the whole output once. This
-    // is what the test above guards against, and shows it can fail.
+    // A group's output keeps its stage for the meter, so even the first
+    // touch is a parameter change.
     let first = lowest_peak_across(false, mute);
-    assert!(first < 0.2, "expected the structural fade, lowest {first}");
+    assert!(first > 0.3, "the playing track dipped to {first}");
 }
 
 #[test]
@@ -1757,4 +1757,22 @@ fn a_script_with_loops_arrays_and_events_never_allocates() {
         assert_eq!(violations, 0, "allocated in round {round}");
     }
     assert!(heard, "the keys were summed");
+}
+
+#[test]
+fn a_groups_output_reports_its_level() {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", output, "in");
+    let (group, command) =
+        noodle_core::group::group_nodes(&s.project.clone(), &[sine], || s.project.new_node_id())
+            .unwrap();
+    s.edit(command);
+    let port = s.project.graph().group_ports(group).outputs[0].stage();
+    s.update();
+    let mut out = vec![0.0; 4800 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    let levels = s.telemetry.meter_reader().meter(port).expect("metered");
+    assert!(levels[0].peak > 0.5, "{levels:?}");
 }

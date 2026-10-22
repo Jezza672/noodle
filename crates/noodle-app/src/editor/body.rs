@@ -10,6 +10,7 @@ use std::collections::{HashMap, VecDeque};
 
 use egui::epaint::PathShape;
 use egui::{Painter, Pos2, Rect, Stroke, Vec2, pos2};
+use noodle_core::group::{GROUP, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{NodeId, Project};
 use noodle_engine::OUTPUT_ID;
@@ -25,6 +26,7 @@ use crate::widgets::{GraphKind, Live};
 pub fn height(type_id: &str) -> f32 {
     match type_id {
         id if METERED.contains(&id) => 30.0,
+        GROUP | GROUP_OUTPUT => 30.0,
         SCOPE_ID | OUTPUT_ID | SPECTRUM_ID | SURROUND_PAN_ID => 80.0,
         ENVELOPE_ID => 56.0,
         id if GraphKind::of(id).is_some() => 56.0,
@@ -50,7 +52,7 @@ pub fn paint(
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
     match type_id {
-        id if METERED.contains(&id) => meter(
+        id if METERED.contains(&id) || matches!(id, GROUP | GROUP_OUTPUT) => meter(
             painter,
             area,
             zoom,
@@ -255,6 +257,32 @@ impl Bodies {
                 kind if METERED.contains(&kind) => {
                     let channels = self.meters.entry(id).or_default();
                     let levels = reader.meter(id).unwrap_or_default();
+                    channels.resize_with(levels.len(), MeterChannel::default);
+                    for (channel, level) in channels.iter_mut().zip(levels) {
+                        channel.update(level, dt);
+                    }
+                }
+                // A group's outputs, and its output node inside, show what
+                // the stage at each output port reports, one bar per channel.
+                GROUP | GROUP_OUTPUT => {
+                    let stages: Vec<NodeId> = if node.type_id == GROUP {
+                        graph
+                            .group_ports(id)
+                            .outputs
+                            .iter()
+                            .map(|p| p.stage())
+                            .collect()
+                    } else {
+                        node.boundary_ports()
+                            .into_iter()
+                            .map(|(port, _)| noodle_core::group::stage_id(id, port))
+                            .collect()
+                    };
+                    let levels: Vec<Level> = stages
+                        .into_iter()
+                        .flat_map(|stage| reader.meter(stage).unwrap_or_default())
+                        .collect();
+                    let channels = self.meters.entry(id).or_default();
                     channels.resize_with(levels.len(), MeterChannel::default);
                     for (channel, level) in channels.iter_mut().zip(levels) {
                         channel.update(level, dt);

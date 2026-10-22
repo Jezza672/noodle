@@ -108,6 +108,18 @@ struct InputStage {
     name: String,
 }
 
+/// The stage of every port of every group's output node, for the meters.
+pub(crate) fn output_stages(graph: &Graph) -> impl Iterator<Item = NodeId> + '_ {
+    graph
+        .nodes()
+        .filter(|(_, node)| node.type_id == GROUP_OUTPUT && node.parent.is_some())
+        .flat_map(|(id, node)| {
+            node.boundary_ports()
+                .into_iter()
+                .map(move |(port, _)| stage_id(id, port))
+        })
+}
+
 /// The boundary ports that stay in the flat graph, as the stage nodes that
 /// replace them, by stage ID.
 ///
