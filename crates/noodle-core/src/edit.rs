@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::{
     AutomationLane, Clip, ClipId, ClipWarp, Connection, Endpoint, Frame, FrameId, LaneId, Node,
-    NodeId, Position, Project, TempoMap, Value, WarpId,
+    NodeId, Position, Project, TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,6 +80,8 @@ pub enum Command {
     },
     /// Replaces the tempo map.
     SetTempoMap(TempoMap),
+    /// Replaces the transport's loop.
+    SetLoop(TransportLoop),
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
@@ -169,6 +171,9 @@ impl Command {
             }
             Command::SetTempoMap(map) => {
                 return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
+            }
+            Command::SetLoop(region) => {
+                return Ok(Command::SetLoop(project.replace_loop(region)));
             }
             Command::SetFrozen { node, frozen } => {
                 if project.graph().node(node).is_none() {
@@ -329,6 +334,7 @@ impl Command {
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
+            | Command::SetLoop(_)
             | Command::SetTrackOrder(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
@@ -355,6 +361,7 @@ enum Target<'a> {
     Warp(WarpId),
     Lane(LaneId),
     TempoMap,
+    Loop,
     TrackOrder,
     Frozen(NodeId),
 }
@@ -368,6 +375,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetWarp { id, .. } => Some(Target::Warp(*id)),
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
+        Command::SetLoop(_) => Some(Target::Loop),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,

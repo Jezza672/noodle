@@ -1342,6 +1342,10 @@ fn pasting_several_clips_keeps_their_spacing() {
     h.state_mut().timeline.selected = [id, second].into();
     h.state_mut().timeline.request(super::ClipAction::Copy);
     h.run();
+    // On the system clipboard as Noodle's clip type, which pastes as clips.
+    assert!(crate::clipboard::holds("application/x.noodle.clip"));
+    let copied: Vec<Clip> = crate::clipboard::paste("application/x.noodle.clip").unwrap();
+    assert_eq!(copied.len(), 2);
     h.state_mut().playhead = Some(Tick(3840));
     h.state_mut().timeline.request(super::ClipAction::Paste);
     h.run();

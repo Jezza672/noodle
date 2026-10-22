@@ -84,7 +84,6 @@ pub struct TimelineState {
     /// A box being dragged over empty space to select the clips it touches.
     band: Option<Band>,
     /// The clips last copied or cut, as they were.
-    clipboard: Vec<Clip>,
     /// An edit-menu command for the next frame to carry out.
     pending: Option<ClipAction>,
     /// Where the arrangement was last right-clicked.
@@ -128,7 +127,6 @@ impl Default for TimelineState {
             selected_track: None,
             drag: None,
             band: None,
-            clipboard: Vec::new(),
             pending: None,
             menu_at: None,
             last_seek: None,
@@ -154,6 +152,12 @@ impl Default for TimelineState {
 }
 
 impl TimelineState {
+    /// How far the tracks are scrolled down, for tests.
+    #[cfg(test)]
+    pub fn scroll_y(&self) -> f32 {
+        self.scroll_y
+    }
+
     /// How tall `track`'s own lane is, with vertical zoom.
     fn lane_height(&self, track: NodeId) -> f32 {
         let own = self
@@ -319,7 +323,7 @@ impl TimelineState {
 
     /// Whether there is anything to paste.
     pub fn can_paste(&self) -> bool {
-        !self.clipboard.is_empty()
+        crate::clipboard::holds(crate::clipboard::CLIP_MIME)
     }
 }
 
@@ -1109,8 +1113,12 @@ pub fn show(
             .filter_map(|&id| Some((id, project.clip(id)?.clone())))
             .collect();
         if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
-            state.clipboard = chosen.iter().map(|(_, clip)| clip.clone()).collect();
-            ui.ctx().copy_text(format!("{} clips", chosen.len()));
+            let copied: Vec<&Clip> = chosen.iter().map(|(_, clip)| clip).collect();
+            crate::clipboard::copy(
+                crate::clipboard::CLIP_MIME,
+                &copied,
+                &format!("{} clips", copied.len()),
+            );
             if action == ClipAction::Cut {
                 let removals = chosen
                     .iter()
@@ -1120,19 +1128,16 @@ pub fn show(
                 edits.push(Edit::Apply(Command::Batch(removals)));
             }
         }
-        if action == ClipAction::Paste && !state.clipboard.is_empty() {
+        if action == ClipAction::Paste
+            && let Some(clips) = crate::clipboard::paste::<Vec<Clip>>(crate::clipboard::CLIP_MIME)
+        {
             // On the selected track if the clips come from one, else where
             // they came from.
             let track = state.selected_track.or_else(|| {
                 let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
                 tracks.next().filter(|first| tracks.all(|t| t == *first))
             });
-            let (command, pasted) = paste(
-                project,
-                &state.clipboard,
-                playhead.unwrap_or(Tick::ZERO),
-                track,
-            );
+            let (command, pasted) = paste(project, &clips, playhead.unwrap_or(Tick::ZERO), track);
             if let Some(command) = command {
                 state.selected = pasted;
                 edits.push(Edit::Apply(command));
@@ -1341,7 +1346,7 @@ pub fn show(
             }));
             open_midi = Some(id);
         }
-        let paste_here = ui.add_enabled(!state.clipboard.is_empty(), egui::Button::new("Paste"));
+        let paste_here = ui.add_enabled(state.can_paste(), egui::Button::new("Paste"));
         if paste_here.clicked() {
             ui.close();
             let at = state.menu_at.filter(|p| content.contains(*p));
@@ -1352,7 +1357,8 @@ pub fn show(
                 ),
                 _ => (playhead.unwrap_or(Tick::ZERO), None),
             };
-            let (command, pasted) = paste(project, &state.clipboard, tick, track);
+            let clips = crate::clipboard::paste::<Vec<Clip>>(crate::clipboard::CLIP_MIME);
+            let (command, pasted) = paste(project, &clips.unwrap_or_default(), tick, track);
             if let Some(command) = command {
                 state.selected = pasted;
                 edits.push(Edit::Apply(command));
@@ -2102,11 +2108,15 @@ fn draw_headers(
             );
             (left, right)
         };
-        if ui.put(track, egui::Button::new("+ Track")).clicked() {
+        // In a child, so a button that is partly scrolled out of the panel
+        // doesn't grow the panel to fit it.
+        let mut buttons = ui.new_child(egui::UiBuilder::new().max_rect(spot));
+        buttons.set_clip_rect(spot.intersect(column).intersect(ui.clip_rect()));
+        if buttons.put(track, egui::Button::new("+ Track")).clicked() {
             let command = add_track::command(graph, || session.new_node_id());
             edits.push(Edit::Apply(command));
         }
-        if ui
+        if buttons
             .put(automation, egui::Button::new("+ Auto"))
             .on_hover_text(
                 "Adds an Automation node and a lane for it. Wire its output to any input.",

@@ -138,12 +138,13 @@ pub struct Geometry {
     pub wave: Rect,
     origin: f32,
     ppb: f32,
+    shift: f64,
 }
 
 #[cfg(test)]
 impl Geometry {
     pub fn x(&self, beat: f64) -> f32 {
-        self.origin + beat as f32 * self.ppb
+        self.origin + (beat - self.shift) as f32 * self.ppb
     }
 }
 
@@ -227,21 +228,30 @@ pub struct Output {
     pub edits: Vec<Edit>,
 }
 
-/// Where the beats are on the screen.
+/// Where the beats are on the screen. The beat lines are what holds still:
+/// `shift` is the clip's grid offset, so the clip's beat `n + shift` is drawn
+/// where whole beat `n` is, and sliding the grid moves the audio (and the
+/// markers) against fixed lines and a fixed clip start.
 #[derive(Clone, Copy)]
 struct Axis {
     area: Rect,
     origin: f32,
     ppb: f32,
+    shift: f64,
 }
 
 impl Axis {
     fn x(self, beat: f64) -> f32 {
-        self.origin + beat as f32 * self.ppb
+        self.origin + (beat - self.shift) as f32 * self.ppb
     }
 
     fn beat(self, x: f32) -> f64 {
-        f64::from((x - self.origin) / self.ppb)
+        f64::from((x - self.origin) / self.ppb) + self.shift
+    }
+
+    /// This axis as it was drawn when the grid offset was `shift`.
+    fn at_shift(self, shift: f64) -> Self {
+        Self { shift, ..self }
     }
 }
 
@@ -388,6 +398,7 @@ pub fn show(
         area,
         origin: area.left() - state.scroll_x,
         ppb: state.ppb,
+        shift: warp.grid_offset,
     };
     #[cfg(test)]
     {
@@ -399,6 +410,7 @@ pub fn show(
             wave,
             origin: axis.origin,
             ppb: axis.ppb,
+            shift: axis.shift,
         });
     }
     let onsets: &[f64] = loaded.analysis.as_ref().map_or(&[], |a| &a.onsets);
@@ -509,7 +521,9 @@ pub fn show(
     if response.dragged()
         && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
     {
-        let beat = axis.beat(pos.x);
+        // The grid slides under a drag of the clip or the ruler, so the
+        // pointer is read against the grid the drag began with.
+        let beat = axis.at_shift(drag.original.grid_offset).beat(pos.x);
         if let Gesture::Marquee { from } = drag.gesture {
             state.marquee = Some((from, pos.x));
             let (lo, hi) = (from.min(pos.x), from.max(pos.x));

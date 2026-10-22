@@ -802,3 +802,66 @@ fn the_toolbar_shows_the_title_and_a_close_button_inside_the_panel() {
         );
     }
 }
+
+#[test]
+fn ctrl_scroll_zooms_the_clip_editor_for_any_clip() {
+    for warped in [false, true] {
+        let mut h = if warped { rig(true) } else { plain_rig() };
+        let wave = if warped {
+            geometry(&h).wave
+        } else {
+            h.state().editor.plain_geometry().expect("drawn").wave
+        };
+        let before = h.state().editor.ppb;
+        crate::testkit::wheel_with(
+            &mut h,
+            wave.center(),
+            egui::MouseWheelUnit::Line,
+            Vec2::new(0.0, 3.0),
+            Modifiers::COMMAND,
+        );
+        h.step();
+        let after = h.state().editor.ppb;
+        assert!(after > before * 1.2, "warped {warped}: {before} -> {after}");
+    }
+}
+
+#[test]
+fn dragging_the_waveform_moves_the_audio_on_screen_with_the_beat_lines_and_clip_start_fixed() {
+    let mut h = rig(true);
+    let rate = f64::from(RATE);
+    let g0 = geometry(&h);
+    let y = g0.wave.center().y;
+    // Where a beat line, the clip's start and a click in the audio are.
+    let line = |h: &H| {
+        let g = geometry(h);
+        g.x(4.0 + warp(h).grid_offset)
+    };
+    let start = |h: &H| {
+        let g = geometry(h);
+        let offset = window_start(h) as f64 / rate;
+        g.x(warp(h).beat_at(offset))
+    };
+    let click = |h: &H| {
+        let g = geometry(h);
+        g.x(warp(h).beat_at(2.0))
+    };
+    let (line0, start0, click0) = (line(&h), start(&h), click(&h));
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g0.x(2.35), y),
+        Pos2::new(g0.x(2.1), y),
+    );
+    assert!((line(&h) - line0).abs() < 0.5, "the beat line stayed");
+    assert!(
+        (start(&h) - start0).abs() < 0.5,
+        "the clip start stayed {} {} off {}",
+        start0,
+        start(&h),
+        window_start(&h)
+    );
+    // The click followed the pointer by a quarter of a beat to the left.
+    let moved = (click(&h) - click0) / geometry(&h).ppb;
+    assert!((moved + 0.25).abs() < 0.02, "{moved}");
+}

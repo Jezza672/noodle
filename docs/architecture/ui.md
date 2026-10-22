@@ -106,10 +106,13 @@ It has these views:
     the first input and output of the wire's signal type, the main signal
     port before a parameter port, and is part of the move's undo step.
     Copy, Cut and Paste (Ctrl/Cmd+C, X, V) keep the nodes, the wires
-    between them and frames in an in-app clipboard, pasted at the pointer
-    into the group being edited as one undo step. The window turns Ctrl/Cmd+V
-    into a paste only while the system clipboard holds text, so a copy also
-    puts a short line of text there.
+    between them and frames on the system clipboard as
+    `application/x.noodle.node` (RON), pasted at the pointer into the group
+    being edited as one undo step. A short line of plain text goes with it,
+    because the window turns Ctrl/Cmd+V into a paste only while the clipboard
+    holds text. `clipboard.rs` is the one place that talks to the system
+    clipboard (`clipboard-rs`); with no clipboard to open, and in tests, it
+    keeps the copy in memory.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -163,8 +166,8 @@ It has these views:
     step and moves those, leaving the originals. Pressing Ctrl/Cmd after a
     move has begun puts the clips back, adds copies and carries on with those.
     Cmd+C, Cmd+X and Cmd+V (with the pointer over the arrangement, or from the
-    Edit menu and the clips' right-click menu) fill a clipboard of clips kept
-    in the timeline's state and paste it, earliest clip at the playhead, on the
+    Edit menu and the clips' right-click menu) put the clips on the system clipboard as
+    `application/x.noodle.clip` (RON) and paste them, earliest clip at the playhead, on the
     clips' own tracks or on the selected track when they all came from one;
     right-clicking a lane pastes at that point. Cmd+D duplicates the selection
     just after itself. Each is one undo step. With a clip selected,
