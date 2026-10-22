@@ -7,6 +7,7 @@ mod app;
 mod carry;
 mod clip_editor;
 mod clip_panel;
+mod clipboard;
 mod devices;
 mod editor;
 mod export_dialog;

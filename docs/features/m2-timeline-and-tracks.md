@@ -246,9 +246,31 @@ Metronome node and the metronome button.
   view state in `TimelineState`, not in the project.
 - **Done.** The Import audio button in the ruler corner is gone (File menu and
   the lane menu still import). In its place: a loop toggle and the loop's start
-  and end bars. The loop is session state (`LoopRegion`), sent to the
-  transport's `set_loop`; it is not saved with the project.
+  and end bars. The loop is saved with the project (`TransportLoop`, changed by
+  `Command::SetLoop`, so undoable) and sent to the transport's `set_loop`.
 - **Done.** Automation tracks and Automation nodes stay in step: `+ Auto`
   already made the node and its lane in one undo step; adding an Automation
   node in the node editor now adds its lane too, and removing an Automation
   track's lane removes the node.
+
+## Feedback regressions (#187, #188, #200, #227, #228, #229)
+
+Fixes for things earlier PRs claimed were done or already working.
+
+- **Sample zoom (#187).** The Sampler's sample view had no zoom or pan at all.
+  Ctrl+scroll (or pinch) zooms around the pointer, the wheel pans, and the
+  markers are dragged through the zoomed window. (The clip editor's own zoom
+  was fine; the sample view is what "looking at a sample" opens.)
+- **Waveform drag (#188).** In the warp view the beat lines and the clip's
+  start are now what holds still: the grid offset shifts the whole drawing
+  (`Axis::shift`), so dragging the body moves the waveform and its markers
+  against fixed lines. Before, the audio stayed put and the lines moved.
+- **Loop in the project (#227).** See above.
+- **Sequencer scroll (#228).** The `+ Track` / `+ Auto` buttons were placed with
+  `ui.put`, which grows the panel when the button is partly scrolled out; every
+  frame grew the panel until the tracks fitted. They are in a clipped child now.
+- **Automation track (#200).** Adding one from the sequencer made the node at
+  the top level, which is not what the node editor shows when it is inside a
+  group, and far from the view. The editor now goes to the top level, selects
+  the node and fits the view.
+- **Clipboard (#229).** See `architecture/ui.md`.

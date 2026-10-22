@@ -2063,6 +2063,10 @@ fn copy_and_paste_put_the_nodes_and_the_wires_between_them_at_the_pointer() {
     h.state_mut().editor.select_only([sine, gain]);
     let at = empty_space(&h);
     clipboard_event(&mut h, at, Event::Copy);
+    // The nodes are on the system clipboard under Noodle's own type, and not
+    // under the clips'.
+    assert!(crate::clipboard::holds("application/x.noodle.node"));
+    assert!(!crate::clipboard::holds("application/x.noodle.clip"));
     // Copying changes nothing.
     assert_eq!(
         h.state().session.project().graph().connections().count(),

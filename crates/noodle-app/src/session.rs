@@ -254,8 +254,8 @@ pub struct Session {
     /// Where the playhead is while no stream is open, so it can be set and
     /// read when stopped, and playing starts from it.
     parked: Tick,
-    /// The transport's loop. Session state, so it isn't in the project file.
-    loop_region: LoopRegion,
+    /// Whether loop edits are sharing an undo step (see `set_loop`).
+    loop_open: bool,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
     /// The project as it was last saved or loaded, to tell whether it has
@@ -501,7 +501,7 @@ impl Session {
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             parked: Tick(0),
-            loop_region: LoopRegion::default(),
+            loop_open: false,
             path: None,
             dirty: false,
             next_id: Cell::new(0),
@@ -1434,7 +1434,7 @@ impl Session {
                     audio
                         .controller
                         .transport()
-                        .set_loop(self.loop_region.active());
+                        .set_loop(self.project.transport_loop().active());
                     // Carry on from where the playhead was left.
                     if self.parked != Tick(0) {
                         audio.controller.transport().seek(self.parked);
@@ -1502,15 +1502,26 @@ impl Session {
 
     /// The transport's loop: whether it is on and the span it repeats.
     pub fn loop_region(&self) -> LoopRegion {
-        self.loop_region
+        self.project.transport_loop()
     }
 
-    /// Turns the loop on or off and sets its span. Takes effect at once, even
-    /// while playing.
+    /// Turns the loop on or off and sets its span, as an undoable edit of the
+    /// project. Takes effect at once, even while playing.
+    ///
+    /// The bar fields change it on every frame of a drag, so the edits share
+    /// one undo step until [`Session::settle_loop`] closes it.
     pub fn set_loop(&mut self, region: LoopRegion) {
-        self.loop_region = region;
-        if let Some(audio) = &self.audio {
-            audio.controller.transport().set_loop(region.active());
+        if region != self.project.transport_loop() {
+            self.loop_open = true;
+            self.edit([Edit::Drag(Command::SetLoop(region))]);
+        }
+    }
+
+    /// Ends the undo step the loop's edits have been sharing, once the
+    /// pointer is up.
+    pub fn settle_loop(&mut self) {
+        if std::mem::take(&mut self.loop_open) {
+            self.edit([Edit::EndDrag]);
         }
     }
 
@@ -1599,6 +1610,11 @@ impl Session {
         if audio.controller.tempo_map() != self.project.tempo_map() {
             audio.controller.set_tempo_map(self.project.tempo_map());
         }
+        // The loop is project state, so undo and loading change it too.
+        audio
+            .controller
+            .transport()
+            .set_loop(self.project.transport_loop().active());
         let health = audio.playback.health();
         let now = Glitches {
             underruns: health.underruns(),
@@ -2246,32 +2262,8 @@ fn edits_warp(command: &Command) -> bool {
     }
 }
 
-/// The transport's loop: a span of the timeline that playback repeats while
-/// `on`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LoopRegion {
-    pub on: bool,
-    pub start: Tick,
-    pub end: Tick,
-}
-
-impl Default for LoopRegion {
-    /// Off, over the first four bars of 4/4.
-    fn default() -> Self {
-        Self {
-            on: false,
-            start: Tick(0),
-            end: Tick(16 * noodle_core::TICKS_PER_QUARTER),
-        }
-    }
-}
-
-impl LoopRegion {
-    /// The span the engine loops, when it is on.
-    pub fn active(self) -> Option<(Tick, Tick)> {
-        self.on.then_some((self.start, self.end))
-    }
-}
+/// The transport's loop (saved with the project).
+pub type LoopRegion = noodle_core::TransportLoop;
 
 /// What a command means for the engine.
 #[derive(Default, Debug, PartialEq)]
@@ -2303,6 +2295,9 @@ impl Effect {
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}
+            // The transport takes the loop when the edit is applied (see
+            // `Session::edit`).
+            Command::SetLoop(_) => {}
             // Solo is read when the project is compiled: it mutes the other
             // tracks' stages, which no parameter reaches.
             Command::SetParam { key, .. }
@@ -2611,6 +2606,29 @@ mod tests {
         .unwrap();
         session.edit([Edit::Apply(command)]);
         (group, osc)
+    }
+
+    #[test]
+    fn the_loop_is_saved_with_the_project_and_comes_back_on_opening_and_on_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.ron");
+        let mut session = Session::new(Nodes::all());
+        let region = LoopRegion {
+            on: true,
+            start: Tick(960),
+            end: Tick(7680),
+        };
+        // A drag of a bar field sets it many times: one undo step.
+        for end in [Tick(2000), Tick(4000), Tick(7680)] {
+            session.set_loop(LoopRegion { end, ..region });
+        }
+        session.settle_loop();
+        assert_eq!(session.loop_region(), region);
+        assert!(session.save_as(&path));
+        let reopened = Session::open(Nodes::all(), &path).unwrap();
+        assert_eq!(reopened.loop_region(), region);
+        session.undo();
+        assert_eq!(session.loop_region(), LoopRegion::default());
     }
 
     #[test]

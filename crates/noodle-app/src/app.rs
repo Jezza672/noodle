@@ -177,6 +177,23 @@ impl Action {
     }
 }
 
+/// The Automation node an edit from the sequencer adds, if it adds one.
+fn added_automation_node(edits: &[Edit]) -> Option<noodle_core::NodeId> {
+    fn find(command: &Command) -> Option<noodle_core::NodeId> {
+        match command {
+            Command::AddNode { id, node } if node.type_id == noodle_nodes::AUTOMATION_NODE_ID => {
+                Some(*id)
+            }
+            Command::Batch(commands) => commands.iter().find_map(find),
+            _ => None,
+        }
+    }
+    edits.iter().find_map(|edit| match edit {
+        Edit::Apply(command) | Edit::Drag(command) => find(command),
+        _ => None,
+    })
+}
+
 impl App {
     pub fn new(session: Session) -> Self {
         Self {
@@ -411,6 +428,7 @@ impl App {
             .show(ui, |ui| {
                 let playhead = Some(self.session.playhead());
                 let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
+                let automation = added_automation_node(&out.edits);
                 self.session.edit(out.edits);
                 if let Some(tick) = out.seek {
                     self.session.seek(tick);
@@ -418,8 +436,21 @@ impl App {
                 if let Some(notice) = out.notice {
                     self.session.notify(notice);
                 }
+                #[cfg(test)]
+                ui.data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("arrangement content height"),
+                        ui.min_rect().height(),
+                    );
+                });
+                if let Some(node) = automation {
+                    self.editor.reveal_top_level(node);
+                }
                 if let Some(region) = out.set_loop {
                     self.session.set_loop(region);
+                }
+                if !ui.input(|i| i.pointer.any_down()) {
+                    self.session.settle_loop();
                 }
                 if let Some(target) = out.pick {
                     self.import_audio(target);
@@ -2629,6 +2660,118 @@ mod tests {
         h.state_mut().session.undo();
         let node = h.state().session.project().graph().node(id).unwrap();
         assert!(!node.params.contains_key("start"));
+    }
+
+    #[test]
+    fn ctrl_scroll_zooms_the_sample_view_around_the_pointer_and_scroll_pans() {
+        use crate::testkit::{double_click, wheel, wheel_with};
+        let (mut h, _id) = sampler_rig();
+        let at = h.get_by_label("Sample waveform").rect().center();
+        double_click(&mut h, at);
+        h.run();
+        let body = h
+            .ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sample view body")))
+            .expect("the view has been drawn");
+        let point = egui::Pos2::new(body.left() + body.width() * 0.5, body.center().y);
+        for _ in 0..10 {
+            wheel_with(
+                &mut h,
+                point,
+                egui::MouseWheelUnit::Line,
+                egui::vec2(0.0, 3.0),
+                egui::Modifiers::COMMAND,
+            );
+        }
+        h.step();
+        let (a, b) = h.state().sample_view.window();
+        assert!(b - a < 0.5, "zoomed in: {a}..{b}");
+        assert!(a < 0.5 && 0.5 < b, "still around the pointer: {a}..{b}");
+        // The plain wheel pans.
+        for _ in 0..3 {
+            wheel(
+                &mut h,
+                point,
+                egui::MouseWheelUnit::Point,
+                egui::vec2(-60.0, 0.0),
+            );
+        }
+        let (c, _) = h.state().sample_view.window();
+        assert!(c > a, "panned right: {a} -> {c}");
+    }
+
+    #[test]
+    fn adding_an_automation_track_shows_its_node_at_the_top_level_of_the_graph() {
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+        })]);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        // The editor is looking inside a group when the track is added.
+        let group = h
+            .state()
+            .session
+            .project()
+            .graph()
+            .nodes()
+            .find(|(_, n)| n.type_id == noodle_core::group::GROUP)
+            .map(|(id, _)| id);
+        h.state_mut().editor.group = group;
+        h.get_by_label("+ Auto").click();
+        h.run();
+        let state = h.state();
+        let (id, _) = state
+            .session
+            .project()
+            .graph()
+            .nodes()
+            .find(|(_, n)| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+            .expect("an Automation node");
+        assert_eq!(state.editor.group, None, "the top level is shown");
+        assert!(
+            state.editor.selected.contains(&id),
+            "and the node is picked"
+        );
+    }
+
+    #[test]
+    fn scrolling_down_the_tracks_does_not_resize_the_sequencer_panel() {
+        use crate::testkit::wheel;
+        let mut app = empty();
+        for n in 1..=14 {
+            app.session.edit([Edit::Apply(Command::AddNode {
+                id: noodle_core::NodeId(n),
+                node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+            })]);
+        }
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        let height = |h: &Harness<'static, App>| {
+            h.ctx
+                .data(|d| d.get_temp::<f32>(egui::Id::new("arrangement content height")))
+                .expect("the sequencer has been drawn")
+        };
+        let before = height(&h);
+        let over_tracks = egui::pos2(600.0, 150.0);
+        for _ in 0..12 {
+            wheel(
+                &mut h,
+                over_tracks,
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(20);
+        assert!(h.state().timeline.scroll_y() > 0.0, "it scrolled");
+        assert_eq!(height(&h), before, "the panel kept its size");
     }
 
     /// An app saved in a temp folder with one track holding a clip of a

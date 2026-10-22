@@ -115,12 +115,23 @@ pub fn press<S>(h: &mut Harness<'_, S>, at: Pos2, modifiers: Modifiers, key: Key
 /// One wheel or trackpad event over `at`. It steps once rather than running,
 /// because egui keeps repainting while it smooths a scroll.
 pub fn wheel<S>(h: &mut Harness<'_, S>, at: Pos2, unit: MouseWheelUnit, delta: Vec2) {
+    wheel_with(h, at, unit, delta, Modifiers::NONE);
+}
+
+/// [`wheel`] holding `modifiers`.
+pub fn wheel_with<S>(
+    h: &mut Harness<'_, S>,
+    at: Pos2,
+    unit: MouseWheelUnit,
+    delta: Vec2,
+    modifiers: Modifiers,
+) {
     h.hover_at(at);
     h.event(Event::MouseWheel {
         unit,
         delta,
         phase: TouchPhase::Move,
-        modifiers: Modifiers::NONE,
+        modifiers,
     });
     h.step();
 }

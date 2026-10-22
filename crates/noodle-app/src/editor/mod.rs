@@ -105,7 +105,6 @@ pub struct EditorState {
     /// What meters and scopes show.
     bodies: body::Bodies,
     /// What Copy and Cut last took, for Paste.
-    clipboard: Option<Clipboard>,
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
@@ -132,8 +131,9 @@ pub struct EditorState {
     monitored: Vec<NodeId>,
 }
 
-/// Nodes, the wires between them and frames, as copied.
-#[derive(Clone, Default)]
+/// Nodes, the wires between them and frames, as copied: what goes on the
+/// system clipboard under `application/x.noodle.node`.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Clipboard {
     nodes: Vec<(NodeId, Node)>,
     wires: Vec<Connection>,
@@ -156,7 +156,6 @@ impl Default for EditorState {
             group_menu: None,
             rename: None,
             bodies: body::Bodies::default(),
-            clipboard: None,
             arrange_requested: false,
             dropped: None,
             fit_requested: false,
@@ -331,6 +330,17 @@ impl EditorState {
         if let Some(id) = select {
             self.select_only([id]);
         }
+    }
+
+    /// Shows the top level, with `node` selected and the view fitted round
+    /// the graph, so a node added from outside the editor (an automation
+    /// track in the sequencer) is seen where it was made.
+    pub fn reveal_top_level(&mut self, node: NodeId) {
+        if self.group.is_some() {
+            self.enter(None, None);
+        }
+        self.select_only([node]);
+        self.request_fit();
     }
 
     pub(crate) fn select_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
@@ -1898,17 +1908,6 @@ fn keyboard(
     let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
     let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
     let copied = (copy || cut) && copy_selection(state, f);
-    if copied {
-        // The window only turns Ctrl/Cmd+V into a paste while the system
-        // clipboard holds text, so leave some for it to find. The nodes
-        // themselves wait in `state.clipboard`.
-        let (nodes, frames) = state
-            .clipboard
-            .as_ref()
-            .map_or((0, 0), |c| (c.nodes.len(), c.frames.len()));
-        ui.ctx()
-            .copy_text(format!("Noodle: {nodes} nodes, {frames} frames"));
-    }
     if cut && copied {
         edits.extend(state.delete_selection());
     }
@@ -2012,25 +2011,32 @@ fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) -> bool {
         .connections()
         .filter(|c| copied.contains(&c.from.node) && copied.contains(&c.to.node))
         .collect();
-    let frames = frames
+    let frames: Vec<Frame> = frames
         .into_iter()
         .filter_map(|id| f.project.frame(id).cloned())
         .collect();
     if nodes.is_empty() && state.selected_frames.is_empty() {
         return false;
     }
-    state.clipboard = Some(Clipboard {
-        nodes,
-        wires,
-        frames,
-    });
+    // The plain text is there so the window sees a paste and other apps
+    // get something readable.
+    let summary = format!("Noodle: {} nodes, {} frames", nodes.len(), frames.len());
+    crate::clipboard::copy(
+        crate::clipboard::NODE_MIME,
+        &Clipboard {
+            nodes,
+            wires,
+            frames,
+        },
+        &summary,
+    );
     true
 }
 
 /// Puts the clipboard down with its top-left corner at `at`, as one edit.
 /// The pasted nodes are selected afterwards.
 fn paste(state: &mut EditorState, at: Pos2, inputs: &mut Inputs<'_>, edits: &mut Vec<Edit>) {
-    let Some(clip) = state.clipboard.clone() else {
+    let Some(clip) = crate::clipboard::paste::<Clipboard>(crate::clipboard::NODE_MIME) else {
         return;
     };
     let corner = clip
