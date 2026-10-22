@@ -27,6 +27,7 @@ use noodle_core::{
 
 mod curve;
 mod gain_line;
+pub(crate) mod pane;
 mod plain;
 
 use crate::clip_panel;
@@ -102,13 +103,12 @@ struct Rows {
     wave: Rect,
 }
 
+#[derive(Default)]
 pub struct ClipEditor {
     clip: Option<ClipId>,
-    /// Points per beat.
-    ppb: f32,
-    scroll_x: f32,
-    /// Fit the clip to the width on the next frame.
-    focus: bool,
+    /// Zoom, scroll and the drag in the audio pane; points per beat when the
+    /// clip is warped, per second when it isn't.
+    view: pane::View,
     /// The flags picked, by their places among the markers.
     selected: BTreeSet<usize>,
     /// The box being dragged out in the flags' row, in screen x.
@@ -117,11 +117,9 @@ pub struct ClipEditor {
     /// Where the editor was last right-clicked, in beats.
     menu_at: Option<f64>,
     /// The drag of an unwarped clip's waveform, if there is one.
-    slip: Option<plain::Slip>,
+    slip: Option<noodle_core::Clip>,
     /// Whether the last frame drew an unwarped clip (in seconds, not beats).
     plain: bool,
-    /// The samples under the view, read when zoomed far in.
-    samples: Option<curve::Samples>,
     #[cfg(test)]
     geometry: Option<Geometry>,
     #[cfg(test)]
@@ -149,28 +147,6 @@ impl Geometry {
     }
 }
 
-impl Default for ClipEditor {
-    fn default() -> Self {
-        Self {
-            clip: None,
-            ppb: 60.0,
-            scroll_x: 0.0,
-            focus: false,
-            selected: BTreeSet::new(),
-            marquee: None,
-            drag: None,
-            menu_at: None,
-            slip: None,
-            plain: false,
-            samples: None,
-            #[cfg(test)]
-            geometry: None,
-            #[cfg(test)]
-            plain_geometry: None,
-        }
-    }
-}
-
 impl ClipEditor {
     /// Shows the audio clip `clip`.
     pub fn open(&mut self, clip: ClipId) {
@@ -180,7 +156,8 @@ impl ClipEditor {
             self.marquee = None;
             self.drag = None;
             self.slip = None;
-            self.focus = true;
+            self.view.drop_grab();
+            self.view.focus = true;
         }
     }
 
@@ -188,6 +165,7 @@ impl ClipEditor {
         self.clip = None;
         self.drag = None;
         self.slip = None;
+        self.view.drop_grab();
         self.marquee = None;
         self.selected.clear();
     }
@@ -273,7 +251,7 @@ pub fn show(
 ) -> Output {
     let mut out = Output::default();
     let project = session.project();
-    let dragging = state.drag.is_some();
+    let dragging = state.drag.is_some() || state.view.dragging();
     state.retain_existing(project);
     let Some(id) = state.clip else {
         // The clip went (an undo) mid-drag: nothing will send the drag's end.
@@ -300,7 +278,7 @@ pub fn show(
     if state.plain != unwarped {
         // The horizontal axis changes between seconds and beats.
         state.plain = unwarped;
-        state.focus = true;
+        state.view.focus = true;
     }
     let closed = crate::toolbar::show(
         ui,
@@ -323,7 +301,7 @@ pub fn show(
         },
     );
     if closed {
-        if state.drag.take().is_some() {
+        if state.drag.take().is_some() | state.view.drop_grab() {
             out.edits.push(Edit::EndDrag);
         }
         state.close();
@@ -386,19 +364,19 @@ pub fn show(
     };
 
     let (first, last) = (warp.beat_at(0.0).min(0.0), warp.beat_at(file_secs));
-    if state.focus {
-        state.focus = false;
-        state.ppb =
+    if state.view.focus {
+        state.view.focus = false;
+        state.view.ppb =
             ((area.width() - 24.0) / (last - first).max(1.0) as f32).clamp(MIN_PPB, MAX_PPB);
-        state.scroll_x = first as f32 * state.ppb - 12.0;
+        state.view.scroll_x = first as f32 * state.view.ppb - 12.0;
     }
     if ui.rect_contains_pointer(area) {
-        navigate(ui, state, area, (first, last));
+        pane::navigate(ui, &mut state.view, area, (first, last));
     }
     let axis = Axis {
         area,
-        origin: area.left() - state.scroll_x,
-        ppb: state.ppb,
+        origin: area.left() - state.view.scroll_x,
+        ppb: state.view.ppb,
         shift: warp.grid_offset,
     };
     #[cfg(test)]
@@ -428,7 +406,7 @@ pub fn show(
             + 1,
     );
     let samples = if (hi - lo) as f32 <= 2.0 * wave.width() {
-        curve::window(&mut state.samples, &loaded.path, lo, hi, file_frames)
+        curve::window(&mut state.view.samples, &loaded.path, lo, hi, file_frames)
     } else {
         None
     };
@@ -680,33 +658,6 @@ pub fn show(
         }
     }
     out
-}
-
-fn navigate(ui: &egui::Ui, state: &mut ClipEditor, area: Rect, beats: (f64, f64)) {
-    let (scroll, zoom, pointer, middle) = ui.input(|i| {
-        (
-            i.smooth_scroll_delta,
-            i.zoom_delta(),
-            i.pointer.hover_pos(),
-            i.pointer.middle_down().then(|| i.pointer.delta().x),
-        )
-    });
-    if zoom != 1.0 {
-        let anchor = pointer.map_or(area.left(), |p| p.x.max(area.left()));
-        let beat = (anchor - area.left() + state.scroll_x) / state.ppb;
-        state.ppb = (state.ppb * zoom).clamp(MIN_PPB, MAX_PPB);
-        state.scroll_x = beat * state.ppb - (anchor - area.left());
-    } else {
-        // The wheel pans along the time axis; so does a middle-button drag.
-        state.scroll_x -= scroll.x + scroll.y + middle.unwrap_or(0.0);
-    }
-    let (lo, hi) = (
-        beats.0 as f32 * state.ppb - 12.0,
-        beats.1 as f32 * state.ppb,
-    );
-    state.scroll_x = state
-        .scroll_x
-        .clamp(lo.min(hi), (hi - area.width() * 0.5).max(lo));
 }
 
 /// The loop's start and end in beats of the clip (warped), if it loops.

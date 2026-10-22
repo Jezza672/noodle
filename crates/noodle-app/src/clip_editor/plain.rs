@@ -1,39 +1,19 @@
-//! The clip editor for a clip that isn't warped: its audio on a seconds ruler,
-//! the part the clip plays lit and the rest dimmed. Dragging the waveform
-//! slips the audio under the clip's window (it changes the clip's offset into
-//! the file, not where the clip is). The Warp button in the toolbar turns the
-//! beat editing on.
+//! The clip editor for a clip that isn't warped: the shared audio pane (see
+//! [`super::pane`]) on the clip's seconds, with the clip's gain envelope on
+//! top. The part the clip plays is lit and the rest dimmed; dragging the
+//! waveform slips the audio under the clip's window (it changes the clip's
+//! offset into the file, not where the clip is), and pulling either edge of
+//! the window trims the clip like the timeline does. The Warp button in the
+//! toolbar turns the beat editing on.
 
-use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, vec2};
+use egui::Rect;
 use noodle_core::{AudioClip, Clip, ClipContent, ClipId, Command, Tick};
-use noodle_io::Peaks;
 
-use super::curve;
-use super::{ClipEditor, MAX_COLUMNS, MAX_PPB, MIN_PPB, RULER};
+use super::ClipEditor;
+use super::pane::{self, CurveSource, Edge, Gesture};
 use crate::session::{Edit, Session};
-use crate::theme::{self, timeline as colors};
 use crate::timeline::Loaded;
-
-/// A drag of the waveform: where the pointer was, and the clip then.
-pub(super) struct Slip {
-    press_x: f32,
-    original: Clip,
-}
-
-/// Where the seconds are on the screen: second 0 is the start of the clip's
-/// window, so the audio before it (the file's first `offset` frames) is at a
-/// negative time.
-#[derive(Clone, Copy)]
-struct Axis {
-    origin: f32,
-    pps: f32,
-}
-
-impl Axis {
-    fn x(self, seconds: f64) -> f32 {
-        self.origin + seconds as f32 * self.pps
-    }
-}
+use crate::timeline::clips;
 
 /// Where things were drawn last frame, for tests to point at.
 #[cfg(test)]
@@ -72,37 +52,29 @@ pub(super) fn show(
     else {
         return edits;
     };
-    let (offset_secs, length_secs, file_secs) = (
-        audio.offset as f64 / rate,
-        audio.length as f64 / rate,
-        file_frames as f64 / rate,
+    let (offset_secs, length_secs) = (audio.offset as f64 / rate, audio.length as f64 / rate);
+    let map = project.tempo_map();
+    let playhead = playhead.filter(|at| *at >= clip.start).and_then(|at| {
+        let seconds = map.seconds_at(at) - map.seconds_at(clip.start);
+        (seconds <= length_secs).then_some(offset_secs + seconds)
+    });
+    let out = pane::show(
+        ui,
+        &mut state.view,
+        body,
+        &pane::Spec {
+            peaks: loaded.peaks.as_deref(),
+            curve: CurveSource::File(&loaded.path),
+            rate,
+            frames: file_frames,
+            zero: offset_secs,
+            lit: (offset_secs, offset_secs + length_secs),
+            looping: None,
+            gain: audio.gain,
+            playhead,
+        },
     );
-    let ruler = Rect::from_min_size(body.min, vec2(body.width(), RULER));
-    let wave = Rect::from_min_max(Pos2::new(body.left(), ruler.bottom()), body.max);
-    let area = Rect::from_min_max(ruler.min, body.max);
-
-    // The file runs from -offset to (file - offset) around the window.
-    let extent = (-offset_secs, file_secs - offset_secs);
-    if state.focus {
-        state.focus = false;
-        let span = (extent.1 - extent.0).max(0.1) as f32;
-        state.ppb = ((area.width() - 24.0) / span).clamp(MIN_PPB, MAX_PPB);
-        state.scroll_x = extent.0 as f32 * state.ppb - 12.0;
-    }
-    if ui.rect_contains_pointer(area) {
-        // The slip changes the extent while it runs; scrolling follows the
-        // clip's start instead, so the view doesn't slide under the pointer.
-        super::navigate(
-            ui,
-            state,
-            area,
-            (extent.0.min(0.0), extent.1.max(length_secs)),
-        );
-    }
-    let axis = Axis {
-        origin: area.left() - state.scroll_x,
-        pps: state.ppb,
-    };
+    let (wave, axis, response) = (out.wave, out.axis, out.response);
     #[cfg(test)]
     {
         state.plain_geometry = Some(Geometry {
@@ -111,90 +83,54 @@ pub(super) fn show(
             pps: axis.pps,
         });
     }
-
-    let painter = ui.painter_at(body);
-    painter.rect_filled(wave, 0.0, colors::BACKGROUND);
-    // Zoomed in to a few frames a screen, the samples themselves are drawn.
-    let seconds = |x: f32| f64::from((x - axis.origin) / axis.pps) + offset_secs;
-    let frames = |x: f32| (seconds(x) * rate).clamp(0.0, file_frames as f64) as u64;
-    let (first, last) = (frames(wave.left()), frames(wave.right()) + 1);
-    let samples = if (last - first) as f32 <= 2.0 * wave.width() {
-        curve::window(&mut state.samples, &loaded.path, first, last, file_frames)
-    } else {
-        None
-    };
-    draw_waveform(
-        &painter,
-        wave,
-        axis,
-        loaded.peaks.as_deref(),
-        samples.map(|s| (s, (first, last))),
-        rate,
-        offset_secs,
-        audio.gain,
-    );
-    // The audio outside the window is dimmed.
-    let dim = Color32::BLACK.gamma_multiply(0.45);
-    let (from, to) = (axis.x(0.0), axis.x(length_secs));
-    for (a, b) in [(wave.left(), from), (to, wave.right())] {
-        let (a, b) = (a.max(wave.left()), b.min(wave.right()));
-        if b > a {
-            painter.rect_filled(Rect::from_x_y_ranges(a..=b, wave.y_range()), 0.0, dim);
+    for gesture in out.gestures {
+        match gesture {
+            Gesture::Begin => state.slip = Some(clip.clone()),
+            Gesture::Slip(seconds) => {
+                if let Some(original) = &state.slip
+                    && let Some(changed) = slipped(original, seconds, rate, file_frames)
+                    && changed != *clip
+                {
+                    edits.push(Edit::Drag(Command::SetClip { id, clip: changed }));
+                }
+            }
+            Gesture::Edge(edge, file_seconds) => {
+                let start_secs = map.seconds_at(clip.start);
+                let tick = Tick(
+                    map.tick_at_seconds(start_secs + file_seconds - offset_secs)
+                        .round() as i64,
+                );
+                let sample_rate = loaded.source.sample_rate;
+                let changed = match edge {
+                    Edge::Start => clips::trim_start(map, clip, tick, sample_rate, None),
+                    Edge::End => {
+                        clips::trim_end(map, clip, tick, sample_rate, Some(file_frames), None)
+                    }
+                    Edge::LoopStart | Edge::LoopEnd => None,
+                };
+                if let Some(changed) = changed.filter(|c| c != clip) {
+                    if edge == Edge::Start
+                        && let Some(new) = changed.as_audio()
+                    {
+                        // Time 0 is the window's start: keep the audio where
+                        // it is on screen while the window moves over it.
+                        let moved = (new.offset as f64 - audio.offset as f64) / rate;
+                        state.view.scroll_x -= moved as f32 * axis.pps;
+                    }
+                    edits.push(Edit::Drag(Command::SetClip { id, clip: changed }));
+                }
+            }
+            Gesture::Release => {
+                state.slip = None;
+                edits.push(Edit::EndDrag);
+            }
         }
-    }
-    for x in [from, to] {
-        if (wave.left()..=wave.right()).contains(&x) {
-            painter.vline(x, wave.y_range(), Stroke::new(1.0, colors::TEXT_WEAK));
-        }
-    }
-    draw_ruler(&painter, ruler, wave, axis);
-    if let Some(at) = playhead.filter(|at| *at >= clip.start) {
-        let map = project.tempo_map();
-        let seconds = map.seconds_at(at) - map.seconds_at(clip.start);
-        let x = axis.x(seconds);
-        if seconds <= length_secs && (wave.left()..=wave.right()).contains(&x) {
-            painter.vline(x, area.y_range(), Stroke::new(1.0, colors::PLAYHEAD));
-        }
-    }
-
-    // Dragging the waveform slips the audio under the window.
-    let response = ui.interact(
-        wave,
-        ui.id().with("clip editor audio"),
-        Sense::click_and_drag(),
-    );
-    if response.hovered() || state.slip.is_some() {
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-    }
-    if response.drag_started()
-        && let Some(press) = ui.input(|i| i.pointer.press_origin())
-    {
-        state.slip = Some(Slip {
-            press_x: press.x,
-            original: clip.clone(),
-        });
-    }
-    if response.dragged()
-        && let (Some(slip), Some(pos)) = (&state.slip, response.interact_pointer_pos())
-        && let Some(changed) = slipped(
-            &slip.original,
-            (pos.x - slip.press_x) / axis.pps,
-            rate,
-            file_frames,
-        )
-        && changed != *clip
-    {
-        edits.push(Edit::Drag(Command::SetClip { id, clip: changed }));
-    }
-    if response.drag_stopped() && state.slip.take().is_some() {
-        edits.push(Edit::EndDrag);
     }
     if state.slip.is_some() && project.clip(id).is_none() {
         state.slip = None;
     }
     // The gain envelope, in timeline time from the clip's start.
     {
-        let map = project.tempo_map();
         let start = map.seconds_at(clip.start);
         let x_of = |tick: Tick| axis.x(map.seconds_at(Tick(clip.start.0 + tick.0)) - start);
         let tick_at = |x: f32| {
@@ -203,6 +139,7 @@ pub(super) fn show(
         };
         let end = map.sample_at(clip.start, rate) + audio.length;
         let length = Tick(map.tick_at_sample(end, rate).round() as i64 - clip.start.0);
+        let painter = ui.painter_at(body);
         edits.extend(super::gain_line::show(
             ui,
             &painter,
@@ -217,15 +154,6 @@ pub(super) fn show(
             audio,
             &response,
         ));
-    }
-    if loaded.peaks.is_none() {
-        painter.text(
-            wave.center(),
-            Align2::CENTER_CENTER,
-            "Reading the waveform…",
-            FontId::proportional(12.0),
-            colors::TEXT_WEAK,
-        );
     }
     edits
 }
@@ -246,108 +174,6 @@ pub(super) fn slipped(original: &Clip, seconds: f32, rate: f64, file_frames: u64
         }),
         ..original.clone()
     })
-}
-
-/// The file's peaks across the window, one column per pixel.
-#[allow(clippy::too_many_arguments)]
-fn draw_waveform(
-    painter: &egui::Painter,
-    wave: Rect,
-    axis: Axis,
-    peaks: Option<&Peaks>,
-    samples: Option<(&curve::Samples, (u64, u64))>,
-    rate: f64,
-    offset_secs: f64,
-    gain: f32,
-) {
-    let Some(peaks) = peaks else {
-        return;
-    };
-    let frames = peaks.frames();
-    // The file's frames, on screen.
-    let (x0, x1) = (
-        axis.x(-offset_secs),
-        axis.x(frames as f64 / rate - offset_secs),
-    );
-    let (v0, v1) = (x0.max(wave.left()), x1.min(wave.right()));
-    if v1 - v0 < 0.5 || x1 <= x0 {
-        return;
-    }
-    let ink = theme::ACCENT.gamma_multiply(0.55);
-    if let Some((samples, frames)) = samples
-        && axis.pps / rate as f32 >= curve::CURVE_AT
-    {
-        curve::draw(painter, wave, samples, frames, gain, ink, |f| {
-            axis.x(f / rate - offset_secs)
-        });
-        return;
-    }
-    let across =
-        |x: f32| (f64::from((x - x0) / (x1 - x0)) * frames as f64).clamp(0.0, frames as f64);
-    let columns = ((v1 - v0).ceil() as usize).clamp(1, MAX_COLUMNS);
-    let (start, end) = (across(v0).round() as u64, across(v1).round() as u64);
-    let middle = wave.center().y;
-    let half = wave.height() / 2.0 - 2.0;
-    let stroke = Stroke::new((v1 - v0) / columns as f32, ink);
-    for (i, peak) in peaks.columns(None, start, end, columns).iter().enumerate() {
-        let x = v0 + (i as f32 + 0.5) * (v1 - v0) / columns as f32;
-        let (min, max) = (
-            (peak.min * gain).clamp(-1.0, 1.0),
-            (peak.max * gain).clamp(-1.0, 1.0),
-        );
-        painter.line_segment(
-            [
-                Pos2::new(x, middle - max * half - 0.5),
-                Pos2::new(x, middle - min * half + 0.5),
-            ],
-            stroke,
-        );
-    }
-}
-
-/// A seconds ruler: a line at a round number of seconds, labelled when there
-/// is room.
-fn draw_ruler(painter: &egui::Painter, ruler: Rect, wave: Rect, axis: Axis) {
-    painter.rect_filled(ruler, 0.0, colors::RULER);
-    let every: f64 = [
-        0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0,
-    ]
-    .into_iter()
-    .find(|s| *s * f64::from(axis.pps) >= 60.0)
-    .unwrap_or(120.0);
-    let first =
-        ((f64::from(ruler.left() - axis.origin) / f64::from(axis.pps)) / every).floor() as i64;
-    let last =
-        ((f64::from(ruler.right() - axis.origin) / f64::from(axis.pps)) / every).ceil() as i64;
-    for n in first..=last {
-        let seconds = n as f64 * every;
-        let x = axis.x(seconds);
-        if !(ruler.left()..=ruler.right()).contains(&x) {
-            continue;
-        }
-        painter.vline(
-            x,
-            ruler.bottom() - 6.0..=wave.bottom(),
-            Stroke::new(1.0, colors::BEAT_LINE),
-        );
-        painter.text(
-            Pos2::new(x + 3.0, ruler.top() + 2.0),
-            Align2::LEFT_TOP,
-            seconds_label(seconds, every),
-            FontId::proportional(10.0),
-            colors::TEXT_WEAK,
-        );
-    }
-}
-
-fn seconds_label(seconds: f64, every: f64) -> String {
-    if every >= 1.0 {
-        format!("{seconds:.0} s")
-    } else if every >= 0.1 {
-        format!("{seconds:.2} s")
-    } else {
-        format!("{:.0} ms", seconds * 1000.0)
-    }
 }
 
 #[cfg(test)]

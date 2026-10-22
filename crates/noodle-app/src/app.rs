@@ -2640,19 +2640,25 @@ mod tests {
         assert!(h.state().sample_view.node().is_none());
     }
 
+    fn open_sample_view(h: &mut Harness<'static, App>) -> crate::sample_view::Geometry {
+        use crate::testkit::double_click;
+        let at = h.get_by_label("Sample waveform").rect().center();
+        double_click(h, at);
+        h.run();
+        h.ctx
+            .data(|d| d.get_temp::<crate::sample_view::Geometry>(egui::Id::new("sample view body")))
+            .expect("the view has been drawn")
+    }
+
     #[test]
     fn dragging_the_start_marker_in_the_sample_view_sets_the_start_parameter() {
-        use crate::testkit::{double_click, drag_between};
+        use crate::testkit::drag_between;
         let (mut h, id) = sampler_rig();
-        let at = h.get_by_label("Sample waveform").rect().center();
-        double_click(&mut h, at);
-        h.run();
-        let body = h
-            .ctx
-            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sample view body")))
-            .expect("the view has been drawn");
-        let from = egui::Pos2::new(body.left() + 1.0, body.center().y);
-        let to = egui::Pos2::new(body.left() + body.width() * 0.25, body.center().y);
+        let (body, axis) = open_sample_view(&mut h);
+        // The sample is a second long.
+        let y = body.center().y;
+        let from = egui::Pos2::new(axis.x(0.0) + 1.0, y);
+        let to = egui::Pos2::new(axis.x(0.25), y);
         drag_between(&mut h, egui::Modifiers::NONE, from, to);
         let start = h.state().session.project().graph().node(id).unwrap().params["start"];
         assert!((start - 0.25).abs() < 0.01, "{start}");
@@ -2663,17 +2669,63 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_scroll_zooms_the_sample_view_around_the_pointer_and_scroll_pans() {
-        use crate::testkit::{double_click, wheel, wheel_with};
-        let (mut h, _id) = sampler_rig();
-        let at = h.get_by_label("Sample waveform").rect().center();
-        double_click(&mut h, at);
+    fn dragging_the_sample_between_the_markers_slips_the_region_along_it() {
+        use crate::testkit::drag_between;
+        let (mut h, id) = sampler_rig();
+        // A region in the middle to slip.
+        h.state_mut().session.edit([
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "start".into(),
+                value: Some(0.2),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "end".into(),
+                value: Some(0.6),
+            }),
+        ]);
+        h.state_mut().session.edit([
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop".into(),
+                value: Some(1.0),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop_start".into(),
+                value: Some(0.3),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop_end".into(),
+                value: Some(0.5),
+            }),
+        ]);
         h.run();
-        let body = h
-            .ctx
-            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sample view body")))
-            .expect("the view has been drawn");
+        let (body, axis) = open_sample_view(&mut h);
+        let y = body.center().y;
+        // The audio follows the pointer, 0.1 s to the left.
+        let from = egui::Pos2::new(axis.x(0.4), y);
+        let to = egui::Pos2::new(axis.x(0.3), y);
+        drag_between(&mut h, egui::Modifiers::NONE, from, to);
+        let params = &h.state().session.project().graph().node(id).unwrap().params;
+        assert!((params["start"] - 0.3).abs() < 0.01, "{}", params["start"]);
+        assert!((params["loop_start"] - 0.4).abs() < 0.01);
+        assert!((params["loop_end"] - 0.6).abs() < 0.01);
+        assert!((params["end"] - 0.7).abs() < 0.01, "{}", params["end"]);
+    }
+
+    #[test]
+    fn ctrl_scroll_zooms_the_sample_view_around_the_pointer_and_scroll_pans() {
+        use crate::testkit::{wheel, wheel_with};
+        let (mut h, _id) = sampler_rig();
+        let (body, axis) = open_sample_view(&mut h);
         let point = egui::Pos2::new(body.left() + body.width() * 0.5, body.center().y);
+        let (zoom0, under0) = (
+            h.state().sample_view.zoom(),
+            (point.x - axis.origin) / axis.pps,
+        );
         for _ in 0..10 {
             wheel_with(
                 &mut h,
@@ -2684,10 +2736,17 @@ mod tests {
             );
         }
         h.step();
-        let (a, b) = h.state().sample_view.window();
-        assert!(b - a < 0.5, "zoomed in: {a}..{b}");
-        assert!(a < 0.5 && 0.5 < b, "still around the pointer: {a}..{b}");
+        let zoom = h.state().sample_view.zoom();
+        assert!(zoom > zoom0 * 2.0, "zoomed in: {zoom0} -> {zoom}");
+        // The second under the pointer stays under it.
+        let (_, axis) = h
+            .ctx
+            .data(|d| d.get_temp::<crate::sample_view::Geometry>(egui::Id::new("sample view body")))
+            .unwrap();
+        let under = (point.x - axis.origin) / axis.pps;
+        assert!((under - under0).abs() < 0.05, "{under0} -> {under}");
         // The plain wheel pans.
+        let scroll = h.state().sample_view.scroll();
         for _ in 0..3 {
             wheel(
                 &mut h,
@@ -2696,8 +2755,7 @@ mod tests {
                 egui::vec2(-60.0, 0.0),
             );
         }
-        let (c, _) = h.state().sample_view.window();
-        assert!(c > a, "panned right: {a} -> {c}");
+        assert!(h.state().sample_view.scroll() > scroll, "panned right");
     }
 
     #[test]

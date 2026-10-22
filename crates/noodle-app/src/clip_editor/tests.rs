@@ -790,6 +790,39 @@ fn an_unwarped_clip_shows_its_waveform_and_the_drag_slips_the_audio_under_it() {
     assert_eq!(rig.session.project().clip(rig.clip).unwrap().start, Tick(0));
 }
 
+#[test]
+fn pulling_the_end_edge_of_an_unwarped_clip_trims_it() {
+    let mut h = plain_rig();
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    let length = |h: &H| {
+        let rig = h.state();
+        rig.session
+            .project()
+            .clip(rig.clip)
+            .unwrap()
+            .as_audio()
+            .unwrap()
+            .length
+    };
+    assert_eq!(length(&h), 2 * u64::from(RATE));
+    let y = g.wave.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.window + g.pps * 2.0 - 1.0, y),
+        Pos2::new(g.window + g.pps * 1.0, y),
+    );
+    let trimmed = length(&h);
+    assert!(
+        (trimmed as i64 - i64::from(RATE)).abs() < i64::from(RATE) / 50,
+        "{trimmed}"
+    );
+    // Pulling an edge trims; it does not slip the audio.
+    assert_eq!(offset(&h), 0);
+    h.state_mut().session.undo();
+    assert_eq!(length(&h), 2 * u64::from(RATE));
+}
+
 /// Lets the double-click window pass, so the next click starts a new count.
 fn wait_out_double_click(h: &mut H) {
     for _ in 0..30 {
@@ -875,7 +908,7 @@ fn ctrl_scroll_zooms_the_clip_editor_for_any_clip() {
         } else {
             h.state().editor.plain_geometry().expect("drawn").wave
         };
-        let before = h.state().editor.ppb;
+        let before = h.state().editor.view.ppb;
         crate::testkit::wheel_with(
             &mut h,
             wave.center(),
@@ -884,7 +917,7 @@ fn ctrl_scroll_zooms_the_clip_editor_for_any_clip() {
             Modifiers::COMMAND,
         );
         h.step();
-        let after = h.state().editor.ppb;
+        let after = h.state().editor.view.ppb;
         assert!(after > before * 1.2, "warped {warped}: {before} -> {after}");
     }
 }

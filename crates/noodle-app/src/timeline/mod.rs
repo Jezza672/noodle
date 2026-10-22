@@ -10,7 +10,7 @@
 
 pub(crate) mod add_track;
 mod automation;
-mod clips;
+pub(crate) mod clips;
 mod crossfade;
 pub(crate) mod grid;
 pub(crate) mod header;

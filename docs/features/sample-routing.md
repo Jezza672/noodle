@@ -22,3 +22,10 @@ Delivered. This is the record of what was planned and built; open work is in [RO
 5. **Not in scope.** The clip's warp is not carried (the window is the part of
    the file, played unwarped); the Sampler's waveform view shows its own option,
    not a wired sample.
+6. **One audio pane for clips and samples.** The sample view and the unwarped
+   clip editor share `clip_editor/pane.rs`: seconds ruler, zoom and pan (also
+   middle-drag), the sample curve when zoomed in, the lit part with draggable
+   start and end, loop ends, and slip. A clip's edges trim it; a Sampler's set
+   `start`/`end`; dragging the audio slips the clip's offset or moves the
+   Sampler's region. Warping, the gain envelope and the playhead stay
+   clip-only, since they depend on the clip's place on the timeline.

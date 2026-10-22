@@ -130,13 +130,20 @@ timeline's trims, fades, split and slip of a warped section work in warped beats
 on (and off at the end of the drag); the node dips (declick) when it flips.
 A clip that isn't warped opens too (`clip_editor/plain.rs`): its file on a
 seconds ruler with the part the clip plays lit, where dragging the waveform
-slips the audio under the clip (a `SetClip` of the offset, one undo step) and
-a Warp button turns the beat editing on. The toolbar over the piano roll, the
-clip editor and the sample view is `toolbar.rs`: a title and a Close button that
-stay in view however long the hint is. The Sampler's sample (`sample_view.rs`)
-is drawn as a preview in its properties, and a double-click opens it in the same
-slot with draggable start, end and loop markers (they set the node's
-parameters).
+slips the audio under the clip (a `SetClip` of the offset, one undo step),
+pulling either edge of the lit part trims the clip (the timeline's
+`trim_start`/`trim_end`), and a Warp button turns the beat editing on.
+That seconds-axis view is `clip_editor/pane.rs`, shared with the Sampler's
+sample: a clip and a sample are the same thing to it (a lit stretch of a
+file, optionally with a loop inside), so zoom, pan, the sample curve when
+zoomed in, slip and edge pulls behave the same on both. The caller turns the
+pane's `Gesture`s into edits: `plain.rs` into `SetClip`, `sample_view.rs`
+into the node's `start`, `end` and loop parameters. Beat warping, the gain
+envelope and the playhead belong to a clip's place on the timeline, so only
+clips have them. The toolbar over the piano roll, the clip editor and the
+sample view is `toolbar.rs`: a title and a Close button that stay in view
+however long the hint is. The Sampler's sample (`sample_view.rs`) is drawn as
+a preview in its properties, and a double-click opens it in the same slot.
 
 **Grid offset and the clip editor's gestures.** `ClipWarp::grid_offset` slides a
 clip's beat lines (not its markers or tempo) by a number of beats, so the lines
