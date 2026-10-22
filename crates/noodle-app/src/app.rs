@@ -65,7 +65,6 @@ pub struct App {
     timeline: TimelineState,
     piano_roll: PianoRoll,
     clip_editor: ClipEditor,
-    sample_view: crate::sample_view::SampleView,
     clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
@@ -202,7 +201,6 @@ impl App {
             timeline: TimelineState::default(),
             piano_roll: PianoRoll::default(),
             clip_editor: ClipEditor::default(),
-            sample_view: Default::default(),
             clip_panel: ClipPanel::default(),
             audition_track: None,
             devices: DevicePicker::default(),
@@ -457,12 +455,10 @@ impl App {
                 }
                 if let Some(clip) = out.open_midi {
                     self.clip_editor.close();
-                    self.sample_view.close();
                     self.piano_roll.open(clip);
                 }
                 if let Some(clip) = out.open_audio {
                     self.piano_roll.close();
-                    self.sample_view.close();
                     self.clip_editor.open(clip);
                 }
                 for (track, kind, on) in out.arm {
@@ -473,19 +469,7 @@ impl App {
         // A double-click on a Sampler's preview in the properties panel.
         if let Some(node) = crate::sample_view::take_request(ui.ctx()) {
             self.piano_roll.close();
-            self.clip_editor.close();
-            self.sample_view.open(node);
-        }
-        self.sample_view.retain_existing(&self.session);
-        if self.sample_view.node().is_some() {
-            egui::Panel::top("sample view")
-                .resizable(true)
-                .default_size(crate::sample_view::DEFAULT_HEIGHT)
-                .frame(egui::Frame::NONE.fill(theme::PANEL))
-                .show(ui, |ui| {
-                    let edits = crate::sample_view::show(ui, &mut self.sample_view, &self.session);
-                    self.session.edit(edits);
-                });
+            self.clip_editor.open_sampler(node);
         }
 
         if let Some(clip) = self.piano_roll.clip() {
@@ -505,13 +489,21 @@ impl App {
                     }
                 });
         }
-        if let Some(clip) = self.clip_editor.clip() {
+        self.clip_editor.retain_existing(self.session.project());
+        if let Some(subject) = self.clip_editor.subject() {
             egui::Panel::top("clip editor")
                 .resizable(true)
                 .default_size(clip_editor::DEFAULT_HEIGHT)
                 .frame(egui::Frame::NONE.fill(theme::PANEL))
                 .show(ui, |ui| {
-                    let loaded = self.clip_source(ui.ctx(), clip);
+                    let loaded = match subject {
+                        clip_editor::subject::Subject::Clip(clip) => {
+                            self.clip_source(ui.ctx(), clip)
+                        }
+                        clip_editor::subject::Subject::Sampler(node) => {
+                            crate::sample_view::loaded(ui.ctx(), &self.session, node)
+                        }
+                    };
                     let playhead = Some(self.session.playhead());
                     let out = clip_editor::show(
                         ui,
@@ -2628,26 +2620,54 @@ mod tests {
     fn the_samplers_properties_show_its_sample_and_a_double_click_opens_the_view() {
         use crate::testkit::double_click;
         let (mut h, id) = sampler_rig();
-        assert!(h.state().sample_view.node().is_none());
+        assert!(h.state().clip_editor.subject().is_none());
         let at = h.get_by_label("Sample waveform").rect().center();
         double_click(&mut h, at);
         h.run();
-        assert_eq!(h.state().sample_view.node(), Some(id));
-        h.get_by_label("Sample · 1.00 s at 48000 Hz");
+        assert_eq!(
+            h.state().clip_editor.subject(),
+            Some(clip_editor::subject::Subject::Sampler(id))
+        );
+        h.get_by_label("Sample editor · 1.00 s at 48000 Hz");
         // Close shuts it again.
         h.get_by_label("Close").click();
         h.run();
-        assert!(h.state().sample_view.node().is_none());
+        assert!(h.state().clip_editor.subject().is_none());
     }
 
-    fn open_sample_view(h: &mut Harness<'static, App>) -> crate::sample_view::Geometry {
+    /// Where the sample editor drew its waveform, and the seconds axis.
+    struct SampleAxis {
+        origin: f32,
+        pps: f32,
+    }
+
+    impl SampleAxis {
+        fn x(&self, seconds: f64) -> f32 {
+            self.origin + seconds as f32 * self.pps
+        }
+    }
+
+    fn sample_axis(h: &Harness<'static, App>) -> (egui::Rect, SampleAxis) {
+        let g = h
+            .state()
+            .clip_editor
+            .plain_geometry()
+            .expect("the editor has been drawn");
+        (
+            g.wave,
+            SampleAxis {
+                origin: g.window,
+                pps: g.pps,
+            },
+        )
+    }
+
+    fn open_sample_view(h: &mut Harness<'static, App>) -> (egui::Rect, SampleAxis) {
         use crate::testkit::double_click;
         let at = h.get_by_label("Sample waveform").rect().center();
         double_click(h, at);
         h.run();
-        h.ctx
-            .data(|d| d.get_temp::<crate::sample_view::Geometry>(egui::Id::new("sample view body")))
-            .expect("the view has been drawn")
+        sample_axis(h)
     }
 
     #[test]
@@ -2723,7 +2743,7 @@ mod tests {
         let (body, axis) = open_sample_view(&mut h);
         let point = egui::Pos2::new(body.left() + body.width() * 0.5, body.center().y);
         let (zoom0, under0) = (
-            h.state().sample_view.zoom(),
+            h.state().clip_editor.zoom(),
             (point.x - axis.origin) / axis.pps,
         );
         for _ in 0..10 {
@@ -2736,17 +2756,14 @@ mod tests {
             );
         }
         h.step();
-        let zoom = h.state().sample_view.zoom();
+        let zoom = h.state().clip_editor.zoom();
         assert!(zoom > zoom0 * 2.0, "zoomed in: {zoom0} -> {zoom}");
         // The second under the pointer stays under it.
-        let (_, axis) = h
-            .ctx
-            .data(|d| d.get_temp::<crate::sample_view::Geometry>(egui::Id::new("sample view body")))
-            .unwrap();
+        let (_, axis) = sample_axis(&h);
         let under = (point.x - axis.origin) / axis.pps;
         assert!((under - under0).abs() < 0.05, "{under0} -> {under}");
         // The plain wheel pans.
-        let scroll = h.state().sample_view.scroll();
+        let scroll = h.state().clip_editor.scroll();
         for _ in 0..3 {
             wheel(
                 &mut h,
@@ -2755,7 +2772,7 @@ mod tests {
                 egui::vec2(-60.0, 0.0),
             );
         }
-        assert!(h.state().sample_view.scroll() > scroll, "panned right");
+        assert!(h.state().clip_editor.scroll() > scroll, "panned right");
     }
 
     #[test]

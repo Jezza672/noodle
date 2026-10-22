@@ -22,10 +22,25 @@ Delivered. This is the record of what was planned and built; open work is in [RO
 5. **Not in scope.** The clip's warp is not carried (the window is the part of
    the file, played unwarped); the Sampler's waveform view shows its own option,
    not a wired sample.
-6. **One audio pane for clips and samples.** The sample view and the unwarped
-   clip editor share `clip_editor/pane.rs`: seconds ruler, zoom and pan (also
-   middle-drag), the sample curve when zoomed in, the lit part with draggable
+6. **One audio pane for clips and samples (#231).** The sample view and the
+   unwarped clip editor share `clip_editor/pane.rs`: seconds ruler, zoom and pan
+   (also middle-drag), the sample curve when zoomed in, the lit part with draggable
    start and end, loop ends, and slip. A clip's edges trim it; a Sampler's set
    `start`/`end`; dragging the audio slips the clip's offset or moves the
-   Sampler's region. Warping, the gain envelope and the playhead stay
-   clip-only, since they depend on the clip's place on the timeline.
+   Sampler's region.
+7. **Clip and sample parity.** "Anything you can do to a clip you can do to a
+   sample", and the other way round. A Sampler's sample now opens in the clip
+   editor itself (`clip_editor/subject.rs`: one `Subject`, a clip or a Sampler,
+   with the same commands either way), and gained what a clip had:
+   - a **gain envelope** (`gain_env`, drawn and edited on the waveform);
+   - a **playhead** for each sounding voice (Sampler voice positions reported
+     through `Telemetry::open_positions`);
+   - a **warp** (`warp`: tempo, follow tempo, markers, grid offset, quantise,
+     Detect and Tap, edited on beats in the same view, with a Warp section in
+     the Sampler's properties). The Sampler plays it as Repitch;
+   - and the other direction, a **loop on an unwarped clip** (a natural-speed
+     warp that holds the loop; the clip stays in the seconds view, with the
+     toolbar's Loop checkbox and pullable loop ends).
+   Not carried over: Grain and Beats warp modes for samples (they need the
+   worker lanes of a track input), the gain envelope in the beat view, and
+   a sample loop shorter than a beat in the beat view.

@@ -1,14 +1,12 @@
-//! The gain envelope of an audio clip, drawn as a line over its waveform with
+//! The gain envelope of an audio clip or a sample, drawn as a line over its waveform with
 //! a handle on each point. Double-click the waveform to add a point, drag a
 //! point to move it (it stops at its neighbours), double-click a point to
 //! remove it.
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, vec2};
-use noodle_core::{
-    AudioClip, Clip, ClipContent, ClipId, Command, GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint,
-    Tick,
-};
+use noodle_core::{Command, GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint, Tick};
 
+use super::subject::Subject;
 use crate::session::Edit;
 use crate::theme::timeline as colors;
 
@@ -36,32 +34,19 @@ fn db_at(wave: Rect, y: f32) -> f32 {
     GAIN_POINT_MIN_DB + along * (GAIN_POINT_MAX_DB - GAIN_POINT_MIN_DB)
 }
 
-fn with_points(clip: &Clip, points: Vec<GainPoint>) -> Option<Clip> {
-    let ClipContent::Audio(audio) = &clip.content else {
-        return None;
-    };
-    Some(Clip {
-        content: ClipContent::Audio(AudioClip {
-            gain_points: points,
-            ..audio.clone()
-        }),
-        ..clip.clone()
-    })
-}
-
-/// Draws the envelope of `audio` and handles its edits. `waveform` is the
-/// response of the waveform behind it, for a double-click that adds a point.
+/// Draws the envelope `points` of `id` and handles its edits, which `set`
+/// turns into commands. `waveform` is the response of the waveform behind it,
+/// for a double-click that adds a point.
 pub(super) fn show(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     frame: &Frame<'_>,
-    id: ClipId,
-    clip: &Clip,
-    audio: &AudioClip,
+    id: Subject,
+    points: &[GainPoint],
+    set: &dyn Fn(Vec<GainPoint>) -> Option<Command>,
     waveform: &egui::Response,
 ) -> Vec<Edit> {
     let mut edits = Vec::new();
-    let points = &audio.gain_points;
     let colour = Color32::from_rgb(0xF0, 0xB4, 0x4A);
     let at = |p: &GainPoint| Pos2::new((frame.x_of)(p.tick), y_of(frame.wave, p.db));
     if let (Some(first), Some(last)) = (points.first(), points.last()) {
@@ -99,25 +84,21 @@ pub(super) fn show(
             Stroke::new(1.5, colour),
         );
         if response.double_clicked() {
-            let mut rest = points.clone();
+            let mut rest = points.to_vec();
             rest.remove(i);
-            edits.extend(
-                with_points(clip, rest).map(|clip| Edit::Apply(Command::SetClip { id, clip })),
-            );
+            edits.extend(set(rest).map(Edit::Apply));
             handled = true;
         } else if response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (lo, hi) = neighbours(i);
-            let mut moved = points.clone();
+            let mut moved = points.to_vec();
             moved[i] = GainPoint {
                 tick: (frame.tick_at)(pos.x).clamp(lo, hi),
                 db: db_at(frame.wave, pos.y),
             };
-            if moved != *points
-                && let Some(clip) = with_points(clip, moved)
-            {
-                edits.push(Edit::Drag(Command::SetClip { id, clip }));
+            if moved != *points {
+                edits.extend(set(moved).map(Edit::Drag));
             }
             handled = true;
         } else if response.drag_stopped() {
@@ -130,7 +111,7 @@ pub(super) fn show(
         && let Some(pos) = waveform.interact_pointer_pos()
     {
         let tick = (frame.tick_at)(pos.x).clamp(Tick::ZERO, frame.length);
-        let mut added = points.clone();
+        let mut added = points.to_vec();
         let place = added.partition_point(|p| p.tick <= tick);
         added.insert(
             place,
@@ -139,9 +120,7 @@ pub(super) fn show(
                 db: db_at(frame.wave, pos.y),
             },
         );
-        edits.extend(
-            with_points(clip, added).map(|clip| Edit::Apply(Command::SetClip { id, clip })),
-        );
+        edits.extend(set(added).map(Edit::Apply));
     }
     edits
 }

@@ -142,8 +142,9 @@ pub(crate) struct Spec<'a> {
     /// The loop's ends, in seconds of the file, if it is on.
     pub looping: Option<(f64, f64)>,
     pub gain: f32,
-    /// The playhead, in seconds of the file.
-    pub playhead: Option<f64>,
+    /// The playheads, in seconds of the file: a clip has at most one, a
+    /// Sampler one for each sounding voice.
+    pub playheads: &'a [f64],
 }
 
 /// What the user did in the pane.
@@ -281,7 +282,7 @@ pub(crate) fn show(ui: &mut Ui, view: &mut View, body: Rect, spec: &Spec) -> Out
             edge.colour(),
         );
     }
-    if let Some(at) = spec.playhead {
+    for &at in spec.playheads {
         let x = axis.x(at - spec.zero);
         if (wave.left()..=wave.right()).contains(&x) {
             painter.vline(x, area.y_range(), Stroke::new(1.0, colors::PLAYHEAD));
@@ -472,9 +473,9 @@ fn seconds_label(seconds: f64, every: f64) -> String {
 }
 
 /// A Sampler's peaks, worked out once per sample.
-pub(crate) fn peaks_of(ui: &Ui, hash: &str, sample: &Sample) -> std::sync::Arc<Peaks> {
+pub(crate) fn peaks_of(ctx: &egui::Context, hash: &str, sample: &Sample) -> std::sync::Arc<Peaks> {
     let id = egui::Id::new(("sample peaks", hash));
-    if let Some(found) = ui.data(|d| d.get_temp::<std::sync::Arc<Peaks>>(id)) {
+    if let Some(found) = ctx.data(|d| d.get_temp::<std::sync::Arc<Peaks>>(id)) {
         return found;
     }
     let mut builder = noodle_io::PeaksBuilder::new(2, sample.sample_rate);
@@ -486,6 +487,6 @@ pub(crate) fn peaks_of(ui: &Ui, hash: &str, sample: &Sample) -> std::sync::Arc<P
         .collect();
     builder.push(&interleaved);
     let found = std::sync::Arc::new(builder.finish());
-    ui.data_mut(|d| d.insert_temp(id, found.clone()));
+    ctx.data_mut(|d| d.insert_temp(id, found.clone()));
     found
 }

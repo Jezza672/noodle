@@ -487,13 +487,19 @@ impl ClipWarp {
         warp.problem().is_none().then_some(warp)
     }
 
+    /// Whether the clip plays at its natural speed all along, with nothing
+    /// pinned to beats: it has a warp (for a loop, say) but is not warped in
+    /// the sense of following beats. The clip editor shows such a clip as it
+    /// shows an unwarped one, in seconds.
+    pub fn is_natural(&self) -> bool {
+        !self.tempo_conversion && (!self.use_markers || self.markers.is_empty())
+    }
+
     /// Whether the clip plays at its natural speed all along, so that it
     /// needs no warping. A looping clip is never left alone: the engine lays
     /// its repeats out.
     pub fn is_identity(&self) -> bool {
-        !self.tempo_conversion
-            && (!self.use_markers || self.markers.is_empty())
-            && self.loop_region.is_none()
+        self.is_natural() && self.loop_region.is_none()
     }
 
     /// The loop region in source seconds, if the clip loops.
