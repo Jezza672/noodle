@@ -101,6 +101,8 @@ pub struct TimelineState {
     warped_waves: warped_waves::WarpedWaves,
     automation: automation::State,
     crossfade: crossfade::State,
+    /// The bar a right-click on the ruler opened its menu at.
+    ruler_menu_bar: Option<u32>,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -141,6 +143,7 @@ impl Default for TimelineState {
             automation: automation::State::default(),
             crossfade: crossfade::State::default(),
             show_tempo: false,
+            ruler_menu_bar: None,
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -1294,6 +1297,58 @@ pub fn show(
         });
     // Only a new tick is worth seeking to: a held button, or a drag that stays
     // within a beat, would otherwise restart the audio's fade every frame.
+    // Right-click on the ruler adds or edits a time signature change at the
+    // bar under the pointer, and the loop is shown as a band along it.
+    {
+        let region = session.loop_region();
+        if region.on {
+            let band = Rect::from_x_y_ranges(
+                axis.x(region.start).max(ruler.left())..=axis.x(region.end).min(ruler.right()),
+                ruler.y_range(),
+            );
+            if band.width() > 0.0 {
+                ui.painter_at(ruler).rect_filled(
+                    band.shrink2(vec2(0.0, 1.0)),
+                    0.0,
+                    colors::SELECTED.gamma_multiply(0.3),
+                );
+            }
+        }
+    }
+    if scrub.secondary_clicked() {
+        state.ruler_menu_bar = scrub
+            .interact_pointer_pos()
+            .map(|pos| map.position(axis.tick(pos.x).max(Tick::ZERO)).bar);
+    }
+    scrub.context_menu(|ui| {
+        let Some(bar) = state.ruler_menu_bar else {
+            return;
+        };
+        ui.label(format!("Bar {}", bar + 1));
+        for (numerator, denominator) in crate::tempo::SIGNATURES {
+            let signature = noodle_core::TimeSignature {
+                numerator,
+                denominator,
+            };
+            if ui
+                .button(format!("Time signature {numerator}/{denominator}"))
+                .clicked()
+            {
+                ui.close();
+                edits.extend(
+                    crate::tempo::with_signature_at(map, bar, signature)
+                        .map(|new| Edit::Apply(Command::SetTempoMap(new))),
+                );
+            }
+        }
+        if ui.button("Remove time signature change").clicked() {
+            ui.close();
+            edits.extend(
+                crate::tempo::without_signature_at(map, bar)
+                    .map(|new| Edit::Apply(Command::SetTempoMap(new))),
+            );
+        }
+    });
     let seek = wanted.filter(|&tick| state.last_seek != Some(tick));
     let seek = jump.or(seek);
     state.last_seek = wanted;
