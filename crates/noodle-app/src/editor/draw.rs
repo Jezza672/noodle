@@ -357,10 +357,15 @@ fn boxed(
                 PortKind::Param(info) if port.key == key => Some(info.default),
                 _ => None,
             });
-            bodies
-                .param_live(node.id, key)
-                .map(|live| live.value)
-                .or_else(|| graph.node(node.id)?.params.get(key).copied())
+            // As in the properties panel, only a wired parameter reads live;
+            // an unwired one is its own value, so both views draw one curve.
+            let wired = graph.source(&Endpoint::new(node_id, key)).is_some();
+            let live = if wired {
+                bodies.param_live(node.id, key).map(|live| live.value)
+            } else {
+                None
+            };
+            live.or_else(|| graph.node(node.id)?.params.get(key).copied())
                 .or(default)
                 .unwrap_or(0.0)
         };
