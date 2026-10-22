@@ -476,6 +476,17 @@ impl ClipWarp {
         }
     }
 
+    /// The warp as text, for a setting that holds one (a Sampler's).
+    pub fn to_text(&self) -> String {
+        ron::to_string(self).unwrap_or_default()
+    }
+
+    /// The warp `text` holds, if it holds one that can play.
+    pub fn from_text(text: &str) -> Option<Self> {
+        let warp: Self = ron::from_str(text).ok()?;
+        warp.problem().is_none().then_some(warp)
+    }
+
     /// Whether the clip plays at its natural speed all along, so that it
     /// needs no warping. A looping clip is never left alone: the engine lays
     /// its repeats out.
@@ -753,6 +764,23 @@ impl WarpCurve {
     pub fn knots(&self) -> &[(f64, f64)] {
         self.curve.knots()
     }
+
+    /// The straight pieces of the curve, as (the source second the piece
+    /// begins at, how much `out` moves per source second there), in order.
+    /// The first piece begins at minus infinity and the last goes on for
+    /// ever, so every moment is in one.
+    pub fn pieces(&self) -> Vec<(f64, f64)> {
+        let knots = self.curve.knots();
+        let mut out = vec![(f64::NEG_INFINITY, self.curve.head)];
+        for (i, k) in knots.iter().enumerate() {
+            let slope = match knots.get(i + 1) {
+                Some(next) => (next.1 - k.1) / (next.0 - k.0),
+                None => self.curve.tail,
+            };
+            out.push((k.0, slope));
+        }
+        out
+    }
 }
 
 /// A rising line that bends at knots, and carries on straight past both ends.
@@ -831,6 +859,43 @@ mod tests {
         // With the markers off they do nothing.
         warp.use_markers = false;
         close(warp.beat_at(1.0), 2.0);
+    }
+
+    #[test]
+    fn a_warp_round_trips_through_text_and_bad_text_is_none() {
+        let mut warp = ClipWarp::at_tempo(97.0);
+        warp.set_marker(WarpMarker {
+            seconds: 0.5,
+            beat: 1.0,
+        });
+        warp.mode = WarpMode::Grain;
+        assert_eq!(ClipWarp::from_text(&warp.to_text()), Some(warp));
+        assert_eq!(ClipWarp::from_text(""), None);
+        assert_eq!(ClipWarp::from_text("(tempo: nonsense"), None);
+    }
+
+    #[test]
+    fn the_curve_says_how_fast_each_piece_plays() {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        for (seconds, beat) in [(0.5, 1.0), (1.0, 3.0)] {
+            warp.set_marker(WarpMarker { seconds, beat });
+        }
+        // Following the timeline, in beats a second: the clip's own 2 before
+        // and after the markers, 4 between them.
+        let pieces = warp.curve().pieces();
+        let slopes: Vec<f64> = pieces.iter().map(|p| p.1).collect();
+        assert_eq!(slopes.len(), 4);
+        for (got, want) in slopes.iter().zip([2.0, 2.0, 4.0, 2.0]) {
+            close(*got, want);
+        }
+        close(pieces[2].0, 0.5);
+        // Not following it, the curve is in seconds of playing time: the
+        // stretch between the markers plays at half speed.
+        warp.tempo_conversion = false;
+        let slopes: Vec<f64> = warp.curve().pieces().iter().map(|p| p.1).collect();
+        for (got, want) in slopes.iter().zip([1.0, 1.0, 2.0, 1.0]) {
+            close(*got, want);
+        }
     }
 
     #[test]

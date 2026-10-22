@@ -297,6 +297,36 @@ pub struct GainPoint {
     pub db: f32,
 }
 
+/// Gain points as text, for a setting that holds an envelope (a Sampler's,
+/// where `tick` counts millionths of the sample): `tick:db` pairs, comma
+/// separated.
+pub fn gain_points_to_text(points: &[GainPoint]) -> String {
+    points
+        .iter()
+        .map(|p| format!("{}:{}", p.tick.0, p.db))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The points `text` holds, sorted by tick and with the levels kept in
+/// range; what can't be read is left out.
+pub fn gain_points_from_text(text: &str) -> Vec<GainPoint> {
+    let mut points: Vec<GainPoint> = text
+        .split(',')
+        .filter_map(|pair| {
+            let (tick, db) = pair.trim().split_once(':')?;
+            let db: f32 = db.parse().ok()?;
+            let tick: i64 = tick.parse().ok()?;
+            db.is_finite().then(|| GainPoint {
+                tick: Tick(tick),
+                db: db.clamp(GAIN_POINT_MIN_DB, GAIN_POINT_MAX_DB),
+            })
+        })
+        .collect();
+    points.sort_by_key(|p| p.tick);
+    points
+}
+
 /// The lowest and highest a gain point can be set to, in dB.
 pub const GAIN_POINT_MIN_DB: f32 = -60.0;
 pub const GAIN_POINT_MAX_DB: f32 = 24.0;
@@ -477,6 +507,26 @@ impl AudioClip {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gain_points_round_trip_through_text_sorted_and_in_range() {
+        let points = vec![
+            GainPoint {
+                tick: Tick(100),
+                db: -6.5,
+            },
+            GainPoint {
+                tick: Tick(900_000),
+                db: 3.0,
+            },
+        ];
+        assert_eq!(gain_points_from_text(&gain_points_to_text(&points)), points);
+        let messy = gain_points_from_text("500:-99,junk,100:2,7:nan");
+        assert_eq!(messy.len(), 2);
+        assert_eq!(messy[0].tick, Tick(100));
+        assert_eq!(messy[1].db, GAIN_POINT_MIN_DB);
+        assert!(gain_points_from_text("").is_empty());
+    }
+
     use super::*;
 
     fn clip_with(points: &[(i64, f32)]) -> AudioClip {

@@ -58,6 +58,8 @@ struct Channels {
     params: HashMap<(NodeId, String), Vec<Arc<ParamCells>>>,
     /// How much of the block budget each node's processing takes.
     cpu: HashMap<NodeId, Vec<Arc<CpuCells>>>,
+    /// Where a sampling node's voices are in their sample.
+    positions: HashMap<NodeId, Vec<Arc<PositionCells>>>,
     /// The IDs of the live [`MeterReader`]s.
     readers: HashSet<u64>,
     next_reader: u64,
@@ -82,6 +84,10 @@ impl Channels {
             !list.is_empty()
         });
         self.cpu.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
+        self.positions.retain(|_, list| {
             list.retain(|cells| Arc::strong_count(cells) > 1);
             !list.is_empty()
         });
@@ -196,6 +202,46 @@ impl Telemetry {
             min: min.min(value),
             max: max.max(value),
         })
+    }
+
+    /// Opens a channel for where `node`'s `voices` voices are in their
+    /// sample. Call this when building a plan, not on the audio thread.
+    pub fn open_positions(&self, node: NodeId, voices: usize) -> PositionWriter {
+        let cells = Arc::new(PositionCells {
+            at: (0..voices)
+                .map(|_| AtomicU32::new(IDLE.to_bits()))
+                .collect(),
+            written: AtomicBool::new(false),
+        });
+        self.lock()
+            .positions
+            .entry(node)
+            .or_default()
+            .push(cells.clone());
+        PositionWriter(cells)
+    }
+
+    /// Where each sounding voice of `node` is in its sample, as a fraction of
+    /// it from 0 to 1, as of the latest block. Empty when nothing is playing
+    /// or nothing has reported.
+    pub fn read_positions(&self, node: NodeId) -> Vec<f32> {
+        let channels = self.lock();
+        let Some(list) = channels.positions.get(&node) else {
+            return Vec::new();
+        };
+        let Some(cells) = list
+            .iter()
+            .rev()
+            .find(|cells| cells.written.load(Ordering::Acquire))
+        else {
+            return Vec::new();
+        };
+        cells
+            .at
+            .iter()
+            .map(|cell| f32::from_bits(cell.load(Ordering::Relaxed)))
+            .filter(|at| *at >= 0.0)
+            .collect()
     }
 
     /// Opens a channel for `node`'s processing time. Call this when building
@@ -557,6 +603,42 @@ impl BlockWriter {
         if load > 1.0 {
             cells.misses.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+/// What a silent voice reports.
+const IDLE: f32 = -1.0;
+
+struct PositionCells {
+    at: Vec<AtomicU32>,
+    written: AtomicBool,
+}
+
+/// The audio thread's end of a position channel.
+pub struct PositionWriter(Arc<PositionCells>);
+
+impl PositionWriter {
+    /// How many voices the channel has room for.
+    pub fn voices(&self) -> usize {
+        self.0.at.len()
+    }
+
+    /// Reports voice `voice`: its place in the sample as a fraction from 0
+    /// to 1, or `None` when it is silent. A voice past the channel's room is
+    /// ignored.
+    pub fn write(&self, voice: usize, fraction: Option<f32>) {
+        if let Some(cell) = self.0.at.get(voice) {
+            let at = fraction
+                .filter(|f| f.is_finite())
+                .map_or(IDLE, |f| f.clamp(0.0, 1.0));
+            cell.store(at.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Marks the reports as coming from a running plan. Call it after each
+    /// block's writes.
+    pub fn publish(&self) {
+        self.0.written.store(true, Ordering::Release);
     }
 }
 
@@ -1066,6 +1148,29 @@ mod tests {
 
         pending.write(1, |_, _| 2.0);
         assert_eq!(read(&telemetry).samples(), [2.0]);
+    }
+
+    #[test]
+    fn positions_list_the_sounding_voices_and_follow_the_playing_instance() {
+        let telemetry = Telemetry::new();
+        assert!(telemetry.read_positions(NODE).is_empty());
+        let playing = telemetry.open_positions(NODE, 3);
+        playing.write(0, Some(0.25));
+        playing.write(1, None);
+        playing.write(2, Some(2.0));
+        // Nothing is read until a block has been published.
+        assert!(telemetry.read_positions(NODE).is_empty());
+        playing.publish();
+        assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0]);
+
+        let pending = telemetry.open_positions(NODE, 3);
+        pending.write(0, Some(0.5));
+        assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0]);
+        pending.publish();
+        assert_eq!(telemetry.read_positions(NODE), [0.5]);
+        drop((playing, pending));
+        assert!(telemetry.read_positions(NODE).is_empty());
+        assert!(telemetry.lock().positions.is_empty());
     }
 
     #[test]
