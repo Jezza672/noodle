@@ -338,9 +338,15 @@ pub(crate) fn build(
         if scheduled.phase == Phase::Output {
             output_halves.insert(id, slot);
         }
+        // The live keys are left out, so a change to them keeps the instance.
+        let live = scheduled.node_type.live_config();
+        let mut key_config = scheduled.config.clone();
+        for key in live {
+            key_config.remove(key);
+        }
         let key = NodeKey {
             type_id: scheduled.node_type.info().id,
-            config: scheduled.config.clone(),
+            config: key_config,
             input_shapes: scheduled.input_shapes.clone(),
             output_shapes: scheduled.output_shapes.clone(),
         };
@@ -354,6 +360,9 @@ pub(crate) fn build(
         let (instance, carries_over) = match carried {
             None if input_half => (None, false),
             Some(&(_, old_slot)) => {
+                if !live.is_empty() {
+                    scheduled.node_type.retune(id, &scheduled.config);
+                }
                 migrations.push((old_slot, slot));
                 carried_ids.insert(id);
                 (None, true)

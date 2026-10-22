@@ -46,7 +46,10 @@ into a parameter port.** It is not a clip and not a node the user wires.
   removing a lane changes the wiring, and fades like any other. This is
   `NodeType::stateless()`: a node that returns true (lane sources, Remap) is
   rebuilt without a fade when only its config changes and its shapes don't,
-  so dragging a Remap curve doesn't chop the sound.
+  so dragging a Remap curve doesn't chop the sound. A node with state that
+  must survive an edit lists the keys in `NodeType::live_config` instead: a
+  change to only those keys carries the instance over, and `retune` hands the
+  new values to it (the Sampler's envelope and warp).
 - **The parameter widget.** For a parameter with a lane, the widget shows the
   lane's value at the playhead and is greyed like a wired parameter. The lane
   is edited as a lane.

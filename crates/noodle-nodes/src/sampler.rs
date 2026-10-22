@@ -1,8 +1,9 @@
 //! The Sampler node: plays one sample when a note arrives.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use noodle_core::{ClipWarp, GainPoint, WarpAxis, gain_points_from_text};
+use noodle_core::{ClipWarp, GainPoint, NodeId, WarpAxis, gain_points_from_text};
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
     NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, PositionWriter, Setup, Shape,
@@ -10,6 +11,7 @@ use noodle_engine::{
 };
 
 use crate::sample::{Sample, SampleRef, SampleStore};
+use crate::sampler_stretch::{Msg, NodeLinks, Service, Stretched, render, tempo_key, warp_key};
 
 /// Plays one sample when a note arrives, at the pitch of the note relative to
 /// `root`, up to 16 notes at once. The output is stereo (a mono sample is the
@@ -52,13 +54,26 @@ use crate::sample::{Sample, SampleRef, SampleStore};
 /// before the first and after the last. It multiplies `gain`. Empty is flat.
 ///
 /// **Warp.** The `warp` setting holds a [`ClipWarp`] (text) that times the
-/// sample the way a clip's is timed, in Repitch mode (the pitch follows the
-/// speed, as with `keytrack`; the other modes play as Repitch here). The
-/// sample's own tempo and markers say where each moment falls in beats, and
-/// with *follow tempo* on a note plays them at the project's tempo, so a loop
-/// recorded at 90 bpm plays in time at 120. Without a warp the sample plays at
-/// its own speed. The warp's loop region is not used: the Sampler's own loop
-/// parameters decide what repeats.
+/// sample the way a clip's is timed. The sample's own tempo and markers say
+/// where each moment falls in beats, and with *follow tempo* on a note plays
+/// them at the project's tempo, so a loop recorded at 90 bpm plays in time at
+/// 120. Without a warp the sample plays at its own speed. The warp's loop
+/// region is not used: the Sampler's own loop parameters decide what repeats.
+///
+/// In *Repitch* mode the pitch follows the speed, as with `keytrack`. *Grain*
+/// and *Beats* keep the pitch, with the clips' own stretcher: a worker
+/// renders a copy of the whole sample stretched by the warp (see
+/// [`crate::sampler_stretch`]), and the notes play that copy, with the pitch,
+/// region and loop of the unstretched sample mapped onto it. The copy is made
+/// for the project's tempo as the node last heard it, and again when the
+/// warp or the tempo changes and then holds still for a moment. Until a copy
+/// is ready, and while the warp is being dragged, the warp plays as Repitch.
+/// An offline render waits for the copy instead, so it sounds the same every
+/// time.
+///
+/// **Live settings.** `gain_env` and `warp` reach the playing node without
+/// rebuilding it (see [`NodeType::live_config`]), so dragging an envelope
+/// point or a marker doesn't cut off the notes that are sounding.
 ///
 /// **Playhead.** Where each voice is in the sample is reported to the
 /// [`Telemetry`] hub (see [`Telemetry::read_positions`]), for the sample view.
@@ -67,6 +82,10 @@ use crate::sample::{Sample, SampleRef, SampleStore};
 pub struct Sampler {
     store: SampleStore,
     telemetry: Telemetry,
+    service: Service,
+    /// Offline: stretch on the audio thread, and wait, instead of leaving it
+    /// to the worker.
+    blocking: bool,
 }
 
 impl Sampler {
@@ -74,6 +93,17 @@ impl Sampler {
         Self {
             store: store.clone(),
             telemetry: telemetry.clone(),
+            service: Service::new(),
+            blocking: false,
+        }
+    }
+
+    /// A Sampler for rendering offline, which stretches a warp itself before
+    /// playing it, so that the render doesn't depend on timing.
+    pub fn blocking(store: &SampleStore, telemetry: &Telemetry) -> Self {
+        Self {
+            blocking: true,
+            ..Self::new(store, telemetry)
         }
     }
 }
@@ -176,6 +206,23 @@ impl NodeType for Sampler {
         Ok(vec![Shape::STEREO; layout.outputs.len()])
     }
 
+    fn live_config(&self) -> &[&'static str] {
+        // An offline render is built once, from the project as it is.
+        if self.blocking {
+            &[]
+        } else {
+            &[GAIN_ENV_KEY, WARP_KEY]
+        }
+    }
+
+    fn retune(&self, node: NodeId, config: &Config) {
+        self.service.retune(
+            node,
+            &CONFIG[1].get_text(config),
+            &CONFIG[2].get_text(config),
+        );
+    }
+
     fn cache_inputs(
         &self,
         _node: noodle_core::NodeId,
@@ -201,13 +248,28 @@ impl NodeType for Sampler {
             .store
             .get(&reference.hash)
             .map(|sample| sample.window(reference.start, reference.end));
-        let points = gain_points_from_text(&CONFIG[1].get_text(setup.config));
-        let warp = ClipWarp::from_text(&CONFIG[2].get_text(setup.config)).map(|w| Play::new(&w));
+        let tune = Arc::new(Tune::read(
+            &CONFIG[1].get_text(setup.config),
+            &CONFIG[2].get_text(setup.config),
+        ));
+        let links = (!self.blocking).then(|| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&CONFIG[0].get_text(setup.config), &mut hasher);
+            self.service.register(
+                setup.node,
+                std::hash::Hasher::finish(&hasher),
+                sample.clone(),
+                tune.clone(),
+            )
+        });
         Ok(Instance::realtime(SamplerNode {
             sample,
             sample_rate: setup.sample_rate,
-            envelope: Envelope::new(&points),
-            warp,
+            tune,
+            stretched: None,
+            domain: None,
+            links,
+            last_bpm: 0,
             beats_per_second: 2.0,
             positions: self.telemetry.open_positions(setup.node, VOICES),
             voices: [Voice::default(); VOICES],
@@ -327,6 +389,49 @@ impl Play {
     }
 }
 
+/// The settings that change while the node plays: the gain envelope and the
+/// warp, read from their config text.
+pub(crate) struct Tune {
+    gain_text: String,
+    warp_text: String,
+    envelope: Envelope,
+    /// The warp played as Repitch: the whole of it, or what stands in until a
+    /// stretched copy is ready.
+    play: Option<Play>,
+    warp: Option<ClipWarp>,
+    /// Identifies the warp as a stretch, or 0 if there is nothing to stretch.
+    pub key: u64,
+}
+
+impl Tune {
+    pub fn read(gain_text: &str, warp_text: &str) -> Self {
+        let warp = ClipWarp::from_text(warp_text);
+        let mut tune = Self {
+            gain_text: gain_text.to_owned(),
+            warp_text: warp_text.to_owned(),
+            envelope: Envelope::new(&gain_points_from_text(gain_text)),
+            play: warp.as_ref().map(Play::new),
+            warp,
+            key: 0,
+        };
+        tune.key = tune.stretch_warp().map_or(0, warp_key);
+        tune
+    }
+
+    /// Whether `gain_text` and `warp_text` are what this was read from.
+    pub fn is(&self, gain_text: &str, warp_text: &str) -> bool {
+        self.gain_text == gain_text && self.warp_text == warp_text
+    }
+
+    /// The warp, if it is one that a stretched copy plays: a mode that keeps
+    /// the pitch, and a warp that changes the timing.
+    pub fn stretch_warp(&self) -> Option<&ClipWarp> {
+        self.warp
+            .as_ref()
+            .filter(|w| w.mode.keeps_pitch() && !w.is_natural())
+    }
+}
+
 /// The slowest and fastest a warp plays a sample, as a multiple of its own
 /// speed (the clip warp's limits).
 const MIN_SPEED: f64 = 1.0 / 16.0;
@@ -335,8 +440,16 @@ const MAX_SPEED: f64 = 32.0;
 struct SamplerNode {
     sample: Option<Arc<Sample>>,
     sample_rate: f32,
-    envelope: Envelope,
-    warp: Option<Play>,
+    tune: Arc<Tune>,
+    /// The latest stretched copy to arrive, which plays when it is of the
+    /// warp the tune has.
+    stretched: Option<Arc<Stretched>>,
+    /// The copy the voices' positions are in, or `None` for the sample
+    /// itself.
+    domain: Option<Arc<Stretched>>,
+    /// The worker's queues; none when stretching in the block.
+    links: Option<NodeLinks>,
+    last_bpm: u64,
     /// The tempo, in beats a second, as of the block.
     beats_per_second: f64,
     positions: PositionWriter,
@@ -387,6 +500,7 @@ impl SamplerNode {
     fn note_on(&mut self, s: &Settings, id: NoteId, key: u8, velocity: f32) {
         let Some(sample) = &self.sample else { return };
         let frames = sample.frames() as f64;
+        let domain = &self.domain;
         let start = f64::from(s.start) * frames;
         let end = (f64::from(s.end) * frames).max(start);
         if end - start < 1.0 {
@@ -407,6 +521,9 @@ impl SamplerNode {
             (a, b)
         });
         let loop_range = loop_range.filter(|&(a, b)| b - a >= 2.0);
+        // Positions are in the sample or in its stretched copy.
+        let (start, end) = (from_source(domain, start), from_source(domain, end));
+        let loop_range = loop_range.map(|(a, b)| (from_source(domain, a), from_source(domain, b)));
 
         // A free voice, else the oldest.
         let slot = self
@@ -482,7 +599,7 @@ impl SamplerNode {
     fn report(&self) {
         let len = self.sample.as_ref().map_or(0, |s| s.frames()) as f64;
         for (i, v) in self.voices.iter().enumerate() {
-            let at = (v.active && len > 0.0).then(|| (v.pos / len) as f32);
+            let at = (v.active && len > 0.0).then(|| (to_source(&self.domain, v.pos) / len) as f32);
             self.positions.write(i, at);
         }
         self.positions.publish();
@@ -491,8 +608,12 @@ impl SamplerNode {
     /// Adds every voice's output for frames `from..to` of the block.
     fn render(&mut self, from: usize, to: usize) {
         let Some(sample) = &self.sample else { return };
-        let len = sample.frames();
-        let (envelope, warp, tempo) = (&self.envelope, &self.warp, self.beats_per_second);
+        // What the voices play: the stretched copy, or the sample.
+        let domain = self.domain.as_deref();
+        let played = domain.map_or(&**sample, |d| &d.sample);
+        let len = played.frames();
+        let source_len = sample.frames() as f64;
+        let (envelope, play, tempo) = (&self.tune.envelope, &self.tune.play, self.beats_per_second);
         let per_second = 1.0 / f64::from(sample.sample_rate.max(1));
         for v in self.voices.iter_mut().filter(|v| v.active) {
             let bent = v.step * (v.bend / 12.0).exp2();
@@ -501,12 +622,18 @@ impl SamplerNode {
                     v.active = false;
                     break;
                 }
-                let step = match warp {
-                    Some(play) => bent * play.speed(&mut v.piece, v.pos * per_second, tempo),
-                    None => bent,
+                // A copy has the warp in it already; the sample's is played
+                // by changing the speed.
+                let (step, at) = match (domain, play) {
+                    (Some(d), _) => (bent, d.map.source_at(v.pos)),
+                    (None, Some(play)) => (
+                        bent * play.speed(&mut v.piece, v.pos * per_second, tempo),
+                        v.pos,
+                    ),
+                    (None, None) => (bent, v.pos),
                 };
-                let (l, r) = read(sample, len, v.pos);
-                let gain = v.level * v.fade * envelope.at(v.pos / len as f64);
+                let (l, r) = read(played, len, v.pos);
+                let gain = v.level * v.fade * envelope.at(at / source_len);
                 self.left[i] += l * gain;
                 self.right[i] += r * gain;
                 v.pos += step;
@@ -526,6 +653,80 @@ impl SamplerNode {
             }
         }
     }
+
+    /// Takes in what the worker has sent, tells it the tempo, and moves the
+    /// voices onto the stretched copy (or off it) when the warp that plays
+    /// has changed.
+    fn sync(&mut self, bpm: f64) {
+        let bpm = if bpm.is_finite() && bpm > 0.0 {
+            bpm
+        } else {
+            120.0
+        };
+        if let Some(links) = &mut self.links {
+            if bpm.to_bits() != self.last_bpm {
+                self.last_bpm = bpm.to_bits();
+                links.bpm.store(self.last_bpm, Ordering::Relaxed);
+            }
+            while let Ok(message) = links.inbox.pop() {
+                // What is replaced goes back to be dropped off this thread.
+                match message {
+                    Msg::Tune(tune) => {
+                        let old = std::mem::replace(&mut self.tune, tune);
+                        let _ = links.outbox.push(Msg::Tune(old));
+                    }
+                    Msg::Stretched(copy) => {
+                        if let Some(old) = self.stretched.replace(copy) {
+                            let _ = links.outbox.push(Msg::Stretched(old));
+                        }
+                    }
+                }
+            }
+        } else if let (Some(sample), Some(warp)) = (&self.sample, self.tune.stretch_warp()) {
+            let (key, tempo) = (warp_key(warp), tempo_key(warp, bpm));
+            if !self
+                .stretched
+                .as_ref()
+                .is_some_and(|s| s.key == key && s.tempo == tempo)
+            {
+                self.stretched = render(sample, warp, bpm).map(Arc::new);
+            }
+        }
+        let wanted = self
+            .stretched
+            .as_ref()
+            .filter(|s| self.tune.key != 0 && s.key == self.tune.key);
+        let same = match (&self.domain, wanted) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        let new = wanted.cloned();
+        for v in self.voices.iter_mut().filter(|v| v.active) {
+            let carry = |x: f64| from_source(&new, to_source(&self.domain, x));
+            v.pos = carry(v.pos);
+            v.end = carry(v.end);
+            v.loop_range = v.loop_range.map(|(a, b)| (carry(a), carry(b)));
+        }
+        if let Some(old) = std::mem::replace(&mut self.domain, new)
+            && let Some(links) = &mut self.links
+        {
+            let _ = links.outbox.push(Msg::Stretched(old));
+        }
+    }
+}
+
+/// Where position `pos` in a voice's frames is in the sample.
+fn to_source(domain: &Option<Arc<Stretched>>, pos: f64) -> f64 {
+    domain.as_ref().map_or(pos, |d| d.map.source_at(pos))
+}
+
+/// Where in a voice's frames sample frame `source` is.
+fn from_source(domain: &Option<Arc<Stretched>>, source: f64) -> f64 {
+    domain.as_ref().map_or(source, |d| d.map.out_at(source))
 }
 
 /// The sample at fractional frame `pos`, by Catmull-Rom interpolation.
@@ -555,6 +756,7 @@ impl Node for SamplerNode {
         let settings = Settings::read(&io);
         let frames = ctx.frames;
         self.beats_per_second = ctx.transport.bpm / 60.0;
+        self.sync(ctx.transport.bpm);
         let idle = self.voices.iter().all(|v| !v.active);
         if idle && io.event_inputs[SamplerPorts::NOTES].is_empty() {
             for channel in 0..2 {
@@ -859,6 +1061,121 @@ mod tests {
             (at[0] - 0.2).abs() < 1e-3 && (at[1] - 0.1).abs() < 1e-3,
             "{at:?}"
         );
+    }
+
+    /// A second of a 440 Hz sine in a store.
+    fn tone() -> (SampleStore, Config) {
+        let store = SampleStore::new();
+        let hash = store.insert(&Audio {
+            samples: (0..RATE as usize)
+                .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / RATE).sin() * 0.5)
+                .collect(),
+            channels: 1,
+            sample_rate: RATE as u32,
+        });
+        (store, Config::new().with(SAMPLE_KEY, Value::Text(hash)))
+    }
+
+    fn crossings(signal: &[f32]) -> usize {
+        signal
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count()
+    }
+
+    /// The tone played for 1.9 s at half speed (a 240 bpm clip on a 120 bpm
+    /// timeline) in `mode`, as an offline render does.
+    fn slowed(mode: noodle_core::WarpMode) -> (Harness, Telemetry) {
+        let (store, config) = tone();
+        let warp = ClipWarp {
+            mode,
+            ..ClipWarp::at_tempo(240.0)
+        };
+        let telemetry = Telemetry::new();
+        let mut h = Harness::new(
+            &Sampler::blocking(&store, &telemetry),
+            &with(&config, WARP_KEY, warp.to_text()),
+            &[],
+            RATE,
+            91_200,
+        )
+        .unwrap();
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        h.run(91_200).unwrap();
+        (h, telemetry)
+    }
+
+    #[test]
+    fn grain_and_beats_stretch_the_sample_and_keep_its_pitch() {
+        // The window 0.2 s to 0.8 s: well inside both the stretched copy and
+        // the sample played slowly.
+        let window = 9_600..38_400;
+        let (repitched, _) = slowed(noodle_core::WarpMode::Repitch);
+        let slow = crossings(&left(&repitched)[window.clone()]);
+        // 220 Hz for 0.6 s.
+        assert!((130..=134).contains(&slow), "{slow}");
+        for mode in [noodle_core::WarpMode::Grain, noodle_core::WarpMode::Beats] {
+            let (h, _) = slowed(mode);
+            let out = left(&h);
+            let kept = crossings(&out[window.clone()]);
+            // 440 Hz for 0.6 s.
+            assert!((259..=269).contains(&kept), "{mode:?}: {kept}");
+            // Twice as long: still sounding at 1.5 s, silent after 2.1 s.
+            let peak = |range: std::ops::Range<usize>| {
+                out[range].iter().fold(0.0f32, |p, x| p.max(x.abs()))
+            };
+            assert!(peak(72_000..76_000) > 0.2, "{mode:?} still sounding");
+        }
+    }
+
+    #[test]
+    fn the_playhead_of_a_stretched_note_is_a_place_in_the_sample() {
+        let (store, config) = tone();
+        let warp = ClipWarp {
+            mode: noodle_core::WarpMode::Grain,
+            ..ClipWarp::at_tempo(240.0)
+        };
+        let telemetry = Telemetry::new();
+        let mut h = Harness::new(
+            &Sampler::blocking(&store, &telemetry),
+            &with(&config, WARP_KEY, warp.to_text()),
+            &[],
+            RATE,
+            48_000,
+        )
+        .unwrap();
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        // A second in, at half speed: half way through the sample.
+        h.run(48_000).unwrap();
+        let at = telemetry.read_positions(noodle_core::NodeId(0));
+        assert_eq!(at.len(), 1);
+        assert!((at[0] - 0.5).abs() < 0.01, "{at:?}");
+    }
+
+    #[test]
+    fn a_new_envelope_reaches_a_sounding_note_without_cutting_it() {
+        let (store, config) = ramp(100_000);
+        let sampler = Sampler::new(&store, &Telemetry::new());
+        let mut h = Harness::new(&sampler, &config, &[], RATE, 256).unwrap();
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        assert!((left(&h)[255] - 0.255).abs() < 1e-4);
+
+        // 20 dB down all along, sent while the note sounds.
+        let quieter = with(&config, GAIN_ENV_KEY, "0:-20,1000000:-20".to_owned());
+        sampler.retune(noodle_core::NodeId(0), &quieter);
+        let mut blocks = 1;
+        let mut level = 1.0;
+        while level > 0.5 && blocks < 400 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            h.run(256).unwrap();
+            blocks += 1;
+            // The ramp is 0.001 a frame, so the gain is the output over it.
+            level = left(&h)[0] / (0.001 * ((blocks - 1) * 256) as f32);
+        }
+        assert!((level - 0.1).abs() < 0.01, "arrived: {level}");
+        // The note carried on from where it was: it did not start over.
+        assert!(left(&h)[0] > 0.0, "{}", left(&h)[0]);
     }
 
     #[test]
