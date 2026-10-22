@@ -184,6 +184,10 @@ static INFO: NodeInfo = NodeInfo {
 
 const VOICES: usize = 16;
 
+/// How many frames a voice takes to fade from the sample to its stretched
+/// copy or back, so that the change doesn't click.
+const XFADE: u32 = 256;
+
 impl NodeType for Sampler {
     fn info(&self) -> &NodeInfo {
         &INFO
@@ -268,6 +272,7 @@ impl NodeType for Sampler {
             tune,
             stretched: None,
             domain: None,
+            previous: None,
             links,
             last_bpm: 0,
             beats_per_second: 2.0,
@@ -303,6 +308,12 @@ struct Voice {
     loop_range: Option<(f64, f64)>,
     one_shot: bool,
     age: u64,
+    /// Frames left of the crossfade from where the voice was before the
+    /// sample/copy it plays changed, which it keeps playing, at `old_pos`
+    /// and `old_piece`, as the fade runs out.
+    xfade: u32,
+    old_pos: f64,
+    old_piece: usize,
 }
 
 /// The gain envelope as a table of linear gains across the sample.
@@ -447,6 +458,9 @@ struct SamplerNode {
     /// The copy the voices' positions are in, or `None` for the sample
     /// itself.
     domain: Option<Arc<Stretched>>,
+    /// The copy (or none, the sample) the voices were in before the last
+    /// change, while they fade across from it.
+    previous: Option<Arc<Stretched>>,
     /// The worker's queues; none when stretching in the block.
     links: Option<NodeLinks>,
     last_bpm: u64,
@@ -554,6 +568,9 @@ impl SamplerNode {
             loop_range,
             one_shot: s.one_shot,
             age: self.clock,
+            xfade: 0,
+            old_pos: 0.0,
+            old_piece: 0,
         };
     }
 
@@ -632,10 +649,33 @@ impl SamplerNode {
                     ),
                     (None, None) => (bent, v.pos),
                 };
-                let (l, r) = read(played, len, v.pos);
-                let gain = v.level * v.fade * envelope.at(at / source_len);
-                self.left[i] += l * gain;
-                self.right[i] += r * gain;
+                let (mut l, mut r) = read(played, len, v.pos);
+                let level = v.level * v.fade;
+                let gain = level * envelope.at(at / source_len);
+                l *= gain;
+                r *= gain;
+                if v.xfade > 0 {
+                    // Fading across from where the voice was before.
+                    let before = self.previous.as_deref();
+                    let (ostep, oat) = match (before, play) {
+                        (Some(d), _) => (bent, d.map.source_at(v.old_pos)),
+                        (None, Some(play)) => (
+                            bent * play.speed(&mut v.old_piece, v.old_pos * per_second, tempo),
+                            v.old_pos,
+                        ),
+                        (None, None) => (bent, v.old_pos),
+                    };
+                    let old = before.map_or(&**sample, |d| &d.sample);
+                    let (ol, or) = read(old, old.frames(), v.old_pos);
+                    let old_gain = level * envelope.at(oat / source_len);
+                    let w = v.xfade as f32 / XFADE as f32;
+                    l = l * (1.0 - w) + ol * old_gain * w;
+                    r = r * (1.0 - w) + or * old_gain * w;
+                    v.old_pos += ostep;
+                    v.xfade -= 1;
+                }
+                self.left[i] += l;
+                self.right[i] += r;
                 v.pos += step;
                 if let Some((a, b)) = v.loop_range
                     && v.held
@@ -668,16 +708,17 @@ impl SamplerNode {
                 self.last_bpm = bpm.to_bits();
                 links.bpm.store(self.last_bpm, Ordering::Relaxed);
             }
+            links.flush();
             while let Ok(message) = links.inbox.pop() {
                 // What is replaced goes back to be dropped off this thread.
                 match message {
                     Msg::Tune(tune) => {
                         let old = std::mem::replace(&mut self.tune, tune);
-                        let _ = links.outbox.push(Msg::Tune(old));
+                        links.retire(Msg::Tune(old));
                     }
                     Msg::Stretched(copy) => {
                         if let Some(old) = self.stretched.replace(copy) {
-                            let _ = links.outbox.push(Msg::Stretched(old));
+                            links.retire(Msg::Stretched(old));
                         }
                     }
                 }
@@ -701,20 +742,37 @@ impl SamplerNode {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             _ => false,
         };
-        if same {
-            return;
+        if !same {
+            let new = wanted.cloned();
+            for v in self.voices.iter_mut().filter(|v| v.active) {
+                // Keep playing from where the voice was while it fades into
+                // where it now is.
+                v.old_pos = v.pos;
+                v.old_piece = v.piece;
+                v.xfade = XFADE;
+                let carry = |x: f64| from_source(&new, to_source(&self.domain, x));
+                v.pos = carry(v.pos);
+                v.end = carry(v.end);
+                v.loop_range = v.loop_range.map(|(a, b)| (carry(a), carry(b)));
+            }
+            let old = std::mem::replace(&mut self.domain, new);
+            if let Some(gone) = std::mem::replace(&mut self.previous, old) {
+                self.retire(Msg::Stretched(gone));
+            }
         }
-        let new = wanted.cloned();
-        for v in self.voices.iter_mut().filter(|v| v.active) {
-            let carry = |x: f64| from_source(&new, to_source(&self.domain, x));
-            v.pos = carry(v.pos);
-            v.end = carry(v.end);
-            v.loop_range = v.loop_range.map(|(a, b)| (carry(a), carry(b)));
-        }
-        if let Some(old) = std::mem::replace(&mut self.domain, new)
-            && let Some(links) = &mut self.links
+        // Once every voice has faded across, the copy it left is let go.
+        if !self.voices.iter().any(|v| v.active && v.xfade > 0)
+            && let Some(gone) = self.previous.take()
         {
-            let _ = links.outbox.push(Msg::Stretched(old));
+            self.retire(Msg::Stretched(gone));
+        }
+    }
+
+    /// Gives `message` to the worker to drop, or drops it here when there is
+    /// no worker (an offline render).
+    fn retire(&mut self, message: Msg) {
+        if let Some(links) = &mut self.links {
+            links.retire(message);
         }
     }
 }
@@ -1176,6 +1234,36 @@ mod tests {
         assert!((level - 0.1).abs() < 0.01, "arrived: {level}");
         // The note carried on from where it was: it did not start over.
         assert!(left(&h)[0] > 0.0, "{}", left(&h)[0]);
+    }
+
+    #[test]
+    fn a_note_does_not_click_when_its_warp_switches_to_the_stretched_copy() {
+        let (store, config) = tone();
+        let sampler = Sampler::new(&store, &Telemetry::new());
+        let mut h = Harness::new(&sampler, &config, &[], RATE, 256).unwrap();
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        let grain = ClipWarp {
+            mode: noodle_core::WarpMode::Grain,
+            ..ClipWarp::at_tempo(240.0)
+        };
+        let warped = with(&config, WARP_KEY, grain.to_text());
+        let mut last = 0.0f32;
+        let mut worst = 0.0f32;
+        for block in 0..180 {
+            if block == 2 {
+                sampler.retune(noodle_core::NodeId(0), &warped);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            h.run(256).unwrap();
+            h.send_events(SamplerPorts::NOTES, &[]);
+            for &x in &left(&h) {
+                worst = worst.max((x - last).abs());
+                last = x;
+            }
+        }
+        // A 440 Hz sine at 0.5 moves 0.03 a frame at most; a jump between
+        // the sample and the copy would be many times that.
+        assert!(worst < 0.15, "{worst}");
     }
 
     #[test]

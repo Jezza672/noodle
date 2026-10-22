@@ -179,9 +179,36 @@ const KEPT: usize = 4;
 /// The node's ends of its queues, and what it reports.
 pub(crate) struct NodeLinks {
     pub inbox: Consumer<Msg>,
-    pub outbox: Producer<Msg>,
+    outbox: Producer<Msg>,
+    /// Retired messages the full outbox would not take yet.
+    limbo: Vec<Msg>,
     /// The tempo as of the node's last block, as `f64` bits.
     pub bpm: Arc<AtomicU64>,
+}
+
+impl NodeLinks {
+    /// Hands `message` back to the service to drop. If the queue is full it
+    /// waits in a list made room for in advance, and is offered again by
+    /// [`flush`](Self::flush); if that is full too it is leaked, since
+    /// freeing it here would be on the audio thread.
+    pub fn retire(&mut self, message: Msg) {
+        if let Err(rtrb::PushError::Full(message)) = self.outbox.push(message) {
+            if self.limbo.len() < self.limbo.capacity() {
+                self.limbo.push(message);
+            } else {
+                std::mem::forget(message);
+            }
+        }
+    }
+
+    /// Offers the retired messages that had to wait to the service again.
+    pub fn flush(&mut self) {
+        while self.limbo.last().is_some() && self.outbox.slots() > 0 {
+            if let Some(message) = self.limbo.pop() {
+                let _ = self.outbox.push(message);
+            }
+        }
+    }
 }
 
 struct Link {
@@ -265,7 +292,12 @@ impl Service {
                 .spawn(move || run(&shared))
                 .is_ok();
         }
-        NodeLinks { inbox, outbox, bpm }
+        NodeLinks {
+            inbox,
+            outbox,
+            limbo: Vec::with_capacity(QUEUE * 4),
+            bpm,
+        }
     }
 
     /// Gives every instance of `node` new settings.
