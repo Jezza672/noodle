@@ -27,7 +27,7 @@ use std::path::Path;
 use crate::host::{HostError, LOAD_TIMEOUT};
 use crate::thread;
 
-pub(crate) use node::Vst3Node;
+pub(crate) use node::vst3_node;
 pub use plugin::describe_file;
 pub(crate) use plugin::{Plugin, class_id_from_text};
 

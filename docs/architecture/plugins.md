@@ -18,6 +18,52 @@ ports become graph ports. Plugin state is saved in the Project.
   `getLatencySamples`, `kAudioUnitProperty_Latency`, all read once after activation, on the plugin thread) and the engine
   compensates for it; see [Performance (M6)](performance.md).
 
+## The bridge
+
+The three formats share one host-side implementation, `bridge.rs`: a
+`Bridge<F: Format>` is the node, and a `Format` is only what differs (CLAP in
+`node.rs`, VST3 in `vst3/node.rs`, AU in `au/node.rs`). A fix to any of the
+following is written once.
+
+- **Buffers and chunks.** The bridge owns the bus buffers, runs a block in
+  chunks of at most `max_frames`, copies the inputs in and the outputs out.
+- **Events.** Every note input is merged into one time-ordered stream.
+  Parameters are sampled at the chunk's start and then every `PARAM_STEP` = 32
+  frames while a wire drives them (an unmodulated port is looked at only at the
+  start), and handed over as timed points, so audio-rate modulation is stepped.
+  Events beyond 4096 a chunk are dropped, and parameter changes stop 512 short
+  of that so a flood of modulation can't push out a note-off. The bridge
+  remembers each held note's channel and key, which a note-off or expression
+  needs.
+- **Transport.** `musical_position` is the one reckoning of beats, seconds, bar
+  start and bar number. A bar is `numerator` beats of a 1/`denominator` note
+  (6/8 is three quarter notes, 2/2 four), counted from where the current
+  signature began (`Transport::signature_start`), in `TICKS_PER_QUARTER`. Bars
+  of earlier signatures are not counted, so the bar number restarts at 0 at a
+  signature change.
+- **Quiet plugins.** A plugin is not called while it has nothing to do, and
+  its outputs are flagged silent so the rest of the graph skips too (see
+  [feedback-and-silence.md](feedback-and-silence.md)). It goes quiet when every
+  audio input lane is silent, no note or parameter change arrived, and the
+  plugin has said it is done: CLAP returned `Sleep` (or `ContinueIfNotQuiet`
+  with all-zero output), every VST3 output bus set all its `silenceFlags`, or the
+  AU's render set `OutputIsSilence`. A format that says nothing (VST3 and AU
+  with their flags unset) is taken to be done after 4 seconds of silence in and
+  exact zeros out, which a delay line with a longer echo would be cut short by.
+  A plugin with note outputs never goes quiet. While quiet the bridge writes
+  zeros, flags every output lane silent and keeps the steady-time counter
+  advancing; any non-silent input, note, parameter change or editor edit wakes
+  it, in the same chunk. A CLAP plugin that slept has its processing stopped
+  and started again on wake. Outputs that are exact zeros are flagged silent
+  whether or not the plugin said so. The test plugins count their `process`
+  calls (`noodle_test_process_calls`) for `tests/quiet.rs`.
+- **Liveness.** A plugin node type does not set `always_runs`, so a plugin runs
+  only while something it feeds reaches an Output, like any other node.
+  (Its editor's own meters therefore freeze for a plugin nothing listens to.)
+- **Sandboxed plugins** don't use the bridge in the proxy (it ships buffers to
+  the host process), but the host process runs a normal node, so the silence
+  flags it sends back are real.
+
 ## CLAP hosting
 
 **Scanning.** `ScanCommand` runs a scanner in a child process for each
@@ -106,16 +152,13 @@ load or editor call stalls the UI thread there, as it already did when the
 compile was waiting on it. One plugin that hangs while loading blocks the
 others, unless plugins are sandboxed (see [Sandboxed plugins](#sandboxed-plugins)).
 
-**Processing** (`node.rs`). Each block is copied into preallocated plugin
-buffers (in chunks of at most `max_frames`), parameters whose value changed
-are sent as timed `ParamValue` events (at frame 0, and every `PARAM_STEP` = 32
-frames while a wire drives them, so audio-rate modulation is stepped), notes
-are converted to CLAP note events (a note-off is given the key and channel its
-note-on had, since Noodle's note-off carries only the id), and the plugin's
-output is copied out. A plugin's note output becomes the node's event output.
-The transport (tempo, position, signature and where it began, playing) is passed on. Nothing on
-this path allocates (`tests/realtime.rs` checks it), so events beyond 4096 per
-block are dropped. A plugin that fails in `process` gives silence for that
+**Processing** (`node.rs`, with the shared bridge below). Parameters whose
+value changed are sent as timed `ParamValue` events, notes are converted to CLAP
+note events (a note-off is given the key and channel its note-on had, since
+Noodle's note-off carries only the id), and a plugin's note output becomes the
+node's event output. `process` returns `Sleep`, `ContinueIfNotQuiet`, `Tail` or
+`Continue`, and the input buffers carry `constant_mask` for the lanes the graph
+knows are silent. A plugin that fails in `process` gives silence for that
 block. A parameter is sent once its port value differs from the plugin's
 reported default: the first block leaves an untouched port alone, so state the
 plugin restored isn't overwritten (Surge XT reports a default of 0 for every
@@ -177,7 +220,8 @@ built).
   rate, with `MaximumFramesPerSlice` set to the block size. The node pulls
   each output bus with `AudioUnitRender`; the unit's input buses pull from a
   render callback that copies the node's inputs (a `Pull` the node owns and
-  frees after the unit). A block runs in chunks of at most `max_frames`.
+  frees after the unit). The bridge copies each input into the pull buffers before the render, and the
+  render's `OutputIsSilence` flag is the unit's word that it is quiet.
 - **Events.** Parameters go in with `AudioUnitSetParameter` and a frame
   offset, a wired one sampled every `PARAM_STEP` frames; notes as MIDI
   through `MusicDeviceMIDIEvent` (note-on, note-off remembering the key and
@@ -242,7 +286,8 @@ results saved before VST3 load as CLAP). The code is in
   without asking the controller per value); a stepped one holds 0 to its
   step count and is rounded.
 - **Processing** (`node.rs`). Per chunk of at most `max_frames`: the inputs
-  are copied into preallocated buses, a parameter whose value changed becomes a
+  are copied into preallocated buses (with `silenceFlags` set from the graph's
+  silence flags, and read back from each output bus), a parameter whose value changed becomes a
   point in its `IParamValueQueue` (at the chunk's start, then every
   `PARAM_STEP` frames while a wire drives it), notes become `Event`s
   (`kNoteOnEvent`, `kNoteOffEvent` with the key the note-on had, note
@@ -293,8 +338,7 @@ results saved before VST3 load as CLAP). The code is in
   the editor then stores the edit in the port. Not mirrored the other way:
   a wire modulating a parameter doesn't move the editor's display.
 - **Transport.** `barPositionMusic` is the start of the current bar in
-  quarter notes from the signature (6/8 is three quarters long), assuming the
-  bars from the project's start are all the current signature's length.
+  quarter notes (see [The bridge](#the-bridge)).
 - **Not yet.** A Linux window for editors, units and program lists, 64-bit
   audio, `IProcessContextRequirements`, `IRunLoop`, and note output other than
   note on and off. Latency is read once, when the plugin is created; a change
@@ -327,8 +371,7 @@ sensibly drive: state is an opaque blob and `nondeterministic` is a flag.
 s, then failing the node), and `start_processing` runs on the first block, on
 the audio thread. 
 
-**Limits.** The transport's bar fields assume quarter-note beats and a
-meter that has not changed. A plugin that crashes while playing takes the process with it
+**Limits.** A plugin that crashes while playing takes the process with it
 (unless plugins are sandboxed, below); editors are separate windows (not drawn inside the app's window), Linux has no
 embedding and no `posix-fd`, and the macOS and Windows editor windows are
 checked only by CI compiling them and by one hand test on the Mac; CLAP extensions beyond audio

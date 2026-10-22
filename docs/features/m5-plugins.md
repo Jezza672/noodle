@@ -26,6 +26,14 @@ follows the denominator. Not yet for VST3: an editor window on Linux (the app
 makes none). Owed: a real plugin (Surge XT, Vital) played on the Mac, including
 its editor and the new windows, a real VST3 one, and the same on Windows.
 
+Shared bridge and quiet plugins (#242, #241): the CLAP, VST3 and AU nodes
+became formats over one `Bridge` (`bridge.rs`), which fixed the CLAP bar start
+in 6/8 and 2/2, made every format use `signature_start` and `TICKS_PER_QUARTER`,
+and gave VST3 the same note-room reserve as CLAP. Plugins now go quiet: a
+plugin that says it is done is not called and its outputs are flagged silent,
+and a plugin nothing listens to no longer runs. The AU path was checked to
+compile for macOS only.
+
 - **CLAP hosting through clack:**
   - Scanning in a child process (done).
   - Plugin nodes (done).

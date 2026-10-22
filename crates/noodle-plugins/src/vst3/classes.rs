@@ -767,10 +767,6 @@ impl Events {
         self.list().clear();
     }
 
-    pub fn len(&self) -> usize {
-        self.list().len()
-    }
-
     /// Adds an event if there is room.
     pub fn push(&self, event: Event) {
         let list = self.list();
