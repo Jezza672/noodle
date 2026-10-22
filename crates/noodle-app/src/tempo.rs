@@ -81,6 +81,31 @@ pub fn with_signature(map: &TempoMap, signature: TimeSignature) -> Option<TempoM
     TempoMap::new(map.tempos().to_vec(), signatures).ok()
 }
 
+/// The map with `signature` from 0-based `bar` on, replacing a
+/// change already at that bar. At bar 0 this is the opening signature.
+pub fn with_signature_at(map: &TempoMap, bar: u32, signature: TimeSignature) -> Option<TempoMap> {
+    let mut signatures = map.signatures().to_vec();
+    let at = signatures.partition_point(|s| s.bar < bar);
+    if signatures.get(at).is_some_and(|s| s.bar == bar) {
+        signatures[at].signature = signature;
+    } else {
+        signatures.insert(at, noodle_core::SignatureChange { bar, signature });
+    }
+    let new = TempoMap::new(map.tempos().to_vec(), signatures).ok()?;
+    (new != *map).then_some(new)
+}
+
+/// The map without the signature change at `bar`. The opening one stays.
+pub fn without_signature_at(map: &TempoMap, bar: u32) -> Option<TempoMap> {
+    let mut signatures = map.signatures().to_vec();
+    let at = signatures.iter().position(|s| s.bar == bar)?;
+    if at == 0 {
+        return None;
+    }
+    signatures.remove(at);
+    TempoMap::new(map.tempos().to_vec(), signatures).ok()
+}
+
 /// The time signatures offered in the transport.
 pub const SIGNATURES: [(u8, u8); 7] = [(4, 4), (3, 4), (2, 4), (5, 4), (6, 8), (7, 8), (12, 8)];
 
@@ -103,6 +128,20 @@ mod tests {
             TempoMap::default().signatures().to_vec(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn signature_changes_can_be_added_and_removed_at_a_bar() {
+        let m = map();
+        let six = TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        };
+        let added = with_signature_at(&m, 4, six).unwrap();
+        assert_eq!(added.signatures().len(), 2);
+        assert_eq!(added.signatures()[1].bar, 4);
+        assert_eq!(without_signature_at(&added, 4).unwrap(), m);
+        assert_eq!(without_signature_at(&m, 0), None, "opening one stays");
     }
 
     #[test]
