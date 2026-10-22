@@ -23,6 +23,10 @@ trait Backend {
     /// Replaces the clipboard's contents with these (MIME type, bytes) pairs.
     fn set(&mut self, items: Vec<(String, Vec<u8>)>) -> bool;
     fn get(&mut self, mime: &str) -> Option<Vec<u8>>;
+    /// Whether `mime` is there, without fetching it (menus ask every frame).
+    fn has(&mut self, mime: &str) -> bool {
+        self.get(mime).is_some()
+    }
 }
 
 /// The clipboard held in memory.
@@ -61,6 +65,11 @@ impl Backend for System {
     fn get(&mut self, mime: &str) -> Option<Vec<u8>> {
         use clipboard_rs::Clipboard;
         self.0.get_buffer(mime).ok().filter(|data| !data.is_empty())
+    }
+
+    fn has(&mut self, mime: &str) -> bool {
+        use clipboard_rs::{Clipboard, ContentFormat};
+        self.0.has(ContentFormat::Other(mime.to_owned()))
     }
 }
 
@@ -122,7 +131,7 @@ pub fn paste<T: DeserializeOwned>(mime: &str) -> Option<T> {
 
 /// Whether the clipboard holds something to paste under `mime`.
 pub fn holds(mime: &str) -> bool {
-    with_backend(|b| b.get(mime)).is_some() || FALLBACK.with(|f| f.borrow_mut().get(mime)).is_some()
+    with_backend(|b| b.has(mime)) || FALLBACK.with(|f| f.borrow_mut().get(mime)).is_some()
 }
 
 /// Empties the clipboard, for tests.

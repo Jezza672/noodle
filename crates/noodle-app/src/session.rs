@@ -216,6 +216,8 @@ pub struct Session {
     /// Where the playhead is while no stream is open, so it can be set and
     /// read when stopped, and playing starts from it.
     parked: Tick,
+    /// Whether loop edits are sharing an undo step (see `set_loop`).
+    loop_open: bool,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
     /// The project as it was last saved or loaded, to tell whether it has
@@ -459,6 +461,7 @@ impl Session {
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             parked: Tick(0),
+            loop_open: false,
             path: None,
             dirty: false,
             next_id: Cell::new(0),
@@ -1347,9 +1350,21 @@ impl Session {
 
     /// Turns the loop on or off and sets its span, as an undoable edit of the
     /// project. Takes effect at once, even while playing.
+    ///
+    /// The bar fields change it on every frame of a drag, so the edits share
+    /// one undo step until [`Session::settle_loop`] closes it.
     pub fn set_loop(&mut self, region: LoopRegion) {
         if region != self.project.transport_loop() {
-            self.edit([Edit::Apply(Command::SetLoop(region))]);
+            self.loop_open = true;
+            self.edit([Edit::Drag(Command::SetLoop(region))]);
+        }
+    }
+
+    /// Ends the undo step the loop's edits have been sharing, once the
+    /// pointer is up.
+    pub fn settle_loop(&mut self) {
+        if std::mem::take(&mut self.loop_open) {
+            self.edit([Edit::EndDrag]);
         }
     }
 
@@ -2425,7 +2440,11 @@ mod tests {
             start: Tick(960),
             end: Tick(7680),
         };
-        session.set_loop(region);
+        // A drag of a bar field sets it many times: one undo step.
+        for end in [Tick(2000), Tick(4000), Tick(7680)] {
+            session.set_loop(LoopRegion { end, ..region });
+        }
+        session.settle_loop();
         assert_eq!(session.loop_region(), region);
         assert!(session.save_as(&path));
         let reopened = Session::open(Nodes::all(), &path).unwrap();

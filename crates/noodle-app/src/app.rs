@@ -441,6 +441,9 @@ impl App {
                 if let Some(region) = out.set_loop {
                     self.session.set_loop(region);
                 }
+                if !ui.input(|i| i.pointer.any_down()) {
+                    self.session.settle_loop();
+                }
                 if let Some(target) = out.pick {
                     self.import_audio(target);
                 }

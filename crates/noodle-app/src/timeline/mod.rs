@@ -22,14 +22,16 @@ mod warped;
 mod warped_waves;
 mod waveform;
 
-use std::collections::BTreeSet;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
-use noodle_core::{Clip, ClipId, Command, Endpoint, LaneId, NodeId, Project, TempoMap, Tick};
+use noodle_core::{
+    Clip, ClipId, ClipWarp, Command, Endpoint, LaneId, NodeId, Project, TempoMap, Tick, WarpId,
+};
 
 use crate::session::{ArmKind, Edit, Session};
 use crate::theme::timeline as colors;
@@ -1113,11 +1115,11 @@ pub fn show(
             .filter_map(|&id| Some((id, project.clip(id)?.clone())))
             .collect();
         if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
-            let copied: Vec<&Clip> = chosen.iter().map(|(_, clip)| clip).collect();
+            let copied = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
             crate::clipboard::copy(
                 crate::clipboard::CLIP_MIME,
                 &copied,
-                &format!("{} clips", copied.len()),
+                &format!("{} clips", copied.clips.len()),
             );
             if action == ClipAction::Cut {
                 let removals = chosen
@@ -1129,7 +1131,7 @@ pub fn show(
             }
         }
         if action == ClipAction::Paste
-            && let Some(clips) = crate::clipboard::paste::<Vec<Clip>>(crate::clipboard::CLIP_MIME)
+            && let Some(clips) = crate::clipboard::paste::<Copied>(crate::clipboard::CLIP_MIME)
         {
             // On the selected track if the clips come from one, else where
             // they came from.
@@ -1149,7 +1151,7 @@ pub fn show(
                 .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
                 .max()
                 .unwrap_or_default();
-            let clipboard: Vec<Clip> = chosen.into_iter().map(|(_, clip)| clip).collect();
+            let clipboard = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
             let (command, copies) = paste(project, &clipboard, last, None);
             // The earliest copy goes at `last`: just after the others.
             if let Some(command) = command {
@@ -1357,7 +1359,7 @@ pub fn show(
                 ),
                 _ => (playhead.unwrap_or(Tick::ZERO), None),
             };
-            let clips = crate::clipboard::paste::<Vec<Clip>>(crate::clipboard::CLIP_MIME);
+            let clips = crate::clipboard::paste::<Copied>(crate::clipboard::CLIP_MIME);
             let (command, pasted) = paste(project, &clips.unwrap_or_default(), tick, track);
             if let Some(command) = command {
                 state.selected = pasted;
@@ -1639,29 +1641,84 @@ fn warped_area(axis: Axis, full: Rect, shown: &warped_waves::Shown) -> Rect {
     )
 }
 
+/// Clips as copied: with the warps they use, so they paste into another
+/// project too.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Copied {
+    clips: Vec<Clip>,
+    warps: Vec<(WarpId, ClipWarp)>,
+}
+
+impl Copied {
+    fn of<'a>(project: &Project, clips: impl Iterator<Item = &'a Clip>) -> Self {
+        let clips: Vec<Clip> = clips.cloned().collect();
+        let mut warps: Vec<(WarpId, ClipWarp)> = Vec::new();
+        for id in clips.iter().filter_map(|c| c.as_audio()?.warp) {
+            if let Some(warp) = project.warp(id)
+                && warps.iter().all(|(w, _)| *w != id)
+            {
+                warps.push((id, warp.clone()));
+            }
+        }
+        Self { clips, warps }
+    }
+}
+
 /// The command that puts copies of `clips` with the earliest at `at`, and the
 /// IDs of the copies. They keep their tracks, unless they all came from one and
 /// `track` says where to put them. A track that is gone drops its clips.
 fn paste(
     project: &Project,
-    clips: &[Clip],
+    copied: &Copied,
     at: Tick,
     track: Option<NodeId>,
 ) -> (Option<Command>, BTreeSet<ClipId>) {
+    let clips = &copied.clips;
     let Some(first) = clips.iter().map(|clip| clip.start.0).min() else {
         return (None, BTreeSet::new());
     };
     let one_track = clips.iter().all(|clip| clip.node == clips[0].node);
     let mut next = project.next_clip_id();
+    let mut next_warp = project.next_warp_id();
+    // Warps the copied clips used that this project doesn't have (the clips
+    // came from another one), added once each under new IDs.
+    let mut brought: BTreeMap<WarpId, WarpId> = BTreeMap::new();
     let mut commands = Vec::new();
     let mut pasted = BTreeSet::new();
     for clip in clips {
         let node = track.filter(|_| one_track).unwrap_or(clip.node);
-        if project.graph().node(node).is_none() {
+        // Another project's track ID may name something else here.
+        if project
+            .graph()
+            .node(node)
+            .is_none_or(|n| n.type_id != TRACK_INPUT && project.clips_on(node).next().is_none())
+        {
             continue;
         }
         let mut copy = clips::moved(clip, Tick(at.0 + clip.start.0 - first));
         copy.node = node;
+        if let noodle_core::ClipContent::Audio(audio) = &mut copy.content
+            && let Some(id) = audio.warp
+            && project.warp(id).is_none()
+        {
+            audio.warp = match (
+                brought.get(&id),
+                copied.warps.iter().find(|(w, _)| *w == id),
+            ) {
+                (Some(&known), _) => Some(known),
+                (None, Some((_, warp))) => {
+                    let fresh = next_warp;
+                    next_warp.0 += 1;
+                    brought.insert(id, fresh);
+                    commands.push(Command::AddWarp {
+                        id: fresh,
+                        warp: warp.clone(),
+                    });
+                    Some(fresh)
+                }
+                (None, None) => None,
+            };
+        }
         commands.push(Command::AddClip {
             id: next,
             clip: copy,

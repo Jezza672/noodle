@@ -85,6 +85,7 @@ fn rig() -> (H, ClipId) {
                 if let Some(region) = out.set_loop {
                     rig.session.set_loop(region);
                 }
+                rig.session.settle_loop();
                 rig.opened.extend(out.open_midi);
                 for (track, kind, on) in out.arm {
                     rig.session.arm_kind(track, kind, on);
@@ -1344,8 +1345,8 @@ fn pasting_several_clips_keeps_their_spacing() {
     h.run();
     // On the system clipboard as Noodle's clip type, which pastes as clips.
     assert!(crate::clipboard::holds("application/x.noodle.clip"));
-    let copied: Vec<Clip> = crate::clipboard::paste("application/x.noodle.clip").unwrap();
-    assert_eq!(copied.len(), 2);
+    let copied: super::Copied = crate::clipboard::paste("application/x.noodle.clip").unwrap();
+    assert_eq!(copied.clips.len(), 2);
     h.state_mut().playhead = Some(Tick(3840));
     h.state_mut().timeline.request(super::ClipAction::Paste);
     h.run();
@@ -2119,4 +2120,39 @@ fn alt_scroll_zooms_every_track_vertically() {
     for track in [NodeId(1), NodeId(2)] {
         assert!(h.state().timeline.lane_height(track) > super::colors::LANE_HEIGHT);
     }
+}
+
+#[test]
+fn clips_pasted_from_another_project_keep_their_warp_and_skip_tracks_that_are_not_here() {
+    let (mut h, id) = rig();
+    let warp = noodle_core::ClipWarp::at_tempo(100.0);
+    // As copied in another project, where warp 7 and track 9 existed.
+    let mut clip = Clip::audio(NodeId(1), Tick(0), "a.wav", 48_000);
+    if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+        audio.warp = Some(noodle_core::WarpId(7));
+    }
+    let mut stray = clip.clone();
+    stray.node = NodeId(9);
+    let copied = super::Copied {
+        clips: vec![clip, stray],
+        warps: vec![(noodle_core::WarpId(7), warp.clone())],
+    };
+    crate::clipboard::copy("application/x.noodle.clip", &copied, "2 clips");
+    h.state_mut().timeline.selected = [id].into();
+    h.state_mut().timeline.request(super::ClipAction::Paste);
+    h.run();
+    let project = h.state().session.project();
+    let pasted: Vec<_> = project.clips().filter(|(c, _)| *c != id).collect();
+    assert_eq!(
+        pasted.len(),
+        1,
+        "the clip for a track that isn't here is skipped"
+    );
+    let used = pasted[0]
+        .1
+        .as_audio()
+        .unwrap()
+        .warp
+        .expect("it kept a warp");
+    assert_eq!(project.warp(used), Some(&warp));
 }
