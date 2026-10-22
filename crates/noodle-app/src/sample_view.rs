@@ -1,79 +1,58 @@
 //! The Sampler's sample, drawn: a small preview in the properties panel and,
 //! on a double-click, a panel of its own (where the piano roll and the clip
-//! editor open) with the region and loop markers to drag.
+//! editor open). The panel is the clip editor's audio pane
+//! ([`crate::clip_editor::pane`]), so a sample zooms, pans, slips, trims and
+//! loops the way a clip does; here the gestures set the Sampler's `start`,
+//! `end` and loop parameters.
 
 use std::sync::Arc;
 
-use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Sense, Stroke, Ui, vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use noodle_core::{Command, Node, NodeId};
 use noodle_nodes::{SAMPLE_KEY, SAMPLER_ID, Sample};
 
+use crate::clip_editor::pane::{self, CurveSource, Edge, Gesture, MIN_SECONDS};
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
 use crate::toolbar;
 
 /// The height the panel opens at.
 pub const DEFAULT_HEIGHT: f32 = 220.0;
-/// How close, in points, a press is to a marker to take it.
-const GRAB: f32 = 7.0;
-/// The least the end of a region is after its start, as a fraction of the
-/// sample.
-const MIN_REGION: f32 = 0.001;
 
-/// Which sample the panel shows, and what is being dragged in it.
+/// Which sample the panel shows, and how it is zoomed.
+#[derive(Default)]
 pub struct SampleView {
     node: Option<NodeId>,
-    drag: Option<Marker>,
-    /// The part of the sample on screen, as fractions of it.
-    window: (f32, f32),
-}
-
-impl Default for SampleView {
-    fn default() -> Self {
-        Self {
-            node: None,
-            drag: None,
-            window: WHOLE,
-        }
-    }
-}
-
-/// The window that shows the whole sample.
-const WHOLE: (f32, f32) = (0.0, 1.0);
-/// The least of the sample the window can show, as a fraction of it.
-const MIN_WINDOW: f32 = 0.0002;
-
-/// `window` after a wheel turn: `zoom` (1.0 for none) keeps the fraction under
-/// `anchor` (0 to 1 across the view) where it is, and `pan` slides it by that
-/// fraction of the view. It stays inside the sample.
-fn navigated(window: (f32, f32), anchor: f32, zoom: f32, pan: f32) -> (f32, f32) {
-    let width = window.1 - window.0;
-    let under = window.0 + anchor * width;
-    let new_width = (width / zoom).clamp(MIN_WINDOW, 1.0);
-    let start = under - anchor * new_width + pan * new_width;
-    let start = start.clamp(0.0, 1.0 - new_width);
-    (start, start + new_width)
+    view: pane::View,
+    /// The Sampler's region when a slip began.
+    slip: Option<Region>,
 }
 
 impl SampleView {
     pub fn open(&mut self, node: NodeId) {
         if self.node != Some(node) {
-            self.drag = None;
-            self.window = WHOLE;
+            self.view.drop_grab();
+            self.slip = None;
+            self.view.focus = true;
         }
         self.node = Some(node);
     }
 
     pub fn close(&mut self) {
         self.node = None;
-        self.drag = None;
-        self.window = WHOLE;
+        self.view.drop_grab();
+        self.slip = None;
     }
 
-    /// The part of the sample on screen, as fractions of it.
+    /// Points per second.
     #[cfg(test)]
-    pub fn window(&self) -> (f32, f32) {
-        self.window
+    pub fn zoom(&self) -> f32 {
+        self.view.ppb
+    }
+
+    #[cfg(test)]
+    pub fn scroll(&self) -> f32 {
+        self.view.scroll_x
     }
 
     /// The Sampler node shown, if the panel is open.
@@ -106,47 +85,19 @@ pub fn hash_of(node: &Node) -> String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Marker {
-    Start,
-    End,
-    LoopStart,
-    LoopEnd,
+fn key(edge: Edge) -> &'static str {
+    match edge {
+        Edge::Start => "start",
+        Edge::End => "end",
+        Edge::LoopStart => "loop_start",
+        Edge::LoopEnd => "loop_end",
+    }
 }
 
-impl Marker {
-    const ALL: [Marker; 4] = [Self::Start, Self::End, Self::LoopStart, Self::LoopEnd];
-
-    fn key(self) -> &'static str {
-        match self {
-            Self::Start => "start",
-            Self::End => "end",
-            Self::LoopStart => "loop_start",
-            Self::LoopEnd => "loop_end",
-        }
-    }
-
-    fn default(self) -> f32 {
-        match self {
-            Self::Start | Self::LoopStart => 0.0,
-            Self::End | Self::LoopEnd => 1.0,
-        }
-    }
-
-    fn colour(self) -> Color32 {
-        match self {
-            Self::Start | Self::End => theme::ACCENT,
-            Self::LoopStart | Self::LoopEnd => Color32::from_rgb(109, 140, 255),
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Start => "Start",
-            Self::End => "End",
-            Self::LoopStart => "Loop start",
-            Self::LoopEnd => "Loop end",
-        }
+fn default_of(edge: Edge) -> f32 {
+    match edge {
+        Edge::Start | Edge::LoopStart => 0.0,
+        Edge::End | Edge::LoopEnd => 1.0,
     }
 }
 
@@ -161,150 +112,17 @@ pub struct Region {
 
 impl Region {
     pub fn of(node: &Node) -> Self {
-        let get = |marker: Marker| {
+        let get = |edge: Edge| {
             node.params
-                .get(marker.key())
+                .get(key(edge))
                 .copied()
-                .unwrap_or(marker.default())
+                .unwrap_or(default_of(edge))
         };
         let on = node.params.get("loop").copied().unwrap_or(0.0) >= 0.5;
         Self {
-            start: get(Marker::Start),
-            end: get(Marker::End),
-            looping: on.then(|| (get(Marker::LoopStart), get(Marker::LoopEnd))),
-        }
-    }
-
-    fn at(self, marker: Marker) -> Option<f32> {
-        match marker {
-            Marker::Start => Some(self.start),
-            Marker::End => Some(self.end),
-            Marker::LoopStart => self.looping.map(|l| l.0),
-            Marker::LoopEnd => self.looping.map(|l| l.1),
-        }
-    }
-
-    /// `value` for `marker`, kept where it can be: inside the sample and on
-    /// the right side of its partner.
-    fn clamped(self, marker: Marker, value: f32) -> f32 {
-        let (lo, hi) = match marker {
-            Marker::Start => (0.0, self.end - MIN_REGION),
-            Marker::End => (self.start + MIN_REGION, 1.0),
-            Marker::LoopStart => (0.0, self.looping.map_or(1.0, |l| l.1) - MIN_REGION),
-            Marker::LoopEnd => (self.looping.map_or(0.0, |l| l.0) + MIN_REGION, 1.0),
-        };
-        value.clamp(lo.min(hi), hi)
-    }
-}
-
-// The columns last worked out for each sample, so they are only worked out
-// again when the sample or the width changes.
-type Columns = Arc<(usize, Vec<(f32, f32)>)>;
-
-/// The sample's min and max, `n` columns across (the two channels mixed).
-fn columns(ui: &Ui, hash: &str, sample: &Sample, n: usize, window: (f32, f32)) -> Columns {
-    let id = egui::Id::new((
-        "sample columns",
-        hash,
-        window.0.to_bits(),
-        window.1.to_bits(),
-    ));
-    if let Some(found) = ui.data(|d| d.get_temp::<Columns>(id))
-        && found.0 == n
-    {
-        return found;
-    }
-    let frames = sample.frames();
-    let (first, span) = (
-        window.0 as f64 * frames as f64,
-        (window.1 - window.0) as f64 * frames as f64,
-    );
-    let at = |i: usize| (first + span * i as f64 / n as f64) as usize;
-    let cols: Vec<(f32, f32)> = (0..n)
-        .map(|i| {
-            let (a, b) = (at(i), at(i + 1).max(at(i) + 1));
-            let mut range = (0.0f32, 0.0f32);
-            for f in a..b.min(frames) {
-                let mixed = (sample.left[f] + sample.right[f]) * 0.5;
-                range = (range.0.min(mixed), range.1.max(mixed));
-            }
-            range
-        })
-        .collect();
-    let found: Columns = Arc::new((n, cols));
-    ui.data_mut(|d| d.insert_temp(id, found.clone()));
-    found
-}
-
-/// Draws `sample` into `rect`: the waveform with the part outside the region
-/// dimmed and, if the loop is on, the loop's span tinted. Markers are drawn on
-/// top when `markers` is set.
-pub fn draw(
-    ui: &Ui,
-    rect: Rect,
-    hash: &str,
-    sample: &Sample,
-    region: Region,
-    markers: bool,
-    window: (f32, f32),
-) {
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, colors::BACKGROUND);
-    let x =
-        |fraction: f32| rect.left() + (fraction - window.0) / (window.1 - window.0) * rect.width();
-    if let Some((from, to)) = region.looping {
-        let band = Rect::from_x_y_ranges(x(from)..=x(to), rect.y_range());
-        painter.rect_filled(band, 0.0, Marker::LoopStart.colour().gamma_multiply(0.12));
-    }
-    let n = (rect.width().ceil() as usize).clamp(1, 4096);
-    let cols = columns(ui, hash, sample, n, window);
-    let (middle, half) = (rect.center().y, rect.height() / 2.0 - 2.0);
-    let stroke = Stroke::new(rect.width() / n as f32, theme::ACCENT.gamma_multiply(0.7));
-    for (i, &(min, max)) in cols.1.iter().enumerate() {
-        let at = x((i as f32 + 0.5) / n as f32);
-        painter.line_segment(
-            [
-                Pos2::new(at, middle - max.clamp(-1.0, 1.0) * half - 0.5),
-                Pos2::new(at, middle - min.clamp(-1.0, 1.0) * half + 0.5),
-            ],
-            stroke,
-        );
-    }
-    let dim = Color32::BLACK.gamma_multiply(0.55);
-    for (a, b) in [(0.0, region.start), (region.end, 1.0)] {
-        if b > a {
-            painter.rect_filled(Rect::from_x_y_ranges(x(a)..=x(b), rect.y_range()), 0.0, dim);
-        }
-    }
-    if markers {
-        for marker in Marker::ALL {
-            if let Some(at) = region.at(marker) {
-                painter.vline(x(at), rect.y_range(), Stroke::new(1.5, marker.colour()));
-                painter.text(
-                    Pos2::new(
-                        if matches!(marker, Marker::Start | Marker::LoopStart) {
-                            x(at) + 3.0
-                        } else {
-                            x(at) - 3.0
-                        },
-                        rect.top()
-                            + 2.0
-                            + if matches!(marker, Marker::LoopStart | Marker::LoopEnd) {
-                                12.0
-                            } else {
-                                0.0
-                            },
-                    ),
-                    if matches!(marker, Marker::Start | Marker::LoopStart) {
-                        Align2::LEFT_TOP
-                    } else {
-                        Align2::RIGHT_TOP
-                    },
-                    marker.name(),
-                    FontId::proportional(10.0),
-                    marker.colour(),
-                );
-            }
+            start: get(Edge::Start),
+            end: get(Edge::End),
+            looping: on.then(|| (get(Edge::LoopStart), get(Edge::LoopEnd))),
         }
     }
 }
@@ -318,6 +136,34 @@ pub fn contents(session: &Session, id: NodeId) -> Option<(String, Arc<Sample>, R
     Some((hash, sample, Region::of(node)))
 }
 
+/// The sample drawn small, whole and still: the waveform with the part
+/// outside the region dimmed.
+pub fn draw_preview(ui: &Ui, rect: Rect, hash: &str, sample: &Sample, region: Region) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, colors::BACKGROUND);
+    let peaks = pane::peaks_of(ui, hash, sample);
+    let n = (rect.width().ceil() as usize).clamp(1, 4096);
+    let (middle, half) = (rect.center().y, rect.height() / 2.0 - 2.0);
+    let stroke = Stroke::new(rect.width() / n as f32, theme::ACCENT.gamma_multiply(0.7));
+    for (i, peak) in peaks.columns(None, 0, peaks.frames(), n).iter().enumerate() {
+        let at = rect.left() + (i as f32 + 0.5) * rect.width() / n as f32;
+        painter.line_segment(
+            [
+                Pos2::new(at, middle - peak.max.clamp(-1.0, 1.0) * half - 0.5),
+                Pos2::new(at, middle - peak.min.clamp(-1.0, 1.0) * half + 0.5),
+            ],
+            stroke,
+        );
+    }
+    let dim = Color32::BLACK.gamma_multiply(0.55);
+    let x = |fraction: f32| rect.left() + fraction * rect.width();
+    for (a, b) in [(0.0, region.start), (region.end, 1.0)] {
+        if b > a {
+            painter.rect_filled(Rect::from_x_y_ranges(x(a)..=x(b), rect.y_range()), 0.0, dim);
+        }
+    }
+}
+
 /// The preview in the properties panel; double-click it for the panel.
 pub fn preview(ui: &mut Ui, session: &Session, id: NodeId, height: f32) {
     let Some((hash, sample, region)) = contents(session, id) else {
@@ -325,7 +171,7 @@ pub fn preview(ui: &mut Ui, session: &Session, id: NodeId, height: f32) {
     };
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
-    draw(ui, rect, &hash, &sample, region, false, WHOLE);
+    draw_preview(ui, rect, &hash, &sample, region);
     if response.double_clicked() {
         request_open(ui.ctx(), id);
     }
@@ -350,7 +196,19 @@ pub fn take_request(ctx: &egui::Context) -> Option<NodeId> {
 }
 
 #[cfg(test)]
-pub(crate) type Geometry = Rect;
+pub(crate) type Geometry = (Rect, pane::Axis);
+
+/// `value` (a fraction) for `edge`, kept inside the sample and on the right
+/// side of its partner.
+fn clamped(region: Region, edge: Edge, value: f32, min: f32) -> f32 {
+    let (lo, hi) = match edge {
+        Edge::Start => (0.0, region.end - min),
+        Edge::End => (region.start + min, 1.0),
+        Edge::LoopStart => (0.0, region.looping.map_or(1.0, |l| l.1) - min),
+        Edge::LoopEnd => (region.looping.map_or(0.0, |l| l.0) + min, 1.0),
+    };
+    value.clamp(lo.min(hi), hi)
+}
 
 /// Draws the panel for the open Sampler and returns what the user did.
 pub fn show(ui: &mut Ui, view: &mut SampleView, session: &Session) -> Vec<Edit> {
@@ -374,11 +232,11 @@ pub fn show(ui: &mut Ui, view: &mut SampleView, session: &Session) -> Vec<Edit> 
         ui,
         toolbar_rect,
         &title,
-        "Drag the start and end to pick the part that plays · Ctrl+scroll zooms, scroll pans · loop markers show when Loop is on",
+        "Drag the start and end to pick the part that plays · drag the audio to slide it under them · Ctrl+scroll zooms, scroll pans · loop markers show when Loop is on",
         |_| {},
     );
     if closed {
-        if view.drag.take().is_some() {
+        if view.view.drop_grab() {
             edits.push(Edit::EndDrag);
         }
         view.close();
@@ -396,92 +254,61 @@ pub fn show(ui: &mut Ui, view: &mut SampleView, session: &Session) -> Vec<Edit> 
         );
         return edits;
     };
-    if ui.rect_contains_pointer(body) {
-        let (scroll, zoom, pointer) =
-            ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
-        let anchor = pointer.map_or(0.5, |p| {
-            ((p.x - body.left()) / body.width()).clamp(0.0, 1.0)
-        });
-        // Ctrl+wheel and pinch zoom around the pointer; the wheel pans.
-        let pan = -(scroll.x + scroll.y) / body.width();
-        view.window = navigated(view.window, anchor, zoom, pan);
-    }
-    let window = view.window;
-    draw(ui, body, &hash, &sample, region, true, window);
+    let frames = sample.frames() as u64;
+    let rate = f64::from(sample.sample_rate.max(1));
+    let total = frames as f64 / rate;
+    let secs = |f: f32| f64::from(f) * total;
+    let peaks = pane::peaks_of(ui, &hash, &sample);
+    let out = pane::show(
+        ui,
+        &mut view.view,
+        body,
+        &pane::Spec {
+            peaks: Some(&peaks),
+            curve: CurveSource::Memory(&sample),
+            rate,
+            frames,
+            zero: 0.0,
+            lit: (secs(region.start), secs(region.end)),
+            looping: region.looping.map(|(a, b)| (secs(a), secs(b))),
+            gain: 1.0,
+            playhead: None,
+        },
+    );
     #[cfg(test)]
-    ui.data_mut(|d| d.insert_temp::<Geometry>(egui::Id::new("sample view body"), body));
-
-    let response = ui.interact(body, ui.id().with("sample view"), Sense::click_and_drag());
-    let fraction = |pos: Pos2| {
-        let across = ((pos.x - body.left()) / body.width()).clamp(0.0, 1.0);
-        window.0 + across * (window.1 - window.0)
-    };
-    let x_of = |value: f32| body.left() + (value - window.0) / (window.1 - window.0) * body.width();
-    let nearest = |pos: Pos2| {
-        Marker::ALL
-            .into_iter()
-            .filter_map(|m| region.at(m).map(|at| (m, (x_of(at) - pos.x).abs())))
-            .filter(|&(_, d)| d <= GRAB)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(m, _)| m)
-    };
-    if let Some(pos) = response.hover_pos()
-        && (nearest(pos).is_some() || view.drag.is_some())
-    {
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-    }
-    if response.drag_started()
-        && let Some(press) = ui.input(|i| i.pointer.press_origin())
-    {
-        view.drag = nearest(press);
-    }
-    if response.dragged()
-        && let (Some(marker), Some(pos)) = (view.drag, response.interact_pointer_pos())
-    {
-        let value = region.clamped(marker, fraction(pos));
-        edits.push(Edit::Drag(Command::SetParam {
+    ui.data_mut(|d| {
+        d.insert_temp::<Geometry>(egui::Id::new("sample view body"), (out.wave, out.axis))
+    });
+    let min = (MIN_SECONDS / total.max(MIN_SECONDS)) as f32;
+    let set = |edge: Edge, value: f32| {
+        Edit::Drag(Command::SetParam {
             node: id,
-            key: marker.key().to_owned(),
+            key: key(edge).to_owned(),
             value: Some(value),
-        }));
-    }
-    if response.drag_stopped() && view.drag.take().is_some() {
-        edits.push(Edit::EndDrag);
+        })
+    };
+    for gesture in out.gestures {
+        match gesture {
+            Gesture::Begin => view.slip = Some(region),
+            Gesture::Edge(edge, at) => {
+                let value = clamped(region, edge, (at / total.max(1e-9)) as f32, min);
+                edits.push(set(edge, value));
+            }
+            Gesture::Slip(seconds) => {
+                // The audio follows the pointer, so the region moves the
+                // other way (loop ends with it), stopping at the sample's ends.
+                if let Some(original) = view.slip {
+                    let by = -seconds / total.max(1e-9) as f32;
+                    let by = by.clamp(-original.start, 1.0 - original.end);
+                    edits.push(set(Edge::Start, original.start + by));
+                    edits.push(set(Edge::End, original.end + by));
+                }
+            }
+            Gesture::Release => {
+                view.slip = None;
+                edits.push(Edit::EndDrag);
+            }
+        }
     }
     edits
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn zooming_keeps_the_fraction_under_the_pointer_and_stays_inside_the_sample() {
-        let (a, b) = navigated(WHOLE, 0.25, 4.0, 0.0);
-        assert!((b - a - 0.25).abs() < 1e-6);
-        assert!((a + 0.25 * (b - a) - 0.25).abs() < 1e-6);
-        // Zooming out past the whole sample stops at the whole sample.
-        assert_eq!(navigated((a, b), 0.5, 0.01, 0.0), WHOLE);
-        // Panning stops at the ends.
-        assert_eq!(navigated((a, b), 0.5, 1.0, -10.0).0, 0.0);
-        assert_eq!(navigated((a, b), 0.5, 1.0, 10.0).1, 1.0);
-        // It can't zoom in without end.
-        let (a, b) = navigated(WHOLE, 0.5, 1e9, 0.0);
-        assert!(b - a >= MIN_WINDOW * 0.99);
-    }
-
-    #[test]
-    fn markers_stay_inside_the_sample_and_on_their_own_side() {
-        let region = Region {
-            start: 0.2,
-            end: 0.8,
-            looping: Some((0.3, 0.6)),
-        };
-        assert_eq!(region.clamped(Marker::Start, -1.0), 0.0);
-        assert_eq!(region.clamped(Marker::Start, 0.9), 0.8 - MIN_REGION);
-        assert_eq!(region.clamped(Marker::End, 0.0), 0.2 + MIN_REGION);
-        assert_eq!(region.clamped(Marker::End, 2.0), 1.0);
-        assert_eq!(region.clamped(Marker::LoopStart, 0.7), 0.6 - MIN_REGION);
-        assert_eq!(region.clamped(Marker::LoopEnd, 0.1), 0.3 + MIN_REGION);
-    }
 }
