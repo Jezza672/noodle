@@ -504,9 +504,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     // Meters and scopes move with the audio, so keep drawing while they do,
     // and while their peaks and traces fall back. A still graph, silent or
     // with the transport stopped, costs nothing.
-    if session.engine_running() && liveness != body::Liveness::Still {
+    if session.engine_running() {
+        // Nothing else wakes a still editor when sound starts without input
+        // (live MIDI with the transport stopped), so look again now and then.
+        let wait = if liveness == body::Liveness::Still {
+            body::IDLE_POLL
+        } else {
+            body::METER_FRAME
+        };
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_secs_f32(body::METER_FRAME));
+            .request_repaint_after(std::time::Duration::from_secs_f32(wait));
     }
     let mut new_node_id = || session.new_node_id();
     let mut new_frame_id = || session.new_frame_id();

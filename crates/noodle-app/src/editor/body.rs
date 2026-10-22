@@ -158,6 +158,9 @@ pub enum Liveness {
 /// however fast the display is.
 pub const METER_FRAME: f32 = 1.0 / 30.0;
 
+/// How often a still editor looks for new sound, in seconds.
+pub const IDLE_POLL: f32 = 0.25;
+
 /// How long a window of block statistics lasts, in seconds.
 const BLOCK_WINDOW_SECONDS: f32 = 5.0;
 

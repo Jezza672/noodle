@@ -827,6 +827,12 @@ impl ScopeWriter {
                     x
                 }),
         );
+        // Frames the full ring has no room for are lost to the view, but
+        // signal in them is still activity: the view must come and drain.
+        if !moved {
+            moved = (fit..frames)
+                .any(|frame| (0..self.channels).any(|channel| sample(frame, channel) != 0.0));
+        }
         if moved {
             self.activity.fetch_add(1, Ordering::Relaxed);
         }
@@ -1267,13 +1273,16 @@ mod tests {
         meter.write(0, quiet);
         meter.write(0, quiet);
         assert_eq!(telemetry.activity(), after_meter + 1);
-        // The silent blocks filled the ring; reading it frees room.
+        // The silent blocks filled the ring: signal it has no room for still
+        // counts, so the view comes to drain it.
+        scope.write(16, |_, _| 0.5);
+        assert_eq!(telemetry.activity(), after_meter + 2);
         telemetry.read_scope(NODE, &mut ScopeView::tail(64));
         scope.write(16, |frame, _| frame as f32 * 0.01);
-        assert_eq!(telemetry.activity(), after_meter + 2);
-        param.write(&[0.6; 8]);
         assert_eq!(telemetry.activity(), after_meter + 3);
-        positions.write(0, Some(0.5));
+        param.write(&[0.6; 8]);
         assert_eq!(telemetry.activity(), after_meter + 4);
+        positions.write(0, Some(0.5));
+        assert_eq!(telemetry.activity(), after_meter + 5);
     }
 }

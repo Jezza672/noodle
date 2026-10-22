@@ -25,7 +25,8 @@ rewind only touch the transport:
   falling: `Telemetry::activity` goes up when a meter, scope, parameter or
   position writer reports a change, and `Bodies::update` says `Moving`,
   `Decaying` (peaks, holds and spectra still falling) or `Still`. A silent
-  graph with the transport stopped draws nothing. The playhead keeps its own
+  graph with the transport stopped only looks again every 250 ms, to
+  catch sound that starts without input, such as live MIDI. The playhead keeps its own
   repaint while it plays.
 - **The fallback.** `Session::start_engine` tries the saved output, then the
   system default (as `play` always did), then the **virtual output**. Either
