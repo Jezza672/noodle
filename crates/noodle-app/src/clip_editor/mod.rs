@@ -26,6 +26,7 @@ use noodle_core::{
 };
 
 mod curve;
+mod gain_line;
 mod plain;
 
 use crate::clip_panel;

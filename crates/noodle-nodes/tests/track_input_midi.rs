@@ -328,6 +328,36 @@ fn live_notes_use_ids_of_their_own() {
 }
 
 #[test]
+fn a_muted_track_plays_no_notes_and_lets_go_of_the_ones_it_holds() {
+    let mut rig = rig("midi-mute");
+    rig.add_midi_clip(0, 8, &[(0, 3840, 60), (3840, 960, 64), (5760, 960, 67)]);
+    rig.settle();
+    // The first note is sounding when the track is muted.
+    let started = run(&mut rig, 0, BEAT, true);
+    assert_eq!(started, [(0, true, 60)]);
+    rig.set_muted(true);
+    let muted = run(&mut rig, BEAT, 3 * BEAT, true);
+    // Only its end, once: the second note (at beat 4) is still ahead.
+    assert_eq!(muted.len(), 1);
+    assert!(!muted[0].1);
+    // While muted nothing starts, even across the second note.
+    let more = run(&mut rig, 3 * BEAT, 5 * BEAT, true);
+    assert!(more.is_empty(), "{more:?}");
+    // After unmuting the next note plays; one that began during the mute
+    // does not come back.
+    rig.set_muted(false);
+    let after = run(&mut rig, 5 * BEAT, 8 * BEAT, true);
+    assert_eq!(
+        after
+            .iter()
+            .filter(|e| e.1)
+            .map(|e| e.2)
+            .collect::<Vec<_>>(),
+        [67]
+    );
+}
+
+#[test]
 fn a_looping_clip_plays_its_loop_again_until_it_ends() {
     let mut rig = rig("midi-loop");
     // A four beat clip at the start whose first beat is the loop.

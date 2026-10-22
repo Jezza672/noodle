@@ -174,6 +174,20 @@ It has these views:
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
+  - **Crossfades** (`timeline/crossfade.rs`). Where two audio clips are butted
+    (one ends within `BUTT_SECONDS` of the other's start) a round handle sits on
+    the cut, halfway down the lane. Dragging it sideways makes a crossfade as
+    long before the cut as after it; each side stops where its clip has no more
+    audio (`clips::head_room` and `tail_room`, and half the clip) while the
+    other keeps following the pointer. A crossfade is drawn as a shaded span
+    with the two equal-power curves; its edges resize it (one side each), its
+    middle slides it along the cut at the same length, and double-click or the
+    right-click menu removes it. Each drag is one undo step on the later clip.
+  - **Clip gain** is set in the clip editor (`clip_editor/gain_line.rs`) for an
+    unwarped audio clip: the gain line is drawn over the waveform; double-click
+    the waveform to add a point, drag a point (it stops at its neighbours),
+    double-click a point to remove it. The scalar is in the clip panel. A
+    warped clip plays its envelope but has no editor for it yet.
   - **Carrying out of the timeline** (`carry.rs`). Dragging an audio clip's
     body, or a track header, out of the timeline's area carries it: the clip
     goes back where it was, a label follows the pointer, and letting go

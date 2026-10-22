@@ -606,14 +606,13 @@ pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: b
     edits
 }
 
-/// A track header's menu for adding a lane for the track's gain or mute,
-/// which starts as one point holding the control's value now, so adding it
+/// A track header's menu for adding a lane for the track's mute, which
+/// starts as one point holding the control's value now, so adding it
 /// changes nothing you hear.
 pub fn add_menu(
     ui: &mut egui::Ui,
     spot: Rect,
     project: &Project,
-    gain: &(NodeId, String),
     mute: &(NodeId, String),
     controls: Controls,
 ) -> Vec<Edit> {
@@ -624,25 +623,24 @@ pub fn add_menu(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     child.menu_button("~", |ui| {
-        for ((key, (node, port)), now, curve) in [
-            ((group::GAIN, gain), controls.gain_db, Curve::Linear),
-            ((group::MUTE, mute), f32::from(controls.mute), Curve::Hold),
-        ] {
-            let target = Endpoint::new(*node, port.as_str());
-            let taken = project.lane_for(&target).is_some();
-            let item = ui.add_enabled(!taken, egui::Button::new(format!("Automate {}", name(key))));
-            if item.on_disabled_hover_text("Already automated").clicked() {
-                let point = AutomationPoint {
-                    tick: Tick::ZERO,
-                    value: now,
-                    curve,
-                };
-                edits.push(Edit::Apply(Command::AddLane {
-                    id: project.next_lane_id(),
-                    lane: AutomationLane::new(target, vec![point]),
-                }));
-                ui.close();
-            }
+        let (node, port) = mute;
+        let target = Endpoint::new(*node, port.as_str());
+        let taken = project.lane_for(&target).is_some();
+        let item = ui.add_enabled(
+            !taken,
+            egui::Button::new(format!("Automate {}", name(group::MUTE))),
+        );
+        if item.on_disabled_hover_text("Already automated").clicked() {
+            let point = AutomationPoint {
+                tick: Tick::ZERO,
+                value: f32::from(controls.mute),
+                curve: Curve::Hold,
+            };
+            edits.push(Edit::Apply(Command::AddLane {
+                id: project.next_lane_id(),
+                lane: AutomationLane::new(target, vec![point]),
+            }));
+            ui.close();
         }
     });
     edits

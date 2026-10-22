@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use noodle_core::ClipId;
 use noodle_engine::{
     Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, ParamInfo, Setup, Shape, Unit,
+    NoteId, ParamInfo, Setup, Shape,
 };
 use noodle_io::{ClipStream, MidiBus};
 use rtrb::{Consumer, Producer, PushError};
@@ -49,12 +49,11 @@ pub const TRACK_INPUT_ID: &str = "noodle.track.input";
 
 const AUDIO: usize = 0;
 const MIDI: usize = 0;
-/// The track's gain and mute: parameters (inputs 0 and 1), passed on as
-/// outputs 1 and 2 for the track's group output to take.
-const GAIN_IN: usize = 0;
-const MUTE_IN: usize = 1;
-const GAIN_OUT: usize = 1;
-const MUTE_OUT: usize = 2;
+/// The track's mute: a parameter (input 0), passed on as output 1 so the
+/// track's graph can follow it. The node itself stops its MIDI while muted;
+/// the engine mutes the audio at the track's group output.
+const MUTE_IN: usize = 0;
+const MUTE_OUT: usize = 1;
 /// The most MIDI notes one track sounds at once; more are dropped.
 const MAX_SOUNDING: usize = 128;
 /// The note IDs of keys auditioned from the piano roll; see
@@ -75,9 +74,30 @@ const MAX_SPAN: f64 = (WINDOW_FRAMES - 16) as f64;
 /// Warped clips are played in pieces of at most this many output frames.
 const WARP_CHUNK: usize = 256;
 
+/// Source frames of a warped clip, `start..end` of its stream, interleaved.
+/// The stream is at `end`.
+struct Window {
+    buf: Vec<f32>,
+    start: u64,
+    end: u64,
+    /// The stream (by serial) the window was read from.
+    serial: Option<u64>,
+}
+
+impl Window {
+    fn new() -> Self {
+        Self {
+            buf: vec![0.0; WINDOW_FRAMES * MAX_CHANNELS],
+            start: 0,
+            end: 0,
+            serial: None,
+        }
+    }
+}
+
 static INFO: NodeInfo = NodeInfo {
     id: TRACK_INPUT_ID,
-    version: 2,
+    version: 3,
     name: "Track Input",
     category: "Track",
 };
@@ -123,14 +143,8 @@ impl NodeType for TrackInput {
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(Layout::realtime()
-            .param(
-                "gain",
-                "Gain",
-                ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
-            )
             .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
             .output("audio", "Audio")
-            .output("gain", "Gain")
             .output("mute", "Mute")
             .event_output("midi", "MIDI"))
     }
@@ -141,7 +155,7 @@ impl NodeType for TrackInput {
         _layout: &Layout,
         _inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
-        Ok(vec![Shape::STEREO, Shape::MONO, Shape::MONO])
+        Ok(vec![Shape::STEREO, Shape::MONO])
     }
 
     fn cache_inputs(
@@ -172,6 +186,17 @@ impl NodeType for TrackInput {
                         .f32(audio.gain)
                         .u64(audio.fade_in)
                         .u64(audio.fade_out);
+                    // Only what a clip has is keyed, so the keys of clips
+                    // without an envelope or a crossfade stay as they were.
+                    if !audio.gain_points.is_empty() {
+                        key.str("gain points").u64(audio.gain_points.len() as u64);
+                        for point in &audio.gain_points {
+                            key.i64(point.tick.0).f32(point.db);
+                        }
+                    }
+                    if let Some(x) = audio.crossfade.filter(|x| !x.is_empty()) {
+                        key.str("crossfade").i64(x.before.0).i64(x.after.0);
+                    }
                     // Only a warp that changes the sound is keyed, so the
                     // keys of clips that aren't warped stay as they were.
                     if let Some(warp) = audio
@@ -252,11 +277,10 @@ struct TrackInputNode {
     /// Source frames of the warped clip being played: frames
     /// `window_start..window_end` of its stream, interleaved. The stream is
     /// at `window_end`.
-    window: Vec<f32>,
-    window_start: u64,
-    window_end: u64,
-    /// The stream (by serial) the window was read from.
-    window_serial: Option<u64>,
+    window: Window,
+    /// The same for the clip a crossfade fades out under the one being
+    /// played; swapped in while that clip plays.
+    window_under: Window,
     /// Whether warped clips are being played as cheap Repitch (see
     /// [`ClipFeeds::set_preview`]), as of the last time the node switched.
     preview: bool,
@@ -323,10 +347,8 @@ impl TrackInputNode {
             scratch: vec![0.0; max_frames * MAX_CHANNELS],
             left: vec![0.0; max_frames],
             right: vec![0.0; max_frames],
-            window: vec![0.0; WINDOW_FRAMES * MAX_CHANNELS],
-            window_start: 0,
-            window_end: 0,
-            window_serial: None,
+            window: Window::new(),
+            window_under: Window::new(),
             preview: false,
             preview_dip: false,
             level: 0.0,
@@ -668,7 +690,18 @@ impl TrackInputNode {
         for (a, b, clip) in Segments::new(&schedule, position + from as u64, position + to as u64) {
             let (fa, fb) = ((a - position) as usize, (b - position) as usize);
             match clip {
-                Some(clip) => self.play(clip, &schedule, a, fa, fb, target),
+                Some(clip) => {
+                    // A crossfade plays the clip it fades out as well, from
+                    // its own stream and window, adding into the output.
+                    if let Some(under) = schedule::under_at(&schedule, clip, a) {
+                        let level = self.level;
+                        std::mem::swap(&mut self.window, &mut self.window_under);
+                        self.play(under, &schedule, a, fa, fb, target);
+                        std::mem::swap(&mut self.window, &mut self.window_under);
+                        self.level = level;
+                    }
+                    self.play(clip, &schedule, a, fa, fb, target)
+                }
                 None => self.advance(target, fb - fa),
             }
         }
@@ -754,18 +787,8 @@ impl TrackInputNode {
                 self.abandoned.push(key);
             }
         }
-        let fade_in = clip.fade_in as f32;
-        let fade_out = clip.fade_out as f32;
         for i in 0..got {
-            let at = rel + i as u64;
-            let mut gain = clip.gain;
-            if clip.fade_in > 0 && at < clip.fade_in {
-                gain *= (at as f32 + 0.5) / fade_in;
-            }
-            let left_in_clip = clip.length - at;
-            if clip.fade_out > 0 && left_in_clip <= clip.fade_out {
-                gain *= (left_in_clip as f32 - 0.5) / fade_out;
-            }
+            let mut gain = clip.level(rel + i as u64);
             self.advance(target, 1);
             gain *= self.level;
             let frame = &self.scratch[i * channels..(i + 1) * channels];
@@ -773,8 +796,8 @@ impl TrackInputNode {
                 1 => (frame[0], frame[0]),
                 _ => (frame[0], frame[1]),
             };
-            self.left[fa + i] = l * gain;
-            self.right[fa + i] = r * gain;
+            self.left[fa + i] += l * gain;
+            self.right[fa + i] += r * gain;
         }
         self.advance(target, len - got);
     }
@@ -827,7 +850,7 @@ impl TrackInputNode {
                 .streams
                 .iter()
                 .flatten()
-                .find(|p| Some(p.serial) == self.window_serial)
+                .find(|p| Some(p.serial) == self.window.serial)
                 .map_or(2, |p| p.stream.channels());
             for k in 0..n {
                 let s = map.source_at((rel + k as u64) as f64);
@@ -862,12 +885,12 @@ impl TrackInputNode {
         // The stream the window came from, if it carries on from here.
         let held = self.streams.iter().position(|slot| {
             slot.as_ref().is_some_and(|p| {
-                Some(p.serial) == self.window_serial
+                Some(p.serial) == self.window.serial
                     && (p.id, p.key) == key
-                    && p.stream.position() == self.window_end
+                    && p.stream.position() == self.window.end
             })
         });
-        let carry_on = held.is_some() && self.window_start <= lo && lo <= self.window_end;
+        let carry_on = held.is_some() && self.window.start <= lo && lo <= self.window.end;
         let found = if carry_on {
             held
         } else if blocking {
@@ -885,12 +908,13 @@ impl TrackInputNode {
         let channels = stream.channels();
         if carry_on {
             // Forget the frames behind `lo`.
-            let drop = (lo - self.window_start) as usize;
+            let drop = (lo - self.window.start) as usize;
             if drop > 0 {
-                let keep = (self.window_end - lo) as usize;
+                let keep = (self.window.end - lo) as usize;
                 self.window
+                    .buf
                     .copy_within(drop * channels..(drop + keep) * channels, 0);
-                self.window_start = lo;
+                self.window.start = lo;
             }
         } else {
             // Line the stream up with `lo`, as a clip that isn't warped does
@@ -916,20 +940,20 @@ impl TrackInputNode {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
-            self.window_start = lo;
-            self.window_end = lo;
-            self.window_serial = Some(prepared.serial);
+            self.window.start = lo;
+            self.window.end = lo;
+            self.window.serial = Some(prepared.serial);
         }
         let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
-        if hi > self.window_end {
-            let want = (hi - self.window_end) as usize;
-            let from = (self.window_end - self.window_start) as usize * channels;
+        if hi > self.window.end {
+            let want = (hi - self.window.end) as usize;
+            let from = (self.window.end - self.window.start) as usize * channels;
             let got = read_frames(
                 stream,
-                &mut self.window[from..from + want * channels],
+                &mut self.window.buf[from..from + want * channels],
                 blocking,
             );
-            self.window_end += got as u64;
+            self.window.end += got as u64;
             if got < want {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);
                 if blocking && stream.position() < stream.total_frames() {
@@ -952,10 +976,10 @@ impl TrackInputNode {
     fn tap(&self, j: i64, c: usize, t: f32, channels: usize, total: u64) -> f32 {
         let at = |j: i64| -> f32 {
             let j = (j.max(0) as u64).min(total.saturating_sub(1));
-            if j < self.window_start || j >= self.window_end {
+            if j < self.window.start || j >= self.window.end {
                 return 0.0;
             }
-            self.window[(j - self.window_start) as usize * channels + c]
+            self.window.buf[(j - self.window.start) as usize * channels + c]
         };
         cubic(at(j - 1), at(j), at(j + 1), at(j + 2), t)
     }
@@ -964,18 +988,11 @@ impl TrackInputNode {
     /// clip's gain and fades (`at` is the frame's place in the clip) and the
     /// declick level.
     fn put(&mut self, clip: &ScheduledClip, at: u64, index: usize, l: f32, r: f32, target: f32) {
-        let mut gain = clip.gain;
-        if clip.fade_in > 0 && at < clip.fade_in {
-            gain *= (at as f32 + 0.5) / clip.fade_in as f32;
-        }
-        let left_in_clip = clip.length.saturating_sub(at);
-        if clip.fade_out > 0 && left_in_clip <= clip.fade_out {
-            gain *= (left_in_clip as f32 - 0.5) / clip.fade_out as f32;
-        }
+        let mut gain = clip.level(at);
         self.advance(target, 1);
         gain *= self.level;
-        self.left[index] = l * gain;
-        self.right[index] = r * gain;
+        self.left[index] += l * gain;
+        self.right[index] += r * gain;
     }
 }
 
@@ -1281,7 +1298,6 @@ fn read_frames(stream: &mut ClipStream, out: &mut [f32], blocking: bool) -> usiz
 impl Node for TrackInputNode {
     fn constant_output(&self, output: usize, constants: &[Option<f32>]) -> Option<f32> {
         match output {
-            GAIN_OUT => constants[GAIN_IN],
             MUTE_OUT => constants[MUTE_IN],
             _ => None,
         }
@@ -1289,11 +1305,12 @@ impl Node for TrackInputNode {
 
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let n = ctx.frames;
-        // The track's own controls, passed on for its group output.
+        // The track's mute, passed on for the track's graph to follow.
         // (A rig that drives the node by hand may have only the audio output.)
-        for (input, output) in [(GAIN_IN, GAIN_OUT), (MUTE_IN, MUTE_OUT)] {
-            if let (Some(input), Some(output)) = (io.inputs.get(input), io.outputs.get_mut(output))
-            {
+        let mut muted = false;
+        if let Some(input) = io.inputs.get(MUTE_IN) {
+            muted = input.lane(0, 0).first().is_some_and(|&m| m >= 0.5);
+            if let Some(output) = io.outputs.get_mut(MUTE_OUT) {
                 output.lane_mut(0, 0).copy_from_slice(input.lane(0, 0));
             }
         }
@@ -1324,12 +1341,19 @@ impl Node for TrackInputNode {
         // isn't monitored lets go of any it holds.
         if let Some(live) = &mut self.live {
             let monitoring = self.shared.monitoring.load(Ordering::Relaxed);
-            live.process(ctx, monitoring.then_some(0), &mut io.event_outputs[MIDI]);
+            live.process(
+                ctx,
+                (monitoring && !muted).then_some(0),
+                &mut io.event_outputs[MIDI],
+            );
         }
+        // A muted track plays no notes, and lets go of the ones it holds as
+        // it is muted. (Notes that begin while it is muted stay unplayed
+        // after it is unmuted: it carries on with the next.)
         self.play_notes(
             transport.position,
             n,
-            transport.playing,
+            transport.playing && !muted,
             &mut io.event_outputs[MIDI],
         );
 

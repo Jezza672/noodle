@@ -361,3 +361,83 @@ fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
         "a control change reshaped the graph"
     );
 }
+
+#[test]
+fn muting_a_track_silences_everything_leaving_it_with_no_wire_for_the_mute() {
+    use noodle_core::group::{GROUP_OUTPUT, TRACK_INPUT, TRACK_MUTE, create_track};
+    use noodle_core::{Command, Connection, Endpoint, Node, Position};
+
+    let mut project = Project::new();
+    let mut history = History::new();
+    let (group, command) = create_track(None, Position::default(), || project.new_node_id());
+    history.apply(&mut project, command).unwrap();
+    let inside = |project: &Project, kind: &str| {
+        project
+            .graph()
+            .children(Some(group))
+            .find(|(_, n)| n.type_id == kind)
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    let (input, output) = (
+        inside(&project, TRACK_INPUT),
+        inside(&project, GROUP_OUTPUT),
+    );
+    // An oscillator that always sounds, in place of the track's audio, and
+    // the project's output after the track.
+    let osc = project.new_node_id();
+    let out = project.new_node_id();
+    for (id, node) in [
+        (
+            osc,
+            Node::new("noodle.osc.sine")
+                .with_param("frequency", 440.0)
+                .in_group(group),
+        ),
+        (out, Node::new("noodle.io.output")),
+    ] {
+        history
+            .apply(&mut project, Command::AddNode { id, node })
+            .unwrap();
+    }
+    history
+        .apply(
+            &mut project,
+            Command::Disconnect {
+                input: Endpoint::new(output, "p1"),
+            },
+        )
+        .unwrap();
+    for (from, to) in [
+        (Endpoint::new(osc, "out"), Endpoint::new(output, "p1")),
+        (Endpoint::new(group, "out"), Endpoint::new(out, "in")),
+    ] {
+        history
+            .apply(&mut project, Command::Connect(Connection { from, to }))
+            .unwrap();
+    }
+    let playing = render_project(&project);
+    assert!(playing[2_400..].iter().any(|&x| x.abs() > 0.1));
+
+    let shape = |project: &Project| {
+        let flat = noodle_engine::flatten(project.graph());
+        let ids: Vec<NodeId> = flat.nodes().map(|(id, _)| id).collect();
+        (ids, flat.connections().collect::<Vec<_>>())
+    };
+    let before = shape(&project);
+    set(&mut project, &mut history, input, TRACK_MUTE, 1.0);
+    // The mute ramps in, then nothing leaves the track, wired or not.
+    let registry = {
+        let mut registry = Registry::with_builtins();
+        let _telemetry = noodle_nodes::register_all(&mut registry);
+        registry
+    };
+    let muted = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
+    assert!(muted.diagnostics.is_empty(), "{:?}", muted.diagnostics);
+    assert!(muted.samples[2_400..].iter().all(|&x| x == 0.0));
+    assert_eq!(shape(&project), before, "muting reshaped the graph");
+
+    set(&mut project, &mut history, input, TRACK_MUTE, 0.0);
+    let again = render_project(&project);
+    assert!(again[2_400..].iter().any(|&x| x.abs() > 0.1));
+}

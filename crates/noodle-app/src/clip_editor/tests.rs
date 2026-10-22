@@ -790,6 +790,69 @@ fn an_unwarped_clip_shows_its_waveform_and_the_drag_slips_the_audio_under_it() {
     assert_eq!(rig.session.project().clip(rig.clip).unwrap().start, Tick(0));
 }
 
+/// Lets the double-click window pass, so the next click starts a new count.
+fn wait_out_double_click(h: &mut H) {
+    for _ in 0..30 {
+        h.step();
+    }
+}
+
+fn gain_points(h: &H) -> Vec<(i64, f32)> {
+    let rig = h.state();
+    rig.session
+        .project()
+        .clip(rig.clip)
+        .unwrap()
+        .as_audio()
+        .unwrap()
+        .gain_points
+        .iter()
+        .map(|p| (p.tick.0, p.db))
+        .collect()
+}
+
+#[test]
+fn the_gain_line_takes_points_by_double_click_and_drags_and_removes_them() {
+    let mut h = plain_rig();
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    let at = |seconds: f32, db: f32| {
+        Pos2::new(
+            g.window + g.pps * seconds,
+            super::gain_line::y_of(g.wave, db),
+        )
+    };
+    // A double-click on the waveform adds a point where it is.
+    double_click(&mut h, at(0.5, -12.0));
+    let points = gain_points(&h);
+    assert_eq!(points.len(), 1);
+    // Half a second at 120 beats per minute is a beat.
+    assert!((points[0].0 - 960).abs() <= 2, "{points:?}");
+    assert!((points[0].1 + 12.0).abs() < 0.5, "{points:?}");
+    wait_out_double_click(&mut h);
+    double_click(&mut h, at(1.5, 6.0));
+    assert_eq!(gain_points(&h).len(), 2);
+    // Dragging the first point down and left moves it and nothing else, and
+    // leaves the audio under the window where it was.
+    drag_between(&mut h, Modifiers::NONE, at(0.5, -12.0), at(0.25, -30.0));
+    let moved = gain_points(&h);
+    assert_eq!(moved.len(), 2);
+    assert!(
+        (moved[0].0 - 480).abs() <= 2 && (moved[0].1 + 30.0).abs() < 0.5,
+        "{moved:?}"
+    );
+    assert_eq!(offset(&h), 0);
+    // A point stops at its neighbour.
+    drag_between(&mut h, Modifiers::NONE, at(0.25, -30.0), at(1.9, -30.0));
+    let stopped = gain_points(&h);
+    assert!(stopped[0].0 <= stopped[1].0, "{stopped:?}");
+    // One undo undoes the drag; double-clicking a point removes it.
+    h.state_mut().session.undo();
+    assert_eq!(gain_points(&h), moved);
+    wait_out_double_click(&mut h);
+    double_click(&mut h, at(0.25, -30.0));
+    assert_eq!(gain_points(&h).len(), 1);
+}
+
 #[test]
 fn the_toolbar_shows_the_title_and_a_close_button_inside_the_panel() {
     for warped in [false, true] {

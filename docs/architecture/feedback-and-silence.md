@@ -82,7 +82,6 @@ pool, so nothing allocates.
   mute settled on, a VCA or multiplier whose level is a constant 0), stops, and
   so does everything that only feeds it, back to the sources. A silenced
   node's other inputs may come from a source whose output is known without
-  running it (`Node::constant_output`, used by the track input's gain and
-  mute). A stopped node whose outputs a live node still reads has them
+  running it (`Node::constant_output`, used by the track input's mute). A stopped node whose outputs a live node still reads has them
   zeroed. When a node becomes live again it is `reset()` and its delay lines
   cleared, so it starts fresh rather than playing stale state.
