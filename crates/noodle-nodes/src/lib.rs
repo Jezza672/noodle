@@ -257,7 +257,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Normalize);
     registry.register(TimeStretch);
     registry.register(Reroute);
-    registry.register(GroupStage);
+    registry.register(GroupStage::new(&telemetry));
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
     registry.register(Spectrum::new(&telemetry));

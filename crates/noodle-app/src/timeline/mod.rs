@@ -11,6 +11,7 @@
 pub(crate) mod add_track;
 mod automation;
 mod clips;
+mod crossfade;
 pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
@@ -98,6 +99,7 @@ pub struct TimelineState {
     /// Sections' waveforms as they play, once warped.
     warped_waves: warped_waves::WarpedWaves,
     automation: automation::State,
+    crossfade: crossfade::State,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -137,6 +139,7 @@ impl Default for TimelineState {
             waveforms: waveform::Cache::default(),
             warped_waves: warped_waves::WarpedWaves::default(),
             automation: automation::State::default(),
+            crossfade: crossfade::State::default(),
             show_tempo: false,
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
@@ -286,6 +289,12 @@ impl TimelineState {
     #[cfg(test)]
     pub fn clip_rect(&self, id: ClipId) -> Option<Rect> {
         self.clip_rects.get(&id).copied()
+    }
+
+    /// Where a crossfade's handle or edge was drawn last frame.
+    #[cfg(test)]
+    fn crossfade_widget(&self, later: ClipId, grab: crossfade::Grab) -> Option<Rect> {
+        self.crossfade.widgets.get(&(later, grab)).copied()
     }
 
     /// Where the take being recorded was drawn on a track, if it was.
@@ -951,6 +960,34 @@ pub fn show(
         }
     }
 
+    // The handles and crossfades where audio clips are butted together.
+    let infos: crossfade::Infos = project
+        .clips()
+        .filter_map(|(id, clip)| {
+            let audio = clip.as_audio()?;
+            let loaded = state
+                .sources
+                .get(ui.ctx(), directory.as_deref(), &audio.source)?;
+            Some((id, (loaded.source.sample_rate, loaded.source.frames)))
+        })
+        .collect();
+    let tops: Vec<(NodeId, f32)> = tracks
+        .iter()
+        .enumerate()
+        .map(|(i, &track)| (track, lane_top(i)))
+        .collect();
+    edits.extend(crossfade::show(
+        ui,
+        &mut state.crossfade,
+        &crossfade::View {
+            project,
+            axis,
+            content,
+            tracks: &tops,
+            infos: &infos,
+            lane_height: colors::LANE_HEIGHT,
+        },
+    ));
     select_by_box(ui, state, &background, content, &drawn);
 
     // Clips and automation points share the Delete key, so picking one
@@ -1958,7 +1995,6 @@ fn draw_headers(
                     session.project().lane_for(&input).is_some() || graph.source(&input).is_some()
                 };
                 header::Automated {
-                    gain: driven(&t.gain_target),
                     mute: driven(&t.mute_target),
                 }
             });
@@ -2008,7 +2044,6 @@ fn draw_headers(
                 ui,
                 spot,
                 session.project(),
-                &controls.gain_target,
                 &controls.mute_target,
                 controls.controls,
             ));

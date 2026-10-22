@@ -175,8 +175,7 @@ fn arrangement() -> Arrangement {
         curve: Curve::Hold,
     };
     let automation = AutomationLane::new(
-        // The track input's gain, which the track's output follows.
-        Endpoint::new(two_in, noodle_core::group::TRACK_GAIN),
+        Endpoint::new(two_out, noodle_core::group::control_key("gain", 1)),
         vec![point(0, 0.0), point(3, HALF_DB)],
     );
     apply(

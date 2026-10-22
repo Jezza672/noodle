@@ -79,6 +79,11 @@ impl Fields {
             if covered {
                 ui.disable();
                 ui.visuals_mut().disabled_alpha = 1.0;
+                // Disabled widgets draw in the noninteractive colours,
+                // which reads as the other nodes dimming whenever the
+                // pointer is over one node. Draw them as at rest.
+                let rest = ui.visuals().widgets.inactive;
+                ui.visuals_mut().widgets.noninteractive = rest;
             }
             for port in &node.ports {
                 let PortKind::Param(info) = &port.kind else {

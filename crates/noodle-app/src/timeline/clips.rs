@@ -206,6 +206,64 @@ pub fn trim_end(
     })
 }
 
+/// How far, in ticks, the audio before an audio clip's start reaches back:
+/// what a crossfade into the clip can use before the cut.
+pub fn head_room(map: &TempoMap, clip: &Clip, rate: u32, warp: Option<&ClipWarp>) -> Tick {
+    let Some(audio) = clip.as_audio() else {
+        return Tick::ZERO;
+    };
+    let Some(layout) = layout(map, audio, warp, rate) else {
+        return Tick::ZERO;
+    };
+    let back = match layout {
+        Layout::Frames => {
+            let rate = f64::from(rate);
+            let start = map.sample_at(clip.start, rate);
+            Tick(
+                map.tick_at_sample(start.saturating_sub(audio.offset), rate)
+                    .round() as i64,
+            )
+        }
+        Layout::Warped(section) => {
+            section.tick_of(clip.start, audio.offset as f64 / f64::from(rate), 0.0)
+        }
+    };
+    Tick((clip.start.0 - back.0).max(0))
+}
+
+/// How far, in ticks, the file goes on after an audio clip's end: what a
+/// crossfade out of the clip can play past the cut. Nothing if the file's
+/// length isn't known.
+pub fn tail_room(
+    map: &TempoMap,
+    clip: &Clip,
+    rate: u32,
+    file_frames: Option<u64>,
+    warp: Option<&ClipWarp>,
+) -> Tick {
+    let (Some(audio), Some(frames)) = (clip.as_audio(), file_frames) else {
+        return Tick::ZERO;
+    };
+    let Some(layout) = layout(map, audio, warp, rate) else {
+        return Tick::ZERO;
+    };
+    let end = clip_end(map, clip, rate, warp);
+    let forward = match layout {
+        Layout::Frames => {
+            let rate = f64::from(rate);
+            let start = map.sample_at(clip.start, rate);
+            let last = start + frames.saturating_sub(audio.offset);
+            Tick(map.tick_at_sample(last, rate).round() as i64)
+        }
+        Layout::Warped(section) => section.tick_of(
+            clip.start,
+            audio.offset as f64 / f64::from(rate),
+            frames as f64 / f64::from(rate),
+        ),
+    };
+    Tick((forward.0 - end.0).max(0))
+}
+
 /// A MIDI clip with its left edge dragged to `edge`. The notes keep their
 /// place on the timeline: the ones before the new start are cut off or, when
 /// the clip is extended to the left, start later in the clip.

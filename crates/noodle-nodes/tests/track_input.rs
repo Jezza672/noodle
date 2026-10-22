@@ -586,3 +586,119 @@ fn an_error_stays_while_the_schedule_changes() {
         "the error vanished while editing"
     );
 }
+
+fn audio_of(clip: &mut noodle_core::Clip) -> &mut noodle_core::AudioClip {
+    let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+        unreachable!("not an audio clip")
+    };
+    audio
+}
+
+#[test]
+fn gain_points_shape_the_clip_in_decibels_between_points() {
+    use noodle_core::{GainPoint, Tick};
+    let mut rig = Rig::blocking("envelope");
+    rig.wav("one.wav", 1, 60_000, |_, _| 1.0);
+    let id = rig.add_clip(0, "one.wav", 0, 40_000);
+    rig.edit_clip(id, |clip| {
+        let audio = audio_of(clip);
+        audio.gain = 0.5;
+        audio.gain_points = vec![
+            GainPoint {
+                tick: Tick(0),
+                db: 0.0,
+            },
+            GainPoint {
+                tick: Tick(960),
+                db: -20.0,
+            },
+        ];
+    });
+    rig.wait_ready(0, 1);
+    let (left, _) = rig.play(0, 30_000);
+    // Linear in dB across the first beat: -10 dB halfway, then it holds.
+    let want =
+        |frame: usize| 0.5 * 10f32.powf(-20.0 * (frame.min(24_000) as f32 / 24_000.0) / 20.0);
+    for frame in [1_000, 6_000, 12_000, 20_000, 24_500, 29_000] {
+        assert!(
+            (left[frame] - want(frame)).abs() < 2e-3,
+            "frame {frame}: {} vs {}",
+            left[frame],
+            want(frame)
+        );
+    }
+}
+
+/// The level of a crossfade side `x` (0 to 1) of the way through its fade.
+fn power(x: f32) -> f32 {
+    (x * std::f32::consts::FRAC_PI_2).sin()
+}
+
+#[test]
+fn butted_clips_crossfade_over_the_audio_each_has_to_spare() {
+    use noodle_core::{Crossfade, Tick};
+    let mut rig = Rig::blocking("crossfade");
+    // A plays frames 0..24 000 of its file and the file goes on; B plays
+    // frames 6 000.. of its file, so it can play 6 000 frames before its start.
+    rig.wav("a.wav", 1, 60_000, |_, i| 0.25 + i as f32 / 400_000.0);
+    rig.wav("b.wav", 1, 60_000, |_, _| 0.75);
+    rig.add_clip(0, "a.wav", 0, 24_000);
+    let b = rig.add_clip(1, "b.wav", 6_000, 20_000);
+    // 240 ticks is 6 000 frames at 120 beats per minute.
+    rig.edit_clip(b, |clip| {
+        audio_of(clip).crossfade = Some(Crossfade {
+            before: Tick(240),
+            after: Tick(240),
+        });
+    });
+    rig.wait_ready(0, 1);
+    let (left, _) = rig.play(0, 40_000);
+    let a = |frame: usize| 0.25 + frame as f32 / 400_000.0;
+    // Before the crossfade, A alone; after it, B alone.
+    assert!((left[10_000] - a(10_000)).abs() < 1e-5);
+    assert!((left[35_000] - 0.75).abs() < 1e-5);
+    // Inside, A plays on past its end while B plays from before its start,
+    // equal power over the 12 000 frames from 18 000 to 30 000.
+    for frame in [18_500, 21_000, 24_000, 27_000, 29_500] {
+        let x = (frame - 18_000) as f32 + 0.5;
+        let want = a(frame) * power(1.0 - x / 12_000.0) + 0.75 * power(x / 12_000.0);
+        assert!(
+            (left[frame] - want).abs() < 2e-3,
+            "frame {frame}: {} vs {want}",
+            left[frame]
+        );
+    }
+}
+
+#[test]
+fn a_crossfade_stops_growing_where_a_clip_runs_out_of_audio() {
+    use noodle_core::{Crossfade, Tick};
+    let mut rig = Rig::blocking("crossfade-clamp");
+    // A's file ends 3 000 frames after the clip does; B starts at the very
+    // start of its file, so it has nothing to play before its start.
+    rig.wav("a.wav", 1, 27_000, |_, _| 0.5);
+    rig.wav("b.wav", 1, 60_000, |_, _| 0.5);
+    rig.add_clip(0, "a.wav", 0, 24_000);
+    let b = rig.add_clip(1, "b.wav", 0, 20_000);
+    rig.edit_clip(b, |clip| {
+        audio_of(clip).crossfade = Some(Crossfade {
+            before: Tick(960),
+            after: Tick(960),
+        });
+    });
+    rig.wait_ready(0, 1);
+    let (left, _) = rig.play(0, 40_000);
+    // Nothing before the cut changes: B has no audio there.
+    assert!((left[23_000] - 0.5).abs() < 1e-5);
+    // After the cut, A fades out under B for its 3 000 spare frames only.
+    for frame in [24_500, 25_500, 26_900] {
+        let x = (frame - 24_000) as f32 + 0.5;
+        let want = 0.5 * power(1.0 - x / 3_000.0) + 0.5 * power(x / 3_000.0);
+        assert!(
+            (left[frame] - want).abs() < 2e-3,
+            "frame {frame}: {} vs {want}",
+            left[frame]
+        );
+    }
+    assert!((left[28_000] - 0.5).abs() < 1e-5);
+}

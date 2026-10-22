@@ -192,6 +192,32 @@ pub(super) fn show(
     if state.slip.is_some() && project.clip(id).is_none() {
         state.slip = None;
     }
+    // The gain envelope, in timeline time from the clip's start.
+    {
+        let map = project.tempo_map();
+        let start = map.seconds_at(clip.start);
+        let x_of = |tick: Tick| axis.x(map.seconds_at(Tick(clip.start.0 + tick.0)) - start);
+        let tick_at = |x: f32| {
+            let seconds = start + f64::from((x - axis.origin) / axis.pps);
+            Tick((map.tick_at_seconds(seconds).round() as i64 - clip.start.0).max(0))
+        };
+        let end = map.sample_at(clip.start, rate) + audio.length;
+        let length = Tick(map.tick_at_sample(end, rate).round() as i64 - clip.start.0);
+        edits.extend(super::gain_line::show(
+            ui,
+            &painter,
+            &super::gain_line::Frame {
+                wave,
+                length,
+                x_of: &x_of,
+                tick_at: &tick_at,
+            },
+            id,
+            clip,
+            audio,
+            &response,
+        ));
+    }
     if loaded.peaks.is_none() {
         painter.text(
             wave.center(),

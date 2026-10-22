@@ -38,7 +38,7 @@ key(output) = hash(key(node), output index)
   points are in the key of everything it reaches.
 - The timeline lives outside the graph, so a node type contributes it through
   `cache_inputs`. A track input hashes each clip it plays: its position, its
-  gain and fades, and for audio the *content hash* of the file
+  gain, gain points, fades and crossfade, and for audio the *content hash* of the file
   (`noodle_io::FileHasher`, remembered while size and modification time hold),
   so a file replaced under the same name gives a new key.
 - Every key also holds the crate version and `DSP_GENERATION`

@@ -314,14 +314,14 @@ fn add_track(p: &mut Patch, part: &Part, index: usize) -> Track {
     p.history
         .apply(
             p.project,
-            // The output follows the track input's gain.
+            // The part's level is the gain of the track's group output.
             Command::SetParam {
-                node: input,
-                key: noodle_core::group::TRACK_GAIN.into(),
+                node: output,
+                key: noodle_core::group::control_key(noodle_core::group::GAIN, 1),
                 value: Some(part.db),
             },
         )
-        .expect("the track input has a gain");
+        .expect("the group output has a gain");
 
     p.parent = Some(group);
     let pan = p.add(spec("noodle.util.pan").param("pan", part.pan), 8.0, 1.0);

@@ -357,7 +357,10 @@ fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
         }
     }
     let lanes: Vec<_> = project.lanes().collect();
-    let keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
+    let mut keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
+    // As compiled (see `compile_with`), so a frozen group's outputs are the
+    // stages that meter them.
+    keep.extend(crate::flatten::output_stages(project.graph()));
     for &frozen in project.frozen() {
         let Some(node) = project.graph().node(frozen) else {
             continue;

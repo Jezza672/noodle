@@ -592,15 +592,20 @@ fn param(h: &H, key: &str) -> Option<f32> {
     graph.node(NodeId(11)).unwrap().params.get(key).copied()
 }
 
+fn track_param(h: &H, key: &str) -> Option<f32> {
+    let graph = h.state().session.project().graph();
+    graph.node(NodeId(1)).unwrap().params.get(key).copied()
+}
+
 #[test]
-fn the_mute_button_sets_the_output_nodes_mute() {
+fn the_mute_button_sets_the_track_inputs_mute() {
     let (mut h, _) = grouped();
     h.get_by_label("M").click();
     h.run();
-    assert_eq!(param(&h, "mute.1"), Some(1.0));
+    assert_eq!(track_param(&h, "mute"), Some(1.0));
     h.get_by_label("M").click();
     h.run();
-    assert_eq!(param(&h, "mute.1"), Some(0.0));
+    assert_eq!(track_param(&h, "mute"), Some(0.0));
 }
 
 #[test]
@@ -609,22 +614,6 @@ fn the_solo_button_sets_solo() {
     h.get_by_label("S").click();
     h.run();
     assert_eq!(param(&h, "solo.1"), Some(1.0));
-}
-
-#[test]
-fn dragging_the_gain_slider_is_one_undo_step() {
-    let (mut h, _) = grouped();
-    let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
-    // From the middle to the far left: down to the bottom of the range.
-    let from = slider.center();
-    let path: Vec<Pos2> = (0..=6)
-        .map(|i| from + Vec2::new(-200.0 * i as f32 / 6.0, 0.0))
-        .collect();
-    drag(&mut h, Modifiers::NONE, &path);
-    let gain = param(&h, "gain.1").unwrap();
-    assert!(gain < -20.0, "{gain}");
-    h.state_mut().session.undo();
-    assert_eq!(param(&h, "gain.1"), None, "one undo puts it back");
 }
 
 #[test]
@@ -679,15 +668,6 @@ fn solo_on_the_input_node_shows_as_soloed() {
     h.run();
     let graph = h.state().session.project().graph();
     assert_eq!(graph.node(NodeId(12)).unwrap().params["solo.1"], 0.0);
-}
-
-#[test]
-fn double_clicking_the_gain_slider_writes_zero_db() {
-    let (mut h, _) = grouped();
-    set_param(&mut h, 11, "gain.1", -12.0);
-    let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
-    double_click(&mut h, slider.center());
-    assert_eq!(param(&h, "gain.1"), Some(0.0));
 }
 
 fn track_inputs(h: &H) -> usize {
@@ -1109,7 +1089,7 @@ fn drops_find_their_track_below_an_automation_lane() {
     h.state_mut().session.edit([Edit::Apply(Command::AddLane {
         id: LaneId(1),
         lane: AutomationLane::new(
-            Endpoint::new(NodeId(11), "gain"),
+            Endpoint::new(NodeId(11), "gain.1"),
             vec![point(0, 0.0), point(960, -6.0)],
         ),
     })]);
@@ -2044,6 +2024,140 @@ fn the_axis_is_linear_in_seconds_so_slow_bars_are_wider() {
     for tick in [0, 100, 3840, 5000, 9999] {
         assert_eq!(axis.tick(axis.x(Tick(tick))), Tick(tick));
     }
+}
+
+/// The rig with a second second-long clip butted against the end of the
+/// first, which now plays the first second of a two second file. The second
+/// starts half a second into its file. Returns that clip's ID.
+fn butted() -> (H, ClipId, ClipId) {
+    let (mut h, first) = rig();
+    let dir = h.state()._dir.path().to_path_buf();
+    write_wav(&dir.join("b.wav"), &vec![0.0; 96_000], 1, 48_000).unwrap();
+    let mut a = clip(&h, first);
+    audio_mut(&mut a).length = 48_000;
+    let second = h.state().session.project().next_clip_id();
+    let mut b = Clip::audio(NodeId(1), Tick(1920), "b.wav", 48_000);
+    audio_mut(&mut b).offset = 24_000;
+    h.state_mut().session.edit([
+        Edit::Apply(Command::SetClip { id: first, clip: a }),
+        Edit::Apply(Command::AddClip {
+            id: second,
+            clip: b,
+        }),
+    ]);
+    for _ in 0..30 {
+        h.run();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    (h, first, second)
+}
+
+fn crossfade_of(h: &H, id: ClipId) -> Option<(i64, i64)> {
+    let x = clip(h, id).as_audio()?.crossfade?;
+    Some((x.before.0, x.after.0))
+}
+
+fn widget(h: &H, id: ClipId, grab: super::crossfade::Grab) -> egui::Rect {
+    h.state()
+        .timeline
+        .crossfade_widget(id, grab)
+        .expect("drawn")
+}
+
+#[test]
+fn dragging_the_handle_on_a_cut_makes_a_crossfade_each_side_stopping_at_its_room() {
+    use super::crossfade::Grab;
+    let (mut h, _, second) = butted();
+    assert_eq!(crossfade_of(&h, second), None);
+    let handle = widget(&h, second, Grab::Create).center();
+    // 40 points is two thirds of a beat: 640 ticks, which both sides have.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        handle,
+        handle + Vec2::new(40.0, 0.0),
+    );
+    let (before, after) = crossfade_of(&h, second).expect("made");
+    assert!(
+        (before - 640).abs() < 20 && (after - 640).abs() < 20,
+        "{before} {after}"
+    );
+    // One undo takes it away.
+    h.state_mut().session.undo();
+    h.run();
+    assert_eq!(crossfade_of(&h, second), None);
+    // Further out, the second clip has only half a second (960 ticks) behind
+    // its start, and the first the same ahead; dragging far stops both there.
+    let handle = widget(&h, second, Grab::Create).center();
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        handle,
+        handle - Vec2::new(200.0, 0.0),
+    );
+    assert_eq!(crossfade_of(&h, second), Some((960, 960)));
+}
+
+#[test]
+fn a_crossfades_edges_resize_it_and_its_middle_slides_it() {
+    use super::crossfade::Grab;
+    let (mut h, _, second) = butted();
+    let handle = widget(&h, second, Grab::Create).center();
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        handle,
+        handle + Vec2::new(30.0, 0.0),
+    );
+    let (before, after) = crossfade_of(&h, second).unwrap();
+    assert!((before - 480).abs() < 20 && (after - 480).abs() < 20);
+    // The right edge, 15 points (240 ticks) further out.
+    let edge = widget(&h, second, Grab::Right).center();
+    drag_between(&mut h, Modifiers::NONE, edge, edge + Vec2::new(15.0, 0.0));
+    let (b, a) = crossfade_of(&h, second).unwrap();
+    assert_eq!(b, before);
+    assert!((a - after - 240).abs() < 20, "{a}");
+    // The middle slides it 15 points right: the same length, later.
+    let middle = widget(&h, second, Grab::Middle).center();
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        middle,
+        middle + Vec2::new(15.0, 0.0),
+    );
+    let (b2, a2) = crossfade_of(&h, second).unwrap();
+    assert_eq!(b2 + a2, b + a);
+    assert!((b2 - (b - 240)).abs() < 20, "{b2}");
+    // Double-clicking it takes it away.
+    let middle = widget(&h, second, Grab::Middle).center();
+    double_click(&mut h, middle);
+    assert_eq!(crossfade_of(&h, second), None);
+}
+
+#[test]
+fn clips_with_a_gap_between_them_have_no_handle() {
+    use super::crossfade::Grab;
+    let (mut h, _, second) = butted();
+    let mut moved = clip(&h, second);
+    moved.start = Tick(2400);
+    h.state_mut().session.edit([Edit::Apply(Command::SetClip {
+        id: second,
+        clip: moved,
+    })]);
+    h.run();
+    assert!(
+        h.state()
+            .timeline
+            .crossfade_widget(second, Grab::Create)
+            .is_none()
+    );
+}
+
+fn audio_mut(clip: &mut Clip) -> &mut noodle_core::AudioClip {
+    let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+        unreachable!("not an audio clip")
+    };
+    audio
 }
 
 #[test]
