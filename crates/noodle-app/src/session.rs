@@ -74,6 +74,44 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// A choice from the monitor button's right-click menu: monitor `node`
+    /// in `mode` (alone, or added to the others), or stop. Not an undo step.
+    MonitorAs {
+        node: NodeId,
+        mode: Option<MonitorMode>,
+        add: bool,
+    },
+    /// A click on a node's monitor button. Not an undo step: the project is
+    /// untouched.
+    Monitor {
+        node: NodeId,
+        /// Ctrl or Cmd: exclusive, or with `shift` silencing every other
+        /// Output.
+        command: bool,
+        /// Shift: sum into what is monitored already.
+        shift: bool,
+    },
+}
+
+/// How the nodes being monitored meet the project's Output nodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MonitorMode {
+    /// Summed into them.
+    #[default]
+    Sum,
+    /// The Output nodes on the monitor's device are silenced.
+    Exclusive,
+    /// Every Output node is silenced.
+    SilenceOthers,
+}
+
+/// What the monitor buttons have set. Not part of the project: it isn't
+/// saved or undone.
+#[derive(Clone, Debug, Default)]
+struct NodeMonitor {
+    nodes: Vec<NodeId>,
+    mode: MonitorMode,
+    device: String,
 }
 
 /// The node types a session can use, and the hub their telemetry (meters,
@@ -232,6 +270,8 @@ pub struct Session {
     diagnostics: Vec<Diagnostic>,
     /// The device to play on.
     audio_config: AudioConfig,
+    /// The nodes being listened to, and how (see [`NodeMonitor`]).
+    node_monitor: NodeMonitor,
     audio: Option<Audio>,
     reroutes: Reroutes,
     /// The tracks that record audio when the record button is pressed.
@@ -468,6 +508,7 @@ impl Session {
             next_frame_id: Cell::new(0),
             diagnostics: Vec::new(),
             audio_config: AudioConfig::default(),
+            node_monitor: NodeMonitor::default(),
             audio: None,
             reroutes: Reroutes::default(),
             armed_audio: BTreeSet::new(),
@@ -509,6 +550,110 @@ impl Session {
     /// Where meter and scope nodes report what they measure.
     pub fn telemetry(&self) -> &Telemetry {
         &self.telemetry
+    }
+
+    /// The nodes whose output is playing on the monitor.
+    pub fn monitored(&self) -> &[NodeId] {
+        &self.node_monitor.nodes
+    }
+
+    /// How the monitored nodes meet the project's own outputs.
+    pub fn monitor_mode(&self) -> MonitorMode {
+        self.node_monitor.mode
+    }
+
+    /// The device the monitor plays on; empty is the main output.
+    pub fn monitor_device(&self) -> &str {
+        &self.node_monitor.device
+    }
+
+    /// Chooses the monitor's device. Playback restarts if it needs a stream
+    /// the engine doesn't have.
+    pub fn set_monitor_device(&mut self, device: &str) {
+        if self.node_monitor.device != device {
+            device.clone_into(&mut self.node_monitor.device);
+            self.monitor_changed();
+        }
+    }
+
+    /// Stops monitoring, if anything is.
+    pub fn stop_monitor(&mut self) {
+        if !self.node_monitor.nodes.is_empty() {
+            self.node_monitor.nodes.clear();
+            self.node_monitor.mode = MonitorMode::Sum;
+            self.monitor_changed();
+        }
+    }
+
+    /// A click on `node`'s monitor button.
+    ///
+    /// - Plain: monitor that node alone, summed with the project's outputs;
+    ///   clicking it again stops.
+    /// - Shift: add the node to those monitored, or take it off.
+    /// - Ctrl or Cmd: monitor it alone and silence the other Output nodes on
+    ///   the monitor's device. If it has the device to itself that changes
+    ///   nothing.
+    /// - Ctrl+Shift: monitor it alone and silence every Output node.
+    ///
+    /// Clicking the node again in the mode it is already in stops.
+    pub fn click_monitor(&mut self, node: NodeId, command: bool, shift: bool) {
+        let monitor = &mut self.node_monitor;
+        let mode = match (command, shift) {
+            (true, true) => MonitorMode::SilenceOthers,
+            (true, false) => MonitorMode::Exclusive,
+            _ => MonitorMode::Sum,
+        };
+        if shift && !command {
+            match monitor.nodes.iter().position(|&n| n == node) {
+                Some(at) => {
+                    monitor.nodes.remove(at);
+                }
+                None => monitor.nodes.push(node),
+            }
+        } else if monitor.nodes == [node] && monitor.mode == mode {
+            monitor.nodes.clear();
+        } else {
+            monitor.nodes = vec![node];
+            monitor.mode = mode;
+        }
+        if monitor.nodes.is_empty() {
+            monitor.mode = MonitorMode::Sum;
+        }
+        self.monitor_changed();
+    }
+
+    /// Monitors `node` in `mode`, alone or added to those already monitored,
+    /// or stops monitoring it if `mode` is `None`.
+    pub fn monitor_as(&mut self, node: NodeId, mode: Option<MonitorMode>, add: bool) {
+        let monitor = &mut self.node_monitor;
+        match (mode, add) {
+            (None, _) => monitor.nodes.retain(|&n| n != node),
+            (Some(_), true) if monitor.nodes.contains(&node) => {}
+            (Some(_), true) => monitor.nodes.push(node),
+            (Some(mode), false) => {
+                monitor.nodes = vec![node];
+                monitor.mode = mode;
+            }
+        }
+        if monitor.nodes.is_empty() {
+            monitor.mode = MonitorMode::Sum;
+        }
+        self.monitor_changed();
+    }
+
+    /// The monitor as the engine takes it.
+    fn engine_monitor(&self) -> Option<noodle_engine::Monitor> {
+        let monitor = &self.node_monitor;
+        (!monitor.nodes.is_empty()).then(|| noodle_engine::Monitor {
+            nodes: monitor.nodes.clone(),
+            device: monitor.device.clone(),
+            exclusive: monitor.mode == MonitorMode::Exclusive,
+            silence_others: monitor.mode == MonitorMode::SilenceOthers,
+        })
+    }
+
+    fn monitor_changed(&mut self) {
+        self.recompile_with(false);
     }
 
     pub fn audio_config(&self) -> &AudioConfig {
@@ -987,6 +1132,18 @@ impl Session {
                     self.library_edit(edit);
                     continue;
                 }
+                Edit::MonitorAs { node, mode, add } => {
+                    self.monitor_as(node, mode, add);
+                    continue;
+                }
+                Edit::Monitor {
+                    node,
+                    command,
+                    shift,
+                } => {
+                    self.click_monitor(node, command, shift);
+                    continue;
+                }
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
                     continue;
@@ -1223,7 +1380,7 @@ impl Session {
             return;
         }
         // Output nodes tied to other devices play on those as well.
-        let devices = noodle_engine::output_devices(self.project.graph());
+        let devices = self.wanted_devices();
         let open = |config: &AudioConfig| {
             noodle_io::play_with_outputs_stopped(config, &devices, MAX_FRAMES, &self.midi).map(
                 |(playback, controller)| {
@@ -2005,6 +2162,20 @@ impl Session {
         self.recompile_with(true);
     }
 
+    /// The devices besides the main one the stream plays on: those Output
+    /// nodes are tied to, and the monitor's.
+    fn wanted_devices(&self) -> Vec<String> {
+        let mut devices = noodle_engine::output_devices(self.project.graph());
+        let monitor = &self.node_monitor;
+        if !monitor.nodes.is_empty()
+            && !monitor.device.is_empty()
+            && !devices.contains(&monitor.device)
+        {
+            devices.push(monitor.device.clone());
+        }
+        devices
+    }
+
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
@@ -2015,12 +2186,19 @@ impl Session {
         self.samples.set_dir_option(dir);
         // Devices are fixed for a stream's lifetime, so an Output node tied
         // to another one means playing afresh. `play` compiles.
-        let wanted = noodle_engine::output_devices(self.project.graph());
+        self.node_monitor
+            .nodes
+            .retain(|&node| self.project.graph().node(node).is_some());
+        let wanted = self.wanted_devices();
         if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
             self.reopen_stream();
             if self.audio.is_some() {
                 return;
             }
+        }
+        let monitor = self.engine_monitor();
+        if let Some(audio) = &mut self.audio {
+            audio.controller.set_monitor(monitor);
         }
         let plan = self.refresh_freezing(start);
         self.diagnostics = match (&mut self.audio, &plan) {
@@ -4174,6 +4352,178 @@ mod tests {
         assert!(heard.iter().all(|x| x.is_finite()));
         let peak = heard.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
         assert!(peak > 0.01 && peak <= 1.0, "peak {peak}");
+    }
+
+    #[test]
+    fn monitor_clicks_follow_the_modifiers() {
+        let mut session = Session::new(Nodes::all());
+        let (a, b) = (NodeId(1), NodeId(2));
+        for id in [a, b] {
+            session.edit([Edit::Apply(Command::AddNode {
+                id,
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let state = |s: &Session| (s.monitored().to_vec(), s.monitor_mode());
+        // Plain: one node, summed; again stops.
+        session.click_monitor(a, false, false);
+        assert_eq!(state(&session), (vec![a], MonitorMode::Sum));
+        session.click_monitor(b, false, false);
+        assert_eq!(state(&session), (vec![b], MonitorMode::Sum));
+        // Shift adds, and takes off again.
+        session.click_monitor(a, false, true);
+        assert_eq!(state(&session), (vec![b, a], MonitorMode::Sum));
+        session.click_monitor(b, false, true);
+        assert_eq!(state(&session), (vec![a], MonitorMode::Sum));
+        session.click_monitor(a, false, true);
+        assert!(session.monitored().is_empty());
+        // Ctrl: alone and exclusive. On a node already summed it changes the
+        // mode rather than stopping; the same again stops.
+        session.click_monitor(a, false, false);
+        session.click_monitor(a, true, false);
+        assert_eq!(state(&session), (vec![a], MonitorMode::Exclusive));
+        session.click_monitor(a, true, false);
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
+        // Ctrl+Shift silences everything else.
+        session.click_monitor(b, true, true);
+        assert_eq!(state(&session), (vec![b], MonitorMode::SilenceOthers));
+        session.stop_monitor();
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
+    }
+
+    /// How much of each of `frequencies` the first channel of interleaved
+    /// stereo `heard` holds, after its first 20 ms (the fade-in).
+    fn energy_at(heard: &[f32], frequencies: [f32; 2]) -> [f32; 2] {
+        frequencies.map(|f| {
+            let (mut sin, mut cos) = (0.0f32, 0.0f32);
+            for (n, frame) in heard.chunks(2).enumerate().skip(960) {
+                let phase = std::f32::consts::TAU * f * n as f32 / 48_000.0;
+                sin += frame[0] * phase.sin();
+                cos += frame[0] * phase.cos();
+            }
+            (sin * sin + cos * cos).sqrt() / (heard.len() / 2) as f32
+        })
+    }
+
+    #[test]
+    fn a_monitored_node_is_heard_summed_exclusively_or_alone() {
+        const A: f32 = 440.0;
+        const B: f32 = 1000.0;
+        let mut session = Session::new(Nodes::all());
+        let sines = [(NodeId(1), A), (NodeId(2), B)];
+        for (id, frequency) in sines {
+            session.edit([
+                Edit::Apply(Command::AddNode {
+                    id,
+                    node: Node::new("noodle.osc.sine"),
+                }),
+                Edit::Apply(Command::SetParam {
+                    node: id,
+                    key: "frequency".into(),
+                    value: Some(frequency),
+                }),
+            ]);
+        }
+        // Only the first sine is wired to an Output; the second is silent
+        // until it is monitored.
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: NodeId(3),
+                node: Node::new(noodle_engine::OUTPUT_ID),
+            }),
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(NodeId(1), "out"),
+                to: Endpoint::new(NodeId(3), "in"),
+            })),
+        ]);
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        session.play();
+        let tap = session.virtual_capture().expect("the virtual output");
+        let hear = |session: &Session| {
+            let _ = session;
+            tap.start();
+            std::thread::sleep(Duration::from_millis(300));
+            energy_at(&tap.take(), [A, B])
+        };
+
+        let [a, b] = hear(&session);
+        assert!(a > 0.1 && b < 0.01, "plain: {a} {b}");
+
+        session.click_monitor(NodeId(2), false, false);
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a > 0.1 && b > 0.1, "summed: {a} {b}");
+
+        session.click_monitor(NodeId(2), true, false);
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a < 0.01 && b > 0.1, "exclusive: {a} {b}");
+
+        session.click_monitor(NodeId(2), true, true);
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a < 0.01 && b > 0.1, "silencing the others: {a} {b}");
+
+        session.stop_monitor();
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a > 0.1 && b < 0.01, "stopped: {a} {b}");
+    }
+
+    #[test]
+    fn the_monitor_menu_sets_a_mode_directly() {
+        let mut session = Session::new(Nodes::all());
+        let (a, b) = (NodeId(1), NodeId(2));
+        for id in [a, b] {
+            session.edit([Edit::Apply(Command::AddNode {
+                id,
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let state = |s: &Session| (s.monitored().to_vec(), s.monitor_mode());
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: Some(MonitorMode::SilenceOthers),
+            add: false,
+        }]);
+        // Choosing a mode again keeps it, where a click would stop.
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: Some(MonitorMode::SilenceOthers),
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![a], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: b,
+            mode: Some(MonitorMode::Sum),
+            add: true,
+        }]);
+        assert_eq!(state(&session), (vec![a, b], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: None,
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![b], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: b,
+            mode: None,
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
+    }
+
+    #[test]
+    fn deleting_a_monitored_node_stops_monitoring_it() {
+        let mut session = Session::new(Nodes::all());
+        session.edit([Edit::Apply(Command::AddNode {
+            id: NodeId(1),
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        session.click_monitor(NodeId(1), false, false);
+        session.edit([Edit::Apply(Command::RemoveNode { id: NodeId(1) })]);
+        assert!(session.monitored().is_empty());
     }
 
     #[test]

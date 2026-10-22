@@ -284,7 +284,9 @@ pub(crate) fn build(
     // At most one Output node plays on each named device: the lowest ID.
     let mut device_owners: HashMap<String, NodeId> = HashMap::new();
     for scheduled in &schedule.nodes {
-        if scheduled.node_type.info().id == OUTPUT_ID {
+        if scheduled.node_type.info().id == OUTPUT_ID
+            && !crate::monitor::is_monitor_config(&scheduled.config)
+        {
             let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let owner = device_owners.entry(device).or_insert(scheduled.id);
             *owner = (*owner).min(scheduled.id);
@@ -567,7 +569,10 @@ pub(crate) fn build(
         if is_output {
             let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let device = device.as_str();
-            if !device.is_empty() && device_owners.get(device) != Some(&id) {
+            if !device.is_empty()
+                && device_owners.get(device) != Some(&id)
+                && !crate::monitor::is_monitor_config(&scheduled.config)
+            {
                 diagnostics.push(Diagnostic::node(
                     id,
                     Problem::DeviceTaken(device.to_owned()),

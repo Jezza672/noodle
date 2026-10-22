@@ -127,6 +127,29 @@ the conventions and nodes that make them usable.
   channel-mask field in exported WAVs matching the layout, and playing extra
   devices as part of one surround bus.
 
+## Node monitoring
+
+The speaker button in a node's header (any node with an audio output) listens
+to its first audio output through the **monitor device**, chosen in the top
+bar (default: the main output, saved in the preferences). It is session state
+(`Session::node_monitor`), not project state: not saved, not undone.
+
+- **How it taps.** `Controller::set_monitor` hands the compiler a `Monitor`
+  (`noodle-engine/src/monitor.rs`). After flattening it adds a hidden Output
+  node (marked with the `monitor` config key) per monitored node, wired to the
+  node's flat output. For a group that is the output after its gain, mute and
+  solo stage, so a node that is not sounding in the mix is silent in the
+  monitor too. A node inside a group that is muted, or that solo leaves out, is not tapped at all.
+  Hidden Outputs sum onto a device other Output nodes play on, instead of
+  being refused as a second owner. Offline renders never include a monitor.
+- **Clicks.** Plain: monitor that node alone, summed into the mix; again
+  stops. Shift: add or remove a node. Ctrl/Cmd: alone, and the Output nodes
+  on the monitor's device are silenced (when the monitor has the device to
+  itself this changes nothing). Ctrl+Shift: alone, and every Output node is
+  silenced. Right-clicking the button offers the same modes as menu items (monitor, add to monitor, silence the device's other outputs, silence all, stop). Escape or the top bar's Stop button ends it.
+- **Devices.** A monitor on a named device opens a stream for it like an
+  Output node would (`Session::wanted_devices`).
+
 ## Live monitoring
 
 A track **armed for MIDI** (RM on its header, `Session::arm_kind`) plays live MIDI

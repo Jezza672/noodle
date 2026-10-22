@@ -120,6 +120,11 @@ enum Action {
     SetRecordQuantise(crate::midi_take::Quantise),
     /// Turns the audio engine on or off.
     ToggleEngine,
+    /// Stops listening to monitored nodes (Escape).
+    StopMonitor,
+    /// Chooses the device the monitor plays on: the nth listed output, or
+    /// the main output for `None`.
+    SetMonitorDevice(Option<usize>),
     AudioSettings,
     ToggleMixer,
     ToggleMetronome,
@@ -299,6 +304,9 @@ impl App {
     /// drive it without a window.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.session.maintain();
+        // The monitor menu lists devices from the Outputs view's listing.
+        self.outputs
+            .ensure_listed(self.session.audio_config().host.as_deref());
         if self.session.watching_midi() {
             ui.ctx()
                 .request_repaint_after(crate::session::MIDI_WATCH_INTERVAL);
@@ -616,6 +624,15 @@ impl App {
                     actions.push(action);
                 }
             }
+            // Escape stops the monitor, but only while there is one, so the
+            // other things Escape closes keep it otherwise.
+            if !dialog
+                && !typing
+                && !self.session.monitored().is_empty()
+                && input.consume_key(Modifiers::NONE, Key::Escape)
+            {
+                actions.push(Action::StopMonitor);
+            }
             if input.viewport().close_requested() && !self.closing {
                 actions.push(Action::Close);
             }
@@ -820,6 +837,7 @@ impl App {
             actions.push(Action::ToggleRecord);
         }
         self.quantise_menu(ui, actions);
+        self.monitor_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
         self.tempo_fields(ui, actions);
@@ -902,6 +920,59 @@ impl App {
             })
             .response
             .on_hover_text("Snap the notes of recorded MIDI to this grid");
+    }
+
+    /// Where the monitor buttons on nodes play: the main output or any other
+    /// device. While something is monitored, a button stops it.
+    fn monitor_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let current = self.session.monitor_device();
+        let name = |id: &str| {
+            self.outputs
+                .device_name(id)
+                .unwrap_or_else(|| id.to_owned())
+        };
+        let shown = if current.is_empty() {
+            "Master".to_owned()
+        } else {
+            name(current)
+        };
+        crate::widgets::Dropdown::from_id_salt("monitor_device")
+            .width(64.0)
+            .selected_text(format!("Mon {shown}"))
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_empty(), "Master").clicked() {
+                    actions.push(Action::SetMonitorDevice(None));
+                }
+                for (n, device) in self.outputs.devices().iter().enumerate() {
+                    if ui
+                        .selectable_label(current == device.id, &device.name)
+                        .clicked()
+                    {
+                        actions.push(Action::SetMonitorDevice(Some(n)));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Where a node's monitor button plays. Click it to listen to a node, \
+                 Shift-click to add another, Ctrl-click to silence the other outputs on \
+                 this device, Ctrl+Shift-click to silence all of them",
+            );
+        if !self.session.monitored().is_empty()
+            && ui
+                .button(
+                    egui::RichText::new(match self.session.monitor_mode() {
+                        crate::session::MonitorMode::Sum => "Stop monitor",
+                        crate::session::MonitorMode::Exclusive => "Stop monitor (solo device)",
+                        crate::session::MonitorMode::SilenceOthers => "Stop monitor (solo)",
+                    })
+                    .color(theme::ACCENT),
+                )
+                .on_hover_text("Stop listening to the monitored nodes (Escape)")
+                .clicked()
+        {
+            actions.push(Action::StopMonitor);
+        }
     }
 
     /// The computer keyboard as a MIDI source. While on it shows the octave
@@ -1184,6 +1255,14 @@ impl App {
                 } else {
                     self.session.start_engine();
                 }
+            }
+            Action::StopMonitor => self.session.stop_monitor(),
+            Action::SetMonitorDevice(choice) => {
+                let device = choice
+                    .and_then(|n| self.outputs.devices().get(n))
+                    .map_or_else(String::new, |d| d.id.clone());
+                self.session.set_monitor_device(&device);
+                crate::prefs::remember_monitor_device(&device);
             }
             Action::Rewind => self.session.rewind(),
             Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),

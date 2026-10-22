@@ -159,15 +159,7 @@ pub fn nodes(
         if node.reroute {
             reroute(painter, f, node, outline);
         } else {
-            boxed(
-                painter,
-                f,
-                node,
-                outline,
-                problem,
-                &state.bodies,
-                state.freeze.get(&node.id),
-            );
+            boxed(painter, f, node, outline, problem, state);
         }
         then(node);
     }
@@ -188,9 +180,11 @@ fn boxed(
     node: &NodeGeom,
     outline: Stroke,
     problem: bool,
-    bodies: &body::Bodies,
-    badge: Option<&Badge>,
+    state: &EditorState,
 ) {
+    let bodies = &state.bodies;
+    let badge = state.freeze.get(&node.id);
+    let monitored = state.monitored.contains(&node.id);
     let z = f.t.zoom;
     let rect = f.t.rect_to_screen(node.rect);
     let radius = f32::from(theme::NODE_RADIUS) * z;
@@ -217,11 +211,18 @@ fn boxed(
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
 
     let text = z >= MIN_TEXT_ZOOM;
+    let monitor = super::monitor_button(f.project, node);
+    // The button sits at the right end of the header, ahead of what is
+    // drawn there.
+    let button_room = if monitor.is_some() { 20.0 } else { 0.0 };
+    if let Some(button) = monitor {
+        monitor_button(painter, f.t.rect_to_screen(button), monitored);
+    }
     if text {
         // Leave room on the right for the warning and a header socket.
         let clipped = painter.with_clip_rect(Rect::from_min_max(
             header.min + Vec2::splat(2.0 * z),
-            header.max - Vec2::new(22.0 * z, 2.0 * z),
+            header.max - Vec2::new((22.0 + button_room) * z, 2.0 * z),
         ));
         clipped.text(
             header.left_center() + Vec2::new(24.0 * z, 0.0),
@@ -233,12 +234,12 @@ fn boxed(
         if problem {
             warning(
                 painter,
-                header.right_center() - Vec2::new(8.0 * z, 0.0),
+                header.right_center() - Vec2::new((8.0 + button_room) * z, 0.0),
                 z,
                 Align2::RIGHT_CENTER,
             );
         }
-        let mut right = if problem { 24.0 } else { 10.0 };
+        let mut right = button_room + if problem { 24.0 } else { 10.0 };
         if let Some(cpu) = bodies.cpu(node.id) {
             let (label, color) = cpu_label(cpu);
             let galley = painter.text(
@@ -380,6 +381,40 @@ fn boxed(
             &values,
             &curve,
         );
+    }
+}
+
+/// A speaker, lit while its node is monitored.
+fn monitor_button(painter: &Painter, rect: Rect, on: bool) {
+    let color = if on {
+        colors::ACTIVE
+    } else {
+        colors::TEXT_WEAK
+    };
+    if on {
+        painter.rect_filled(rect.expand(1.0), rect.width() / 4.0, colors::NODE_OUTLINE);
+    }
+    let u = rect.width() / 14.0;
+    let c = rect.center();
+    let at = |x: f32, y: f32| c + Vec2::new(x * u, y * u);
+    // The cone, then two arcs of sound.
+    painter.add(Shape::convex_polygon(
+        vec![
+            at(-5.0, -2.0),
+            at(-2.0, -2.0),
+            at(1.0, -5.0),
+            at(1.0, 5.0),
+            at(-2.0, 2.0),
+            at(-5.0, 2.0),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+    for reach in [3.0, 5.5] {
+        painter.add(Shape::line(
+            vec![at(2.5, -reach), at(4.0 + reach / 2.0, 0.0), at(2.5, reach)],
+            Stroke::new((1.2 * u).max(0.8), color),
+        ));
     }
 }
 
