@@ -198,14 +198,20 @@ pub fn take_request(ctx: &egui::Context) -> Option<NodeId> {
 #[cfg(test)]
 pub(crate) type Geometry = (Rect, pane::Axis);
 
-/// `value` (a fraction) for `edge`, kept inside the sample and on the right
-/// side of its partner.
+/// `value` (a fraction) for `edge`, kept inside the sample (the loop's ends,
+/// inside the region) and on the right side of its partner.
 fn clamped(region: Region, edge: Edge, value: f32, min: f32) -> f32 {
     let (lo, hi) = match edge {
         Edge::Start => (0.0, region.end - min),
         Edge::End => (region.start + min, 1.0),
-        Edge::LoopStart => (0.0, region.looping.map_or(1.0, |l| l.1) - min),
-        Edge::LoopEnd => (region.looping.map_or(0.0, |l| l.0) + min, 1.0),
+        Edge::LoopStart => (
+            region.start,
+            region.looping.map_or(region.end, |l| l.1) - min,
+        ),
+        Edge::LoopEnd => (
+            region.looping.map_or(region.start, |l| l.0) + min,
+            region.end,
+        ),
     };
     value.clamp(lo.min(hi), hi)
 }
@@ -293,15 +299,39 @@ pub fn show(ui: &mut Ui, view: &mut SampleView, session: &Session) -> Vec<Edit> 
             Gesture::Edge(edge, at) => {
                 let value = clamped(region, edge, (at / total.max(1e-9)) as f32, min);
                 edits.push(set(edge, value));
+                // The loop stays inside the region: pushed along by an edge.
+                if let (Some((a, b)), Edge::Start | Edge::End) = (region.looping, edge) {
+                    let (lo, hi) = if edge == Edge::Start {
+                        (value, region.end)
+                    } else {
+                        (region.start, value)
+                    };
+                    let (na, nb) = (a.clamp(lo, hi), b.clamp(lo, hi));
+                    if na != a {
+                        edits.push(set(Edge::LoopStart, na));
+                    }
+                    if nb != b {
+                        edits.push(set(Edge::LoopEnd, nb));
+                    }
+                }
             }
             Gesture::Slip(seconds) => {
                 // The audio follows the pointer, so the region moves the
                 // other way (loop ends with it), stopping at the sample's ends.
                 if let Some(original) = view.slip {
                     let by = -seconds / total.max(1e-9) as f32;
-                    let by = by.clamp(-original.start, 1.0 - original.end);
+                    let (mut lo, mut hi) = (original.start, original.end);
+                    if let Some((a, b)) = original.looping {
+                        lo = lo.min(a);
+                        hi = hi.max(b);
+                    }
+                    let by = by.clamp(-lo, 1.0 - hi);
                     edits.push(set(Edge::Start, original.start + by));
                     edits.push(set(Edge::End, original.end + by));
+                    if let Some((a, b)) = original.looping {
+                        edits.push(set(Edge::LoopStart, a + by));
+                        edits.push(set(Edge::LoopEnd, b + by));
+                    }
                 }
             }
             Gesture::Release => {
@@ -311,4 +341,23 @@ pub fn show(ui: &mut Ui, view: &mut SampleView, session: &Session) -> Vec<Edit> 
         }
     }
     edits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_loop_stays_inside_the_region_and_markers_on_their_own_side() {
+        let region = Region {
+            start: 0.2,
+            end: 0.8,
+            looping: Some((0.3, 0.6)),
+        };
+        assert_eq!(clamped(region, Edge::Start, -1.0, 0.001), 0.0);
+        assert_eq!(clamped(region, Edge::End, 2.0, 0.001), 1.0);
+        assert_eq!(clamped(region, Edge::LoopStart, 0.0, 0.001), 0.2);
+        assert_eq!(clamped(region, Edge::LoopEnd, 1.0, 0.001), 0.8);
+        assert_eq!(clamped(region, Edge::LoopStart, 0.7, 0.001), 0.6 - 0.001);
+    }
 }

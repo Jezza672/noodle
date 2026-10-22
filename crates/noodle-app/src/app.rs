@@ -2685,6 +2685,23 @@ mod tests {
                 value: Some(0.6),
             }),
         ]);
+        h.state_mut().session.edit([
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop".into(),
+                value: Some(1.0),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop_start".into(),
+                value: Some(0.3),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop_end".into(),
+                value: Some(0.5),
+            }),
+        ]);
         h.run();
         let (body, axis) = open_sample_view(&mut h);
         let y = body.center().y;
@@ -2694,6 +2711,8 @@ mod tests {
         drag_between(&mut h, egui::Modifiers::NONE, from, to);
         let params = &h.state().session.project().graph().node(id).unwrap().params;
         assert!((params["start"] - 0.3).abs() < 0.01, "{}", params["start"]);
+        assert!((params["loop_start"] - 0.4).abs() < 0.01);
+        assert!((params["loop_end"] - 0.6).abs() < 0.01);
         assert!((params["end"] - 0.7).abs() < 0.01, "{}", params["end"]);
     }
 
