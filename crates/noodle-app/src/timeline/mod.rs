@@ -101,6 +101,8 @@ pub struct TimelineState {
     warped_waves: warped_waves::WarpedWaves,
     automation: automation::State,
     crossfade: crossfade::State,
+    /// The bar a right-click on the ruler opened its menu at.
+    ruler_menu_bar: Option<u32>,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -141,6 +143,7 @@ impl Default for TimelineState {
             automation: automation::State::default(),
             crossfade: crossfade::State::default(),
             show_tempo: false,
+            ruler_menu_bar: None,
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -1283,7 +1286,10 @@ pub fn show(
     let scrub = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
     let wanted = scrub
         .interact_pointer_pos()
-        .filter(|_| scrub.clicked() || scrub.dragged() || scrub.is_pointer_button_down_on())
+        .filter(|_| {
+            ui.input(|i| i.pointer.primary_down())
+                && (scrub.clicked() || scrub.dragged() || scrub.is_pointer_button_down_on())
+        })
         .map(|pos| {
             let tick = axis.tick(pos.x).max(Tick::ZERO);
             if ui.input(|i| i.modifiers.alt) {
@@ -1292,6 +1298,139 @@ pub fn show(
                 axis.snap(tick)
             }
         });
+    // Right-click on the ruler adds or edits a time signature change at the
+    // bar under the pointer. The loop is a band along it, dimmed when off,
+    // whose edges can be dragged.
+    let mut ruler_loop = None;
+    {
+        let region = session.loop_region();
+        let (x0, x1) = (axis.x(region.start), axis.x(region.end));
+        let band = Rect::from_x_y_ranges(
+            x0.max(ruler.left())..=x1.min(ruler.right()),
+            ruler.y_range(),
+        );
+        let alpha = if region.on { 0.3 } else { 0.12 };
+        if band.width() > 0.0 {
+            ui.painter_at(ruler).rect_filled(
+                band.shrink2(vec2(0.0, 1.0)),
+                0.0,
+                colors::SELECTED.gamma_multiply(alpha),
+            );
+        }
+        for (is_start, x) in [(true, x0), (false, x1)] {
+            if x < ruler.left() - 4.0 || x > ruler.right() + 4.0 {
+                continue;
+            }
+            let handle = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, ruler.y_range());
+            let id = ui.id().with(("loop_edge", is_start));
+            let response = ui
+                .interact(handle, id, Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+            ui.painter_at(ruler).vline(
+                x,
+                ruler.y_range(),
+                Stroke::new(
+                    if response.hovered() || response.dragged() {
+                        3.0
+                    } else {
+                        2.0
+                    },
+                    colors::SELECTED.gamma_multiply(if region.on { 1.0 } else { 0.5 }),
+                ),
+            );
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let tick = axis.snap(axis.tick(pos.x).max(Tick::ZERO));
+                let mut moved = region;
+                if is_start {
+                    moved.start = tick.min(Tick((region.end.0 - 1).max(0)));
+                } else {
+                    moved.end = tick.max(Tick(region.start.0 + 1));
+                }
+                if moved != region {
+                    ruler_loop = Some(moved);
+                }
+            }
+        }
+    }
+    if scrub.secondary_clicked() {
+        state.ruler_menu_bar = scrub
+            .interact_pointer_pos()
+            .map(|pos| map.position(axis.tick(pos.x).max(Tick::ZERO)).bar);
+    }
+    scrub.context_menu(|ui| {
+        let Some(bar) = state.ruler_menu_bar else {
+            return;
+        };
+        ui.label(format!("Bar {}", bar + 1));
+        let region = session.loop_region();
+        let here = bar_tick(map, bar + 1);
+        if ui
+            .button(if region.on { "Loop off" } else { "Loop on" })
+            .clicked()
+        {
+            ui.close();
+            ruler_loop = Some(crate::session::LoopRegion {
+                on: !region.on,
+                ..region
+            });
+        }
+        if ui.button("Set loop start here").clicked() {
+            ui.close();
+            let end = if region.end > here {
+                region.end
+            } else {
+                bar_tick(map, bar + 2)
+            };
+            ruler_loop = Some(crate::session::LoopRegion {
+                start: here,
+                end,
+                ..region
+            });
+        }
+        if ui.button("Set loop end here").clicked() {
+            ui.close();
+            let start = if region.start < here {
+                region.start
+            } else {
+                Tick::ZERO
+            };
+            let end = if here > start { here } else { bar_tick(map, 2) };
+            ruler_loop = Some(crate::session::LoopRegion {
+                start,
+                end,
+                ..region
+            });
+        }
+        ui.separator();
+        for (numerator, denominator) in crate::tempo::SIGNATURES {
+            let signature = noodle_core::TimeSignature {
+                numerator,
+                denominator,
+            };
+            if ui
+                .button(format!("Time signature {numerator}/{denominator}"))
+                .clicked()
+            {
+                ui.close();
+                edits.extend(
+                    crate::tempo::with_signature_at(map, bar, signature)
+                        .map(|new| Edit::Apply(Command::SetTempoMap(new))),
+                );
+            }
+        }
+        if bar > 0
+            && map.signatures().iter().any(|s| s.bar == bar)
+            && ui.button("Remove time signature change").clicked()
+        {
+            ui.close();
+            edits.extend(
+                crate::tempo::without_signature_at(map, bar)
+                    .map(|new| Edit::Apply(Command::SetTempoMap(new))),
+            );
+        }
+    });
     // Only a new tick is worth seeking to: a held button, or a drag that stays
     // within a beat, would otherwise restart the audio's fade every frame.
     let seek = wanted.filter(|&tick| state.last_seek != Some(tick));
@@ -1346,7 +1485,7 @@ pub fn show(
         vec2(colors::HEADER_WIDTH - 12.0, colors::RULER_HEIGHT - 6.0),
     );
     let mut pick = None;
-    let set_loop = loop_controls(ui, corner, map, session.loop_region());
+    let set_loop = ruler_loop.or(loop_controls(ui, corner, map, session.loop_region()));
     let import = |state: &TimelineState, notice: &mut Option<String>| {
         let target = state.import_target(project, playhead.unwrap_or(Tick::ZERO));
         if target.is_none() {
