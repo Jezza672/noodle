@@ -1,9 +1,11 @@
 //! The worker that stretches warped clips ahead of the playhead.
 //!
 //! Repitch is a resampling the audio thread does itself. Grain and Beats are
-//! too heavy for that, so a worker thread per track input node renders them
-//! into a ring buffer, and the audio thread only copies out of it. This is
-//! the same arrangement the hub has for decoding: the worker opens what the
+//! too heavy for that, so a worker task per track input node renders them
+//! into a ring buffer, and the audio thread only copies out of it. The worker
+//! sleeps until it is rung: by the node when it has taken enough out of a ring
+//! to make room, or the playhead has moved on, and by the UI side when the
+//! schedule changes. This is the same arrangement the hub has for decoding: the worker opens what the
 //! node will need before the playhead gets there, hands it over through a
 //! queue, and takes it back to free it.
 //!
@@ -21,15 +23,16 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use noodle_core::ClipId;
+use noodle_io::pool::{self, Bell, Handle, Next, Task};
 use noodle_io::{
     ClipStream, StreamSpec, StreamWorker, detect_bass_onsets, detect_onsets, open_stream,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use super::hub::{LOOKAHEAD, MAX_CHANNELS, Shared, wanted};
+use super::hub::{LOOKAHEAD, MAX_CHANNELS, RETRY, Shared, wanted};
 use super::read_frames;
 use super::schedule::ScheduledClip;
 use super::stretch::{Source, Stretcher};
@@ -41,10 +44,6 @@ pub(super) const MAX_LANES: usize = 8;
 const RING_FRAMES: usize = 16_384;
 /// The worker renders this many frames at a time.
 const CHUNK_FRAMES: usize = 1_024;
-const POLL: Duration = Duration::from_millis(2);
-const IDLE_POLL: Duration = Duration::from_millis(20);
-/// How long before a file that failed is tried again.
-const RETRY: Duration = Duration::from_secs(2);
 /// Source frames kept behind the stretcher's reading, for the grains that
 /// reach back.
 const HISTORY: i64 = 16_384;
@@ -52,6 +51,9 @@ const HISTORY: i64 = 16_384;
 /// being seeked.
 const MAX_SKIP: i64 = 32_768;
 const QUEUE: usize = 16;
+/// Chunks a lane renders in one run, so a refill doesn't hold a pool thread
+/// for long.
+const CHUNKS_PER_RUN: usize = 4;
 
 /// What the node and the worker share about one lane.
 struct Control {
@@ -79,6 +81,11 @@ pub(super) struct Lane {
     pub head: bool,
     ring: Consumer<f32>,
     control: Arc<Control>,
+    /// Rings the worker, when there is room in the ring for it or it must
+    /// seek.
+    bell: Bell,
+    /// Frames taken out of the ring since the worker was last rung.
+    unrung: usize,
     /// The section frame the next frame out of the ring is.
     read_pos: u64,
     /// How many frames the playhead has gone on since then: it played
@@ -100,6 +107,17 @@ impl Lane {
         if self.head {
             self.head = false;
             self.control.promoted.store(true, Ordering::Relaxed);
+            self.bell.ring();
+        }
+    }
+
+    /// Notes that `frames` left the ring, and rings the worker once there is
+    /// room for it to render a chunk.
+    fn took(&mut self, frames: usize) {
+        self.unrung += frames;
+        if self.unrung >= CHUNK_FRAMES {
+            self.unrung = 0;
+            self.bell.ring();
         }
     }
 
@@ -108,6 +126,7 @@ impl Lane {
         self.request += 1;
         self.control.want_pos.store(pos, Ordering::Relaxed);
         self.control.want_gen.store(self.request, Ordering::Release);
+        self.bell.ring();
         self.read_pos = pos;
         self.behind = 0;
         self.stale = None;
@@ -136,6 +155,7 @@ impl Lane {
             self.taken += n as u64;
             self.read_pos += n as u64;
             self.behind -= n as u64;
+            self.took(n);
         }
         self.behind == 0
     }
@@ -162,6 +182,7 @@ impl Lane {
         {
             chunk.commit_all();
             self.taken += n as u64;
+            self.took(n);
         }
         self.synced = self.taken >= upto;
     }
@@ -185,6 +206,7 @@ impl Lane {
         chunk.commit_all();
         self.taken += n as u64;
         self.read_pos += n as u64;
+        self.took(n);
         n
     }
 }
@@ -193,16 +215,35 @@ impl Lane {
 pub(super) struct AheadLinks {
     pub lanes: Consumer<Box<Lane>>,
     pub returned: Producer<Box<Lane>>,
+    pub bell: Bell,
+    /// Stops the worker when the node is dropped.
+    pub _handle: Handle,
 }
 
 pub(super) fn spawn(shared: Arc<Shared>, rate: u32) -> AheadLinks {
     let (to_node, lanes) = RingBuffer::new(QUEUE);
     let (returned, from_node) = RingBuffer::new(QUEUE * 2);
-    thread::Builder::new()
-        .name("noodle-warp".into())
-        .spawn(move || run(&shared, rate, to_node, from_node))
-        .expect("can't start a thread");
-    AheadLinks { lanes, returned }
+    let handle = pool::control().spawn_with(|bell| Ahead {
+        shared: shared.clone(),
+        bell,
+        rate,
+        to_node,
+        from_node,
+        jobs: Vec::new(),
+        next_serial: 0,
+        failed: HashMap::new(),
+        onsets: HashMap::new(),
+        outstanding: 0,
+        lookahead: (f64::from(rate) * LOOKAHEAD) as u64,
+    });
+    let bell = handle.bell();
+    shared.add_bell(bell.clone());
+    AheadLinks {
+        lanes,
+        returned,
+        bell,
+        _handle: handle,
+    }
 }
 
 /// The worker's end of one lane.
@@ -243,7 +284,9 @@ impl Job {
             self.control.ack_gen.store(self.request, Ordering::Release);
         }
         let mut busy = false;
-        while self.pos < self.length && self.ring.slots() >= CHUNK_FRAMES * 2 {
+        let mut budget = CHUNKS_PER_RUN;
+        while budget > 0 && self.pos < self.length && self.ring.slots() >= CHUNK_FRAMES * 2 {
+            budget -= 1;
             let n = (CHUNK_FRAMES as u64).min(self.length - self.pos) as usize;
             let made = self.stretcher.read(&mut self.buffer[..n * 2]);
             // Whatever the stretcher didn't fill is silence.
@@ -405,15 +448,19 @@ fn onsets_of(
     clip: &ScheduledClip,
     rate: u32,
     known: &mut HashMap<u64, Onsets>,
+    shared: &Arc<Shared>,
 ) -> Option<Arc<Transients>> {
     let key = clip.stream_key().1;
     let entry = known.entry(key).or_insert_with(|| {
         let (tx, rx) = mpsc::channel();
         let clip = clip.clone();
+        let shared = shared.clone();
         thread::Builder::new()
             .name("noodle-onsets".into())
             .spawn(move || {
                 let _ = tx.send(analyse(&clip, rate));
+                // The worker is asleep until something rings it.
+                shared.ring();
             })
             .map_or_else(
                 |_| {
@@ -437,6 +484,7 @@ fn onsets_of(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Opens a job for `clip`, starting at its frame `from`.
 fn open(
     clip: &ScheduledClip,
@@ -445,6 +493,8 @@ fn open(
     serial: u64,
     rate: u32,
     onsets: &mut HashMap<u64, Onsets>,
+    shared: &Arc<Shared>,
+    bell: &Bell,
 ) -> Result<Option<(Job, Box<Lane>)>, String> {
     let map = clip.warp.clone().ok_or("not warped")?;
     let spec = StreamSpec {
@@ -456,7 +506,7 @@ fn open(
         chunks: 8,
     };
     // Not found yet: try again on the next pass.
-    let Some(transients) = onsets_of(clip, rate, onsets) else {
+    let Some(transients) = onsets_of(clip, rate, onsets, shared) else {
         return Ok(None);
     };
     // Beats cuts the mix at every transient; Grain only where the bass has
@@ -509,6 +559,8 @@ fn open(
         head,
         ring: consumer,
         control,
+        bell: bell.clone(),
+        unrung: 0,
         read_pos: from,
         behind: 0,
         taken: 0,
@@ -519,24 +571,59 @@ fn open(
     Ok(Some((job, lane)))
 }
 
-fn run(
-    shared: &Shared,
+struct Ahead {
+    shared: Arc<Shared>,
+    bell: Bell,
     rate: u32,
-    mut to_node: Producer<Box<Lane>>,
-    mut from_node: Consumer<Box<Lane>>,
-) {
-    let mut jobs: Vec<Job> = Vec::new();
-    let mut next_serial = 0u64;
-    let mut failed: HashMap<(ClipId, u64), Instant> = HashMap::new();
-    let mut onsets: HashMap<u64, Onsets> = HashMap::new();
-    // Lanes handed to the node and not yet taken back.
-    let mut outstanding = 0usize;
-    let lookahead = (f64::from(rate) * LOOKAHEAD) as u64;
-    while !to_node.is_abandoned() {
+    to_node: Producer<Box<Lane>>,
+    from_node: Consumer<Box<Lane>>,
+    jobs: Vec<Job>,
+    next_serial: u64,
+    failed: HashMap<(ClipId, u64), Instant>,
+    onsets: HashMap<u64, Onsets>,
+    /// Lanes handed to the node and not yet taken back.
+    outstanding: usize,
+    lookahead: u64,
+}
+
+impl Task for Ahead {
+    fn run(&mut self) -> Next {
+        if self.to_node.is_abandoned() {
+            return Next::Done;
+        }
+        if self.pass() {
+            Next::Again
+        } else if self.failed.is_empty() {
+            Next::Idle
+        } else {
+            // A file that failed may turn up later.
+            Next::After(RETRY)
+        }
+    }
+}
+
+impl Ahead {
+    /// Looks at everything once and renders some. Returns whether it did
+    /// something that may make more to do.
+    fn pass(&mut self) -> bool {
+        let Self {
+            shared,
+            bell,
+            rate,
+            to_node,
+            from_node,
+            jobs,
+            next_serial,
+            failed,
+            onsets,
+            outstanding,
+            lookahead,
+        } = self;
+        let (rate, lookahead) = (*rate, *lookahead);
         let mut busy = false;
         while let Ok(lane) = from_node.pop() {
             busy = true;
-            outstanding = outstanding.saturating_sub(1);
+            *outstanding = outstanding.saturating_sub(1);
             jobs.retain(|j| j.serial != lane.serial);
             // Dropped here, not on the audio thread.
             drop(lane);
@@ -560,7 +647,7 @@ fn run(
                     continue;
                 }
                 if failed.get(&key).is_some_and(|at| at.elapsed() < RETRY)
-                    || outstanding >= MAX_LANES
+                    || *outstanding >= MAX_LANES
                     || to_node.slots() == 0
                 {
                     continue;
@@ -570,13 +657,14 @@ fn run(
                     _ => position,
                 }
                 .saturating_sub(clip.start);
-                match open(clip, head, from, next_serial, rate, &mut onsets) {
-                    Ok(None) => busy = true,
+                match open(clip, head, from, *next_serial, rate, onsets, shared, bell) {
+                    // Still finding its transients: rung when they are known.
+                    Ok(None) => {}
                     Ok(Some((job, lane))) => {
-                        next_serial += 1;
+                        *next_serial += 1;
                         if to_node.push(lane).is_ok() {
                             jobs.push(job);
-                            outstanding += 1;
+                            *outstanding += 1;
                             failed.remove(&key);
                             busy = true;
                         }
@@ -594,12 +682,12 @@ fn run(
                 }
             }
         }
-        for job in &mut jobs {
+        for job in jobs.iter_mut() {
             if job.head && job.control.promoted.load(Ordering::Relaxed) {
                 job.head = false;
             }
             busy |= job.work();
         }
-        thread::sleep(if busy { POLL } else { IDLE_POLL });
+        busy
     }
 }

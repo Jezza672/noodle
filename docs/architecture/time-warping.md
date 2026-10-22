@@ -53,7 +53,8 @@ allocator). The warp is in the track's cache key when it changes the sound.
 do, so they are rendered ahead (`noodle-nodes/src/clip/ahead.rs` and
 `stretch.rs`). A section whose warp has one of those modes is *stretched*
 (`ScheduledClip::stretched`): the hub opens no stream for it, and a worker
-thread (`noodle-warp`, one per track input node, like the hub) opens a **lane**
+task (`ahead.rs`, one per track input node on the `noodle-io` control pool, like
+the hub; it sleeps until the node rings it) opens a **lane**
 instead. A lane is a ring of stereo frames (about 340 ms) the worker fills with
 the stretched section, and a small control block; the node holds up to
 `MAX_LANES` of them, handed over and taken back through queues the way streams

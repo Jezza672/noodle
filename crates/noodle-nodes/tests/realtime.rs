@@ -1798,3 +1798,55 @@ fn a_groups_output_reports_its_level() {
     let levels = s.telemetry.meter_reader().meter(port).expect("metered");
     assert!(levels[0].peak > 0.5, "{levels:?}");
 }
+
+#[test]
+fn ringing_a_doorbell_never_touches_the_allocator() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Asleep, so the ring has to wake it; and awake, so it doesn't.
+    let bell = Arc::new(noodle_engine::Doorbell::new());
+    let sleeper = {
+        let bell = bell.clone();
+        std::thread::spawn(move || bell.wait(Some(Duration::from_secs(10))))
+    };
+    while !bell.is_sleeping() {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "woke a sleeper"
+    );
+    assert!(sleeper.join().unwrap());
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "rang an awake worker"
+    );
+}
+
+#[test]
+fn ringing_a_pool_task_never_touches_the_allocator() {
+    use noodle_io::pool::{self, Next, Task};
+
+    struct Idle;
+    impl Task for Idle {
+        fn run(&mut self) -> Next {
+            Next::Idle
+        }
+    }
+    let handle = pool::io().spawn(Idle);
+    let bell = handle.bell();
+    // Let the first run finish, so the pool's threads are asleep.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for _ in 0..50 {
+        assert_eq!(realtime(|| bell.ring()), 0);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(handle.runs() > 1);
+}
