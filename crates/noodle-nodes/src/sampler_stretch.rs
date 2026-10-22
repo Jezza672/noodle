@@ -123,7 +123,7 @@ pub(crate) fn render(sample: &Sample, warp: &ClipWarp, bpm: f64) -> Option<Stret
     let mut right = Vec::with_capacity(total as usize);
     loop {
         let n = stretcher.read(&mut buffer);
-        for frame in buffer[..n * 2].chunks_exact(2) {
+        for frame in buffer[..n * 2].as_chunks::<2>().0 {
             left.push(frame[0]);
             right.push(frame[1]);
         }
@@ -155,7 +155,7 @@ impl StretchSource for Memory<'_> {
     }
 
     fn read(&mut self, start: i64, out: &mut [f32]) {
-        for (i, frame) in out.chunks_exact_mut(2).enumerate() {
+        for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let at = usize::try_from(start + i as i64)
                 .ok()
                 .filter(|&at| at < self.left.len());
