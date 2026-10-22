@@ -47,9 +47,8 @@ use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sen
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
-use noodle_engine::OUTPUT_ID;
-use noodle_engine::{Diagnostic, Location, Registry};
-use noodle_nodes::{REROUTE_ID, SCOPE_ID};
+use noodle_engine::{Diagnostic, Location, NodeView, Registry};
+use noodle_nodes::REROUTE_ID;
 
 use crate::freezing::Badge;
 use crate::session::{Edit, Session};
@@ -496,12 +495,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     state
         .bodies
         .set_sample_rate(session.engine_sample_rate().unwrap_or(0.0));
-    state
-        .bodies
-        .update(session.telemetry(), session.project(), dt);
-    // Meters and scopes move with the audio, so keep drawing while it plays.
-    if session.engine_running() && state.bodies.is_live() {
-        ui.ctx().request_repaint();
+    let liveness = state.bodies.update(
+        session.telemetry(),
+        session.project(),
+        session.registry(),
+        dt,
+    );
+    // Meters and scopes move with the audio, so keep drawing while they do,
+    // and while their peaks and traces fall back. A still graph, silent or
+    // with the transport stopped, costs nothing.
+    if session.engine_running() && liveness != body::Liveness::Still {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(body::METER_FRAME));
     }
     let mut new_node_id = || session.new_node_id();
     let mut new_frame_id = || session.new_frame_id();
@@ -1132,9 +1137,9 @@ fn pointer(
             // Mixers, scopes and outputs (which have a scope) have a view of
             // their own.
             Hit::Node(id)
-                if f.project.graph().node(id).is_some_and(|n| {
-                    matches!(n.type_id.as_str(), spare::MIXER | SCOPE_ID | OUTPUT_ID)
-                }) =>
+                if f.scene
+                    .node(id)
+                    .is_some_and(|n| matches!(n.view, NodeView::Mixer | NodeView::Scope)) =>
             {
                 state.view_request = Some(id);
             }

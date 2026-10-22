@@ -162,9 +162,6 @@ use noodle_engine::{
     Registry, Render, RenderError, Settings, Telemetry, TempoTable, render_project,
 };
 
-/// The node types that draw a meter of their output in the editor.
-pub const METERED: [&str; 3] = [METER_ID, GAIN_ID, VOICE_MIX_ID];
-
 /// What [`register_library`] gives back.
 pub struct Library {
     /// The hub the view nodes (Meter, Scope) report to, for the UI to read.

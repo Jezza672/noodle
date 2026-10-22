@@ -381,6 +381,7 @@ fn boxed(
             f.t.rect_to_screen(area),
             z,
             node.id,
+            node.view,
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
             &values,

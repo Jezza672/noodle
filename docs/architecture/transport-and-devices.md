@@ -20,9 +20,13 @@ rewind only touch the transport:
 - **Idle cost.** A graph with nothing to do renders silence, which the engine
   already skips (a silent lane is a branch and a memset), so an idle engine is
   cheap. A graph that makes sound on its own, like a drone, sounds as soon as
-  the engine is on; that's the price of ADR 0001. The window repaints at about
-  10 frames a second while the engine runs with the transport stopped, and 60
-  while it runs.
+  the engine is on; that's the price of ADR 0001. The node editor repaints
+  (at most 30 times a second) only while something it shows is moving or
+  falling: `Telemetry::activity` goes up when a meter, scope, parameter or
+  position writer reports a change, and `Bodies::update` says `Moving`,
+  `Decaying` (peaks, holds and spectra still falling) or `Still`. A silent
+  graph with the transport stopped draws nothing. The playhead keeps its own
+  repaint while it plays.
 - **The fallback.** `Session::start_engine` tries the saved output, then the
   system default (as `play` always did), then the **virtual output**. Either
   fallback is not saved, shows a message in the status bar, and sets

@@ -100,6 +100,10 @@ pub fn is_single(config: &Config) -> bool {
 }
 
 impl NodeType for Envelope {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Envelope
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

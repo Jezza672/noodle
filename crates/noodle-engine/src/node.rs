@@ -44,6 +44,55 @@ pub struct NodeInfo {
     pub category: &'static str,
 }
 
+/// What a node draws below its ports in the node editor, and so which of
+/// its telemetry the editor reads. A node type declares it with
+/// [`NodeType::view`]; the editor keeps one table from view to height,
+/// painter and reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeView {
+    /// Nothing: just ports and parameters.
+    None,
+    /// Level bars for what the node's `in` passes, from a `MeterWriter`.
+    Meter,
+    /// A mixer: one level per input, shown beside the input rows.
+    Mixer,
+    /// A scope of what the node's scope channel records.
+    Scope,
+    /// A spectrum and spectrogram of the node's scope channel.
+    Spectrum,
+    /// An Envelope node's drawn curve.
+    Envelope,
+    /// A panner's speaker layout with the source on it.
+    Panner,
+    /// A graph of what the node does, drawn from its parameters.
+    Graph(GraphKind),
+    /// Group boundaries show the levels at their output stages. The engine
+    /// flattens groups away, so only the editor uses this.
+    GroupMeter,
+}
+
+/// The kinds of parameter graph a node can draw, see [`NodeView::Graph`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphKind {
+    Adsr,
+    Svf,
+    Ladder,
+    Lfo,
+    Dynamics,
+    Eq,
+}
+
+impl GraphKind {
+    /// The telemetry parameters the graph reads from the node even when
+    /// nothing is wired, for its live dot.
+    pub fn reports(self) -> &'static [&'static str] {
+        match self {
+            Self::Dynamics => &["level", "reduction"],
+            _ => &[],
+        }
+    }
+}
+
 pub trait NodeType: Send + Sync + 'static {
     fn info(&self) -> &NodeInfo;
 
@@ -68,6 +117,13 @@ pub trait NodeType: Send + Sync + 'static {
     /// an Output node (see "Silence skipping" in the architecture notes).
     fn always_runs(&self) -> bool {
         false
+    }
+
+    /// What the node editor draws in the node's body. Anything that reports
+    /// to the UI (see [`always_runs`](Self::always_runs)) says here what it
+    /// reports.
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::None
     }
 
     /// The config a newly added node of this type starts with, for settings

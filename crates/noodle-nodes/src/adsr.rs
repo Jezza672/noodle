@@ -72,6 +72,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Adsr {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Adsr)
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

@@ -216,6 +216,10 @@ pub fn release_response(from_db: f32, release: f32, seconds: f32) -> f32 {
 }
 
 impl NodeType for Dynamics {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Dynamics)
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

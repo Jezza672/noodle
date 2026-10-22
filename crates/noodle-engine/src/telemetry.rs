@@ -47,6 +47,9 @@ pub struct Telemetry {
     inner: Arc<Mutex<Channels>>,
     /// How long whole blocks take, for every plan that reports.
     blocks: Arc<BlockCells>,
+    /// Counts the times a writer reported something that moved, see
+    /// [`Telemetry::activity`].
+    activity: Arc<AtomicU64>,
 }
 
 /// Each node's open channels, oldest first.
@@ -107,6 +110,15 @@ impl Telemetry {
         Self::default()
     }
 
+    /// A count that goes up whenever a meter, scope, parameter or position
+    /// writer reports something that moved: a level above [`ACTIVITY_FLOOR`]
+    /// (or falling from one), a scope block with a non-zero sample, a value
+    /// that changed. A silent, steady graph leaves it alone, so a view that
+    /// sees it hold still can stop redrawing.
+    pub fn activity(&self) -> u64 {
+        self.activity.load(Ordering::Relaxed)
+    }
+
     fn lock(&self) -> MutexGuard<'_, Channels> {
         // The hub holds no invariants a panic could break, so carry on.
         let mut channels = self
@@ -123,6 +135,7 @@ impl Telemetry {
         let cells = Arc::new(MeterCells {
             levels: (0..channels).map(|_| LevelCells::default()).collect(),
             written: AtomicBool::new(false),
+            activity: self.activity.clone(),
         });
         self.lock()
             .meters
@@ -147,7 +160,11 @@ impl Telemetry {
             written: false,
         };
         self.lock().scopes.entry(node).or_default().push(reader);
-        ScopeWriter { producer, channels }
+        ScopeWriter {
+            producer,
+            channels,
+            activity: self.activity.clone(),
+        }
     }
 
     /// A new reader of meter levels. Each reader sees every peak, so a view
@@ -168,7 +185,7 @@ impl Telemetry {
     /// Opens a channel reporting the signal wired into parameter `key` of
     /// `node`. Call this when building a plan, not on the audio thread.
     pub fn open_param(&self, node: NodeId, key: &str) -> ParamWriter {
-        let cells = Arc::new(ParamCells::default());
+        let cells = Arc::new(ParamCells::new(self.activity.clone()));
         self.lock()
             .params
             .entry((node, key.to_owned()))
@@ -212,6 +229,7 @@ impl Telemetry {
                 .map(|_| AtomicU32::new(IDLE.to_bits()))
                 .collect(),
             written: AtomicBool::new(false),
+            activity: self.activity.clone(),
         });
         self.lock()
             .positions
@@ -612,6 +630,7 @@ const IDLE: f32 = -1.0;
 struct PositionCells {
     at: Vec<AtomicU32>,
     written: AtomicBool,
+    activity: Arc<AtomicU64>,
 }
 
 /// The audio thread's end of a position channel.
@@ -631,7 +650,9 @@ impl PositionWriter {
             let at = fraction
                 .filter(|f| f.is_finite())
                 .map_or(IDLE, |f| f.clamp(0.0, 1.0));
-            cell.store(at.to_bits(), Ordering::Relaxed);
+            if cell.swap(at.to_bits(), Ordering::Relaxed) != at.to_bits() {
+                self.0.activity.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -659,11 +680,13 @@ struct ParamCells {
     max: AtomicU32,
     /// Set once the writer has reported, which shows its plan is running.
     written: AtomicBool,
+    activity: Arc<AtomicU64>,
 }
 
-impl Default for ParamCells {
-    fn default() -> Self {
+impl ParamCells {
+    fn new(activity: Arc<AtomicU64>) -> Self {
         Self {
+            activity,
             value: AtomicU32::new(0),
             min: AtomicU32::new(f32::INFINITY.to_bits()),
             max: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
@@ -687,7 +710,11 @@ impl ParamWriter {
             min = min.min(x);
             max = max.max(x);
         }
-        self.0.value.store(last.to_bits(), Ordering::Relaxed);
+        // A steady value, the same block after block, is not activity.
+        let before = self.0.value.swap(last.to_bits(), Ordering::Relaxed);
+        if before != last.to_bits() || min != max {
+            self.0.activity.fetch_add(1, Ordering::Relaxed);
+        }
         // Floats compare differently from their bits when negative, so
         // these take the extreme with a compare-and-swap.
         let _ = self
@@ -720,6 +747,7 @@ struct MeterCells {
     levels: Box<[LevelCells]>,
     /// Set once the writer has reported, which shows its instance is playing.
     written: AtomicBool,
+    activity: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -751,14 +779,18 @@ impl MeterWriter {
             return;
         };
         self.0.written.store(true, Ordering::Relaxed);
-        cells
-            .peak
-            .fetch_max(non_negative(level.peak).to_bits(), Ordering::Relaxed);
-        cells
-            .rms
-            .store(non_negative(level.rms).to_bits(), Ordering::Relaxed);
+        let (peak, rms) = (non_negative(level.peak), non_negative(level.rms));
+        cells.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        let before = f32::from_bits(cells.rms.swap(rms.to_bits(), Ordering::Relaxed));
+        // Audible now, or just was: the fall to silence is still a change.
+        if peak > ACTIVITY_FLOOR || rms > ACTIVITY_FLOOR || before > ACTIVITY_FLOOR {
+            self.0.activity.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
+
+/// The level below which a meter reports no activity: -90 dBFS.
+pub const ACTIVITY_FLOOR: f32 = 3.162_277_7e-5;
 
 /// Maps NaN and negative values (including -0.0, whose bits are huge) to 0.
 fn non_negative(x: f32) -> f32 {
@@ -769,6 +801,7 @@ fn non_negative(x: f32) -> f32 {
 pub struct ScopeWriter {
     producer: rtrb::Producer<f32>,
     channels: usize,
+    activity: Arc<AtomicU64>,
 }
 
 impl ScopeWriter {
@@ -784,11 +817,19 @@ impl ScopeWriter {
             return 0;
         };
         let channels = self.channels;
+        let mut moved = false;
         chunk.fill_from_iter(
             (0..fit)
                 .flat_map(|frame| (0..channels).map(move |channel| (frame, channel)))
-                .map(|(frame, channel)| sample(frame, channel)),
+                .map(|(frame, channel)| {
+                    let x = sample(frame, channel);
+                    moved |= x != 0.0;
+                    x
+                }),
         );
+        if moved {
+            self.activity.fetch_add(1, Ordering::Relaxed);
+        }
         fit
     }
 }
@@ -1188,5 +1229,51 @@ mod tests {
         let channels = telemetry.lock();
         assert!(channels.meters.is_empty() && channels.scopes.is_empty());
         assert!(channels.held.is_empty());
+    }
+
+    #[test]
+    fn activity_moves_only_when_a_writer_reports_something_that_moved() {
+        let telemetry = Telemetry::new();
+        let meter = telemetry.open_meter(NODE, 1);
+        let mut scope = telemetry.open_scope(NODE, 1, 64);
+        let param = telemetry.open_param(NODE, "x");
+        let positions = telemetry.open_positions(NODE, 1);
+        let quiet = Level::default();
+        for _ in 0..100 {
+            meter.write(0, quiet);
+            scope.write(16, |_, _| 0.0);
+            param.write(&[0.5; 8]);
+            positions.write(0, None);
+        }
+        // The first parameter block is a change from zero; nothing after it.
+        let settled = telemetry.activity();
+        assert!(settled <= 1);
+        for _ in 0..100 {
+            meter.write(0, quiet);
+            scope.write(16, |_, _| 0.0);
+            param.write(&[0.5; 8]);
+            positions.write(0, None);
+        }
+        assert_eq!(telemetry.activity(), settled);
+
+        let loud = Level {
+            peak: 0.5,
+            rms: 0.3,
+        };
+        meter.write(0, loud);
+        let after_meter = telemetry.activity();
+        assert!(after_meter > settled);
+        // The fall back to silence counts once, then it is still.
+        meter.write(0, quiet);
+        meter.write(0, quiet);
+        assert_eq!(telemetry.activity(), after_meter + 1);
+        // The silent blocks filled the ring; reading it frees room.
+        telemetry.read_scope(NODE, &mut ScopeView::tail(64));
+        scope.write(16, |frame, _| frame as f32 * 0.01);
+        assert_eq!(telemetry.activity(), after_meter + 2);
+        param.write(&[0.6; 8]);
+        assert_eq!(telemetry.activity(), after_meter + 3);
+        positions.write(0, Some(0.5));
+        assert_eq!(telemetry.activity(), after_meter + 4);
     }
 }

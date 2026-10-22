@@ -9,7 +9,7 @@ use egui::{RichText, Ui};
 use noodle_core::group::GROUP;
 use noodle_core::library::{SYSTEM, USER};
 use noodle_core::{Command, Endpoint, Node, NodeId};
-use noodle_engine::{InputKind, Location, NodeType, ParamReading};
+use noodle_engine::{InputKind, Location, NodeType, NodeView, ParamReading};
 
 use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
@@ -57,7 +57,7 @@ pub fn show<'a>(
     problems(ui, session, id);
     presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
-    if node.type_id == noodle_nodes::SPECTRUM_ID {
+    if node_type.is_some_and(|t| t.view(&node.config) == NodeView::Spectrum) {
         spectrum_views(ui, session, spectra(id));
     }
     match node_type {
@@ -976,10 +976,10 @@ fn params(
     ui.separator();
     ui.label(RichText::new("Parameters").strong());
     let params: Vec<_> = std::iter::once(first).chain(params).collect();
-    if let Some(kind) = GraphKind::of(&node.type_id) {
-        graph(ui, session, kind, id, node, &params, live, edits);
-    } else if node.type_id == noodle_nodes::SURROUND_PAN_ID {
-        panner(ui, session, id, node, &params, live, edits);
+    match node_type.view(&node.config) {
+        NodeView::Graph(kind) => graph(ui, session, kind.into(), id, node, &params, live, edits),
+        NodeView::Panner => panner(ui, session, id, node, &params, live, edits),
+        _ => {}
     }
     for (input, info) in params {
         let key = input.key.as_ref();
