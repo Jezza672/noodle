@@ -146,7 +146,7 @@ bar (default: the main output, saved in the preferences). It is session state
   stops. Shift: add or remove a node. Ctrl/Cmd: alone, and the Output nodes
   on the monitor's device are silenced (when the monitor has the device to
   itself this changes nothing). Ctrl+Shift: alone, and every Output node is
-  silenced. Escape or the top bar's Stop button ends it.
+  silenced. Right-clicking the button offers the same modes as menu items (monitor, add to monitor, silence the device's other outputs, silence all, stop). Escape or the top bar's Stop button ends it.
 - **Devices.** A monitor on a named device opens a stream for it like an
   Output node would (`Session::wanted_devices`).
 

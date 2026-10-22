@@ -122,6 +122,8 @@ pub struct EditorState {
     open_request: Option<NodeId>,
     /// The group port a right-click landed on, which its menu removes.
     port_menu: Option<group::GroupPort>,
+    /// The node whose monitor button was right-clicked.
+    monitor_menu: Option<NodeId>,
     /// Which nodes are frozen or offline, and how their renders are doing.
     freeze: BTreeMap<NodeId, Badge>,
     /// The nodes whose monitor button is lit, from the session.
@@ -159,6 +161,7 @@ impl Default for EditorState {
             view_request: None,
             open_request: None,
             port_menu: None,
+            monitor_menu: None,
             freeze: BTreeMap::new(),
             monitored: Vec::new(),
         }
@@ -963,12 +966,17 @@ fn pointer(
     // Right-clicking a port row of a group's input or output node offers to
     // remove the port.
     if response.secondary_clicked() {
-        state.port_menu = latest.and_then(|p| boundary_port_at(f, p));
+        state.monitor_menu = latest.and_then(|p| monitor_button_at(f, p));
+        state.port_menu = latest
+            .filter(|_| state.monitor_menu.is_none())
+            .and_then(|p| boundary_port_at(f, p));
     }
     let port = state.port_menu.clone();
+    let monitor = state.monitor_menu;
+    let monitored = state.monitored.clone();
     let mut remove = false;
-    response.context_menu(|ui| match &port {
-        Some(port) => {
+    response.context_menu(|ui| match (&port, monitor) {
+        (Some(port), _) => {
             if ui
                 .button(format!("Remove port \"{}\"", port.name))
                 .clicked()
@@ -977,7 +985,44 @@ fn pointer(
                 ui.close();
             }
         }
-        None => ui.close(),
+        (None, Some(node)) => {
+            use crate::session::MonitorMode::{Exclusive, SilenceOthers, Sum};
+            let choices = [
+                ("Monitor", Some(Sum), false),
+                ("Add to monitor", Some(Sum), true),
+                (
+                    "Monitor, silence other outputs on its device",
+                    Some(Exclusive),
+                    false,
+                ),
+                (
+                    "Monitor, silence all other outputs",
+                    Some(SilenceOthers),
+                    false,
+                ),
+            ];
+            for (label, mode, add) in choices {
+                if ui.button(label).clicked() {
+                    edits.push(Edit::MonitorAs { node, mode, add });
+                    ui.close();
+                }
+            }
+            if ui
+                .add_enabled(
+                    monitored.contains(&node),
+                    egui::Button::new("Stop monitoring"),
+                )
+                .clicked()
+            {
+                edits.push(Edit::MonitorAs {
+                    node,
+                    mode: None,
+                    add: false,
+                });
+                ui.close();
+            }
+        }
+        (None, None) => ui.close(),
     });
     if remove && let Some(port) = state.port_menu.take() {
         edits.extend(spare::remove_group_port(f.project, &port).map(Edit::Apply));
@@ -1000,6 +1045,7 @@ fn pointer(
         && let Some(p) = latest
         && !modifiers.command
         && !modifiers.shift
+        && monitor_button_at(f, p).is_none()
         && let Hit::Node(id) = hit(f, p)
         && is_group(f.project, id)
     {

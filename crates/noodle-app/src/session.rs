@@ -74,6 +74,13 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// A choice from the monitor button's right-click menu: monitor `node`
+    /// in `mode` (alone, or added to the others), or stop. Not an undo step.
+    MonitorAs {
+        node: NodeId,
+        mode: Option<MonitorMode>,
+        add: bool,
+    },
     /// A click on a node's monitor button. Not an undo step: the project is
     /// untouched.
     Monitor {
@@ -615,6 +622,25 @@ impl Session {
         self.monitor_changed();
     }
 
+    /// Monitors `node` in `mode`, alone or added to those already monitored,
+    /// or stops monitoring it if `mode` is `None`.
+    pub fn monitor_as(&mut self, node: NodeId, mode: Option<MonitorMode>, add: bool) {
+        let monitor = &mut self.node_monitor;
+        match (mode, add) {
+            (None, _) => monitor.nodes.retain(|&n| n != node),
+            (Some(_), true) if monitor.nodes.contains(&node) => {}
+            (Some(_), true) => monitor.nodes.push(node),
+            (Some(mode), false) => {
+                monitor.nodes = vec![node];
+                monitor.mode = mode;
+            }
+        }
+        if monitor.nodes.is_empty() {
+            monitor.mode = MonitorMode::Sum;
+        }
+        self.monitor_changed();
+    }
+
     /// The monitor as the engine takes it.
     fn engine_monitor(&self) -> Option<noodle_engine::Monitor> {
         let monitor = &self.node_monitor;
@@ -1104,6 +1130,10 @@ impl Session {
                 }
                 Edit::Library(edit) => {
                     self.library_edit(edit);
+                    continue;
+                }
+                Edit::MonitorAs { node, mode, add } => {
+                    self.monitor_as(node, mode, add);
                     continue;
                 }
                 Edit::Monitor {
@@ -4439,6 +4469,49 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         let [a, b] = hear(&session);
         assert!(a > 0.1 && b < 0.01, "stopped: {a} {b}");
+    }
+
+    #[test]
+    fn the_monitor_menu_sets_a_mode_directly() {
+        let mut session = Session::new(Nodes::all());
+        let (a, b) = (NodeId(1), NodeId(2));
+        for id in [a, b] {
+            session.edit([Edit::Apply(Command::AddNode {
+                id,
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let state = |s: &Session| (s.monitored().to_vec(), s.monitor_mode());
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: Some(MonitorMode::SilenceOthers),
+            add: false,
+        }]);
+        // Choosing a mode again keeps it, where a click would stop.
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: Some(MonitorMode::SilenceOthers),
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![a], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: b,
+            mode: Some(MonitorMode::Sum),
+            add: true,
+        }]);
+        assert_eq!(state(&session), (vec![a, b], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: None,
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![b], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: b,
+            mode: None,
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
     }
 
     #[test]
