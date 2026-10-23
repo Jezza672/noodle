@@ -1,36 +1,44 @@
 //! Custom drawing inside a node, below its ports, for nodes that show
 //! something other than parameters, such as meters and scopes.
 //!
-//! To give a node type a body: return its height from [`height`], and draw it
-//! in [`paint`]. The editor reserves the space, and calls `paint` after
-//! drawing the rest of the node. Anything a body shows from the engine is read
-//! once a frame into [`Bodies`], by [`Bodies::update`].
+//! A node type declares what it shows with `NodeType::view`; [`view_of`]
+//! resolves it, and the editor keeps it on the node's geometry. To give a view
+//! a body, return its height from [`height`], draw it in [`paint`] and read its
+//! telemetry in [`Bodies::update`]. The editor reserves the space, and calls
+//! `paint` after drawing the rest of the node.
 
 use std::collections::{HashMap, VecDeque};
 
 use egui::epaint::PathShape;
 use egui::{Painter, Pos2, Rect, Stroke, Vec2, pos2};
 use noodle_core::group::{GROUP, GROUP_OUTPUT};
-use noodle_core::spare;
-use noodle_core::{NodeId, Project};
-use noodle_engine::OUTPUT_ID;
+use noodle_core::{Node, NodeId, Project};
 use noodle_engine::{
-    BlockStats, CpuReading, Level, MeterReader, ParamReading, ScopeView, Telemetry,
+    ACTIVITY_FLOOR, BlockStats, CpuReading, Level, MeterReader, NodeView, ParamReading, Registry,
+    ScopeView, Telemetry,
 };
-use noodle_nodes::{ENVELOPE_ID, METERED, SCOPE_ID, SPECTRUM_ID, SURROUND_PAN_ID};
 
 use crate::theme::editor as colors;
-use crate::widgets::{GraphKind, Live};
+use crate::widgets::Live;
+
+/// What `node` shows in its body. Group boundaries are structural, and the
+/// engine flattens them away, so they have no node type to ask.
+pub fn view_of(registry: &Registry, node: &Node) -> NodeView {
+    match node.type_id.as_str() {
+        GROUP | GROUP_OUTPUT => NodeView::GroupMeter,
+        id => registry
+            .get(id)
+            .map_or(NodeView::None, |node_type| node_type.view(&node.config)),
+    }
+}
 
 /// Extra space below a node's ports, in graph units. Zero for most nodes.
-pub fn height(type_id: &str) -> f32 {
-    match type_id {
-        id if METERED.contains(&id) => 30.0,
-        GROUP | GROUP_OUTPUT => 30.0,
-        SCOPE_ID | OUTPUT_ID | SPECTRUM_ID | SURROUND_PAN_ID => 80.0,
-        ENVELOPE_ID => 56.0,
-        id if GraphKind::of(id).is_some() => 56.0,
-        _ => 0.0,
+pub fn height(view: NodeView) -> f32 {
+    match view {
+        NodeView::Meter | NodeView::GroupMeter => 30.0,
+        NodeView::Scope | NodeView::Spectrum | NodeView::Panner => 80.0,
+        NodeView::Envelope | NodeView::Graph(_) => 56.0,
+        NodeView::Mixer | NodeView::None => 0.0,
     }
 }
 
@@ -45,23 +53,24 @@ pub fn paint(
     rect: Rect,
     zoom: f32,
     node: NodeId,
+    view: NodeView,
     type_id: &str,
     bodies: &Bodies,
     values: &dyn Fn(&str) -> f32,
     curve: &str,
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
-    match type_id {
-        id if METERED.contains(&id) || matches!(id, GROUP | GROUP_OUTPUT) => meter(
+    match view {
+        NodeView::Meter | NodeView::GroupMeter => meter(
             painter,
             area,
             zoom,
             bodies.input_meters(node),
             MeterAxis::Horizontal,
         ),
-        SCOPE_ID | OUTPUT_ID => scope(painter, area, zoom, bodies.scopes.get(&node)),
-        SPECTRUM_ID => spectrum(painter, area, zoom, bodies.spectra.get(&node)),
-        SURROUND_PAN_ID => {
+        NodeView::Scope => scope(painter, area, zoom, bodies.scopes.get(&node)),
+        NodeView::Spectrum => spectrum(painter, area, zoom, bodies.spectra.get(&node)),
+        NodeView::Panner => {
             let layout = noodle_engine::ChannelLayout::from_name(curve)
                 .or_else(|| noodle_nodes::default_layout(type_id))
                 .unwrap_or(noodle_engine::ChannelLayout::Stereo);
@@ -75,12 +84,11 @@ pub fn paint(
                 false,
             );
         }
-        ENVELOPE_ID => envelope(painter, area, zoom, curve),
-        id => {
-            if let Some(kind) = GraphKind::of(id) {
-                crate::widgets::graph::paint(painter, area, kind, zoom, values);
-            }
+        NodeView::Envelope => envelope(painter, area, zoom, curve),
+        NodeView::Graph(kind) => {
+            crate::widgets::graph::paint(painter, area, kind.into(), zoom, values);
         }
+        NodeView::Mixer | NodeView::None => {}
     }
 }
 
@@ -116,6 +124,8 @@ pub struct Bodies {
     sample_rate: f32,
     /// What each wired parameter has been doing, by (node, port key).
     params: HashMap<(NodeId, String), ParamWindow>,
+    /// [`Telemetry::activity`] as of the last update.
+    activity: u64,
     /// Seconds since the first update, for the windows.
     clock: f32,
     /// Whether CPU meters are shown, so they're only read when wanted.
@@ -132,6 +142,24 @@ pub struct Bodies {
     /// When the current window began, on `clock`.
     blocks_since: f32,
 }
+
+/// How much the editor needs redrawing, as of the last [`Bodies::update`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// Something reported a change since the last update.
+    Moving,
+    /// Nothing new, but a peak, hold or trace is still falling.
+    Decaying,
+    /// Every body shows what it will show until something moves.
+    Still,
+}
+
+/// The longest a live editor waits between repaints, in seconds: 30 a second,
+/// however fast the display is.
+pub const METER_FRAME: f32 = 1.0 / 30.0;
+
+/// How often a still editor looks for new sound, in seconds.
+pub const IDLE_POLL: f32 = 0.25;
 
 /// How long a window of block statistics lasts, in seconds.
 const BLOCK_WINDOW_SECONDS: f32 = 5.0;
@@ -182,10 +210,21 @@ impl ParamWindow {
 }
 
 impl Bodies {
-    /// Reads every meter and scope in `project` from `telemetry`. `dt` is the
-    /// time since the last update, in seconds, for the peaks' decay.
-    pub fn update(&mut self, telemetry: &Telemetry, project: &Project, dt: f32) {
+    /// Reads every meter and scope in `project` from `telemetry`, each by
+    /// the view its node type declares in `registry`. `dt` is the time since
+    /// the last update, in seconds, for the peaks' decay. Says whether the
+    /// bodies need drawing again.
+    pub fn update(
+        &mut self,
+        telemetry: &Telemetry,
+        project: &Project,
+        registry: &Registry,
+        dt: f32,
+    ) -> Liveness {
         let graph = project.graph();
+        let activity = telemetry.activity();
+        let moving = activity != self.activity || self.show_cpu;
+        self.activity = activity;
         self.cpu.clear();
         self.cpu_total = 0.0;
         if self.show_cpu {
@@ -230,13 +269,12 @@ impl Bodies {
             .connections()
             .map(|c| (c.to.node, c.to.port))
             .collect();
-        // A Dynamics node reports its level and reduction whether or not
-        // anything is wired, for the dot on its graph.
+        // A graph reports what it declares whether or not anything is wired
+        // (a Dynamics node's level and reduction, for the dot on its graph).
         let mut wired = wired;
         for (id, node) in graph.nodes() {
-            if node.type_id == noodle_nodes::DYNAMICS_ID {
-                wired.insert((id, "level".to_owned()));
-                wired.insert((id, "reduction".to_owned()));
+            if let NodeView::Graph(kind) = view_of(registry, node) {
+                wired.extend(kind.reports().iter().map(|&key| (id, key.to_owned())));
             }
         }
         self.params.retain(|key, _| wired.contains(key));
@@ -253,8 +291,9 @@ impl Bodies {
         }
 
         for (id, node) in graph.nodes() {
-            match node.type_id.as_str() {
-                kind if METERED.contains(&kind) => {
+            match view_of(registry, node) {
+                // A mixer reports one level per input.
+                NodeView::Meter | NodeView::Mixer => {
                     let channels = self.meters.entry(id).or_default();
                     let levels = reader.meter(id).unwrap_or_default();
                     channels.resize_with(levels.len(), MeterChannel::default);
@@ -264,7 +303,7 @@ impl Bodies {
                 }
                 // A group's outputs, and its output node inside, show what
                 // the stage at each output port reports, one bar per channel.
-                GROUP | GROUP_OUTPUT => {
+                NodeView::GroupMeter => {
                     let stages: Vec<NodeId> = if node.type_id == GROUP {
                         graph
                             .group_ports(id)
@@ -288,31 +327,44 @@ impl Bodies {
                         channel.update(level, dt);
                     }
                 }
-                // A mixer reports one level per input.
-                spare::MIXER => {
-                    let channels = self.meters.entry(id).or_default();
-                    let levels = reader.meter(id).unwrap_or_default();
-                    channels.resize_with(levels.len(), MeterChannel::default);
-                    for (channel, level) in channels.iter_mut().zip(levels) {
-                        channel.update(level, dt);
-                    }
-                }
                 // An Output node's scope shows what it sends to the device.
-                SCOPE_ID | OUTPUT_ID => {
+                NodeView::Scope => {
                     let view = self.scopes.entry(id).or_insert_with(scope_view);
                     if !telemetry.read_scope(id, view) {
                         *view = scope_view();
                     }
                 }
-                SPECTRUM_ID => {
+                NodeView::Spectrum => {
                     let trace = self.spectra.entry(id).or_default();
                     if self.sample_rate > 0.0 {
                         trace.update(telemetry, id, self.sample_rate, dt);
                     }
                 }
-                _ => {}
+                NodeView::Envelope | NodeView::Panner | NodeView::Graph(_) | NodeView::None => {}
             }
         }
+        if moving {
+            Liveness::Moving
+        } else if self.is_decaying() {
+            Liveness::Decaying
+        } else {
+            Liveness::Still
+        }
+    }
+
+    /// Whether anything shown is still falling on its own: a meter's peak or
+    /// its held tick, a spectrum's curve or held peaks, or a wired
+    /// parameter's range marks.
+    fn is_decaying(&self) -> bool {
+        self.meters
+            .values()
+            .flatten()
+            .any(|c| c.peak > ACTIVITY_FLOOR || c.hold > ACTIVITY_FLOOR)
+            || self.spectra.values().any(SpectrumTrace::is_decaying)
+            || self
+                .params
+                .values()
+                .any(|w| w.live().is_some_and(|live| live.min < live.max))
     }
 
     /// Tells the spectra the engine's sample rate (0 when none runs).
@@ -382,15 +434,6 @@ impl Bodies {
         };
         (stats.blocks > 0).then_some(stats)
     }
-
-    /// Whether anything is shown that changes while audio plays.
-    pub fn is_live(&self) -> bool {
-        self.show_cpu
-            || !self.meters.is_empty()
-            || !self.scopes.is_empty()
-            || !self.spectra.is_empty()
-            || !self.params.is_empty()
-    }
 }
 
 /// Columns across a spectrum display.
@@ -401,6 +444,8 @@ const SPECTRUM_FALL_DB_PER_SECOND: f32 = 60.0;
 const SPECTRUM_PEAK_FALL_DB_PER_SECOND: f32 = 15.0;
 /// How long a held peak stays, in seconds.
 const SPECTRUM_PEAK_HOLD_SECONDS: f32 = 1.5;
+/// The shortest time between two analyses, in seconds.
+const SPECTRUM_PERIOD: f32 = 1.0 / 30.0 - 0.002;
 /// Spectrogram columns per second, and how many it keeps.
 const SPECTROGRAM_RATE: f32 = 30.0;
 const SPECTROGRAM_COLUMNS: usize = 120;
@@ -418,6 +463,10 @@ pub struct SpectrumTrace {
     /// Recent curves, oldest first, one per spectrogram column.
     history: VecDeque<Vec<f32>>,
     since_column: f32,
+    /// Time since the last analysis, which runs at most [`SPECTRUM_RATE`]
+    /// times a second whatever the frame rate.
+    since_analysis: f32,
+    fresh: Vec<f32>,
     sample_rate: f32,
 }
 
@@ -433,6 +482,9 @@ impl Default for SpectrumTrace {
             peak_age: vec![0.0; SPECTRUM_COLUMNS],
             history: VecDeque::new(),
             since_column: 0.0,
+            // Due at once, so a new trace shows its first frame.
+            since_analysis: 1.0,
+            fresh: vec![floor; SPECTRUM_COLUMNS],
             sample_rate: 48_000.0,
         }
     }
@@ -442,6 +494,11 @@ impl SpectrumTrace {
     fn update(&mut self, telemetry: &Telemetry, node: NodeId, sample_rate: f32, dt: f32) {
         let floor = noodle_nodes::SPECTRUM_FLOOR_DB;
         self.sample_rate = sample_rate;
+        self.since_analysis += dt;
+        if self.since_analysis < SPECTRUM_PERIOD {
+            return;
+        }
+        let dt = std::mem::take(&mut self.since_analysis);
         self.mono.clear();
         if telemetry.read_scope(node, &mut self.view) {
             let channels = self.view.channels().max(1);
@@ -452,13 +509,13 @@ impl SpectrumTrace {
                     .map(|frame| frame.iter().sum::<f32>() / channels as f32),
             );
         }
-        let mut fresh = vec![floor; SPECTRUM_COLUMNS];
+        self.fresh.fill(floor);
         if !self.mono.is_empty() {
             let bins = self.analyser.analyse(&self.mono);
-            noodle_nodes::columns_from_bins(bins, sample_rate, &mut fresh);
+            noodle_nodes::columns_from_bins(bins, sample_rate, &mut self.fresh);
         }
         let fall = SPECTRUM_FALL_DB_PER_SECOND * dt;
-        for (k, &now) in fresh.iter().enumerate() {
+        for (k, &now) in self.fresh.iter().enumerate() {
             self.curve[k] = now.max(self.curve[k] - fall).max(floor);
             if self.curve[k] >= self.peaks[k] {
                 self.peaks[k] = self.curve[k];
@@ -474,11 +531,22 @@ impl SpectrumTrace {
         self.since_column += dt;
         if self.since_column >= 1.0 / SPECTROGRAM_RATE {
             self.since_column = 0.0;
-            if self.history.len() == SPECTROGRAM_COLUMNS {
-                self.history.pop_front();
-            }
-            self.history.push_back(self.curve.clone());
+            let mut column = if self.history.len() == SPECTROGRAM_COLUMNS {
+                self.history.pop_front().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            column.clear();
+            column.extend_from_slice(&self.curve);
+            self.history.push_back(column);
         }
+    }
+
+    /// Whether the curve or its held peaks are still above the floor, so
+    /// they will move on their own.
+    fn is_decaying(&self) -> bool {
+        let floor = noodle_nodes::SPECTRUM_FLOOR_DB + 0.01;
+        self.curve.iter().chain(&self.peaks).any(|&db| db > floor)
     }
 
     /// dB at each display column of the curve, quietest first by frequency.
@@ -831,8 +899,21 @@ fn min_max_columns(samples: &[f32], columns: usize, window: usize) -> Vec<(f32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use noodle_core::spare;
     use noodle_core::{Command, Node};
-    use noodle_nodes::METER_ID;
+    use noodle_engine::OUTPUT_ID;
+    use noodle_nodes::{
+        DYNAMICS_ID, ENVELOPE_ID, METER_ID, SCOPE_ID, SPECTRUM_ID, SURROUND_PAN_ID,
+    };
+
+    fn registry() -> Registry {
+        crate::session::Nodes::all().registry
+    }
+
+    /// The height of the body a node of this type gets.
+    fn height_of(type_id: &str) -> f32 {
+        height(view_of(&registry(), &Node::new(type_id)))
+    }
 
     #[test]
     fn a_group_shows_what_the_nodes_inside_it_take() {
@@ -859,10 +940,10 @@ mod tests {
             }
         }
         let mut bodies = Bodies::default();
-        bodies.update(&telemetry, &project, 0.016);
+        bodies.update(&telemetry, &project, &registry(), 0.016);
         assert_eq!(bodies.cpu(group), None, "off until switched on");
         bodies.set_show_cpu(true);
-        bodies.update(&telemetry, &project, 0.016);
+        bodies.update(&telemetry, &project, &registry(), 0.016);
         let inside = bodies.cpu(group).expect("the group reports");
         assert!((inside.load - 0.3).abs() < 0.01, "{}", inside.load);
         let total = bodies.cpu_total().unwrap();
@@ -1041,14 +1122,14 @@ mod tests {
         let tap = telemetry.open_param(gain, "gain");
         let mut bodies = Bodies::default();
         // Nothing has been written yet.
-        bodies.update(&telemetry, &project, 0.016);
+        bodies.update(&telemetry, &project, &registry(), 0.016);
         assert_eq!(bodies.param_live(gain, "gain"), None);
 
         tap.write(&[-12.0, 6.0, 0.0]);
-        bodies.update(&telemetry, &project, 0.016);
+        let state = bodies.update(&telemetry, &project, &registry(), 0.016);
         let live = bodies.param_live(gain, "gain").unwrap();
         assert_eq!((live.min, live.max, live.value), (-12.0, 6.0, 0.0));
-        assert!(bodies.is_live());
+        assert_ne!(state, Liveness::Still);
 
         // Cutting the wire forgets it.
         Command::Disconnect {
@@ -1056,7 +1137,7 @@ mod tests {
         }
         .apply(&mut project)
         .unwrap();
-        bodies.update(&telemetry, &project, 0.016);
+        bodies.update(&telemetry, &project, &registry(), 0.016);
         assert_eq!(bodies.param_live(gain, "gain"), None);
     }
 
@@ -1070,7 +1151,7 @@ mod tests {
         }
         .apply(&mut project)
         .unwrap();
-        assert!(height(SPECTRUM_ID) > 0.0);
+        assert!(height_of(SPECTRUM_ID) > 0.0);
         let telemetry = Telemetry::new();
         let rate = 48_000.0;
         let mut writer = telemetry.open_scope(id, 2, 16_384);
@@ -1081,7 +1162,7 @@ mod tests {
 
         let mut bodies = Bodies::default();
         // Nothing is analysed until the engine's rate is known.
-        bodies.update(&telemetry, &project, 0.02);
+        bodies.update(&telemetry, &project, &registry(), 0.02);
         assert!(
             bodies
                 .spectrum(id)
@@ -1091,7 +1172,7 @@ mod tests {
                 .all(|&db| db < -80.0)
         );
         bodies.set_sample_rate(rate);
-        bodies.update(&telemetry, &project, 0.02);
+        let state = bodies.update(&telemetry, &project, &registry(), 0.02);
         let trace = bodies.spectrum(id).unwrap();
         let loudest = (0..trace.curve().len())
             .max_by(|&a, &b| trace.curve()[a].total_cmp(&trace.curve()[b]))
@@ -1100,13 +1181,13 @@ mod tests {
         assert!((hz / 1000.0).log2().abs() < 1.0 / 12.0, "{hz}");
         assert!(trace.curve()[loudest] > -3.0);
         assert!(trace.peaks()[loudest] >= trace.curve()[loudest]);
-        assert!(bodies.is_live());
+        assert_ne!(state, Liveness::Still);
 
         // Later and quiet, the curve falls rather than jumping, and the peak
         // is held.
         writer.write(8192, |_, _| 0.0);
         writer.write(8192, |_, _| 0.0);
-        bodies.update(&telemetry, &project, 0.1);
+        bodies.update(&telemetry, &project, &registry(), 0.1);
         let trace = bodies.spectrum(id).unwrap();
         assert!(trace.curve()[loudest] < -3.0 && trace.curve()[loudest] > -20.0);
         assert!(trace.peaks()[loudest] > -3.0, "the peak is held");
@@ -1124,13 +1205,13 @@ mod tests {
         std::mem::forget(output.textures_delta);
 
         Command::RemoveNode { id }.apply(&mut project).unwrap();
-        bodies.update(&telemetry, &project, 0.02);
+        bodies.update(&telemetry, &project, &registry(), 0.02);
         assert!(bodies.spectrum(id).is_none());
     }
 
     #[test]
     fn an_envelope_draws_its_curve_on_its_body() {
-        assert!(height(ENVELOPE_ID) > 0.0);
+        assert!(height_of(ENVELOPE_ID) > 0.0);
         let ctx = egui::Context::default();
         let drawn = |text: &str| {
             let output = ctx.run_ui(egui::RawInput::default(), |ctx| {
@@ -1192,19 +1273,19 @@ mod tests {
         output_writer.write(2, |f, c| (f + 10 * c) as f32);
 
         let mut bodies = Bodies::default();
-        bodies.update(&telemetry, &project, 1.0 / 60.0);
-        assert!(bodies.is_live());
+        let state = bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(state, Liveness::Moving);
         assert_eq!(bodies.meters[&meter].len(), 2);
         assert_eq!(bodies.meters[&meter][1].peak, 0.5);
         assert_eq!(bodies.meters[&meter][1].rms, 0.25);
         assert_eq!(bodies.scopes[&scope].samples(), [0.0, 1.0, 2.0]);
         assert_eq!(bodies.scopes[&output].samples(), [0.0, 10.0, 1.0, 11.0]);
-        assert_eq!(height(OUTPUT_ID), height(SCOPE_ID));
+        assert_eq!(height_of(OUTPUT_ID), height_of(SCOPE_ID));
 
         Command::RemoveNode { id: meter }
             .apply(&mut project)
             .unwrap();
-        bodies.update(&telemetry, &project, 1.0 / 60.0);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
         assert!(!bodies.meters.contains_key(&meter));
     }
 
@@ -1221,7 +1302,7 @@ mod tests {
             }
             .apply(&mut project)
             .unwrap();
-            assert!(height(kind) > 0.0, "{kind} reserves room for a meter");
+            assert!(height_of(kind) > 0.0, "{kind} reserves room for a meter");
             let writer = telemetry.open_meter(id, 1);
             writer.write(
                 0,
@@ -1233,7 +1314,7 @@ mod tests {
             writers.push((id, writer));
         }
         let mut bodies = Bodies::default();
-        bodies.update(&telemetry, &project, 1.0 / 60.0);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
         for (id, _) in &writers {
             assert_eq!(bodies.input_meters(*id)[0].peak, 0.5);
         }
@@ -1259,11 +1340,171 @@ mod tests {
             },
         );
         let mut bodies = Bodies::default();
-        bodies.update(&telemetry, &project, 1.0 / 60.0);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
         assert_eq!(bodies.input_meters(mix).len(), 2);
         assert_eq!(bodies.input_meters(mix)[0].peak, 0.0);
         assert_eq!(bodies.input_meters(mix)[1].peak, 0.5);
         assert_eq!(bodies.input_meters_of(mix, 1)[0].rms, 0.25);
         assert!(bodies.input_meters_of(mix, 5).is_empty());
+    }
+
+    /// A node type that is none of the built-ins, declaring only a view.
+    struct Probe;
+
+    static PROBE_INFO: noodle_engine::NodeInfo = noodle_engine::NodeInfo {
+        id: "test.probe",
+        version: 1,
+        name: "Probe",
+        category: "Test",
+    };
+
+    impl noodle_engine::NodeType for Probe {
+        fn info(&self) -> &noodle_engine::NodeInfo {
+            &PROBE_INFO
+        }
+
+        fn view(&self, _config: &noodle_engine::Config) -> NodeView {
+            NodeView::Meter
+        }
+
+        fn layout(
+            &self,
+            _config: &noodle_engine::Config,
+        ) -> Result<noodle_engine::Layout, noodle_engine::NodeError> {
+            Ok(noodle_engine::Layout::realtime().input("in", "In"))
+        }
+
+        fn instantiate(
+            &self,
+            _setup: &noodle_engine::Setup<'_>,
+        ) -> Result<noodle_engine::Instance, noodle_engine::NodeError> {
+            unreachable!("the test never builds a plan")
+        }
+    }
+
+    #[test]
+    fn a_node_type_that_declares_a_meter_view_gets_a_meter_body_with_no_app_changes() {
+        let mut registry = registry();
+        registry.register(Probe);
+        let mut project = Project::new();
+        let id = project.new_node_id();
+        Command::AddNode {
+            id,
+            node: Node::new("test.probe"),
+        }
+        .apply(&mut project)
+        .unwrap();
+        let view = view_of(&registry, project.graph().node(id).unwrap());
+        assert_eq!(view, NodeView::Meter);
+        assert_eq!(height(view), height_of(METER_ID));
+
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_meter(id, 1);
+        writer.write(
+            0,
+            Level {
+                peak: 0.5,
+                rms: 0.25,
+            },
+        );
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, &registry, 1.0 / 60.0);
+        assert_eq!(bodies.input_meters(id).len(), 1);
+        assert_eq!(bodies.input_meters(id)[0].peak, 0.5);
+    }
+
+    #[test]
+    fn views_are_declared_by_the_node_types() {
+        for (type_id, view) in [
+            (METER_ID, NodeView::Meter),
+            (SCOPE_ID, NodeView::Scope),
+            (OUTPUT_ID, NodeView::Scope),
+            (SPECTRUM_ID, NodeView::Spectrum),
+            (ENVELOPE_ID, NodeView::Envelope),
+            (SURROUND_PAN_ID, NodeView::Panner),
+            (spare::MIXER, NodeView::Mixer),
+            (GROUP, NodeView::GroupMeter),
+            (
+                DYNAMICS_ID,
+                NodeView::Graph(noodle_engine::GraphKind::Dynamics),
+            ),
+            ("noodle.util.gain", NodeView::Meter),
+        ] {
+            assert_eq!(view_of(&registry(), &Node::new(type_id)), view, "{type_id}");
+        }
+    }
+
+    #[test]
+    fn the_body_code_matches_no_node_type_ids() {
+        let source = include_str!("body.rs");
+        let code = &source[..source.find("#[cfg(test)]").unwrap()];
+        let lines: Vec<&str> = code
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//") && line.contains("_ID"))
+            .collect();
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn a_silent_graph_goes_still_and_a_sound_decays_before_it_does() {
+        let mut project = Project::new();
+        let ids: Vec<NodeId> = [METER_ID, SPECTRUM_ID, OUTPUT_ID]
+            .into_iter()
+            .map(|type_id| {
+                let id = project.new_node_id();
+                Command::AddNode {
+                    id,
+                    node: Node::new(type_id),
+                }
+                .apply(&mut project)
+                .unwrap();
+                id
+            })
+            .collect();
+        let telemetry = Telemetry::new();
+        let meter = telemetry.open_meter(ids[0], 1);
+        let mut spectrum = telemetry.open_scope(ids[1], 1, noodle_nodes::SPECTRUM_WINDOW);
+        let mut output = telemetry.open_scope(ids[2], 2, 64);
+        let registry = registry();
+        let mut bodies = Bodies::default();
+        bodies.set_sample_rate(48_000.0);
+        let dt = 1.0 / 30.0;
+        let mut silent_block = || {
+            meter.write(0, Level::default());
+            spectrum.write(256, |_, _| 0.0);
+            output.write(64, |_, _| 0.0);
+        };
+
+        // Silent from the start: settled after the first look.
+        silent_block();
+        bodies.update(&telemetry, &project, &registry, dt);
+        for _ in 0..5 {
+            silent_block();
+            assert_eq!(
+                bodies.update(&telemetry, &project, &registry, dt),
+                Liveness::Still
+            );
+        }
+
+        // A sound moves the bodies, then they fall back to still.
+        meter.write(
+            0,
+            Level {
+                peak: 0.8,
+                rms: 0.5,
+            },
+        );
+        assert_eq!(
+            bodies.update(&telemetry, &project, &registry, dt),
+            Liveness::Moving
+        );
+        meter.write(0, Level::default());
+        let mut states = Vec::new();
+        for _ in 0..600 {
+            silent_block();
+            states.push(bodies.update(&telemetry, &project, &registry, dt));
+        }
+        assert!(states.contains(&Liveness::Decaying));
+        assert_eq!(states.last(), Some(&Liveness::Still), "{states:?}");
     }
 }
