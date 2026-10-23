@@ -2815,6 +2815,35 @@ mod tests {
     }
 
     #[test]
+    fn the_arrangement_panel_does_not_grow_to_fit_off_screen_lanes() {
+        let mut app = empty();
+        // Several free automation lanes: each is an Automation node plus a
+        // lane, so the lanes pile up below the tracks and most sit off screen.
+        for _ in 0..30 {
+            let graph = app.session.project().graph().clone();
+            let node = app.session.new_node_id();
+            let lane = app.session.project().next_lane_id();
+            let cmd = crate::timeline::add_track::automation_command(&graph, node, lane);
+            app.session.edit([Edit::Apply(cmd)]);
+        }
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        let height =
+            egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("arrangement"))
+                .expect("the arrangement panel has been shown")
+                .size()
+                .y;
+        assert_eq!(
+            height,
+            theme::timeline::DEFAULT_HEIGHT,
+            "the panel keeps its default height instead of growing to fit the lanes"
+        );
+    }
+
+    #[test]
     fn scrolling_down_the_tracks_does_not_resize_the_sequencer_panel() {
         use crate::testkit::wheel;
         let mut app = empty();
@@ -2847,6 +2876,66 @@ mod tests {
         h.run_steps(20);
         assert!(h.state().timeline.scroll_y() > 0.0, "it scrolled");
         assert_eq!(height(&h), before, "the panel kept its size");
+    }
+
+    #[test]
+    fn scrolling_to_the_bottom_reaches_the_add_track_buttons() {
+        use crate::testkit::wheel;
+        let mut app = empty();
+        for n in 1..=14 {
+            app.session.edit([Edit::Apply(Command::AddNode {
+                id: noodle_core::NodeId(n),
+                node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+            })]);
+        }
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        assert!(
+            h.query_by_label("+ Track").is_none(),
+            "the buttons are below the fold at the top"
+        );
+        let over_tracks = egui::pos2(600.0, 150.0);
+        for _ in 0..20 {
+            wheel(
+                &mut h,
+                over_tracks,
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(20);
+        assert!(
+            h.query_by_label("+ Track").is_some(),
+            "the + Track button scrolls into view"
+        );
+    }
+
+    #[test]
+    fn resizing_the_arrangement_panel_keeps_the_graph_content_put() {
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new("noodle.osc.sine").at(200.0, 150.0),
+        })]);
+        let mut h = harness(app);
+        h.run();
+        let before = on_canvas(&h, egui::pos2(200.0, 150.0));
+        // Make the arrangement panel taller: the graph canvas shrinks from the
+        // top, but the graph content must not move with its corner.
+        let state = egui::containers::panel::PanelState {
+            outer_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 400.0)),
+        };
+        h.ctx
+            .data_mut(|d| d.insert_persisted(egui::Id::new("arrangement"), state));
+        h.run();
+        assert_eq!(
+            on_canvas(&h, egui::pos2(200.0, 150.0)),
+            before,
+            "the graph content stays where it was on screen"
+        );
     }
 
     /// An app saved in a temp folder with one track holding a clip of a
