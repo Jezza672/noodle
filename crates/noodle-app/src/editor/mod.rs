@@ -581,6 +581,15 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     state.retain_in(project);
     let (canvas, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
     let response = ui.interact(canvas, canvas_id(), Sense::click_and_drag());
+    // A panel resized above the canvas moves its top-left; keep the graph
+    // where it was on screen instead of dragging the content with the corner.
+    // (The first frame has no previous canvas to compare against.)
+    if state.canvas.is_positive()
+        && let moved = canvas.min - state.canvas.min
+        && moved != Vec2::ZERO
+    {
+        state.view.offset -= moved / state.view.zoom;
+    }
     state.canvas = canvas;
     // Tab is how egui moves focus, so the canvas has to hold focus, and say
     // it wants Tab, for the editor to be given it.
