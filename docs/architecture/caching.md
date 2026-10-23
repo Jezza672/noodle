@@ -93,7 +93,7 @@ a source node to play in its place. `replace.rs` rewires the readers of that
 output to the source and drops every node that only fed it, so a frozen
 subgraph costs nothing, track inputs and lanes included. `CachedPlayer`
 (`noodle-nodes`) is the source. Live it streams chunks from the store through
-a worker thread, in the manner of clip streams: the audio side takes full
+a worker task on the `noodle-io` pool, in the manner of clip streams: the audio side takes full
 chunks and returns spent ones through two lock-free queues, a jump asks the
 worker to restart, and a loop wraps without a gap because the worker follows
 the transport's loop range. In an offline render it reads the file itself.

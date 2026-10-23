@@ -30,11 +30,14 @@ use noodle_engine::{
     Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
     NoteId, ParamInfo, Setup, Shape,
 };
+use noodle_io::pool::{Bell, Handle};
 use noodle_io::{ClipStream, MidiBus};
 use rtrb::{Consumer, Producer, PushError};
 
 use ahead::{AheadLinks, Lane, MAX_LANES};
-use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
+use hub::{
+    Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, POSITION_STEP, Prepared, Retired, Shared, ToNode,
+};
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
     ScheduledNote, WarpMap, active_at,
@@ -260,6 +263,15 @@ struct TrackInputNode {
     shared: Arc<Shared>,
     from_hub: Consumer<ToNode>,
     to_hub: Producer<Retired>,
+    /// Rings the hub and the stretch worker, which sleep until then.
+    bells: [Bell; 2],
+    /// Where the playhead and the loop were when they were last rung, and how
+    /// far the playhead goes before they are rung again.
+    rung_at: u64,
+    rung_loop: (u64, u64),
+    ring_step: u64,
+    /// Stop the hub and the stretch worker when the node is dropped.
+    _handles: [Handle; 2],
     schedule: Option<Box<Schedule>>,
     /// A newer schedule waiting for the dip to reach silence.
     pending: Option<Box<Schedule>>,
@@ -337,6 +349,11 @@ impl TrackInputNode {
             shared,
             from_hub: links.from_hub,
             to_hub: links.to_hub,
+            bells: [links.bell, ahead.bell],
+            rung_at: 0,
+            rung_loop: (0, 0),
+            ring_step: (f64::from(sample_rate) * POSITION_STEP) as u64,
+            _handles: [links._handle, ahead._handle],
             schedule: None,
             pending: None,
             streams: (0..MAX_STREAMS + MAX_HEADS).map(|_| None).collect(),
@@ -373,6 +390,26 @@ impl TrackInputNode {
     fn retire(&mut self, item: Retired) {
         if let Err(PushError::Full(item)) = self.to_hub.push(item) {
             std::mem::forget(item);
+        }
+        self.bells[0].ring();
+    }
+
+    /// Tells the hub the node plays from a stream that was opened ahead.
+    fn promoted(&mut self, serial: u64) {
+        let _ = self.to_hub.push(Retired::Promoted(serial));
+        self.bells[0].ring();
+    }
+
+    /// Rings the hub and the stretch worker when the playhead has gone far
+    /// enough that they may have clips to open, or the loop has changed.
+    fn ring_if_moved(&mut self, position: u64, looping: Option<(u64, u64)>) {
+        let looped = looping.unwrap_or((0, 0));
+        if position.abs_diff(self.rung_at) >= self.ring_step || looped != self.rung_loop {
+            self.rung_at = position;
+            self.rung_loop = looped;
+            for bell in &self.bells {
+                bell.ring();
+            }
         }
     }
 
@@ -415,13 +452,19 @@ impl TrackInputNode {
         if let Some((version, next, notes)) = self.deferred.take() {
             self.take_schedule(version, next, notes, position, frames);
         }
+        let mut took = false;
         while let Ok(message) = self.from_hub.pop() {
+            took = true;
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
                 ToNode::Schedule(version, next, notes) => {
                     self.take_schedule(version, next, notes, position, frames)
                 }
             }
+        }
+        if took {
+            // There is room in the queue again.
+            self.bells[0].ring();
         }
     }
 
@@ -430,7 +473,9 @@ impl TrackInputNode {
     /// the start of the next block.
     fn receive_streams(&mut self) {
         self.take_lanes();
+        let mut took = false;
         while let Ok(message) = self.from_hub.pop() {
+            took = true;
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
                 ToNode::Schedule(version, next, notes) => {
@@ -443,12 +488,16 @@ impl TrackInputNode {
                 }
             }
         }
+        if took {
+            self.bells[0].ring();
+        }
     }
 
     /// Takes in the lanes the worker has opened. One that has no room is sent
     /// straight back to be dropped there.
     fn take_lanes(&mut self) {
         while let Ok(lane) = self.new_lanes.pop() {
+            self.bells[1].ring();
             match self.lanes.iter_mut().find(|slot| slot.is_none()) {
                 Some(slot) => *slot = Some(lane),
                 None => self.retire_lane(lane),
@@ -462,6 +511,7 @@ impl TrackInputNode {
         if let Err(PushError::Full(lane)) = self.spent_lanes.push(lane) {
             std::mem::forget(lane);
         }
+        self.bells[1].ring();
     }
 
     fn take_stream(&mut self, prepared: Box<Prepared>) {
@@ -777,7 +827,7 @@ impl TrackInputNode {
         let got = read_frames(stream, &mut self.scratch[..len * channels], blocking);
         if let Some(serial) = promoted {
             // Playing from it now, so it is an ordinary stream.
-            let _ = self.to_hub.push(Retired::Promoted(serial));
+            self.promoted(serial);
         }
         if got < len {
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
@@ -1323,6 +1373,7 @@ impl Node for TrackInputNode {
         self.shared.loop_end.store(end, Ordering::Relaxed);
         self.block = (transport.position, n);
         self.looping = transport.loop_range;
+        self.ring_if_moved(transport.position, transport.loop_range);
         self.receive(transport.position, n);
         self.watch_preview();
         if self.shared.blocking {

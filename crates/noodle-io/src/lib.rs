@@ -11,6 +11,7 @@ mod midi;
 mod onsets;
 mod output;
 mod peaks;
+pub mod pool;
 mod record;
 mod resample;
 mod stream;

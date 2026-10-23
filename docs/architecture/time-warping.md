@@ -53,7 +53,8 @@ allocator). The warp is in the track's cache key when it changes the sound.
 do, so they are rendered ahead (`noodle-nodes/src/clip/ahead.rs` and
 `stretch.rs`). A section whose warp has one of those modes is *stretched*
 (`ScheduledClip::stretched`): the hub opens no stream for it, and a worker
-thread (`noodle-warp`, one per track input node, like the hub) opens a **lane**
+task (`ahead.rs`, one per track input node on the `noodle-io` control pool, like
+the hub; it sleeps until the node rings it) opens a **lane**
 instead. A lane is a ring of stereo frames (about 340 ms) the worker fills with
 the stretched section, and a small control block; the node holds up to
 `MAX_LANES` of them, handed over and taken back through queues the way streams
@@ -143,10 +144,26 @@ millionths of the sample, so they stay on the audio when the region moves).
 A Sampler's loop is a sustain loop in the sample's own seconds, so it stays in
 the parameters; the warped view sees it as the warp's `loop_region` (when it is
 at least a beat long) and writes drags of it back to the parameters. The
-Sampler plays its warp as Repitch only (see `sampler.rs`: the warp's curve says
-how fast each stretch of the sample goes, with *follow tempo* on that is the
-transport's tempo); Grain and Beats need the worker lanes that only a track
-input has.
+Sampler plays its warp in all three modes. Repitch is done by the voice itself
+(see `sampler.rs`: the warp's curve says how fast each stretch of the sample
+goes, with *follow tempo* on that is the transport's tempo). Grain and Beats use
+the clips' own `Stretcher`, but not their lanes, since a note has no playhead to
+render ahead of: `sampler_stretch.rs` renders a copy of the whole sample
+stretched by the warp (`WarpMap::build` at the sample's rate and a constant
+tempo, the same transient lists as a clip) on a worker thread shared by the
+Sampler's instances, and the voices play that copy. Their positions (region,
+loop, pitch bend, envelope, the playhead) are in the copy's frames and turn
+back into the sample's through the copy's `WarpMap`; when the copy arrives or
+goes the voices are moved across, not cut. The copy is made for the tempo the
+node last heard and again when the warp or the tempo has held still for 150 ms;
+until then, and while a marker is being dragged, the warp plays as Repitch. An
+offline render (`register_library_blocking`) stretches on the audio thread
+instead, so it does not depend on timing.
+
+`gain_env` and `warp` are *live config* (`NodeType::live_config`/`retune`): a
+change to only those keys doesn't rebuild the Sampler, and the plan build
+sends them to the running instances through the worker, so dragging an
+envelope point or a marker doesn't cut the notes that sound.
 
 A clip or sample that is **natural** (`ClipWarp::is_natural`: no tempo
 conversion and no markers in play, or no warp at all) opens in the seconds view

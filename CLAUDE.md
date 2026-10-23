@@ -4,6 +4,20 @@ Noodle is a node-based DAW written in Rust: a Blender-compositor-style node
 editor for audio, with a timeline. This file is an index. Read the one file
 you need, not all of them.
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `Jezza672/noodle`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage-role labels, plus `wayfinder:*`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` as the glossary, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Where things live
 
 | Need | Read |

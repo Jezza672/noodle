@@ -47,6 +47,7 @@ mod sample;
 mod sample_hold;
 mod sample_input;
 mod sampler;
+mod sampler_stretch;
 mod scope;
 mod script;
 mod spectral;
@@ -162,9 +163,6 @@ use noodle_engine::{
     Registry, Render, RenderError, Settings, Telemetry, TempoTable, render_project,
 };
 
-/// The node types that draw a meter of their output in the editor.
-pub const METERED: [&str; 3] = [METER_ID, GAIN_ID, VOICE_MIX_ID];
-
 /// What [`register_library`] gives back.
 pub struct Library {
     /// The hub the view nodes (Meter, Scope) report to, for the UI to read.
@@ -265,7 +263,11 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     let samples = SampleStore::new();
-    registry.register(Sampler::new(&samples, &telemetry));
+    registry.register(if clips.is_blocking() {
+        Sampler::blocking(&samples, &telemetry)
+    } else {
+        Sampler::new(&samples, &telemetry)
+    });
     Library {
         telemetry,
         clips,

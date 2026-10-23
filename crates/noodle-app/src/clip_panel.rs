@@ -688,9 +688,8 @@ fn looping(
     });
 }
 
-/// How a warped clip or sample is warped: mode (for a clip; a Sampler plays
-/// every warp as Repitch), following the tempo, markers, the clip's tempo and
-/// where its beat falls, and quantise.
+/// How a warped clip or sample is warped: mode, following the tempo, markers,
+/// the clip's tempo and where its beat falls, and quantise.
 #[allow(clippy::too_many_arguments)]
 pub fn warp_controls(
     ui: &mut Ui,
@@ -702,35 +701,31 @@ pub fn warp_controls(
     span: Span,
     edits: &mut Vec<Edit>,
 ) {
-    if matches!(subject, Subject::Clip(_)) {
-        ui.horizontal(|ui| {
-            ui.label("Mode");
-            let mut mode = warp.mode;
-            crate::widgets::Dropdown::from_id_salt("clip warp mode")
-                .selected_text(match mode {
-                    WarpMode::Repitch => "Repitch",
-                    WarpMode::Grain => "Grain",
-                    WarpMode::Beats => "Beats",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut mode, WarpMode::Repitch, "Repitch")
-                        .on_hover_text("Plain resampling: pitch follows speed");
-                    ui.selectable_value(&mut mode, WarpMode::Grain, "Grain")
-                        .on_hover_text("Keeps the pitch: for tonal and sustained sounds");
-                    ui.selectable_value(&mut mode, WarpMode::Beats, "Beats")
-                        .on_hover_text("Keeps each transient whole: for drums and plucks");
-                });
-            if mode != warp.mode {
-                edits.extend(
-                    subject
-                        .warp_edit(project, |warp| warp.mode = mode)
-                        .map(Edit::Apply),
-                );
-            }
-        });
-    } else {
-        ui.weak("A Sampler plays a warp by changing the pitch with the speed.");
-    }
+    ui.horizontal(|ui| {
+        ui.label("Mode");
+        let mut mode = warp.mode;
+        crate::widgets::Dropdown::from_id_salt("clip warp mode")
+            .selected_text(match mode {
+                WarpMode::Repitch => "Repitch",
+                WarpMode::Grain => "Grain",
+                WarpMode::Beats => "Beats",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut mode, WarpMode::Repitch, "Repitch")
+                    .on_hover_text("Plain resampling: pitch follows speed");
+                ui.selectable_value(&mut mode, WarpMode::Grain, "Grain")
+                    .on_hover_text("Keeps the pitch: for tonal and sustained sounds");
+                ui.selectable_value(&mut mode, WarpMode::Beats, "Beats")
+                    .on_hover_text("Keeps each transient whole: for drums and plucks");
+            });
+        if mode != warp.mode {
+            edits.extend(
+                subject
+                    .warp_edit(project, |warp| warp.mode = mode)
+                    .map(Edit::Apply),
+            );
+        }
+    });
 
     let noun = if matches!(subject, Subject::Clip(_)) {
         "clip"

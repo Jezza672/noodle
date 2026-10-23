@@ -84,6 +84,19 @@ signal flow (bit sets of each step's ancestors), so reuse adds no ordering. A
 plain chain still uses two buffers; side-by-side branches each keep their
 own. The cost is memory for wide graphs.
 
+**Background threads don't poll.** Everything off the audio thread that feeds
+playback (disk streams, cached-render playback, the track inputs' hub and
+stretch workers) is a task on one of two shared pools in `noodle-io`
+(`pool::io`, for tasks that never wait on another task, and `pool::control`,
+for the ones that may: `2 + cores / 4` threads each, started on first use).
+A task returns what it wants next (`Again`, `Idle`, `After(d)`, `Done`) and
+sleeps until its `Bell` is rung. The audio thread rings it when it has made
+room (a chunk returned, a seek, a lane's ring drained, the playhead moved an
+eighth of the lookahead). A stopped project with open streams wakes nothing
+(`tests/idle_wakeups.rs`), and 16 track inputs start no threads of their own
+(`tests/thread_count.rs`). The extra-device `RateConverter` keeps a thread but
+waits on a `Doorbell` that the main stream's callback rings.
+
 **Running a block.** Each step claims itself with a compare-and-swap on its
 count of unfinished prerequisites (a plan-sized array of atomics reset at the
 start of the block, no queue), runs, and decrements its dependents. The audio

@@ -108,6 +108,10 @@ impl ParametricEq {
 }
 
 impl NodeType for ParametricEq {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Eq)
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
