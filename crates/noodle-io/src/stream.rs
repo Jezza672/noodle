@@ -19,16 +19,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use rtrb::{Consumer, Producer, RingBuffer};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{
-    Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, SincInterpolationType,
-    WindowFunction,
-};
+use rubato::{Async, FixedAsync, Indexing, Resampler};
 
+use crate::pool::{self, Bell, Handle, Next, Task};
+use crate::resample::SINC_PARAMETERS;
 use crate::{DecodeError, Decoder, FileInfo};
 
 /// Engine frames in a chunk.
@@ -38,8 +35,6 @@ const RESAMPLE_IN: usize = 1024;
 /// Source frames decoded before the wanted position when resampling, so the
 /// filter has its context and a seek leaves no transient.
 const PREROLL: u64 = 256;
-const SINC_LEN: usize = 128;
-const IDLE: Duration = Duration::from_millis(2);
 
 /// What to play.
 #[derive(Clone, Debug)]
@@ -70,7 +65,6 @@ struct Shared {
     /// Bumped by each seek, and published after `target`.
     generation: AtomicU64,
     target: AtomicU64,
-    stop: AtomicBool,
     underruns: AtomicU64,
     failed: AtomicBool,
     /// The clip frame where the audio really ends, if that is before the
@@ -85,18 +79,29 @@ pub struct ClipStream {
     full: Consumer<Chunk>,
     spent: Producer<Chunk>,
     shared: Arc<Shared>,
+    /// Rung when there is room for the worker to fill or a seek to follow.
+    bell: Bell,
     generation: u64,
     current: Option<Chunk>,
     /// Frames of `current` already used.
     used: usize,
     /// The clip frame the next `read` returns.
     position: u64,
+    /// A spent chunk went back since the worker was last rung.
+    returned: bool,
 }
 
-/// Owns the worker thread. Dropping it stops the worker.
+/// Owns the worker's task on the [`io`](pool::io) pool. Dropping it stops the
+/// worker and waits until it has let go of the file.
 pub struct StreamWorker {
-    shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    handle: Option<Handle>,
+}
+
+impl StreamWorker {
+    /// How many times the worker has run, for tests.
+    pub fn runs(&self) -> u64 {
+        self.handle.as_ref().map_or(0, Handle::runs)
+    }
 }
 
 /// How long a clip is at the engine's rate: `length` file frames from
@@ -139,19 +144,20 @@ pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), Decod
     let shared = Arc::new(Shared {
         generation: AtomicU64::new(0),
         target: AtomicU64::new(start),
-        stop: AtomicBool::new(false),
         underruns: AtomicU64::new(0),
         failed: AtomicBool::new(false),
         end: AtomicU64::new(u64::MAX),
     });
     let source = Source::new(decoder, spec.offset, length, ratio, total)?;
-    let worker = {
-        let shared = shared.clone();
-        thread::Builder::new()
-            .name("noodle-stream".into())
-            .spawn(move || run(source, spent_rx, full_tx, &shared))
-            .map_err(DecodeError::Io)?
-    };
+    let handle = pool::io().spawn(Worker {
+        source,
+        spent: spent_rx,
+        full: full_tx,
+        shared: shared.clone(),
+        generation: 0,
+        spare: None,
+        started: false,
+    });
     Ok((
         ClipStream {
             channels,
@@ -159,23 +165,23 @@ pub fn open_stream(spec: StreamSpec) -> Result<(ClipStream, StreamWorker), Decod
             full: full_rx,
             spent: spent_tx,
             shared: shared.clone(),
+            bell: handle.bell(),
             generation: 0,
             current: None,
             used: 0,
             position: start,
+            returned: false,
         },
         StreamWorker {
-            shared,
-            thread: Some(worker),
+            handle: Some(handle),
         },
     ))
 }
 
 impl Drop for StreamWorker {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(handle) = self.handle.take() {
+            handle.close();
         }
     }
 }
@@ -218,6 +224,7 @@ impl ClipStream {
         if let Some(chunk) = self.current.take() {
             let _ = self.spent.push(chunk);
         }
+        self.bell.ring();
         self.used = 0;
         self.position = frame;
     }
@@ -245,10 +252,15 @@ impl ClipStream {
             if self.used == chunk.frames {
                 let chunk = self.current.take().expect("set above");
                 let _ = self.spent.push(chunk);
+                self.returned = true;
                 self.used = 0;
             }
         }
         self.position += done as u64;
+        if self.returned {
+            self.returned = false;
+            self.bell.ring();
+        }
         if done < want {
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
         }
@@ -264,57 +276,86 @@ impl ClipStream {
                 return true;
             }
             let _ = self.spent.push(chunk);
+            self.returned = true;
         }
         false
     }
 }
 
-fn run(mut source: Source, mut spent: Consumer<Chunk>, mut full: Producer<Chunk>, shared: &Shared) {
-    let mut generation = 0;
-    // The chunk being filled when the queue of spent ones ran dry.
-    let mut spare: Option<Chunk> = None;
-    if source.seek(shared.target.load(Ordering::Relaxed)).is_err() {
-        shared.failed.store(true, Ordering::Relaxed);
-        return;
+/// The worker's task: keeps the queue of full chunks topped up.
+struct Worker {
+    source: Source,
+    spent: Consumer<Chunk>,
+    full: Producer<Chunk>,
+    shared: Arc<Shared>,
+    generation: u64,
+    /// The chunk being filled when the queue of spent ones ran dry.
+    spare: Option<Chunk>,
+    started: bool,
+}
+
+impl Worker {
+    fn fail(&self) -> Next {
+        self.shared.failed.store(true, Ordering::Relaxed);
+        Next::Done
     }
-    while !shared.stop.load(Ordering::Acquire) {
-        let wanted = shared.generation.load(Ordering::Acquire);
-        if wanted != generation {
-            generation = wanted;
-            let target = shared.target.load(Ordering::Relaxed);
-            if source.seek(target).is_err() {
-                shared.failed.store(true, Ordering::Relaxed);
-                return;
+}
+
+/// Chunks made in one run, so a long refill doesn't keep the other streams
+/// waiting for a thread.
+const CHUNKS_PER_RUN: usize = 4;
+
+impl Task for Worker {
+    fn run(&mut self) -> Next {
+        let shared = &self.shared;
+        if !self.started {
+            self.started = true;
+            if self
+                .source
+                .seek(shared.target.load(Ordering::Relaxed))
+                .is_err()
+            {
+                return self.fail();
             }
         }
-        if source.done() {
-            thread::sleep(IDLE);
-            continue;
-        }
-        let mut chunk = match spare.take().map(Ok).unwrap_or_else(|| spent.pop()) {
-            Ok(chunk) => chunk,
-            Err(_) => {
-                thread::sleep(IDLE);
+        for _ in 0..CHUNKS_PER_RUN {
+            let wanted = shared.generation.load(Ordering::Acquire);
+            if wanted != self.generation {
+                self.generation = wanted;
+                let target = shared.target.load(Ordering::Relaxed);
+                if self.source.seek(target).is_err() {
+                    return self.fail();
+                }
+            }
+            if self.source.done() {
+                return Next::Idle;
+            }
+            let mut chunk = match self
+                .spare
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| self.spent.pop())
+            {
+                Ok(chunk) => chunk,
+                // Rung again when the audio thread returns a chunk.
+                Err(_) => return Next::Idle,
+            };
+            chunk.start = self.source.position();
+            match self.source.fill(&mut chunk.data) {
+                Ok(frames) => {
+                    chunk.frames = frames;
+                    shared.end.fetch_min(self.source.total, Ordering::Relaxed);
+                }
+                Err(_) => return self.fail(),
+            }
+            if chunk.frames == 0 {
+                self.spare = Some(chunk);
                 continue;
             }
-        };
-        chunk.start = source.position();
-        match source.fill(&mut chunk.data) {
-            Ok(frames) => {
-                chunk.frames = frames;
-                shared.end.fetch_min(source.total, Ordering::Relaxed);
-            }
-            Err(_) => {
-                shared.failed.store(true, Ordering::Relaxed);
-                return;
-            }
+            // The queue holds as many slots as chunks exist, so this can't fail.
+            let _ = self.full.push(chunk);
         }
-        if chunk.frames == 0 {
-            spare = Some(chunk);
-            continue;
-        }
-        // The queue holds as many slots as chunks exist, so this can't fail.
-        let _ = full.push(chunk);
+        Next::Again
     }
 }
 
@@ -359,18 +400,11 @@ impl Source {
         let resampler = if (ratio - 1.0).abs() < 1e-12 {
             None
         } else {
-            let params = SincInterpolationParameters {
-                sinc_len: SINC_LEN,
-                f_cutoff: Some(0.95),
-                interpolation: SincInterpolationType::Cubic,
-                oversampling_factor: 128,
-                window: WindowFunction::BlackmanHarris2,
-            };
             Some(
                 Async::<f32>::new_sinc(
                     ratio,
                     1.1,
-                    &params,
+                    &SINC_PARAMETERS,
                     RESAMPLE_IN,
                     channels,
                     FixedAsync::Input,
@@ -578,6 +612,8 @@ impl Source {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
 
     use super::*;
     use crate::write_wav;
@@ -794,5 +830,34 @@ mod tests {
             open_stream(spec(&temp("stream-nothing.wav"), 48_000, 0, 10)),
             Err(DecodeError::Io(_))
         ));
+    }
+
+    #[test]
+    fn an_idle_stream_doesnt_wake_its_worker() {
+        let (path, _) = ramp_file("idle.wav", 200_000, 48_000);
+        let (mut stream, worker) = open_stream(spec(&path, 48_000, 0, 200_000)).unwrap();
+        // Let the ring fill.
+        thread::sleep(Duration::from_millis(300));
+        let before = worker.runs();
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            worker.runs() - before <= 1,
+            "{} runs",
+            worker.runs() - before
+        );
+
+        // Reading a chunk makes one run, which refills it.
+        let before = worker.runs();
+        let mut out = vec![0.0; CHUNK_FRAMES * 2];
+        assert_eq!(stream.read(&mut out), CHUNK_FRAMES);
+        let started = std::time::Instant::now();
+        while worker.runs() == before && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(worker.runs() - before, 1);
+        // The ring is full again: the next read finds all its chunks.
+        let mut out = vec![0.0; CHUNK_FRAMES * 4 * 2];
+        assert_eq!(stream.read(&mut out), CHUNK_FRAMES * 4);
     }
 }

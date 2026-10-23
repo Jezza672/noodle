@@ -2,8 +2,8 @@
 //! of the subgraph that made it. A frozen node or group, and an offline node,
 //! play this way.
 //!
-//! Live, the audio comes off the disk through a worker thread that keeps a
-//! few chunks ready ahead of the playhead, in the manner of
+//! Live, the audio comes off the disk through a worker, a task on
+//! `noodle_io::pool::io`, that keeps a few chunks ready ahead of the playhead, in the manner of
 //! `noodle_io::ClipStream`: full chunks go to the audio thread through one
 //! lock-free queue and spent ones come back through another, so the audio
 //! side never allocates, locks or touches the disk. The worker follows the
@@ -14,14 +14,13 @@
 //! itself in `process`, so the output doesn't depend on timing.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use noodle_core::{CacheKey, Config, Value};
 use noodle_engine::{
     Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Replacement, Setup, Shape,
 };
+use noodle_io::pool::{self, Bell, Handle, Next, Task};
 use noodle_io::{CacheStore, CachedAudio};
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -35,7 +34,8 @@ const CHUNKS: usize = 16;
 /// a render swapped in mid-playback has its first blocks ready: about 0.34 s
 /// at 48 kHz, longer than the worker needs to catch up.
 const PRELOAD: u64 = 4;
-const IDLE: Duration = Duration::from_millis(2);
+/// Chunks made in one run, so a refill doesn't hold a pool thread for long.
+const CHUNKS_PER_RUN: usize = 4;
 
 static INFO: NodeInfo = NodeInfo {
     id: CACHED_ID,
@@ -206,7 +206,6 @@ struct Shared {
     /// Bumped by the audio thread to restart the worker, after `target`.
     generation: AtomicU64,
     target: AtomicU64,
-    stop: AtomicBool,
     /// The loop in frames as of the last block; an end of 0 means none.
     loop_start: AtomicU64,
     loop_end: AtomicU64,
@@ -227,6 +226,12 @@ struct Streaming {
     shared: Arc<Shared>,
     full: Consumer<Chunk>,
     spent: Producer<Chunk>,
+    /// Owns the worker's task; dropping it stops the worker.
+    _handle: Handle,
+    /// Rung when a chunk goes back to the worker, or it must seek.
+    bell: Bell,
+    /// A chunk went back since the bell was last rung.
+    returned: bool,
     generation: u64,
     /// The chunk the worker delivers next, as far as this side can tell.
     expected: u64,
@@ -254,7 +259,6 @@ impl Streaming {
         let shared = Arc::new(Shared {
             generation: AtomicU64::new(0),
             target: AtomicU64::new(first),
-            stop: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
         });
@@ -266,17 +270,18 @@ impl Streaming {
             full: full_tx,
             scratch: vec![0.0; CHUNK * lanes],
             next: first,
+            generation: 0,
         };
         worker.preload(PRELOAD);
-        thread::Builder::new()
-            .name("noodle-cached".into())
-            .spawn(move || worker.run())
-            .expect("can't start a thread");
+        let handle = pool::io().spawn(Fill(worker));
         Self {
             lanes,
             shared,
             full: full_rx,
             spent: spent_tx,
+            bell: handle.bell(),
+            _handle: handle,
+            returned: false,
             generation: 0,
             expected: first,
             current: None,
@@ -315,6 +320,10 @@ impl Streaming {
             }
             done += n;
         }
+        if self.returned {
+            self.returned = false;
+            self.bell.ring();
+        }
     }
 
     /// Makes the chunk `index` current, if it is ready. If not, makes sure it
@@ -329,6 +338,7 @@ impl Streaming {
         }
         if let Some(chunk) = self.current.take() {
             let _ = self.spent.push(chunk);
+            self.returned = true;
         }
         let (start, end) = self.loop_range;
         loop {
@@ -367,6 +377,7 @@ impl Streaming {
     fn recycle(&mut self) {
         if let Ok(chunk) = self.full.pop() {
             let _ = self.spent.push(chunk);
+            self.returned = true;
         }
     }
 
@@ -377,12 +388,7 @@ impl Streaming {
         self.shared
             .generation
             .store(self.generation, Ordering::Release);
-    }
-}
-
-impl Drop for Streaming {
-    fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
+        self.bell.ring();
     }
 }
 
@@ -395,6 +401,16 @@ struct Worker {
     scratch: Vec<f32>,
     /// The chunk to make next.
     next: u64,
+    /// The seek the worker last followed.
+    generation: u64,
+}
+
+struct Fill(Worker);
+
+impl Task for Fill {
+    fn run(&mut self) -> Next {
+        self.0.make()
+    }
 }
 
 impl Worker {
@@ -412,29 +428,28 @@ impl Worker {
         }
     }
 
-    fn run(mut self) {
-        let mut generation = 0;
-        let mut next = self.next;
-        while !self.shared.stop.load(Ordering::Relaxed) {
+    fn make(&mut self) -> Next {
+        for _ in 0..CHUNKS_PER_RUN {
             let latest = self.shared.generation.load(Ordering::Acquire);
-            if latest != generation {
-                generation = latest;
-                next = self.shared.target.load(Ordering::Acquire);
+            if latest != self.generation {
+                self.generation = latest;
+                self.next = self.shared.target.load(Ordering::Acquire);
             }
+            // Rung again when the audio thread returns a chunk.
             let Ok(mut chunk) = self.spent.pop() else {
-                thread::sleep(IDLE);
-                continue;
+                return Next::Idle;
             };
-            self.fill(&mut chunk, next);
-            chunk.generation = generation;
-            chunk.index = next;
+            self.fill(&mut chunk, self.next);
+            chunk.generation = self.generation;
+            chunk.index = self.next;
             let (start, end) = (
                 self.shared.loop_start.load(Ordering::Relaxed),
                 self.shared.loop_end.load(Ordering::Relaxed),
             );
-            next = next_index(next, start, end);
+            self.next = next_index(self.next, start, end);
             let _ = self.full.push(chunk);
         }
+        Next::Again
     }
 
     /// Reads chunk `index` and lays it out lane by lane. Whatever the entry
@@ -462,6 +477,7 @@ mod tests {
     use super::*;
     use noodle_core::KeyBuilder;
     use noodle_engine::testing::Harness;
+    use std::time::Duration;
 
     const RATE: f32 = 48_000.0;
 

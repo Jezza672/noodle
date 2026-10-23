@@ -794,6 +794,9 @@ impl ClipFeeds {
         self.inner
             .preview
             .store(on, std::sync::atomic::Ordering::Relaxed);
+        for shared in self.inner.hubs.lock().expect("feeds lock").values() {
+            shared.ring();
+        }
     }
 
     /// Whether the preview is on (see [`set_preview`](Self::set_preview)).
@@ -801,6 +804,14 @@ impl ClipFeeds {
         self.inner
             .preview
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many times the background tasks of the track input `node` (the one
+    /// that opens streams, and the one that stretches clips) have run since it
+    /// was built. They sleep until there is work, so this stays put while
+    /// nothing plays. For tests.
+    pub fn background_runs(&self, node: NodeId) -> u64 {
+        self.shared(node).runs()
     }
 
     /// How many nodes the feeds are keeping a schedule for.
