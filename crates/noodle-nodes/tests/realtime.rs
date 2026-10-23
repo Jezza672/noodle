@@ -1776,3 +1776,51 @@ fn a_groups_output_reports_its_level() {
     let levels = s.telemetry.meter_reader().meter(port).expect("metered");
     assert!(levels[0].peak > 0.5, "{levels:?}");
 }
+
+#[test]
+fn random_select_never_allocates_through_triggers_reseeds_and_resizes() {
+    // Three oscillators go through a Random Select that a fast clock
+    // triggers (zero-crossing switching, avoiding repeats), reseeded and
+    // resized mid-run. (The note kind is covered by its unit tests.)
+    let mut s = Session::new();
+    let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 6.0));
+    let select = s.add(
+        Node::new("noodle.util.randselect")
+            .with_config(Config::new().with("inputs", Value::Int(3)))
+            .with_param("switch", 1.0)
+            .with_param("avoid_repeat", 1.0),
+    );
+    for (i, hz) in [220.0, 330.0, 440.0].into_iter().enumerate() {
+        let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        s.wire(osc, "out", select, &format!("in{}", i + 1));
+    }
+    s.wire(clock, "out", select, "trigger");
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(select, "out", output, "in");
+
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        s.controller.set_param(select, "seed", round as f32);
+        if round == 8 {
+            s.edit(Command::SetConfig {
+                node: select,
+                key: "inputs".into(),
+                value: Some(Value::Int(4)),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
+}

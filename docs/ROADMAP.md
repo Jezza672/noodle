@@ -51,4 +51,5 @@ need a person and hardware, plus a few deliberately deferred items.
   retry the saved device when it returns.
 - **VST3:** an editor window on Linux (the app makes none).
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
+- **Random Select editor behaviour** (#211): resolve the node's `kind` (signal or notes) from the first wire and grow `inputs` as you wire, as the mixer does (`spare.rs`).
 - **Flaky test** #138 stays open (no recurrence).

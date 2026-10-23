@@ -157,6 +157,16 @@ These are primitives; instruments and racks built from them are groups.
   A note goes to every output that matches (layering); note-offs and
   expression follow their note-on; other MIDI goes to all outputs. One output
   and no rest is a note filter.
+- **Random Select** (`noodle.util.randselect`, #211) routes one of `inputs`
+  inputs (config, 1 to 64) to its output and picks again, uniformly, on each
+  rising edge of `trigger`; the choice holds between triggers and starts on
+  input 1. `kind` (config) is 0 for signals or 1 for notes, since it changes the
+  ports. `avoid_repeat` never picks the input just chosen; `seed` is mixed into
+  the node's own seed, so renders repeat. Signals switch `Instant`ly or at the
+  old input's next `Zero crossing` (per voice and channel, giving up after
+  20 ms). Notes close the old input to new note-ons at the trigger and either
+  let its held notes' note-offs through (`Finish held`) or end them at the
+  trigger (`Cut held`).
 - **Dynamics** (`noodle.effect.dynamics`) is a compressor, limiter, gate or
   expander by `mode`, with a `detect` choice of input or sidechain, a
   gain-reduction output, and gain computed in the log domain with a soft knee.

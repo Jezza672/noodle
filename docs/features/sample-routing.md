@@ -22,3 +22,17 @@ Delivered. This is the record of what was planned and built; open work is in [RO
 5. **Not in scope.** The clip's warp is not carried (the window is the part of
    the file, played unwarped); the Sampler's waveform view shows its own option,
    not a wired sample.
+
+## Random Select (#211)
+
+A primitive node, `noodle.util.randselect`: one output routed from one of N inputs,
+chosen at random on each trigger. Signals or notes (config `kind`), uniform pick
+with an optional "don't repeat" and a seed, instant or zero-crossing switching
+for signals, and finish-or-cut for held notes. Design in
+[synths-and-library.md](../architecture/synths-and-library.md). Tests:
+the node's unit tests (picks, seed determinism, avoid repeat, zero crossing,
+held notes) and `realtime.rs`.
+
+Not done, in [ROADMAP.md](../ROADMAP.md): the editor does not yet set `kind`
+from the first wire (the "one universal port type until connected" behaviour)
+or grow the inputs as you wire; both are config set by hand for now.
