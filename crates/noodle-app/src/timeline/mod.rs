@@ -741,7 +741,7 @@ pub fn show(
                         && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
                     {
                         let free = ui.input(|i| i.modifiers.alt);
-                        let lane = rows.track_at(pos.y - content.top() + state.scroll_y);
+                        let lane = rows.track_at(pos.y - content.top() + scroll_y);
                         let target = tracks[lane];
                         // Dragged out of the timeline, an audio clip is carried to a
                         // Sampler or the graph, and stays where it was.
