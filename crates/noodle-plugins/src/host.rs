@@ -36,6 +36,9 @@ pub(crate) struct Flags {
     pub editor_closed: AtomicBool,
     /// The plugin asked for a call on the main thread.
     pub callback: AtomicBool,
+    /// The plugin has asked for a call at least once, so an adopted thread,
+    /// which a request from the audio thread can't wake, looks now and then.
+    pub callback_used: AtomicBool,
     /// The editor is embedded in a window of the host's, so the plugin's
     /// resize requests are the host's to carry out.
     pub embedded: AtomicBool,
@@ -93,7 +96,10 @@ impl SharedHandler<'_> for HostShared {
     fn request_restart(&self) {}
     fn request_process(&self) {}
     fn request_callback(&self) {
+        self.flags.callback_used.store(true, Ordering::Relaxed);
         self.flags.callback.store(true, Ordering::Release);
+        // May be the audio thread: a ring takes no lock and allocates nothing.
+        crate::thread::ring();
     }
 }
 
@@ -106,6 +112,7 @@ impl HostGuiImpl for HostShared {
         if self.flags.embedded.load(Ordering::Acquire) {
             let packed = (u64::from(new_size.width) << 32) | u64::from(new_size.height);
             self.flags.resize.store(packed, Ordering::Release);
+            crate::thread::ring();
         }
         Ok(())
     }
@@ -125,6 +132,7 @@ impl HostGuiImpl for HostShared {
     fn closed(&self, _was_destroyed: bool) {
         self.flags.editor_open.store(false, Ordering::Release);
         self.flags.editor_closed.store(true, Ordering::Release);
+        crate::thread::ring();
     }
 }
 

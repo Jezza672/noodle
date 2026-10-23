@@ -29,6 +29,7 @@ use clack_extensions::latency::PluginLatency;
 use clack_extensions::params::PluginParams;
 use clack_extensions::timer::PluginTimer;
 use clack_host::prelude::*;
+use noodle_engine::Doorbell;
 
 use crate::editor::Captured;
 use crate::host::{
@@ -37,8 +38,18 @@ use crate::host::{
 };
 use crate::window::{self, EditorWindow, ParentWindow};
 
-/// How long the thread waits for a command when no timer is due sooner.
+/// How long the thread waits at most while an editor is open: the window
+/// system closing or resizing it makes no sound the thread could wait on.
 const IDLE: Duration = Duration::from_millis(50);
+
+/// How long an adopted thread waits at most for a plugin that has asked for a
+/// call from the audio thread, which can't wake it (waking takes a lock).
+const CALLBACK_POLL: Duration = Duration::from_millis(250);
+
+/// Rung when something is waiting for the plugin thread: a command, or a
+/// request from a plugin (a callback, a resize, a closed editor). The thread
+/// sleeps on it with no timeout when nothing else is due.
+static BELL: Doorbell = Doorbell::new();
 
 /// How long an editor command (open, capture) may take.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -152,14 +163,30 @@ impl Executor {
         crate::vst3::gui::housekeeping();
     }
 
-    /// How long until the next timer is due (at most [`IDLE`]).
-    fn next_wake(&self) -> Duration {
+    /// How long until the thread next has something to look at without being
+    /// told, or `None` if it can sleep until rung: the next timer, [`IDLE`]
+    /// while an editor is open, and (on an adopted thread, which a request
+    /// from the audio thread can't ring) [`CALLBACK_POLL`] for plugins that
+    /// have asked for callbacks.
+    fn next_wake(&self, adopted: bool) -> Option<Duration> {
         let now = Instant::now();
-        self.live
-            .values()
-            .filter_map(|l| l.flags.next_due())
-            .min()
-            .map_or(IDLE, |due| due.saturating_duration_since(now).min(IDLE))
+        let mut wake: Option<Duration> = None;
+        let mut within = |d: Duration| wake = Some(wake.map_or(d, |w| w.min(d)));
+        for live in self.live.values() {
+            if let Some(due) = live.flags.next_due() {
+                within(due.saturating_duration_since(now));
+            }
+            if live.gui {
+                within(IDLE);
+            }
+            if adopted && live.flags.callback_used.load(Ordering::Relaxed) {
+                within(CALLBACK_POLL);
+            }
+        }
+        if crate::vst3::gui::any() {
+            within(IDLE);
+        }
+        wake
     }
 }
 
@@ -225,8 +252,7 @@ pub fn pump() -> Option<Duration> {
             adopted.executor.handle(command);
         }
         adopted.executor.housekeeping();
-        (!adopted.executor.live.is_empty() || crate::vst3::gui::any())
-            .then(|| adopted.executor.next_wake())
+        adopted.executor.next_wake(true)
     })
 }
 
@@ -277,6 +303,7 @@ fn send(command: Command) -> Result<(), HostError> {
     };
     let queue = queue();
     queue.sender.send(command).map_err(|_| gone())?;
+    BELL.ring();
     if let Some(wake) = &queue.wake {
         wake();
     }
@@ -379,15 +406,31 @@ pub(crate) fn close_editor(key: u64) {
     let _ = send(Command::CloseEditor { key });
 }
 
+/// Tells the plugin thread something wants it. Real-time safe: a plugin may
+/// call the host from the audio thread.
+pub(crate) fn ring() {
+    BELL.ring();
+}
+
+/// How many times the plugin thread has woken, for tests that check it sleeps
+/// while idle.
+pub fn thread_wakes() -> u64 {
+    BELL.wakes()
+}
+
 fn run(receiver: Receiver<Command>) {
     let mut executor = Executor::default();
     loop {
-        match receiver.recv_timeout(executor.next_wake()) {
-            Ok(command) => executor.handle(command),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+        loop {
+            match receiver.try_recv() {
+                Ok(command) => executor.handle(command),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return,
+            }
         }
         executor.housekeeping();
+        // Asleep until rung unless a timer or an open editor needs a look.
+        BELL.wait(executor.next_wake(false));
     }
 }
 
