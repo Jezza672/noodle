@@ -7,7 +7,7 @@
 //! the engine's parameter cells.
 
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,7 +18,6 @@ mod stems;
 pub use export::ExportChoice;
 pub use library::LibraryEdit;
 
-use crate::filewatch::FileWatch;
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
 use noodle_engine::{
@@ -171,6 +170,7 @@ impl Nodes {
             .name("noodle-plugin-scan".into())
             .spawn(move || {
                 let _ = sender.send(noodle_plugins::discover());
+                noodle_engine::wake::wake();
             });
         nodes.plugin_scan = spawned.ok().map(|_| receiver);
         nodes
@@ -184,6 +184,15 @@ impl Nodes {
 
 /// How often to look for the chosen MIDI port coming or going.
 pub const MIDI_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often the stream's health is looked at while the window is idle.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often sandboxed plugin hosts are looked at.
+const HOST_WATCH_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A frame at about 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
 
 type ListMidi = Box<dyn FnMut() -> Result<Vec<String>, noodle_io::MidiError>>;
 type OpenMidi =
@@ -246,7 +255,9 @@ pub struct Session {
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
     midi_watch: MidiWatch,
     /// Watches the audio files clips play for being replaced on disk.
-    file_watch: FileWatch,
+    /// The stamps of the clips' files as of the last look, to notice a file
+    /// that was replaced (see [`noodle_io::AudioFiles`]).
+    file_stamps: HashMap<PathBuf, Option<noodle_io::FileStamp>>,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
     /// The renders behind frozen nodes and offline nodes.
@@ -258,10 +269,9 @@ pub struct Session {
     loop_open: bool,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
-    /// The project as it was last saved or loaded, to tell whether it has
-    /// unsaved changes.
-    saved: Project,
-    dirty: bool,
+    /// The history position when the project was last saved or loaded, to
+    /// tell whether it has unsaved changes.
+    saved_position: u64,
     /// The next ID [`Session::new_node_id`] can hand out. Views only get
     /// `&Session`, so it's a `Cell`.
     next_id: Cell<u64>,
@@ -476,7 +486,7 @@ impl Session {
             plugin_files,
         } = nodes;
         let mut session = Self {
-            saved: Project::new(),
+            saved_position: 0,
             project: Project::new(),
             history: History::new(),
             registry,
@@ -495,7 +505,7 @@ impl Session {
             samples,
             midi_connection: None,
             midi_watch: MidiWatch::default(),
-            file_watch: FileWatch::default(),
+            file_stamps: HashMap::new(),
             exporting: None,
             stems: stems::Stems::new(),
             clip_problems: Vec::new(),
@@ -503,7 +513,6 @@ impl Session {
             parked: Tick(0),
             loop_open: false,
             path: None,
-            dirty: false,
             next_id: Cell::new(0),
             next_frame_id: Cell::new(0),
             diagnostics: Vec::new(),
@@ -815,7 +824,7 @@ impl Session {
         if !self.sandbox_plugins
             || self
                 .hosts_checked
-                .is_some_and(|at| now.duration_since(at) < Duration::from_millis(500))
+                .is_some_and(|at| now.duration_since(at) < HOST_WATCH_INTERVAL)
         {
             return;
         }
@@ -866,6 +875,7 @@ impl Session {
             .name("noodle-plugin-scan".into())
             .spawn(move || {
                 let _ = sender.send(noodle_plugins::discover_with(everything));
+                noodle_engine::wake::wake();
             });
         match spawned {
             Ok(_) => self.plugin_scan = Some(receiver),
@@ -1005,12 +1015,12 @@ impl Session {
         }
     }
 
-    /// Looks about once a second at whether an audio file a clip plays has
+    /// Looks at whether an audio file a clip plays has
     /// been replaced on disk (re-exported from another program, say). If so,
     /// the clips are scheduled again so their streams read the new file, and
     /// anything frozen or offline that depends on it is keyed afresh, which
     /// renders it again.
-    fn watch_files(&mut self, now: Instant) {
+    fn watch_files(&mut self) {
         let base = self.base().to_owned();
         let files = self
             .project
@@ -1019,7 +1029,21 @@ impl Session {
                 noodle_core::ClipContent::Audio(audio) => Some(base.join(&audio.source)),
                 noodle_core::ClipContent::Midi(_) => None,
             });
-        let mut changed = self.file_watch.changed(now, files);
+        // Reads what the watcher thread last saw: no I/O here, and the
+        // watcher wakes the window when a file differs.
+        let watcher = noodle_io::AudioFiles::global();
+        let files: Vec<PathBuf> = files.collect();
+        self.file_stamps.retain(|path, _| files.contains(path));
+        let mut changed = Vec::new();
+        for path in files {
+            let stamp = watcher.stamp(&path);
+            // A file seen for the first time is only remembered.
+            if let Some(before) = self.file_stamps.insert(path.clone(), stamp)
+                && before != stamp
+            {
+                changed.push(path);
+            }
+        }
         if changed.is_empty() {
             return;
         }
@@ -1070,7 +1094,7 @@ impl Session {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.history.position() != self.saved_position
     }
 
     /// Problems found compiling the project, for the views to show where they
@@ -1187,7 +1211,6 @@ impl Session {
                 self.recompile_with(false);
             }
         }
-        self.update_dirty();
     }
 
     pub fn undo(&mut self) {
@@ -1208,7 +1231,6 @@ impl Session {
             // engine, so undoing a parameter change reaches the audio.
             Ok(true) => {
                 self.recompile();
-                self.update_dirty();
             }
             Ok(false) => {}
             Err(error) => self.message = Some(format!("Couldn't {name}: {error}")),
@@ -1232,8 +1254,7 @@ impl Session {
                 self.path = Some(path.to_owned());
                 self.save_samples();
                 self.feed_clips();
-                self.saved = self.project.clone();
-                self.dirty = false;
+                self.saved_position = self.history.position();
                 self.message = Some(format!("Saved {}", path.display()));
                 true
             }
@@ -1306,11 +1327,10 @@ impl Session {
         for track in std::mem::take(&mut self.armed_midi) {
             self.clips.set_monitoring(track, false);
         }
-        self.saved = project.clone();
         self.project = project;
         self.history = History::new();
+        self.saved_position = self.history.position();
         self.path = path;
-        self.dirty = false;
         self.plugin_editors.clear();
         self.message = None;
         self.parked = Tick(0);
@@ -1577,6 +1597,44 @@ impl Session {
         Tick(tick.round() as i64)
     }
 
+    /// When [`maintain`](Self::maintain) next has something to do that nothing
+    /// will wake the window for, or `None` if it can sleep until something
+    /// does. Finished jobs and scans wake it themselves
+    /// (see [`noodle_engine::wake`]); this covers what has to be looked at:
+    /// the stream's health, devices coming and going, and work waiting on a
+    /// timer.
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        let mut soonest: Option<Instant> = None;
+        let mut at = |when: Instant| {
+            soonest = Some(soonest.map_or(when, |s| s.min(when)));
+        };
+        let frame = now + FRAME;
+        if self.recording.is_some() {
+            // The bus holds only so many messages.
+            at(frame);
+        }
+        if let Some(audio) = &self.audio {
+            if audio.controller.has_pending() || audio.controller.transport().is_playing() {
+                // A plan waiting for room, or the playhead moving.
+                at(frame);
+            }
+            at(now + HEALTH_INTERVAL);
+        }
+        if self.watching_midi() {
+            at(self
+                .midi_watch
+                .checked
+                .map_or(now, |c| c + MIDI_WATCH_INTERVAL));
+        }
+        if let Some(due) = self.freezing.due_at() {
+            at(due);
+        }
+        if self.sandbox_plugins {
+            at(now + HOST_WATCH_INTERVAL);
+        }
+        soonest.map(|s| s.max(now))
+    }
+
     /// Housekeeping to do every frame: frees plans the audio thread is done
     /// with, and checks the device's health.
     pub fn maintain(&mut self) {
@@ -1597,7 +1655,7 @@ impl Session {
             }
         }
         self.watch_midi(Instant::now());
-        self.watch_files(Instant::now());
+        self.watch_files();
         self.poll_export();
         self.poll_split();
         self.poll_plugin_scan();
@@ -2246,10 +2304,6 @@ impl Session {
             self.diagnostics.extend(plan.diagnostics);
         }
         self.feed_clips();
-    }
-
-    fn update_dirty(&mut self) {
-        self.dirty = self.project != self.saved;
     }
 }
 
@@ -4294,6 +4348,27 @@ mod tests {
     }
 
     use crate::testkit::virtual_audio as virtual_config;
+
+    #[test]
+    fn an_idle_session_asks_for_no_wake_up_and_a_busy_one_for_the_next_look() {
+        let mut session = Session::new(Nodes::all());
+        let now = Instant::now();
+        assert_eq!(session.next_deadline(now), None, "nothing to look at");
+
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        let idle = session.next_deadline(now).expect("health is checked");
+        assert!(
+            idle - now >= Duration::from_millis(500),
+            "idle health checks are not frame-rate: {:?}",
+            idle - now
+        );
+
+        session.set_transport_running(true);
+        let playing = session.next_deadline(now).unwrap();
+        assert!(playing - now <= Duration::from_millis(20), "the playhead");
+    }
 
     #[test]
     fn the_engine_runs_without_the_transport_and_stop_leaves_it_running() {

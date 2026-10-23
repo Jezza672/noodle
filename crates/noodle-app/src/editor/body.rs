@@ -122,6 +122,9 @@ pub struct Bodies {
     spectra: HashMap<NodeId, SpectrumTrace>,
     /// The engine's sample rate, for the spectra.
     sample_rate: f32,
+    /// Every wired parameter, for the project revision and node types it was
+    /// worked out at.
+    wired: ((u64, u64), std::collections::HashSet<(NodeId, String)>),
     /// What each wired parameter has been doing, by (node, port key).
     params: HashMap<(NodeId, String), ParamWindow>,
     /// [`Telemetry::activity`] as of the last update.
@@ -265,23 +268,28 @@ impl Bodies {
         // read, so this is the only reader: the properties panel asks `Bodies`.
         self.clock += dt;
         let now = self.clock;
-        let wired: std::collections::HashSet<(NodeId, String)> = graph
-            .connections()
-            .map(|c| (c.to.node, c.to.port))
-            .collect();
-        // A graph reports what it declares whether or not anything is wired
-        // (a Dynamics node's level and reduction, for the dot on its graph).
-        let mut wired = wired;
-        for (id, node) in graph.nodes() {
-            if let NodeView::Graph(kind) = view_of(registry, node) {
-                wired.extend(kind.reports().iter().map(|&key| (id, key.to_owned())));
+        let key = (project.revision(), registry.generation());
+        if self.wired.0 != key {
+            let mut wired: std::collections::HashSet<(NodeId, String)> = graph
+                .connections()
+                .map(|c| (c.to.node, c.to.port))
+                .collect();
+            // A graph reports what it declares whether or not anything is
+            // wired (a Dynamics node's level and reduction, for the dot on
+            // its graph).
+            for (id, node) in graph.nodes() {
+                if let NodeView::Graph(kind) = view_of(registry, node) {
+                    wired.extend(kind.reports().iter().map(|&key| (id, key.to_owned())));
+                }
             }
+            self.wired = (key, wired);
         }
+        let wired = &self.wired.1;
         self.params.retain(|key, _| wired.contains(key));
         for (node, key) in wired {
-            if let Some(reading) = telemetry.read_param(node, &key) {
+            if let Some(reading) = telemetry.read_param(*node, key) {
                 self.params
-                    .entry((node, key))
+                    .entry((*node, key.clone()))
                     .or_default()
                     .push(now, reading);
             }

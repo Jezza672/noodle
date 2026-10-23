@@ -26,8 +26,13 @@ pub struct Doorbell {
 }
 
 impl Doorbell {
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            rung: AtomicBool::new(false),
+            sleeping: AtomicBool::new(false),
+            waiter: OnceLock::new(),
+            wakes: AtomicU64::new(0),
+        }
     }
 
     /// Tells the waiter there is work. Real-time safe: no allocation, no lock,

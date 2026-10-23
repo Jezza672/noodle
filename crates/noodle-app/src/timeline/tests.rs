@@ -435,7 +435,7 @@ fn a_clip_gets_its_waveform_once_the_file_is_read() {
 #[test]
 fn a_file_that_turns_up_later_replaces_the_missing_mark() {
     let (mut h, _) = rig();
-    h.state_mut().timeline.sources.retry_at_once();
+    h.state_mut().timeline.sources.watch_quickly();
     let session = &mut h.state_mut().session;
     let id = session.project().next_clip_id();
     session.edit([Edit::Apply(Command::AddClip {
@@ -480,7 +480,7 @@ fn a_waveform_is_only_worked_out_again_when_the_view_changes() {
 fn a_file_that_changes_on_disk_is_read_again() {
     let (mut h, id) = rig();
     wait_for_waveforms(&mut h, 1);
-    h.state_mut().timeline.sources.retry_at_once();
+    h.state_mut().timeline.sources.watch_quickly();
     let before = rect(&h, id).width();
     // Re-exported at half the rate: the same frames take twice as long.
     let dir = h.state().session.directory().unwrap().to_owned();
@@ -493,6 +493,8 @@ fn a_file_that_changes_on_disk_is_read_again() {
         .unwrap()
         .set_modified(later)
         .unwrap();
+    // The watcher looks every few milliseconds.
+    std::thread::sleep(std::time::Duration::from_millis(100));
     h.run_steps(3);
     assert_eq!(rect(&h, id).width(), before * 2.0);
 }

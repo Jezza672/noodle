@@ -322,10 +322,6 @@ impl App {
         // The monitor menu lists devices from the Outputs view's listing.
         self.outputs
             .ensure_listed(self.session.audio_config().host.as_deref());
-        if self.session.watching_midi() {
-            ui.ctx()
-                .request_repaint_after(crate::session::MIDI_WATCH_INTERVAL);
-        }
         // Before the shortcuts, so the note keys are not also delete and the
         // like.
         self.keyboard_midi(ui.ctx());
@@ -557,16 +553,12 @@ impl App {
         self.dragging = dragging;
         crate::carry::expire(ui.ctx());
         self.update_title(ui.ctx());
-        if self.session.engine_running() {
-            // Keeps health checks and plan freeing going while idle, and the
-            // playhead moving at about 60 frames a second while it does.
-            let wait = if self.session.transport_running() {
-                16
-            } else {
-                100
-            };
+        // Sleep until something has news (jobs and scans wake the window) or
+        // the session has something to look at again.
+        let now = std::time::Instant::now();
+        if let Some(deadline) = self.session.next_deadline(now) {
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(wait));
+                .request_repaint_after(deadline.saturating_duration_since(now));
         }
         if let Some(action) = self.discarding.take() {
             self.run(ui.ctx(), action);

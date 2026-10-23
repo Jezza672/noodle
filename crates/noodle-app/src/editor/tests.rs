@@ -2980,3 +2980,28 @@ fn a_group_with_no_template_has_no_update_item() {
     h.get_by_label("Save group to library...");
     assert!(h.query_by_label_contains("Update from").is_none());
 }
+
+#[test]
+fn the_scene_is_built_again_only_when_the_project_changes() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine"));
+    h.run();
+    let cached = |h: &H| h.state().editor.scene_cache.as_ref().unwrap().1.clone();
+    let first = cached(&h);
+    h.run();
+    h.run();
+    assert!(
+        std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        "no edit, so the same scene"
+    );
+    h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+        node: sine,
+        key: "frequency".into(),
+        value: Some(880.0),
+    })]);
+    h.run();
+    assert!(
+        !std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        "an edit builds it again"
+    );
+}
