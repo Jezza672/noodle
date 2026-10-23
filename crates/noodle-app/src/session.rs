@@ -258,10 +258,9 @@ pub struct Session {
     loop_open: bool,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
-    /// The project as it was last saved or loaded, to tell whether it has
-    /// unsaved changes.
-    saved: Project,
-    dirty: bool,
+    /// The history position when the project was last saved or loaded, to
+    /// tell whether it has unsaved changes.
+    saved_position: u64,
     /// The next ID [`Session::new_node_id`] can hand out. Views only get
     /// `&Session`, so it's a `Cell`.
     next_id: Cell<u64>,
@@ -476,7 +475,7 @@ impl Session {
             plugin_files,
         } = nodes;
         let mut session = Self {
-            saved: Project::new(),
+            saved_position: 0,
             project: Project::new(),
             history: History::new(),
             registry,
@@ -503,7 +502,6 @@ impl Session {
             parked: Tick(0),
             loop_open: false,
             path: None,
-            dirty: false,
             next_id: Cell::new(0),
             next_frame_id: Cell::new(0),
             diagnostics: Vec::new(),
@@ -1070,7 +1068,7 @@ impl Session {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.history.position() != self.saved_position
     }
 
     /// Problems found compiling the project, for the views to show where they
@@ -1187,7 +1185,6 @@ impl Session {
                 self.recompile_with(false);
             }
         }
-        self.update_dirty();
     }
 
     pub fn undo(&mut self) {
@@ -1208,7 +1205,6 @@ impl Session {
             // engine, so undoing a parameter change reaches the audio.
             Ok(true) => {
                 self.recompile();
-                self.update_dirty();
             }
             Ok(false) => {}
             Err(error) => self.message = Some(format!("Couldn't {name}: {error}")),
@@ -1232,8 +1228,7 @@ impl Session {
                 self.path = Some(path.to_owned());
                 self.save_samples();
                 self.feed_clips();
-                self.saved = self.project.clone();
-                self.dirty = false;
+                self.saved_position = self.history.position();
                 self.message = Some(format!("Saved {}", path.display()));
                 true
             }
@@ -1306,11 +1301,10 @@ impl Session {
         for track in std::mem::take(&mut self.armed_midi) {
             self.clips.set_monitoring(track, false);
         }
-        self.saved = project.clone();
         self.project = project;
         self.history = History::new();
+        self.saved_position = self.history.position();
         self.path = path;
-        self.dirty = false;
         self.plugin_editors.clear();
         self.message = None;
         self.parked = Tick(0);
@@ -2246,10 +2240,6 @@ impl Session {
             self.diagnostics.extend(plan.diagnostics);
         }
         self.feed_clips();
-    }
-
-    fn update_dirty(&mut self) {
-        self.dirty = self.project != self.saved;
     }
 }
 
