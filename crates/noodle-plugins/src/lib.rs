@@ -12,6 +12,7 @@
 //!   playback.
 
 mod au;
+mod bridge;
 mod catalog;
 mod descriptor;
 mod editor;
@@ -37,8 +38,9 @@ pub fn audio_unit_files() -> Vec<std::path::PathBuf> {
     au::component_files()
 }
 
+pub use bridge::PARAM_STEP;
 pub use host::{HostError, MAX_PARAMS, capture_state, describe_file};
-pub use node::{PARAM_STEP, PluginNodeType};
+pub use node::PluginNodeType;
 pub use sandbox::{
     HOST_ARG, HOST_PUMPED_ARG, SandboxCommand, SandboxStatus, host_main, sandbox_enabled,
     sandbox_status, set_sandbox,

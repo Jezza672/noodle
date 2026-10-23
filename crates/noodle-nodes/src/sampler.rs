@@ -1223,8 +1223,11 @@ mod tests {
         let quieter = with(&config, GAIN_ENV_KEY, "0:-20,1000000:-20".to_owned());
         sampler.retune(noodle_core::NodeId(0), &quieter);
         let mut blocks = 1;
-        let mut level = 1.0;
-        while level > 0.5 && blocks < 400 {
+        let mut level = 1.0f32;
+        // Wait for the gain to settle on -20 dB: the new curve arrives from
+        // another thread, then the gain slews towards it, so stopping at the
+        // first sign of change would catch it mid-slew.
+        while (level - 0.1).abs() >= 0.01 && blocks < 800 {
             std::thread::sleep(std::time::Duration::from_millis(5));
             h.run(256).unwrap();
             blocks += 1;

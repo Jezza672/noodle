@@ -37,7 +37,7 @@ mod node;
 mod plugin;
 
 #[cfg(target_os = "macos")]
-pub(crate) use node::{AuNode, load};
+pub(crate) use node::{au_node, load};
 #[cfg(target_os = "macos")]
 pub use plugin::describe_file;
 #[cfg(target_os = "macos")]
