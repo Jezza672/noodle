@@ -750,6 +750,12 @@ impl ClipFeeds {
         }
     }
 
+    /// Whether these feeds are for rendering offline (see
+    /// [`blocking`](Self::blocking)).
+    pub fn is_blocking(&self) -> bool {
+        self.inner.blocking
+    }
+
     /// Blocks where audio was missing, summed over every node.
     pub fn underruns(&self) -> u64 {
         let hubs = self.inner.hubs.lock().expect("feeds lock");
