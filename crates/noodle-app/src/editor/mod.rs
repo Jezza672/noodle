@@ -163,6 +163,7 @@ impl EditorState {
     }
 
     /// Like [`scene`](Self::scene), without remembering a new one.
+    #[cfg(test)]
     fn peek_scene(&self, project: &Project, registry: &Registry) -> Rc<Scene> {
         let key = (project.revision(), registry.generation(), self.group);
         match &self.scene_cache {
