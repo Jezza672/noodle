@@ -382,6 +382,12 @@ impl Controller {
         self.send_tempo();
     }
 
+    /// Whether a plan or tempo table is waiting for room in the queue, so
+    /// [`maintain`](Self::maintain) has to be called again soon.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some() || self.tempo_pending.is_some()
+    }
+
     fn free_returned(&mut self) {
         while let Ok(plan) = self.returned.pop() {
             drop(plan);
