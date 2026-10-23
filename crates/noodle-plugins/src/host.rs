@@ -36,6 +36,9 @@ pub(crate) struct Flags {
     pub editor_closed: AtomicBool,
     /// The plugin asked for a call on the main thread.
     pub callback: AtomicBool,
+    /// The plugin asked to be processed or flushed (a knob turned in its
+    /// editor while it sleeps): the audio thread wakes it for its next block.
+    pub process_requested: AtomicBool,
     /// The editor is embedded in a window of the host's, so the plugin's
     /// resize requests are the host's to carry out.
     pub embedded: AtomicBool,
@@ -91,7 +94,9 @@ impl HostShared {
 
 impl SharedHandler<'_> for HostShared {
     fn request_restart(&self) {}
-    fn request_process(&self) {}
+    fn request_process(&self) {
+        self.flags.process_requested.store(true, Ordering::Release);
+    }
     fn request_callback(&self) {
         self.flags.callback.store(true, Ordering::Release);
     }
@@ -130,8 +135,10 @@ impl HostGuiImpl for HostShared {
 
 impl HostParamsImplShared for HostShared {
     // Parameter changes made in the editor reach the audio thread through the
-    // plugin itself; the host has nothing to flush.
-    fn request_flush(&self) {}
+    // plugin itself; the host only has to wake the plugin if it sleeps.
+    fn request_flush(&self) {
+        self.flags.process_requested.store(true, Ordering::Release);
+    }
 }
 
 pub(crate) struct HostMain<'a> {

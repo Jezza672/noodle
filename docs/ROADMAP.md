@@ -10,6 +10,11 @@ need a person and hardware, plus a few deliberately deferred items.
 
 ## Owed: needs a person on real hardware
 
+- **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
+  instrument and an effect play, go quiet when idle (the unit sets
+  `OutputIsSilence`) and wake on a note; `cargo test -p noodle-plugins --test
+  au --test au_realtime` on macOS.
+
 - **Mac listening checks** for M0 to M2: a short `noodle play`, plus the batched
   macOS tests on the latest main. Never produce real audio there without asking.
 - **Real MIDI hardware** (M3): a keyboard playing a polyphonic synth; device input
@@ -50,6 +55,9 @@ need a person and hardware, plus a few deliberately deferred items.
 - **Virtual output:** remember the live-monitoring toggle between launches and
   retry the saved device when it returns.
 - **VST3:** an editor window on Linux (the app makes none).
+- **Plugin editor keeps its plugin running:** a plugin nothing listens to no
+  longer runs, so its editor's meters freeze. `always_runs` is per node type;
+  true-only-while-the-editor-is-open needs it to be per instance.
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
 - **Beat view gain envelope.** The beat view draws no gain envelope (clip or
   sample).

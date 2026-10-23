@@ -97,3 +97,30 @@ pub fn vst3_node_type(catalog: &Catalog) -> &PluginNodeType {
         .find(|t| t.descriptor().name == "Noodle Test VST3")
         .expect("test VST3 plugin in catalog")
 }
+
+/// The VST3 test plugin's library inside its bundle (the file the host loads,
+/// so its counters are the ones the host's calls move).
+pub fn vst3_library() -> PathBuf {
+    let bundle = vst3_path();
+    let (folder, name) = if cfg!(target_os = "macos") {
+        ("MacOS", "NoodleTest")
+    } else if cfg!(windows) {
+        ("x86_64-win", "NoodleTest.vst3")
+    } else {
+        ("x86_64-linux", "NoodleTest.so")
+    };
+    bundle.join("Contents").join(folder).join(name)
+}
+
+/// How many times the host has called `process` on the test plugin in
+/// `library`, which loading again shares with the host's copy.
+pub fn process_calls(library: &std::path::Path) -> u64 {
+    // SAFETY: the test plugins export this plain function.
+    unsafe {
+        let library = libloading::Library::new(library).expect("load the plugin");
+        let calls: libloading::Symbol<unsafe extern "C" fn() -> u64> = library
+            .get(b"noodle_test_process_calls")
+            .expect("the counter");
+        calls()
+    }
+}

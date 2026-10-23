@@ -1,11 +1,8 @@
-//! The audio side of an AU node: the buffers, parameter changes and MIDI of
-//! each block, and the calls that make the unit render.
-//!
-//! Like the CLAP and VST3 nodes, it runs a block in chunks of at most
-//! `max_frames`, samples wired parameters every [`PARAM_STEP`] frames, and
-//! merges every note input into one time-ordered stream. An AU takes
-//! parameter changes and MIDI as calls made just before a render, each with
-//! a sample offset into that render.
+//! The AU half of a plugin node: how parameter changes, MIDI, the transport
+//! and the audio are handed to the unit, and the calls that make it render
+//! (see [`crate::bridge`] for the rest). An AU takes parameter changes and MIDI
+//! as calls made just before a render, each with a sample offset into that
+//! render.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -16,35 +13,14 @@ use objc2_audio_toolbox::{
 };
 use objc2_core_audio_types::{AudioBufferList, AudioTimeStamp, AudioTimeStampFlags};
 
-use noodle_engine::{Context, EventKind, Io, Node};
+use noodle_engine::{Event, EventKind};
 
+use crate::bridge::{Bridge, Buffers, Format, ParamSlot, Position, Status};
 use crate::descriptor::{Descriptor, ParamDesc};
-use crate::node::{PARAM_STEP, bar_start, param_range};
+use crate::node::param_range;
 
 use super::midi_message;
 use super::plugin::{BufferList, Loaded, Unit};
-
-/// Notes remembered so a note-off can say which key it is for.
-const MAX_NOTES: usize = 256;
-
-struct Slot {
-    id: AudioUnitParameterID,
-    /// The input's position in the layout.
-    input: usize,
-    min: f32,
-    max: f32,
-    stepped: bool,
-    /// The last value sent (the default until one is), so a port nobody
-    /// touched leaves the unit's own, or restored, value alone.
-    last: f32,
-}
-
-struct NoteKey {
-    port: u16,
-    note: u32,
-    channel: u8,
-    key: u8,
-}
 
 /// What the unit's input callbacks read: one list of channel buffers per
 /// input bus, owned by the node and filled before each render.
@@ -103,25 +79,6 @@ unsafe extern "C-unwind" fn pull_input(
     0
 }
 
-pub(crate) struct AuNode {
-    unit: Unit,
-    max_frames: usize,
-    out_buses: Vec<Vec<Vec<f32>>>,
-    out_lists: Vec<BufferList>,
-    params: Vec<Slot>,
-    notes: Vec<NoteKey>,
-    cursors: Vec<usize>,
-    /// Frames rendered, for the unit's sample times.
-    steady: f64,
-    latency: u32,
-    takes_notes: bool,
-    /// The unit's callbacks hold this pointer. Last, so it drops after the unit.
-    pull: PullBox,
-}
-
-// SAFETY: the raw pointer is a box this node owns; the unit is `Send`.
-unsafe impl Send for AuNode {}
-
 /// The input buses' buffers for a descriptor, boxed for the unit's
 /// callbacks.
 fn make_pull(descriptor: &Descriptor, max_frames: usize) -> PullBox {
@@ -164,253 +121,109 @@ pub(crate) fn load(
     )
 }
 
-impl AuNode {
-    pub fn new(
-        loaded: Loaded<PullBox>,
-        descriptor: &Descriptor,
-        exposed: &[&ParamDesc],
-        max_frames: usize,
-    ) -> Self {
-        let out_buses: Vec<Vec<Vec<f32>>> = descriptor
-            .audio_outputs
-            .iter()
-            .map(|port| {
-                (0..port.channels.max(1))
-                    .map(|_| vec![0.0; max_frames])
-                    .collect()
-            })
-            .collect();
-        let out_lists = out_buses
-            .iter()
-            .map(|channels| BufferList::new(channels.len()))
-            .collect();
-        let first_param = descriptor.audio_inputs.len();
-        let params = exposed
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                let (min, max, default) = param_range(param.min, param.max, param.default);
-                Slot {
-                    id: param.id,
-                    input: first_param + index,
-                    min,
-                    max,
-                    stepped: param.stepped,
-                    last: if param.stepped {
-                        default.round()
-                    } else {
-                        default
-                    },
-                }
-            })
-            .collect();
-        let id = loaded.unit.id;
-        Self {
-            unit: loaded.unit,
-            max_frames,
-            out_buses,
-            out_lists,
-            params,
-            notes: Vec::with_capacity(MAX_NOTES),
-            cursors: vec![0; descriptor.note_inputs as usize],
-            steady: 0.0,
-            latency: loaded.latency,
-            takes_notes: id.takes_notes(),
-            pull: loaded.extra,
+pub(crate) struct AuFormat {
+    unit: Unit,
+    out_lists: Vec<BufferList>,
+    /// The parameter behind each of the bridge's parameter slots.
+    param_ids: Vec<AudioUnitParameterID>,
+    /// Frames the node has been given, for the unit's sample times.
+    steady: f64,
+    latency: u32,
+    takes_notes: bool,
+    /// The unit's callbacks hold this pointer. Last, so it drops after the unit.
+    pull: PullBox,
+}
+
+// SAFETY: the raw pointer is a box this node owns; the unit is `Send`.
+unsafe impl Send for AuFormat {}
+
+/// The bridge for a loaded Audio Unit.
+pub(crate) fn au_node(
+    loaded: Loaded<PullBox>,
+    descriptor: &Descriptor,
+    exposed: &[&ParamDesc],
+    max_frames: usize,
+) -> Bridge<AuFormat> {
+    let channels = |ports: &[crate::descriptor::AudioPort]| -> Vec<u32> {
+        ports.iter().map(|p| p.channels).collect()
+    };
+    let buffers = Buffers::new(
+        channels(&descriptor.audio_inputs),
+        channels(&descriptor.audio_outputs),
+        max_frames,
+    );
+    let out_lists = buffers
+        .outputs
+        .iter()
+        .map(|bus| BufferList::new(bus.channels.len()))
+        .collect();
+    let first_param = descriptor.audio_inputs.len();
+    let mut param_ids = Vec::new();
+    let params = exposed
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            let (min, max, default) = param_range(param.min, param.max, param.default);
+            param_ids.push(param.id);
+            ParamSlot::new(Some(first_param + index), min, max, param.stepped, default)
+        })
+        .collect();
+    let id = loaded.unit.id;
+    let format = AuFormat {
+        unit: loaded.unit,
+        out_lists,
+        param_ids,
+        steady: 0.0,
+        latency: loaded.latency,
+        takes_notes: id.takes_notes(),
+        pull: loaded.extra,
+    };
+    Bridge::new(
+        format,
+        buffers,
+        params,
+        descriptor.note_inputs as usize,
+        false,
+        max_frames,
+    )
+}
+
+impl Format for AuFormat {
+    fn begin(&mut self, _n: usize) -> bool {
+        false
+    }
+
+    fn param(&mut self, slot: usize, at: usize, value: f32) {
+        // SAFETY: a live unit; the parameter is in the global scope.
+        unsafe {
+            AudioUnitSetParameter(
+                self.unit.raw(),
+                self.param_ids[slot],
+                kAudioUnitScope_Global,
+                0,
+                value,
+                at as u32,
+            );
         }
     }
 
-    /// Runs frames `start..start + n` of the block.
-    fn chunk(&mut self, ctx: &Context, io: &mut Io<'_, '_>, start: usize, n: usize) {
-        // SAFETY: the node's own box; nothing else reads it until the render.
-        let pull = unsafe { &mut *self.pull.0 };
-        for (port, channels) in pull.buses.iter_mut().enumerate() {
-            let Some(input) = io.inputs.get(port) else {
-                continue;
-            };
-            for (channel, buffer) in channels.iter_mut().enumerate() {
-                buffer[..n].copy_from_slice(&input.lane(0, channel)[start..start + n]);
-            }
+    fn note(&mut self, _port: usize, event: &Event, at: usize, key: Option<(u8, u8)>) {
+        if !self.takes_notes {
+            return;
         }
-        self.set_transport(ctx, start);
-        self.send_events(io, start, n);
-        self.render(io, start, n);
-    }
-
-    fn set_transport(&self, ctx: &Context, start: usize) {
-        let t = &ctx.transport;
-        let advance = if t.playing { start as f64 } else { 0.0 };
-        let rate = f64::from(ctx.sample_rate);
-        let beat = t.tick / 960.0 + advance / rate * t.bpm / 60.0;
-        let (numerator, denominator) = (
-            u32::from(t.signature.numerator),
-            u32::from(t.signature.denominator),
-        );
-        self.unit.transport().set(
-            t.playing,
-            t.bpm,
-            beat,
-            t.position as f64 + advance,
-            (numerator, denominator),
-            bar_start(beat, numerator as i32, denominator as i32),
-        );
-    }
-
-    fn render(&mut self, io: &mut Io<'_, '_>, start: usize, n: usize) {
-        let time = AudioTimeStamp {
-            mSampleTime: self.steady,
-            mFlags: AudioTimeStampFlags::SampleTimeValid,
-            // SAFETY: a plain-data struct that is valid all zero.
-            ..unsafe { std::mem::zeroed() }
-        };
-        for (bus, channels) in self.out_buses.iter_mut().enumerate() {
-            let list = &mut self.out_lists[bus];
-            for (channel, buffer) in channels.iter_mut().enumerate() {
-                list.set(channel, buffer.as_mut_ptr(), n);
-            }
-            let mut flags = AudioUnitRenderActionFlags(0);
-            // SAFETY: a live, initialised unit; the list's buffers point at
-            // `n` samples each; the time stamp is valid.
-            let status = unsafe {
-                AudioUnitRender(
-                    self.unit.raw(),
-                    &mut flags,
-                    NonNull::from(&time),
-                    bus as u32,
-                    n as u32,
-                    list.as_ptr(),
-                )
-            };
-            let out = &mut io.outputs[bus];
-            for channel in 0..channels.len() {
-                let lane = &mut out.lane_mut(0, channel)[start..start + n];
-                if status == 0 {
-                    // The unit may have pointed the buffer at its own memory.
-                    let data = list.data(channel);
-                    if data.is_null() {
-                        lane.fill(0.0);
-                    } else {
-                        // SAFETY: a rendered buffer of `n` samples.
-                        lane.copy_from_slice(unsafe { std::slice::from_raw_parts(data, n) });
-                    }
-                } else {
-                    lane.fill(0.0);
-                }
-            }
-        }
-        self.steady += n as f64;
-    }
-
-    /// Sends the chunk's parameter changes and notes to the unit, each with
-    /// its offset into the render that follows.
-    fn send_events(&mut self, io: &Io<'_, '_>, start: usize, n: usize) {
-        self.sample_params(io, start, 0);
-        let mut next_step = PARAM_STEP;
-        self.cursors.iter_mut().for_each(|c| *c = 0);
-        loop {
-            let mut pick: Option<(usize, usize)> = None;
-            for (port, cursor) in self.cursors.iter_mut().enumerate() {
-                let events = io.event_inputs.get(port).copied().unwrap_or(&[]);
-                while let Some(event) = events.get(*cursor) {
-                    let time = event.time as usize;
-                    if time < start {
-                        *cursor += 1;
-                    } else {
-                        if time < start + n && pick.is_none_or(|(_, t)| time < t) {
-                            pick = Some((port, time));
-                        }
-                        break;
-                    }
-                }
-            }
-            let Some((port, time)) = pick else { break };
-            let event = &io.event_inputs[port][self.cursors[port]];
-            self.cursors[port] += 1;
-            let at = time - start;
-            while next_step <= at {
-                self.sample_params(io, start, next_step);
-                next_step += PARAM_STEP;
-            }
-            if self.takes_notes {
-                self.send_note(port as u16, &event.kind, at as u32);
-            }
-        }
-        while next_step < n {
-            self.sample_params(io, start, next_step);
-            next_step += PARAM_STEP;
-        }
-    }
-
-    /// Sends the parameters whose value at `start + at` differs from what the
-    /// unit has. Unmodulated ones are only looked at at `at == 0`.
-    fn sample_params(&mut self, io: &Io<'_, '_>, start: usize, at: usize) {
-        for slot in &mut self.params {
-            let input = &io.inputs[slot.input];
-            let value = match input.constant() {
-                Some(value) => {
-                    if at != 0 {
-                        continue;
-                    }
-                    value
-                }
-                None => input.lane(0, 0)[start + at],
-            };
-            let mut value = value.clamp(slot.min, slot.max);
-            if slot.stepped {
-                value = value.round();
-            }
-            if value == slot.last || !value.is_finite() {
-                continue;
-            }
-            slot.last = value;
-            // SAFETY: a live unit; the parameter is in the global scope.
-            unsafe {
-                AudioUnitSetParameter(
-                    self.unit.raw(),
-                    slot.id,
-                    kAudioUnitScope_Global,
-                    0,
-                    value,
-                    at as u32,
-                );
-            }
-        }
-    }
-
-    fn send_note(&mut self, port: u16, kind: &EventKind, at: u32) {
-        let message = match *kind {
-            EventKind::NoteOn {
-                note, channel, key, ..
-            } => {
-                self.notes.retain(|n| !(n.port == port && n.note == note.0));
-                if self.notes.len() == MAX_NOTES {
-                    self.notes.remove(0);
-                }
-                self.notes.push(NoteKey {
-                    port,
-                    note: note.0,
-                    channel,
-                    key,
-                });
-                midi_message(kind)
-            }
-            EventKind::NoteOff { note, velocity } => {
+        let message = match event.kind {
+            EventKind::NoteOff { velocity, .. } => {
                 // A note we don't remember (never seen, or evicted) has no
                 // key to release: sending key 0 could cut a held one.
-                let found = self
-                    .notes
-                    .iter()
-                    .position(|n| n.port == port && n.note == note.0)
-                    .map(|i| self.notes.remove(i));
-                found.map(|n| {
+                key.map(|(channel, key)| {
                     [
-                        0x80 | (n.channel & 0x0f),
-                        n.key & 0x7f,
+                        0x80 | (channel & 0x0f),
+                        key & 0x7f,
                         (velocity.clamp(0.0, 1.0) * 127.0).round() as u8,
                     ]
                 })
             }
-            _ => midi_message(kind),
+            ref kind => midi_message(kind),
         };
         let Some([status, data1, data2]) = message else {
             return;
@@ -422,29 +235,93 @@ impl AuNode {
                 u32::from(status),
                 u32::from(data1),
                 u32::from(data2),
-                at,
+                at as u32,
             );
         }
     }
-}
 
-impl Node for AuNode {
+    fn transport(&mut self, position: &Position) {
+        self.steady = position.steady as f64;
+        self.unit.transport().set(
+            position.playing,
+            position.bpm,
+            position.beats,
+            position.samples,
+            (
+                u32::from(position.signature.numerator),
+                u32::from(position.signature.denominator),
+            ),
+            position.bar_start,
+        );
+    }
+
+    fn process(&mut self, n: usize, buffers: &mut Buffers) -> Status {
+        // SAFETY: the node's own box; nothing else reads it until the render.
+        let pull = unsafe { &mut *self.pull.0 };
+        for (channels, bus) in pull.buses.iter_mut().zip(&buffers.inputs) {
+            for (buffer, source) in channels.iter_mut().zip(&bus.channels) {
+                buffer[..n].copy_from_slice(&source[..n]);
+            }
+        }
+        let time = AudioTimeStamp {
+            mSampleTime: self.steady,
+            mFlags: AudioTimeStampFlags::SampleTimeValid,
+            // SAFETY: a plain-data struct that is valid all zero.
+            ..unsafe { std::mem::zeroed() }
+        };
+        let mut all_silent = !buffers.outputs.is_empty();
+        for (index, bus) in buffers.outputs.iter_mut().enumerate() {
+            let list = &mut self.out_lists[index];
+            for (channel, buffer) in bus.channels.iter_mut().enumerate() {
+                list.set(channel, buffer.as_mut_ptr(), n);
+            }
+            let mut flags = AudioUnitRenderActionFlags(0);
+            // SAFETY: a live, initialised unit; the list's buffers point at
+            // `n` samples each; the time stamp is valid.
+            let status = unsafe {
+                AudioUnitRender(
+                    self.unit.raw(),
+                    &mut flags,
+                    NonNull::from(&time),
+                    index as u32,
+                    n as u32,
+                    list.as_ptr(),
+                )
+            };
+            let silent = status == 0
+                && flags.0 & AudioUnitRenderActionFlags::UnitRenderAction_OutputIsSilence.0 != 0;
+            all_silent &= silent;
+            bus.silent = if silent { u64::MAX } else { 0 };
+            for (channel, buffer) in bus.channels.iter_mut().enumerate() {
+                if status != 0 {
+                    buffer[..n].fill(0.0);
+                    continue;
+                }
+                // The unit may have pointed the buffer at its own memory.
+                let data = list.data(channel);
+                if data.is_null() {
+                    buffer[..n].fill(0.0);
+                } else if data != buffer.as_ptr() {
+                    // SAFETY: a rendered buffer of `n` samples.
+                    buffer[..n].copy_from_slice(unsafe { std::slice::from_raw_parts(data, n) });
+                }
+            }
+        }
+        if all_silent {
+            Status::Sleep
+        } else {
+            Status::Unknown
+        }
+    }
+
+    fn drain_note_outputs(&mut self, _emit: &mut dyn FnMut(usize, u32, EventKind)) {}
+
     fn latency(&self) -> u32 {
         self.latency
     }
 
-    fn process(&mut self, ctx: &Context, mut io: Io<'_, '_>) {
-        let mut start = 0;
-        while start < ctx.frames {
-            let n = (ctx.frames - start).min(self.max_frames);
-            self.chunk(ctx, &mut io, start, n);
-            start += n;
-        }
-    }
-
     fn reset(&mut self) {
         self.unit.reset();
-        self.notes.clear();
     }
 }
 
