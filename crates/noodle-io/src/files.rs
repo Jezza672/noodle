@@ -188,12 +188,16 @@ mod tests {
             .set_modified(before)
             .unwrap();
 
+        // The watcher may see the file mid-write (truncated) first.
         let start = Instant::now();
-        while !woke.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(5) {
+        let mut now = files.stamp(&path).unwrap();
+        while (now.len != 5 || now.modified != first.modified)
+            && start.elapsed() < Duration::from_secs(5)
+        {
             std::thread::sleep(Duration::from_millis(5));
+            now = files.stamp(&path).unwrap();
         }
-        assert!(woke.load(Ordering::SeqCst), "the change was not noticed");
-        let now = files.stamp(&path).unwrap();
+        assert!(woke.load(Ordering::SeqCst), "the change was not announced");
         assert_eq!(now.len, 5);
         assert_eq!(now.modified, first.modified, "only the length differs");
         assert_ne!(now, first);
@@ -216,9 +220,12 @@ mod tests {
 
         std::fs::write(&path, b"x").unwrap();
         let start = Instant::now();
-        while !woke.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(5) {
+        while files.stamp(&path).map(|s| s.len) != Some(1)
+            && start.elapsed() < Duration::from_secs(5)
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(files.stamp(&path).map(|s| s.len), Some(1));
+        assert!(woke.load(Ordering::SeqCst));
     }
 }
