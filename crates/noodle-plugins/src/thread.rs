@@ -48,7 +48,9 @@ const CALLBACK_POLL: Duration = Duration::from_millis(250);
 
 /// Rung when something is waiting for the plugin thread: a command, or a
 /// request from a plugin (a callback, a resize, a closed editor). The thread
-/// sleeps on it with no timeout when nothing else is due.
+/// sleeps on it with no timeout when nothing else is due. A bell has one
+/// waiter, the first thread to wait: the plugin thread, which `queue()` starts
+/// once per process.
 static BELL: Doorbell = Doorbell::new();
 
 /// How long an editor command (open, capture) may take.

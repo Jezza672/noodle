@@ -18,8 +18,10 @@ use std::time::{Duration, Instant, SystemTime};
 /// How often the known files are looked at.
 pub const INTERVAL: Duration = Duration::from_secs(1);
 
-/// How long a file nobody has asked about stays watched.
-const KEEP: Duration = Duration::from_secs(30);
+/// How many files are watched at once. Past it the ones asked about longest
+/// ago are dropped; a window with nothing repainting asks about none, so
+/// time alone must not drop a file the project still plays.
+const MAX_WATCHED: usize = 4096;
 
 /// A file's size and modification time. Two stamps are the same file as far
 /// as anything cached from it is concerned.
@@ -112,7 +114,12 @@ fn watch(shared: Weak<Shared>, interval: Duration, on_change: impl Fn()) {
         };
         let paths: Vec<PathBuf> = {
             let mut known = strong.known.lock().expect("files lock");
-            known.retain(|_, entry| entry.asked.elapsed() < KEEP);
+            if known.len() > MAX_WATCHED {
+                let mut asked: Vec<Instant> = known.values().map(|e| e.asked).collect();
+                asked.sort();
+                let cutoff = asked[known.len() - MAX_WATCHED];
+                known.retain(|_, entry| entry.asked >= cutoff);
+            }
             if known.is_empty() {
                 // Nothing to look at: sleep until there is, and let go of
                 // the shared state now and then so a dropped watcher ends.
