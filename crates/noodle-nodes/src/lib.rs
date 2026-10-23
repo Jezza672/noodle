@@ -47,6 +47,7 @@ mod sample;
 mod sample_hold;
 mod sample_input;
 mod sampler;
+mod sampler_stretch;
 mod scope;
 mod script;
 mod spectral;
@@ -262,7 +263,11 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     let samples = SampleStore::new();
-    registry.register(Sampler::new(&samples, &telemetry));
+    registry.register(if clips.is_blocking() {
+        Sampler::blocking(&samples, &telemetry)
+    } else {
+        Sampler::new(&samples, &telemetry)
+    });
     Library {
         telemetry,
         clips,

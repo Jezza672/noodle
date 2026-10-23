@@ -50,6 +50,9 @@ pub struct Telemetry {
     /// Counts the times a writer reported something that moved, see
     /// [`Telemetry::activity`].
     activity: Arc<AtomicU64>,
+    /// Counts position reports across every node, to tell the instances that
+    /// are still running from those left over from an old plan.
+    position_clock: Arc<AtomicU64>,
 }
 
 /// Each node's open channels, oldest first.
@@ -230,33 +233,45 @@ impl Telemetry {
                 .collect(),
             written: AtomicBool::new(false),
             activity: self.activity.clone(),
+            stamp: AtomicU64::new(0),
         });
         self.lock()
             .positions
             .entry(node)
             .or_default()
             .push(cells.clone());
-        PositionWriter(cells)
+        PositionWriter {
+            cells,
+            clock: self.position_clock.clone(),
+        }
     }
 
     /// Where each sounding voice of `node` is in its sample, as a fraction of
     /// it from 0 to 1, as of the latest block. Empty when nothing is playing
     /// or nothing has reported.
+    ///
+    /// Every instance that is still reporting counts (a Sampler in a
+    /// voice-instanced group has one per voice), so the voices of all of them
+    /// are listed. An instance that has stopped, because a newer plan took
+    /// over, is told by its reports falling behind the rest.
     pub fn read_positions(&self, node: NodeId) -> Vec<f32> {
         let channels = self.lock();
         let Some(list) = channels.positions.get(&node) else {
             return Vec::new();
         };
-        let Some(cells) = list
-            .iter()
-            .rev()
-            .find(|cells| cells.written.load(Ordering::Acquire))
-        else {
+        let stamps = |cells: &Arc<PositionCells>| cells.stamp.load(Ordering::Relaxed);
+        let reported = || list.iter().filter(|c| c.written.load(Ordering::Acquire));
+        let Some(newest) = reported().map(stamps).max() else {
             return Vec::new();
         };
-        cells
-            .at
-            .iter()
+        // A running instance reports once per block, and the clock moves once
+        // per report of any node, so it falls behind by at most the number of
+        // channels open.
+        let open: usize = channels.positions.values().map(Vec::len).sum();
+        let window = 2 * open as u64 + 2;
+        reported()
+            .filter(|c| newest - stamps(c) <= window)
+            .flat_map(|cells| cells.at.iter())
             .map(|cell| f32::from_bits(cell.load(Ordering::Relaxed)))
             .filter(|at| *at >= 0.0)
             .collect()
@@ -631,27 +646,32 @@ struct PositionCells {
     at: Vec<AtomicU32>,
     written: AtomicBool,
     activity: Arc<AtomicU64>,
+    /// The clock's value at the latest report.
+    stamp: AtomicU64,
 }
 
 /// The audio thread's end of a position channel.
-pub struct PositionWriter(Arc<PositionCells>);
+pub struct PositionWriter {
+    cells: Arc<PositionCells>,
+    clock: Arc<AtomicU64>,
+}
 
 impl PositionWriter {
     /// How many voices the channel has room for.
     pub fn voices(&self) -> usize {
-        self.0.at.len()
+        self.cells.at.len()
     }
 
     /// Reports voice `voice`: its place in the sample as a fraction from 0
     /// to 1, or `None` when it is silent. A voice past the channel's room is
     /// ignored.
     pub fn write(&self, voice: usize, fraction: Option<f32>) {
-        if let Some(cell) = self.0.at.get(voice) {
+        if let Some(cell) = self.cells.at.get(voice) {
             let at = fraction
                 .filter(|f| f.is_finite())
                 .map_or(IDLE, |f| f.clamp(0.0, 1.0));
             if cell.swap(at.to_bits(), Ordering::Relaxed) != at.to_bits() {
-                self.0.activity.fetch_add(1, Ordering::Relaxed);
+                self.cells.activity.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -659,7 +679,9 @@ impl PositionWriter {
     /// Marks the reports as coming from a running plan. Call it after each
     /// block's writes.
     pub fn publish(&self) {
-        self.0.written.store(true, Ordering::Release);
+        let stamp = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        self.cells.stamp.store(stamp, Ordering::Relaxed);
+        self.cells.written.store(true, Ordering::Release);
     }
 }
 
@@ -1213,7 +1235,14 @@ mod tests {
         let pending = telemetry.open_positions(NODE, 3);
         pending.write(0, Some(0.5));
         assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0]);
+        // Both are reporting, as the instances of a voice-instanced group do.
         pending.publish();
+        playing.publish();
+        assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0, 0.5]);
+        // The old plan stops reporting; the new one carries on.
+        for _ in 0..10 {
+            pending.publish();
+        }
         assert_eq!(telemetry.read_positions(NODE), [0.5]);
         drop((playing, pending));
         assert!(telemetry.read_positions(NODE).is_empty());

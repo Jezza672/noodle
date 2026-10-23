@@ -13,6 +13,7 @@ mod cache;
 mod channels;
 mod compile;
 mod denormals;
+mod doorbell;
 mod event;
 mod flatten;
 mod job;
@@ -52,6 +53,7 @@ pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
     ScheduledNode, SpectralBufferId, compile, compile_replacing, compile_with_lanes,
 };
+pub use doorbell::Doorbell;
 pub use event::{ChannelControl, Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
 pub use job::{Job, JobPanicked};

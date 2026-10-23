@@ -144,9 +144,12 @@ These are primitives; instruments and racks built from them are groups.
   `tune` (cents), `keytrack`, `start`, `end`, `mode` (one-shot or gate), `loop`
   and loop points (gate mode only), `release`, `gain`. Two more settings are
   config text: `gain_env`, a gain envelope across the sample, and `warp`, a
-  `ClipWarp` that times the sample like a clip's (Repitch only; with *follow
-  tempo* it plays at the transport's tempo). Each voice's place in the sample
-  is reported through `Telemetry::open_positions`, for the editor's playhead.
+  `ClipWarp` that times the sample like a clip's (Repitch, Grain or Beats; with
+  *follow tempo* it plays at the transport's tempo; see
+  [time-warping.md](time-warping.md)), both of them live config that doesn't
+  rebuild the node. Each voice's place in the sample is reported through
+  `Telemetry::open_positions`, for the editor's playhead, which lists the voices
+  of every instance still reporting.
   Interpolation is four-point Catmull-Rom. The `sample` option is also a sample input (see
   "Sample" in [signals.md](signals.md)): a wire from a `Sample` node
   (`noodle.instrument.sample`, which holds a hash and a window) overrides it.

@@ -10,7 +10,7 @@ use rubato::{
     WindowFunction,
 };
 
-const SINC_PARAMETERS: SincInterpolationParameters = SincInterpolationParameters {
+pub(crate) const SINC_PARAMETERS: SincInterpolationParameters = SincInterpolationParameters {
     sinc_len: 128,
     f_cutoff: Some(0.95),
     interpolation: SincInterpolationType::Cubic,

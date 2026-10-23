@@ -51,16 +51,6 @@ need a person and hardware, plus a few deliberately deferred items.
   retry the saved device when it returns.
 - **VST3:** an editor window on Linux (the app makes none).
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
-- **Sample warp modes.** A Sampler plays its warp as Repitch only (the editor
-  hides the mode for samples). Grain and Beats would need the stretcher lanes
-  (`clip/ahead.rs`) in the Sampler, or a stretched copy of the sample made when
-  the node is built. The beat view draws no gain envelope (clip or sample).
-- **Sampler edits cut sounding notes.** `gain_env` and `warp` are config, so
-  each point or marker drag rebuilds the Sampler and stops its voices. Needs
-  either a way for a node to take new config without losing state, or a live
-  channel (like telemetry, the other way) for these two settings.
-- **Playhead of several Sampler instances.** `Telemetry::read_positions`
-  shows only the newest instance that has reported, so a Sampler inside a
-  voice-instanced group, or two live instances across a plan swap, shows one
-  instance's voices.
+- **Beat view gain envelope.** The beat view draws no gain envelope (clip or
+  sample).
 - **Flaky test** #138 stays open (no recurrence).

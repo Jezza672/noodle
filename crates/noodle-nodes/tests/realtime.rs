@@ -1430,6 +1430,89 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
 }
 
 #[test]
+fn a_sampler_plays_a_stretched_warp_and_takes_live_edits_without_allocating() {
+    use noodle_io::Audio;
+    use noodle_nodes::{GAIN_ENV_KEY, SAMPLE_KEY, SampleStore, Sampler, WARP_KEY};
+
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let hash = store.insert(&Audio {
+        samples: (0..48_000).map(|i| (i as f32 * 0.07).sin() * 0.5).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let warp = |beats: f64| {
+        let mut warp = noodle_core::ClipWarp::at_tempo(90.0);
+        warp.mode = noodle_core::WarpMode::Grain;
+        warp.set_marker(noodle_core::WarpMarker {
+            seconds: 0.5,
+            beat: beats,
+        });
+        warp.to_text()
+    };
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let sampler = s.add(
+        Node::new("noodle.instrument.sampler")
+            .with_config(
+                Config::new()
+                    .with(SAMPLE_KEY, Value::Text(hash))
+                    .with(WARP_KEY, Value::Text(warp(1.0))),
+            )
+            .with_param("mode", 1.0)
+            .with_param("loop", 1.0)
+            .with_param("loop_start", 0.2)
+            .with_param("loop_end", 0.8),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", sampler, "in");
+    s.wire(sampler, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut play = |s: &mut Session, rounds: usize| {
+        for round in 0..rounds {
+            s.controller.maintain();
+            let violations = realtime(|| s.processor.process(&mut out));
+            assert_eq!(violations, 0, "allocated in round {round}");
+            assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+        }
+        out.iter().fold(0.0f32, |peak, x| peak.max(x.abs()))
+    };
+    // Let the worker settle and stretch, then hear the note through it.
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        play(&mut s, 1);
+    }
+    assert!(play(&mut s, 4) > 0.01, "the stretched sampler is silent");
+
+    // Edits to the envelope and the warp, which the Sampler takes while it
+    // sounds: the held note keeps going through every one.
+    for round in 0..12 {
+        let (key, value) = if round % 2 == 0 {
+            (GAIN_ENV_KEY, "0:-6,500000:-12".to_owned())
+        } else {
+            (WARP_KEY, warp(1.0 + round as f64 * 0.1))
+        };
+        s.edit(Command::SetConfig {
+            node: sampler,
+            key: key.into(),
+            value: Some(Value::Text(value)),
+        });
+        s.update();
+        let mut peak = 0.0f32;
+        for _ in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            peak = peak.max(play(&mut s, 1));
+        }
+        assert!(peak > 0.001, "the note was cut by edit {round}");
+    }
+}
+
+#[test]
 fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
     use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
 
@@ -1797,4 +1880,56 @@ fn a_groups_output_reports_its_level() {
     s.processor.process(&mut out);
     let levels = s.telemetry.meter_reader().meter(port).expect("metered");
     assert!(levels[0].peak > 0.5, "{levels:?}");
+}
+
+#[test]
+fn ringing_a_doorbell_never_touches_the_allocator() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Asleep, so the ring has to wake it; and awake, so it doesn't.
+    let bell = Arc::new(noodle_engine::Doorbell::new());
+    let sleeper = {
+        let bell = bell.clone();
+        std::thread::spawn(move || bell.wait(Some(Duration::from_secs(10))))
+    };
+    while !bell.is_sleeping() {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "woke a sleeper"
+    );
+    assert!(sleeper.join().unwrap());
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "rang an awake worker"
+    );
+}
+
+#[test]
+fn ringing_a_pool_task_never_touches_the_allocator() {
+    use noodle_io::pool::{self, Next, Task};
+
+    struct Idle;
+    impl Task for Idle {
+        fn run(&mut self) -> Next {
+            Next::Idle
+        }
+    }
+    let handle = pool::io().spawn(Idle);
+    let bell = handle.bell();
+    // Let the first run finish, so the pool's threads are asleep.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for _ in 0..50 {
+        assert_eq!(realtime(|| bell.ring()), 0);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(handle.runs() > 1);
 }

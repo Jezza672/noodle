@@ -110,6 +110,21 @@ pub trait NodeType: Send + Sync + 'static {
         false
     }
 
+    /// The config keys that reach a running instance through
+    /// [`retune`](Self::retune) instead of by rebuilding it. A change to only
+    /// these leaves the instance in place, with its state (a sounding note,
+    /// say), so a drag that sets one many times a second doesn't cut it off.
+    fn live_config(&self) -> &[&'static str] {
+        &[]
+    }
+
+    /// Tells the node's running instances the node's config, whenever a plan
+    /// is built that keeps them. Runs off the audio thread. A node type that
+    /// lists [`live_config`](Self::live_config) keys passes them on here, to
+    /// the instances it has made for `node`; an instance made later reads its
+    /// config when it is instantiated.
+    fn retune(&self, _node: NodeId, _config: &Config) {}
+
     /// True if the node does something besides turn its inputs into its
     /// outputs, such as reporting to the UI, reading a device or hosting a
     /// plugin, so the engine runs it even when nothing downstream of it is

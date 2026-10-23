@@ -2,18 +2,21 @@
 //! opens the audio streams it will need, so the audio thread never opens a
 //! file, allocates or frees anything.
 //!
-//! One hub thread runs per track input node instance. It talks to the node
-//! through two queues: schedules and ready streams go to the node, and the
-//! ones the node is done with come back to be dropped here. It stops when the
-//! node is dropped.
+//! One hub task runs per track input node instance, on the control pool. It
+//! talks to the node through two queues: schedules and ready streams go to the
+//! node, and the ones the node is done with come back to be dropped here. It
+//! sleeps until it is rung: by the UI side when the schedule changes, and by
+//! the node when it has given something back, taken something in, or the
+//! playhead has moved on (see [`POSITION_STEP`]). It stops when the node is
+//! dropped.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
+use noodle_io::pool::{self, Bell, Handle, Next, Task};
 use noodle_io::{ClipStream, StreamSpec, StreamWorker, open_stream};
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -29,12 +32,13 @@ pub(super) const MAX_HEADS: usize = 4;
 pub(super) const MAX_CHANNELS: usize = 8;
 /// How far ahead of the playhead streams are opened, in seconds.
 pub(super) const LOOKAHEAD: f64 = 1.0;
-/// How often the hub looks while the playhead moves, and while it doesn't.
-const POLL: Duration = Duration::from_millis(4);
-const IDLE_POLL: Duration = Duration::from_millis(25);
+/// How far the playhead goes before the node rings the hub (and the stretch
+/// worker) to look again: a fraction of [`LOOKAHEAD`], which they have to keep
+/// room for in the streams they open.
+pub(super) const POSITION_STEP: f64 = LOOKAHEAD / 8.0;
 /// How long before a file that failed to open is tried again, so one that
 /// turns up later (restored, or a drive mounted) starts playing.
-const RETRY: Duration = Duration::from_secs(2);
+pub(super) const RETRY: Duration = Duration::from_secs(2);
 /// Things sent to the node and not yet returned. The return queue is bigger,
 /// so the node can always hand a retired one back.
 const MAX_OUTSTANDING: usize = 24;
@@ -66,6 +70,9 @@ pub(super) struct Shared {
     /// warp is being edited and the stretch would have to start over with
     /// every change. Shared by all the nodes of one set of feeds.
     pub preview: Arc<AtomicBool>,
+    /// The bells of the tasks serving this node, for the UI side to ring when
+    /// it changes what they work from. The node rings its own copies.
+    bells: Mutex<Vec<Bell>>,
 }
 
 impl Shared {
@@ -82,6 +89,29 @@ impl Shared {
             underruns: AtomicU64::new(0),
             audition: [AtomicU64::new(0), AtomicU64::new(0)],
             monitoring: AtomicBool::new(false),
+            bells: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Notes a task to ring when the schedule or the preview switch changes.
+    pub(super) fn add_bell(&self, bell: Bell) {
+        let mut bells = self.bells.lock().expect("bells lock");
+        bells.retain(|b| !b.is_closed());
+        bells.push(bell);
+    }
+
+    /// How many times the tasks serving this node have run.
+    pub fn runs(&self) -> u64 {
+        let bells = self.bells.lock().expect("bells lock");
+        bells.iter().map(Bell::runs).sum()
+    }
+
+    /// Rings the tasks serving this node.
+    pub fn ring(&self) {
+        let mut bells = self.bells.lock().expect("bells lock");
+        bells.retain(|b| !b.is_closed());
+        for bell in bells.iter() {
+            bell.ring();
         }
     }
 
@@ -110,6 +140,8 @@ impl Shared {
         let mut latest = self.latest.lock().expect("schedule lock");
         if *latest.1 != schedule || *latest.2 != notes {
             *latest = (latest.0 + 1, Arc::new(schedule), Arc::new(notes));
+            drop(latest);
+            self.ring();
         }
     }
 
@@ -201,33 +233,84 @@ struct Live {
 pub(super) struct Links {
     pub from_hub: Consumer<ToNode>,
     pub to_hub: Producer<Retired>,
+    pub bell: Bell,
+    /// Stops the hub when the node is dropped.
+    pub _handle: Handle,
 }
 
 pub(super) fn spawn(shared: Arc<Shared>, rate: u32) -> Links {
     let (to_node, from_hub) = RingBuffer::new(QUEUE);
     let (to_hub, from_node) = RingBuffer::new(QUEUE * 2);
-    thread::Builder::new()
-        .name("noodle-clips".into())
-        .spawn(move || run(&shared, rate, to_node, from_node))
-        .expect("can't start a thread");
-    Links { from_hub, to_hub }
+    let handle = pool::control().spawn(Hub {
+        shared: shared.clone(),
+        to_node,
+        from_node,
+        sent: None,
+        outstanding: 0,
+        next_serial: 0,
+        live: Vec::new(),
+        failed: HashMap::new(),
+        lookahead: (f64::from(rate) * LOOKAHEAD) as u64,
+        rate,
+    });
+    let bell = handle.bell();
+    shared.add_bell(bell.clone());
+    Links {
+        from_hub,
+        to_hub,
+        bell,
+        _handle: handle,
+    }
 }
 
-fn run(
-    shared: &Shared,
+struct Hub {
+    shared: Arc<Shared>,
     rate: u32,
-    mut to_node: Producer<ToNode>,
-    mut from_node: Consumer<Retired>,
-) {
-    let mut sent: Option<u64> = None;
-    let mut outstanding = 0usize;
-    let mut next_serial = 0u64;
-    let mut live: Vec<Live> = Vec::new();
-    // Streams that failed to open, and when.
-    let mut failed: HashMap<(ClipId, u64), Instant> = HashMap::new();
-    let mut last_position = None;
-    let lookahead = (f64::from(rate) * LOOKAHEAD) as u64;
-    while !to_node.is_abandoned() {
+    to_node: Producer<ToNode>,
+    from_node: Consumer<Retired>,
+    sent: Option<u64>,
+    outstanding: usize,
+    next_serial: u64,
+    live: Vec<Live>,
+    /// Streams that failed to open, and when.
+    failed: HashMap<(ClipId, u64), Instant>,
+    lookahead: u64,
+}
+
+impl Task for Hub {
+    fn run(&mut self) -> Next {
+        if self.to_node.is_abandoned() {
+            return Next::Done;
+        }
+        let busy = self.pass();
+        if busy {
+            Next::Again
+        } else if self.failed.is_empty() {
+            Next::Idle
+        } else {
+            // A file that failed to open may turn up later.
+            Next::After(RETRY)
+        }
+    }
+}
+
+impl Hub {
+    /// Looks at everything once. Returns whether it did something that may
+    /// make more to do.
+    fn pass(&mut self) -> bool {
+        let Self {
+            shared,
+            rate,
+            to_node,
+            from_node,
+            sent,
+            outstanding,
+            next_serial,
+            live,
+            failed,
+            lookahead,
+        } = self;
+        let (rate, lookahead) = (*rate, *lookahead);
         let mut busy = false;
         while let Ok(item) = from_node.pop() {
             busy = true;
@@ -242,22 +325,22 @@ fn run(
                 Retired::Notes(_) => continue,
                 Retired::Schedule(_) => {}
             }
-            outstanding -= 1;
+            *outstanding -= 1;
             drop(item);
         }
         let (version, schedule, notes) = {
             let latest = shared.latest.lock().expect("schedule lock");
             (latest.0, latest.1.clone(), latest.2.clone())
         };
-        if sent != Some(version) && outstanding < MAX_OUTSTANDING {
+        if *sent != Some(version) && *outstanding < MAX_OUTSTANDING {
             let message = ToNode::Schedule(
                 version,
                 Box::new(schedule.to_vec()),
                 Box::new(notes.to_vec()),
             );
             if to_node.push(message).is_ok() {
-                sent = Some(version);
-                outstanding += 1;
+                *sent = Some(version);
+                *outstanding += 1;
                 busy = true;
                 failed.clear();
                 // Files still in the schedule keep their error until they open,
@@ -270,10 +353,8 @@ fn run(
                     .retain(|(k, _)| schedule.iter().any(|c| c.stream_key() == *k));
             }
         }
-        if sent == Some(version) {
+        if *sent == Some(version) {
             let position = shared.position.load(Ordering::Relaxed);
-            busy |= last_position != Some(position);
-            last_position = Some(position);
             let looping = {
                 let (start, end) = (
                     shared.loop_start.load(Ordering::Relaxed),
@@ -295,7 +376,7 @@ fn run(
                 if failed.get(&key).is_some_and(|at| at.elapsed() < RETRY) {
                     continue;
                 }
-                if outstanding >= MAX_OUTSTANDING {
+                if *outstanding >= MAX_OUTSTANDING {
                     break;
                 }
                 let cap = if head { MAX_HEADS } else { MAX_STREAMS };
@@ -318,7 +399,7 @@ fn run(
                 };
                 match open_stream(spec) {
                     Ok((stream, worker)) if stream.channels() <= MAX_CHANNELS => {
-                        let serial = next_serial;
+                        let serial = *next_serial;
                         let prepared = Prepared {
                             id: clip.id,
                             key: key.1,
@@ -336,9 +417,9 @@ fn run(
                                     .expect("failed lock")
                                     .retain(|(k, _)| *k != key);
                             }
-                            next_serial += 1;
+                            *next_serial += 1;
                             live.push(Live { serial, key, head });
-                            outstanding += 1;
+                            *outstanding += 1;
                         }
                     }
                     Ok(_) => {
@@ -364,7 +445,7 @@ fn run(
                 }
             }
         }
-        thread::sleep(if busy { POLL } else { IDLE_POLL });
+        busy
     }
 }
 

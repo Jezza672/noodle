@@ -260,7 +260,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
 /// Part of every key, so renders made by another build of the DSP are never
 /// replayed from the shared per-user cache. Bump `DSP_GENERATION` in the same
 /// change as any regenerated golden render; the crate version covers releases.
-const DSP_GENERATION: u32 = 5;
+const DSP_GENERATION: u32 = 6;
 
 /// The key of a node, from everything it depends on. `wired` lists the
 /// outputs wired into signal inputs in input order, and `events` those wired
