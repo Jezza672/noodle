@@ -40,7 +40,7 @@ const KIND: ConfigInfo = ConfigInfo::int("kind", "Kind (0 signal, 1 notes)", 0);
 pub const MAX_INPUTS: i64 = 64;
 /// The longest a zero-crossing switch waits for a crossing.
 pub const MAX_WAIT_MS: f32 = 20.0;
-/// Held notes remembered at once; past this, a note-off is not passed on.
+/// Held notes remembered at once; past this, new note-ons are dropped.
 const HELD: usize = 256;
 
 static CONFIG: [ConfigInfo; 2] = [KIND, INPUTS];
@@ -269,10 +269,13 @@ impl RandomSelectNode {
                     let current = input == now;
                     let pass = match event.kind {
                         EventKind::NoteOn { note, .. } => {
-                            if current && self.held.len() < HELD {
+                            // A note-on that can't be remembered is dropped, so
+                            // it can't be left without its note-off.
+                            let room = self.held.len() < HELD;
+                            if current && room {
                                 self.held.push((input, note));
                             }
-                            current
+                            current && room
                         }
                         EventKind::NoteOff { note, .. } => {
                             let at = self.held.iter().position(|&h| h == (input, note));
@@ -511,6 +514,20 @@ mod tests {
             seen += FRAMES;
         }
         panic!("never switched");
+    }
+
+    #[test]
+    fn a_full_held_list_drops_note_ons_rather_than_their_offs() {
+        let mut h = notes(1);
+        let ons: Vec<Event> = (0..HELD as u32 + 4).map(|i| on(1, i)).collect();
+        // The harness's event buffer holds 1024.
+        h.send_events(0, &ons);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0).len(), HELD);
+        let offs: Vec<Event> = (0..HELD as u32 + 4).map(|i| off(2, i)).collect();
+        h.send_events(0, &offs);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0).len(), HELD);
     }
 
     #[test]
