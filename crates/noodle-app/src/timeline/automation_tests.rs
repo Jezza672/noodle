@@ -568,3 +568,48 @@ fn removing_a_free_tracks_lane_removes_its_node_too() {
     assert!(h.state().session.project().graph().node(node).is_some());
     assert!(lane(&h, id).is_some());
 }
+
+#[test]
+fn a_selected_point_copies_and_pastes_at_the_playhead_on_its_lane() {
+    crate::clipboard::clear();
+    let (mut h, output) = rig();
+    let id = add_lane(
+        &mut h,
+        gain(output),
+        vec![point(1, 0.0, Curve::Linear), point(2, -6.0, Curve::Hold)],
+    );
+    assert!(!h.state().timeline.can_copy());
+    let at = point_at(&h, id, 1);
+    click(&mut h, at);
+    assert!(h.state().timeline.can_copy());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+    h.run();
+    assert_eq!(ticks(&h, id), vec![960, 1920], "copying changes nothing");
+    assert!(h.state().timeline.can_paste());
+    // No playhead in the rig, so it lands at the start, keeping value and curve.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+    h.run();
+    assert_eq!(ticks(&h, id), vec![0, 960, 1920]);
+    let pasted = lane(&h, id).unwrap().points[0];
+    assert_eq!((pasted.value, pasted.curve), (-6.0, Curve::Hold));
+    assert_eq!(h.state().timeline.automation().selected(), Some((id, 0)));
+    h.state_mut().session.undo();
+    assert_eq!(ticks(&h, id), vec![960, 1920]);
+}
+
+#[test]
+fn cutting_a_point_removes_it() {
+    crate::clipboard::clear();
+    let (mut h, output) = rig();
+    let id = add_lane(
+        &mut h,
+        gain(output),
+        vec![point(1, 0.0, Curve::Linear), point(2, -6.0, Curve::Linear)],
+    );
+    let at = point_at(&h, id, 1);
+    click(&mut h, at);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::X);
+    h.run();
+    assert_eq!(ticks(&h, id), vec![960]);
+    assert_eq!(h.state().timeline.automation().selected(), None);
+}

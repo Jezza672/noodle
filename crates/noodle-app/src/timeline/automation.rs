@@ -313,6 +313,64 @@ fn value_at(row: Rect, key: &str, y: f32) -> f32 {
     }
 }
 
+/// Copies, cuts or pastes the selected point (a copy keeps its value and
+/// curve; a paste puts it on the selected point's lane at `playhead`). Does
+/// nothing without a selected point.
+pub fn act(
+    action: super::ClipAction,
+    state: &mut State,
+    project: &Project,
+    playhead: Tick,
+) -> Vec<Edit> {
+    use super::ClipAction;
+    use crate::clipboard::{POINT_MIME, copy, paste};
+    let Some((id, index)) = state.selected else {
+        return Vec::new();
+    };
+    let Some(lane) = project.lane(id) else {
+        return Vec::new();
+    };
+    match action {
+        ClipAction::Copy | ClipAction::Cut => {
+            let Some(&point) = lane.points.get(index) else {
+                return Vec::new();
+            };
+            copy(
+                POINT_MIME,
+                &vec![AutomationPoint {
+                    tick: Tick::ZERO,
+                    ..point
+                }],
+                "1 automation point",
+            );
+            if action == ClipAction::Cut {
+                let mut lane = lane.clone();
+                lane.points.remove(index);
+                state.selected = None;
+                return vec![Edit::Apply(Command::SetLane { id, lane })];
+            }
+            Vec::new()
+        }
+        ClipAction::Paste => {
+            let Some(points) = paste::<Vec<AutomationPoint>>(POINT_MIME) else {
+                return Vec::new();
+            };
+            let (mut lane, mut at) = (lane.clone(), index);
+            for point in points {
+                let point = AutomationPoint {
+                    tick: Tick(playhead.0 + point.tick.0),
+                    ..point
+                };
+                (lane, at) = with_point(&lane, point);
+            }
+            state.selected = Some((id, at));
+            vec![Edit::Apply(Command::SetLane { id, lane })]
+        }
+        // A point has no "just after" to go to.
+        ClipAction::Duplicate => Vec::new(),
+    }
+}
+
 /// Whether the compiler will refuse the lane: solo is read when the project
 /// is compiled, so a lane on it never does anything.
 pub fn refused(lane: &AutomationLane) -> bool {

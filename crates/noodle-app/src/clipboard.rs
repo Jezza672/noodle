@@ -1,6 +1,6 @@
-//! The system clipboard, for what Noodle copies: clips and nodes go on it
-//! under their own MIME types (`application/x.noodle.clip` and
-//! `application/x.noodle.node`, RON text inside) beside a plain-text summary,
+//! The system clipboard, for what Noodle copies: clips, nodes, notes and
+//! automation points go on it under their own MIME types (`application/x.noodle.clip`,
+//! `.node`, `.notes` and `.points`, RON text inside) beside a plain-text summary,
 //! so they paste into another window or another run of the app, and pasting
 //! reads the type it wants and ignores anything else on the clipboard.
 //!
@@ -17,6 +17,11 @@ use serde::de::DeserializeOwned;
 pub const CLIP_MIME: &str = "application/x.noodle.clip";
 /// Nodes, their wires and frames, copied from the node editor.
 pub const NODE_MIME: &str = "application/x.noodle.node";
+
+/// Notes copied from the piano roll.
+pub const NOTE_MIME: &str = "application/x.noodle.notes";
+/// Automation points copied from a lane in the arrangement.
+pub const POINT_MIME: &str = "application/x.noodle.points";
 
 /// Where copied things are put and found.
 trait Backend {

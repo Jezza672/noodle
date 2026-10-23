@@ -338,6 +338,22 @@ fn boxed(
                 body::MeterAxis::Horizontal,
             );
         }
+        // Any other wired audio input shows the level arriving at it.
+        if text
+            && !port.spare
+            && port.side == Side::Input
+            && mixer_channel(graph, node.id, &port.key).is_none()
+        {
+            let levels = bodies.tap(node.id, &port.key);
+            if !levels.is_empty() {
+                let row = f.t.rect_to_screen(port.row);
+                let area = Rect::from_center_size(
+                    Pos2::new(row.right() - 30.0 * z, row.center().y),
+                    Vec2::new(48.0 * z, 7.0 * z),
+                );
+                body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+            }
+        }
         socket(painter, f, port);
     }
 

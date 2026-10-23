@@ -332,12 +332,15 @@ impl TimelineState {
 
     /// Whether there are selected clips to copy, cut or duplicate.
     pub fn can_copy(&self) -> bool {
-        !self.selected.is_empty()
+        !self.selected.is_empty() || self.automation.selected().is_some()
     }
 
-    /// Whether there is anything to paste.
+    /// Whether there is anything to paste: clips, or a point where one is
+    /// selected to paste onto its lane.
     pub fn can_paste(&self) -> bool {
         crate::clipboard::holds(crate::clipboard::CLIP_MIME)
+            || (self.automation.selected().is_some()
+                && crate::clipboard::holds(crate::clipboard::POINT_MIME))
     }
 }
 
@@ -1172,6 +1175,12 @@ pub fn show(
                             .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                     })
                 };
+                edits.extend(automation::act(
+                    action,
+                    &mut state.automation,
+                    project,
+                    playhead.unwrap_or(Tick::ZERO),
+                ));
                 let chosen: Vec<(ClipId, Clip)> = state
                     .selected
                     .iter()

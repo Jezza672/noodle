@@ -113,6 +113,22 @@ It has these views:
     holds text. `clipboard.rs` is the one place that talks to the system
     clipboard (`clipboard-rs`); with no clipboard to open, and in tests, it
     keeps the copy in memory.
+    The piano roll's notes (`application/x.noodle.notes`) and an
+    automation lane's selected point (`application/x.noodle.points`) share
+    the same clipboard, one MIME type each, so a paste reads only its own.
+    The keys act on the view under the pointer, and the Edit menu's Cut, Copy,
+    Paste and Duplicate act on the view last clicked in (`App::focus`: the
+    arrangement, the piano roll or the node graph; a click on the menu
+    itself doesn't count).
+  - **Audio input meters.** Every wired audio input on a node that draws
+    a body shows a small meter at the right of its row, except on the Meter,
+    Mix and group-boundary nodes, which meter their inputs already. The
+    engine opens one meter channel per wired audio input when it builds a
+    plan (`Telemetry::open_input_meter`, keyed by node and port key) and
+    writes one peak and one block RMS per channel as the node is prepared
+    to run: atomics only, nothing allocated or locked, and only when a
+    telemetry hub is attached. `Bodies` reads them with the other meters
+    (`Bodies::tap`). Modulation inputs are left out.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per

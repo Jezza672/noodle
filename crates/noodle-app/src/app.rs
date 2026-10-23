@@ -60,6 +60,9 @@ const SHORTCUTS: [(KeyboardShortcut, Action); 9] = [
 ];
 
 pub struct App {
+    /// The view the Edit menu's Cut, Copy, Paste and Duplicate act on: the
+    /// last one clicked in.
+    focus: Focus,
     session: Session,
     editor: EditorState,
     timeline: TimelineState,
@@ -103,6 +106,13 @@ pub struct App {
 /// Something the user asked for, from a menu or a shortcut. Collected during
 /// the frame and run afterwards, so nothing slow (file dialogs, file and
 /// device I/O) happens while egui is mid-frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Focus {
+    Arrangement,
+    Notes,
+    Graph,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     New,
@@ -199,6 +209,7 @@ impl App {
             session,
             editor: EditorState::default(),
             timeline: TimelineState::default(),
+            focus: Focus::Graph,
             piano_roll: PianoRoll::default(),
             clip_editor: ClipEditor::default(),
             clip_panel: ClipPanel::default(),
@@ -419,7 +430,7 @@ impl App {
                 self.session.edit(edits);
             });
 
-        egui::Panel::top("arrangement")
+        let arrangement = egui::Panel::top("arrangement")
             .resizable(true)
             .default_size(theme::timeline::DEFAULT_HEIGHT)
             .frame(egui::Frame::NONE)
@@ -472,22 +483,28 @@ impl App {
             self.clip_editor.open_sampler(node);
         }
 
+        let mut roll_rect = None;
         if let Some(clip) = self.piano_roll.clip() {
-            egui::Panel::top("piano roll")
-                .resizable(true)
-                .default_size(piano_roll::DEFAULT_HEIGHT)
-                .frame(egui::Frame::NONE.fill(theme::PANEL))
-                .show(ui, |ui| {
-                    let playhead = Some(self.session.playhead());
-                    let out = piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
-                    self.session.edit(out.edits);
-                    if let Some(track) = self.session.project().clip(clip).map(|c| c.node) {
-                        self.audition_track = Some(track);
-                        for (key, on) in out.audition {
-                            self.session.audition(track, key, on);
+            roll_rect = Some(
+                egui::Panel::top("piano roll")
+                    .resizable(true)
+                    .default_size(piano_roll::DEFAULT_HEIGHT)
+                    .frame(egui::Frame::NONE.fill(theme::PANEL))
+                    .show(ui, |ui| {
+                        let playhead = Some(self.session.playhead());
+                        let out =
+                            piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
+                        self.session.edit(out.edits);
+                        if let Some(track) = self.session.project().clip(clip).map(|c| c.node) {
+                            self.audition_track = Some(track);
+                            for (key, on) in out.audition {
+                                self.session.audition(track, key, on);
+                            }
                         }
-                    }
-                });
+                    })
+                    .response
+                    .rect,
+            );
         }
         self.clip_editor.retain_existing(self.session.project());
         if let Some(subject) = self.clip_editor.subject() {
@@ -522,13 +539,19 @@ impl App {
             self.session.audition(track, key, false);
         }
 
-        egui::CentralPanel::default()
+        let graph = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::CANVAS))
             .show(ui, |ui| {
                 let edits = editor::show(ui, &mut self.editor, &self.session);
                 self.session.edit(edits);
                 self.open_requested_view();
             });
+        self.track_focus(
+            ui.ctx(),
+            arrangement.response.rect,
+            roll_rect,
+            graph.response.rect,
+        );
         if let Some(dropped) = self.editor.take_dropped() {
             self.dropped_on_graph(dropped);
         }
@@ -708,16 +731,15 @@ impl App {
                 Action::Redo,
             );
             ui.separator();
-            let clips = self.timeline.can_copy();
+            let (clips, pasteable) = match self.focus {
+                Focus::Arrangement => (self.timeline.can_copy(), self.timeline.can_paste()),
+                Focus::Notes => (self.piano_roll.can_copy(), self.piano_roll.can_paste()),
+                Focus::Graph => (self.editor.has_selection(), self.editor.can_paste()),
+            };
             for (text, shortcut, enabled, action) in [
                 ("Cut", &CUT, clips, timeline::ClipAction::Cut),
                 ("Copy", &COPY, clips, timeline::ClipAction::Copy),
-                (
-                    "Paste",
-                    &PASTE,
-                    self.timeline.can_paste(),
-                    timeline::ClipAction::Paste,
-                ),
+                ("Paste", &PASTE, pasteable, timeline::ClipAction::Paste),
                 (
                     "Duplicate",
                     &DUPLICATE,
@@ -1399,7 +1421,11 @@ impl App {
                 self.editor.request_fit();
                 ctx.request_repaint();
             }
-            Action::Clips(action) => self.timeline.request(action),
+            Action::Clips(action) => match self.focus {
+                Focus::Arrangement => self.timeline.request(action),
+                Focus::Notes => self.piano_roll.request(action),
+                Focus::Graph => self.editor.request_clip(action),
+            },
             Action::DeleteSelection => {
                 if let Some(edit) = self.editor.delete_selection() {
                     self.session.edit([edit]);
@@ -1409,6 +1435,34 @@ impl App {
                 self.closing = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+        }
+    }
+
+    /// Makes the view that was just clicked in the one the Edit menu acts on.
+    /// A click on the menu itself, which floats over the views, doesn't count.
+    fn track_focus(
+        &mut self,
+        ctx: &egui::Context,
+        arrangement: egui::Rect,
+        roll: Option<egui::Rect>,
+        graph: egui::Rect,
+    ) {
+        let Some(at) = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()))
+        else {
+            return;
+        };
+        if ctx
+            .layer_id_at(at)
+            .is_some_and(|layer| layer.order != egui::Order::Background)
+        {
+            return;
+        }
+        if arrangement.contains(at) {
+            self.focus = Focus::Arrangement;
+        } else if roll.is_some_and(|r| r.contains(at)) {
+            self.focus = Focus::Notes;
+        } else if graph.contains(at) {
+            self.focus = Focus::Graph;
         }
     }
 
@@ -1665,6 +1719,26 @@ mod tests {
         harness.get_by_label_contains("Delete").click();
         harness.run();
         assert!(harness.state().session.project().graph().node(id).is_none());
+    }
+
+    #[test]
+    fn edit_duplicate_acts_on_the_view_that_was_clicked_last() {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        app.editor.selected.insert(id);
+        app.editor.active = Some(id);
+        let mut harness = harness(app);
+        harness.run();
+        // The node graph is where the menu acts to begin with.
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.get_by_label_contains("Duplicate").click();
+        harness.run();
+        assert_eq!(harness.state().session.project().graph().nodes().count(), 2);
     }
 
     #[test]
