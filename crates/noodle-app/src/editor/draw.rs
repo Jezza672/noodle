@@ -345,14 +345,14 @@ fn boxed(
         let node_id = node.id;
         // What each parameter is now: a wire's live value, else the node's
         // own, else the default.
+        // Every parameter's default, shown on the node or not: a graph reads
+        // parameters the node doesn't list as ports.
+        let defaults = param_defaults(f.registry, graph.node(node_id));
         let values = |key: &str| {
             let Some(own) = graph.node(node_id) else {
                 return 0.0;
             };
-            let default = node.ports.iter().find_map(|port| match &port.kind {
-                PortKind::Param(info) if port.key == key => Some(info.default),
-                _ => None,
-            });
+            let default = defaults.iter().find(|(k, _)| k == key).map(|&(_, d)| d);
             crate::widgets::graph::graph_value(
                 key,
                 own,
@@ -700,4 +700,44 @@ fn mixer_channel(graph: &noodle_core::Graph, id: noodle_core::NodeId, key: &str)
     let mixer = graph.node(id)?.type_id == noodle_core::spare::MIXER;
     let index = noodle_core::spare::mixer_input_index(key)?;
     mixer.then(|| index - 1)
+}
+
+/// Every parameter's default by key, shown on the node as a port or not: a
+/// graph reads parameters the node doesn't list.
+fn param_defaults(
+    registry: &noodle_engine::Registry,
+    node: Option<&noodle_core::Node>,
+) -> Vec<(String, f32)> {
+    let Some(node) = node else {
+        return Vec::new();
+    };
+    let Some(layout) = registry
+        .get(&node.type_id)
+        .and_then(|t| t.layout(&node.config).ok())
+    else {
+        return Vec::new();
+    };
+    layout
+        .inputs
+        .iter()
+        .filter_map(|input| match &input.kind {
+            noodle_engine::InputKind::Param(info) => Some((input.key.to_string(), info.default)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn a_graph_node_knows_the_defaults_of_parameters_it_does_not_show() {
+        let nodes = crate::session::Nodes::all();
+        let node = noodle_core::Node::new("noodle.effect.eq");
+        let defaults = param_defaults(&nodes.registry, Some(&node));
+        let get = |key: &str| defaults.iter().find(|(k, _)| k == key).map(|&(_, d)| d);
+        assert_eq!(get("freq2"), Some(400.0));
+        assert!((get("q1").unwrap() - 0.707).abs() < 1e-3);
+    }
 }

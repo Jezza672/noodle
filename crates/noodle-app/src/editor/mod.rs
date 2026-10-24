@@ -602,6 +602,7 @@ impl Problems {
 /// One frame of the editor, with everything it needs worked out.
 struct Frame_<'a> {
     project: &'a Project,
+    registry: &'a Registry,
     scene: Rc<Scene>,
     t: Transform,
     /// Indices into `scene.nodes`, bottom first. Selected nodes are on top.
@@ -659,6 +660,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     });
     let f = Frame_ {
         project,
+        registry: inputs.registry,
         t: state.view.on(canvas),
         scene,
         order,
