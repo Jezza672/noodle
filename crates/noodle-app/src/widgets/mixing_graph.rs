@@ -378,26 +378,6 @@ pub(super) fn paint_eq(painter: &Painter, rect: Rect, values: Values<'_>, scale:
         }
     }
     let bands = eq_bands(values);
-    {
-        // DEBUG (temporary): the rect each view plots into, and its curve.
-        thread_local!(static LAST: std::cell::RefCell<std::collections::HashMap<bool, String>> = Default::default());
-        let text = format!(
-            "full={full} rect=({:.1},{:.1} {:.1}x{:.1}) clip={:?} scale={scale} bands={:?}",
-            rect.left(),
-            rect.top(),
-            rect.width(),
-            rect.height(),
-            painter.clip_rect(),
-            bands
-        );
-        LAST.with(|l| {
-            let mut l = l.borrow_mut();
-            if l.get(&full) != Some(&text) {
-                eprintln!("[eqdebug] {text}");
-                l.insert(full, text);
-            }
-        });
-    }
     let points: Vec<P> = (0..=160)
         .map(|i| {
             let x = i as f32 / 160.0;
