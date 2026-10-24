@@ -7,6 +7,7 @@ use crate::NodeType;
 #[derive(Default)]
 pub struct Registry {
     types: BTreeMap<&'static str, Arc<dyn NodeType>>,
+    generation: u64,
 }
 
 impl Registry {
@@ -19,6 +20,7 @@ impl Registry {
         let id = node_type.info().id;
         let previous = self.types.insert(id, Arc::new(node_type));
         assert!(previous.is_none(), "node type {id} registered twice");
+        self.generation += 1;
     }
 
     /// Registers a type, replacing one with the same ID if there is one.
@@ -26,6 +28,13 @@ impl Registry {
     /// [`with_builtins`](Self::with_builtins) and a fuller one elsewhere.
     pub fn replace(&mut self, node_type: impl NodeType) {
         self.types.insert(node_type.info().id, Arc::new(node_type));
+        self.generation += 1;
+    }
+
+    /// Changes whenever a type is registered or replaced, so what was derived
+    /// from the registry (a node's layout) can be told to be stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<dyn NodeType>> {

@@ -441,8 +441,10 @@ fn bring_to_playhead(rig: &mut Rig, id: noodle_core::ClipId) {
 /// Replaces `path` with something that isn't audio, keeping its timestamp so
 /// the schedule still takes the clip as good.
 fn damage(path: &std::path::Path) {
-    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
-    std::fs::write(path, b"not audio").unwrap();
+    let meta = std::fs::metadata(path).unwrap();
+    let modified = meta.modified().unwrap();
+    // The same length too: a file's stamp is its size and its time.
+    std::fs::write(path, vec![b'x'; meta.len() as usize]).unwrap();
     std::fs::File::options()
         .write(true)
         .open(path)

@@ -70,6 +70,8 @@ const MIN_PPS: f32 = 16.0;
 const MAX_PPS: f32 = 1200.0;
 
 pub struct TimelineState {
+    /// The track list for the project revision it was worked out at.
+    tracks_cache: Option<(u64, std::rc::Rc<[NodeId]>)>,
     /// Zoom: screen points per second.
     pps: f32,
     /// How far the view is scrolled, in screen points.
@@ -124,6 +126,7 @@ pub struct TimelineState {
 impl Default for TimelineState {
     fn default() -> Self {
         Self {
+            tracks_cache: None,
             pps: 120.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
@@ -160,6 +163,18 @@ impl Default for TimelineState {
 }
 
 impl TimelineState {
+    /// [`tracks`], worked out again only when the project changed.
+    fn tracks(&mut self, project: &Project) -> std::rc::Rc<[NodeId]> {
+        match &self.tracks_cache {
+            Some((revision, tracks)) if *revision == project.revision() => tracks.clone(),
+            _ => {
+                let tracks: std::rc::Rc<[NodeId]> = tracks(project).into();
+                self.tracks_cache = Some((project.revision(), tracks.clone()));
+                tracks
+            }
+        }
+    }
+
     /// How far the tracks are scrolled down, for tests.
     #[cfg(test)]
     pub fn scroll_y(&self) -> f32 {
@@ -381,10 +396,11 @@ enum Mode {
 /// The track lanes, top to bottom: every track input node, and any other node
 /// that has clips.
 pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
+    let with_clips: BTreeSet<NodeId> = project.clips().map(|(_, clip)| clip.node).collect();
     let mut tracks: Vec<NodeId> = project
         .graph()
         .nodes()
-        .filter(|(id, node)| node.type_id == TRACK_INPUT || project.clips_on(*id).next().is_some())
+        .filter(|(id, node)| node.type_id == TRACK_INPUT || with_clips.contains(id))
         .map(|(id, _)| id)
         .collect();
     // Track order is the order of the groups the inputs sit in; an input
@@ -466,7 +482,7 @@ pub fn show(
 ) -> Output {
     let project = session.project();
     state.retain_existing(project);
-    let tracks = tracks(project);
+    let tracks = state.tracks(project);
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
     let rows = automation::Rows::new(project, &tracks, &heights);
     let map = project.tempo_map();

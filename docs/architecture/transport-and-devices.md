@@ -28,6 +28,16 @@ rewind only touch the transport:
   graph with the transport stopped only looks again every 250 ms, to
   catch sound that starts without input, such as live MIDI. The playhead keeps its own
   repaint while it plays.
+- **The window sleeps until there is news.** Background work wakes it:
+  `noodle_engine::wake` (the app registers a repaint request) is called when a
+  `Job` ends (freezes, exports, stem splits, renders), when the plugin scan
+  finishes and when the audio file watcher sees a file change. For what has to
+  be looked at, `Session::next_deadline` says when: the next frame while the
+  transport plays, a recording is open or a plan waits for room in the queue; one
+  second for the stream's health and for MIDI hot-plug; the freeze debounce;
+  half a second for sandboxed plugin hosts. `App::show` asks for one repaint at
+  the earliest, so an idle project with the transport stopped runs about one
+  frame a second, plus the editor's own liveness repaints above.
 - **The fallback.** `Session::start_engine` tries the saved output, then the
   system default (as `play` always did), then the **virtual output**. Either
   fallback is not saved, shows a message in the status bar, and sets

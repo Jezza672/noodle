@@ -32,6 +32,11 @@ pub struct Project {
     /// Nodes and groups whose output plays from a cached render (see
     /// "Caching" in docs/architecture/caching.md).
     frozen: BTreeSet<NodeId>,
+    /// Names this project's contents, so a view can tell whether it changed
+    /// without comparing it. Drawn from one counter for all projects, so a
+    /// newly loaded project never has the revision of the one it replaces.
+    /// Not saved, and not part of equality.
+    revision: u64,
 }
 
 impl Default for Project {
@@ -50,8 +55,14 @@ impl Default for Project {
             next_lane_id: 1,
             track_order: Vec::new(),
             frozen: BTreeSet::new(),
+            revision: next_revision(),
         }
     }
+}
+
+fn next_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Like [`Graph`], two projects are equal if their contents are, whichever IDs
@@ -142,6 +153,17 @@ impl Project {
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Changes whenever a [`Command`](crate::Command) is applied, undo and
+    /// redo included, and never otherwise. Equal revisions mean equal
+    /// contents (a clone has its original's), so views can cache what they derive from it.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn bump_revision(&mut self) {
+        self.revision = next_revision();
     }
 
     pub(crate) fn graph_mut(&mut self) -> &mut Graph {
@@ -668,6 +690,7 @@ impl Project {
             next_lane_id,
             track_order: file.track_order,
             frozen: file.frozen,
+            revision: next_revision(),
         };
         for (id, warp) in &project.warps {
             project.check_warp(*id, warp).map_err(LoadError::Broken)?;

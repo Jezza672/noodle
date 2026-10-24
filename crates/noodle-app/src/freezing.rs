@@ -140,6 +140,11 @@ impl Freezing {
         }
     }
 
+    /// When an edit waiting for the debounce will be due.
+    pub fn due_at(&self) -> Option<Instant> {
+        self.dirty_since.map(|since| since + DEBOUNCE)
+    }
+
     pub fn is_waiting(&self) -> bool {
         self.dirty_since.is_some()
     }

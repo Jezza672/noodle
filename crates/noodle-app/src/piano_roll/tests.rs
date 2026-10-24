@@ -26,6 +26,11 @@ fn note(start: i64, length: i64, key: u8) -> MidiNote {
 
 /// A four beat clip (3840 ticks) holding `notes`, open in the roll.
 fn rig(notes: &[MidiNote]) -> H {
+    rig_at(Tick(960), notes)
+}
+
+/// The same, starting at `start`.
+fn rig_at(start: Tick, notes: &[MidiNote]) -> H {
     let mut session = Session::new(Nodes::all());
     session.set_snap(240);
     session.edit([Edit::Apply(Command::AddNode {
@@ -33,7 +38,7 @@ fn rig(notes: &[MidiNote]) -> H {
         node: Node::new(TRACK_INPUT),
     })]);
     let clip = session.project().next_clip_id();
-    let mut midi = Clip::midi(NodeId(1), Tick(960), Tick(3840));
+    let mut midi = Clip::midi(NodeId(1), start, Tick(3840));
     let ClipContent::Midi(content) = &mut midi.content else {
         unreachable!()
     };
@@ -495,5 +500,41 @@ fn the_edit_menu_can_ask_for_a_copy_and_paste() {
     assert!(h.state().roll.can_paste());
     h.state_mut().roll.request(ClipAction::Paste);
     h.run();
-    assert_eq!(notes_of(&h).len(), 2);
+}
+
+/// The tick (from the clip's start) a double click at `tick` makes a note at,
+/// with the snap on a beat.
+fn note_added_at(h: &mut H, tick: i64) -> i64 {
+    h.state_mut().session.set_snap(TICKS_PER_QUARTER);
+    h.run();
+    let pos = at(h, tick, 65);
+    double_click(h, pos);
+    notes_of(h)[0].start.0
+}
+
+#[test]
+fn notes_snap_to_the_beat_lines_drawn_even_in_a_clip_off_the_beat() {
+    // A clip starting at tick 100, as Alt-placing one can: the beat lines are
+    // at 960 and 1920 absolute, so 860 and 1820 from the clip's start.
+    let mut h = rig_at(Tick(100), &[]);
+    let start = note_added_at(&mut h, 900);
+    assert_eq!(start, 860, "absolute {}", start + 100);
+}
+
+#[test]
+fn notes_snap_to_the_beat_lines_of_the_time_signature() {
+    let mut h = rig_at(Tick(960), &[]);
+    let map = crate::tempo::with_signature(
+        h.state().session.project().tempo_map(),
+        noodle_core::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        },
+    )
+    .unwrap();
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetTempoMap(map))]);
+    // In 6/8 a beat is 480 ticks, and the nearest line to 500 is at 480.
+    assert_eq!(note_added_at(&mut h, 500), 480);
 }

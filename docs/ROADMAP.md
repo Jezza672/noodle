@@ -61,4 +61,8 @@ need a person and hardware, plus a few deliberately deferred items.
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
 - **Beat view gain envelope.** The beat view draws no gain envelope (clip or
   sample).
+- **Cleanup leftovers** (see `features/code-cleanup.md`): one `TimeAxis` for the
+  arrangement, piano roll and clip editor (only the piano roll's snap is done), a
+  sandbox monitor that sleeps with no tick, and one retry policy for files that
+  fail to open.
 - **Flaky test** #138 stays open (no recurrence).

@@ -15,7 +15,9 @@ mod notes;
 use std::collections::BTreeSet;
 
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
-use noodle_core::{Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, Tick};
+use noodle_core::{
+    Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, TICKS_PER_QUARTER, Tick,
+};
 
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
@@ -102,7 +104,7 @@ pub struct Geometry {
 #[cfg(test)]
 impl Geometry {
     pub fn x(&self, tick: i64) -> f32 {
-        self.origin + tick as f32 / 960.0 * self.ppq
+        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
     }
 
     /// The vertical centre of `key`'s row.
@@ -245,11 +247,11 @@ struct Axes {
 
 impl Axes {
     fn x(self, tick: i64) -> f32 {
-        self.origin + tick as f32 / 960.0 * self.ppq
+        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
     }
 
     fn tick(self, x: f32) -> i64 {
-        ((x - self.origin) / self.ppq * 960.0).round() as i64
+        ((x - self.origin) / self.ppq * TICKS_PER_QUARTER as f32).round() as i64
     }
 
     fn y_top(self, key: u8) -> f32 {
@@ -347,7 +349,7 @@ pub fn show(
 
     if state.focus {
         state.focus = false;
-        let beats = (length as f32 / 960.0).max(1.0);
+        let beats = (length as f32 / TICKS_PER_QUARTER as f32).max(1.0);
         state.ppq = ((grid_rect.width() - 24.0) / beats).clamp(MIN_PPQ, MAX_PPQ);
         state.scroll_x = 0.0;
         let middle = match (
@@ -394,7 +396,7 @@ pub fn show(
         Sense::click_and_drag(),
     );
     let free = ui.input(|i| i.modifiers.alt);
-    let snap = |tick: i64| notes::snap(tick, if free { 1 } else { state.step });
+    let snap = |tick: i64| notes::snap(map, clip.start, tick, if free { 1 } else { state.step });
     let min_length = if free { 1 } else { state.step.max(1) };
     let shift = ui.input(|i| i.modifiers.shift);
     let mut hit_note = false;
@@ -563,7 +565,7 @@ pub fn show(
         midi,
         ruler_rect,
         axes,
-        &|t| notes::snap(t, step),
+        &|t| notes::snap(map, clip.start, t, step),
     );
 
     // The velocity lane, with a bar per note.
@@ -768,7 +770,7 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
         state.scroll_x -= scroll.x;
         state.scroll_y -= scroll.y;
     }
-    let width = length as f32 / 960.0 * state.ppq;
+    let width = length as f32 / TICKS_PER_QUARTER as f32 * state.ppq;
     state.scroll_x = state
         .scroll_x
         .clamp(0.0, (width - grid.width() * 0.5).max(0.0));

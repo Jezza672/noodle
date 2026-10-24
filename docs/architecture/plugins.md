@@ -148,8 +148,16 @@ application whose UI thread should be the plugin thread calls
 `adopt_current_thread(wake)` once at startup and `pump()` every frame:
 requests from the UI thread then run on the spot, and requests from other
 threads (a freeze render loading the plugin, say) wait in a queue for `pump`,
-which `wake` asks the UI to run. `pump` also returns when to be called next so
-plugin timers run (nothing is asked of an app with no plugin loaded). The app
+which `wake` asks the UI to run. `pump` also returns when to be called next, or
+`None` when nothing needs it: only a registered timer (at its due time), an open
+editor (50 ms, because the window system closing or resizing it makes no sound to
+wait on) or a plugin that has used `request_callback` (250 ms, since a request
+from the audio thread can't wake the UI) ask for a call. A plugin loaded with no
+timer and no editor costs the UI no wake-ups. The own-thread case (Linux) is the
+same without the polling: the thread sleeps on a `Doorbell`, rung by a queued
+command or by `request_callback`, a resize or a closed editor (a ring is real-time
+safe, so the audio thread may do it), and wakes by itself only for the same
+timers and open editors. The app
 does this on macOS and Windows only; Linux plugins keep their own thread, since
 an X11 editor needs no event loop of ours. The cost is that a slow plugin
 load or editor call stalls the UI thread there, as it already did when the
@@ -420,7 +428,9 @@ The code is `noodle-plugins/src/sandbox/`:
   `Catalog::extender`, i.e. freeze and export) are *patient*: they wait for as
   long as the host lives. Nothing here allocates, locks or waits on a lock
   (`tests/realtime.rs` counts); the one syscall is the wake-up write.
-- **Restarts.** A monitor thread per node polls the child (every 20 ms). If it
+- **Restarts.** A monitor thread per node polls the child (every 250 ms while the
+  host is healthy and idle, every 20 ms while a block is pending or the host is down,
+  and at once when the audio thread drops a block or the node is dropped). If it
   exits, or a block has been pending for 2 s (60 s when patient; a patient node waits out a restart instead of rendering silence), it flips
   `state` away from RUNNING, waits for the audio thread to leave (`in_audio`),
   kills the child, and after a back-off (250 ms times the attempt) starts a new
