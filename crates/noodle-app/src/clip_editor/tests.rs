@@ -23,6 +23,8 @@ struct Rig {
     /// Where the editor and the panel learn about the file.
     timeline: TimelineState,
     clip: ClipId,
+    /// The wheel delta left over after the editor was drawn.
+    left_scroll: Vec2,
     _dir: tempfile::TempDir,
 }
 
@@ -80,6 +82,7 @@ fn rig(warped: bool) -> H {
         panel: ClipPanel::default(),
         timeline: TimelineState::default(),
         clip,
+        left_scroll: Vec2::ZERO,
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -93,6 +96,8 @@ fn rig(warped: bool) -> H {
                     .source(ui.ctx(), directory.as_deref(), "hits.wav");
                 let out = show(ui, &mut rig.editor, &rig.session, loaded.as_ref(), None);
                 rig.session.edit(out.edits);
+                // What the editor left of the wheel, for the tests.
+                rig.left_scroll = ui.input(|i| i.smooth_scroll_delta);
             },
             rig,
         );
@@ -371,6 +376,7 @@ fn blank_rig() -> Rig {
         panel: ClipPanel::default(),
         timeline: TimelineState::default(),
         clip: ClipId(0),
+        left_scroll: Vec2::ZERO,
         _dir: tempfile::tempdir().unwrap(),
     }
 }
@@ -923,6 +929,60 @@ fn ctrl_scroll_zooms_the_clip_editor_for_any_clip() {
         let after = h.state().editor.view.ppb;
         assert!(after > before * 1.2, "warped {warped}: {before} -> {after}");
     }
+}
+
+#[test]
+fn a_vertical_wheel_does_not_pan_the_audio() {
+    // The pane has one axis, the time along the horizontal, so a vertical
+    // wheel turn has nothing to scroll and must not slide the audio sideways.
+    for plain in [false, true] {
+        let mut h = if plain { plain_rig() } else { rig(true) };
+        let at = if plain {
+            h.state()
+                .editor
+                .plain_geometry()
+                .expect("drawn")
+                .wave
+                .center()
+        } else {
+            geometry(&h).wave.center()
+        };
+        let before = h.state().editor.scroll();
+        crate::testkit::wheel(
+            &mut h,
+            at,
+            egui::MouseWheelUnit::Point,
+            egui::vec2(0.0, -80.0),
+        );
+        assert_eq!(
+            h.state().editor.scroll(),
+            before,
+            "plain {plain}: a vertical wheel panned the audio"
+        );
+    }
+}
+
+#[test]
+fn the_wheel_over_the_pane_is_swallowed_rather_than_passed_on() {
+    let mut h = plain_rig();
+    let at = h
+        .state()
+        .editor
+        .plain_geometry()
+        .expect("drawn")
+        .wave
+        .center();
+    crate::testkit::wheel(
+        &mut h,
+        at,
+        egui::MouseWheelUnit::Point,
+        egui::vec2(0.0, -80.0),
+    );
+    assert_eq!(
+        h.state().left_scroll,
+        Vec2::ZERO,
+        "the wheel delta was left for something else to scroll"
+    );
 }
 
 #[test]

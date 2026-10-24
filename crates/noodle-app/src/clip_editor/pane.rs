@@ -12,7 +12,9 @@
 
 use std::path::Path;
 
-use egui::{Align2, Color32, CursorIcon, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, vec2};
+use egui::{
+    Align2, Color32, CursorIcon, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, vec2,
+};
 use noodle_io::Peaks;
 use noodle_nodes::Sample;
 
@@ -346,6 +348,12 @@ pub(crate) fn show(ui: &mut Ui, view: &mut View, body: Rect, spec: &Spec) -> Out
 
 /// Zooms around the pointer (Ctrl+scroll, pinch) or pans (scroll, middle
 /// button drag), keeping `seconds` (the extent in time on the axis) in reach.
+///
+/// The pane has one axis, the time along the horizontal: every row of it
+/// (the ruler, the flags, the brace, the handles and the wave) is drawn in
+/// the space the pane has, so there is nothing to scroll up and down. The
+/// wheel's vertical component is therefore swallowed rather than turned into
+/// a sideways pan.
 pub(crate) fn navigate(ui: &Ui, view: &mut View, area: Rect, seconds: (f64, f64)) {
     let (scroll, zoom, pointer, middle) = ui.input(|i| {
         (
@@ -356,14 +364,19 @@ pub(crate) fn navigate(ui: &Ui, view: &mut View, area: Rect, seconds: (f64, f64)
         )
     });
     if zoom != 1.0 {
+        // Ctrl+scroll and pinch zoom; the wheel's own delta goes no further,
+        // so one turn cannot zoom and pan at once.
         let anchor = pointer.map_or(area.left(), |p| p.x.max(area.left()));
         let at = (anchor - area.left() + view.scroll_x) / view.ppb;
         view.ppb = (view.ppb * zoom).clamp(MIN_PPB, MAX_PPB);
         view.scroll_x = at * view.ppb - (anchor - area.left());
     } else {
         // The wheel pans along the time axis; so does a middle-button drag.
-        view.scroll_x -= scroll.x + scroll.y + middle.unwrap_or(0.0);
+        view.scroll_x -= scroll.x + middle.unwrap_or(0.0);
     }
+    // The wheel turn is the pane's: what it did not use is swallowed too, so
+    // that one turn does not scroll something else as well.
+    ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
     let (lo, hi) = (
         seconds.0 as f32 * view.ppb - 12.0,
         seconds.1 as f32 * view.ppb,
