@@ -165,6 +165,7 @@ pub fn special_value(
 /// properties panel so both draw one curve: the special values, else a wired
 /// parameter's live value, else the node's own value, else `default`.
 /// `live` reads the node's telemetry channel `key`.
+#[track_caller]
 pub fn graph_value(
     key: &str,
     node: &noodle_core::Node,
@@ -176,7 +177,25 @@ pub fn graph_value(
         return value;
     }
     let own = node.params.get(key).copied().unwrap_or(default);
-    if wired { live(key).unwrap_or(own) } else { own }
+    let result = if wired { live(key).unwrap_or(own) } else { own };
+    // DEBUG (temporary): which view reads what for a wired parameter.
+    if wired {
+        thread_local!(static LAST: std::cell::RefCell<std::collections::HashMap<u32, String>> = Default::default());
+        let line = std::panic::Location::caller().line();
+        let text = format!(
+            "{}:{line} {key} wired live={:?} own={own} -> {result}",
+            std::panic::Location::caller().file(),
+            live(key)
+        );
+        LAST.with(|last| {
+            let mut last = last.borrow_mut();
+            if last.get(&line) != Some(&text) {
+                eprintln!("[eqdebug] {text}");
+                last.insert(line, text);
+            }
+        });
+    }
+    result
 }
 
 fn adsr_shape(values: Values<'_>) -> AdsrShape {
