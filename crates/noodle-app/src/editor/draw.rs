@@ -343,10 +343,9 @@ fn boxed(
 
     if let Some(area) = node.body {
         let node_id = node.id;
-        // What each parameter is now: a wire's live value, else the node's
-        // own, else the default.
-        // Every parameter's default, shown on the node or not: a graph reads
-        // parameters the node doesn't list as ports.
+        // What each parameter is now: a wired one's live value, else the
+        // node's own, else its default, shown on the node or not (a graph
+        // reads parameters the node doesn't list as ports).
         let defaults = param_defaults(f.registry, graph.node(node_id));
         let values = |key: &str| {
             let Some(own) = graph.node(node_id) else {
