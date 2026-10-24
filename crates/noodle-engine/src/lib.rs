@@ -13,6 +13,7 @@ mod cache;
 mod channels;
 mod compile;
 mod denormals;
+mod doorbell;
 mod event;
 mod flatten;
 mod job;
@@ -52,14 +53,15 @@ pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
     ScheduledNode, SpectralBufferId, compile, compile_replacing, compile_with_lanes,
 };
+pub use doorbell::Doorbell;
 pub use event::{ChannelControl, Event, EventKind, EventsOut, Expression, NoteId};
 pub use flatten::flatten;
 pub use job::{Job, JobPanicked};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
 pub use monitor::{MONITOR_KEY, Monitor};
 pub use node::{
-    ConfigInfo, Context, InputKind, InputPort, Instance, Io, Layout, MAX_LATENCY, Mode, Node,
-    NodeError, NodeInfo, NodeType, Port, Setup, Transport,
+    ConfigInfo, Context, GraphKind, InputKind, InputPort, Instance, Io, Layout, MAX_LATENCY, Mode,
+    Node, NodeError, NodeInfo, NodeType, NodeView, Port, Setup, Transport,
 };
 pub use noodle_core::{Config, NodeId, Value};
 pub use noodle_macros::Ports;
@@ -86,8 +88,10 @@ pub use spectral::{
     SpectralOut, Synthesizer, bin_frequency, frame_capacity,
 };
 pub use telemetry::{
-    BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level, MeterReader,
-    MeterWriter, ParamReading, ParamWriter, ScopeView, ScopeWriter, Telemetry,
+    ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level,
+    MeterReader, MeterWriter, ParamReading, ParamWriter, PositionWriter, ScopeView, ScopeWriter,
+    Telemetry,
 };
 pub use tempo::TempoTable;
+pub mod wake;
 pub use transport::TransportControl;

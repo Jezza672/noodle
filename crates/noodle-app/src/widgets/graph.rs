@@ -21,7 +21,7 @@ use egui::{
     Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 use noodle_core::{Command, NodeId};
-use noodle_nodes::{ADSR_ID, AdsrShape, DYNAMICS_ID, EQ_ID, LADDER_ID, LFO_ID, SVF_ID, lfo_wave};
+use noodle_nodes::{AdsrShape, lfo_wave};
 
 use super::mixing_graph;
 
@@ -63,18 +63,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub fn of(type_id: &str) -> Option<Self> {
-        match type_id {
-            ADSR_ID => Some(Self::Adsr),
-            SVF_ID => Some(Self::Svf),
-            LADDER_ID => Some(Self::Ladder),
-            LFO_ID => Some(Self::Lfo),
-            DYNAMICS_ID => Some(Self::Dynamics),
-            EQ_ID => Some(Self::Eq),
-            _ => None,
-        }
-    }
-
     /// What the graph is called, for screen readers and tests.
     pub fn label(self) -> &'static str {
         match self {
@@ -82,6 +70,20 @@ impl Kind {
             Self::Svf | Self::Ladder | Self::Eq => "Frequency response graph",
             Self::Dynamics => "Dynamics graph",
             Self::Lfo => "Wave graph",
+        }
+    }
+}
+
+impl From<noodle_engine::GraphKind> for Kind {
+    fn from(kind: noodle_engine::GraphKind) -> Self {
+        use noodle_engine::GraphKind;
+        match kind {
+            GraphKind::Adsr => Self::Adsr,
+            GraphKind::Svf => Self::Svf,
+            GraphKind::Ladder => Self::Ladder,
+            GraphKind::Lfo => Self::Lfo,
+            GraphKind::Dynamics => Self::Dynamics,
+            GraphKind::Eq => Self::Eq,
         }
     }
 }
@@ -932,15 +934,6 @@ mod tests {
         let low = noodle_nodes::svf_response(1_000.0, 0.8, 1_000.0, SAMPLE_RATE)[0];
         assert!((svf.at.1 - gain_to_y(low)).abs() < 1e-6);
         assert!((svf.at.0 - hz_to_x(1_000.0)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn only_these_node_types_have_graphs() {
-        assert_eq!(Kind::of("noodle.mod.adsr"), Some(Kind::Adsr));
-        assert_eq!(Kind::of("noodle.filter.svf"), Some(Kind::Svf));
-        assert_eq!(Kind::of("noodle.filter.ladder"), Some(Kind::Ladder));
-        assert_eq!(Kind::of("noodle.mod.lfo"), Some(Kind::Lfo));
-        assert_eq!(Kind::of("noodle.util.gain"), None);
     }
 
     #[test]

@@ -20,9 +20,24 @@ rewind only touch the transport:
 - **Idle cost.** A graph with nothing to do renders silence, which the engine
   already skips (a silent lane is a branch and a memset), so an idle engine is
   cheap. A graph that makes sound on its own, like a drone, sounds as soon as
-  the engine is on; that's the price of ADR 0001. The window repaints at about
-  10 frames a second while the engine runs with the transport stopped, and 60
-  while it runs.
+  the engine is on; that's the price of ADR 0001. The node editor repaints
+  (at most 30 times a second) only while something it shows is moving or
+  falling: `Telemetry::activity` goes up when a meter, scope, parameter or
+  position writer reports a change, and `Bodies::update` says `Moving`,
+  `Decaying` (peaks, holds and spectra still falling) or `Still`. A silent
+  graph with the transport stopped only looks again every 250 ms, to
+  catch sound that starts without input, such as live MIDI. The playhead keeps its own
+  repaint while it plays.
+- **The window sleeps until there is news.** Background work wakes it:
+  `noodle_engine::wake` (the app registers a repaint request) is called when a
+  `Job` ends (freezes, exports, stem splits, renders), when the plugin scan
+  finishes and when the audio file watcher sees a file change. For what has to
+  be looked at, `Session::next_deadline` says when: the next frame while the
+  transport plays, a recording is open or a plan waits for room in the queue; one
+  second for the stream's health and for MIDI hot-plug; the freeze debounce;
+  half a second for sandboxed plugin hosts. `App::show` asks for one repaint at
+  the earliest, so an idle project with the transport stopped runs about one
+  frame a second, plus the editor's own liveness repaints above.
 - **The fallback.** `Session::start_engine` tries the saved output, then the
   system default (as `play` always did), then the **virtual output**. Either
   fallback is not saved, shows a message in the status bar, and sets

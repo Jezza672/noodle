@@ -133,7 +133,10 @@ before the start, keys and velocities in range).
   the velocity lane sets velocity. Notes snap to the app-wide snap step (the
   *Snap* menu in the menu bar: a beat down to 1/16 of a beat, or off; one
   setting for the arrangement, the piano roll and the clip editor, `snap.rs`),
-  Alt turns snapping off. Each gesture is one undo step,
+  Alt turns snapping off. In the piano roll, snapping is on the absolute grid
+  the roll draws (`grid::snap_to`, which follows the time signature), whatever
+  tick the clip starts on: the roll converts a clip-relative tick to an
+  absolute one, snaps it and converts back (`notes::snap`). Each gesture is one undo step,
   worked out from the notes as they were when it began. Notes carry an `id`
   that is unique in their clip (the project assigns one to any note that
   repeats an earlier id when a clip enters it, which also fixes files from

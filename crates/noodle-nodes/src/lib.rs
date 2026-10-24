@@ -48,6 +48,7 @@ mod sample;
 mod sample_hold;
 mod sample_input;
 mod sampler;
+mod sampler_stretch;
 mod scope;
 mod script;
 mod spectral;
@@ -129,7 +130,7 @@ pub use reverse::Reverse;
 pub use sample::{Sample, SampleError, SampleRef, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sample_input::{SAMPLE_INPUT_ID, SampleInput};
-pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
+pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
@@ -163,9 +164,6 @@ use noodle_core::Project;
 use noodle_engine::{
     Registry, Render, RenderError, Settings, Telemetry, TempoTable, render_project,
 };
-
-/// The node types that draw a meter of their output in the editor.
-pub const METERED: [&str; 3] = [METER_ID, GAIN_ID, VOICE_MIX_ID];
 
 /// What [`register_library`] gives back.
 pub struct Library {
@@ -268,7 +266,11 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     let samples = SampleStore::new();
-    registry.register(Sampler::new(&samples));
+    registry.register(if clips.is_blocking() {
+        Sampler::blocking(&samples, &telemetry)
+    } else {
+        Sampler::new(&samples, &telemetry)
+    });
     Library {
         telemetry,
         clips,

@@ -11,7 +11,6 @@ mod clipboard;
 mod devices;
 mod editor;
 mod export_dialog;
-mod filewatch;
 mod freezing;
 mod keyboard;
 mod metronome;
@@ -94,6 +93,10 @@ fn main() -> ExitCode {
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
             let _ = UI.set(cc.egui_ctx.clone());
+            let ctx = cc.egui_ctx.clone();
+            noodle_engine::wake::set_waker(Some(std::sync::Arc::new(move || {
+                ctx.request_repaint()
+            })));
             Ok(Box::new(App::new(session)))
         }),
     );

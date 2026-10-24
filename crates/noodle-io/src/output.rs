@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
-use noodle_engine::{Bus, Controller, Processor, Settings, TransportControl, engine_with_workers};
+use noodle_engine::{
+    Bus, Controller, Doorbell, Processor, Settings, TransportControl, engine_with_workers,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
@@ -156,12 +158,14 @@ impl DeviceWriter {
         for &(channels, device_rate) in extras {
             let capacity = (EXTRA_QUEUE_SECONDS * rate) as usize * channels;
             let (queue, tapped) = RingBuffer::new(capacity);
+            let bell = (device_rate != rate as u32).then(|| Arc::new(Doorbell::new()));
             self.taps.push(Tap {
                 queue,
                 first,
                 channels,
                 overruns: Arc::clone(glitches),
                 full: false,
+                bell: bell.clone(),
             });
             first += channels;
             let made = if device_rate == rate as u32 {
@@ -174,6 +178,7 @@ impl DeviceWriter {
                 let capacity = (EXTRA_QUEUE_SECONDS * device_rate as f32) as usize * channels;
                 let (converted, playing) = RingBuffer::new(capacity);
                 RateConverter::spawn(
+                    bell.expect("made for a converter"),
                     tapped,
                     converted,
                     channels,
@@ -189,8 +194,8 @@ impl DeviceWriter {
                         glitches,
                     );
                     output.ratio = f64::from(device_rate) / f64::from(rate);
-                    // The converter works a chunk at a time and wakes on a
-                    // timer, so what it makes arrives later than the tap's
+                    // The converter works a chunk at a time, and has to be
+                    // woken, so what it makes arrives later than the tap's
                     // block does.
                     output.slack = (f64::from(device_rate)
                         * (CONVERTER_CHUNK as f64 / f64::from(rate) + CONVERTER_WAKE.as_secs_f64()))
@@ -281,6 +286,8 @@ struct Tap {
     /// The last block didn't fit. A queue that stays full (a device that has
     /// stopped) counts once, not on every block.
     full: bool,
+    /// Rung when a block is queued, if a converter is waiting for it.
+    bell: Option<Arc<Doorbell>>,
 }
 
 impl Tap {
@@ -306,6 +313,9 @@ impl Tap {
                 .chunks(engine_channels)
                 .flat_map(|frame| frame[first..first + channels].iter().copied()),
         );
+        if let Some(bell) = &self.bell {
+            bell.ring();
+        }
     }
 }
 
@@ -438,7 +448,7 @@ impl ExtraOutput {
 
 /// How many frames the converter takes in at a time, at the engine's rate.
 const CONVERTER_CHUNK: usize = 128;
-/// How often the converter looks for audio when there was none.
+/// What a converter's wake-up is allowed to add to its delay.
 const CONVERTER_WAKE: Duration = Duration::from_millis(1);
 
 /// Converts an extra device's audio from the engine's rate to the device's, on
@@ -447,11 +457,13 @@ const CONVERTER_WAKE: Duration = Duration::from_millis(1);
 /// Dropping it stops the thread.
 struct RateConverter {
     stop: Arc<AtomicBool>,
+    bell: Arc<Doorbell>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl RateConverter {
     fn spawn(
+        bell: Arc<Doorbell>,
         mut input: Consumer<f32>,
         mut output: Producer<f32>,
         channels: usize,
@@ -466,6 +478,7 @@ impl RateConverter {
             })?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
+        let waiting = Arc::clone(&bell);
         let thread = thread::Builder::new()
             .name("noodle-resample".into())
             .spawn(move || {
@@ -478,7 +491,9 @@ impl RateConverter {
                         if input.is_abandoned() {
                             break;
                         }
-                        thread::sleep(CONVERTER_WAKE);
+                        // Rung by the tap when it queues a block. If the tap
+                        // is gone it sleeps on, until the output is dropped.
+                        waiting.wait(None);
                         continue;
                     }
                     let take = frames.min(block.len() / channels) * channels;
@@ -512,6 +527,7 @@ impl RateConverter {
             })?;
         Ok(Self {
             stop,
+            bell,
             thread: Some(thread),
         })
     }
@@ -524,6 +540,7 @@ impl Drop for RateConverter {
         // so this can run there; that only happens when the stream is torn
         // down, never while audio is playing.
         self.stop.store(true, Ordering::Relaxed);
+        self.bell.ring();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

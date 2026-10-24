@@ -42,14 +42,14 @@ mod view;
 mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
-use noodle_engine::OUTPUT_ID;
-use noodle_engine::{Diagnostic, Location, Registry};
-use noodle_nodes::{REROUTE_ID, SCOPE_ID};
+use noodle_engine::{Diagnostic, Location, NodeView, Registry};
+use noodle_nodes::REROUTE_ID;
 
 use crate::freezing::Badge;
 use crate::session::{Edit, Session};
@@ -104,6 +104,9 @@ pub struct EditorState {
     group_menu: Option<GroupMenu>,
     /// What meters and scopes show.
     bodies: body::Bodies,
+    /// The last scene built, and what it was built from. It is reused while
+    /// none of that changes.
+    scene_cache: Option<(SceneKey, Rc<Scene>)>,
     /// What Copy and Cut last took, for Paste.
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
@@ -140,6 +143,36 @@ struct Clipboard {
     frames: Vec<Frame>,
 }
 
+/// What a [`Scene`] is built from: the project (by revision), the node types
+/// and the group shown.
+type SceneKey = (u64, u64, Option<NodeId>);
+
+impl EditorState {
+    /// The scene for the group being shown, rebuilt only if the project, the
+    /// registry or the group changed since the last one.
+    fn scene(&mut self, project: &Project, registry: &Registry) -> Rc<Scene> {
+        let key = (project.revision(), registry.generation(), self.group);
+        if let Some((cached, scene)) = &self.scene_cache
+            && *cached == key
+        {
+            return scene.clone();
+        }
+        let scene = Rc::new(Scene::build(project, registry, self.group));
+        self.scene_cache = Some((key, scene.clone()));
+        scene
+    }
+
+    /// Like [`scene`](Self::scene), without remembering a new one.
+    #[cfg(test)]
+    fn peek_scene(&self, project: &Project, registry: &Registry) -> Rc<Scene> {
+        let key = (project.revision(), registry.generation(), self.group);
+        match &self.scene_cache {
+            Some((cached, scene)) if *cached == key => scene.clone(),
+            _ => Rc::new(Scene::build(project, registry, self.group)),
+        }
+    }
+}
+
 impl Default for EditorState {
     fn default() -> Self {
         Self {
@@ -156,6 +189,7 @@ impl Default for EditorState {
             group_menu: None,
             rename: None,
             bodies: body::Bodies::default(),
+            scene_cache: None,
             arrange_requested: false,
             dropped: None,
             fit_requested: false,
@@ -496,12 +530,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     state
         .bodies
         .set_sample_rate(session.engine_sample_rate().unwrap_or(0.0));
-    state
-        .bodies
-        .update(session.telemetry(), session.project(), dt);
-    // Meters and scopes move with the audio, so keep drawing while it plays.
-    if session.engine_running() && state.bodies.is_live() {
-        ui.ctx().request_repaint();
+    let liveness = state.bodies.update(
+        session.telemetry(),
+        session.project(),
+        session.registry(),
+        dt,
+    );
+    // Meters and scopes move with the audio, so keep drawing while they do,
+    // and while their peaks and traces fall back. A still graph, silent or
+    // with the transport stopped, costs nothing.
+    if session.engine_running() {
+        // Nothing else wakes a still editor when sound starts without input
+        // (live MIDI with the transport stopped), so look again now and then.
+        let wait = if liveness == body::Liveness::Still {
+            body::IDLE_POLL
+        } else {
+            body::METER_FRAME
+        };
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(wait));
     }
     let mut new_node_id = || session.new_node_id();
     let mut new_frame_id = || session.new_frame_id();
@@ -555,7 +602,7 @@ impl Problems {
 /// One frame of the editor, with everything it needs worked out.
 struct Frame_<'a> {
     project: &'a Project,
-    scene: Scene,
+    scene: Rc<Scene>,
     t: Transform,
     /// Indices into `scene.nodes`, bottom first. Selected nodes are on top.
     order: Vec<usize>,
@@ -569,6 +616,15 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     state.retain_in(project);
     let (canvas, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
     let response = ui.interact(canvas, canvas_id(), Sense::click_and_drag());
+    // A panel resized above the canvas moves its top-left; keep the graph
+    // where it was on screen instead of dragging the content with the corner.
+    // (The first frame has no previous canvas to compare against.)
+    if state.canvas.is_positive()
+        && let moved = canvas.min - state.canvas.min
+        && moved != Vec2::ZERO
+    {
+        state.view.offset -= moved / state.view.zoom;
+    }
     state.canvas = canvas;
     // Tab is how egui moves focus, so the canvas has to hold focus, and say
     // it wants Tab, for the editor to be given it.
@@ -588,7 +644,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             );
         });
     }
-    let scene = Scene::build(project, inputs.registry, state.group);
+    let scene = state.scene(project, inputs.registry);
     let problems = Problems::new(inputs.diagnostics);
     let mut edits = Vec::new();
 
@@ -1132,9 +1188,9 @@ fn pointer(
             // Mixers, scopes and outputs (which have a scope) have a view of
             // their own.
             Hit::Node(id)
-                if f.project.graph().node(id).is_some_and(|n| {
-                    matches!(n.type_id.as_str(), spare::MIXER | SCOPE_ID | OUTPUT_ID)
-                }) =>
+                if f.scene
+                    .node(id)
+                    .is_some_and(|n| matches!(n.view, NodeView::Mixer | NodeView::Scope)) =>
             {
                 state.view_request = Some(id);
             }
@@ -2779,7 +2835,7 @@ pub(crate) fn socket_on_screen(
     key: &str,
 ) -> Option<Pos2> {
     let side = if output { Side::Output } else { Side::Input };
-    let scene = Scene::build(session.project(), session.registry(), state.group);
+    let scene = state.peek_scene(session.project(), session.registry());
     let socket = scene.node(node)?.port(side, key)?.socket;
     Some(state.view.on(state.canvas).to_screen(socket))
 }

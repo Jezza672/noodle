@@ -17,6 +17,7 @@ use noodle_core::{
 
 use noodle_io::TempoEstimate;
 
+use crate::clip_editor::subject::{LOOP_TEMPO, Subject};
 use crate::session::{Edit, Session};
 use crate::timeline::{Analysis, Loaded};
 
@@ -26,7 +27,7 @@ const TAP_RESET: Duration = Duration::from_secs(2);
 const TAPS: usize = 8;
 
 /// What the panel remembers between frames.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ClipPanel {
     taps: Vec<Instant>,
 }
@@ -72,28 +73,45 @@ pub fn suggested_mode(analysis: Option<&Analysis>) -> WarpMode {
 
 /// The command that warps clip `id`: it follows the timeline's tempo, from
 /// the tempo found in the audio if there was one.
-pub fn start_warp(project: &Project, id: ClipId, analysis: Option<&Analysis>) -> Option<Command> {
+pub fn start_warp(
+    project: &Project,
+    id: impl Into<Subject>,
+    analysis: Option<&Analysis>,
+) -> Option<Command> {
     let tempo = analysis.and_then(|a| a.tempo);
     let mode = suggested_mode(analysis);
-    project
-        .warp_edit(id, |warp| {
-            warp.tempo_conversion = true;
-            warp.mode = mode;
-            if let Some(bpm) = tempo {
-                warp.tempo = TempoCurve::constant(bpm);
-            }
-        })
-        .ok()
+    id.into().warp_edit(project, |warp| {
+        let loop_seconds = warp.loop_seconds();
+        warp.tempo_conversion = true;
+        warp.mode = mode;
+        if let Some(bpm) = tempo {
+            warp.tempo = TempoCurve::constant(bpm);
+        }
+        keep_loop(warp, loop_seconds);
+    })
+}
+
+/// Puts the loop back where it was in the clip's seconds, after a change of
+/// its tempo moved the beats it is counted in.
+fn keep_loop(warp: &mut ClipWarp, seconds: Option<(f64, f64)>) {
+    if let Some((from, to)) = seconds {
+        warp.loop_region = Some(LoopRegion {
+            start: warp.tempo.beats_at(from),
+            end: warp.tempo.beats_at(to),
+        });
+    }
 }
 
 /// The command that sets the tempo of clip `id` to `bpm` all along.
-pub fn set_tempo(project: &Project, id: ClipId, bpm: f64) -> Option<Command> {
+pub fn set_tempo(project: &Project, id: impl Into<Subject>, bpm: f64) -> Option<Command> {
     if !(MIN_CLIP_BPM..=MAX_CLIP_BPM).contains(&bpm) {
         return None;
     }
-    project
-        .warp_edit(id, |warp| warp.tempo = TempoCurve::constant(bpm))
-        .ok()
+    id.into().warp_edit(project, |warp| {
+        let loop_seconds = warp.loop_seconds();
+        warp.tempo = TempoCurve::constant(bpm);
+        keep_loop(warp, loop_seconds);
+    })
 }
 
 /// What a clip's file is, for the commands that move a section within it.
@@ -126,40 +144,38 @@ impl Span {
 /// nothing. The warp and the section change in one command.
 pub fn slide_grid(
     project: &Project,
-    id: ClipId,
+    id: impl Into<Subject>,
     span: Span,
     change: impl FnOnce(&mut ClipWarp),
 ) -> Option<Command> {
-    project
-        .section_edit(id, |warp, audio| {
-            let before = warp.grid_offset;
-            change(warp);
-            let delta = warp.grid_offset - before;
-            if delta == 0.0 {
-                return;
-            }
-            let rate = f64::from(span.rate);
-            let start = warp.beat_at(audio.offset as f64 / rate) + delta;
-            let seconds = warp.seconds_at_beat(start).max(0.0);
-            let offset = ((seconds * rate).round() as u64).min(span.frames);
-            let end = offset.saturating_add(audio.length).min(span.frames);
-            if end <= offset {
-                // Nothing of the file would be left: the lines move alone.
-                return;
-            }
-            audio.offset = offset;
-            audio.length = end - offset;
-            audio.fade_in = audio.fade_in.min(audio.length);
-            audio.fade_out = audio.fade_out.min(audio.length - audio.fade_in);
-        })
-        .ok()
+    id.into().section_edit(project, span, |warp, audio| {
+        let before = warp.grid_offset;
+        change(warp);
+        let delta = warp.grid_offset - before;
+        if delta == 0.0 {
+            return;
+        }
+        let rate = f64::from(span.rate);
+        let start = warp.beat_at(audio.offset as f64 / rate) + delta;
+        let seconds = warp.seconds_at_beat(start).max(0.0);
+        let offset = ((seconds * rate).round() as u64).min(span.frames);
+        let end = offset.saturating_add(audio.length).min(span.frames);
+        if end <= offset {
+            // Nothing of the file would be left: the lines move alone.
+            return;
+        }
+        audio.offset = offset;
+        audio.length = end - offset;
+        audio.fade_in = audio.fade_in.min(audio.length);
+        audio.fade_out = audio.fade_out.min(audio.length - audio.fade_in);
+    })
 }
 
 /// The command that gives clip `id` the tempo and beat `found` in its audio:
 /// the clip tempo, and a grid slid so its lines fall on the transients.
 pub fn detect_tempo(
     project: &Project,
-    id: ClipId,
+    id: impl Into<Subject>,
     found: &TempoEstimate,
     span: Span,
 ) -> Option<Command> {
@@ -168,14 +184,21 @@ pub fn detect_tempo(
     }
     let (bpm, phase) = (found.bpm, found.phase);
     slide_grid(project, id, span, move |warp| {
+        let loop_seconds = warp.loop_seconds();
         warp.tempo = TempoCurve::constant(bpm);
         warp.grid_offset = phase;
+        keep_loop(warp, loop_seconds);
     })
 }
 
 /// The command that slides the grid of clip `id` to `offset` beats, and the
 /// section with it (see [`slide_grid`]).
-pub fn set_grid_offset(project: &Project, id: ClipId, offset: f64, span: Span) -> Option<Command> {
+pub fn set_grid_offset(
+    project: &Project,
+    id: impl Into<Subject>,
+    offset: f64,
+    span: Span,
+) -> Option<Command> {
     if !offset.is_finite() || offset.abs() > MAX_GRID_OFFSET {
         return None;
     }
@@ -207,13 +230,34 @@ pub fn default_loop(warp: &ClipWarp, offset: u64, length: u64, rate: u32) -> Opt
 /// file's `rate`.
 pub fn set_loop(project: &Project, id: ClipId, on: bool, rate: u32) -> Option<Command> {
     let audio = project.clip(id)?.as_audio()?;
-    let region = if on {
-        let (_, warp) = project.warp_of(id)?;
-        Some(default_loop(warp, audio.offset, audio.length, rate)?)
-    } else {
-        None
-    };
-    project.warp_edit(id, |warp| warp.loop_region = region).ok()
+    if !on {
+        let looping = project
+            .warp_of(id)
+            .is_some_and(|(_, w)| w.loop_region.is_some());
+        return looping
+            .then(|| project.warp_edit(id, |warp| warp.loop_region = None).ok())
+            .flatten();
+    }
+    // An unwarped clip gets a fast tempo so that its loop can be short.
+    let mut warp = project
+        .warp_of(id)
+        .map_or_else(|| ClipWarp::at_tempo(LOOP_TEMPO), |(_, warp)| warp.clone());
+    if project.warp_of(id).is_none() {
+        warp.tempo_conversion = false;
+    }
+    let region = default_loop(&warp, audio.offset, audio.length, rate)?;
+    let seconds = (
+        warp.tempo.seconds_at(region.start),
+        warp.tempo.seconds_at(region.end),
+    );
+    Subject::Clip(id).set_loop(
+        project,
+        Span {
+            rate,
+            frames: u64::MAX,
+        },
+        Some(seconds),
+    )
 }
 
 /// The most markers "Pin transients" puts on a clip.
@@ -227,8 +271,13 @@ const MIN_PIN_GAP: f64 = 0.04;
 /// like the rest, so the clip is re-timed. Quantise has markers to move, and
 /// the clip's groove has something to be read from. `None` if there is
 /// nothing to pin.
-pub fn pin_transients(project: &Project, id: ClipId, onsets: &[f64]) -> Option<Command> {
-    let (_, warp) = project.warp_of(id)?;
+pub fn pin_transients(
+    project: &Project,
+    id: impl Into<Subject>,
+    onsets: &[f64],
+) -> Option<Command> {
+    let id = id.into();
+    let warp = id.warp(project)?;
     // Where things play with the markers as they are stored.
     let plain = ClipWarp {
         quantise: None,
@@ -262,34 +311,30 @@ pub fn pin_transients(project: &Project, id: ClipId, onsets: &[f64]) -> Option<C
         return None;
     }
     let markers = pinned.markers;
-    project
-        .warp_edit(id, move |warp| warp.markers = markers)
-        .ok()
+    id.warp_edit(project, move |warp| warp.markers = markers)
 }
 
 /// The command that changes warp quantise of clip `id`: `change` is given the
 /// current settings (or the defaults, for a clip that has none).
 pub fn change_quantise(
     project: &Project,
-    id: ClipId,
+    id: impl Into<Subject>,
     change: impl FnOnce(&mut WarpQuantise),
 ) -> Option<Command> {
-    project
-        .warp_edit(id, |warp| {
-            let quantise = warp.quantise.get_or_insert_with(WarpQuantise::default);
-            change(quantise);
-        })
-        .ok()
+    id.into().warp_edit(project, |warp| {
+        let quantise = warp.quantise.get_or_insert_with(WarpQuantise::default);
+        change(quantise);
+    })
 }
 
 /// The command that turns warp quantise of clip `id` off.
-pub fn quantise_off(project: &Project, id: ClipId) -> Option<Command> {
-    project.warp_edit(id, |warp| warp.quantise = None).ok()
+pub fn quantise_off(project: &Project, id: impl Into<Subject>) -> Option<Command> {
+    id.into().warp_edit(project, |warp| warp.quantise = None)
 }
 
 /// The command that makes the quantised markers of clip `id` its markers.
-pub fn bake_quantise(project: &Project, id: ClipId) -> Option<Command> {
-    project.warp_edit(id, |warp| *warp = warp.baked()).ok()
+pub fn bake_quantise(project: &Project, id: impl Into<Subject>) -> Option<Command> {
+    id.into().warp_edit(project, |warp| *warp = warp.baked())
 }
 
 /// The clips clip `id` can take a groove from, by file name: the other audio
@@ -347,7 +392,7 @@ fn grid_name(grid: f64) -> String {
 fn quantise_section(
     ui: &mut Ui,
     project: &Project,
-    id: ClipId,
+    subject: Subject,
     warp: &ClipWarp,
     analysis: Option<&Analysis>,
     edits: &mut Vec<Edit>,
@@ -361,9 +406,9 @@ fn quantise_section(
             .changed()
         {
             let command = if on {
-                change_quantise(project, id, |_| {})
+                change_quantise(project, subject, |_| {})
             } else {
-                quantise_off(project, id)
+                quantise_off(project, subject)
             };
             edits.extend(command.map(Edit::Apply));
         }
@@ -373,7 +418,7 @@ fn quantise_section(
             .clicked()
         {
             edits.extend(
-                pin_transients(project, id, analysis.map_or(&[], |a| &a.onsets)).map(Edit::Apply),
+                pin_transients(project, subject, analysis.map_or(&[], |a| &a.onsets)).map(Edit::Apply),
             );
         }
     });
@@ -392,7 +437,7 @@ fn quantise_section(
                 }
             });
         if grid != quantise.grid {
-            edits.extend(change_quantise(project, id, |q| q.grid = grid).map(Edit::Apply));
+            edits.extend(change_quantise(project, subject, |q| q.grid = grid).map(Edit::Apply));
         }
     });
     ui.horizontal(|ui| {
@@ -407,82 +452,86 @@ fn quantise_section(
         );
         let command = response
             .changed()
-            .then(|| change_quantise(project, id, |q| q.amount = percent / 100.0))
+            .then(|| change_quantise(project, subject, |q| q.amount = percent / 100.0))
             .flatten();
         commit(&response, command, edits);
     });
 
     // The groove: a feel lent by another clip.
-    let sources = groove_sources(project, id);
-    ui.horizontal(|ui| {
-        ui.label("Groove");
-        let current = match (&quantise.groove, quantise.groove_from) {
-            (None, _) => "None".to_string(),
-            (Some(_), None) => "Copied".to_string(),
-            (Some(_), Some(from)) => sources
-                .iter()
-                .find(|(warp, _)| *warp == from)
-                .map_or("Linked".to_string(), |(_, name)| format!("Linked: {name}")),
-        };
-        let mut chosen: Option<Option<(ClipId, bool)>> = None;
-        crate::widgets::Dropdown::from_id_salt("clip groove")
-            .selected_text(current)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(quantise.groove.is_none(), "None")
-                    .clicked()
-                {
-                    chosen = Some(None);
-                }
-                for (warp, name) in &sources {
-                    if ui
-                        .button(format!("Link: {name}"))
-                        .on_hover_text("Follow this clip's groove as it changes")
-                        .clicked()
-                    {
-                        chosen = Some(Some((*warp, true)));
-                    }
-                    if ui
-                        .button(format!("Copy: {name}"))
-                        .on_hover_text("Take this clip's groove as it is now")
-                        .clicked()
-                    {
-                        chosen = Some(Some((*warp, false)));
-                    }
-                }
-            });
-        match chosen {
-            Some(None) => edits.extend(drop_groove(project, id).map(Edit::Apply)),
-            Some(Some((source, follow))) => {
-                edits.extend(take_groove(project, id, source, follow).map(Edit::Apply));
-            }
-            None => {}
-        }
-    });
-    if quantise.groove.is_some() {
+    if let Subject::Clip(id) = subject {
+        let sources = groove_sources(project, id);
         ui.horizontal(|ui| {
-            ui.label("Groove amount");
-            let mut percent = quantise.groove_amount * 100.0;
-            let response = ui.add(
-                egui::DragValue::new(&mut percent)
-                    .range(0.0..=100.0)
-                    .speed(0.5)
-                    .max_decimals(0)
-                    .suffix(" %"),
-            );
-            let command = response
-                .changed()
-                .then(|| change_quantise(project, id, |q| q.groove_amount = percent / 100.0))
-                .flatten();
-            commit(&response, command, edits);
+            ui.label("Groove");
+            let current = match (&quantise.groove, quantise.groove_from) {
+                (None, _) => "None".to_string(),
+                (Some(_), None) => "Copied".to_string(),
+                (Some(_), Some(from)) => sources
+                    .iter()
+                    .find(|(warp, _)| *warp == from)
+                    .map_or("Linked".to_string(), |(_, name)| format!("Linked: {name}")),
+            };
+            let mut chosen: Option<Option<(ClipId, bool)>> = None;
+            crate::widgets::Dropdown::from_id_salt("clip groove")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(quantise.groove.is_none(), "None")
+                        .clicked()
+                    {
+                        chosen = Some(None);
+                    }
+                    for (warp, name) in &sources {
+                        if ui
+                            .button(format!("Link: {name}"))
+                            .on_hover_text("Follow this clip's groove as it changes")
+                            .clicked()
+                        {
+                            chosen = Some(Some((*warp, true)));
+                        }
+                        if ui
+                            .button(format!("Copy: {name}"))
+                            .on_hover_text("Take this clip's groove as it is now")
+                            .clicked()
+                        {
+                            chosen = Some(Some((*warp, false)));
+                        }
+                    }
+                });
+            match chosen {
+                Some(None) => edits.extend(drop_groove(project, id).map(Edit::Apply)),
+                Some(Some((source, follow))) => {
+                    edits.extend(take_groove(project, id, source, follow).map(Edit::Apply));
+                }
+                None => {}
+            }
         });
+        if quantise.groove.is_some() {
+            ui.horizontal(|ui| {
+                ui.label("Groove amount");
+                let mut percent = quantise.groove_amount * 100.0;
+                let response = ui.add(
+                    egui::DragValue::new(&mut percent)
+                        .range(0.0..=100.0)
+                        .speed(0.5)
+                        .max_decimals(0)
+                        .suffix(" %"),
+                );
+                let command = response
+                    .changed()
+                    .then(|| {
+                        change_quantise(project, subject, |q| q.groove_amount = percent / 100.0)
+                    })
+                    .flatten();
+                commit(&response, command, edits);
+            });
+        }
     }
     if ui
         .button("Bake")
         .on_hover_text("Make the quantised markers the markers, and turn quantise off")
         .clicked()
     {
-        edits.extend(bake_quantise(project, id).map(Edit::Apply));
+        edits.extend(bake_quantise(project, subject).map(Edit::Apply));
     }
 }
 
@@ -525,19 +574,133 @@ pub fn show(
     ui.heading("Clip");
     ui.label(RichText::new(name).weak().small());
 
-    let Some((_, warp)) = project.warp_of(id) else {
-        ui.weak("Not warped: plays as recorded, whatever the tempo.");
-        let button = ui
-            .button("Warp")
-            .on_hover_text("Follow the timeline's tempo, from the tempo found in the audio");
-        if button.clicked() {
-            edits.extend(start_warp(project, id, analysis).map(Edit::Apply));
+    let warp = project.warp_of(id).map(|(_, warp)| warp);
+    match warp.filter(|warp| !warp.is_natural()) {
+        None => {
+            unwarped(ui, project, id.into(), analysis, &mut edits);
+            looping(ui, project, id, warp, rate, &mut edits);
         }
-        gain(ui, project, id, &mut edits);
-        section(ui, project, id, &mut edits);
-        return edits;
-    };
+        Some(warp) => {
+            warp_controls(
+                ui,
+                state,
+                project,
+                id.into(),
+                warp,
+                analysis,
+                span,
+                &mut edits,
+            );
+            ui.separator();
+            looping(ui, project, id, Some(warp), rate, &mut edits);
+        }
+    }
+    gain(ui, project, id, &mut edits);
+    section(ui, project, id, &mut edits);
+    edits
+}
 
+/// The warp section of a Sampler's properties: the same controls a clip has,
+/// over its sample.
+pub fn sampler_warp(
+    ui: &mut Ui,
+    session: &Session,
+    id: noodle_core::NodeId,
+    edits: &mut Vec<Edit>,
+) {
+    let project = session.project();
+    let Some(loaded) = crate::sample_view::loaded(ui.ctx(), session, id) else {
+        return;
+    };
+    let span = Span::of(Some(&loaded));
+    let subject = Subject::Sampler(id);
+    let Some(section) = subject.read(project, span) else {
+        return;
+    };
+    let analysis = loaded.analysis.as_deref();
+    ui.add_space(4.0);
+    ui.label(RichText::new("Warp").strong());
+    let state_id = egui::Id::new(("sampler warp panel", id));
+    let mut state = ui
+        .data(|d| d.get_temp::<ClipPanel>(state_id))
+        .unwrap_or_default();
+    match section.warp.as_ref().filter(|warp| !warp.is_natural()) {
+        None => unwarped(ui, project, subject, analysis, edits),
+        Some(warp) => {
+            warp_controls(
+                ui, &mut state, project, subject, warp, analysis, span, edits,
+            );
+            if ui
+                .button("Remove warp")
+                .on_hover_text("Play the sample at its own speed again")
+                .clicked()
+            {
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: id,
+                    key: noodle_nodes::WARP_KEY.to_owned(),
+                    value: None,
+                }));
+            }
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(state_id, state));
+}
+
+/// What the panel says of something that is not warped, and the button that
+/// warps it.
+pub fn unwarped(
+    ui: &mut Ui,
+    project: &Project,
+    subject: Subject,
+    analysis: Option<&Analysis>,
+    edits: &mut Vec<Edit>,
+) {
+    ui.weak("Not warped: plays as recorded, whatever the tempo.");
+    let button = ui
+        .button("Warp")
+        .on_hover_text("Follow the timeline's tempo, from the tempo found in the audio");
+    if button.clicked() {
+        edits.extend(start_warp(project, subject, analysis).map(Edit::Apply));
+    }
+}
+
+/// The loop checkbox of clip `id`, and how long the loop is.
+fn looping(
+    ui: &mut Ui,
+    project: &Project,
+    id: ClipId,
+    warp: Option<&ClipWarp>,
+    rate: u32,
+    edits: &mut Vec<Edit>,
+) {
+    let mut looped = warp.is_some_and(|w| w.loop_region.is_some());
+    ui.horizontal(|ui| {
+        if ui
+            .checkbox(&mut looped, "Loop")
+            .on_hover_text("Repeat the loop when the section is dragged out past its audio")
+            .changed()
+        {
+            edits.extend(set_loop(project, id, looped, rate).map(Edit::Apply));
+        }
+        if let Some(region) = warp.and_then(|w| w.loop_region) {
+            ui.weak(format!("{:.2} beats", region.beats()));
+        }
+    });
+}
+
+/// How a warped clip or sample is warped: mode, following the tempo, markers,
+/// the clip's tempo and where its beat falls, and quantise.
+#[allow(clippy::too_many_arguments)]
+pub fn warp_controls(
+    ui: &mut Ui,
+    state: &mut ClipPanel,
+    project: &Project,
+    subject: Subject,
+    warp: &ClipWarp,
+    analysis: Option<&Analysis>,
+    span: Span,
+    edits: &mut Vec<Edit>,
+) {
     ui.horizontal(|ui| {
         ui.label("Mode");
         let mut mode = warp.mode;
@@ -557,43 +720,51 @@ pub fn show(
             });
         if mode != warp.mode {
             edits.extend(
-                project
-                    .warp_edit(id, |warp| warp.mode = mode)
-                    .ok()
+                subject
+                    .warp_edit(project, |warp| warp.mode = mode)
                     .map(Edit::Apply),
             );
         }
     });
 
+    let noun = if matches!(subject, Subject::Clip(_)) {
+        "clip"
+    } else {
+        "sample"
+    };
     let mut follow = warp.tempo_conversion;
     if ui
         .checkbox(&mut follow, "Follow tempo")
-        .on_hover_text("Play the clip's beats on the timeline's tempo")
+        .on_hover_text(format!("Play the {noun}'s beats on the timeline's tempo"))
         .changed()
     {
         edits.extend(
-            project
-                .warp_edit(id, |warp| warp.tempo_conversion = follow)
-                .ok()
+            subject
+                .warp_edit(project, |warp| warp.tempo_conversion = follow)
                 .map(Edit::Apply),
         );
     }
     let mut markers = warp.use_markers;
     if ui
         .checkbox(&mut markers, "Warp markers")
-        .on_hover_text("Pin moments of the clip to beats (in the clip editor)")
+        .on_hover_text(format!(
+            "Pin moments of the {noun} to beats (in the editor)"
+        ))
         .changed()
     {
         edits.extend(
-            project
-                .warp_edit(id, |warp| warp.use_markers = markers)
-                .ok()
+            subject
+                .warp_edit(project, |warp| warp.use_markers = markers)
                 .map(Edit::Apply),
         );
     }
 
     ui.horizontal(|ui| {
-        ui.label("Clip tempo");
+        ui.label(if noun == "clip" {
+            "Clip tempo"
+        } else {
+            "Sample tempo"
+        });
         match warp.tempo.points() {
             [only] => {
                 let mut bpm = only.bpm;
@@ -605,9 +776,9 @@ pub fn show(
                         .suffix(" bpm"),
                 );
                 if response.changed() {
-                    commit(&response, set_tempo(project, id, bpm), &mut edits);
+                    commit(&response, set_tempo(project, subject, bpm), edits);
                 } else {
-                    commit(&response, None, &mut edits);
+                    commit(&response, None, edits);
                 }
             }
             points => {
@@ -634,13 +805,13 @@ pub fn show(
         if detect.on_hover_text(hint).clicked()
             && let Some(found) = found
         {
-            edits.extend(detect_tempo(project, id, &found, span).map(Edit::Apply));
+            edits.extend(detect_tempo(project, subject, &found, span).map(Edit::Apply));
         }
         let tap = ui.button("Tap").on_hover_text("Tap along to set the tempo");
         if tap.clicked()
             && let Some(bpm) = state.tap(Instant::now())
         {
-            edits.extend(set_tempo(project, id, bpm).map(Edit::Apply));
+            edits.extend(set_tempo(project, subject, bpm).map(Edit::Apply));
         }
     });
     ui.horizontal(|ui| {
@@ -654,13 +825,13 @@ pub fn show(
                     .max_decimals(3)
                     .suffix(" beats"),
             )
-            .on_hover_text(
-                "Slide the clip's beat lines against its audio, so they line up with its transients: the clip then plays from the shifted line (or drag the waveform in the clip editor)",
-            );
+            .on_hover_text(format!(
+                "Slide the {noun}'s beat lines against its audio, so they line up with its transients: it then plays from the shifted line (or drag the waveform in the editor)"
+            ));
         if response.changed() {
-            commit(&response, set_grid_offset(project, id, offset, span), &mut edits);
+            commit(&response, set_grid_offset(project, subject, offset, span), edits);
         } else {
-            commit(&response, None, &mut edits);
+            commit(&response, None, edits);
         }
         if warp.grid_offset != 0.0
             && ui
@@ -668,30 +839,11 @@ pub fn show(
                 .on_hover_text("Put the beat lines back on the whole beats")
                 .clicked()
         {
-            edits.extend(set_grid_offset(project, id, 0.0, span).map(Edit::Apply));
+            edits.extend(set_grid_offset(project, subject, 0.0, span).map(Edit::Apply));
         }
     });
 
-    quantise_section(ui, project, id, warp, analysis, &mut edits);
-    ui.separator();
-
-    let mut looped = warp.loop_region.is_some();
-    ui.horizontal(|ui| {
-        if ui
-            .checkbox(&mut looped, "Loop")
-            .on_hover_text("Repeat the loop when the section is dragged out past its audio")
-            .changed()
-        {
-            edits.extend(set_loop(project, id, looped, rate).map(Edit::Apply));
-        }
-        if let Some(region) = warp.loop_region {
-            ui.weak(format!("{:.2} beats", region.beats()));
-        }
-    });
-
-    gain(ui, project, id, &mut edits);
-    section(ui, project, id, &mut edits);
-    edits
+    quantise_section(ui, project, subject, warp, analysis, edits);
 }
 
 /// Mute, and Split to stems.

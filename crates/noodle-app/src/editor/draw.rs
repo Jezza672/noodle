@@ -357,10 +357,15 @@ fn boxed(
                 PortKind::Param(info) if port.key == key => Some(info.default),
                 _ => None,
             });
-            bodies
-                .param_live(node.id, key)
-                .map(|live| live.value)
-                .or_else(|| graph.node(node.id)?.params.get(key).copied())
+            // As in the properties panel, only a wired parameter reads live;
+            // an unwired one is its own value, so both views draw one curve.
+            let wired = graph.source(&Endpoint::new(node_id, key)).is_some();
+            let live = if wired {
+                bodies.param_live(node.id, key).map(|live| live.value)
+            } else {
+                None
+            };
+            live.or_else(|| graph.node(node.id)?.params.get(key).copied())
                 .or(default)
                 .unwrap_or(0.0)
         };
@@ -376,6 +381,7 @@ fn boxed(
             f.t.rect_to_screen(area),
             z,
             node.id,
+            node.view,
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
             &values,
@@ -384,7 +390,7 @@ fn boxed(
     }
 }
 
-/// A speaker, lit while its node is monitored.
+/// A pair of headphones, lit while its node is monitored.
 fn monitor_button(painter: &Painter, rect: Rect, on: bool) {
     let color = if on {
         colors::ACTIVE
@@ -397,24 +403,23 @@ fn monitor_button(painter: &Painter, rect: Rect, on: bool) {
     let u = rect.width() / 14.0;
     let c = rect.center();
     let at = |x: f32, y: f32| c + Vec2::new(x * u, y * u);
-    // The cone, then two arcs of sound.
-    painter.add(Shape::convex_polygon(
-        vec![
-            at(-5.0, -2.0),
-            at(-2.0, -2.0),
-            at(1.0, -5.0),
-            at(1.0, 5.0),
-            at(-2.0, 2.0),
-            at(-5.0, 2.0),
-        ],
-        color,
-        Stroke::NONE,
+    // The band over the head, then the two ear cups it ends in.
+    let band: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let angle = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 12.0;
+            at(4.6 * angle.cos(), 0.9 + 4.6 * angle.sin())
+        })
+        .collect();
+    painter.add(PathShape::line(
+        band,
+        Stroke::new((2.0 * u).max(1.0), color),
     ));
-    for reach in [3.0, 5.5] {
-        painter.add(Shape::line(
-            vec![at(2.5, -reach), at(4.0 + reach / 2.0, 0.0), at(2.5, reach)],
-            Stroke::new((1.2 * u).max(0.8), color),
-        ));
+    for (left, right) in [(-6.2, -2.6), (2.6, 6.2)] {
+        painter.rect_filled(
+            Rect::from_min_max(at(left, -0.7), at(right, 4.7)),
+            1.6 * u,
+            color,
+        );
     }
 }
 

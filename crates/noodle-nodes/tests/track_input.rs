@@ -430,13 +430,37 @@ fn a_clip_cut_off_by_the_wrap_starts_afresh_next_lap() {
     }
 }
 
+/// Puts clip `id` at the playhead (tick 0) after `damage`, so that the hub
+/// first looks at its file when it is already bad. The clip starts far away,
+/// out of the hub's reach, until then; a hub that is rung by every change
+/// would otherwise open the good file before the test could spoil it.
+fn bring_to_playhead(rig: &mut Rig, id: noodle_core::ClipId) {
+    rig.edit_clip(id, |c| c.start = noodle_core::Tick(0));
+}
+
+/// Replaces `path` with something that isn't audio, keeping its timestamp so
+/// the schedule still takes the clip as good.
+fn damage(path: &std::path::Path) {
+    let meta = std::fs::metadata(path).unwrap();
+    let modified = meta.modified().unwrap();
+    // The same length too: a file's stamp is its size and its time.
+    std::fs::write(path, vec![b'x'; meta.len() as usize]).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+}
+
 #[test]
 fn a_file_that_fails_to_open_is_tried_again_later() {
     let mut rig = Rig::new("retry");
     rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
-    rig.add_clip(0, "file.wav", 0, 5_000);
+    let clip = rig.add_clip(100, "file.wav", 0, 5_000);
     // The file is damaged after the project looked at it, and mended later.
-    std::fs::write(rig.dir.join("file.wav"), b"not audio").unwrap();
+    damage(&rig.dir.join("file.wav"));
+    bring_to_playhead(&mut rig, clip);
     let started = std::time::Instant::now();
     while rig.feeds.status(rig.id).errors.is_empty() {
         rig.run(0, BLOCK, false);
@@ -473,9 +497,10 @@ fn the_feeds_forget_nodes_that_are_gone() {
 fn an_offline_render_does_not_wait_on_a_file_that_cannot_be_opened() {
     let mut rig = Rig::with_feeds("blocking-gone", noodle_nodes::ClipFeeds::blocking());
     rig.wav("file.wav", 1, 20_000, |_, _| 0.5);
-    rig.add_clip(0, "file.wav", 0, 5_000);
-    // The file goes after the project was scheduled.
-    std::fs::remove_file(rig.dir.join("file.wav")).unwrap();
+    let clip = rig.add_clip(100, "file.wav", 0, 5_000);
+    // The file goes bad after the project was scheduled.
+    damage(&rig.dir.join("file.wav"));
+    bring_to_playhead(&mut rig, clip);
     let started = std::time::Instant::now();
     for block in 0..20 {
         let (left, _) = rig.run(block * BLOCK as u64, BLOCK, true);
@@ -539,18 +564,11 @@ fn each_bad_file_is_named_separately() {
 fn an_error_stays_while_the_schedule_changes() {
     let mut rig = Rig::new("steady-errors");
     rig.wav("a.wav", 1, 20_000, |_, _| 0.5);
-    let clip = rig.add_clip(0, "a.wav", 0, 5_000);
+    let clip = rig.add_clip(100, "a.wav", 0, 5_000);
     // Damage the file but keep its timestamp, so edits don't look at it again
     // and the clip stays in the schedule.
-    let path = rig.dir.join("a.wav");
-    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-    std::fs::write(&path, b"not audio").unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(modified)
-        .unwrap();
+    damage(&rig.dir.join("a.wav"));
+    bring_to_playhead(&mut rig, clip);
     let started = std::time::Instant::now();
     while rig.feeds.status(rig.id).errors.is_empty() {
         rig.run(0, BLOCK, false);

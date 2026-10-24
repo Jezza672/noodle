@@ -13,7 +13,7 @@ use noodle_core::{
     WarpMode,
 };
 use noodle_engine::TempoTable;
-use noodle_io::{Decoder, FileInfo, clip_frames};
+use noodle_io::{AudioFiles, Decoder, FileInfo, FileStamp, clip_frames};
 
 use super::hub::Shared;
 pub use super::warp::WarpMap;
@@ -695,7 +695,7 @@ struct Inner {
     hubs: Mutex<HashMap<NodeId, Arc<Shared>>>,
     /// See [`ClipFeeds::set_preview`].
     preview: Arc<std::sync::atomic::AtomicBool>,
-    files: Mutex<HashMap<PathBuf, (Option<SystemTime>, FileInfo)>>,
+    files: Mutex<HashMap<PathBuf, (Option<FileStamp>, FileInfo)>>,
 }
 
 /// What a track input is doing, for the UI.
@@ -750,6 +750,12 @@ impl ClipFeeds {
         }
     }
 
+    /// Whether these feeds are for rendering offline (see
+    /// [`blocking`](Self::blocking)).
+    pub fn is_blocking(&self) -> bool {
+        self.inner.blocking
+    }
+
     /// Blocks where audio was missing, summed over every node.
     pub fn underruns(&self) -> u64 {
         let hubs = self.inner.hubs.lock().expect("feeds lock");
@@ -794,6 +800,9 @@ impl ClipFeeds {
         self.inner
             .preview
             .store(on, std::sync::atomic::Ordering::Relaxed);
+        for shared in self.inner.hubs.lock().expect("feeds lock").values() {
+            shared.ring();
+        }
     }
 
     /// Whether the preview is on (see [`set_preview`](Self::set_preview)).
@@ -801,6 +810,14 @@ impl ClipFeeds {
         self.inner
             .preview
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many times the background tasks of the track input `node` (the one
+    /// that opens streams, and the one that stretches clips) have run since it
+    /// was built. They sleep until there is work, so this stays put while
+    /// nothing plays. For tests.
+    pub fn background_runs(&self, node: NodeId) -> u64 {
+        self.shared(node).runs()
     }
 
     /// How many nodes the feeds are keeping a schedule for.
@@ -1015,7 +1032,9 @@ impl ClipFeeds {
     }
 
     fn file_info(&self, path: &Path) -> Result<FileInfo, String> {
-        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        // The one rule for "changed" (see `noodle_io::AudioFiles`), read from
+        // what the watcher last saw rather than from the disk.
+        let modified = AudioFiles::global().stamp(path);
         let mut files = self.inner.files.lock().expect("feeds lock");
         if let Some((seen, info)) = files.get(path)
             && *seen == modified
@@ -1216,5 +1235,32 @@ mod tests {
         assert!((c.level(0) - 1.0).abs() < 1e-6);
         assert!((c.level(200) - 10f32.powf(-0.5)).abs() < 1e-4);
         assert!((c.level(900) - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_file_replaced_with_the_same_mtime_but_another_length_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        noodle_io::write_wav(&path, &vec![0.0; 100], 1, 48_000).unwrap();
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let feeds = ClipFeeds::default();
+        assert_eq!(feeds.file_info(&path).unwrap().frames, Some(100));
+
+        noodle_io::write_wav(&path, &vec![0.0; 200], 1, 48_000).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        // The watcher thread looks once a second.
+        let start = std::time::Instant::now();
+        while feeds.file_info(&path).unwrap().frames != Some(200) {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "still the old length"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }

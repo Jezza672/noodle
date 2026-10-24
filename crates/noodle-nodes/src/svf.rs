@@ -50,6 +50,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Svf {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Svf)
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

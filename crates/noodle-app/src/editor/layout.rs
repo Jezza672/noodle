@@ -8,7 +8,7 @@ use egui::{Pos2, Rect, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, FrameId, Graph, LaneId, Node, NodeId, Project};
-use noodle_engine::{InputKind, ParamInfo, Registry, Unit};
+use noodle_engine::{InputKind, NodeView, ParamInfo, Registry, Unit};
 use noodle_nodes::REROUTE_ID;
 
 pub const NODE_WIDTH: f32 = 160.0;
@@ -107,6 +107,8 @@ pub struct NodeGeom {
     pub reroute: bool,
     /// Space for custom drawing below the ports; see [`super::body`].
     pub body: Option<Rect>,
+    /// What the body shows, as the node type declares it.
+    pub view: NodeView,
     /// Why the node's ports couldn't be worked out, if they couldn't.
     pub error: Option<String>,
 }
@@ -440,6 +442,7 @@ impl Scene {
             let rank = |p: &PortGeom| order.iter().position(|key| *key == p.key);
             ports.sort_by_key(|p| rank(p).unwrap_or(usize::MAX));
 
+            let view = super::body::view_of(registry, node);
             let origin = Pos2::new(node.position.x, node.position.y);
             let reroute = node.type_id == REROUTE_ID && error.is_none();
             let mut body = None;
@@ -459,7 +462,7 @@ impl Scene {
                 // is drawn where the port is and can be edited in place.
                 let labelled = matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT);
                 let rect = place_columns(origin, &mut ports, has_field, labelled);
-                let height = super::body::height(&node.type_id);
+                let height = super::body::height(view);
                 if height > 0.0 {
                     let top = rect.bottom() - PADDING;
                     body = Some(Rect::from_min_size(
@@ -481,6 +484,7 @@ impl Scene {
                 ports,
                 reroute,
                 body,
+                view,
                 error,
             });
         }
@@ -1061,7 +1065,7 @@ mod tests {
             HEADER_HEIGHT
                 + 2.0 * ROW_HEIGHT
                 + PADDING
-                + crate::editor::body::height("noodle.util.gain")
+                + crate::editor::body::height(NodeView::Meter)
         );
         let out = node.port(Side::Output, "out").unwrap();
         assert!(out.in_header);

@@ -28,11 +28,20 @@ use std::cell::{Cell, RefCell, UnsafeCell};
 use std::f32::consts::TAU;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface, uid};
+
+/// How many times the host has called `process`, for tests that check a
+/// quiet plugin isn't called (read through the exported symbol).
+static PROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn noodle_test_process_calls() -> u64 {
+    PROCESS_CALLS.load(Ordering::Relaxed)
+}
 
 const GAIN: u32 = 1;
 const INVERT: u32 = 2;
@@ -352,6 +361,7 @@ impl IAudioProcessorTrait for Processor {
     }
 
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        PROCESS_CALLS.fetch_add(1, Ordering::Relaxed);
         let data = unsafe { &*data };
         let state = self.state();
         let frames = data.numSamples as usize;
@@ -399,6 +409,19 @@ impl IAudioProcessorTrait for Processor {
             let bus = &*data.outputs;
             std::slice::from_raw_parts(bus.__field0.channelBuffers32, bus.numChannels as usize)
         };
+
+        // Nothing to do, and so silent: no input, notes or changes, no voice
+        // sounding, and no constant offset.
+        let quiet = points.is_empty()
+            && events.is_empty()
+            && state.voices.iter().all(|v| !v.active)
+            && state.bias == 0.0
+            && state.boost == 0.0
+            && input.is_none_or(|input| {
+                input
+                    .iter()
+                    .all(|&c| (0..frames).all(|i| unsafe { *c.add(i) } == 0.0))
+            });
 
         let (mut next_point, mut next_event) = (0, 0);
         for i in 0..frames {
@@ -454,6 +477,13 @@ impl IAudioProcessorTrait for Processor {
                     *channel.add(i) =
                         dry * state.gain * sign + sine + state.bias + state.boost * 0.1;
                 }
+            }
+        }
+        if quiet {
+            // SAFETY: the host's output bus, which the plugin may write.
+            unsafe {
+                let bus = data.outputs;
+                (*bus).silenceFlags = (1u64 << (*bus).numChannels) - 1;
             }
         }
         kResultOk

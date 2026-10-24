@@ -43,6 +43,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Spectrum {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Spectrum
+    }
+
     fn always_runs(&self) -> bool {
         true
     }

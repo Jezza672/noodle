@@ -21,18 +21,21 @@ use std::collections::BTreeSet;
 
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 use noodle_core::{
-    ClipId, ClipWarp, Command, LoopRegion, MAX_GRID_OFFSET, MIN_LOOP_BEATS, Project,
+    ClipId, ClipWarp, Command, LoopRegion, MAX_GRID_OFFSET, MIN_LOOP_BEATS, NodeId, Project,
     TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
 };
 
 mod curve;
 mod gain_line;
+pub(crate) mod pane;
 mod plain;
+pub(crate) mod subject;
 
 use crate::clip_panel;
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
 use crate::timeline::Loaded;
+use subject::Subject;
 
 const TOOLBAR: f32 = crate::toolbar::HEIGHT;
 const HINT_PLAIN: &str =
@@ -102,13 +105,12 @@ struct Rows {
     wave: Rect,
 }
 
+#[derive(Default)]
 pub struct ClipEditor {
-    clip: Option<ClipId>,
-    /// Points per beat.
-    ppb: f32,
-    scroll_x: f32,
-    /// Fit the clip to the width on the next frame.
-    focus: bool,
+    subject: Option<Subject>,
+    /// Zoom, scroll and the drag in the audio pane; points per beat when the
+    /// clip is warped, per second when it isn't.
+    view: pane::View,
     /// The flags picked, by their places among the markers.
     selected: BTreeSet<usize>,
     /// The box being dragged out in the flags' row, in screen x.
@@ -116,12 +118,14 @@ pub struct ClipEditor {
     drag: Option<Drag>,
     /// Where the editor was last right-clicked, in beats.
     menu_at: Option<f64>,
-    /// The drag of an unwarped clip's waveform, if there is one.
-    slip: Option<plain::Slip>,
+    /// The part of the file that plays when a drag of an unwarped waveform
+    /// began.
+    slip: Option<(noodle_core::AudioClip, Option<(f64, f64)>)>,
     /// Whether the last frame drew an unwarped clip (in seconds, not beats).
     plain: bool,
-    /// The samples under the view, read when zoomed far in.
-    samples: Option<curve::Samples>,
+    /// The playheads drawn last frame, in seconds of the file.
+    #[cfg(test)]
+    playheads: Vec<f64>,
     #[cfg(test)]
     geometry: Option<Geometry>,
     #[cfg(test)]
@@ -149,62 +153,81 @@ impl Geometry {
     }
 }
 
-impl Default for ClipEditor {
-    fn default() -> Self {
-        Self {
-            clip: None,
-            ppb: 60.0,
-            scroll_x: 0.0,
-            focus: false,
-            selected: BTreeSet::new(),
-            marquee: None,
-            drag: None,
-            menu_at: None,
-            slip: None,
-            plain: false,
-            samples: None,
-            #[cfg(test)]
-            geometry: None,
-            #[cfg(test)]
-            plain_geometry: None,
-        }
-    }
-}
-
 impl ClipEditor {
     /// Shows the audio clip `clip`.
     pub fn open(&mut self, clip: ClipId) {
-        if self.clip != Some(clip) {
-            self.clip = Some(clip);
+        self.open_subject(Subject::Clip(clip));
+    }
+
+    /// Shows the sample of the Sampler `node`.
+    pub fn open_sampler(&mut self, node: NodeId) {
+        self.open_subject(Subject::Sampler(node));
+    }
+
+    fn open_subject(&mut self, subject: Subject) {
+        if self.subject != Some(subject) {
+            self.subject = Some(subject);
             self.selected.clear();
             self.marquee = None;
             self.drag = None;
             self.slip = None;
-            self.focus = true;
+            self.view.drop_grab();
+            self.view.focus = true;
         }
     }
 
     pub fn close(&mut self) {
-        self.clip = None;
+        self.subject = None;
         self.drag = None;
         self.slip = None;
+        self.view.drop_grab();
         self.marquee = None;
         self.selected.clear();
     }
 
-    /// The clip being edited, if the editor is open.
-    pub fn clip(&self) -> Option<ClipId> {
-        self.clip
+    /// What is being edited, if the editor is open.
+    pub fn subject(&self) -> Option<Subject> {
+        self.subject
     }
 
-    /// Closes the editor if its clip has gone (or isn't an audio clip any
-    /// more).
+    /// The clip being edited, if the editor is open on one.
+    pub fn clip(&self) -> Option<ClipId> {
+        match self.subject? {
+            Subject::Clip(id) => Some(id),
+            Subject::Sampler(_) => None,
+        }
+    }
+
+    /// Closes the editor if what it edits has gone (or isn't an audio clip
+    /// or a Sampler any more).
     pub fn retain_existing(&mut self, project: &Project) {
-        if let Some(id) = self.clip
-            && project.clip(id).and_then(|c| c.as_audio()).is_none()
-        {
+        let gone = match self.subject {
+            Some(Subject::Clip(id)) => project.clip(id).and_then(|c| c.as_audio()).is_none(),
+            Some(Subject::Sampler(id)) => !project
+                .graph()
+                .node(id)
+                .is_some_and(|node| node.type_id == noodle_nodes::SAMPLER_ID),
+            None => false,
+        };
+        if gone {
             self.close();
         }
+    }
+
+    /// Points per second (or beat).
+    #[cfg(test)]
+    pub fn zoom(&self) -> f32 {
+        self.view.ppb
+    }
+
+    #[cfg(test)]
+    pub fn scroll(&self) -> f32 {
+        self.view.scroll_x
+    }
+
+    #[cfg(test)]
+    pub fn playheads(&self) -> &[f64] {
+        &self.playheads
     }
 
     #[cfg(test)]
@@ -261,9 +284,10 @@ fn snap_to(beat: f64, step: f64, origin: f64) -> f64 {
     ((beat - origin) / step).round() * step + origin
 }
 
-/// Draws the clip editor for the open clip into `ui` and returns what the
-/// user did. `loaded` is what is known about the clip's file. `playhead` is
-/// the transport position, drawn when it is inside the section.
+/// Draws the clip editor for what is open into `ui` and returns what the
+/// user did. `loaded` is what is known about the file (a Sampler's sample is
+/// in memory). `playhead` is the transport position, drawn when it is inside
+/// a clip's section.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut ClipEditor,
@@ -273,57 +297,73 @@ pub fn show(
 ) -> Output {
     let mut out = Output::default();
     let project = session.project();
-    let dragging = state.drag.is_some();
+    let dragging = state.drag.is_some() || state.view.dragging();
     state.retain_existing(project);
-    let Some(id) = state.clip else {
-        // The clip went (an undo) mid-drag: nothing will send the drag's end.
+    let Some(subject) = state.subject else {
+        // What was edited went (an undo) mid-drag: nothing will send the
+        // drag's end.
         if dragging {
             out.edits.push(Edit::EndDrag);
         }
         return out;
     };
-    let Some(clip) = project.clip(id) else {
+    let span = clip_panel::Span::of(loaded);
+    let Some(section) = subject.read(project, span) else {
         return out;
     };
-    let Some(audio) = clip.as_audio() else {
-        return out;
-    };
+    let audio = &section.audio;
     let rect = ui.available_rect_before_wrap();
     ui.allocate_rect(rect, Sense::hover());
-    let name = std::path::Path::new(&audio.source).file_name().map_or_else(
-        || audio.source.clone(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let name = match subject {
+        Subject::Clip(_) => std::path::Path::new(&audio.source).file_name().map_or_else(
+            || audio.source.clone(),
+            |n| n.to_string_lossy().into_owned(),
+        ),
+        Subject::Sampler(_) => loaded.map_or_else(String::new, |l| {
+            format!(
+                "{:.2} s at {} Hz",
+                span.frames as f64 / f64::from(l.source.sample_rate.max(1)),
+                l.source.sample_rate
+            )
+        }),
+    };
+    let title = match subject {
+        Subject::Clip(_) => format!("Clip editor · {name}"),
+        Subject::Sampler(_) => format!("Sample editor · {name}"),
+    };
 
     let toolbar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR));
-    let unwarped = project.warp_of(id).is_none();
+    let unwarped = section.is_plain();
     if state.plain != unwarped {
         // The horizontal axis changes between seconds and beats.
         state.plain = unwarped;
-        state.focus = true;
+        state.view.focus = true;
     }
     let closed = crate::toolbar::show(
         ui,
         toolbar,
-        &format!("Clip editor · {name}"),
+        &title,
         if unwarped { HINT_PLAIN } else { HINT },
         |ui| {
-            if unwarped
-                && ui
+            if unwarped {
+                if ui
                     .button("Warp")
                     .on_hover_text(
-                        "Give this clip beats to pin: the tempo is guessed from its hits",
+                        "Give this audio beats to pin: the tempo is guessed from its hits",
                     )
                     .clicked()
-            {
-                let analysis = loaded.and_then(|l| l.analysis.as_deref());
-                out.edits
-                    .extend(clip_panel::start_warp(project, id, analysis).map(Edit::Apply));
+                {
+                    let analysis = loaded.and_then(|l| l.analysis.as_deref());
+                    out.edits.extend(
+                        clip_panel::start_warp(project, subject, analysis).map(Edit::Apply),
+                    );
+                }
+                plain::loop_toggle(ui, project, subject, &section, span, &mut out.edits);
             }
         },
     );
     if closed {
-        if state.drag.take().is_some() {
+        if state.drag.take().is_some() | state.view.drop_grab() {
             out.edits.push(Edit::EndDrag);
         }
         state.close();
@@ -337,16 +377,23 @@ pub fn show(
         painter.text(
             body.center(),
             Align2::CENTER_CENTER,
-            "The audio file can't be read",
+            match subject {
+                Subject::Clip(_) => "The audio file can't be read",
+                Subject::Sampler(_) => "This Sampler has no sample loaded",
+            },
             FontId::proportional(13.0),
             colors::TEXT_WEAK,
         );
         return out;
     };
-    let Some((_, warp)) = project.warp_of(id) else {
-        out.edits
-            .extend(plain::show(ui, state, session, id, loaded, body, playhead));
-        return out;
+    let warp = match &section.warp {
+        Some(warp) if !unwarped => warp,
+        _ => {
+            out.edits.extend(plain::show(
+                ui, state, session, subject, &section, loaded, body, playhead,
+            ));
+            return out;
+        }
     };
     let rate = f64::from(loaded.source.sample_rate);
     let Some(file_frames) = loaded
@@ -361,6 +408,7 @@ pub fn show(
         rate: loaded.source.sample_rate,
         frames: file_frames,
     };
+    let id = subject;
 
     let ruler = Rect::from_min_size(body.min, vec2(body.width(), RULER));
     let flags = Rect::from_min_size(
@@ -386,19 +434,19 @@ pub fn show(
     };
 
     let (first, last) = (warp.beat_at(0.0).min(0.0), warp.beat_at(file_secs));
-    if state.focus {
-        state.focus = false;
-        state.ppb =
+    if state.view.focus {
+        state.view.focus = false;
+        state.view.ppb =
             ((area.width() - 24.0) / (last - first).max(1.0) as f32).clamp(MIN_PPB, MAX_PPB);
-        state.scroll_x = first as f32 * state.ppb - 12.0;
+        state.view.scroll_x = first as f32 * state.view.ppb - 12.0;
     }
     if ui.rect_contains_pointer(area) {
-        navigate(ui, state, area, (first, last));
+        pane::navigate(ui, &mut state.view, area, (first, last));
     }
     let axis = Axis {
         area,
-        origin: area.left() - state.scroll_x,
-        ppb: state.ppb,
+        origin: area.left() - state.view.scroll_x,
+        ppb: state.view.ppb,
         shift: warp.grid_offset,
     };
     #[cfg(test)]
@@ -427,8 +475,15 @@ pub fn show(
             * rate) as u64
             + 1,
     );
+    let memory;
     let samples = if (hi - lo) as f32 <= 2.0 * wave.width() {
-        curve::window(&mut state.samples, &loaded.path, lo, hi, file_frames)
+        match &loaded.memory {
+            Some(sample) => {
+                memory = curve::Samples::in_memory(sample, lo, hi);
+                Some(&memory)
+            }
+            None => curve::window(&mut state.view.samples, &loaded.path, lo, hi, file_frames),
+        }
     } else {
         None
     };
@@ -448,16 +503,34 @@ pub fn show(
             StrokeKind::Inside,
         );
     }
-    draw_playhead(
-        &painter,
-        wave,
-        axis,
-        warp,
-        clip.start,
-        playhead,
-        audio.offset,
-        rate,
-    );
+    match subject {
+        Subject::Clip(_) => draw_playhead(
+            &painter,
+            wave,
+            axis,
+            warp,
+            section.start,
+            playhead,
+            audio.offset,
+            rate,
+        ),
+        Subject::Sampler(node) => {
+            let voices = session.telemetry().read_positions(node);
+            #[cfg(test)]
+            {
+                state.playheads = voices.iter().map(|f| f64::from(*f) * file_secs).collect();
+            }
+            for fraction in &voices {
+                let x = axis.x(warp.beat_at(f64::from(*fraction) * file_secs));
+                if (wave.left()..=wave.right()).contains(&x) {
+                    painter.vline(x, axis.area.y_range(), Stroke::new(1.0, colors::PLAYHEAD));
+                }
+            }
+            if !voices.is_empty() {
+                ui.ctx().request_repaint();
+            }
+        }
+    }
 
     // Flags that have gone (after an undo) can't stay picked.
     state.selected.retain(|&i| i < warp.markers.len());
@@ -682,33 +755,6 @@ pub fn show(
     out
 }
 
-fn navigate(ui: &egui::Ui, state: &mut ClipEditor, area: Rect, beats: (f64, f64)) {
-    let (scroll, zoom, pointer, middle) = ui.input(|i| {
-        (
-            i.smooth_scroll_delta,
-            i.zoom_delta(),
-            i.pointer.hover_pos(),
-            i.pointer.middle_down().then(|| i.pointer.delta().x),
-        )
-    });
-    if zoom != 1.0 {
-        let anchor = pointer.map_or(area.left(), |p| p.x.max(area.left()));
-        let beat = (anchor - area.left() + state.scroll_x) / state.ppb;
-        state.ppb = (state.ppb * zoom).clamp(MIN_PPB, MAX_PPB);
-        state.scroll_x = beat * state.ppb - (anchor - area.left());
-    } else {
-        // The wheel pans along the time axis; so does a middle-button drag.
-        state.scroll_x -= scroll.x + scroll.y + middle.unwrap_or(0.0);
-    }
-    let (lo, hi) = (
-        beats.0 as f32 * state.ppb - 12.0,
-        beats.1 as f32 * state.ppb,
-    );
-    state.scroll_x = state
-        .scroll_x
-        .clamp(lo.min(hi), (hi - area.width() * 0.5).max(lo));
-}
-
 /// The loop's start and end in beats of the clip (warped), if it loops.
 fn loop_beats(warp: &ClipWarp) -> Option<(f64, f64)> {
     let (from, to) = warp.loop_seconds()?;
@@ -856,11 +902,11 @@ fn pinned_transient(warp: &ClipWarp, seconds: f64) -> Option<ClipWarp> {
     )
 }
 
-/// The command that gives clip `id` the markers, loop and grid offset of
+/// The command that gives `id` the markers, loop and grid offset of
 /// `candidate`, if that is a change.
 fn warp_change(
     project: &Project,
-    id: ClipId,
+    id: Subject,
     span: clip_panel::Span,
     candidate: &ClipWarp,
     now: &ClipWarp,
@@ -883,10 +929,10 @@ fn warp_change(
     })
 }
 
-/// The command that removes the markers `indices` of clip `id`.
+/// The command that removes the markers `indices` of `id`.
 fn removal(
     project: &Project,
-    id: ClipId,
+    id: Subject,
     span: clip_panel::Span,
     warp: &ClipWarp,
     indices: &[usize],

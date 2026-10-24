@@ -120,7 +120,12 @@ It has these views:
     after the node is painted, so nodes in front cover them, and a field
     under a node in front ignores the pointer so the front node gets it.
   - **Custom node bodies.** Nodes that draw something other than parameters,
-    such as meters and scopes, reserve space and draw it in `editor/body.rs`.
+    such as meters and scopes, declare a `NodeView` from `NodeType::view`
+    (the engine crate; groups' boundaries use `GroupMeter`). `editor/body.rs`
+    keeps the one table from view to height, painter and telemetry reader,
+    and `Scene` stores the view on each `NodeGeom`. A new visual node needs no
+    app change if it reuses a view. The editor repaints from
+    `Bodies::update`'s `Liveness`, see "Idle cost" in transport-and-devices.
 - **Timeline** (`noodle-app/src/timeline`, the arrangement above the node
   editor): a lane per track input node, a ruler of bars and beats from the
   tempo map, and clips as wide as their audio at that tempo.
@@ -337,7 +342,8 @@ parameters have no wire, and is greyed when neither is free. The envelope's time
 envelope when idle and holds still during a drag, so a point follows the
 pointer; dragging past the right edge asks for longer times, and the graph
 rescales when you let go. To add a graph for a node type, add a `Kind` and
-its drawing and handles to `graph.rs`, and a height in `body::height`.
+its drawing and handles to `graph.rs`, a `GraphKind` in the engine for the node
+type to return from `view`, and a height in `body::height`.
 
 `widgets/mixing_graph.rs` draws two more. Dynamics shows its transfer curve
 (input against output level, from `reduction_db`) with points for threshold,

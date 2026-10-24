@@ -27,6 +27,20 @@ impl Samples {
         self.path == path && self.start <= from && to <= self.end
     }
 
+    /// The stretch `from..to` of a sample already in memory.
+    pub(super) fn in_memory(sample: &noodle_nodes::Sample, from: u64, to: u64) -> Self {
+        let end = (to as usize).min(sample.frames());
+        let start = (from as usize).min(end);
+        Self {
+            path: PathBuf::new(),
+            start: start as u64,
+            end: to,
+            mono: (start..end)
+                .map(|f| (sample.left[f] + sample.right[f]) * 0.5)
+                .collect(),
+        }
+    }
+
     /// The sample at `frame`, if the stretch has it.
     fn at(&self, frame: u64) -> Option<f32> {
         let i = usize::try_from(frame.checked_sub(self.start)?).ok()?;

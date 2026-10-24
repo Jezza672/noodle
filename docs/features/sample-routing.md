@@ -22,6 +22,46 @@ Delivered. This is the record of what was planned and built; open work is in [RO
 5. **Not in scope.** The clip's warp is not carried (the window is the part of
    the file, played unwarped); the Sampler's waveform view shows its own option,
    not a wired sample.
+6. **One audio pane for clips and samples (#231).** The sample view and the
+   unwarped clip editor share `clip_editor/pane.rs`: seconds ruler, zoom and pan
+   (also middle-drag), the sample curve when zoomed in, the lit part with draggable
+   start and end, loop ends, and slip. A clip's edges trim it; a Sampler's set
+   `start`/`end`; dragging the audio slips the clip's offset or moves the
+   Sampler's region.
+7. **Clip and sample parity.** "Anything you can do to a clip you can do to a
+   sample", and the other way round. A Sampler's sample now opens in the clip
+   editor itself (`clip_editor/subject.rs`: one `Subject`, a clip or a Sampler,
+   with the same commands either way), and gained what a clip had:
+   - a **gain envelope** (`gain_env`, drawn and edited on the waveform);
+   - a **playhead** for each sounding voice (Sampler voice positions reported
+     through `Telemetry::open_positions`);
+   - a **warp** (`warp`: tempo, follow tempo, markers, grid offset, quantise,
+     Detect and Tap, edited on beats in the same view, with a Warp section in
+     the Sampler's properties). The Sampler plays it as Repitch;
+   - and the other direction, a **loop on an unwarped clip** (a natural-speed
+     warp that holds the loop; the clip stays in the seconds view, with the
+     toolbar's Loop checkbox and pullable loop ends).
+   Not carried over then: Grain and Beats warp modes for samples, the gain
+   envelope in the beat view, and a sample loop shorter than a beat in the
+   beat view. Grain and Beats followed (see "Shared warp engine" below).
+
+## Shared warp engine for samples
+
+A Sampler now has the clips' warp modes. Grain and Beats run the clip engine's
+`Stretcher` over the whole sample on a worker (`sampler_stretch.rs`), and the
+voices play the stretched copy with the existing pitch, loop and envelope logic,
+mapped back to the sample through the clip's `WarpMap`. The mode picker is shown
+for samples. While the copy is made, and while a marker is dragged, the warp
+plays as Repitch; an offline render waits for the copy. Also in this change:
+
+- `gain_env` and `warp` are *live config* (`NodeType::live_config`/`retune`), so
+  dragging an envelope point or a marker no longer rebuilds the Sampler and cuts
+  its notes.
+- `Telemetry::read_positions` lists the voices of every instance still
+  reporting (a Sampler inside a voice-instanced group, or two instances across a
+  plan swap) instead of the newest instance's only.
+- `DSP_GENERATION` is 6, since a Grain or Beats warp on a Sampler used to render
+  as Repitch.
 
 ## Random Select (#211)
 

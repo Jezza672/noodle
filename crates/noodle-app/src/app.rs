@@ -65,7 +65,6 @@ pub struct App {
     timeline: TimelineState,
     piano_roll: PianoRoll,
     clip_editor: ClipEditor,
-    sample_view: crate::sample_view::SampleView,
     clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
@@ -202,7 +201,6 @@ impl App {
             timeline: TimelineState::default(),
             piano_roll: PianoRoll::default(),
             clip_editor: ClipEditor::default(),
-            sample_view: Default::default(),
             clip_panel: ClipPanel::default(),
             audition_track: None,
             devices: DevicePicker::default(),
@@ -324,10 +322,6 @@ impl App {
         // The monitor menu lists devices from the Outputs view's listing.
         self.outputs
             .ensure_listed(self.session.audio_config().host.as_deref());
-        if self.session.watching_midi() {
-            ui.ctx()
-                .request_repaint_after(crate::session::MIDI_WATCH_INTERVAL);
-        }
         // Before the shortcuts, so the note keys are not also delete and the
         // like.
         self.keyboard_midi(ui.ctx());
@@ -457,12 +451,10 @@ impl App {
                 }
                 if let Some(clip) = out.open_midi {
                     self.clip_editor.close();
-                    self.sample_view.close();
                     self.piano_roll.open(clip);
                 }
                 if let Some(clip) = out.open_audio {
                     self.piano_roll.close();
-                    self.sample_view.close();
                     self.clip_editor.open(clip);
                 }
                 for (track, kind, on) in out.arm {
@@ -473,19 +465,7 @@ impl App {
         // A double-click on a Sampler's preview in the properties panel.
         if let Some(node) = crate::sample_view::take_request(ui.ctx()) {
             self.piano_roll.close();
-            self.clip_editor.close();
-            self.sample_view.open(node);
-        }
-        self.sample_view.retain_existing(&self.session);
-        if self.sample_view.node().is_some() {
-            egui::Panel::top("sample view")
-                .resizable(true)
-                .default_size(crate::sample_view::DEFAULT_HEIGHT)
-                .frame(egui::Frame::NONE.fill(theme::PANEL))
-                .show(ui, |ui| {
-                    let edits = crate::sample_view::show(ui, &mut self.sample_view, &self.session);
-                    self.session.edit(edits);
-                });
+            self.clip_editor.open_sampler(node);
         }
 
         if let Some(clip) = self.piano_roll.clip() {
@@ -505,13 +485,21 @@ impl App {
                     }
                 });
         }
-        if let Some(clip) = self.clip_editor.clip() {
+        self.clip_editor.retain_existing(self.session.project());
+        if let Some(subject) = self.clip_editor.subject() {
             egui::Panel::top("clip editor")
                 .resizable(true)
                 .default_size(clip_editor::DEFAULT_HEIGHT)
                 .frame(egui::Frame::NONE.fill(theme::PANEL))
                 .show(ui, |ui| {
-                    let loaded = self.clip_source(ui.ctx(), clip);
+                    let loaded = match subject {
+                        clip_editor::subject::Subject::Clip(clip) => {
+                            self.clip_source(ui.ctx(), clip)
+                        }
+                        clip_editor::subject::Subject::Sampler(node) => {
+                            crate::sample_view::loaded(ui.ctx(), &self.session, node)
+                        }
+                    };
                     let playhead = Some(self.session.playhead());
                     let out = clip_editor::show(
                         ui,
@@ -565,16 +553,12 @@ impl App {
         self.dragging = dragging;
         crate::carry::expire(ui.ctx());
         self.update_title(ui.ctx());
-        if self.session.engine_running() {
-            // Keeps health checks and plan freeing going while idle, and the
-            // playhead moving at about 60 frames a second while it does.
-            let wait = if self.session.transport_running() {
-                16
-            } else {
-                100
-            };
+        // Sleep until something has news (jobs and scans wake the window) or
+        // the session has something to look at again.
+        let now = std::time::Instant::now();
+        if let Some(deadline) = self.session.next_deadline(now) {
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(wait));
+                .request_repaint_after(deadline.saturating_duration_since(now));
         }
         if let Some(action) = self.discarding.take() {
             self.run(ui.ctx(), action);
@@ -2628,31 +2612,65 @@ mod tests {
     fn the_samplers_properties_show_its_sample_and_a_double_click_opens_the_view() {
         use crate::testkit::double_click;
         let (mut h, id) = sampler_rig();
-        assert!(h.state().sample_view.node().is_none());
+        assert!(h.state().clip_editor.subject().is_none());
         let at = h.get_by_label("Sample waveform").rect().center();
         double_click(&mut h, at);
         h.run();
-        assert_eq!(h.state().sample_view.node(), Some(id));
-        h.get_by_label("Sample · 1.00 s at 48000 Hz");
+        assert_eq!(
+            h.state().clip_editor.subject(),
+            Some(clip_editor::subject::Subject::Sampler(id))
+        );
+        h.get_by_label("Sample editor · 1.00 s at 48000 Hz");
         // Close shuts it again.
         h.get_by_label("Close").click();
         h.run();
-        assert!(h.state().sample_view.node().is_none());
+        assert!(h.state().clip_editor.subject().is_none());
+    }
+
+    /// Where the sample editor drew its waveform, and the seconds axis.
+    struct SampleAxis {
+        origin: f32,
+        pps: f32,
+    }
+
+    impl SampleAxis {
+        fn x(&self, seconds: f64) -> f32 {
+            self.origin + seconds as f32 * self.pps
+        }
+    }
+
+    fn sample_axis(h: &Harness<'static, App>) -> (egui::Rect, SampleAxis) {
+        let g = h
+            .state()
+            .clip_editor
+            .plain_geometry()
+            .expect("the editor has been drawn");
+        (
+            g.wave,
+            SampleAxis {
+                origin: g.window,
+                pps: g.pps,
+            },
+        )
+    }
+
+    fn open_sample_view(h: &mut Harness<'static, App>) -> (egui::Rect, SampleAxis) {
+        use crate::testkit::double_click;
+        let at = h.get_by_label("Sample waveform").rect().center();
+        double_click(h, at);
+        h.run();
+        sample_axis(h)
     }
 
     #[test]
     fn dragging_the_start_marker_in_the_sample_view_sets_the_start_parameter() {
-        use crate::testkit::{double_click, drag_between};
+        use crate::testkit::drag_between;
         let (mut h, id) = sampler_rig();
-        let at = h.get_by_label("Sample waveform").rect().center();
-        double_click(&mut h, at);
-        h.run();
-        let body = h
-            .ctx
-            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sample view body")))
-            .expect("the view has been drawn");
-        let from = egui::Pos2::new(body.left() + 1.0, body.center().y);
-        let to = egui::Pos2::new(body.left() + body.width() * 0.25, body.center().y);
+        let (body, axis) = open_sample_view(&mut h);
+        // The sample is a second long.
+        let y = body.center().y;
+        let from = egui::Pos2::new(axis.x(0.0) + 1.0, y);
+        let to = egui::Pos2::new(axis.x(0.25), y);
         drag_between(&mut h, egui::Modifiers::NONE, from, to);
         let start = h.state().session.project().graph().node(id).unwrap().params["start"];
         assert!((start - 0.25).abs() < 0.01, "{start}");
@@ -2663,17 +2681,63 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_scroll_zooms_the_sample_view_around_the_pointer_and_scroll_pans() {
-        use crate::testkit::{double_click, wheel, wheel_with};
-        let (mut h, _id) = sampler_rig();
-        let at = h.get_by_label("Sample waveform").rect().center();
-        double_click(&mut h, at);
+    fn dragging_the_sample_between_the_markers_slips_the_region_along_it() {
+        use crate::testkit::drag_between;
+        let (mut h, id) = sampler_rig();
+        // A region in the middle to slip.
+        h.state_mut().session.edit([
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "start".into(),
+                value: Some(0.2),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "end".into(),
+                value: Some(0.6),
+            }),
+        ]);
+        h.state_mut().session.edit([
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop".into(),
+                value: Some(1.0),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop_start".into(),
+                value: Some(0.3),
+            }),
+            Edit::Apply(Command::SetParam {
+                node: id,
+                key: "loop_end".into(),
+                value: Some(0.5),
+            }),
+        ]);
         h.run();
-        let body = h
-            .ctx
-            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("sample view body")))
-            .expect("the view has been drawn");
+        let (body, axis) = open_sample_view(&mut h);
+        let y = body.center().y;
+        // The audio follows the pointer, 0.1 s to the left.
+        let from = egui::Pos2::new(axis.x(0.4), y);
+        let to = egui::Pos2::new(axis.x(0.3), y);
+        drag_between(&mut h, egui::Modifiers::NONE, from, to);
+        let params = &h.state().session.project().graph().node(id).unwrap().params;
+        assert!((params["start"] - 0.3).abs() < 0.01, "{}", params["start"]);
+        assert!((params["loop_start"] - 0.4).abs() < 0.01);
+        assert!((params["loop_end"] - 0.6).abs() < 0.01);
+        assert!((params["end"] - 0.7).abs() < 0.01, "{}", params["end"]);
+    }
+
+    #[test]
+    fn ctrl_scroll_zooms_the_sample_view_around_the_pointer_and_scroll_pans() {
+        use crate::testkit::{wheel, wheel_with};
+        let (mut h, _id) = sampler_rig();
+        let (body, axis) = open_sample_view(&mut h);
         let point = egui::Pos2::new(body.left() + body.width() * 0.5, body.center().y);
+        let (zoom0, under0) = (
+            h.state().clip_editor.zoom(),
+            (point.x - axis.origin) / axis.pps,
+        );
         for _ in 0..10 {
             wheel_with(
                 &mut h,
@@ -2684,10 +2748,14 @@ mod tests {
             );
         }
         h.step();
-        let (a, b) = h.state().sample_view.window();
-        assert!(b - a < 0.5, "zoomed in: {a}..{b}");
-        assert!(a < 0.5 && 0.5 < b, "still around the pointer: {a}..{b}");
+        let zoom = h.state().clip_editor.zoom();
+        assert!(zoom > zoom0 * 2.0, "zoomed in: {zoom0} -> {zoom}");
+        // The second under the pointer stays under it.
+        let (_, axis) = sample_axis(&h);
+        let under = (point.x - axis.origin) / axis.pps;
+        assert!((under - under0).abs() < 0.05, "{under0} -> {under}");
         // The plain wheel pans.
+        let scroll = h.state().clip_editor.scroll();
         for _ in 0..3 {
             wheel(
                 &mut h,
@@ -2696,8 +2764,7 @@ mod tests {
                 egui::vec2(-60.0, 0.0),
             );
         }
-        let (c, _) = h.state().sample_view.window();
-        assert!(c > a, "panned right: {a} -> {c}");
+        assert!(h.state().clip_editor.scroll() > scroll, "panned right");
     }
 
     #[test]
@@ -2740,6 +2807,35 @@ mod tests {
     }
 
     #[test]
+    fn the_arrangement_panel_does_not_grow_to_fit_off_screen_lanes() {
+        let mut app = empty();
+        // Several free automation lanes: each is an Automation node plus a
+        // lane, so the lanes pile up below the tracks and most sit off screen.
+        for _ in 0..30 {
+            let graph = app.session.project().graph().clone();
+            let node = app.session.new_node_id();
+            let lane = app.session.project().next_lane_id();
+            let cmd = crate::timeline::add_track::automation_command(&graph, node, lane);
+            app.session.edit([Edit::Apply(cmd)]);
+        }
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        let height =
+            egui::containers::panel::PanelState::load(&h.ctx, egui::Id::new("arrangement"))
+                .expect("the arrangement panel has been shown")
+                .size()
+                .y;
+        assert_eq!(
+            height,
+            theme::timeline::DEFAULT_HEIGHT,
+            "the panel keeps its default height instead of growing to fit the lanes"
+        );
+    }
+
+    #[test]
     fn scrolling_down_the_tracks_does_not_resize_the_sequencer_panel() {
         use crate::testkit::wheel;
         let mut app = empty();
@@ -2772,6 +2868,66 @@ mod tests {
         h.run_steps(20);
         assert!(h.state().timeline.scroll_y() > 0.0, "it scrolled");
         assert_eq!(height(&h), before, "the panel kept its size");
+    }
+
+    #[test]
+    fn scrolling_to_the_bottom_reaches_the_add_track_buttons() {
+        use crate::testkit::wheel;
+        let mut app = empty();
+        for n in 1..=14 {
+            app.session.edit([Edit::Apply(Command::AddNode {
+                id: noodle_core::NodeId(n),
+                node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+            })]);
+        }
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1100.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        assert!(
+            h.query_by_label("+ Track").is_none(),
+            "the buttons are below the fold at the top"
+        );
+        let over_tracks = egui::pos2(600.0, 150.0);
+        for _ in 0..20 {
+            wheel(
+                &mut h,
+                over_tracks,
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(20);
+        assert!(
+            h.query_by_label("+ Track").is_some(),
+            "the + Track button scrolls into view"
+        );
+    }
+
+    #[test]
+    fn resizing_the_arrangement_panel_keeps_the_graph_content_put() {
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new("noodle.osc.sine").at(200.0, 150.0),
+        })]);
+        let mut h = harness(app);
+        h.run();
+        let before = on_canvas(&h, egui::pos2(200.0, 150.0));
+        // Make the arrangement panel taller: the graph canvas shrinks from the
+        // top, but the graph content must not move with its corner.
+        let state = egui::containers::panel::PanelState {
+            outer_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 400.0)),
+        };
+        h.ctx
+            .data_mut(|d| d.insert_persisted(egui::Id::new("arrangement"), state));
+        h.run();
+        assert_eq!(
+            on_canvas(&h, egui::pos2(200.0, 150.0)),
+            before,
+            "the graph content stays where it was on screen"
+        );
     }
 
     /// An app saved in a temp folder with one track holding a clip of a

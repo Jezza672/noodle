@@ -60,15 +60,21 @@ key(output) = hash(key(node), output index)
   own threads with the blocking `analyze`. A file that can't be read is
   remembered as such until its size or time change, so it isn't retried every
   compile.
-- **Watching clip files.** Once a second the session looks at the size and
-  modification time of every audio file a clip plays (`filewatch.rs`; a
-  `stat` each, no platform watcher). A changed file schedules the clips
-  again, which opens new streams (a clip's source includes the file's
-  modification time, so streams on the old file are dropped), and compiles
-  again, which keys frozen and offline nodes afresh and renders them. Waveforms
-  watch their files separately (`timeline::sources`). A file rewritten in
-  place with its modification time put back is not seen, the same trade-off
-  the hasher makes.
+- **Watching clip files.** One service answers "has this audio file changed?"
+  for everyone: `noodle_io::AudioFiles` (`files.rs`). A `FileStamp` (size and
+  modification time) is the only rule. One thread looks at the files that have
+  been asked about once a second (it sleeps when there are none, and forgets a
+  file nobody has asked about for 30 s) and wakes the UI (`noodle_engine::wake`)
+  when a stamp differs. `AudioFiles::stamp` reads what the thread last saw, so
+  the session, the clip schedule (`ClipFeeds::file_info`) and the timeline's
+  waveforms (`timeline::sources`) compare stamps with no `stat` of their own,
+  even during a clip drag. A changed file schedules the clips again, which opens
+  new streams (a clip's source includes the file's stamp, so streams on the old
+  file are dropped), and compiles again, which keys frozen and offline nodes
+  afresh and renders them. A file rewritten in place with its size and
+  modification time both put back is not seen, the same trade-off the hasher
+  makes. The streaming hub and the warp worker still keep their own 2 s retry
+  for files that fail to open.
 - An offline node can take a modulated parameter: the render taps the wire
   like any other input, and a wire into an offsetting parameter is turned into
   the parameter's value by `apply_offset`, exactly as the real-time plan does
@@ -93,7 +99,7 @@ a source node to play in its place. `replace.rs` rewires the readers of that
 output to the source and drops every node that only fed it, so a frozen
 subgraph costs nothing, track inputs and lanes included. `CachedPlayer`
 (`noodle-nodes`) is the source. Live it streams chunks from the store through
-a worker thread, in the manner of clip streams: the audio side takes full
+a worker task on the `noodle-io` pool, in the manner of clip streams: the audio side takes full
 chunks and returns spent ones through two lock-free queues, a jump asks the
 worker to restart, and a loop wraps without a gap because the worker follows
 the transport's loop range. In an offline render it reads the file itself.
@@ -133,7 +139,9 @@ meanwhile, and shows a progress bar on the node.
   the in-memory version; both give the same samples.
 - `Job` (`noodle-engine`) runs work on a thread with `fraction()`,
   `cancel()` and a non-blocking `poll()`. Dropping it cancels. Nothing in
-  it touches the audio thread.
+  it touches the audio thread. A job calls `noodle_engine::wake` when its
+  thread ends (a panic included), so the UI polls it when it finishes rather
+  than on a timer.
 - `spawn_render` and `spawn_render_to_cache` (`noodle-nodes`,
   `background.rs`) are the offline renderer as a background service. The
   render has its own engine and a blocking track-input registry, so it

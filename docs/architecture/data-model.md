@@ -177,3 +177,18 @@ The **Project** is the single source of truth. It holds one global graph:
 Every change goes through a **command**. Applying a command returns its
 inverse, which gives undo/redo for free and gives the UI one place to hook
 dirty-tracking and recompiling.
+
+Two cheap questions answer "has anything changed?":
+
+- `Project::revision()` is a number drawn from one process-wide counter and
+  replaced by every applied command (undo and redo are commands). Equal
+  revisions mean equal contents, so a view can cache what it derives from the
+  project: the editor's `Scene`, the timeline's track list and the set of wired
+  ports are rebuilt only when the revision (or, for the first and last, the
+  registry's `generation()`) moves. It is not saved and not part of equality.
+- `History::position()` names the state in the history: the number of the latest
+  step still applied. A step keeps its number through undo and redo, and a new
+  step never reuses one. `Session` stores the position when it saves or loads;
+  the project is dirty when the position differs. That is O(1), exact under undo
+  back to the saved state, and keeps no copy of the saved project. (An edit that
+  changes nothing still counts as a change.)
