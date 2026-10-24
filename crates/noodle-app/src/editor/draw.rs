@@ -346,28 +346,20 @@ fn boxed(
         // What each parameter is now: a wire's live value, else the node's
         // own, else the default.
         let values = |key: &str| {
-            if let Some(node) = graph.node(node.id)
-                && let Some(value) = crate::widgets::graph::special_value(key, node, &|channel| {
-                    bodies.param_live(node_id, channel).map(|live| live.value)
-                })
-            {
-                return value;
-            }
+            let Some(own) = graph.node(node_id) else {
+                return 0.0;
+            };
             let default = node.ports.iter().find_map(|port| match &port.kind {
                 PortKind::Param(info) if port.key == key => Some(info.default),
                 _ => None,
             });
-            // As in the properties panel, only a wired parameter reads live;
-            // an unwired one is its own value, so both views draw one curve.
-            let wired = graph.source(&Endpoint::new(node_id, key)).is_some();
-            let live = if wired {
-                bodies.param_live(node.id, key).map(|live| live.value)
-            } else {
-                None
-            };
-            live.or_else(|| graph.node(node.id)?.params.get(key).copied())
-                .or(default)
-                .unwrap_or(0.0)
+            crate::widgets::graph::graph_value(
+                key,
+                own,
+                graph.source(&Endpoint::new(node_id, key)).is_some(),
+                &|channel| bodies.param_live(node_id, channel).map(|live| live.value),
+                default.unwrap_or(0.0),
+            )
         };
         let curve = match graph
             .node(node.id)
