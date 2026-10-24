@@ -352,7 +352,7 @@ impl EditorState {
 
     /// Shows the inside of `group`, or the top level for `None`, with
     /// `select` selected (the group just left, say).
-    fn enter(&mut self, group: Option<NodeId>, select: Option<NodeId>) {
+    pub fn enter(&mut self, group: Option<NodeId>, select: Option<NodeId>) {
         let left = std::mem::take(&mut self.view);
         self.views.insert(self.group, left);
         self.view = self.views.remove(&group).unwrap_or_default();

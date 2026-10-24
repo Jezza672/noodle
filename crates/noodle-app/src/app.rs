@@ -376,6 +376,18 @@ impl App {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
         {
+            static ENTERED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if let Some(group) = std::env::var("NOODLE_DEBUG_GROUP")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                && !ENTERED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                let group = noodle_core::NodeId(group);
+                self.editor
+                    .enter(Some(group), Some(noodle_core::NodeId(id)));
+                self.editor.request_fit();
+            }
             self.editor.active = Some(noodle_core::NodeId(id));
         }
         let active = self.editor.active;
