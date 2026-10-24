@@ -371,6 +371,13 @@ impl App {
                 .show(ui, |ui| self.scope_pane(ui));
         }
 
+        // DEBUG (temporary): select a node by id to reproduce a view bug.
+        if let Some(id) = std::env::var("NOODLE_DEBUG_ACTIVE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            self.editor.active = Some(noodle_core::NodeId(id));
+        }
         let active = self.editor.active;
         egui::Panel::right("properties")
             .default_size(theme::PROPERTIES_WIDTH)
