@@ -5,6 +5,7 @@ mod adsr;
 mod arpeggiator;
 mod automation;
 mod background;
+mod beat_length;
 mod bitcrush;
 mod button;
 mod cached;
@@ -71,6 +72,7 @@ pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
     render_streaming, spawn_render, spawn_render_to_cache,
 };
+pub use beat_length::{BEAT_LENGTH_ID, BeatLength};
 pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
@@ -241,6 +243,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Automation);
     registry.register(Clock);
     registry.register(Tempo);
+    registry.register(BeatLength);
     registry.register(SampleInput);
     registry.register(Distortion);
     registry.register(Bitcrusher);

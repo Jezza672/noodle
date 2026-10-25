@@ -1553,6 +1553,7 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
     );
     let compare = s.add(Node::new("noodle.mod.comparator"));
     let tempo = s.add(Node::new("noodle.mod.tempo"));
+    let beat_length = s.add(Node::new("noodle.mod.beat_length"));
     let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 4.0));
     let multi = s.add(Node::new("noodle.mod.envelope").with_param("length", 0.1));
     let single = s.add(
@@ -1581,6 +1582,8 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
     s.wire(noise, "out", hold, "in");
     s.wire(hold, "out", lag, "in");
     s.wire(lag, "out", chorus, "rate");
+    s.wire(lag, "out", beat_length, "bpm");
+    s.wire(beat_length, "rate", clock, "rate");
     s.wire(sine, "out", follower, "in");
     s.wire(sine, "out", distortion, "in");
     s.wire(automation, "out", distortion, "mix");

@@ -577,6 +577,28 @@
         ),
     )),
     NodePreset((
+        name: "Quarter Notes",
+        slug: "beat-length-quarter-notes",
+        node_type: "noodle.mod.beat_length",
+        values: (
+            params: {
+                "bpm": 120.0,
+                "division": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Dotted Eighths",
+        slug: "beat-length-dotted-eighths",
+        node_type: "noodle.mod.beat_length",
+        values: (
+            params: {
+                "bpm": 120.0,
+                "division": 14.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Compressor",
         slug: "dynamics-compressor",
         node_type: "noodle.effect.dynamics",

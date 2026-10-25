@@ -151,6 +151,10 @@ It has these views:
     optional stepped lane under the ruler (`timeline/tempo_lane.rs`): click to
     add a change on the beat, drag a point to move it and set its tempo, and
     right-click or Delete removes it (the first change stays at the start).
+    The ruler's right-click menu also adds a tempo change at the bar
+    clicked ("Add tempo change at bar N"), next to its time signature items;
+    signature changes live in the same tempo map, on bar lines only, and show
+    as markers on the ruler.
     Every edit is a `SetTempoMap` command, so undo and the engine's table follow
     as for any tempo change.
   - **Warped sections' waveforms** (`timeline/warped_waves.rs`) are not the

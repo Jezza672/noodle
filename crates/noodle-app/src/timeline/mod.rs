@@ -1292,7 +1292,9 @@ pub fn show(
         });
     state.scroll_y = scroll.state.offset.y;
 
-    draw_ruler(ui, rect, axis, &lines);
+    let _markers = draw_ruler(ui, rect, axis, &lines);
+    #[cfg(test)]
+    state.drawn_text.extend(_markers);
     let ruler = Rect::from_min_max(
         Pos2::new(content.left(), rect.top()),
         Pos2::new(rect.right(), rect.top() + colors::RULER_HEIGHT),
@@ -1456,6 +1458,18 @@ pub fn show(
             });
         }
         ui.separator();
+        if ui
+            .button(format!("Add tempo change at bar {}", bar + 1))
+            .clicked()
+        {
+            ui.close();
+            let at = map.bar_start(bar);
+            edits.extend(
+                crate::tempo::with_change(map, at, map.bpm_at(at))
+                    .filter(|(new, _)| new != map)
+                    .map(|(new, _)| Edit::Apply(Command::SetTempoMap(new))),
+            );
+        }
         for (numerator, denominator) in crate::tempo::SIGNATURES {
             let signature = noodle_core::TimeSignature {
                 numerator,
@@ -2417,7 +2431,8 @@ fn draw_headers(
     (edits, arm)
 }
 
-fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) {
+/// Draws the ruler, and returns the time signature markers it drew.
+fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) -> Vec<String> {
     let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), colors::RULER_HEIGHT));
     let painter = ui.painter_at(strip);
     painter.rect_filled(strip, 0.0, colors::RULER);
@@ -2457,11 +2472,31 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) {
             grid::Kind::Beat => {}
         }
     }
+    // A marker at every time signature change after the first, which the
+    // transport shows.
+    let mut markers = Vec::new();
+    for change in axis.map.signatures().iter().skip(1) {
+        let x = axis.x(axis.map.bar_start(change.bar));
+        painter.vline(
+            x,
+            strip.y_range(),
+            Stroke::new(1.5, colors::AUTOMATION_LINE),
+        );
+        painter.text(
+            Pos2::new(x + 4.0, strip.bottom() - 2.0),
+            Align2::LEFT_BOTTOM,
+            change.signature.to_string(),
+            FontId::proportional(10.0),
+            colors::AUTOMATION_LINE,
+        );
+        markers.push(change.signature.to_string());
+    }
     painter.hline(
         strip.x_range(),
         strip.bottom() - 0.5,
         Stroke::new(1.0, colors::BACKGROUND),
     );
+    markers
 }
 
 #[cfg(test)]
