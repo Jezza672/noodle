@@ -302,6 +302,13 @@ It has these views:
   (`widgets/curve.rs`): drag points and handles, click the line to add a
   point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
   (Its live value and range come from the editor, as on the node.)
+- **Dialogs:** the audio settings, export and stem-model dialogs are modals.
+  A modal is not a scrolling container: egui clips its area to the window, so
+  a dialog with more in it than the window has would lose the bottom of
+  itself, buttons and all. Each of these dialogs is built with
+  `dialog::modal`, which gives the dialog's area the window's size to
+  measure itself with and puts its body in a scroll area, so the dialog is
+  never taller than the window and everything in it can be reached.
 
 The UI only changes the Project by issuing commands, and only reads engine state
 through the telemetry API.

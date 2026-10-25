@@ -109,7 +109,7 @@ impl ExportDialog {
             self.open = false;
             return;
         }
-        let modal = egui::Modal::new(egui::Id::new("export")).show(ctx, |ui| {
+        let modal = crate::dialog::modal(ctx, "export", |ui| {
             ui.heading("Export Audio");
             ui.add_space(6.0);
             ui.add_enabled_ui(running.is_none(), |ui| self.fields(ui));

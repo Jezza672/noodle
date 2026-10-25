@@ -94,7 +94,7 @@ impl DevicePicker {
             return None;
         }
         let mut applied = None;
-        let modal = egui::Modal::new(egui::Id::new("audio settings")).show(ctx, |ui| {
+        let modal = crate::dialog::modal(ctx, "audio settings", |ui| {
             ui.heading("Audio Settings");
             ui.add_space(6.0);
             egui::Grid::new("audio settings grid")

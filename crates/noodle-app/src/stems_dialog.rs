@@ -13,7 +13,7 @@ pub fn show(ctx: &egui::Context, session: &mut Session) {
         |f| f.display().to_string(),
     );
     let mut answer = None;
-    let modal = egui::Modal::new(egui::Id::new("stems consent")).show(ctx, |ui| {
+    let modal = crate::dialog::modal(ctx, "stems consent", |ui| {
         ui.set_max_width(420.0);
         ui.heading("Download the stem model?");
         ui.add_space(6.0);
