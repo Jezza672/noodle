@@ -9,6 +9,7 @@ mod clip_editor;
 mod clip_panel;
 mod clipboard;
 mod devices;
+mod dialog;
 mod editor;
 mod export_dialog;
 mod freezing;

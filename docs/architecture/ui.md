@@ -292,13 +292,31 @@ It has these views:
   - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
-  and compile problems. The Remap node's curve gets a curve editor
+  and compile problems. The panel is as tall as the window, so its body
+  scrolls: a node with more parameters than fit would otherwise draw them
+  off screen, out of reach. The offset is kept in egui's own state, so it
+  survives from frame to frame and from one selected node to the next, and
+  the wheel over the panel scrolls it. It is session state, so the panel
+  opens at the top the next time the app starts.
+  The Remap node's curve gets a curve editor
   (`widgets/curve.rs`): drag points and handles, click the line to add a
   point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
   (Its live value and range come from the editor, as on the node.)
+- **Dialogs:** the audio settings, export and stem-model dialogs are modals.
+  A modal is not a scrolling container: egui clips its area to the window, so
+  a dialog with more in it than the window has would lose the bottom of
+  itself, buttons and all. Each of these dialogs is built with
+  `dialog::modal`, which gives the dialog's area the window's size to
+  measure itself with and puts its body in a scroll area, so the dialog is
+  never taller than the window and everything in it can be reached.
 
 The UI only changes the Project by issuing commands, and only reads engine state
 through the telemetry API.
+
+**The wheel belongs to the view under the pointer.** egui's scroll areas clear
+the scroll delta they use, so a view that pans or zooms with the wheel has to
+clear it too: otherwise one turn acts twice, once on the view and once on a
+scroll area around it.
 
 ## Parameter widgets
 

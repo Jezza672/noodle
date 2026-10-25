@@ -96,8 +96,11 @@ it non-destructively, and lend its groove to a second clip.
 
 ## Clip editor navigation and sample curve
 
-The clip editor pans with the wheel (or a middle-button drag) and zooms with
-Ctrl+scroll or a pinch, around the pointer, down to a few pixels per frame.
+The clip editor pans along the time axis with the wheel (or a middle-button
+drag) and zooms with Ctrl+scroll or a pinch, around the pointer, down to a few
+pixels per frame. The pane has no vertical axis, so the wheel's vertical
+component does nothing: the wave, the gain envelope and the rulers all take
+the height they need.
 Zoomed in until a frame is 1.5 px wide, the waveform switches from peak columns
 to a line through the file's actual samples (read from the file for the
 visible stretch, `clip_editor/curve.rs`), with a dot on each sample from 4 px

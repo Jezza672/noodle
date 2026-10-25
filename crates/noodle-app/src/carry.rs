@@ -41,25 +41,18 @@ fn drop_id() -> Id {
 pub fn carrying(ctx: &Context, item: Item, at: Pos2, label: &str) {
     ctx.data_mut(|d| d.insert_temp(carrying_id(), Some((item, at))));
     let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("carry label")));
-    let text = painter.text(
-        at + Vec2::new(14.0, 14.0),
-        Align2::LEFT_TOP,
-        label,
-        FontId::proportional(13.0),
-        Color32::WHITE,
-    );
+    // Lay the label out without painting it: `Painter::text` paints as well as
+    // it measures, so measuring the label with it drew the label twice, and
+    // the copy under the box showed through it.
+    let galley =
+        painter.layout_no_wrap(label.to_owned(), FontId::proportional(13.0), Color32::WHITE);
+    let text = Align2::LEFT_TOP.anchor_size(at + Vec2::new(14.0, 14.0), galley.size());
     painter.rect_filled(
         text.expand2(Vec2::new(6.0, 3.0)),
         4.0,
         Color32::from_black_alpha(200),
     );
-    painter.text(
-        at + Vec2::new(14.0, 14.0),
-        Align2::LEFT_TOP,
-        label,
-        FontId::proportional(13.0),
-        Color32::WHITE,
-    );
+    painter.galley(text.min, galley, Color32::WHITE);
     ctx.request_repaint();
 }
 
@@ -107,4 +100,67 @@ pub fn expire(ctx: &Context) {
             d.insert_temp(drop_id(), None::<Dropped>);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::Shape;
+
+    /// The label is drawn once.
+    ///
+    /// `egui::Painter::text` paints as well as it measures, so measuring the
+    /// label with it drew the label twice: once under the box, where the box
+    /// let a ghost of it show through, and once on top.
+    #[test]
+    fn the_label_is_drawn_once() {
+        let ctx = Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+            ..Default::default()
+        };
+        let at = Pos2::new(100.0, 200.0);
+        let mut output = ctx.run_ui(input, |ui| {
+            carrying(ui.ctx(), Item::Clip(ClipId(1)), at, "Sample");
+        });
+        // The fonts are rasterised into a texture nothing applies here.
+        output.textures_delta.clear();
+
+        let mut text = None;
+        let mut box_ = None;
+        for shape in &output.shapes {
+            match &shape.shape {
+                Shape::Text(text_shape) => {
+                    assert!(text.is_none(), "the label's text is drawn twice");
+                    text = Some(text_shape);
+                }
+                Shape::Rect(rect_shape) => {
+                    assert!(box_.is_none(), "the label has more than one box");
+                    box_ = Some(rect_shape);
+                }
+                _ => {}
+            }
+        }
+
+        let text = text.expect("the label's text is drawn");
+        assert_eq!(
+            text.galley.text(),
+            "Sample",
+            "the label says what is carried"
+        );
+        assert_eq!(
+            text.pos,
+            at + Vec2::new(14.0, 14.0),
+            "the label is by the pointer"
+        );
+
+        let box_ = box_.expect("the label has a box behind it");
+        assert_eq!(box_.fill, Color32::from_black_alpha(200));
+        assert_eq!(box_.corner_radius, 4.0.into());
+        assert_eq!(
+            box_.rect,
+            Rect::from_min_size(text.pos, text.galley.size()).expand2(Vec2::new(6.0, 3.0)),
+            "the box fits the text",
+        );
+    }
 }

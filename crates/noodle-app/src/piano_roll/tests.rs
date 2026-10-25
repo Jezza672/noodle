@@ -1,8 +1,8 @@
 //! The piano roll driven like a user would: pointer and keyboard events into
 //! a real [`Session`], checking the notes that result.
 
-use crate::testkit::{double_click, drag, drag_between};
-use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
+use crate::testkit::{double_click, drag, drag_between, wheel};
+use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, TouchPhase, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use noodle_core::{Clip, ClipId, Command, MidiNote, Node, NodeId, Tick};
@@ -16,6 +16,8 @@ struct Rig {
     roll: PianoRoll,
     clip: ClipId,
     auditioned: Vec<(u8, bool)>,
+    /// How far the scroll area around the roll has scrolled, if it has one.
+    scroll: Vec2,
 }
 
 type H = Harness<'static, Rig>;
@@ -31,6 +33,47 @@ fn rig(notes: &[MidiNote]) -> H {
 
 /// The same, starting at `start`.
 fn rig_at(start: Tick, notes: &[MidiNote]) -> H {
+    harness(make_rig(start, notes), false)
+}
+
+/// The same roll, but in a scroll area, so a wheel turn the roll leaves
+/// behind scrolls it.
+fn rig_in_scroll_area(notes: &[MidiNote]) -> H {
+    harness(make_rig(Tick(960), notes), true)
+}
+
+/// A harness for the roll, in a scroll area or not.
+fn harness(rig: Rig, in_scroll_area: bool) -> H {
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(900.0, 420.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            move |ui, rig: &mut Rig| {
+                if in_scroll_area {
+                    let out = egui::ScrollArea::vertical().show(ui, |ui| {
+                        let out = show(ui, &mut rig.roll, &rig.session, None);
+                        rig.session.edit(out.edits);
+                        rig.auditioned.extend(out.audition);
+                        // Something below the roll, so the area has room to
+                        // scroll.
+                        ui.add_space(400.0);
+                    });
+                    rig.scroll = out.state.offset;
+                } else {
+                    let out = show(ui, &mut rig.roll, &rig.session, None);
+                    rig.session.edit(out.edits);
+                    rig.auditioned.extend(out.audition);
+                }
+            },
+            rig,
+        );
+    h.run();
+    h
+}
+
+/// The roll itself: a four beat clip (3840 ticks) holding `notes`, open in
+/// the roll.
+fn make_rig(start: Tick, notes: &[MidiNote]) -> Rig {
     let mut session = Session::new(Nodes::all());
     session.set_snap(240);
     session.edit([Edit::Apply(Command::AddNode {
@@ -49,25 +92,13 @@ fn rig_at(start: Tick, notes: &[MidiNote]) -> H {
     })]);
     let mut roll = PianoRoll::default();
     roll.open(clip);
-    let rig = Rig {
+    Rig {
         session,
         roll,
         clip,
         auditioned: Vec::new(),
-    };
-    let mut h = Harness::builder()
-        .with_size(Vec2::new(900.0, 420.0))
-        .with_step_dt(1.0 / 60.0)
-        .build_ui_state(
-            |ui, rig: &mut Rig| {
-                let out = show(ui, &mut rig.roll, &rig.session, None);
-                rig.session.edit(out.edits);
-                rig.auditioned.extend(out.audition);
-            },
-            rig,
-        );
-    h.run();
-    h
+        scroll: Vec2::ZERO,
+    }
 }
 
 /// The clip's notes as stored, with their ids.
@@ -288,6 +319,64 @@ fn the_roll_closes_when_its_clip_goes() {
         .edit([Edit::Apply(Command::RemoveClip { id: clip })]);
     h.run();
     assert_eq!(h.state().roll.clip(), None);
+}
+
+#[test]
+fn the_wheel_turn_the_roll_uses_is_not_left_for_the_scroll_area_around_it() {
+    let mut h = rig_in_scroll_area(&[]);
+    let at = geometry(&h).grid.center();
+    let before = h.state().roll.scroll_y;
+    // A trackpad's scroll: the roll pans with it.
+    wheel(&mut h, at, MouseWheelUnit::Point, Vec2::new(0.0, -5.0));
+    assert_eq!(h.state().roll.scroll_y, before + 5.0, "the roll panned");
+    assert_eq!(
+        h.state().scroll,
+        Vec2::ZERO,
+        "the scroll area around it did not scroll as well"
+    );
+}
+
+#[test]
+fn a_zooming_turn_is_spent_on_the_roll_too() {
+    let mut h = rig_in_scroll_area(&[]);
+    let at = geometry(&h).grid.center();
+    let before = h.state().roll.ppq;
+    h.hover_at(at);
+    // A pinch, and the scroll that came with it: the roll zooms, so the
+    // turn is spent.
+    h.event(Event::MouseWheel {
+        unit: MouseWheelUnit::Point,
+        delta: Vec2::new(0.0, -5.0),
+        phase: TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    h.event(Event::Zoom(1.1));
+    h.step();
+    assert!(h.state().roll.ppq > before, "the roll zoomed");
+    assert_eq!(
+        h.state().scroll,
+        Vec2::ZERO,
+        "the scroll area around it did not scroll as well"
+    );
+}
+
+#[test]
+fn a_mouse_wheel_turn_is_spent_on_the_roll_too() {
+    let mut h = rig_in_scroll_area(&[]);
+    let at = geometry(&h).grid.center();
+    let before = h.state().roll.scroll_y;
+    // A mouse wheel: the roll pans with it, over the frames egui spreads it
+    // over.
+    wheel(&mut h, at, MouseWheelUnit::Line, Vec2::new(0.0, -1.0));
+    assert!(h.state().roll.scroll_y > before, "the roll panned");
+    for _ in 0..10 {
+        h.step();
+        assert_eq!(
+            h.state().scroll,
+            Vec2::ZERO,
+            "the scroll area around it did not scroll as well"
+        );
+    }
 }
 
 #[test]
