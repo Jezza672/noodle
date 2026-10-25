@@ -29,7 +29,7 @@ struct ComparatorPorts {
     threshold: (),
     #[param("hysteresis", "Hysteresis", ParamInfo::new(0.0, 1.0, 0.05))]
     hysteresis: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
 }
 

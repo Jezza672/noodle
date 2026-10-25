@@ -61,7 +61,7 @@ pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
 pub use monitor::{MONITOR_KEY, Monitor};
 pub use node::{
     ConfigInfo, Context, GraphKind, InputKind, InputPort, Instance, Io, Layout, MAX_LATENCY, Mode,
-    Node, NodeError, NodeInfo, NodeType, NodeView, Port, Setup, Transport,
+    Node, NodeError, NodeInfo, NodeType, NodeView, Port, Setup, SignalKind, Transport,
 };
 pub use noodle_core::{Config, NodeId, Value};
 pub use noodle_macros::Ports;

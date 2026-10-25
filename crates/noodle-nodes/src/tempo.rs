@@ -43,9 +43,9 @@ struct TempoPorts {
         }
     )]
     division: (),
-    #[output("time", "Time")]
+    #[control_output("time", "Time")]
     time: (),
-    #[output("rate", "Rate")]
+    #[control_output("rate", "Rate")]
     rate: (),
 }
 

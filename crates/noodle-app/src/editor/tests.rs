@@ -1145,6 +1145,46 @@ fn problems_show_on_the_node_they_belong_to() {
     }
 }
 
+#[test]
+fn ports_say_what_they_carry_on_hover() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
+    let osc = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 200.0));
+    h.run();
+    for (node, side, key, text) in [
+        (lfo, Side::Output, "out", "Control signal"),
+        (osc, Side::Output, "out", ""),
+    ] {
+        let p = socket(&h, node, side, key);
+        h.hover_at(p);
+        for _ in 0..60 {
+            h.step();
+        }
+        h.run();
+        assert_eq!(
+            !text.is_empty(),
+            h.query_by_label_contains("Control signal").is_some(),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn a_parameter_port_shows_its_range_on_hover_even_when_wired() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
+    let osc = add(&mut h, Node::new("noodle.osc.sine").at(300.0, 0.0));
+    connect(&mut h, lfo, "out", osc, "frequency");
+    h.run();
+    let p = socket(&h, osc, Side::Input, "frequency");
+    h.hover_at(p);
+    for _ in 0..60 {
+        h.step();
+    }
+    h.run();
+    assert!(h.query_by_label_contains(" to ").is_some());
+}
+
 /// Presses `button` at `start`, moves to `via`, then moves to `end` and
 /// releases there in the same frame.
 fn drag_ending_in_one_frame(

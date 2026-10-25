@@ -36,7 +36,7 @@ struct RemapPorts {
     out_min: (),
     #[param("out_max", "Out max", ParamInfo::new(-20_000.0, 20_000.0, 1.0))]
     out_max: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
 }
 

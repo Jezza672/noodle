@@ -9,7 +9,12 @@ reference to a sample instead of signal:
   the broadcast shape of its inputs, so a mono LFO modulates all 8 voices of
   a polyphonic filter without anything special being done. A *Voice Mix* node
   sums voices back down to 1. Audio-rate modulation is just audio, so there's
-  no separate CV type.
+  no separate CV type. An output can still carry a display-only
+  `SignalKind` tag (`Layout::control_output`, or `#[control_output]` in
+  `#[derive(Ports)]`, which shares `output`'s indices): the LFO, envelopes,
+  Remap and similar are tagged `Control`, and the editor's port tooltip says
+  so. The engine ignores the tag. The tooltip of a parameter port shows its
+  range and unit, wired or not.
 - **Events:** a per-block list of timestamped events (sample offset within the
   block, note ID, payload) covering notes, note expressions and MIDI. A
   *Voices* node turns events into polyphonic pitch, gate and velocity signals,

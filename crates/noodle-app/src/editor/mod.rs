@@ -2814,18 +2814,28 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
 }
 
 /// The tooltip for whatever's under the pointer: the name of a socket that
-/// has no label of its own, then any problems.
+/// has no label of its own, what the port carries (a control signal, a
+/// parameter's range), then any problems.
 fn hover_text(f: &Frame_<'_>, problems: &Problems, p: Pos2) -> Option<String> {
-    let name = match hit(f, p) {
-        Hit::Port(endpoint, side) => f
-            .scene
-            .port(&endpoint, side)
-            .filter(|port| port.in_header)
-            .map(|port| port.name.clone()),
+    let port = match hit(f, p) {
+        Hit::Port(endpoint, side) => f.scene.port(&endpoint, side),
         _ => None,
     };
+    let name = port
+        .filter(|port| port.in_header)
+        .map(|port| port.name.clone());
+    let about = port.and_then(|port| match &port.kind {
+        PortKind::Param(info) => Some(format!(
+            "{} to {}",
+            crate::widgets::format::format_value(info, info.min),
+            crate::widgets::format::format_value(info, info.max)
+        )),
+        _ if port.control => Some("Control signal".to_owned()),
+        _ => None,
+    });
     let texts: Vec<String> = name
         .into_iter()
+        .chain(about)
         .chain(hover_problem(f, problems, p))
         .collect();
     (!texts.is_empty()).then(|| texts.join("\n"))
