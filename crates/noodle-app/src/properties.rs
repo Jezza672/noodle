@@ -1101,20 +1101,14 @@ fn graph(
             .is_some()
     };
     let values = |key: &str| {
-        if let Some(value) = crate::widgets::graph::special_value(key, node, &|channel| {
-            live(id, channel).map(|live| live.value)
-        }) {
-            return value;
-        }
-        let own = || {
-            let default = info_of(key).map_or(0.0, |info| info.default);
-            node.params.get(key).copied().unwrap_or(default)
-        };
-        if wired(key) {
-            live(id, key).map_or_else(own, |live| live.value)
-        } else {
-            own()
-        }
+        let default = info_of(key).map_or(0.0, |info| info.default);
+        crate::widgets::graph::graph_value(
+            key,
+            node,
+            wired(key),
+            &|channel| live(id, channel).map(|live| live.value),
+            default,
+        )
     };
     let range = |key: &str| info_of(key).map_or((0.0, 1.0), |info| (info.min, info.max));
     let editable = |key: &str| !wired(key);
