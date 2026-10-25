@@ -68,7 +68,9 @@ output's delay.
   a device that doesn't say keeps its default). With no size chosen, both ask
   for `LIVE_BUFFER` (256 frames) when the device says it takes that, and
   otherwise leave it to the device: a size it never promised could fail the
-  stream. The output retries without it if the device refuses.
+  stream. If the device refuses the automatic size when the stream is built, the output
+  and the input each retry once with the device's own choice; a size the user
+  chose fails loudly instead.
 - **Margin.** `Feed::trim` drops backlog that was never needed, measured as
   the smallest backlog over half a second. "Needed" is one input callback plus
   one engine block (`Feed::margin`), so a large input buffer isn't trimmed

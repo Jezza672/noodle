@@ -1078,7 +1078,7 @@ pub fn play_with_outputs(
     max_frames: usize,
     midi: &MidiBus,
 ) -> Result<(Playback, Controller), AudioError> {
-    open_playback(choice, extra, max_frames, midi, true)
+    open_playback_retrying(choice, extra, max_frames, midi, true)
 }
 
 /// [`play_with_outputs`] with the transport stopped from the first block, for
@@ -1090,7 +1090,26 @@ pub fn play_with_outputs_stopped(
     max_frames: usize,
     midi: &MidiBus,
 ) -> Result<(Playback, Controller), AudioError> {
-    open_playback(choice, extra, max_frames, midi, false)
+    open_playback_retrying(choice, extra, max_frames, midi, false)
+}
+
+/// [`open_playback`], and when the automatic live-sized buffer made it fail
+/// (a driver that lists a range but refuses a fixed size when it builds the
+/// stream), once more leaving the size to the device. A size the user chose
+/// still fails loudly.
+fn open_playback_retrying(
+    choice: &AudioConfig,
+    extra: &[String],
+    max_frames: usize,
+    midi: &MidiBus,
+    running: bool,
+) -> Result<(Playback, Controller), AudioError> {
+    match open_playback(choice, extra, max_frames, midi, running, true) {
+        Err(_) if choice.buffer_size.is_none() => {
+            open_playback(choice, extra, max_frames, midi, running, false)
+        }
+        result => result,
+    }
 }
 
 fn open_playback(
@@ -1099,6 +1118,7 @@ fn open_playback(
     max_frames: usize,
     midi: &MidiBus,
     running: bool,
+    live_default: bool,
 ) -> Result<(Playback, Controller), AudioError> {
     let (host_id, target, name, main_id, main_channels, rate) =
         if choice.output.as_deref() == Some(VIRTUAL_OUTPUT) {
@@ -1150,6 +1170,7 @@ fn open_playback(
             // ask for a live-sized one where the device allows.
             let live = match choice.buffer_size {
                 Some(_) => None,
+                None if !live_default => None,
                 None => buffer_request(
                     &ranges,
                     choice.sample_rate.unwrap_or(default.sample_rate()),
@@ -1252,7 +1273,16 @@ fn open_playback(
                 None => Ok(host_id),
             }
             .and_then(open_host)
-            .and_then(|host| open_input(&host, id, &settings, choice.buffer_size, &mut health));
+            .and_then(|host| {
+                open_input(
+                    &host,
+                    id,
+                    &settings,
+                    choice.buffer_size,
+                    live_default,
+                    &mut health,
+                )
+            });
             match opened {
                 Ok((stream, name, channels, feed, recorder)) => {
                     input_meter = Some(feed.meter());
@@ -1483,6 +1513,7 @@ fn open_input(
     id: Option<&str>,
     settings: &Settings,
     buffer_size: Option<u32>,
+    live_default: bool,
     health: &mut Health,
 ) -> Result<(cpal::Stream, String, usize, Feed, Recorder), AudioError> {
     let device = find_device(host, id, Direction::Input)?;
@@ -1490,7 +1521,11 @@ fn open_input(
     let ranges: Vec<_> = device.supported_input_configs()?.collect();
     let default = device.default_input_config()?;
     let rate = settings.sample_rate as u32;
-    let buffer = buffer_request(&ranges, rate, buffer_size);
+    let buffer = if buffer_size.is_none() && !live_default {
+        None
+    } else {
+        buffer_request(&ranges, rate, buffer_size)
+    };
     let chosen = |buffer| choose_config(&ranges, default, Some(rate), buffer, None);
     let Chosen { config, format } = match buffer {
         Some(frames) => chosen(Some(frames)).or_else(|_| chosen(None))?,
@@ -1516,7 +1551,15 @@ fn open_input(
         SampleFormat::U16 => record::<u16>(&device, config, capture, on_error),
         SampleFormat::U32 => record::<u32>(&device, config, capture, on_error),
         format => return Err(AudioError::UnsupportedFormat(format)),
-    }?;
+    };
+    // A device can list a range and still refuse the size when the stream
+    // builds: leave it to the device, unless the size was chosen.
+    let stream = match stream {
+        Err(_) if buffer.is_some() && buffer_size.is_none() => {
+            return open_input(host, id, settings, None, false, health);
+        }
+        stream => stream?,
+    };
     Ok((stream, name, channels, feed, recorder))
 }
 
