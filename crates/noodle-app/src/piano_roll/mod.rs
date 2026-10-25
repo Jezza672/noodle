@@ -14,7 +14,9 @@ mod notes;
 
 use std::collections::BTreeSet;
 
-use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{
+    Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
+};
 use noodle_core::{
     Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, TICKS_PER_QUARTER, Tick,
 };
@@ -762,6 +764,8 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
     let (scroll, zoom, pointer) =
         ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
     if zoom != 1.0 {
+        // Ctrl+wheel or a pinch: zoom around the pointer, and don't let the
+        // same turn pan as well.
         let anchor = pointer.map_or(grid.left(), |p| p.x.max(grid.left()));
         let quarters = (anchor - grid.left() + state.scroll_x) / state.ppq;
         state.ppq = (state.ppq * zoom).clamp(MIN_PPQ, MAX_PPQ);
@@ -770,6 +774,10 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
         state.scroll_x -= scroll.x;
         state.scroll_y -= scroll.y;
     }
+    // The roll has had the wheel turn, whether it panned or zoomed, so the
+    // delta is spent: a scroll area around the roll must not act on it as
+    // well.
+    ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
     let width = length as f32 / TICKS_PER_QUARTER as f32 * state.ppq;
     state.scroll_x = state
         .scroll_x

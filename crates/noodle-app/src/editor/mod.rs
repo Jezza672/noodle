@@ -822,6 +822,8 @@ fn navigate(
                 i.pointer.latest_pos().unwrap_or(canvas.center()),
             )
         });
+        // Whether the canvas has had the wheel turn.
+        let mut wheel = false;
         for event in events {
             if let Event::MouseWheel {
                 unit,
@@ -830,6 +832,7 @@ fn navigate(
                 ..
             } = event
             {
+                wheel = true;
                 if modifiers.command {
                     continue; // egui turns it into zoom_delta
                 }
@@ -847,6 +850,14 @@ fn navigate(
         }
         if zoom != 1.0 {
             state.view.zoom_around(canvas, pointer, zoom);
+            wheel = true;
+        }
+        if wheel || ui.input(|i| i.is_scrolling()) {
+            // The canvas has had the wheel turn, so the delta is spent: a
+            // scroll area around the canvas must not act on it as well. A
+            // mouse wheel's turn is spread over several frames by egui, so
+            // the whole of it is taken.
+            ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
         }
     }
     if response.dragged_by(PointerButton::Middle) {
@@ -2874,4 +2885,89 @@ pub(crate) fn socket_on_screen(
     let scene = state.peek_scene(session.project(), session.registry());
     let socket = scene.node(node)?.port(side, key)?.socket;
     Some(state.view.on(state.canvas).to_screen(socket))
+}
+
+/// The canvas and the wheel: a turn the canvas has acted on must not reach a
+/// scroll area around it.
+///
+/// This can move into `tests.rs` when that file is next edited.
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use crate::session::Nodes;
+    use crate::testkit::wheel;
+    use egui_kittest::Harness;
+
+    struct Rig {
+        session: Session,
+        editor: EditorState,
+        /// How far the scroll area around the canvas has scrolled.
+        scroll: Vec2,
+    }
+
+    /// The canvas in a scroll area, so a wheel turn the canvas leaves behind
+    /// scrolls it.
+    fn rig() -> Harness<'static, Rig> {
+        let rig = Rig {
+            session: Session::new(Nodes::all()),
+            editor: EditorState::default(),
+            scroll: Vec2::ZERO,
+        };
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(1000.0, 700.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(
+                |ui, rig: &mut Rig| {
+                    let out = egui::ScrollArea::vertical().show(ui, |ui| {
+                        let edits = show(ui, &mut rig.editor, &rig.session);
+                        rig.session.edit(edits);
+                        // Something below the canvas, so the area has room to
+                        // scroll.
+                        ui.add_space(400.0);
+                    });
+                    rig.scroll = out.state.offset;
+                },
+                rig,
+            );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn the_wheel_turn_the_canvas_uses_is_not_left_for_the_scroll_area_around_it() {
+        let mut h = rig();
+        let at = Pos2::new(400.0, 300.0);
+        let before = h.state().editor.view.offset;
+        // A trackpad's scroll: the canvas pans with it.
+        wheel(&mut h, at, MouseWheelUnit::Point, Vec2::new(0.0, -5.0));
+        assert_eq!(
+            h.state().editor.view.offset,
+            before + Vec2::new(0.0, -5.0),
+            "the canvas panned"
+        );
+        assert_eq!(
+            h.state().scroll,
+            Vec2::ZERO,
+            "the scroll area around it did not scroll as well"
+        );
+    }
+
+    #[test]
+    fn a_mouse_wheel_turn_is_spent_on_the_canvas_too() {
+        let mut h = rig();
+        let at = Pos2::new(400.0, 300.0);
+        // A mouse wheel: the canvas zooms with it.
+        wheel(&mut h, at, MouseWheelUnit::Line, Vec2::new(0.0, -1.0));
+        assert!(h.state().editor.view.zoom < 1.0, "the canvas zoomed out");
+        // egui spreads a mouse wheel's turn over several frames, and none of
+        // them may scroll the area around the canvas.
+        for _ in 0..10 {
+            h.step();
+            assert_eq!(
+                h.state().scroll,
+                Vec2::ZERO,
+                "the scroll area around it did not scroll as well"
+            );
+        }
+    }
 }

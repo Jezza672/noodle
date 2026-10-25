@@ -300,6 +300,11 @@ It has these views:
 The UI only changes the Project by issuing commands, and only reads engine state
 through the telemetry API.
 
+**The wheel belongs to the view under the pointer.** egui's scroll areas clear
+the scroll delta they use, so a view that pans or zooms with the wheel has to
+clear it too: otherwise one turn acts twice, once on the view and once on a
+scroll area around it.
+
 ## Parameter widgets
 
 `widgets::ParamField` draws any `ParamInfo`, in the properties panel and
