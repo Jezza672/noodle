@@ -100,8 +100,12 @@ pub struct EditorState {
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
-    /// The menu opened by right-clicking a group.
-    group_menu: Option<GroupMenu>,
+    /// The group the canvas's context menu is about: the one a right-click
+    /// landed on. The menu stays open until egui closes it.
+    group_menu: Option<NodeId>,
+    /// The name being typed for a group, once "Save group to library..." has
+    /// been chosen in its menu.
+    group_name: Option<GroupName>,
     /// What meters and scopes show.
     bodies: body::Bodies,
     /// The last scene built, and what it was built from. It is reused while
@@ -189,6 +193,7 @@ impl Default for EditorState {
             gesture: Gesture::Idle,
             search: None,
             group_menu: None,
+            group_name: None,
             rename: None,
             bodies: body::Bodies::default(),
             scene_cache: None,
@@ -484,14 +489,14 @@ enum StrokeAction {
     Reroute,
 }
 
-/// The menu a right-click on a group opens: "Save group to library...", which
-/// then asks for a name.
-struct GroupMenu {
+/// The name being typed for a group, once "Save group to library..." has been
+/// chosen in the canvas's context menu.
+struct GroupName {
+    /// The group it is for.
     group: NodeId,
-    /// Where it is drawn.
-    screen: Pos2,
-    /// The name being typed, once "Save group to library..." is chosen.
-    name: Option<String>,
+    /// The text so far.
+    text: String,
+    /// Whether the field has been given the focus yet.
     focused: bool,
 }
 
@@ -1100,66 +1105,100 @@ fn pointer(
                     _ => None,
                 });
     }
+    // A right-click on a group opens the menu about that group: save it to
+    // the library, take its unused ports off, or update it from the template
+    // it was made from.
+    if response.secondary_clicked() {
+        state.group_menu = latest
+            .filter(|_| !modifiers.command && !modifiers.shift)
+            .filter(|_| state.monitor_menu.is_none())
+            .and_then(|p| match hit(f, p) {
+                Hit::Node(id) if is_group(f.project, id) => Some(id),
+                _ => None,
+            });
+    }
     let port = state.port_menu.clone();
     let monitor = state.monitor_menu;
     let monitored = state.monitored.clone();
     let unused = state.unused_menu;
+    // The group the menu is about, and the name being typed for it, if it is
+    // about one. The name is taken out of the state for the menu to work on,
+    // and put back afterwards.
+    let group = state.group_menu;
+    let mut group_name = state.group_name.take();
+    // The template the group was made from, if the library still lists it.
+    let source_name = group.and_then(|id| template_name(f, id, inputs.library));
     let mut remove = false;
     let mut remove_unused = false;
-    response.context_menu(|ui| {
-        if let Some(port) = &port
-            && ui
-                .button(format!("Remove port \"{}\"", port.name))
-                .clicked()
-        {
-            remove = true;
-            ui.close();
-        }
-        if unused.is_some() && ui.button("Remove unused ports").clicked() {
-            remove_unused = true;
-            ui.close();
-        }
-        if let Some(node) = monitor {
-            use crate::session::MonitorMode::{Exclusive, SilenceOthers, Sum};
-            let choices = [
-                ("Monitor", Some(Sum), false),
-                ("Add to monitor", Some(Sum), true),
-                (
-                    "Monitor, silence other outputs on its device",
-                    Some(Exclusive),
-                    false,
-                ),
-                (
-                    "Monitor, silence all other outputs",
-                    Some(SilenceOthers),
-                    false,
-                ),
-            ];
-            for (label, mode, add) in choices {
-                if ui.button(label).clicked() {
-                    edits.push(Edit::MonitorAs { node, mode, add });
+    let mut shown = false;
+    // The canvas's context menu, but it only closes on a click outside it, so
+    // that a group's menu can ask for the name in the same popup.
+    egui::Popup::context_menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            shown = true;
+            if let Some(port) = &port
+                && ui
+                    .button(format!("Remove port \"{}\"", port.name))
+                    .clicked()
+            {
+                remove = true;
+                ui.close();
+            }
+            if unused.is_some() && ui.button("Remove unused ports").clicked() {
+                remove_unused = true;
+                ui.close();
+            }
+            if let Some(node) = monitor {
+                use crate::session::MonitorMode::{Exclusive, SilenceOthers, Sum};
+                let choices = [
+                    ("Monitor", Some(Sum), false),
+                    ("Add to monitor", Some(Sum), true),
+                    (
+                        "Monitor, silence other outputs on its device",
+                        Some(Exclusive),
+                        false,
+                    ),
+                    (
+                        "Monitor, silence all other outputs",
+                        Some(SilenceOthers),
+                        false,
+                    ),
+                ];
+                for (label, mode, add) in choices {
+                    if ui.button(label).clicked() {
+                        edits.push(Edit::MonitorAs { node, mode, add });
+                        ui.close();
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        monitored.contains(&node),
+                        egui::Button::new("Stop monitoring"),
+                    )
+                    .clicked()
+                {
+                    edits.push(Edit::MonitorAs {
+                        node,
+                        mode: None,
+                        add: false,
+                    });
                     ui.close();
                 }
             }
-            if ui
-                .add_enabled(
-                    monitored.contains(&node),
-                    egui::Button::new("Stop monitoring"),
-                )
-                .clicked()
-            {
-                edits.push(Edit::MonitorAs {
-                    node,
-                    mode: None,
-                    add: false,
-                });
+            if let Some(group) = group {
+                group_items(ui, f, group, source_name.as_deref(), &mut group_name, edits);
+            }
+            if port.is_none() && unused.is_none() && monitor.is_none() && group.is_none() {
                 ui.close();
             }
-        }
-        if port.is_none() && unused.is_none() && monitor.is_none() {
-            ui.close();
-        }
-    });
+        });
+    if shown {
+        state.group_name = group_name;
+    } else {
+        // The menu is closed, so it is about nothing.
+        state.group_menu = None;
+    }
     if remove_unused && let Some(node) = state.unused_menu.take() {
         edits.extend(spare::remove_unused_ports(f.project, node).map(Edit::Apply));
     }
@@ -1179,21 +1218,6 @@ fn pointer(
         } else {
             click(state, f, p, modifiers);
         }
-    }
-    if response.secondary_clicked()
-        && let Some(p) = latest
-        && !modifiers.command
-        && !modifiers.shift
-        && monitor_button_at(f, p).is_none()
-        && let Hit::Node(id) = hit(f, p)
-        && is_group(f.project, id)
-    {
-        state.group_menu = Some(GroupMenu {
-            group: id,
-            screen: p,
-            name: None,
-            focused: false,
-        });
     }
     // Ctrl+double-click removes a node's unused ports; anywhere else it does
     // nothing, so it can't open or rename by mistake.
@@ -2500,92 +2524,77 @@ fn start_port_rename(
     }
 }
 
-/// The menu over a right-clicked group.
-fn group_menu(
-    ui: &egui::Ui,
-    state: &mut EditorState,
+/// The name of the library template a group was made from, if the library
+/// still lists it.
+fn template_name(
     f: &Frame_<'_>,
+    group: NodeId,
     library: &noodle_core::library::Library,
-    edits: &mut Vec<Edit>,
-) {
-    let Some(menu) = &mut state.group_menu else {
-        return;
-    };
-    if !is_group(f.project, menu.group) {
-        state.group_menu = None;
-        return;
-    }
-    let default_name = layout::group_title(f.project.graph(), menu.group);
-    // The template the group was made from, if the library still lists it.
-    let source_name = f
-        .project
+) -> Option<String> {
+    f.project
         .graph()
-        .node(menu.group)
+        .node(group)
         .and_then(|n| n.template.as_deref())
         .and_then(|entry| library.templates().find(|(id, _)| *id == entry))
-        .map(|(_, t)| t.name.clone());
-    let mut close = false;
-    let area = egui::Area::new(egui::Id::new("noodle-editor-group-menu"))
-        .fixed_pos(menu.screen)
-        .order(egui::Order::Foreground)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| match &mut menu.name {
-                None => {
-                    if ui.button("Save group to library...").clicked() {
-                        menu.name = Some(default_name.clone());
-                    }
-                    if spare::remove_unused_ports(f.project, menu.group).is_some()
-                        && ui.button("Remove unused ports").clicked()
-                    {
-                        edits.extend(
-                            spare::remove_unused_ports(f.project, menu.group).map(Edit::Apply),
-                        );
-                        close = true;
-                    }
-                    if let Some(name) = source_name.as_deref() {
-                        let text = format!("Update from {name}");
-                        if ui
-                            .button(text)
-                            .on_hover_text(
-                                "Replaces what is inside with the template's current version",
-                            )
-                            .clicked()
-                        {
-                            edits.push(Edit::UpdateFromTemplate(menu.group));
-                            close = true;
-                        }
-                    }
+        .map(|(_, t)| t.name.clone())
+}
+
+/// The items the canvas's context menu offers for a group: save it to the
+/// library, take its unused ports off, or update it from the template it was
+/// made from. Choosing "Save group to library..." asks for the name instead,
+/// in the same menu.
+fn group_items(
+    ui: &mut egui::Ui,
+    f: &Frame_<'_>,
+    group: NodeId,
+    source_name: Option<&str>,
+    name: &mut Option<GroupName>,
+    edits: &mut Vec<Edit>,
+) {
+    match name {
+        None => {
+            if ui.button("Save group to library...").clicked() {
+                *name = Some(GroupName {
+                    group,
+                    text: layout::group_title(f.project.graph(), group),
+                    focused: false,
+                });
+            }
+            let unused_ports = spare::remove_unused_ports(f.project, group);
+            if unused_ports.is_some() && ui.button("Remove unused ports").clicked() {
+                edits.extend(unused_ports.map(Edit::Apply));
+                ui.close();
+            }
+            if let Some(source) = source_name {
+                let text = format!("Update from {source}");
+                if ui
+                    .button(text)
+                    .on_hover_text("Replaces what is inside with the template's current version")
+                    .clicked()
+                {
+                    edits.push(Edit::UpdateFromTemplate(group));
+                    ui.close();
                 }
-                Some(name) => {
-                    ui.label("Name in the library");
-                    let edit = ui.add(egui::TextEdit::singleline(name).desired_width(200.0));
-                    if !menu.focused {
-                        edit.request_focus();
-                        menu.focused = true;
-                    }
-                    let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                    let named = !name.trim().is_empty();
-                    let save = ui.add_enabled(named, egui::Button::new("Save")).clicked();
-                    if (save || enter) && named {
-                        edits.push(Edit::Library(crate::session::LibraryEdit::Template {
-                            group: menu.group,
-                            name: name.trim().to_string(),
-                        }));
-                        close = true;
-                    }
-                }
-            });
-        })
-        .response;
-    let escape = ui.input(|i| i.key_pressed(Key::Escape));
-    let clicked_outside = ui.input(|i| {
-        i.pointer.any_pressed()
-            && i.pointer
-                .interact_pos()
-                .is_some_and(|p| !area.rect.contains(p))
-    });
-    if close || escape || clicked_outside {
-        state.group_menu = None;
+            }
+        }
+        Some(name) => {
+            ui.label("Name in the library");
+            let edit = ui.add(egui::TextEdit::singleline(&mut name.text).desired_width(200.0));
+            if !name.focused {
+                edit.request_focus();
+                name.focused = true;
+            }
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let named = !name.text.trim().is_empty();
+            let save = ui.add_enabled(named, egui::Button::new("Save")).clicked();
+            if (save || enter) && named {
+                edits.push(Edit::Library(crate::session::LibraryEdit::Template {
+                    group: name.group,
+                    name: name.text.trim().to_string(),
+                }));
+                ui.close();
+            }
+        }
     }
 }
 
@@ -2695,8 +2704,6 @@ fn popups(
             }
         }
     }
-
-    group_menu(ui, state, f, inputs.library, edits);
 
     let Some(rename) = &mut state.rename else {
         return;

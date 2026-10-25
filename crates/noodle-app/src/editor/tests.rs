@@ -2231,8 +2231,8 @@ fn a_spare_that_gets_no_wire_stores_nothing() {
     assert_eq!(h.state().session.project(), &before);
 }
 
-/// Types `text` into the rename box and presses Enter.
-fn type_name(h: &mut H, text: &str) {
+/// Types `text` into the field that has the focus, replacing what was there.
+fn type_text(h: &mut H, text: &str) {
     h.run();
     h.event(Event::Key {
         key: Key::A,
@@ -2247,6 +2247,11 @@ fn type_name(h: &mut H, text: &str) {
         h.event(Event::Text(text.to_owned()));
     }
     h.run();
+}
+
+/// Types `text` into the rename box and presses Enter.
+fn type_name(h: &mut H, text: &str) {
+    type_text(h, text);
     h.key_press(Key::Enter);
     h.run();
 }
@@ -2890,18 +2895,51 @@ fn the_add_menu_searches_the_groups_section() {
     assert!(h.query_by_label("Track  ·  Groups").is_none());
 }
 
+/// The canvas's context menu, which is where a group's menu lives.
+fn canvas_menu() -> egui::Id {
+    super::canvas_id().with("popup")
+}
+
+/// Right-clicks a group's title, which opens its menu.
+fn open_group_menu(h: &mut H, group: NodeId) {
+    let p = title(h, group);
+    crate::testkit::click_with(h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+}
+
+#[test]
+fn right_clicking_a_group_opens_the_canvass_context_menu() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    open_group_menu(&mut h, group);
+    // The group's menu is the canvas's own context menu, not a second popup.
+    assert!(
+        egui::Popup::is_id_open(&h.ctx, canvas_menu()),
+        "the canvas's context menu is open"
+    );
+    h.get_by_label("Save group to library...");
+    // The group came from no template, and has no ports to spare.
+    assert!(h.query_by_label_contains("Update from").is_none());
+    assert!(h.query_by_label("Remove unused ports").is_none());
+}
+
 #[test]
 fn right_clicking_a_group_saves_it_to_the_user_library() {
     use noodle_core::group::GROUP;
     let mut h = rig();
     let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
     h.run();
-    let p = title(&h, group);
-    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
-    h.run();
+    open_group_menu(&mut h, group);
     h.get_by_label("Save group to library...").click();
     h.run();
-    type_name(&mut h, "My Group");
+    // The menu asks for the name now, in the same menu.
+    h.get_by_label("Name in the library");
+    assert!(h.query_by_label("Save group to library...").is_none());
+    type_text(&mut h, "My Group");
+    h.get_by_label("Save").click();
+    h.run();
     let library = h.state().session.library();
     let (id, template) = library
         .templates()
@@ -2914,6 +2952,85 @@ fn right_clicking_a_group_saves_it_to_the_user_library() {
     assert!(h.state().session.can_undo());
     h.state_mut().session.undo();
     assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn enter_saves_the_groups_name_in_the_library() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    open_group_menu(&mut h, group);
+    h.get_by_label("Save group to library...").click();
+    h.run();
+    type_name(&mut h, "Entered");
+    let library = h.state().session.library();
+    let (_, template) = library
+        .templates()
+        .find(|(id, _)| id.starts_with("user:"))
+        .expect("a user template");
+    assert_eq!(template.name, "Entered");
+}
+
+#[test]
+fn a_group_with_unused_ports_offers_to_remove_them() {
+    use noodle_core::group::{GROUP, GROUP_OUTPUT, ports_config};
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    add(
+        &mut h,
+        Node::new(GROUP_OUTPUT)
+            .with_config(ports_config(&[(1, "out1".into())]))
+            .at(700.0, 0.0)
+            .in_group(group),
+    );
+    h.run();
+    open_group_menu(&mut h, group);
+    h.get_by_label("Remove unused ports").click();
+    h.run();
+    let graph = h.state().session.project().graph();
+    assert!(
+        graph.group_ports(group).outputs.is_empty(),
+        "the unused port went"
+    );
+}
+
+#[test]
+fn the_group_menu_closes_on_a_click_outside_it() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    open_group_menu(&mut h, group);
+    h.get_by_label("Save group to library...");
+    let empty = empty_space(&h);
+    click(&mut h, empty, Modifiers::NONE);
+    h.run();
+    assert!(
+        !egui::Popup::is_id_open(&h.ctx, canvas_menu()),
+        "the menu closed"
+    );
+    assert!(h.state().editor.group_menu.is_none(), "it forgot the group");
+    assert!(h.query_by_label("Save group to library...").is_none());
+}
+
+#[test]
+fn the_group_menu_closes_on_escape() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    open_group_menu(&mut h, group);
+    h.get_by_label("Save group to library...");
+    h.key_press(Key::Escape);
+    h.run();
+    assert!(
+        !egui::Popup::is_id_open(&h.ctx, canvas_menu()),
+        "the menu closed"
+    );
+    h.run();
+    assert!(h.state().editor.group_menu.is_none(), "it forgot the group");
+    assert!(h.query_by_label("Save group to library...").is_none());
 }
 
 #[test]
