@@ -211,10 +211,10 @@ impl NodeLinks {
     /// Offers the retired messages that had to wait to the service again.
     pub fn flush(&mut self) {
         while self.limbo.last().is_some() && self.outbox.slots() > 0 {
-            if let Some(message) = self.limbo.pop() {
-                if self.outbox.push(message).is_ok() {
-                    self.bell.ring();
-                }
+            if let Some(message) = self.limbo.pop()
+                && self.outbox.push(message).is_ok()
+            {
+                self.bell.ring();
             }
         }
     }
