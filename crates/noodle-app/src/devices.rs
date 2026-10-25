@@ -8,7 +8,12 @@
 
 use noodle_io::{
     AudioConfig, AudioError, Capabilities, DeviceInfo, DeviceList, HostInfo, InputChoice,
+    LIVE_BUFFER, LatencyReport, looks_like_bluetooth,
 };
+
+/// Said when a device looks like Bluetooth, or plays late.
+const BLUETOOTH_NOTE: &str = "Bluetooth adds 100 to 200 ms that Noodle cannot remove. \
+     Use wired or built-in output for live playing.";
 
 /// Buffer sizes the dialog offers, where the device takes them.
 const BUFFER_SIZES: [u32; 8] = [32, 64, 128, 256, 512, 1024, 2048, 4096];
@@ -80,7 +85,11 @@ impl DevicePicker {
 
     /// Draws the dialog while it's open. Returns the new settings when the
     /// user applies them.
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<AudioConfig> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        latency: Option<LatencyReport>,
+    ) -> Option<AudioConfig> {
         if !self.open {
             return None;
         }
@@ -92,6 +101,19 @@ impl DevicePicker {
                 .num_columns(2)
                 .spacing([12.0, 6.0])
                 .show(ui, |ui| self.fields(ui));
+            if let Some(report) = latency {
+                ui.add_space(4.0);
+                ui.label(latency_line(&report));
+                if let Some(detail) = latency_detail(&report) {
+                    ui.weak(detail);
+                }
+                // The figures move with the backlog.
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            if let Some(note) = self.bluetooth_note(latency.as_ref()) {
+                ui.add_space(4.0);
+                ui.colored_label(ui.visuals().warn_fg_color, note);
+            }
             let warning = match &self.devices {
                 Err(error) => Some(error.clone()),
                 Ok(_) => self.input_rate_warning(),
@@ -217,13 +239,21 @@ impl DevicePicker {
         ui.end_row();
 
         let mut buffer = self.draft.buffer_size;
-        combo(ui, "Buffer size", buffer_label(buffer), |ui| {
-            ui.selectable_value(&mut buffer, None, buffer_label(None));
+        let buffer_rate = rate.or(default_rate);
+        combo(ui, "Buffer size", buffer_label(buffer, buffer_rate), |ui| {
+            ui.selectable_value(&mut buffer, None, buffer_label(None, buffer_rate));
             for size in buffer_sizes(output_caps) {
-                ui.selectable_value(&mut buffer, Some(size), buffer_label(Some(size)));
+                ui.selectable_value(
+                    &mut buffer,
+                    Some(size),
+                    buffer_label(Some(size), buffer_rate),
+                );
             }
         })
-        .on_hover_text("Smaller is quicker to respond, larger is safer from dropouts");
+        .on_hover_text(
+            "Smaller is quicker to respond, larger is safer from dropouts. Applies to the \
+             input as well as the output",
+        );
         ui.end_row();
 
         let mut channels = self.draft.channels;
@@ -297,6 +327,30 @@ impl DevicePicker {
         (!input.sample_rates.contains(&rate)).then(|| {
             format!("The input doesn't support {rate} Hz, so it would be off. Pick a sample rate both devices support.")
         })
+    }
+
+    /// A note when a chosen device looks like Bluetooth, or the running
+    /// output reports a delay too long to play live on. The driver's figure
+    /// is the better evidence; the names catch it before the engine runs.
+    fn bluetooth_note(&self, latency: Option<&LatencyReport>) -> Option<&'static str> {
+        let named = self.devices.as_ref().ok().is_some_and(|list| {
+            let name = |devices: &[DeviceInfo], id: Option<&str>| {
+                devices
+                    .iter()
+                    .find(|d| match id {
+                        Some(id) => d.id == id,
+                        None => d.is_default,
+                    })
+                    .is_some_and(|d| looks_like_bluetooth(&d.name))
+            };
+            let input = match &self.draft.input {
+                InputChoice::Off => false,
+                InputChoice::Default => name(&list.inputs, None),
+                InputChoice::Device(id) => name(&list.inputs, Some(id)),
+            };
+            name(&list.outputs, self.draft.output.as_deref()) || input
+        });
+        (named || latency.is_some_and(|r| r.output_is_slow())).then_some(BLUETOOTH_NOTE)
     }
 
     /// Switches host. The output has to be on the chosen host, so it goes
@@ -415,11 +469,41 @@ fn channel_counts(output: Option<&Capabilities>) -> Vec<u16> {
     counts
 }
 
-fn buffer_label(frames: Option<u32>) -> String {
+fn buffer_label(frames: Option<u32>, rate: Option<u32>) -> String {
+    let ms = |frames: u32| {
+        rate.map_or(String::new(), |rate| {
+            format!(", {:.1} ms", 1000.0 * f64::from(frames) / f64::from(rate))
+        })
+    };
     match frames {
-        Some(frames) => format!("{frames} frames"),
-        None => "Device default".into(),
+        Some(frames) => format!("{frames} frames{}", ms(frames)),
+        None => format!("Automatic ({} frames{})", LIVE_BUFFER, ms(LIVE_BUFFER)),
     }
+}
+
+/// One line on the latency: the round trip when input is on, else the
+/// output's delay.
+pub(crate) fn latency_line(report: &LatencyReport) -> String {
+    let ms = |d: std::time::Duration| format!("{:.0} ms", d.as_secs_f64() * 1000.0);
+    match (report.input, report.round_trip()) {
+        (None, _) => format!("Output latency: {}", ms(report.output())),
+        (Some(_), Some(trip)) => format!("Estimated round trip: {}", ms(trip)),
+        (Some(_), None) => "Estimated round trip: waiting for the devices".into(),
+    }
+}
+
+/// Where the round trip goes, once there is one.
+fn latency_detail(report: &LatencyReport) -> Option<String> {
+    let ms = |d: std::time::Duration| format!("{:.1} ms", d.as_secs_f64() * 1000.0);
+    let input = report.input?;
+    Some(format!(
+        "Input {} ({} frame buffer) + queue {} + output {} ({} frame buffer)",
+        ms(report.input_side()?),
+        input.buffer_frames,
+        ms(report.queue()?),
+        ms(report.output()),
+        report.output_buffer_frames,
+    ))
 }
 
 /// What the configured output and input support, where they're listed.
@@ -565,7 +649,7 @@ mod tests {
             applied: None,
         };
         crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
-            if let Some(config) = state.picker.show(ui.ctx()) {
+            if let Some(config) = state.picker.show(ui.ctx(), None) {
                 state.applied = Some(config);
             }
         })
@@ -591,7 +675,10 @@ mod tests {
         assert_eq!(shown(&harness, "Output"), "Default (Speakers)");
         assert_eq!(shown(&harness, "Input"), "Off");
         assert_eq!(shown(&harness, "Sample rate"), "Device default (44100 Hz)");
-        assert_eq!(shown(&harness, "Buffer size"), "Device default");
+        assert_eq!(
+            shown(&harness, "Buffer size"),
+            "Automatic (256 frames, 5.8 ms)"
+        );
     }
 
     #[test]
@@ -698,7 +785,10 @@ mod tests {
         let draft = &harness.state().picker.draft;
         assert_eq!((draft.sample_rate, draft.buffer_size), (None, None));
         assert_eq!(shown(&harness, "Sample rate"), "Device default (44100 Hz)");
-        assert_eq!(shown(&harness, "Buffer size"), "Device default");
+        assert_eq!(
+            shown(&harness, "Buffer size"),
+            "Automatic (256 frames, 5.8 ms)"
+        );
     }
 
     #[test]
@@ -770,5 +860,55 @@ mod tests {
         );
         assert_eq!(buffer_sizes(Some(&caps(&[], None))), BUFFER_SIZES);
         assert_eq!(buffer_sizes(None), BUFFER_SIZES);
+    }
+
+    #[test]
+    fn buffer_labels_give_the_delay() {
+        assert_eq!(buffer_label(Some(256), Some(48_000)), "256 frames, 5.3 ms");
+        assert_eq!(buffer_label(Some(256), None), "256 frames");
+        assert_eq!(
+            buffer_label(None, Some(48_000)),
+            "Automatic (256 frames, 5.3 ms)"
+        );
+    }
+
+    fn report(output_ms: u64, with_input: bool) -> LatencyReport {
+        LatencyReport {
+            sample_rate: 48_000.0,
+            block_frames: 128,
+            output_buffer_frames: 256,
+            output_driver: std::time::Duration::from_millis(output_ms),
+            input: with_input.then_some(noodle_io::InputLatency {
+                buffer_frames: 256,
+                driver: std::time::Duration::from_millis(4),
+                backlog_frames: 112,
+            }),
+        }
+    }
+
+    #[test]
+    fn the_latency_line_is_the_round_trip_with_input_and_the_output_without() {
+        assert_eq!(
+            latency_line(&report(6, true)),
+            "Estimated round trip: 15 ms"
+        );
+        assert_eq!(latency_line(&report(6, false)), "Output latency: 6 ms");
+        let detail = latency_detail(&report(6, true)).unwrap();
+        assert!(detail.contains("queue 5.0 ms"), "{detail}");
+        assert_eq!(latency_detail(&report(6, false)), None);
+    }
+
+    #[test]
+    fn bluetooth_is_noted_by_name_or_by_a_slow_output() {
+        let mut picker = DevicePicker::with_lister(fake_hosts, fake_devices);
+        picker.open(&AudioConfig::default());
+        assert_eq!(picker.bluetooth_note(None), None);
+        assert_eq!(picker.bluetooth_note(Some(&report(10, true))), None);
+        assert!(picker.bluetooth_note(Some(&report(150, true))).is_some());
+        picker.devices = Ok(DeviceList {
+            outputs: vec![device("a", "Jeremy's AirPods", true, caps(&[48_000], None))],
+            inputs: Vec::new(),
+        });
+        assert!(picker.bluetooth_note(None).unwrap().contains("Bluetooth"));
     }
 }

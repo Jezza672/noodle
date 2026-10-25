@@ -28,7 +28,8 @@ need a person and hardware, plus a few deliberately deferred items.
   MIDI output from AU instruments, AUv3 async instantiation.
 - **`noodle profile --threads`** showing real-time workers on Mac and Windows;
   the macOS audio workgroup join is not done.
-- **Recording with a real microphone**, to check the latency compensation.
+- **Recording with a real microphone**, to check the latency compensation, and
+  that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
   stems. There is no Intel Mac ONNX Runtime build.
 - **Warp evaluation:** CC0 clips for `eval/clips.csv` (`eval/fetch.sh --pin`),
@@ -36,6 +37,10 @@ need a person and hardware, plus a few deliberately deferred items.
   listening check of the warp modes on the Mac.
 
 ## Deferred on purpose
+
+- **Live input latency, part two (#36):** let the input run at its own sample rate
+  (the 24 kHz AirPods microphone is off today) and steer a resampler on the
+  backlog so drift costs no clicks, instead of trimming and silence gaps.
 
 - **M10 batch 3, Stem warp** (a warp mode that separates, warps each stem with its
   own mode and adds them back). Research (`research/stem-warp/findings.md` in the

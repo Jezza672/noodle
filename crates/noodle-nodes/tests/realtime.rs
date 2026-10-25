@@ -332,6 +332,7 @@ fn the_device_writer_never_allocates_with_input() {
     s.update();
     let glitches = Arc::new(AtomicU64::new(0));
     let (mut capture, feed) = input_path(1, SETTINGS.sample_rate, SETTINGS.max_frames, glitches);
+    let meter = feed.meter();
     let mut writer = DeviceWriter::with_input(s.processor, feed);
     let recorded: Vec<i16> = (0..1000).map(|x| (x % 200) * 100).collect();
     let mut out = vec![0i16; 1000 * SETTINGS.channels];
@@ -344,6 +345,8 @@ fn the_device_writer_never_allocates_with_input() {
         writer.write(&mut out);
     });
     assert_eq!(violations, 0, "allocated in the audio callbacks");
+    // The meter's atomics were written in those callbacks.
+    assert_eq!(meter.callback_frames(), 1000);
     // The last block ran dry, so look at a fresh one.
     capture.capture(&recorded);
     writer.write(&mut out);

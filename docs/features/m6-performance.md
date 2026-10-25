@@ -26,3 +26,10 @@ A plugin that changes its latency after loading (restart request, latency
   editor really embeds and gets focus from a background host).
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
+- Live input latency, part one (done, #36): the Audio Settings dialog and the
+  Audio button's tooltip show the estimated round trip and where it goes; the
+  buffer size applies to the input stream, and defaults to 256 frames where
+  the device allows; the input backlog margin follows the two callbacks' sizes
+  rather than a fixed 64 frames; a Bluetooth note appears for devices that
+  look like it or report over 80 ms. Owed: checking the readout against a real
+  interface on the Mac.

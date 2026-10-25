@@ -560,7 +560,7 @@ impl App {
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
-        if let Some(config) = self.devices.show(ui.ctx()) {
+        if let Some(config) = self.devices.show(ui.ctx(), self.session.latency_report()) {
             self.session.set_audio_config(config);
             crate::prefs::remember_audio(self.session.audio_config());
         }
@@ -1028,9 +1028,16 @@ impl App {
             (true, Some(warning)) => format!(
                 "The audio engine is on, but not as chosen: {warning}. Click to turn it off"
             ),
-            (true, None) => "The audio engine is on: the graph sounds, and live MIDI plays \
-                 through the armed tracks, even with the timeline stopped. Click to turn it off"
-                .to_owned(),
+            (true, None) => format!(
+                "The audio engine is on: the graph sounds, and live MIDI plays \
+                 through the armed tracks, even with the timeline stopped.{} Click to turn it off",
+                self.session
+                    .latency_report()
+                    .map_or(String::new(), |r| format!(
+                        " {}.",
+                        crate::devices::latency_line(&r)
+                    )),
+            ),
             (false, _) => "The audio engine is off, so nothing sounds. Click to turn it on".into(),
         };
         let label = egui::RichText::new(label).color(colour);
