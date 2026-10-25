@@ -18,13 +18,13 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use noodle_core::{ClipWarp, NodeId, TempoMap, Tick, TimeSignature, WarpAxis};
-use noodle_engine::TempoTable;
+use noodle_engine::{Doorbell, TempoTable};
 use noodle_io::{detect_bass_onsets, detect_onsets};
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -170,7 +170,6 @@ impl StretchSource for Memory<'_> {
 /// every step. Until then the Sampler plays the warp as Repitch.
 const SETTLE: Duration = Duration::from_millis(150);
 const POLL: Duration = Duration::from_millis(5);
-const IDLE_POLL: Duration = Duration::from_millis(20);
 /// Messages each way per instance.
 const QUEUE: usize = 16;
 /// Copies kept for other instances to share.
@@ -182,8 +181,11 @@ pub(crate) struct NodeLinks {
     outbox: Producer<Msg>,
     /// Retired messages the full outbox would not take yet.
     limbo: Vec<Msg>,
-    /// The tempo as of the node's last block, as `f64` bits.
+    /// The tempo as of the node's last block, as `f64` bits. Ring
+    /// [`bell`](Self::bell) after changing it.
     pub bpm: Arc<AtomicU64>,
+    /// Wakes the worker, which sleeps while there is nothing to do.
+    pub bell: Arc<Doorbell>,
 }
 
 impl NodeLinks {
@@ -192,11 +194,16 @@ impl NodeLinks {
     /// [`flush`](Self::flush); if that is full too it is leaked, since
     /// freeing it here would be on the audio thread.
     pub fn retire(&mut self, message: Msg) {
-        if let Err(rtrb::PushError::Full(message)) = self.outbox.push(message) {
-            if self.limbo.len() < self.limbo.capacity() {
-                self.limbo.push(message);
-            } else {
-                std::mem::forget(message);
+        match self.outbox.push(message) {
+            Ok(()) => {
+                self.bell.ring();
+            }
+            Err(rtrb::PushError::Full(message)) => {
+                if self.limbo.len() < self.limbo.capacity() {
+                    self.limbo.push(message);
+                } else {
+                    std::mem::forget(message);
+                }
             }
         }
     }
@@ -205,7 +212,9 @@ impl NodeLinks {
     pub fn flush(&mut self) {
         while self.limbo.last().is_some() && self.outbox.slots() > 0 {
             if let Some(message) = self.limbo.pop() {
-                let _ = self.outbox.push(message);
+                if self.outbox.push(message).is_ok() {
+                    self.bell.ring();
+                }
             }
         }
     }
@@ -233,6 +242,9 @@ struct Link {
 struct Shared {
     links: Mutex<Vec<Link>>,
     cache: Mutex<Vec<(u64, Arc<Stretched>)>>,
+    bell: Arc<Doorbell>,
+    /// Set when the node type is gone, so the worker stops.
+    closed: AtomicBool,
 }
 
 /// The worker of one Sampler node type. See the module.
@@ -248,6 +260,8 @@ impl Service {
             shared: Arc::new(Shared {
                 links: Mutex::new(Vec::new()),
                 cache: Mutex::new(Vec::new()),
+                bell: Arc::new(Doorbell::new()),
+                closed: AtomicBool::new(false),
             }),
             started: Mutex::new(false),
             next: AtomicU64::new(0),
@@ -282,6 +296,7 @@ impl Service {
             ready: None,
         };
         lock(&self.shared.links).push(link);
+        self.shared.bell.ring();
         let mut started = lock(&self.started);
         if !*started {
             let shared = self.shared.clone();
@@ -297,6 +312,7 @@ impl Service {
             outbox,
             limbo: Vec::with_capacity(QUEUE * 4),
             bpm,
+            bell: self.shared.bell.clone(),
         }
     }
 
@@ -313,6 +329,14 @@ impl Service {
                 link.tune_sent = false;
             }
         }
+        self.shared.bell.ring();
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::SeqCst);
+        self.shared.bell.ring();
     }
 }
 
@@ -332,8 +356,11 @@ struct Job {
 
 fn run(shared: &Arc<Shared>) {
     // Stops when the node type, the only other holder, is gone.
-    while Arc::strong_count(shared) > 1 {
+    while !shared.closed.load(Ordering::SeqCst) {
         let mut busy = false;
+        // Something is waiting on time or on room in a queue, which no ring
+        // announces, so the worker looks again soon.
+        let mut pending = false;
         let job = {
             let mut links = lock(&shared.links);
             links.retain(|l| !l.to_node.is_abandoned());
@@ -343,9 +370,11 @@ fn run(shared: &Arc<Shared>) {
                 if job.is_none() {
                     job = wants(link, shared);
                 }
+                pending |= link.wanted.is_some() || link.ready.is_some() || !link.tune_sent;
             }
             job
         };
+        let job_made = job.is_some();
         if let Some(job) = job {
             busy = true;
             let made = render(&job.sample, &job.warp, job.bpm).map(Arc::new);
@@ -367,7 +396,11 @@ fn run(shared: &Arc<Shared>) {
                 link.ready = made;
             }
         }
-        thread::sleep(if busy { POLL } else { IDLE_POLL });
+        if busy || job_made || pending {
+            shared.bell.wait(Some(POLL));
+        } else {
+            shared.bell.wait(None);
+        }
     }
 }
 
@@ -443,4 +476,24 @@ fn wants(link: &mut Link, shared: &Shared) -> Option<Job> {
         bpm,
         key,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_idle_worker_sleeps_until_rung() {
+        let service = Service::new();
+        let tune = Arc::new(Tune::read("", ""));
+        let _links = service.register(NodeId(0), 0, None, tune);
+        // Let it settle, then see that it doesn't wake on a timer.
+        thread::sleep(Duration::from_millis(100));
+        let idle = service.shared.bell.wakes();
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(service.shared.bell.wakes(), idle, "woke with nothing to do");
+        service.shared.bell.ring();
+        thread::sleep(Duration::from_millis(100));
+        assert!(service.shared.bell.wakes() > idle, "a ring wakes it");
+    }
 }
