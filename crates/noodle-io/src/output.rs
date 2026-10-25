@@ -1051,8 +1051,9 @@ impl Reporter {
 /// `max_frames` frames per engine block. The channel count is the device's.
 /// If `choice` turns input on, the input device records into Input nodes,
 /// converted to the output's sample rate if it runs at another. Input that
-/// can't be opened leaves Input nodes silent rather than failing: see [`Playback::input_problem`]. Send the engine graphs
-/// with the returned [`Controller`].
+/// can't be opened leaves Input nodes silent rather than failing: see
+/// [`Playback::input_problem`]. Send the engine graphs with the returned
+/// [`Controller`].
 ///
 /// `midi` is told when the blocks run, so the MIDI In nodes on it place
 /// notes within a block and recordings know where the transport was.
