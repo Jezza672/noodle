@@ -292,7 +292,12 @@ It has these views:
   - The mixer is still to come.
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
-  and compile problems. The Remap node's curve gets a curve editor
+  and compile problems. The panel is as tall as the window, so its body
+  scrolls: a node with more parameters than fit would otherwise draw them
+  off screen, out of reach. The offset is kept in egui's own state, so it
+  survives from frame to frame and from one selected node to the next, and
+  the wheel over the panel scrolls it.
+  The Remap node's curve gets a curve editor
   (`widgets/curve.rs`): drag points and handles, click the line to add a
   point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
   (Its live value and range come from the editor, as on the node.)

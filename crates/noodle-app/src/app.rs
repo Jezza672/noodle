@@ -46,6 +46,11 @@ const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V
 const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
 const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 
+/// Where the properties panel's body is scrolled to, in egui's own state.
+fn properties_scroll() -> egui::Id {
+    egui::Id::new("properties scroll")
+}
+
 /// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
 const SHORTCUTS: [(KeyboardShortcut, Action); 9] = [
     (REDO, Action::Redo),
@@ -383,7 +388,7 @@ impl App {
         }
 
         let active = self.editor.active;
-        egui::Panel::right("properties")
+        let properties_edits = egui::Panel::right("properties")
             .default_size(theme::PROPERTIES_WIDTH)
             .frame(egui::Frame::side_top_panel(ui.style()).fill(theme::PANEL))
             .show(ui, |ui| {
@@ -392,39 +397,76 @@ impl App {
                 // the next node would open it at its default width.
                 ui.set_min_width(ui.available_width());
                 ui.add_space(4.0);
-                let mut edits = Vec::new();
-                // The selected audio clip's own properties, above the node's.
-                let picked = self
-                    .clip_editor
-                    .clip()
-                    .or_else(|| self.timeline.selected_clip())
-                    .filter(|&id| {
-                        self.session
-                            .project()
-                            .clip(id)
-                            .is_some_and(|clip| clip.as_audio().is_some())
+                // The panel is as tall as the window, so a node with more
+                // properties than fit would draw them off screen, out of
+                // reach. The body scrolls instead. The offset is ours, kept
+                // in egui's own state, so it survives from frame to frame and
+                // from one selected node to the next.
+                // The scroll bar is hidden: a solid one would take width
+                // from the fields, and a floating one would lie over them.
+                // The wheel over the panel scrolls it.
+                let offset = ui
+                    .ctx()
+                    .data_mut(|d| d.get_persisted::<f32>(properties_scroll()))
+                    .unwrap_or(0.0);
+                let body = egui::ScrollArea::vertical()
+                    .id_salt("properties body")
+                    .auto_shrink([false, false])
+                    .vertical_scroll_offset(offset)
+                    .scroll_bar_visibility(
+                        egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                    )
+                    .scroll_source(egui::containers::scroll_area::ScrollSource {
+                        // A drag belongs to the fields, not to the panel.
+                        drag: egui::containers::scroll_area::DragScroll::Never,
+                        ..Default::default()
+                    })
+                    .show(ui, |ui| {
+                        let mut edits = Vec::new();
+                        // The selected audio clip's own properties, above the node's.
+                        let picked = self
+                            .clip_editor
+                            .clip()
+                            .or_else(|| self.timeline.selected_clip())
+                            .filter(|&id| {
+                                self.session
+                                    .project()
+                                    .clip(id)
+                                    .is_some_and(|clip| clip.as_audio().is_some())
+                            });
+                        if let Some(id) = picked {
+                            let loaded = self.clip_source(ui.ctx(), id);
+                            edits.extend(clip_panel::show(
+                                ui,
+                                &mut self.clip_panel,
+                                &self.session,
+                                id,
+                                loaded.as_ref(),
+                            ));
+                            ui.separator();
+                        }
+                        let editor = &self.editor;
+                        edits.extend(properties::show(
+                            ui,
+                            &self.session,
+                            active,
+                            &|node, key| editor.param_live(node, key),
+                            &|node| editor.spectrum(node),
+                        ));
+                        edits
                     });
-                if let Some(id) = picked {
-                    let loaded = self.clip_source(ui.ctx(), id);
-                    edits.extend(clip_panel::show(
-                        ui,
-                        &mut self.clip_panel,
-                        &self.session,
-                        id,
-                        loaded.as_ref(),
-                    ));
-                    ui.separator();
+                if body.state.offset.y != offset {
+                    // The wheel moved it, or what is under it no longer
+                    // reaches that far down, so it was drawn at the wrong
+                    // place. Keep the new offset and draw it again.
+                    ui.ctx()
+                        .data_mut(|d| d.insert_persisted(properties_scroll(), body.state.offset.y));
+                    ui.ctx().request_repaint();
                 }
-                let editor = &self.editor;
-                edits.extend(properties::show(
-                    ui,
-                    &self.session,
-                    active,
-                    &|node, key| editor.param_live(node, key),
-                    &|node| editor.spectrum(node),
-                ));
-                self.session.edit(edits);
-            });
+                body.inner
+            })
+            .inner;
+        self.session.edit(properties_edits);
 
         let arrangement = egui::Panel::top("arrangement")
             .resizable(true)
@@ -1687,6 +1729,127 @@ mod tests {
             properties_width(&harness),
             wanted,
             "kept when it is deselected"
+        );
+    }
+
+    /// A harness for a window too short for the properties panel, so that
+    /// what a node has to say does not fit in it.
+    fn short_window(app: App) -> Harness<'static, App> {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(700.0, 300.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        h.run();
+        h
+    }
+
+    /// Scrolls the properties panel down, with the wheel over it.
+    fn scroll_properties_down(h: &mut Harness<'static, App>) {
+        use crate::testkit::wheel;
+        for _ in 0..20 {
+            wheel(
+                h,
+                egui::pos2(650.0, 200.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(20);
+    }
+
+    /// An app with a Sampler in it, selected: it has eleven parameters, so
+    /// more than a short window can show.
+    fn sampler_app() -> App {
+        let mut app = empty();
+        let id = noodle_core::NodeId(1);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id,
+            node: Node::new(noodle_nodes::SAMPLER_ID),
+        })]);
+        app.editor.selected.insert(id);
+        app.editor.active = Some(id);
+        app
+    }
+
+    #[test]
+    fn the_properties_panel_scrolls_to_a_parameter_below_the_fold() {
+        let mut h = short_window(sampler_app());
+        // Where the bottom of a parameter's label is, in the window.
+        let bottom_of = |h: &Harness<'_, App>, label: &str| {
+            h.query_all_by_label(label)
+                .map(|w| w.rect().max.y)
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(
+            bottom_of(&h, "Keytrack") > 300.0,
+            "the parameter starts below the fold: {:?}",
+            bottom_of(&h, "Keytrack")
+        );
+        // The wheel over the panel scrolls it.
+        scroll_properties_down(&mut h);
+        assert!(
+            bottom_of(&h, "Loop end") <= 300.0,
+            "the last parameter scrolls into view: {:?}",
+            bottom_of(&h, "Loop end")
+        );
+    }
+
+    #[test]
+    fn the_properties_panel_keeps_its_scroll_when_another_node_is_selected() {
+        let mut app = sampler_app();
+        let b = noodle_core::NodeId(2);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: b,
+            node: Node::new(noodle_nodes::SAMPLER_ID),
+        })]);
+        let mut h = short_window(app);
+        scroll_properties_down(&mut h);
+        let top_of = |h: &Harness<'_, App>, label: &str| {
+            h.query_all_by_label(label)
+                .map(|w| w.rect().min.y)
+                .fold(f32::MIN, f32::max)
+        };
+        let before = top_of(&h, "Root");
+        assert!(before < 0.0, "the panel scrolled down: {before}");
+        // Another node, with just as much in it, so the offset still fits.
+        h.state_mut().editor.selected.clear();
+        h.state_mut().editor.selected.insert(b);
+        h.state_mut().editor.active = Some(b);
+        h.run();
+        assert_eq!(
+            top_of(&h, "Root"),
+            before,
+            "the scroll did not jump when the selection changed"
+        );
+    }
+
+    #[test]
+    fn the_properties_panel_shows_a_node_with_less_in_it_after_scrolling() {
+        let mut app = sampler_app();
+        let osc = noodle_core::NodeId(2);
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: osc,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        let mut h = short_window(app);
+        scroll_properties_down(&mut h);
+        // A node with much less in it: the panel shows it, not a blank.
+        h.state_mut().editor.selected.clear();
+        h.state_mut().editor.selected.insert(osc);
+        h.state_mut().editor.active = Some(osc);
+        h.run();
+        let in_the_panel: Vec<_> = h
+            .query_all_by_label("Frequency")
+            .map(|w| w.rect())
+            .filter(|r| r.min.x > 400.0)
+            .collect();
+        assert!(
+            !in_the_panel.is_empty(),
+            "the oscillator's parameter is there"
+        );
+        assert!(
+            in_the_panel[0].min.y > 0.0 && in_the_panel[0].max.y < 300.0,
+            "{in_the_panel:?}"
         );
     }
 
@@ -3198,6 +3361,54 @@ mod tests {
         assert!(
             (at.x - 400.0).abs() < 8.0 && (at.y - 250.0).abs() < 8.0,
             "{at:?}"
+        );
+    }
+
+    #[test]
+    fn a_clip_dropped_on_the_sample_in_a_scrolled_properties_panel_sets_the_sample() {
+        use crate::testkit::wheel;
+        let (mut h, clip, _dir) = clip_rig();
+        // A short window, so the properties panel has more to show than fits.
+        h.set_size(egui::vec2(1100.0, 400.0));
+        let sampler = noodle_core::NodeId(10);
+        h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+            id: sampler,
+            node: Node::new(noodle_nodes::SAMPLER_ID).at(300.0, 200.0),
+        })]);
+        h.state_mut().editor.selected.insert(sampler);
+        h.state_mut().editor.active = Some(sampler);
+        h.run();
+        // Selecting the clip puts its own panel above the Sampler's settings,
+        // so click it first and aim at where the settings are then.
+        let at = h.state().timeline.clip_rect(clip).unwrap().center();
+        crate::testkit::click(&mut h, at, egui::Modifiers::NONE);
+        h.run();
+        h.state_mut().editor.selected.insert(sampler);
+        h.state_mut().editor.active = Some(sampler);
+        h.run();
+        // Scroll the panel down, so the sample field moves up with it.
+        let before = h.get_by_label("Load sample…").rect().center();
+        for _ in 0..3 {
+            wheel(
+                &mut h,
+                egui::pos2(1050.0, 200.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -40.0),
+            );
+        }
+        h.run_steps(10);
+        let after = h.get_by_label("Load sample…").rect().center();
+        assert!(
+            after.y < before.y,
+            "the panel scrolled down: {before:?} then {after:?}"
+        );
+        // The drop lands on the sample field, which moved with the scroll.
+        carry_clip(&mut h, clip, after);
+        let node = h.state().session.project().graph().node(sampler).unwrap();
+        assert!(
+            (node.params["start"] - 0.25).abs() < 1e-4,
+            "{:?}",
+            node.params
         );
     }
 
