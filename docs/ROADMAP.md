@@ -48,7 +48,7 @@ need a person and hardware, plus a few deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Piano roll and recording:** quantise and copy/paste in the piano roll, more
+- **Piano roll and recording:** quantise, more
   than one MIDI port at a time, overdubbing into an existing clip, a count-in,
   keeping the raw take for re-quantising. The 128-frame engine block is fixed;
   it could follow the device period.

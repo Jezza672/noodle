@@ -129,7 +129,8 @@ before the start, keys and velocities in range).
 - **The piano roll** opens below the arrangement when a MIDI clip is
   double-clicked. Dragging on empty space draws a note, dragging a note moves
   it (in time and pitch, a whole selection together), dragging its right end
-  resizes it, Delete removes, the arrow keys transpose and nudge, and a bar in
+  resizes it, Delete removes, the arrow keys transpose and nudge, Cmd+C/X/V/D
+  copy, cut, paste (at the playhead) and duplicate the selected notes, and a bar in
   the velocity lane sets velocity. Notes snap to the app-wide snap step (the
   *Snap* menu in the menu bar: a beat down to 1/16 of a beat, or off; one
   setting for the arrangement, the piano roll and the clip editor, `snap.rs`),

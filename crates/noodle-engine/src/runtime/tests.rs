@@ -1678,6 +1678,35 @@ fn a_wired_parameter_reports_its_live_value_and_range() {
     assert_eq!(telemetry.read_param(counter, "out"), None);
 }
 
+#[test]
+fn a_wired_audio_input_reports_the_level_arriving_at_it() {
+    let telemetry = Telemetry::new();
+    let reader = telemetry.meter_reader();
+    let mut rig = Rig::new(SETTINGS);
+    rig.controller.set_telemetry(&telemetry);
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    assert!(rig.update().is_empty());
+    // Nothing has run yet.
+    assert!(
+        reader
+            .input_meter(output, "in")
+            .is_none_or(|levels| levels[0].peak == 0.0)
+    );
+
+    // The counter delivers 0 to 3 in the first block, then 4 to 7.
+    rig.render(4);
+    let levels = reader.input_meter(output, "in").unwrap();
+    assert_eq!(levels.len(), 1);
+    assert_eq!(levels[0].peak, 3.0);
+    rig.render(4);
+    assert_eq!(reader.input_meter(output, "in").unwrap()[0].peak, 7.0);
+    // The source's output and unwired inputs have none.
+    assert_eq!(reader.input_meter(counter, "out"), None);
+    assert_eq!(reader.input_meter(output, "gain"), None);
+}
+
 /// Outputs 1 and counts the blocks it runs.
 struct Tally(Arc<AtomicUsize>);
 

@@ -111,6 +111,8 @@ pub struct EditorState {
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
+    /// Copy, cut, paste or duplicate, asked for by the Edit menu.
+    clip_requested: Option<crate::timeline::ClipAction>,
     /// Something carried out of the timeline and let go of over the canvas,
     /// until the app takes it.
     dropped: Option<Dropped>,
@@ -191,6 +193,7 @@ impl Default for EditorState {
             bodies: body::Bodies::default(),
             scene_cache: None,
             arrange_requested: false,
+            clip_requested: None,
             dropped: None,
             fit_requested: false,
             view_request: None,
@@ -253,6 +256,17 @@ impl EditorState {
     /// frame: the selection, or everything if nothing is selected.
     pub fn request_arrange(&mut self) {
         self.arrange_requested = true;
+    }
+
+    /// Asks for the selected nodes to be copied, cut or duplicated, or the
+    /// copied ones pasted (at the centre of the view), on the next frame.
+    pub fn request_clip(&mut self, action: crate::timeline::ClipAction) {
+        self.clip_requested = Some(action);
+    }
+
+    /// Whether there are copied nodes to paste.
+    pub fn can_paste(&self) -> bool {
+        crate::clipboard::holds(crate::clipboard::NODE_MIME)
     }
 
     /// Asks for the view to be fitted around the whole graph at the current
@@ -700,6 +714,26 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     // From the menu, so the pointer isn't over the canvas.
     if std::mem::take(&mut state.arrange_requested) {
         arrange_nodes(state, &f, &mut edits);
+    }
+    if let Some(action) = state.clip_requested.take() {
+        use crate::timeline::ClipAction;
+        match action {
+            ClipAction::Copy => {
+                copy_selection(state, &f);
+            }
+            ClipAction::Cut => {
+                if copy_selection(state, &f) {
+                    edits.extend(state.delete_selection());
+                }
+            }
+            ClipAction::Paste => paste(
+                state,
+                f.t.to_graph(canvas.center()),
+                &mut inputs,
+                &mut edits,
+            ),
+            ClipAction::Duplicate => duplicate(state, &f, &mut inputs, &mut edits),
+        }
     }
 
     let painter = ui.painter_at(canvas);

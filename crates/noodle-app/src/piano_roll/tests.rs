@@ -441,6 +441,67 @@ fn dragging_the_braces_body_slides_the_loop() {
     assert_eq!(midi_of(&h).loop_start, Tick(0), "one gesture, one undo");
 }
 
+#[test]
+fn notes_copy_cut_and_paste_keeping_their_spacing() {
+    crate::clipboard::clear();
+    let mut h = rig(&[note(480, 240, 60), note(960, 240, 64)]);
+    let pos = at(&h, 540, 60);
+    click(&mut h, pos);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+    h.run();
+    assert_eq!(notes_of(&h).len(), 2, "copying changes nothing");
+    // Pasted at the clip's start (no playhead in the clip), as one undo step,
+    // and left selected.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+    h.run();
+    assert_eq!(
+        notes_of(&h),
+        [note(480, 240, 60), note(960, 240, 64), note(0, 240, 60)]
+    );
+    let pasted = stored_notes(&h)[2].id;
+    assert_eq!(h.state().roll.selected(), &BTreeSet::from([pasted]));
+    h.state_mut().session.undo();
+    assert_eq!(notes_of(&h).len(), 2);
+    // Cut removes the selected note and puts it on the clipboard.
+    let pos = at(&h, 1000, 64);
+    click(&mut h, pos);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::X);
+    h.run();
+    assert_eq!(notes_of(&h), [note(480, 240, 60)]);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+    h.run();
+    assert_eq!(notes_of(&h), [note(480, 240, 60), note(0, 240, 64)]);
+}
+
+#[test]
+fn duplicating_notes_puts_the_copies_just_after_them() {
+    crate::clipboard::clear();
+    let mut h = rig(&[note(0, 240, 60), note(240, 240, 62)]);
+    let pos = at(&h, 100, 60);
+    click(&mut h, pos);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    h.run();
+    assert_eq!(
+        notes_of(&h),
+        [note(0, 240, 60), note(240, 240, 62), note(240, 240, 60)]
+    );
+}
+
+#[test]
+fn the_edit_menu_can_ask_for_a_copy_and_paste() {
+    crate::clipboard::clear();
+    let mut h = rig(&[note(0, 240, 60)]);
+    assert!(!h.state().roll.can_copy() && !h.state().roll.can_paste());
+    let pos = at(&h, 100, 60);
+    click(&mut h, pos);
+    assert!(h.state().roll.can_copy());
+    h.state_mut().roll.request(ClipAction::Copy);
+    h.run();
+    assert!(h.state().roll.can_paste());
+    h.state_mut().roll.request(ClipAction::Paste);
+    h.run();
+}
+
 /// The tick (from the clip's start) a double click at `tick` makes a note at,
 /// with the snap on a beat.
 fn note_added_at(h: &mut H, tick: i64) -> i64 {

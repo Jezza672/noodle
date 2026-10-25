@@ -118,6 +118,9 @@ pub struct Bodies {
     /// The editor's own reader, so other views still see every peak.
     reader: Option<MeterReader>,
     meters: HashMap<NodeId, Vec<MeterChannel>>,
+    /// The level arriving at each wired audio input, by (node, port key), one
+    /// channel per signal channel.
+    taps: HashMap<(NodeId, String), Vec<MeterChannel>>,
     scopes: HashMap<NodeId, ScopeView>,
     spectra: HashMap<NodeId, SpectrumTrace>,
     /// The engine's sample rate, for the spectra.
@@ -351,6 +354,33 @@ impl Bodies {
                 NodeView::Envelope | NodeView::Panner | NodeView::Graph(_) | NodeView::None => {}
             }
         }
+        // Every wired audio input reports what arrives at it. The nodes that
+        // meter their inputs already (Meter, Mixer, groups) don't need it.
+        self.taps.retain(|(node, key), _| {
+            graph
+                .source(&noodle_core::Endpoint::new(*node, key.clone()))
+                .is_some()
+        });
+        for connection in graph.connections() {
+            let (node, key) = (connection.to.node, connection.to.port.clone());
+            let Some(target) = graph.node(node) else {
+                continue;
+            };
+            if matches!(
+                view_of(registry, target),
+                NodeView::Meter | NodeView::Mixer | NodeView::GroupMeter
+            ) {
+                continue;
+            }
+            let Some(levels) = reader.input_meter(node, &key) else {
+                continue;
+            };
+            let channels = self.taps.entry((node, key)).or_default();
+            channels.resize_with(levels.len(), MeterChannel::default);
+            for (channel, level) in channels.iter_mut().zip(levels) {
+                channel.update(level, dt);
+            }
+        }
         if moving {
             Liveness::Moving
         } else if self.is_decaying() {
@@ -366,6 +396,7 @@ impl Bodies {
     fn is_decaying(&self) -> bool {
         self.meters
             .values()
+            .chain(self.taps.values())
             .flatten()
             .any(|c| c.peak > ACTIVITY_FLOOR || c.hold > ACTIVITY_FLOOR)
             || self.spectra.values().any(SpectrumTrace::is_decaying)
@@ -388,6 +419,14 @@ impl Bodies {
     /// The levels a mixer node's inputs last reported, one per input.
     pub fn input_meters(&self, node: NodeId) -> &[MeterChannel] {
         self.meters.get(&node).map_or(&[], Vec::as_slice)
+    }
+
+    /// The levels arriving at the wired audio input `key` of `node`, one per
+    /// channel (empty when nothing is wired or nothing has reported).
+    pub fn tap(&self, node: NodeId, key: &str) -> &[MeterChannel] {
+        self.taps
+            .get(&(node, key.to_owned()))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The one channel `channel` of a mixer node, as a slice for drawing.
@@ -1354,6 +1393,63 @@ mod tests {
         assert_eq!(bodies.input_meters(mix)[1].peak, 0.5);
         assert_eq!(bodies.input_meters_of(mix, 1)[0].rms, 0.25);
         assert!(bodies.input_meters_of(mix, 5).is_empty());
+    }
+
+    #[test]
+    fn a_wired_audio_input_shows_the_level_arriving_at_it() {
+        let mut project = Project::new();
+        let (src, gain, mix) = (
+            project.new_node_id(),
+            project.new_node_id(),
+            project.new_node_id(),
+        );
+        for (id, type_id) in [
+            (src, "noodle.osc.sine"),
+            (gain, "noodle.filter.svf"),
+            (mix, spare::MIXER),
+        ] {
+            Command::AddNode {
+                id,
+                node: Node::new(type_id),
+            }
+            .apply(&mut project)
+            .unwrap();
+        }
+        for (to, port) in [(gain, "in"), (mix, "in1")] {
+            Command::Connect(noodle_core::Connection {
+                from: noodle_core::Endpoint::new(src, "out"),
+                to: noodle_core::Endpoint::new(to, port),
+            })
+            .apply(&mut project)
+            .unwrap();
+        }
+        let telemetry = Telemetry::new();
+        let level = Level {
+            peak: 0.5,
+            rms: 0.25,
+        };
+        let writers = [
+            telemetry.open_input_meter(gain, "in", 2),
+            telemetry.open_input_meter(mix, "in1", 1),
+        ];
+        writers[0].write(1, level);
+        writers[1].write(0, level);
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.tap(gain, "in").len(), 2);
+        assert_eq!(bodies.tap(gain, "in")[0].peak, 0.0);
+        assert_eq!(bodies.tap(gain, "in")[1].peak, 0.5);
+        // Unwired inputs and the mixer's own meters are left out.
+        assert!(bodies.tap(gain, "gain").is_empty());
+        assert!(bodies.tap(mix, "in1").is_empty());
+        // Unwiring forgets the reading.
+        Command::Disconnect {
+            input: noodle_core::Endpoint::new(gain, "in"),
+        }
+        .apply(&mut project)
+        .unwrap();
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(bodies.tap(gain, "in").is_empty());
     }
 
     /// A node type that is none of the built-ins, declaring only a view.

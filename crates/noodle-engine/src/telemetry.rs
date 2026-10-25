@@ -58,7 +58,7 @@ pub struct Telemetry {
 /// Each node's open channels, oldest first.
 #[derive(Default)]
 struct Channels {
-    meters: HashMap<NodeId, Vec<Arc<MeterCells>>>,
+    meters: HashMap<MeterKey, Vec<Arc<MeterCells>>>,
     scopes: HashMap<NodeId, Vec<ScopeReader>>,
     /// Wired parameters' values, by node and port key.
     params: HashMap<(NodeId, String), Vec<Arc<ParamCells>>>,
@@ -71,7 +71,15 @@ struct Channels {
     next_reader: u64,
     /// Each reader's highest peak per channel since it last read a meter,
     /// by (meter, reader).
-    held: HashMap<(NodeId, u64), Vec<f32>>,
+    held: HashMap<(MeterKey, u64), Vec<f32>>,
+}
+
+/// What a meter channel measures: a node's own signal, or the signal
+/// arriving at one of its audio inputs.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum MeterKey {
+    Node(NodeId),
+    Input(NodeId, String),
 }
 
 impl Channels {
@@ -98,7 +106,7 @@ impl Channels {
             !list.is_empty()
         });
         let meters = &self.meters;
-        self.held.retain(|(node, _), _| meters.contains_key(node));
+        self.held.retain(|(key, _), _| meters.contains_key(key));
     }
 }
 
@@ -135,6 +143,17 @@ impl Telemetry {
     /// Opens a meter channel for `node` with one level per channel. Call this
     /// when instantiating, not on the audio thread.
     pub fn open_meter(&self, node: NodeId, channels: usize) -> MeterWriter {
+        self.open_meter_at(MeterKey::Node(node), channels)
+    }
+
+    /// Opens a meter channel for the signal wired into audio input `key` of
+    /// `node`, read with [`MeterReader::input_meter`]. Call this when
+    /// building a plan, not on the audio thread.
+    pub fn open_input_meter(&self, node: NodeId, key: &str, channels: usize) -> MeterWriter {
+        self.open_meter_at(MeterKey::Input(node, key.to_owned()), channels)
+    }
+
+    fn open_meter_at(&self, key: MeterKey, channels: usize) -> MeterWriter {
         let cells = Arc::new(MeterCells {
             levels: (0..channels).map(|_| LevelCells::default()).collect(),
             written: AtomicBool::new(false),
@@ -142,7 +161,7 @@ impl Telemetry {
         });
         self.lock()
             .meters
-            .entry(node)
+            .entry(key)
             .or_default()
             .push(cells.clone());
         MeterWriter(cells)
@@ -416,6 +435,17 @@ impl MeterReader {
     /// `node`'s meter levels, one per channel, or `None` if it has no meter.
     /// Each peak is the highest since this reader last read `node`.
     pub fn meter(&self, node: NodeId) -> Option<Vec<Level>> {
+        self.read(MeterKey::Node(node))
+    }
+
+    /// The levels arriving at audio input `key` of `node`, one per channel,
+    /// or `None` if nothing is wired to it (or it hasn't run). Peaks are as
+    /// for [`meter`](Self::meter).
+    pub fn input_meter(&self, node: NodeId, key: &str) -> Option<Vec<Level>> {
+        self.read(MeterKey::Input(node, key.to_owned()))
+    }
+
+    fn read(&self, key: MeterKey) -> Option<Vec<Level>> {
         let mut guard = self.hub.lock();
         let Channels {
             meters,
@@ -423,21 +453,21 @@ impl MeterReader {
             held,
             ..
         } = &mut *guard;
-        let list = meters.get(&node)?;
+        let list = meters.get(&key)?;
         let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
         let count = cells.levels.len();
 
         // Hand the peaks since anyone last read to every reader.
         let peaks: Vec<f32> = cells.levels.iter().map(LevelCells::take_peak).collect();
         for &reader in readers.iter() {
-            let held = held.entry((node, reader)).or_default();
+            let held = held.entry((key.clone(), reader)).or_default();
             held.resize(count, 0.0);
             for (held, &peak) in held.iter_mut().zip(&peaks) {
                 *held = held.max(peak);
             }
         }
 
-        let mine = held.get_mut(&(node, self.id))?;
+        let mine = held.get_mut(&(key, self.id))?;
         Some(
             cells
                 .levels
@@ -1204,7 +1234,7 @@ mod tests {
         playing.write(0, peak(0.7));
         assert_eq!(read(), 0.1);
         drop(playing);
-        assert_eq!(telemetry.lock().meters[&NODE].len(), 1);
+        assert_eq!(telemetry.lock().meters[&MeterKey::Node(NODE)].len(), 1);
     }
 
     #[test]

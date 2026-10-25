@@ -707,6 +707,29 @@ fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
 }
 
 #[test]
+fn input_meters_report_without_allocating() {
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw"));
+    let svf = s.add(Node::new("noodle.filter.svf"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", svf, "in");
+    s.wire(svf, "low", output, "in");
+    s.update();
+    let reader = s.telemetry.meter_reader();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    let violations = realtime(|| {
+        for _ in 0..8 {
+            s.processor.process(&mut out);
+        }
+    });
+    assert_eq!(violations, 0, "allocated while metering inputs");
+    let level = reader.input_meter(svf, "in").expect("it reports")[0];
+    assert!(level.peak > 0.0 && level.rms > 0.0, "{level:?}");
+    assert!(reader.input_meter(output, "in").is_some());
+}
+
+#[test]
 fn events_envelopes_and_modulated_parameters_never_allocate() {
     // button -> key -> mono note -> saw -> filter (cutoff offset by an LFO)
     // -> vca (level from an ADSR) -> output, with every wired parameter probed.
