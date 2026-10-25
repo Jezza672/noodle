@@ -72,6 +72,29 @@ pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> 
             Some(Connection { from, to })
         })
         .collect();
+    // A track's mute reaches its outputs without a wire: its track input's
+    // mute drives the stage of each output, unless something is wired to
+    // that output's mute already.
+    for (node_id, node) in graph.nodes() {
+        if node.type_id != GROUP_OUTPUT {
+            continue;
+        }
+        let Some(track) = node.parent.and_then(|group| graph.track_input(group)) else {
+            continue;
+        };
+        for (port, _) in node.boundary_ports() {
+            let stage = stage_id(node_id, port);
+            let wired = graph
+                .source(&Endpoint::new(node_id, control_key(MUTE, port)))
+                .is_some();
+            if stages.contains_key(&stage) && !wired {
+                connections.push(Connection {
+                    from: Endpoint::new(track, noodle_core::group::TRACK_MUTE),
+                    to: Endpoint::new(stage, MUTE),
+                });
+            }
+        }
+    }
     // A kept group input has nothing wired to it inside the group; its signal
     // comes from whatever feeds the group's input of that name.
     for stage in stages.values() {
@@ -108,6 +131,18 @@ struct InputStage {
     name: String,
 }
 
+/// The stage of every port of every group's output node, for the meters.
+pub(crate) fn output_stages(graph: &Graph) -> impl Iterator<Item = NodeId> + '_ {
+    graph
+        .nodes()
+        .filter(|(_, node)| node.type_id == GROUP_OUTPUT && node.parent.is_some())
+        .flat_map(|(id, node)| {
+            node.boundary_ports()
+                .into_iter()
+                .map(move |(port, _)| stage_id(id, port))
+        })
+}
+
 /// The boundary ports that stay in the flat graph, as the stage nodes that
 /// replace them, by stage ID.
 ///
@@ -142,7 +177,10 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
                     .source(&Endpoint::new(node_id, control_key(control, port)))
                     .is_some()
             });
+            // A track's outputs keep a stage for its track input's mute to drive.
+            let track_out = !is_input && graph.track_input(group).is_some();
             if !(node.has_gain_or_mute(port)
+                || track_out
                 || mute
                 || keep_for_solo
                 || wired
@@ -216,6 +254,21 @@ pub(crate) fn group_outputs(
         }
     }
     sources
+}
+
+/// The node output in the flat graph that feeds a group's first output (its
+/// stage's, if it has one), which is what monitoring the group listens to.
+pub(crate) fn group_first_output(
+    graph: &Graph,
+    keep: &BTreeSet<NodeId>,
+    group: NodeId,
+) -> Option<Endpoint> {
+    let stages = stages(graph, keep);
+    let port = graph.group_ports(group).outputs.into_iter().next()?;
+    if stages.contains_key(&port.stage()) {
+        return Some(Endpoint::new(port.stage(), STAGE_OUT));
+    }
+    resolve(graph, &stages, &Endpoint::new(port.node, port.key()))
 }
 
 /// Follows an input's wire back through group boundaries to the real node

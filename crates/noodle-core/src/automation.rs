@@ -1,6 +1,6 @@
 //! Automation lanes: a parameter's value over the timeline. The compiler
 //! turns each lane into a source wired into the parameter's port, so a lane
-//! modulates what a wire does. See "Automation" in docs/ARCHITECTURE.md.
+//! modulates what a wire does. See "Automation" in docs/architecture/automation.md.
 
 use std::fmt;
 

@@ -164,7 +164,7 @@ fn nothing_plays_while_the_transport_stands_still() {
 #[test]
 fn an_auditioned_key_sounds_on_its_own_track_even_when_stopped() {
     let mut rig = rig("midi-audition");
-    let other = Rig::new("midi-audition-other");
+    let other = Rig::blocking("midi-audition-other");
     rig.feeds.audition(rig.id, 62, true);
     let events = rig.run_events(0, BLOCK, false);
     assert_eq!(events.len(), 1, "{events:?}");
@@ -325,4 +325,62 @@ fn live_notes_use_ids_of_their_own() {
     };
     // Apart from the MIDI In node's (top bit), a clip's, and the piano roll's.
     assert_eq!(note.0 & 0xF000_0000, 0x2000_0000);
+}
+
+#[test]
+fn a_muted_track_plays_no_notes_and_lets_go_of_the_ones_it_holds() {
+    let mut rig = rig("midi-mute");
+    rig.add_midi_clip(0, 8, &[(0, 3840, 60), (3840, 960, 64), (5760, 960, 67)]);
+    rig.settle();
+    // The first note is sounding when the track is muted.
+    let started = run(&mut rig, 0, BEAT, true);
+    assert_eq!(started, [(0, true, 60)]);
+    rig.set_muted(true);
+    let muted = run(&mut rig, BEAT, 3 * BEAT, true);
+    // Only its end, once: the second note (at beat 4) is still ahead.
+    assert_eq!(muted.len(), 1);
+    assert!(!muted[0].1);
+    // While muted nothing starts, even across the second note.
+    let more = run(&mut rig, 3 * BEAT, 5 * BEAT, true);
+    assert!(more.is_empty(), "{more:?}");
+    // After unmuting the next note plays; one that began during the mute
+    // does not come back.
+    rig.set_muted(false);
+    let after = run(&mut rig, 5 * BEAT, 8 * BEAT, true);
+    assert_eq!(
+        after
+            .iter()
+            .filter(|e| e.1)
+            .map(|e| e.2)
+            .collect::<Vec<_>>(),
+        [67]
+    );
+}
+
+#[test]
+fn a_looping_clip_plays_its_loop_again_until_it_ends() {
+    let mut rig = rig("midi-loop");
+    // A four beat clip at the start whose first beat is the loop.
+    let id = rig.add_midi_clip(0, 4, &[(0, 240, 60), (480, 240, 62), (1500, 100, 71)]);
+    rig.edit_clip(id, |clip| {
+        let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.set_loop(noodle_core::Tick(0), noodle_core::Tick(960));
+        midi.loop_on = true;
+    });
+    rig.settle();
+    let events = run(&mut rig, 0, 5 * BEAT, true);
+    let on: Vec<_> = events
+        .iter()
+        .filter(|e| e.1)
+        .map(|&(t, _, key)| (t, key))
+        .collect();
+    // Four passes of the beat; the note after the loop's end never plays.
+    let expect: Vec<_> = (0..4)
+        .flat_map(|b| [(b * BEAT, 60), (b * BEAT + BEAT / 2, 62)])
+        .collect();
+    assert_eq!(on, expect);
+    // Every note-on has its note-off.
+    assert_eq!(events.iter().filter(|e| !e.1).count(), expect.len());
 }

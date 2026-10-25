@@ -44,6 +44,55 @@ pub struct NodeInfo {
     pub category: &'static str,
 }
 
+/// What a node draws below its ports in the node editor, and so which of
+/// its telemetry the editor reads. A node type declares it with
+/// [`NodeType::view`]; the editor keeps one table from view to height,
+/// painter and reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeView {
+    /// Nothing: just ports and parameters.
+    None,
+    /// Level bars for what the node's `in` passes, from a `MeterWriter`.
+    Meter,
+    /// A mixer: one level per input, shown beside the input rows.
+    Mixer,
+    /// A scope of what the node's scope channel records.
+    Scope,
+    /// A spectrum and spectrogram of the node's scope channel.
+    Spectrum,
+    /// An Envelope node's drawn curve.
+    Envelope,
+    /// A panner's speaker layout with the source on it.
+    Panner,
+    /// A graph of what the node does, drawn from its parameters.
+    Graph(GraphKind),
+    /// Group boundaries show the levels at their output stages. The engine
+    /// flattens groups away, so only the editor uses this.
+    GroupMeter,
+}
+
+/// The kinds of parameter graph a node can draw, see [`NodeView::Graph`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphKind {
+    Adsr,
+    Svf,
+    Ladder,
+    Lfo,
+    Dynamics,
+    Eq,
+}
+
+impl GraphKind {
+    /// The telemetry parameters the graph reads from the node even when
+    /// nothing is wired, for its live dot.
+    pub fn reports(self) -> &'static [&'static str] {
+        match self {
+            Self::Dynamics => &["level", "reduction"],
+            _ => &[],
+        }
+    }
+}
+
 pub trait NodeType: Send + Sync + 'static {
     fn info(&self) -> &NodeInfo;
 
@@ -61,6 +110,21 @@ pub trait NodeType: Send + Sync + 'static {
         false
     }
 
+    /// The config keys that reach a running instance through
+    /// [`retune`](Self::retune) instead of by rebuilding it. A change to only
+    /// these leaves the instance in place, with its state (a sounding note,
+    /// say), so a drag that sets one many times a second doesn't cut it off.
+    fn live_config(&self) -> &[&'static str] {
+        &[]
+    }
+
+    /// Tells the node's running instances the node's config, whenever a plan
+    /// is built that keeps them. Runs off the audio thread. A node type that
+    /// lists [`live_config`](Self::live_config) keys passes them on here, to
+    /// the instances it has made for `node`; an instance made later reads its
+    /// config when it is instantiated.
+    fn retune(&self, _node: NodeId, _config: &Config) {}
+
     /// True if the node does something besides turn its inputs into its
     /// outputs, such as reporting to the UI, reading a device or hosting a
     /// plugin, so the engine runs it even when nothing downstream of it is
@@ -68,6 +132,13 @@ pub trait NodeType: Send + Sync + 'static {
     /// an Output node (see "Silence skipping" in the architecture notes).
     fn always_runs(&self) -> bool {
         false
+    }
+
+    /// What the node editor draws in the node's body. Anything that reports
+    /// to the UI (see [`always_runs`](Self::always_runs)) says here what it
+    /// reports.
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::None
     }
 
     /// The config a newly added node of this type starts with, for settings
@@ -108,6 +179,16 @@ pub trait NodeType: Send + Sync + 'static {
         Ok(())
     }
 
+    /// The sample a sample output port carries, as the text its receiver is
+    /// given: a content hash, optionally followed by `:start:end`, a window
+    /// as fractions of the sample (see `noodle_nodes::SampleRef`). The
+    /// compiler writes it into the config of the node wired to the port, under
+    /// the receiving sample input's key, in place of whatever was set there.
+    /// `None` is no sample, which the receiver treats as silence.
+    fn sample_output(&self, _config: &Config, _key: &str) -> Option<String> {
+        None
+    }
+
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.
@@ -145,6 +226,11 @@ pub struct Layout {
     /// Spectral (FFT frame) ports; see [`crate::spectral`](crate::Analyzer).
     pub spectral_inputs: Vec<Port>,
     pub spectral_outputs: Vec<Port>,
+    /// Sample ports carry a reference to a sample, not signal. The compiler
+    /// resolves them before scheduling (see [`NodeType::sample_output`]), so
+    /// they have no buffers and no place in the shapes.
+    pub sample_inputs: Vec<Port>,
+    pub sample_outputs: Vec<Port>,
     pub mode: Mode,
     /// False if identical inputs can give different output, e.g. unseeded
     /// randomness. Nondeterministic nodes are never cached.
@@ -249,6 +335,8 @@ impl Layout {
             event_outputs: Vec::new(),
             spectral_inputs: Vec::new(),
             spectral_outputs: Vec::new(),
+            sample_inputs: Vec::new(),
+            sample_outputs: Vec::new(),
             mode,
             deterministic: true,
         }
@@ -323,6 +411,24 @@ impl Layout {
         name: impl Into<Cow<'static, str>>,
     ) -> Self {
         self.spectral_outputs.push(port(key, name));
+        self
+    }
+
+    pub fn sample_input(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.sample_inputs.push(port(key, name));
+        self
+    }
+
+    pub fn sample_output(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.sample_outputs.push(port(key, name));
         self
     }
 

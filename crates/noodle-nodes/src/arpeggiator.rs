@@ -314,7 +314,9 @@ impl Node for ArpNode {
                             me.release(note, hold);
                             me.stop_if_empty(out, event.time as usize, hold);
                         }
-                        EventKind::Midi(_) => push(out, event.time as usize, event.kind),
+                        EventKind::Midi(_) | EventKind::Channel { .. } => {
+                            push(out, event.time as usize, event.kind)
+                        }
                         EventKind::Expression { .. } => {}
                     }
                 }

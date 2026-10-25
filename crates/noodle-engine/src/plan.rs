@@ -13,14 +13,15 @@ use std::time::Instant;
 
 use noodle_core::NodeId;
 
-use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID};
+use crate::ChannelLayout;
+use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_routing};
 use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
     BlockWriter, Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource,
     Instance, Io, MAX_LATENCY, Node, NodeError, ParamInfo, ParamKind, ParamWriter, Phase, Problem,
-    Schedule, Settings, Setup, Shape, SignalIn, SignalOut, SpectralBuf, SpectralIn, SpectralOut,
-    Telemetry,
+    Schedule, Settings, Setup, Shape, SignalIn, SignalOut, SpectralBuf, SpectralDelay, SpectralIn,
+    SpectralOut, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -134,6 +135,7 @@ pub(crate) struct Plan {
     /// ((slot, line) in the previous plan, (slot, line) in this one) for
     /// delay lines whose contents carry over.
     delay_migrations: Vec<((usize, usize), (usize, usize))>,
+    spectral_delay_migrations: Vec<((usize, usize), (usize, usize))>,
     max_frames: usize,
     /// What each step waits for, to run the plan on several threads.
     graph: StepGraph,
@@ -180,6 +182,12 @@ struct PlanNode {
     /// number of channels. `None` for an Output node that plays nothing
     /// (its device isn't open) and for every other node.
     bus: Option<(usize, usize)>,
+    /// For an Output node whose signal has more channels than its bus and
+    /// both name a layout: the downmix (rows are bus channels, columns signal
+    /// channels), so a 5.1 mix on a stereo bus folds down instead of losing
+    /// its centre and rears. For one with a `routing`: that routing as a
+    /// matrix of the same shape.
+    downmix: Option<Box<[f32]>>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
     /// Reports the signals wired into parameters, by input index.
@@ -199,6 +207,8 @@ struct PlanNode {
     /// Delay lines that hold some of this node's inputs back to line up with
     /// the slowest one, run just before the node.
     delays: Vec<DelayLine>,
+    /// The same for spectral inputs.
+    spectral_delays: Vec<SpectralDelayLine>,
     scratch: Scratch,
     /// Where an Output node mixes to when the plan runs on several threads:
     /// `frames * channels` samples, added to the device output at the end
@@ -274,7 +284,9 @@ pub(crate) fn build(
     // At most one Output node plays on each named device: the lowest ID.
     let mut device_owners: HashMap<String, NodeId> = HashMap::new();
     for scheduled in &schedule.nodes {
-        if scheduled.node_type.info().id == OUTPUT_ID {
+        if scheduled.node_type.info().id == OUTPUT_ID
+            && !crate::monitor::is_monitor_config(&scheduled.config)
+        {
             let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let owner = device_owners.entry(device).or_insert(scheduled.id);
             *owner = (*owner).min(scheduled.id);
@@ -326,9 +338,15 @@ pub(crate) fn build(
         if scheduled.phase == Phase::Output {
             output_halves.insert(id, slot);
         }
+        // The live keys are left out, so a change to them keeps the instance.
+        let live = scheduled.node_type.live_config();
+        let mut key_config = scheduled.config.clone();
+        for key in live {
+            key_config.remove(key);
+        }
         let key = NodeKey {
             type_id: scheduled.node_type.info().id,
-            config: scheduled.config.clone(),
+            config: key_config,
             input_shapes: scheduled.input_shapes.clone(),
             output_shapes: scheduled.output_shapes.clone(),
         };
@@ -342,6 +360,9 @@ pub(crate) fn build(
         let (instance, carries_over) = match carried {
             None if input_half => (None, false),
             Some(&(_, old_slot)) => {
+                if !live.is_empty() {
+                    scheduled.node_type.retune(id, &scheduled.config);
+                }
                 migrations.push((old_slot, slot));
                 carried_ids.insert(id);
                 (None, true)
@@ -557,7 +578,10 @@ pub(crate) fn build(
         if is_output {
             let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let device = device.as_str();
-            if !device.is_empty() && device_owners.get(device) != Some(&id) {
+            if !device.is_empty()
+                && device_owners.get(device) != Some(&id)
+                && !crate::monitor::is_monitor_config(&scheduled.config)
+            {
                 diagnostics.push(Diagnostic::node(
                     id,
                     Problem::DeviceTaken(device.to_owned()),
@@ -588,12 +612,7 @@ pub(crate) fn build(
                 })
                 .collect(),
             outputs: scheduled.outputs.clone(),
-            spectral_inputs: scheduled
-                .spectral_inputs
-                .iter()
-                .flatten()
-                .copied()
-                .collect(),
+            spectral_inputs: scheduled.spectral_inputs.clone(),
             spectral_outputs: scheduled.spectral_outputs.clone(),
             consumes: scheduled.phase != Phase::Input,
         });
@@ -609,6 +628,28 @@ pub(crate) fn build(
             spectral_outputs,
             is_output,
             bus,
+            downmix: bus.and_then(|(_, count)| {
+                let signal = scheduled.input_shapes.first()?.channels;
+                // A routing the node sets decides where every channel goes.
+                if is_output
+                    && let Ok(routes) = parse_routing(&OUTPUT_ROUTING.get_text(&scheduled.config))
+                    && !routes.is_empty()
+                {
+                    let mut matrix = vec![0.0; count * signal];
+                    for (source, dest) in routes.iter().enumerate().take(signal) {
+                        if let Some(dest) = dest.filter(|&d| d < count) {
+                            matrix[dest * signal + source] = 1.0;
+                        }
+                    }
+                    return Some(matrix.into_boxed_slice());
+                }
+                if signal <= count {
+                    return None;
+                }
+                let from = ChannelLayout::from_channels(signal)?;
+                let to = ChannelLayout::from_channels(count)?;
+                Some(ChannelLayout::convert_matrix(from, to).into_boxed_slice())
+            }),
             is_input: scheduled.node_type.info().id == INPUT_ID,
             probes,
             cpu: telemetry
@@ -620,6 +661,7 @@ pub(crate) fn build(
             constants: vec![None; scheduled.inputs.len()],
             sources: Vec::new(),
             delays: Vec::new(),
+            spectral_delays: Vec::new(),
             scratch,
             bus_out: match bus {
                 Some(_) => vec![0.0; max_frames * channels].into_boxed_slice(),
@@ -627,12 +669,13 @@ pub(crate) fn build(
             },
         });
     }
-    let spectral_lanes = schedule.spectral_lanes;
-    let delay_migrations = compensate(
+    let mut spectral_lanes = schedule.spectral_lanes;
+    let (delay_migrations, spectral_delay_migrations) = compensate(
         &mut nodes,
         &slot_info,
         &mut offsets_in,
         &mut pool_len,
+        &mut spectral_lanes,
         max_frames,
         previous,
         &mut info,
@@ -679,6 +722,7 @@ pub(crate) fn build(
         migrations,
         value_migrations,
         delay_migrations,
+        spectral_delay_migrations,
         max_frames,
         graph,
         loops: nodes_have_loops,
@@ -818,6 +862,11 @@ impl Plan {
         for &((old_slot, old_line), (slot, line)) in &self.delay_migrations {
             self.nodes[slot].delays[line].continue_from(&mut old.nodes[old_slot].delays[old_line]);
         }
+        for &((old_slot, old_line), (slot, line)) in &self.spectral_delay_migrations {
+            self.nodes[slot].spectral_delays[line]
+                .line
+                .continue_from(&mut old.nodes[old_slot].spectral_delays[old_line].line);
+        }
     }
 
     /// Clears every node's internal state, for when the transport jumps.
@@ -828,6 +877,9 @@ impl Plan {
             }
             for delay in &mut node.delays {
                 delay.clear();
+            }
+            for delay in &mut node.spectral_delays {
+                delay.line.clear();
             }
         }
     }
@@ -909,6 +961,9 @@ impl Plan {
                 }
                 for delay in &mut node.delays {
                     delay.clear();
+                }
+                for delay in &mut node.spectral_delays {
+                    delay.line.clear();
                 }
             }
             self.was_live[node] = live;
@@ -1112,6 +1167,11 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         // private to the delay line.
         unsafe { delay.run(pool, silent, frames, max_frames) };
     }
+    for delay in &mut node.spectral_delays {
+        // SAFETY: as above, for the spectral buffers: the source holds this
+        // block's frames, and the destination is private to the line.
+        unsafe { delay.run(spectral, frames) };
+    }
     for input in &node.inputs {
         if let Input::Offset(k) = *input {
             let offset = unsafe { &mut *offsets.add(k) };
@@ -1218,7 +1278,10 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         if fresh {
             out.fill(0.0);
         }
-        mix_into(inputs[0], out, channels, first, count);
+        match &node.downmix {
+            Some(matrix) => mix_matrix_into(inputs[0], matrix, out, channels, first, count),
+            None => mix_into(inputs[0], out, channels, first, count),
+        }
     }
 
     node.scratch.inputs = recycle(inputs);
@@ -1275,13 +1338,18 @@ fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput]) -> StepGraph {
         );
         let event_reads: Vec<usize> = node.event_inputs.iter().flatten().copied().collect();
         let event_writes = &node.event_outputs;
-        let spectral_reads: Vec<usize> = node
+        let mut spectral_reads: Vec<usize> = node
             .spectral_inputs
             .iter()
             .flatten()
             .map(|&(b, _)| b)
             .collect();
-        let spectral_writes: Vec<usize> = node.spectral_outputs.iter().map(|&(b, _)| b).collect();
+        let mut spectral_writes: Vec<usize> =
+            node.spectral_outputs.iter().map(|&(b, _)| b).collect();
+        for delay in &node.spectral_delays {
+            spectral_reads.push(delay.source);
+            spectral_writes.push(delay.dest);
+        }
         for (tracks, reads, writes) in [
             (&mut pool, &reads[..], &writes[..]),
             (&mut events, &event_reads[..], &event_writes[..]),
@@ -1411,13 +1479,15 @@ pub(crate) fn read_input(input: Interleaved<'_>, signal: &mut SignalOut<'_>) {
 }
 
 /// Adds a signal into the `count` channels of interleaved output that start
-/// at `first`. A mono signal goes to every channel; otherwise channel n goes
+/// at `first`. A mono signal goes to the first two channels (left and right,
+/// not the centre, LFE and rears of a surround bus); otherwise channel n goes
 /// to channel n, and voices are summed.
 fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize, first: usize, count: usize) {
     let shape = signal.shape();
     for channel in 0..count {
         let source = match shape.channels {
-            1 => 0,
+            1 if channel < 2 => 0,
+            1 => continue,
             n if channel < n => channel,
             _ => continue,
         };
@@ -1425,6 +1495,32 @@ fn mix_into(signal: SignalIn<'_>, output: &mut [f32], channels: usize, first: us
             let lane = signal.lane(voice, source);
             for (frame, sample) in lane.iter().enumerate() {
                 output[frame * channels + first + channel] += sample;
+            }
+        }
+    }
+}
+
+/// Adds a signal into the `count` channels of interleaved output that start at
+/// `first`, through `matrix` (one row per output channel, one column per
+/// signal channel), summing voices.
+fn mix_matrix_into(
+    signal: SignalIn<'_>,
+    matrix: &[f32],
+    output: &mut [f32],
+    channels: usize,
+    first: usize,
+    count: usize,
+) {
+    let shape = signal.shape();
+    for (channel, gains) in matrix.chunks(shape.channels).take(count).enumerate() {
+        for (source, &gain) in gains.iter().enumerate() {
+            if gain == 0.0 {
+                continue;
+            }
+            for voice in 0..shape.voices {
+                for (frame, sample) in signal.lane(voice, source).iter().enumerate() {
+                    output[frame * channels + first + channel] += sample * gain;
+                }
             }
         }
     }
@@ -1642,6 +1738,15 @@ impl ValueInput {
     }
 }
 
+/// Spectral delay lines are recorded in `PlanInfo::delays` under this plus
+/// their port, which no signal input index reaches, so a change in a node's
+/// signal inputs can't make a signal line take over a spectral one's state.
+const SPECTRAL_KEY_BASE: usize = 1 << 20;
+
+/// `(old slot, old line)` to `(slot, line)` for delay lines that take over
+/// the contents of the previous plan's.
+type DelayMigrations = Vec<((usize, usize), (usize, usize))>;
+
 /// What delay compensation needs to know about a scheduled step.
 struct SlotInfo {
     id: NodeId,
@@ -1652,9 +1757,9 @@ struct SlotInfo {
     /// The buffer behind each signal input, if connected.
     inputs: Vec<Option<crate::BufferId>>,
     outputs: Vec<crate::BufferId>,
-    /// The connected spectral inputs and the spectral outputs. Lateness
-    /// travels along them, but they get no delay lines.
-    spectral_inputs: Vec<crate::SpectralBufferId>,
+    /// The buffer behind each spectral input, if connected, and the spectral
+    /// outputs. Lateness travels along them.
+    spectral_inputs: Vec<Option<crate::SpectralBufferId>>,
     spectral_outputs: Vec<crate::SpectralBufferId>,
     /// False for the input half of a split node, which only reads its loop
     /// input and makes no output.
@@ -1671,24 +1776,26 @@ struct SlotInfo {
 ///
 /// Lateness also travels along spectral wires, so a pair of Analyze and
 /// Synthesize after a latent plugin, or two pairs in a row, is as late as the
-/// whole path. Spectral wires get no delay lines: where spectral paths of
-/// different lateness meet (a Cross), the later one is not waited for, and
-/// the earlier one's frames are used as they come.
+/// whole path. Spectral inputs are lined up like signal inputs, with a
+/// [`SpectralDelay`] that holds the frames of the earlier paths back, so a
+/// Cross of paths of different lateness sees frames of the same moment.
 ///
 /// Events aren't compensated, and a loop's own input never is (the loop
 /// already carries its delay). Returns the delay lines that can take over
 /// the contents of the previous plan's.
+#[allow(clippy::too_many_arguments)]
 fn compensate(
     nodes: &mut [PlanNode],
     slots: &[SlotInfo],
     offsets: &mut [OffsetInput],
     pool_len: &mut usize,
+    spectral_lanes: &mut Vec<usize>,
     max_frames: usize,
     previous: Option<&PlanInfo>,
     info: &mut PlanInfo,
-) -> Vec<((usize, usize), (usize, usize))> {
+) -> (DelayMigrations, DelayMigrations) {
     if slots.iter().all(|s| s.latency == 0) {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     // How late each buffer is, as of the step being looked at; buffers are
     // reused, so this follows the schedule.
@@ -1696,6 +1803,7 @@ fn compensate(
     let mut spectral_arrival: HashMap<crate::SpectralBufferId, u32> = HashMap::new();
     // The latest a step's spectral inputs arrive.
     let mut spectral_slowest: Vec<u32> = Vec::with_capacity(slots.len());
+    let mut spectral_input_arrival: Vec<Vec<Option<u32>>> = Vec::with_capacity(slots.len());
     let mut input_arrival: Vec<Vec<Option<u32>>> = Vec::with_capacity(slots.len());
     let mut sink_latency = 0;
     for slot in slots {
@@ -1704,12 +1812,18 @@ fn compensate(
             .iter()
             .map(|b| b.map(|b| arrival.get(&b).copied().unwrap_or(0)))
             .collect();
-        let spectral = slot
+        let spectral_arrivals: Vec<Option<u32>> = slot
             .spectral_inputs
             .iter()
-            .map(|b| spectral_arrival.get(b).copied().unwrap_or(0))
+            .map(|b| b.map(|b| spectral_arrival.get(&b).copied().unwrap_or(0)))
+            .collect();
+        let spectral = spectral_arrivals
+            .iter()
+            .flatten()
+            .copied()
             .max()
             .unwrap_or(0);
+        spectral_input_arrival.push(spectral_arrivals);
         spectral_slowest.push(spectral);
         let slowest = arrivals
             .iter()
@@ -1734,6 +1848,7 @@ fn compensate(
     info.output_latency = sink_latency;
 
     let mut migrations = Vec::new();
+    let mut spectral_migrations = Vec::new();
     for (index, (slot, arrivals)) in slots.iter().zip(&input_arrival).enumerate() {
         if !slot.consumes {
             continue;
@@ -1749,6 +1864,37 @@ fn compensate(
                 .unwrap_or(0)
                 .max(spectral_slowest[index])
         };
+        // Spectral inputs have their own lines, keyed after the signal inputs.
+        for (port, arrived) in spectral_input_arrival[index].iter().enumerate() {
+            let Some(arrived) = *arrived else { continue };
+            if arrived >= target {
+                continue;
+            }
+            let Some((source, shape)) = nodes[index].spectral_inputs[port] else {
+                continue;
+            };
+            let delay = (target - arrived) as usize;
+            let dest = spectral_lanes.len();
+            spectral_lanes.push(shape.lanes());
+            let line_index = nodes[index].spectral_delays.len();
+            nodes[index].spectral_delays.push(SpectralDelayLine {
+                source,
+                dest,
+                line: SpectralDelay::new(shape.lanes(), delay, max_frames),
+                shape,
+            });
+            nodes[index].spectral_inputs[port] = Some((dest, shape));
+            let key = (slot.id, SPECTRAL_KEY_BASE + port);
+            info.delays.push((key, (index, line_index, delay as u32)));
+            let old = previous.and_then(|p| {
+                p.delays
+                    .iter()
+                    .find(|(k, (_, _, d))| *k == key && *d == delay as u32)
+            });
+            if let Some((_, (old_slot, old_line, _))) = old {
+                spectral_migrations.push(((*old_slot, *old_line), (index, line_index)));
+            }
+        }
         for (input, arrived) in arrivals.iter().enumerate() {
             let Some(arrived) = *arrived else { continue };
             if arrived >= target {
@@ -1792,7 +1938,31 @@ fn compensate(
         .iter()
         .map(|&(key, (_, _, delay))| (key, delay))
         .collect();
-    migrations
+    (migrations, spectral_migrations)
+}
+
+/// Holds one spectral input back, reading its source at the consumer's step
+/// and writing a private buffer appended to the plan's spectral buffers.
+struct SpectralDelayLine {
+    source: usize,
+    dest: usize,
+    shape: Shape,
+    line: SpectralDelay,
+}
+
+impl SpectralDelayLine {
+    /// SAFETY: `spectral` must be the plan's, nothing may write the source
+    /// buffer meanwhile, and nothing else may touch the destination.
+    unsafe fn run(&mut self, spectral: *mut SpectralBuf, frames: usize) {
+        // SAFETY: the two buffers are different entries of the plan's list.
+        let (input, mut out) = unsafe {
+            (
+                (*spectral.add(self.source)).as_in(self.shape),
+                SpectralOut::new(&mut *spectral.add(self.dest), self.shape),
+            )
+        };
+        self.line.process(&input, frames, &mut out);
+    }
 }
 
 /// Holds one signal back by a fixed number of samples.

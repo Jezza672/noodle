@@ -4,12 +4,13 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod carry;
 mod clip_editor;
 mod clip_panel;
+mod clipboard;
 mod devices;
 mod editor;
 mod export_dialog;
-mod filewatch;
 mod freezing;
 mod keyboard;
 mod metronome;
@@ -21,9 +22,11 @@ mod pill_buttons;
 mod plugin_browser;
 mod prefs;
 mod properties;
+mod sample_drop;
 mod sample_view;
 mod session;
 mod snap;
+mod stems_dialog;
 mod tempo;
 #[cfg(test)]
 mod testkit;
@@ -73,6 +76,7 @@ fn main() -> ExitCode {
         let prefs = prefs::init(path);
         session.set_audio_config(prefs.audio);
         session.set_sandbox_plugins(prefs.sandbox_plugins);
+        session.set_monitor_device(&prefs.monitor_device);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.
@@ -89,6 +93,10 @@ fn main() -> ExitCode {
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
             let _ = UI.set(cc.egui_ctx.clone());
+            let ctx = cc.egui_ctx.clone();
+            noodle_engine::wake::set_waker(Some(std::sync::Arc::new(move || {
+                ctx.request_repaint()
+            })));
             Ok(Box::new(App::new(session)))
         }),
     );

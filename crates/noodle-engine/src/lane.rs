@@ -1,7 +1,7 @@
 //! Per-lane processing: the easy way to write a node whose lanes are
 //! independent.
 
-use crate::{Context, Io, Node, Setup, Shape, SignalIn, SignalOut};
+use crate::{Context, Event, EventsOut, Io, Node, Setup, Shape, SignalIn, SignalOut};
 
 /// A node whose (voice, channel) lanes are processed independently:
 /// oscillators, filters, gains, envelopes and most effects.
@@ -12,6 +12,14 @@ use crate::{Context, Io, Node, Setup, Shape, SignalIn, SignalOut};
 pub trait LaneKernel: Send + 'static {
     /// Per-lane state, such as oscillator phase or filter memory.
     type State: Default + Send + 'static;
+
+    /// Called once before the lanes of each block, with the node's event
+    /// inputs. For a kernel whose lanes all read the same events.
+    fn begin_block(&mut self, _ctx: &Context, _events: &[&[Event]]) {}
+
+    /// Called when the node is reset (a jump of the transport), after the
+    /// lanes' states have been. For memory the kernel keeps for its lanes.
+    fn reset(&mut self) {}
 
     /// Same real-time rules as [`Node::process`].
     fn process_lane(&mut self, state: &mut Self::State, ctx: &Context, lane: Lane<'_, '_>);
@@ -74,6 +82,9 @@ pub struct Lane<'a, 'b> {
     pub channel: usize,
     pub inputs: LaneInputs<'a>,
     pub outputs: LaneOutputs<'a, 'b>,
+    /// The node's event outputs. The same for every lane, so a kernel that
+    /// writes to them picks one lane to do it.
+    pub event_outputs: &'a mut [EventsOut<'b>],
 }
 
 #[derive(Clone, Copy)]
@@ -148,6 +159,7 @@ impl<K: LaneKernel> Node for PerLane<K> {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let channels = self.shape.channels;
         let skip = self.kernel.skip();
+        self.kernel.begin_block(ctx, io.event_inputs);
         for (lane, state) in self.states.iter_mut().enumerate() {
             let (voice, channel) = (lane / channels, lane % channels);
             let silent = |port: &usize| io.inputs[*port].is_silent(voice, channel);
@@ -176,6 +188,7 @@ impl<K: LaneKernel> Node for PerLane<K> {
                     voice,
                     channel,
                 },
+                event_outputs: &mut *io.event_outputs,
             };
             self.kernel.process_lane(state, ctx, lane);
         }
@@ -183,6 +196,7 @@ impl<K: LaneKernel> Node for PerLane<K> {
 
     fn reset(&mut self) {
         self.states.fill_with(K::State::default);
+        self.kernel.reset();
     }
 
     fn silenced_by(&self, constants: &[Option<f32>]) -> bool {

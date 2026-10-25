@@ -332,6 +332,32 @@ fn box_select_takes_the_nodes_it_touches() {
 }
 
 #[test]
+fn the_monitor_button_monitors_without_selecting() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let out = add(&mut h, Node::new(OUTPUT_ID).at(250.0, 0.0));
+    h.run();
+    let button = |h: &H, node| {
+        let geom = scene(h).node(node).unwrap().clone();
+        let at = super::monitor_button(h.state().session.project(), &geom);
+        at.map(|rect| screen(h, rect.center()))
+    };
+    // An Output has no audio out to listen to.
+    assert!(button(&h, out).is_none());
+    let p = button(&h, sine).expect("a sine has a monitor button");
+    click(&mut h, p, Modifiers::NONE);
+    assert_eq!(h.state().session.monitored(), [sine]);
+    assert!(h.state().editor.selected.is_empty());
+    click(&mut h, p, Modifiers::NONE);
+    assert!(h.state().session.monitored().is_empty());
+    click(&mut h, p, Modifiers::COMMAND);
+    assert_eq!(
+        h.state().session.monitor_mode(),
+        crate::session::MonitorMode::Exclusive
+    );
+}
+
+#[test]
 fn clicking_selects_and_shift_toggles() {
     let mut h = rig();
     let a = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
@@ -646,6 +672,34 @@ fn shift_a_searches_and_adds_at_the_pointer() {
     assert_eq!(node.position, Position { x: 120.0, y: 80.0 });
     assert_eq!(h.state().editor.active, Some(id));
     assert!(h.state().editor.search.is_none());
+}
+
+#[test]
+fn an_automation_node_added_in_the_graph_gets_its_track_in_one_undo_step() {
+    let mut h = rig();
+    let before = h.state().session.project().graph().nodes().count();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("automation".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let project = h.state().session.project();
+    let node = project
+        .graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+        .map(|(id, _)| id)
+        .expect("an Automation node was added");
+    let value = noodle_core::Endpoint::new(node, noodle_nodes::AUTOMATION_VALUE);
+    assert!(
+        project.lane_for(&value).is_some(),
+        "and a lane on its value"
+    );
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(project.graph().nodes().count(), before);
+    assert_eq!(project.lanes().count(), 0);
 }
 
 /// A node type whose new nodes start with a setting, as plugin nodes with
@@ -1726,7 +1780,7 @@ fn deleting_a_group_removes_what_is_inside_and_undo_brings_it_back() {
 /// Tab still enters and leaves a group with another widget in the window.
 /// This does not prove the `tab: true` focus filter: kittest delivers Tab to
 /// the editor either way, so that line needs a manual Tab press in the real
-/// window (see ARCHITECTURE.md).
+/// window (see docs/architecture/ui.md).
 #[test]
 fn tab_enters_and_leaves_a_group_with_another_widget_present() {
     let mut h = rig_with(true);
@@ -2009,6 +2063,10 @@ fn copy_and_paste_put_the_nodes_and_the_wires_between_them_at_the_pointer() {
     h.state_mut().editor.select_only([sine, gain]);
     let at = empty_space(&h);
     clipboard_event(&mut h, at, Event::Copy);
+    // The nodes are on the system clipboard under Noodle's own type, and not
+    // under the clips'.
+    assert!(crate::clipboard::holds("application/x.noodle.node"));
+    assert!(!crate::clipboard::holds("application/x.noodle.clip"));
     // Copying changes nothing.
     assert_eq!(
         h.state().session.project().graph().connections().count(),
@@ -2921,4 +2979,29 @@ fn a_group_with_no_template_has_no_update_item() {
     h.run();
     h.get_by_label("Save group to library...");
     assert!(h.query_by_label_contains("Update from").is_none());
+}
+
+#[test]
+fn the_scene_is_built_again_only_when_the_project_changes() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine"));
+    h.run();
+    let cached = |h: &H| h.state().editor.scene_cache.as_ref().unwrap().1.clone();
+    let first = cached(&h);
+    h.run();
+    h.run();
+    assert!(
+        std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        "no edit, so the same scene"
+    );
+    h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+        node: sine,
+        key: "frequency".into(),
+        value: Some(880.0),
+    })]);
+    h.run();
+    assert!(
+        !std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        "an edit builds it again"
+    );
 }

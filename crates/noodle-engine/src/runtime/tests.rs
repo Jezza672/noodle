@@ -552,6 +552,86 @@ fn plays_the_output_node_in_blocks() {
 }
 
 #[test]
+fn a_mono_signal_on_a_surround_bus_plays_left_and_right_only() {
+    let mut rig = Rig::new(Settings {
+        channels: 6,
+        ..SETTINGS
+    });
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.update();
+    assert_eq!(
+        rig.render(2),
+        [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+            1.0, 1.0, 0.0, 0.0, 0.0, 0.0
+        ]
+    );
+}
+
+#[test]
+fn an_output_routing_sends_each_channel_where_it_says() {
+    let mut rig = Rig::new(Settings {
+        channels: 6,
+        ..SETTINGS
+    });
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("5".into())),
+    });
+    assert!(rig.update().is_empty());
+    // The one channel plays on channel 5 and nowhere else, not on L and R.
+    assert_eq!(
+        rig.render(2),
+        [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0
+        ]
+    );
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("-".into())),
+    });
+    assert!(rig.update().is_empty());
+    rig.render(2 * FADE);
+    assert!(rig.render(2).iter().all(|&x| x == 0.0), "routed nowhere");
+    // A channel past the bus plays nowhere either.
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("7".into())),
+    });
+    assert!(rig.update().is_empty());
+    rig.render(2 * FADE);
+    assert!(rig.render(2).iter().all(|&x| x == 0.0));
+}
+
+#[test]
+fn a_routing_that_is_not_channel_numbers_is_a_problem() {
+    let mut rig = Rig::new(SETTINGS);
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    rig.edit(Command::SetConfig {
+        node: output,
+        key: "routing".into(),
+        value: Some(Value::Text("left right".into())),
+    });
+    assert!(!rig.update().is_empty());
+    assert_eq!(
+        crate::parse_routing("2, 1 - off 0").unwrap(),
+        [Some(1), Some(0), None, None, None]
+    );
+    assert!(crate::parse_routing("1 x").is_err());
+}
+
+#[test]
 fn unchanged_nodes_keep_their_state_across_updates() {
     let (mut rig, _) = counter_rig();
     assert_eq!(rig.render(4), [0.0, 1.0, 2.0, 3.0]);
@@ -1387,6 +1467,91 @@ fn output_nodes_play_on_the_bus_of_their_device() {
     );
 }
 
+/// `two_bus_rig` with a monitor on the first counter (which feeds the main
+/// bus), played on `device`.
+fn monitored_rig(device: &str, exclusive: bool, silence_others: bool) -> Rig {
+    let (mut rig, _, _) = two_bus_rig();
+    let counter = NodeId(1);
+    rig.controller.set_monitor(Some(Monitor {
+        nodes: vec![counter],
+        device: device.into(),
+        exclusive,
+        silence_others,
+    }));
+    assert!(rig.update().is_empty());
+    rig
+}
+
+#[test]
+fn a_monitor_sums_into_the_device_other_outputs_play_on() {
+    // "other" carries the second counter (100, 101, ...) plus the monitored
+    // first (0, 1, ...); the main bus is untouched.
+    let mut rig = monitored_rig("other", false, false);
+    assert_eq!(
+        rig.render(3),
+        [0.0, 0.0, 100.0, 1.0, 1.0, 102.0, 2.0, 2.0, 104.0]
+    );
+}
+
+#[test]
+fn an_exclusive_monitor_silences_the_other_outputs_on_its_device() {
+    let mut rig = monitored_rig("other", true, false);
+    assert_eq!(rig.render(3), [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+}
+
+#[test]
+fn an_exclusive_monitor_on_a_unique_device_acts_like_a_plain_one() {
+    let render = |exclusive| {
+        let mut rig = Rig::new(Settings {
+            channels: 4,
+            ..SETTINGS
+        });
+        let bus = |device: &str, channels| Bus {
+            device: device.into(),
+            channels,
+        };
+        rig.controller
+            .set_buses(vec![bus("main", 2), bus("other", 1), bus("monitor", 1)])
+            .unwrap();
+        let counter = rig.add("counter");
+        let out = rig.add(OUTPUT_ID);
+        rig.wire(counter, out, "in");
+        rig.controller.set_monitor(Some(Monitor {
+            nodes: vec![counter],
+            device: "monitor".into(),
+            exclusive,
+            silence_others: false,
+        }));
+        assert!(rig.update().is_empty());
+        rig.render(3)
+    };
+    assert_eq!(render(true), render(false));
+    assert_eq!(
+        render(true),
+        [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 2.0, 2.0, 0.0, 2.0]
+    );
+}
+
+#[test]
+fn silencing_the_others_leaves_only_the_monitor() {
+    let mut rig = monitored_rig("other", false, true);
+    assert_eq!(rig.render(3), [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0]);
+}
+
+#[test]
+fn stopping_the_monitor_restores_the_mix() {
+    let mut rig = monitored_rig("other", true, true);
+    rig.controller.set_monitor(None);
+    assert!(rig.update().is_empty());
+    // Let the fade after the plan change pass. The second counter stood
+    // still while its Output was silenced.
+    rig.render(12);
+    assert_eq!(
+        rig.render(3),
+        [12.0, 12.0, 107.0, 13.0, 13.0, 108.0, 14.0, 14.0, 109.0]
+    );
+}
+
 #[test]
 fn naming_the_main_device_plays_on_the_main_bus() {
     let (mut rig, main, _) = two_bus_rig();
@@ -1653,4 +1818,69 @@ fn a_node_feeding_a_node_that_is_off_stops_until_it_is_on_again() {
     rig.controller.set_param(times, "level", 1.0);
     assert_eq!(rig.render(4), [1.0; 4]);
     assert!(runs.load(Ordering::Relaxed) > on);
+}
+
+mod monitor_in_groups {
+    use super::*;
+    use crate::monitor::{Monitor, apply, is_monitor_config};
+    use noodle_core::group::{MUTE, control_key, group_nodes};
+    use noodle_core::{Connection, Endpoint, History, Node, NodeId};
+    use std::collections::BTreeSet;
+
+    /// A sine folded into a group, and the output node holding the group's
+    /// port.
+    fn grouped_counter() -> (Project, History, NodeId, NodeId, NodeId) {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let sine = project.new_node_id();
+        let add = Command::AddNode {
+            id: sine,
+            node: Node::new("counter"),
+        };
+        history.apply(&mut project, add).unwrap();
+        // Something downstream, so the group gets an output port.
+        let out = project.new_node_id();
+        let add = Command::AddNode {
+            id: out,
+            node: Node::new(OUTPUT_ID),
+        };
+        history.apply(&mut project, add).unwrap();
+        let wire = Command::Connect(Connection {
+            from: Endpoint::new(sine, "out"),
+            to: Endpoint::new(out, "in"),
+        });
+        history.apply(&mut project, wire).unwrap();
+        let (group, command) =
+            group_nodes(&project.clone(), &[sine], || project.new_node_id()).unwrap();
+        history.apply(&mut project, command).unwrap();
+        let output = project.graph().group_ports(group).outputs[0].node;
+        (project, history, sine, group, output)
+    }
+
+    fn taps(project: &Project, node: NodeId) -> usize {
+        let graph = project.graph();
+        let flat = crate::flatten::flatten(graph);
+        let monitor = Monitor {
+            nodes: vec![node],
+            ..Monitor::default()
+        };
+        let registry = registry(&Arc::new(AtomicUsize::new(0)));
+        apply(graph, &flat, &BTreeSet::new(), &registry, &monitor, None)
+            .nodes()
+            .filter(|(_, n)| is_monitor_config(&n.config))
+            .count()
+    }
+
+    #[test]
+    fn a_node_inside_a_muted_group_is_not_tapped() {
+        let (mut project, mut history, sine, group, output) = grouped_counter();
+        assert_eq!((taps(&project, sine), taps(&project, group)), (1, 1));
+        let mute = Command::SetParam {
+            node: output,
+            key: control_key(MUTE, 1),
+            value: Some(1.0),
+        };
+        history.apply(&mut project, mute).unwrap();
+        assert_eq!((taps(&project, sine), taps(&project, group)), (0, 1));
+    }
 }

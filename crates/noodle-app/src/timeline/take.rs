@@ -5,7 +5,7 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, vec2};
 use noodle_core::NodeId;
 use noodle_io::Peak;
 
-use super::{Axis, colors, midi_preview, waveform};
+use super::{Axis, midi_preview, waveform};
 use crate::session::TakePreview;
 
 /// Draws `take` on a lane `top` pixels down, if it records on that track.
@@ -14,6 +14,7 @@ pub fn draw(
     painter: &Painter,
     axis: Axis<'_>,
     top: f32,
+    height: f32,
     take: &TakePreview,
     track: NodeId,
     waveform_of: impl FnOnce(usize) -> Vec<Peak>,
@@ -22,7 +23,7 @@ pub fn draw(
         Pos2::new(axis.x(take.start), top + 3.0),
         Pos2::new(
             axis.x(take.end).max(axis.x(take.start) + 2.0),
-            top + colors::LANE_HEIGHT - 3.0,
+            top + height - 3.0,
         ),
     );
     let visible = full.intersect(painter.clip_rect());

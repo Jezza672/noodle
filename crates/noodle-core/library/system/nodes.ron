@@ -537,6 +537,46 @@
         ),
     )),
     NodePreset((
+        name: "Quarter Notes",
+        slug: "tempo-quarter-notes",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eighth Notes",
+        slug: "tempo-eighth-notes",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Dotted Eighths",
+        slug: "tempo-dotted-eighths",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 14.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bar",
+        slug: "tempo-bar",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Compressor",
         slug: "dynamics-compressor",
         node_type: "noodle.effect.dynamics",
@@ -1384,6 +1424,107 @@
         values: (
             params: {
                 "pan": 0.7,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Front Centre",
+        slug: "surround-pan-front-centre",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Behind",
+        slug: "surround-pan-behind",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 180.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Left Surround",
+        slug: "surround-pan-left-surround",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": -110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Right Surround",
+        slug: "surround-pan-right-surround",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Everywhere",
+        slug: "surround-pan-everywhere",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "lfe": -12.0,
+                "spread": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Mono",
+        slug: "convert-layout-to-mono",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Mono",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Stereo",
+        slug: "convert-layout-to-stereo",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Stereo",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Quad",
+        slug: "convert-layout-to-quad",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Quad",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To 5.1",
+        slug: "convert-layout-to-5-1",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "5.1",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To 7.1",
+        slug: "convert-layout-to-7-1",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "7.1",
             },
         ),
     )),

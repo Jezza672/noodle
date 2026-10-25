@@ -20,9 +20,8 @@ struct Rig {
 
 type H = Harness<'static, Rig>;
 
-/// One track, with its group's output node.
-/// A harness over one new track, and its track input, which holds the
-/// track's gain and mute.
+/// A harness over one new track, and the track's group output node, which has
+/// a gain to automate. The track input holds the mute (see [`input`]).
 fn rig() -> (H, NodeId) {
     let mut session = Session::new(Nodes::all());
     let (_, command) = create_track(None, Position { x: 0.0, y: 0.0 }, || session.new_node_id());
@@ -31,7 +30,7 @@ fn rig() -> (H, NodeId) {
         .project()
         .graph()
         .nodes()
-        .find(|(_, node)| node.type_id == TRACK_INPUT)
+        .find(|(_, node)| node.type_id == GROUP_OUTPUT)
         .map(|(id, _)| id)
         .unwrap();
     let mut h = Harness::builder()
@@ -49,6 +48,18 @@ fn rig() -> (H, NodeId) {
         );
     h.run();
     (h, output)
+}
+
+/// The track input of the rig's track, whose mute is what the header sets.
+fn input(h: &H) -> NodeId {
+    h.state()
+        .session
+        .project()
+        .graph()
+        .nodes()
+        .find(|(_, node)| node.type_id == TRACK_INPUT)
+        .map(|(id, _)| id)
+        .unwrap()
 }
 
 fn point(beat: i64, value: f32, curve: Curve) -> AutomationPoint {
@@ -102,7 +113,7 @@ fn spot(h: &H, id: LaneId, beat: f32, along: f32) -> Pos2 {
 }
 
 fn gain(output: NodeId) -> Endpoint {
-    Endpoint::new(output, group::TRACK_GAIN)
+    Endpoint::new(output, "gain.1")
 }
 
 #[test]
@@ -123,30 +134,34 @@ fn a_lane_is_drawn_under_its_track_with_its_points() {
 }
 
 #[test]
-fn the_track_header_adds_a_gain_lane_that_changes_nothing() {
-    let (mut h, output) = rig();
-    // Set the gain first, so the new lane has something to match.
+fn the_track_header_adds_a_mute_lane_that_changes_nothing() {
+    let (mut h, _) = rig();
+    let input = input(&h);
+    let mute = Endpoint::new(input, group::TRACK_MUTE);
+    // Mute it first, so the new lane has something to match.
     h.state_mut().session.edit([Edit::Apply(Command::SetParam {
-        node: output,
-        key: group::TRACK_GAIN.into(),
-        value: Some(-6.0),
+        node: input,
+        key: group::TRACK_MUTE.into(),
+        value: Some(1.0),
     })]);
     h.run();
     h.get_by_label("~").click();
     h.run();
-    h.get_by_label("Automate Gain").click();
+    // There is no track gain to automate; a clip's gain has its own points.
+    assert!(h.query_by_label("Automate Gain").is_none());
+    h.get_by_label("Automate Mute").click();
     h.run();
     let (id, added) = {
         let project = h.state().session.project();
-        let (id, lane) = project.lane_for(&gain(output)).unwrap();
+        let (id, lane) = project.lane_for(&mute).unwrap();
         (id, lane.clone())
     };
     assert_eq!(
         added.points,
         vec![AutomationPoint {
             tick: Tick(0),
-            value: -6.0,
-            curve: Curve::Linear
+            value: 1.0,
+            curve: Curve::Hold
         }]
     );
     assert!(h.state().timeline.automation().row(id).is_some());
@@ -155,16 +170,11 @@ fn the_track_header_adds_a_gain_lane_that_changes_nothing() {
     h.run();
     assert!(lane(&h, id).is_none());
     // A lane that already exists can't be added twice.
-    let id = add_lane(&mut h, gain(output), vec![point(0, 0.0, Curve::Linear)]);
+    let id = add_lane(&mut h, mute, vec![point(0, 0.0, Curve::Hold)]);
     h.get_by_label("~").click();
     h.run();
     assert!(
-        h.get_by_label("Automate Gain")
-            .accesskit_node()
-            .is_disabled()
-    );
-    assert!(
-        !h.get_by_label("Automate Mute")
+        h.get_by_label("Automate Mute")
             .accesskit_node()
             .is_disabled()
     );
@@ -191,10 +201,11 @@ fn clicking_an_empty_spot_adds_a_point_on_the_nearest_beat() {
 
 #[test]
 fn a_mute_lane_holds_and_snaps_to_off_or_on() {
-    let (mut h, output) = rig();
+    let (mut h, _) = rig();
+    let track = input(&h);
     let id = add_lane(
         &mut h,
-        Endpoint::new(output, group::TRACK_MUTE),
+        Endpoint::new(track, group::TRACK_MUTE),
         vec![point(0, 0.0, Curve::Hold)],
     );
     let at = spot(&h, id, 1.0, 0.8);
@@ -388,16 +399,12 @@ fn delete_removes_only_the_point_when_a_clip_was_selected_before() {
 
 #[test]
 fn a_track_control_with_a_lane_is_greyed_and_says_so() {
-    let (mut h, output) = rig();
+    let (mut h, _) = rig();
     assert!(!h.get_by_label("M").accesskit_node().is_disabled());
-    add_lane(&mut h, gain(output), vec![point(0, 0.0, Curve::Linear)]);
-    // Gain is automated now, mute isn't.
-    assert!(!h.get_by_label("M").accesskit_node().is_disabled());
-    let slider = h.get_by_role(egui::accesskit::Role::Slider);
-    assert!(slider.accesskit_node().is_disabled());
+    let id = input(&h);
     add_lane(
         &mut h,
-        Endpoint::new(output, group::TRACK_MUTE),
+        Endpoint::new(id, group::TRACK_MUTE),
         vec![point(0, 0.0, Curve::Hold)],
     );
     assert!(h.get_by_label("M").accesskit_node().is_disabled());
@@ -501,7 +508,11 @@ fn an_automation_node_in_a_tracks_group_shows_under_that_track() {
     );
     let project = h.state().session.project();
     let tracks = super::tracks(project);
-    let rows = super::automation::Rows::new(project, &tracks);
+    let rows = super::automation::Rows::new(
+        project,
+        &tracks,
+        &vec![super::colors::LANE_HEIGHT; tracks.len()],
+    );
     assert_eq!(rows.lanes(0), [id]);
     assert!(rows.free_lanes().is_empty());
     assert_eq!(
@@ -539,4 +550,21 @@ fn click(h: &mut H, pos: Pos2) {
 
 fn drag(h: &mut H, path: &[Pos2]) {
     testkit::drag(h, Modifiers::NONE, path);
+}
+
+#[test]
+fn removing_a_free_tracks_lane_removes_its_node_too() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (node, id) = free_lane(&h);
+    h.get_by_label("×").click();
+    h.run();
+    assert!(lane(&h, id).is_none());
+    assert!(h.state().session.project().graph().node(node).is_none());
+    // One undo brings both back.
+    h.state_mut().session.undo();
+    h.run();
+    assert!(h.state().session.project().graph().node(node).is_some());
+    assert!(lane(&h, id).is_some());
 }

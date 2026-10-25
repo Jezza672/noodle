@@ -324,10 +324,8 @@ fn the_tempo_of_a_full_mix_is_found_from_its_bass() {
                 "{label}: {tempo}"
             );
             // The renders start on a bar, so the beat falls on the start. A
-            // bass line that is on the off-beat as often as on it (funk) can
-            // put it half a beat off: the onsets themselves favour the
-            // off-beat there (more of them, and louder), so no rule over
-            // onsets can tell, and no more than half a beat is asked.
+            // bass line on the off-beat as often as on it (funk) ties the
+            // onsets; the harmony, which changes on the bar, breaks the tie.
             // Glass-ambient's beat is its bells, which come a little late
             // on purpose and fade in over a pad, so its onsets sit further off.
             let limit = if song.name == "glass-ambient" {
@@ -336,11 +334,7 @@ fn the_tempo_of_a_full_mix_is_found_from_its_bass() {
                 0.05
             };
             let phase = analysis.grid.unwrap().phase;
-            let off = phase.abs().min((phase.abs() - 0.5).abs());
-            assert!(off < limit, "{label}: phase {phase}");
-            if song.name != "funk-engine" {
-                assert!(phase.abs() < limit, "{label}: phase {phase}");
-            }
+            assert!(phase.abs() < limit, "{label}: phase {phase}");
         }
     }
 }

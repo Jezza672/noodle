@@ -30,10 +30,13 @@ pub struct Rig {
     pub problems: Vec<ClipProblem>,
     /// The loop in samples, handed to the node with every block.
     pub looping: Option<(u64, u64)>,
+    /// The track's mute input, as a parameter would give it.
+    muted: bool,
     /// The node waits for the hub (see [`ClipFeeds::blocking`]), so there is
     /// nothing to wait out.
     blocking: bool,
     out: SignalBuffer,
+    mute_in: SignalBuffer,
     midi: Vec<noodle_engine::Event>,
 }
 
@@ -107,8 +110,10 @@ impl Rig {
             dir,
             problems: Vec::new(),
             looping: None,
+            muted: false,
             blocking: false,
             out: SignalBuffer::new(Shape::STEREO, BLOCK),
+            mute_in: SignalBuffer::new(Shape::MONO, BLOCK),
             midi: Vec::with_capacity(16),
         }
     }
@@ -197,6 +202,15 @@ impl Rig {
         self.update();
     }
 
+    /// Mutes or unmutes the track from the next block, by the mute input.
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        self.mute_in
+            .as_out(BLOCK)
+            .lane_mut(0, 0)
+            .fill(f32::from(u8::from(muted)));
+    }
+
     /// Waits for the hub to hand the node the schedule from the last update.
     /// The hub is a background thread, so a loaded CI machine (macOS runners
     /// in particular) can take much longer than a quiet one.
@@ -240,10 +254,11 @@ impl Rig {
         };
         let mut outputs = [self.out.as_out(frames)];
         let mut events = [EventsOut::new(&mut self.midi)];
+        let muted = [self.mute_in.as_in(frames)];
         self.node.process(
             &ctx,
             Io {
-                inputs: &[],
+                inputs: if self.muted { &muted } else { &[] },
                 outputs: &mut outputs,
                 event_inputs: &[],
                 event_outputs: &mut events,

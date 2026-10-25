@@ -78,9 +78,13 @@ struct Session {
 
 impl Session {
     fn new() -> Self {
+        Self::with_settings(SETTINGS)
+    }
+
+    fn with_settings(settings: Settings) -> Self {
         let mut registry = Registry::with_builtins();
         let telemetry = noodle_nodes::register_all(&mut registry);
-        let (mut controller, processor) = engine(SETTINGS).unwrap();
+        let (mut controller, processor) = engine(settings).unwrap();
         // So wired parameters are probed, as in the app.
         controller.set_telemetry(&telemetry);
         Self {
@@ -587,10 +591,10 @@ fn muting_a_track_whose_stage_is_in_place_does_not_dip_the_others() {
     // The stage already exists, so muting is a parameter change.
     let lowest = lowest_peak_across(true, mute);
     assert!(lowest > 0.3, "the playing track dipped to {lowest}");
-    // The first touch adds the stage, which fades the whole output once. This
-    // is what the test above guards against, and shows it can fail.
+    // A group's output keeps its stage for the meter, so even the first
+    // touch is a parameter change.
     let first = lowest_peak_across(false, mute);
-    assert!(first < 0.2, "expected the structural fade, lowest {first}");
+    assert!(first > 0.3, "the playing track dipped to {first}");
 }
 
 #[test]
@@ -1237,6 +1241,61 @@ fn delay_compensation_never_allocates_through_plan_swaps_and_seeks() {
 }
 
 #[test]
+fn spectral_delay_lines_never_allocate_through_plan_swaps_and_seeks() {
+    // saw -> analyze -> cross.carrier, and saw -> latent -> analyze ->
+    // cross.modulator: the carrier's frames are held back to meet the
+    // modulator's. The latent path is cut and restored, so the delay comes
+    // and goes with each plan, and the transport jumps.
+    let mut s = Session::new();
+    s.registry.register(Latent);
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let latent = s.add(Node::new("test.latent"));
+    let a = s.add(Node::new("noodle.spectral.analyze"));
+    let b = s.add(Node::new("noodle.spectral.analyze"));
+    let cross = s.add(Node::new("noodle.spectral.cross"));
+    let synth = s.add(Node::new("noodle.spectral.synthesize"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", a, "in");
+    s.wire(saw, "out", latent, "in");
+    s.wire(latent, "out", b, "in");
+    s.wire(a, "spectrum", cross, "carrier");
+    s.wire(b, "spectrum", cross, "modulator");
+    s.wire(cross, "out", synth, "spectrum");
+    s.wire(synth, "out", output, "in");
+    s.update();
+    assert_eq!(s.controller.output_latency(), 100 + 2047);
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 300 * SETTINGS.channels];
+    for round in 0..8 {
+        let cut = round % 2 == 1;
+        if cut {
+            s.edit(Command::Disconnect {
+                input: Endpoint::new(b, "in"),
+            });
+        } else if round > 0 {
+            s.wire(latent, "out", b, "in");
+        }
+        s.update();
+        assert_eq!(
+            s.controller.output_latency(),
+            if cut { 2047 } else { 100 + 2047 }
+        );
+        if round % 3 == 2 {
+            transport.seek(noodle_core::Tick(1_000));
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+}
+
+#[test]
 fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     use noodle_io::Audio;
     use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
@@ -1246,16 +1305,38 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     // from the first sampler) -> EQ -> reverb -> output.
     let mut s = Session::new();
     let store = SampleStore::new();
-    s.registry.replace(Sampler::new(&store));
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
     let hash = store.insert(&Audio {
         samples: (0..4800).map(|i| (i as f32 * 0.07).sin() * 0.5).collect(),
         channels: 1,
         sample_rate: 48_000,
     });
+    // Both play a gain envelope and a warp with a marker, at the project's
+    // tempo.
+    let mut warp = noodle_core::ClipWarp::at_tempo(90.0);
+    for (seconds, beat) in [(0.02, 0.05), (0.05, 0.2)] {
+        warp.set_marker(noodle_core::WarpMarker { seconds, beat });
+    }
+    let envelope = noodle_core::gain_points_to_text(&[
+        noodle_core::GainPoint {
+            tick: noodle_core::Tick(100_000),
+            db: -12.0,
+        },
+        noodle_core::GainPoint {
+            tick: noodle_core::Tick(700_000),
+            db: 3.0,
+        },
+    ]);
     let sampler = |s: &mut Session| {
         s.add(
             Node::new("noodle.instrument.sampler")
-                .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash.clone())))
+                .with_config(
+                    Config::new()
+                        .with(SAMPLE_KEY, Value::Text(hash.clone()))
+                        .with(noodle_nodes::GAIN_ENV_KEY, Value::Text(envelope.clone()))
+                        .with(noodle_nodes::WARP_KEY, Value::Text(warp.to_text())),
+                )
                 .with_param("mode", 1.0)
                 .with_param("loop", 1.0)
                 .with_param("loop_start", 0.2)
@@ -1349,6 +1430,89 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
 }
 
 #[test]
+fn a_sampler_plays_a_stretched_warp_and_takes_live_edits_without_allocating() {
+    use noodle_io::Audio;
+    use noodle_nodes::{GAIN_ENV_KEY, SAMPLE_KEY, SampleStore, Sampler, WARP_KEY};
+
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let hash = store.insert(&Audio {
+        samples: (0..48_000).map(|i| (i as f32 * 0.07).sin() * 0.5).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let warp = |beats: f64| {
+        let mut warp = noodle_core::ClipWarp::at_tempo(90.0);
+        warp.mode = noodle_core::WarpMode::Grain;
+        warp.set_marker(noodle_core::WarpMarker {
+            seconds: 0.5,
+            beat: beats,
+        });
+        warp.to_text()
+    };
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let sampler = s.add(
+        Node::new("noodle.instrument.sampler")
+            .with_config(
+                Config::new()
+                    .with(SAMPLE_KEY, Value::Text(hash))
+                    .with(WARP_KEY, Value::Text(warp(1.0))),
+            )
+            .with_param("mode", 1.0)
+            .with_param("loop", 1.0)
+            .with_param("loop_start", 0.2)
+            .with_param("loop_end", 0.8),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", sampler, "in");
+    s.wire(sampler, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut play = |s: &mut Session, rounds: usize| {
+        for round in 0..rounds {
+            s.controller.maintain();
+            let violations = realtime(|| s.processor.process(&mut out));
+            assert_eq!(violations, 0, "allocated in round {round}");
+            assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+        }
+        out.iter().fold(0.0f32, |peak, x| peak.max(x.abs()))
+    };
+    // Let the worker settle and stretch, then hear the note through it.
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        play(&mut s, 1);
+    }
+    assert!(play(&mut s, 4) > 0.01, "the stretched sampler is silent");
+
+    // Edits to the envelope and the warp, which the Sampler takes while it
+    // sounds: the held note keeps going through every one.
+    for round in 0..12 {
+        let (key, value) = if round % 2 == 0 {
+            (GAIN_ENV_KEY, "0:-6,500000:-12".to_owned())
+        } else {
+            (WARP_KEY, warp(1.0 + round as f64 * 0.1))
+        };
+        s.edit(Command::SetConfig {
+            node: sampler,
+            key: key.into(),
+            value: Some(Value::Text(value)),
+        });
+        s.update();
+        let mut peak = 0.0f32;
+        for _ in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            peak = peak.max(play(&mut s, 1));
+        }
+        assert!(peak > 0.001, "the note was cut by edit {round}");
+    }
+}
+
+#[test]
 fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
     use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
 
@@ -1365,6 +1529,7 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
             .with_param("shape", 3.0),
     );
     let compare = s.add(Node::new("noodle.mod.comparator"));
+    let tempo = s.add(Node::new("noodle.mod.tempo"));
     let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 4.0));
     let multi = s.add(Node::new("noodle.mod.envelope").with_param("length", 0.1));
     let single = s.add(
@@ -1385,6 +1550,7 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
     let follower = s.add(Node::new("noodle.mod.follower"));
     let automation = s.add(Node::new("noodle.mod.automation"));
     let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(tempo, "rate", lfo, "rate");
     s.wire(lfo, "out", compare, "in");
     s.wire(compare, "out", multi, "trigger");
     s.wire(clock, "out", single, "trigger");
@@ -1472,4 +1638,298 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
     assert!(heard, "the patch never sounded");
+}
+
+#[test]
+fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
+    // A 5.1 engine: sine -> surround pan (azimuth swept by an LFO) -> split
+    // -> merge -> output, the same pan through a downmix to stereo and an
+    // upmix back, and a second pan whose layout alternates 5.1 and 7.1 (a
+    // 6 -> 8 -> 6 channel rebuild) into a Convert Layout back to 5.1.
+    let surround = Settings {
+        channels: 6,
+        ..SETTINGS
+    };
+    let mut s = Session::with_settings(surround);
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let lfo = s.add(Node::new("noodle.mod.lfo").with_param("rate", 9.0));
+    let pan = s.add(
+        Node::new("noodle.util.surround_pan")
+            .with_param("azimuth", 150.0)
+            .with_param("lfe", 0.0),
+    );
+    let split = s.add(
+        Node::new("noodle.util.split_channels")
+            .with_config(Config::new().with("channels", Value::Int(6))),
+    );
+    let merge = s.add(
+        Node::new("noodle.util.merge_channels")
+            .with_config(Config::new().with("channels", Value::Int(6))),
+    );
+    let down = s.add(Node::new("noodle.util.convert_layout"));
+    let up = s.add(
+        Node::new("noodle.util.convert_layout")
+            .with_config(Config::new().with("layout", Value::Text("5.1".to_owned()))),
+    );
+    let swept = s.add(Node::new("noodle.util.surround_pan"));
+    let to_51 = s.add(
+        Node::new("noodle.util.convert_layout")
+            .with_config(Config::new().with("layout", Value::Text("5.1".to_owned()))),
+    );
+    let mix = s
+        .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(3))));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", swept, "in");
+    s.wire(swept, "out", to_51, "in");
+    s.wire(to_51, "out", mix, "in3");
+    s.wire(sine, "out", pan, "in");
+    s.wire(lfo, "out", pan, "azimuth");
+    s.wire(pan, "out", split, "in");
+    for i in 1..=6 {
+        s.wire(split, &format!("ch{i}"), merge, &format!("in{i}"));
+    }
+    s.wire(merge, "out", mix, "in1");
+    s.wire(pan, "out", down, "in");
+    s.wire(down, "out", up, "in");
+    s.wire(up, "out", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * surround.channels];
+    let mut channels_heard = [false; 6];
+    for round in 0..8 {
+        // Between blocks, on this thread: the second pan changes shape,
+        // 6 channels then 8 then 6 again.
+        s.edit(Command::SetConfig {
+            node: swept,
+            key: "layout".to_owned(),
+            value: Some(Value::Text(
+                if round % 2 == 1 { "7.1" } else { "5.1" }.to_owned(),
+            )),
+        });
+        s.update();
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                for frame in out.chunks(surround.channels) {
+                    for (heard, x) in channels_heard.iter_mut().zip(frame) {
+                        *heard |= x.abs() > 1e-3;
+                    }
+                }
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
+    assert!(
+        channels_heard.iter().all(|&h| h),
+        "every channel should have sounded: {channels_heard:?}"
+    );
+}
+
+#[test]
+fn midi_control_never_allocates_on_midi1_and_midi2_controllers() {
+    use noodle_io::Midi2;
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (input, control, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    for (id, node) in [
+        (input, Node::new(noodle_nodes::MIDI_IN_ID)),
+        (
+            control,
+            Node::new(noodle_nodes::MIDI_CONTROL_ID).with_param("control", 128.0),
+        ),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    for (from, port, to, to_port) in [
+        (input, "out", control, "in"),
+        (control, "out", output, "in"),
+    ] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    for round in 0..16u32 {
+        library.midi.send([0xB0, 1, (round * 8) as u8 & 127]);
+        library.midi.send([0xB0, 33, 5]);
+        library.midi.send([0xE0, 0, (round * 4) as u8 & 127]);
+        for message in [
+            Midi2::PitchBend {
+                channel: 0,
+                value: round.wrapping_mul(0x1000_0000),
+            },
+            Midi2::Controller {
+                channel: 1,
+                index: 74,
+                value: round.wrapping_mul(0x0F00_0000),
+            },
+        ] {
+            library.midi.send_packet(message.encode(0));
+        }
+        // A jump resets the nodes.
+        transport.seek(noodle_core::Tick(480 * i64::from(round)));
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}
+
+#[test]
+fn a_script_with_loops_arrays_and_events_never_allocates() {
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (input, script, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    // Keeps the last 16 keys in an array, sums them in a loop, and passes
+    // every note on a fifth up.
+    let text = "events in notes\nevents out played\noutput out\narray keys[16]\nstate at\n\
+                if notes_on { keys[at] = notes_key; at = (at + 1) % len(keys); note_on(played, notes_key + 7, notes_velocity) }\n\
+                if notes_off { note_off(played, notes_key + 7) }\n\
+                let sum = 0\nfor i in 0 to len(keys) { sum += keys[i] }\nout = sum / 2000";
+    for (id, node) in [
+        (input, Node::new(noodle_nodes::MIDI_IN_ID)),
+        (script, Node::new("noodle.util.script")),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    Command::SetConfig {
+        node: script,
+        key: "script".to_owned(),
+        value: Some(Value::Text(text.to_owned())),
+    }
+    .apply(&mut project)
+    .unwrap();
+    for (from, port, to, to_port) in [
+        (input, "out", script, "notes"),
+        (script, "out", output, "in"),
+    ] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16u8 {
+        // A chord, then releases, then a jump that resets the node.
+        for key in 0..4 {
+            library.midi.send([0x90, 40 + round + key, 100]);
+        }
+        library.midi.send([0x80, 40 + round, 0]);
+        if round % 4 == 3 {
+            transport.seek(noodle_core::Tick(480 * i64::from(round)));
+        }
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(heard, "the keys were summed");
+}
+
+#[test]
+fn a_groups_output_reports_its_level() {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", output, "in");
+    let (group, command) =
+        noodle_core::group::group_nodes(&s.project.clone(), &[sine], || s.project.new_node_id())
+            .unwrap();
+    s.edit(command);
+    let port = s.project.graph().group_ports(group).outputs[0].stage();
+    s.update();
+    let mut out = vec![0.0; 4800 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    let levels = s.telemetry.meter_reader().meter(port).expect("metered");
+    assert!(levels[0].peak > 0.5, "{levels:?}");
+}
+
+#[test]
+fn ringing_a_doorbell_never_touches_the_allocator() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Asleep, so the ring has to wake it; and awake, so it doesn't.
+    let bell = Arc::new(noodle_engine::Doorbell::new());
+    let sleeper = {
+        let bell = bell.clone();
+        std::thread::spawn(move || bell.wait(Some(Duration::from_secs(10))))
+    };
+    while !bell.is_sleeping() {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "woke a sleeper"
+    );
+    assert!(sleeper.join().unwrap());
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "rang an awake worker"
+    );
+}
+
+#[test]
+fn ringing_a_pool_task_never_touches_the_allocator() {
+    use noodle_io::pool::{self, Next, Task};
+
+    struct Idle;
+    impl Task for Idle {
+        fn run(&mut self) -> Next {
+            Next::Idle
+        }
+    }
+    let handle = pool::io().spawn(Idle);
+    let bell = handle.bell();
+    // Let the first run finish, so the pool's threads are asleep.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for _ in 0..50 {
+        assert_eq!(realtime(|| bell.ring()), 0);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(handle.runs() > 1);
 }

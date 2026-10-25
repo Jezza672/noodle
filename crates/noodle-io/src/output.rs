@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, I24, Sample, SampleFormat, SizedSample, StreamConfig};
-use noodle_engine::{Bus, Controller, Processor, Settings, TransportControl, engine_with_workers};
+use noodle_engine::{
+    Bus, Controller, Doorbell, Processor, Settings, TransportControl, engine_with_workers,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
@@ -156,12 +158,14 @@ impl DeviceWriter {
         for &(channels, device_rate) in extras {
             let capacity = (EXTRA_QUEUE_SECONDS * rate) as usize * channels;
             let (queue, tapped) = RingBuffer::new(capacity);
+            let bell = (device_rate != rate as u32).then(|| Arc::new(Doorbell::new()));
             self.taps.push(Tap {
                 queue,
                 first,
                 channels,
                 overruns: Arc::clone(glitches),
                 full: false,
+                bell: bell.clone(),
             });
             first += channels;
             let made = if device_rate == rate as u32 {
@@ -174,6 +178,7 @@ impl DeviceWriter {
                 let capacity = (EXTRA_QUEUE_SECONDS * device_rate as f32) as usize * channels;
                 let (converted, playing) = RingBuffer::new(capacity);
                 RateConverter::spawn(
+                    bell.expect("made for a converter"),
                     tapped,
                     converted,
                     channels,
@@ -189,8 +194,8 @@ impl DeviceWriter {
                         glitches,
                     );
                     output.ratio = f64::from(device_rate) / f64::from(rate);
-                    // The converter works a chunk at a time and wakes on a
-                    // timer, so what it makes arrives later than the tap's
+                    // The converter works a chunk at a time, and has to be
+                    // woken, so what it makes arrives later than the tap's
                     // block does.
                     output.slack = (f64::from(device_rate)
                         * (CONVERTER_CHUNK as f64 / f64::from(rate) + CONVERTER_WAKE.as_secs_f64()))
@@ -281,6 +286,8 @@ struct Tap {
     /// The last block didn't fit. A queue that stays full (a device that has
     /// stopped) counts once, not on every block.
     full: bool,
+    /// Rung when a block is queued, if a converter is waiting for it.
+    bell: Option<Arc<Doorbell>>,
 }
 
 impl Tap {
@@ -306,6 +313,9 @@ impl Tap {
                 .chunks(engine_channels)
                 .flat_map(|frame| frame[first..first + channels].iter().copied()),
         );
+        if let Some(bell) = &self.bell {
+            bell.ring();
+        }
     }
 }
 
@@ -438,7 +448,7 @@ impl ExtraOutput {
 
 /// How many frames the converter takes in at a time, at the engine's rate.
 const CONVERTER_CHUNK: usize = 128;
-/// How often the converter looks for audio when there was none.
+/// What a converter's wake-up is allowed to add to its delay.
 const CONVERTER_WAKE: Duration = Duration::from_millis(1);
 
 /// Converts an extra device's audio from the engine's rate to the device's, on
@@ -447,11 +457,13 @@ const CONVERTER_WAKE: Duration = Duration::from_millis(1);
 /// Dropping it stops the thread.
 struct RateConverter {
     stop: Arc<AtomicBool>,
+    bell: Arc<Doorbell>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl RateConverter {
     fn spawn(
+        bell: Arc<Doorbell>,
         mut input: Consumer<f32>,
         mut output: Producer<f32>,
         channels: usize,
@@ -466,6 +478,7 @@ impl RateConverter {
             })?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
+        let waiting = Arc::clone(&bell);
         let thread = thread::Builder::new()
             .name("noodle-resample".into())
             .spawn(move || {
@@ -478,7 +491,9 @@ impl RateConverter {
                         if input.is_abandoned() {
                             break;
                         }
-                        thread::sleep(CONVERTER_WAKE);
+                        // Rung by the tap when it queues a block. If the tap
+                        // is gone it sleeps on, until the output is dropped.
+                        waiting.wait(None);
                         continue;
                     }
                     let take = frames.min(block.len() / channels) * channels;
@@ -512,6 +527,7 @@ impl RateConverter {
             })?;
         Ok(Self {
             stop,
+            bell,
             thread: Some(thread),
         })
     }
@@ -524,6 +540,7 @@ impl Drop for RateConverter {
         // so this can run there; that only happens when the stream is torn
         // down, never while audio is playing.
         self.stop.store(true, Ordering::Relaxed);
+        self.bell.ring();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -667,11 +684,18 @@ const VIRTUAL_BUFFER: u32 = 256;
 const VIRTUAL_RATE: u32 = 48_000;
 /// The smallest and largest buffer the virtual output takes, in frames.
 pub(crate) const VIRTUAL_BUFFERS: (u32, u32) = (16, 8192);
-/// The channels of the virtual output.
+/// The channels of the virtual output unless the settings say.
 const VIRTUAL_CHANNELS: usize = 2;
+/// The most channels the virtual output takes.
+pub(crate) const VIRTUAL_MAX_CHANNELS: usize = 8;
 
 impl VirtualClock {
-    fn start(mut writer: Box<DeviceWriter>, frames: u32, rate: u32) -> std::io::Result<Self> {
+    fn start(
+        mut writer: Box<DeviceWriter>,
+        frames: u32,
+        rate: u32,
+        channels: usize,
+    ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let tap = Arc::new(Mutex::<Option<Vec<f32>>>::new(None));
@@ -680,7 +704,7 @@ impl VirtualClock {
         let thread = std::thread::Builder::new()
             .name("noodle virtual output".into())
             .spawn(move || {
-                let mut buffer = vec![0.0f32; frames as usize * VIRTUAL_CHANNELS];
+                let mut buffer = vec![0.0f32; frames as usize * channels];
                 let mut next = Instant::now();
                 while !flag.load(Ordering::Relaxed) {
                     writer.write(&mut buffer);
@@ -984,12 +1008,19 @@ fn open_playback(
             if rate == 0 {
                 return Err(AudioError::UnsupportedSampleRate(rate));
             }
+            let channels = choice.channels.map_or(VIRTUAL_CHANNELS, usize::from);
+            if !(1..=VIRTUAL_MAX_CHANNELS).contains(&channels) {
+                return Err(AudioError::UnsupportedChannels {
+                    wanted: channels as u16,
+                    max: VIRTUAL_MAX_CHANNELS as u16,
+                });
+            }
             (
                 host_id,
                 Target::Virtual { frames },
                 "Virtual (no sound)".to_owned(),
                 Some(VIRTUAL_OUTPUT.to_owned()),
-                VIRTUAL_CHANNELS,
+                channels,
                 rate,
             )
         } else {
@@ -1008,6 +1039,7 @@ fn open_playback(
                 device.default_output_config()?,
                 choice.sample_rate,
                 choice.buffer_size,
+                choice.channels,
             )?;
             let channels = usize::from(config.channels);
             let rate = config.sample_rate;
@@ -1179,13 +1211,13 @@ fn open_playback(
             stream.play()?;
             MainStream::Device(stream)
         }
-        Unstarted::Virtual(writer, frames) => {
-            MainStream::Virtual(VirtualClock::start(writer, frames, rate).map_err(|error| {
+        Unstarted::Virtual(writer, frames) => MainStream::Virtual(
+            VirtualClock::start(writer, frames, rate, main_channels).map_err(|error| {
                 AudioError::Virtual {
                     reason: error.to_string(),
                 }
-            })?)
-        }
+            })?,
+        ),
     };
     Ok((
         Playback {
@@ -1248,8 +1280,10 @@ fn open_extra(id: &str, rate: u32) -> Result<OpenedExtra, AudioError> {
     // The queue decouples the callbacks, so the device uses whatever buffer
     // size suits it.
     let default = device.default_output_config()?;
-    let Chosen { config, format } = match choose_config(&ranges, default, Some(rate), None) {
-        Err(AudioError::UnsupportedSampleRate(_)) => choose_config(&ranges, default, None, None)?,
+    let Chosen { config, format } = match choose_config(&ranges, default, Some(rate), None, None) {
+        Err(AudioError::UnsupportedSampleRate(_)) => {
+            choose_config(&ranges, default, None, None, None)?
+        }
         chosen => chosen?,
     };
     Ok(OpenedExtra {
@@ -1320,6 +1354,7 @@ fn open_input(
         Some(settings.sample_rate as u32),
         // The ring decouples the two callbacks, so the input can use
         // whatever buffer size suits it.
+        None,
         None,
     )?;
     let channels = usize::from(config.channels);
@@ -1984,15 +2019,56 @@ mod tests {
         let tap = playback.virtual_capture().expect("a virtual output");
         std::thread::sleep(Duration::from_millis(60));
         assert!(tap.take().is_empty(), "nothing is kept until asked");
+        // The window is timed rather than assumed: a loaded machine can keep
+        // this thread asleep well past 300 ms (macOS CI once took 480 ms),
+        // and the output plays on meanwhile.
+        let began = Instant::now();
         tap.start();
         std::thread::sleep(Duration::from_millis(300));
         let kept = tap.take();
-        // A whole number of stereo frames, and about 300 ms of them at the
-        // output's pace (not flat out, not stalled).
+        let window = began.elapsed().as_secs_f32();
+        // A whole number of stereo frames, and as many of them as the window
+        // holds at the output's pace: not flat out (it may catch up a few
+        // blocks it was late with, never more), not stalled.
         let rate = playback.settings().sample_rate;
         let seconds = kept.len() as f32 / 2.0 / rate;
         assert_eq!(kept.len() % 2, 0);
-        assert!(seconds > 0.15 && seconds < 0.45, "{seconds}");
+        assert!(
+            seconds > window * 0.5 && seconds < window + 0.1,
+            "{seconds} s kept in {window} s"
+        );
+    }
+
+    #[test]
+    fn the_virtual_output_can_have_more_channels() {
+        let config = AudioConfig {
+            channels: Some(6),
+            ..virtual_config()
+        };
+        let (playback, _controller) = play(&config, 128).unwrap();
+        assert_eq!(playback.settings().channels, 6);
+        let tap = playback.virtual_capture().unwrap();
+        tap.start();
+        std::thread::sleep(Duration::from_millis(100));
+        let kept = tap.take();
+        assert!(
+            !kept.is_empty() && kept.len() % 6 == 0,
+            "{} samples",
+            kept.len()
+        );
+        for channels in [0, 9] {
+            let config = AudioConfig {
+                channels: Some(channels),
+                ..virtual_config()
+            };
+            assert!(
+                matches!(
+                    play(&config, 128),
+                    Err(AudioError::UnsupportedChannels { .. })
+                ),
+                "{channels}"
+            );
+        }
     }
 
     #[test]

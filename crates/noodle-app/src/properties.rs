@@ -9,7 +9,7 @@ use egui::{RichText, Ui};
 use noodle_core::group::GROUP;
 use noodle_core::library::{SYSTEM, USER};
 use noodle_core::{Command, Endpoint, Node, NodeId};
-use noodle_engine::{InputKind, Location, NodeType, ParamReading};
+use noodle_engine::{InputKind, Location, NodeType, NodeView, ParamReading};
 
 use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
@@ -21,11 +21,15 @@ use crate::widgets::{
 /// the editor reads it once a frame.
 pub type LiveParams<'a> = &'a dyn Fn(NodeId, &str) -> Option<Live>;
 
-pub fn show(
+/// What a Spectrum node last measured, if it has.
+pub type Spectra<'a> = &'a dyn Fn(NodeId) -> Option<&'a crate::editor::SpectrumTrace>;
+
+pub fn show<'a>(
     ui: &mut Ui,
     session: &Session,
     active: Option<NodeId>,
     live: LiveParams<'_>,
+    spectra: Spectra<'a>,
 ) -> Vec<Edit> {
     let graph = session.project().graph();
     let mut edits = pending_scripts(ui, session, active);
@@ -53,6 +57,9 @@ pub fn show(
     problems(ui, session, id);
     presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
+    if node_type.is_some_and(|t| t.view(&node.config) == NodeView::Spectrum) {
+        spectrum_views(ui, session, spectra(id));
+    }
     match node_type {
         Some(node_type) => {
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
@@ -66,6 +73,29 @@ pub fn show(
         }
     }
     edits
+}
+
+/// A Spectrum node's curve and spectrogram at full width, with the frequency
+/// axis marked.
+fn spectrum_views(ui: &mut Ui, session: &Session, trace: Option<&crate::editor::SpectrumTrace>) {
+    if !session.engine_running() {
+        ui.weak("The engine is off, so there is nothing to measure.");
+    }
+    let width = ui.available_width();
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, 150.0), egui::Sense::hover());
+    crate::editor::draw_spectrum(&painter, response.rect, trace);
+    response.on_hover_text("Loudness by frequency (20 Hz to 20 kHz, log), 0 dB at the top. The thin line holds recent peaks.");
+    ui.label(
+        RichText::new("20 Hz  ·  100  ·  1 k  ·  10 k  ·  20 kHz")
+            .small()
+            .weak(),
+    );
+    let (response, painter) = ui.allocate_painter(egui::vec2(width, 100.0), egui::Sense::hover());
+    crate::editor::draw_spectrogram(&painter, response.rect, trace);
+    response.on_hover_text(
+        "Spectrogram: the last few seconds, newest on the right, low frequencies at the bottom.",
+    );
+    ui.add_space(4.0);
 }
 
 /// The Presets control: pick a preset that fits, save the values as a user
@@ -179,6 +209,15 @@ fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edi
     let Some(plugin) = session.plugin_of(id) else {
         return;
     };
+    if plugin.descriptor().format == noodle_plugins::PluginFormat::Au {
+        ui.label(
+            RichText::new(
+                "Audio Units have no editor window yet; set them through their parameters.",
+            )
+            .weak(),
+        );
+        return;
+    }
     let open = session.plugin_editor_open(id);
     let label = if open { "Close editor" } else { "Open editor" };
     if ui
@@ -291,10 +330,15 @@ fn sample_picker(
     node: &Node,
     edits: &mut Vec<Edit>,
 ) {
+    use noodle_nodes::{SAMPLE_INPUT_ID, SampleRef};
+    let sampler = node.type_id != SAMPLE_INPUT_ID;
+    let top = ui.cursor().top();
     let store = session.samples();
-    let hash = info.get_text(&node.config);
+    // A Sample node's option can name a window of the sample.
+    let reference = SampleRef::parse(&info.get_text(&node.config));
+    let hash = reference.hash.clone();
     ui.label(info.name);
-    let status = if hash.is_empty() {
+    let mut status = if hash.is_empty() {
         "No sample loaded".to_owned()
     } else if let Some(sample) = store.get(&hash) {
         format!(
@@ -309,8 +353,18 @@ fn sample_picker(
             &hash[..8.min(hash.len())]
         )
     };
+    if !reference.is_whole() {
+        status.push_str(&format!(
+            ", the part from {:.0}% to {:.0}%",
+            reference.start * 100.0,
+            reference.end * 100.0
+        ));
+    }
     ui.label(RichText::new(status).weak());
     crate::sample_view::preview(ui, session, id, 64.0);
+    if node.type_id == noodle_nodes::SAMPLER_ID {
+        crate::clip_panel::sampler_warp(ui, session, id, edits);
+    }
     let error_id = egui::Id::new((id, "sample_error"));
     if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
         ui.colored_label(crate::theme::MUTE, error);
@@ -327,14 +381,48 @@ fn sample_picker(
         match store.import(&path) {
             Ok(hash) => {
                 ui.data_mut(|d| d.remove_temp::<String>(error_id));
-                edits.push(Edit::Apply(Command::SetConfig {
-                    node: id,
-                    key: info.key.to_owned(),
-                    value: Some(noodle_core::Value::Text(hash)),
+                edits.push(Edit::Apply(if sampler {
+                    crate::sample_drop::choose(session, id, &hash)
+                } else {
+                    Command::SetConfig {
+                        node: id,
+                        key: info.key.to_owned(),
+                        value: Some(noodle_core::Value::Text(hash)),
+                    }
                 }));
             }
             Err(error) => {
                 ui.data_mut(|d| d.insert_temp(error_id, error.to_string()));
+            }
+        }
+    }
+    // A clip carried here from the timeline sets the sample.
+    let area = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+    let over = crate::carry::carried(ui.ctx())
+        .is_some_and(|(item, at)| matches!(item, crate::carry::Item::Clip(_)) && area.contains(at));
+    if over {
+        ui.painter().rect_stroke(
+            area,
+            4.0,
+            egui::Stroke::new(2.0, crate::theme::editor::SAMPLE_SOCKET),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if let Some(drop) = crate::carry::drop_in(ui.ctx(), area)
+        && let crate::carry::Item::Clip(clip) = drop.item
+    {
+        crate::carry::take_drop(ui.ctx());
+        match crate::sample_drop::from_clip(session, clip) {
+            Ok(dropped) if sampler => {
+                edits.push(Edit::Apply(crate::sample_drop::onto_sampler(id, &dropped)));
+            }
+            Ok(dropped) => edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: info.key.to_owned(),
+                value: Some(noodle_core::Value::Text(dropped.reference.to_text())),
+            })),
+            Err(error) => {
+                ui.data_mut(|d| d.insert_temp(error_id, error));
             }
         }
     }
@@ -356,6 +444,12 @@ fn config(
     ui.label(RichText::new("Settings").strong());
     for info in settings {
         // Chosen in the outputs view, which knows what devices there are.
+        if node_type.info().id == noodle_engine::OUTPUT_ID
+            && info.key == noodle_engine::OUTPUT_ROUTING_KEY
+        {
+            routing_editor(ui, session, id, info, node, edits);
+            continue;
+        }
         if node_type.info().id == noodle_engine::OUTPUT_ID
             && info.key == noodle_engine::OUTPUT_DEVICE_KEY
         {
@@ -417,11 +511,30 @@ fn config(
             }
             continue;
         }
+        // Edited in the sample editor and the Warp section above.
+        if node_type.info().id == noodle_nodes::SAMPLER_ID
+            && matches!(
+                info.key,
+                noodle_nodes::GAIN_ENV_KEY | noodle_nodes::WARP_KEY
+            )
+        {
+            continue;
+        }
+        if info.key == noodle_nodes::LAYOUT_KEY
+            && let Some(default) = noodle_nodes::default_layout(node_type.info().id)
+        {
+            layout_picker(ui, id, info, node, default, edits);
+            continue;
+        }
         if node_type.info().id == noodle_nodes::SCRIPT_ID && info.key == noodle_nodes::SCRIPT_KEY {
             script_editor(ui, id, info, node, edits);
             continue;
         }
-        if node_type.info().id == noodle_nodes::SAMPLER_ID && info.key == noodle_nodes::SAMPLE_KEY {
+        if matches!(
+            node_type.info().id,
+            noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
+        ) && info.key == noodle_nodes::SAMPLE_KEY
+        {
             sample_picker(ui, session, id, info, node, edits);
             continue;
         }
@@ -437,6 +550,146 @@ fn config(
         edits.extend(out.edit(id, info.key));
         out.response
             .on_hover_text("Changing this rebuilds the node, and may change its ports.");
+    }
+}
+
+/// The drop-down for a node's channel layout: one undo step per choice.
+/// An Output node's speaker routing: for each channel of the signal (named by
+/// the layout chosen here, which only decides how many rows there are), the
+/// device channel it plays on. The setting holds the numbers, in order.
+fn routing_editor(
+    ui: &mut Ui,
+    session: &Session,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_engine::ChannelLayout;
+    let text = info.get_text(&node.config);
+    let routes = noodle_engine::parse_routing(&text).unwrap_or_default();
+    let device_channels = usize::from(session.audio_config().channels.unwrap_or(2)).max(1);
+    let shown = device_channels.max(routes.iter().flatten().map(|d| d + 1).max().unwrap_or(0));
+    let layout_id = egui::Id::new((id, "routing layout"));
+    let default_layout = ChannelLayout::from_channels(routes.len().max(device_channels))
+        .unwrap_or(ChannelLayout::Stereo);
+    let mut layout = ui
+        .data(|d| d.get_temp::<ChannelLayout>(layout_id))
+        .unwrap_or(default_layout);
+    ui.label(RichText::new("Speaker routing").strong());
+    ui.horizontal(|ui| {
+        ui.label("Signal");
+        crate::widgets::Dropdown::from_id_salt((id, "routing layout"))
+            .selected_text(crate::export_dialog::layout_label(layout))
+            .show_ui(ui, |ui| {
+                for choice in ChannelLayout::ALL {
+                    ui.selectable_value(
+                        &mut layout,
+                        choice,
+                        crate::export_dialog::layout_label(choice),
+                    );
+                }
+            });
+    });
+    ui.data_mut(|d| d.insert_temp(layout_id, layout));
+    // With no routing set, channel n plays on channel n.
+    let current = |row: usize| {
+        if routes.is_empty() {
+            (row < device_channels).then_some(row)
+        } else {
+            routes.get(row).copied().flatten()
+        }
+    };
+    let mut chosen: Vec<Option<usize>> = (0..layout.channels()).map(current).collect();
+    egui::Grid::new((id, "routing grid")).show(ui, |ui| {
+        for (row, speaker) in layout.speakers().iter().enumerate() {
+            let name = ui.label(speaker.name());
+            let label = match chosen[row] {
+                Some(channel) => format!("Output {}", channel + 1),
+                None => "Off".to_owned(),
+            };
+            crate::widgets::Dropdown::from_id_salt((id, "route", row))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen[row], None, "Off");
+                    for channel in 0..shown {
+                        ui.selectable_value(
+                            &mut chosen[row],
+                            Some(channel),
+                            format!("Output {}", channel + 1),
+                        );
+                    }
+                })
+                .response
+                .labelled_by(name.id);
+            ui.end_row();
+        }
+    });
+    let new_text = chosen
+        .iter()
+        .map(|c| c.map_or("-".to_owned(), |c| (c + 1).to_string()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let before: Vec<Option<usize>> = (0..layout.channels()).map(current).collect();
+    if chosen != before {
+        edits.push(Edit::Apply(Command::SetConfig {
+            node: id,
+            key: info.key.to_owned(),
+            value: Some(noodle_core::Value::Text(new_text)),
+        }));
+    }
+    ui.label(
+        RichText::new(
+            "Which output channel each channel of the signal plays on. Channels that \
+             are off, or past the device's channels, play nowhere, and a routing \
+             replaces the usual fold-down of a wide signal onto a narrow device.",
+        )
+        .weak()
+        .small(),
+    );
+    if !text.is_empty() && ui.small_button("Back to channel n on channel n").clicked() {
+        edits.push(Edit::Apply(Command::SetConfig {
+            node: id,
+            key: info.key.to_owned(),
+            value: None,
+        }));
+    }
+}
+
+fn layout_picker(
+    ui: &mut Ui,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    default: noodle_engine::ChannelLayout,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_engine::ChannelLayout;
+    let current = ChannelLayout::from_name(&info.get_text(&node.config)).unwrap_or(default);
+    let mut chosen = current;
+    ui.horizontal(|ui| {
+        let label = ui.label(info.name);
+        crate::widgets::Dropdown::from_id_salt((id, info.key))
+            .selected_text(crate::export_dialog::layout_label(current))
+            .show_ui(ui, |ui| {
+                for layout in ChannelLayout::ALL {
+                    ui.selectable_value(
+                        &mut chosen,
+                        layout,
+                        crate::export_dialog::layout_label(layout),
+                    );
+                }
+            })
+            .response
+            .labelled_by(label.id)
+            .on_hover_text("Changing this rebuilds the node, and changes its output's channels.");
+    });
+    if chosen != current {
+        edits.push(Edit::Apply(Command::SetConfig {
+            node: id,
+            key: info.key.to_owned(),
+            value: Some(noodle_core::Value::Text(chosen.name().to_owned())),
+        }));
     }
 }
 
@@ -508,15 +761,19 @@ fn script_editor(
     }
     match noodle_nodes::check_script(&text) {
         Ok(ports) => {
-            ui.label(
-                RichText::new(format!(
-                    "Inputs: {}. Outputs: {}.",
-                    ports.inputs.join(", "),
-                    ports.outputs.join(", ")
-                ))
-                .weak()
-                .small(),
+            let mut summary = format!(
+                "Inputs: {}. Outputs: {}.",
+                ports.inputs.join(", "),
+                ports.outputs.join(", ")
             );
+            if !ports.event_inputs.is_empty() || !ports.event_outputs.is_empty() {
+                summary += &format!(
+                    " Events in: {}. Events out: {}.",
+                    ports.event_inputs.join(", "),
+                    ports.event_outputs.join(", ")
+                );
+            }
+            ui.label(RichText::new(summary).weak().small());
         }
         Err(error) => {
             ui.colored_label(crate::theme::MUTE, error);
@@ -545,6 +802,11 @@ state z = 0        keeps its value
 let k = x * 2      this sample only
 y = k + z          (also += -= *= /=)
 if c { } else { }  comparisons give 1/0
+array a[64] = 0    memory; a[i] wraps round
+for i in 0 to 8 { } fixed length; len(a)
+events in n        n_on n_off n_key n_velocity
+events out m       note_on(m, key, vel)
+                   note_off(m, key)
 sr bpm beat time pi tau e
 (time is coarse late on: keep phase in state)
 rand()  select(c,a,b)  db()  mtof()
@@ -714,8 +976,10 @@ fn params(
     ui.separator();
     ui.label(RichText::new("Parameters").strong());
     let params: Vec<_> = std::iter::once(first).chain(params).collect();
-    if let Some(kind) = GraphKind::of(&node.type_id) {
-        graph(ui, session, kind, id, node, &params, live, edits);
+    match node_type.view(&node.config) {
+        NodeView::Graph(kind) => graph(ui, session, kind.into(), id, node, &params, live, edits),
+        NodeView::Panner => panner(ui, session, id, node, &params, live, edits),
+        _ => {}
     }
     for (input, info) in params {
         let key = input.key.as_ref();
@@ -857,6 +1121,65 @@ fn graph(
     edits.extend(GraphEditor::new(id, kind, &values, &range, &editable).show(ui));
 }
 
+/// The Surround Pan node's panner: the speakers around the listener and the
+/// source, which can be dragged.
+fn panner(
+    ui: &mut Ui,
+    session: &Session,
+    id: NodeId,
+    node: &Node,
+    params: &[(&noodle_engine::InputPort, &noodle_engine::ParamInfo)],
+    live: LiveParams<'_>,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_engine::ChannelLayout;
+    let wired = |key: &str| {
+        session
+            .project()
+            .graph()
+            .source(&Endpoint::new(id, key))
+            .is_some()
+    };
+    let value = |key: &str| {
+        let default = params
+            .iter()
+            .find(|(input, _)| input.key == key)
+            .map_or(0.0, |p| p.1.default);
+        let own = node.params.get(key).copied().unwrap_or(default);
+        if wired(key) {
+            live(id, key).map_or(own, |live| live.value)
+        } else {
+            own
+        }
+    };
+    let range = |key: &str| {
+        params
+            .iter()
+            .find(|(input, _)| input.key == key)
+            .map_or((0.0, 1.0), |p| (p.1.min, p.1.max))
+    };
+    let default = noodle_nodes::default_layout(&node.type_id).unwrap_or(ChannelLayout::Stereo);
+    let layout = node
+        .config
+        .get(noodle_nodes::LAYOUT_KEY)
+        .and_then(|v| match v {
+            noodle_core::Value::Text(name) => ChannelLayout::from_name(name),
+            _ => None,
+        })
+        .unwrap_or(default);
+    edits.extend(
+        crate::widgets::panner::PannerEditor::new(
+            id,
+            layout,
+            value("azimuth"),
+            value("spread"),
+            (!wired("azimuth"), !wired("spread")),
+        )
+        .ranges(range("azimuth"), range("spread"))
+        .show(ui),
+    );
+}
+
 /// What a parameter accepts, and for a wired one the range its signal has
 /// covered lately: "Range 20 Hz to 20 kHz, default 440 Hz".
 fn range_text(info: &noodle_engine::ParamInfo, reading: Option<ParamReading>) -> String {
@@ -933,7 +1256,7 @@ mod tests {
             active: Some(NodeId(1)),
         };
         crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
-            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            let edits = show(ui, &state.session, state.active, &|_, _| None, &|_| None);
             state.session.edit(edits);
         })
     }
@@ -1273,6 +1596,14 @@ mod tests {
     }
 
     #[test]
+    fn a_spectrum_node_shows_its_views_and_says_when_the_engine_is_off() {
+        let harness = harness([Node::new(noodle_nodes::SPECTRUM_ID)]);
+        harness.get_by_label("Spectrum");
+        harness.get_by_label_contains("nothing to measure");
+        harness.get_by_label_contains("20 kHz");
+    }
+
+    #[test]
     fn shows_config_and_its_problems() {
         let mix = |inputs| {
             Node::new("noodle.util.mix")
@@ -1579,6 +1910,90 @@ mod tests {
     }
 
     #[test]
+    fn the_layout_of_a_surround_node_is_chosen_from_a_list() {
+        let mut harness = harness([
+            Node::new("noodle.util.surround_pan"),
+            Node::new("noodle.util.convert_layout"),
+        ]);
+        let layout = |harness: &Harness<'_, State>, node| {
+            let graph = harness.state().session.project().graph();
+            graph
+                .node(NodeId(node))
+                .unwrap()
+                .config
+                .get("layout")
+                .cloned()
+        };
+        // An unset layout shows the node's default.
+        assert_eq!(
+            harness.get_by_label("Layout").value().unwrap_or_default(),
+            "5.1 (6 channels)"
+        );
+        harness.get_by_label("Layout").click();
+        harness.run();
+        harness.get_by_label("7.1 (8 channels)").click();
+        harness.run();
+        assert_eq!(layout(&harness, 1), Some(Value::Text("7.1".to_owned())));
+
+        // The next node's default is its own.
+        harness.state_mut().active = Some(NodeId(2));
+        harness.run_steps(2);
+        harness.get_by_label("Layout").click();
+        harness.run();
+        harness.get_by_label("Quad (4 channels)").click();
+        harness.run();
+        assert_eq!(layout(&harness, 2), Some(Value::Text("Quad".to_owned())));
+    }
+
+    #[test]
+    fn dragging_the_surround_panner_sets_the_azimuth_and_spread() {
+        let mut harness = harness([Node::new("noodle.util.surround_pan")]);
+        let rect = harness.get_by_label("Surround panner").rect();
+        let value = |harness: &Harness<'_, State>, key| param(harness, key).unwrap_or(0.0);
+        // Out to the right on the ring's edge: 90 degrees, no spread.
+        harness.drag_at(rect.center());
+        harness.run();
+        let radius = (rect.width().min(rect.height()) * 0.5 - 8.0).max(4.0);
+        let right = rect.center() + vec2(radius, 0.0);
+        harness.hover_at(right);
+        harness.run();
+        harness.drop_at(right);
+        harness.run();
+        let azimuth = value(&harness, "azimuth");
+        assert!((azimuth - 90.0).abs() < 2.0, "{azimuth}");
+        assert!(value(&harness, "spread") < 0.05);
+        // It was one undo step.
+        harness.state_mut().session.undo();
+        assert_eq!(param(&harness, "azimuth"), None);
+    }
+
+    #[test]
+    fn an_outputs_speakers_are_routed_from_a_list() {
+        let mut harness = harness([Node::new(noodle_engine::OUTPUT_ID)]);
+        let routing = |harness: &Harness<'_, State>| {
+            let graph = harness.state().session.project().graph();
+            graph
+                .node(NodeId(1))
+                .unwrap()
+                .config
+                .get("routing")
+                .cloned()
+        };
+        assert_eq!(routing(&harness), None);
+        // Stereo by default: the left channel is switched off.
+        harness.get_by_label("L").click();
+        harness.run();
+        harness.get_by_label("Off").click();
+        harness.run();
+        assert_eq!(routing(&harness), Some(Value::Text("- 2".to_owned())));
+        harness
+            .get_by_label("Back to channel n on channel n")
+            .click();
+        harness.run();
+        assert_eq!(routing(&harness), None);
+    }
+
+    #[test]
     fn a_param_abandoned_mid_typing_is_a_slider_again() {
         let mut harness = harness([Node::new("noodle.osc.sine")]);
         harness.get_by_label("Frequency").click();
@@ -1725,7 +2140,7 @@ mod tests {
             active: Some(group),
         };
         let mut h = crate::testkit::harness(state, vec2(300.0, 400.0), |ui, state: &mut State| {
-            let edits = show(ui, &state.session, state.active, &|_, _| None);
+            let edits = show(ui, &state.session, state.active, &|_, _| None, &|_| None);
             state.session.edit(edits);
         });
         h.run();

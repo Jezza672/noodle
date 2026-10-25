@@ -54,7 +54,10 @@ fn every_system_preset_fits_its_template() {
             .collect();
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }
-    assert_eq!(templates, 8, "the instruments and the subtractive voice");
+    assert_eq!(
+        templates, 11,
+        "the instruments, the subtractive voice, two synced effects and the rack"
+    );
     assert!(
         library
             .all()
@@ -67,11 +70,13 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.spectral.analyze",
     "noodle.spectral.synthesize",
     "noodle.event.mono",
+    "noodle.event.control",
     "noodle.group.stage",
     "noodle.input.button",
     "noodle.internal.automation",
     "noodle.io.input",
     "noodle.io.output",
+    "noodle.instrument.sample",
     "noodle.mod.automation",
     "noodle.noise.white",
     "noodle.offline.reverse",
@@ -79,9 +84,12 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.util.script",
     "noodle.track.input",
     "noodle.util.mix",
+    "noodle.util.merge_channels",
     "noodle.util.reroute",
+    "noodle.util.split_channels",
     "noodle.view.meter",
     "noodle.view.scope",
+    "noodle.view.spectrum",
 ];
 
 /// Every built-in node has presets (bar a few), each fits a node of its type

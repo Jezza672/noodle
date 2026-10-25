@@ -2,24 +2,22 @@
 //! file's rate and length from its header, straight away, and its waveform
 //! from a couple of background workers when that's done.
 //!
-//! A file is looked at again every couple of seconds: one that couldn't be
-//! read is tried again, one whose waveform failed gets another go, and one
-//! whose modification time changed (a re-export) is read afresh.
+//! Nothing here polls. [`noodle_io::AudioFiles`] watches the files and wakes
+//! the window when one changes: a file that couldn't be read is tried again
+//! when its stamp (size and modification time) differs, and so is one whose
+//! waveform failed, and one that changed under a loaded waveform (a
+//! re-export) is read afresh.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
 
 pub use noodle_io::Analysis;
-use noodle_io::{ANALYSIS_SECONDS, Decoder, Peaks, PeaksBuilder};
+use noodle_io::{ANALYSIS_SECONDS, AudioFiles, Decoder, FileStamp, Peaks, PeaksBuilder};
 
 use super::clips::Source;
 
-/// How long to leave a file alone before looking at it again, so a broken
-/// path doesn't cost a read per frame.
-const RETRY: Duration = Duration::from_secs(2);
 /// How many waveforms are worked out at once, however many files a project
 /// has.
 const WORKERS: usize = 2;
@@ -27,11 +25,16 @@ const WORKERS: usize = 2;
 /// A file that could be read.
 #[derive(Clone)]
 pub struct Loaded {
+    /// Where the file is, for reading samples out of it.
+    pub path: PathBuf,
     pub source: Source,
     /// `None` while the waveform is still being worked out.
     pub peaks: Option<Arc<Peaks>>,
     /// The transients and tempo found along with the waveform.
     pub analysis: Option<Arc<Analysis>>,
+    /// The audio itself, when it is in memory (a Sampler's sample) and `path`
+    /// names nothing.
+    pub memory: Option<Arc<noodle_nodes::Sample>>,
 }
 
 /// Reads the whole file once for its waveform, and the start of it for its
@@ -62,27 +65,26 @@ fn analyse(path: &Path) -> Option<(Arc<Peaks>, Arc<Analysis>)> {
 enum Waveform {
     Working,
     Ready,
-    /// When the attempt failed, so it's tried again after a while.
-    Failed(Instant),
+    /// The attempt failed. It is tried again if the file changes.
+    Failed,
 }
 
 struct Found {
     loaded: Loaded,
-    /// When the file was last changed, as of when it was read.
-    modified: Option<SystemTime>,
-    /// When it was last looked at.
-    checked: Instant,
+    /// The file's stamp as of when it was read.
+    stamp: Option<FileStamp>,
     waveform: Waveform,
 }
 
 enum Entry {
     Found(Found),
-    Missing(Instant),
+    /// Couldn't be opened when the file had this stamp.
+    Missing(Option<FileStamp>),
 }
 
 struct Job {
     path: PathBuf,
-    modified: Option<SystemTime>,
+    stamp: Option<FileStamp>,
     ctx: egui::Context,
     /// Told once the worker has reported and asked for its repaint.
     #[cfg(test)]
@@ -91,7 +93,7 @@ struct Job {
 
 type Done = (
     PathBuf,
-    Option<SystemTime>,
+    Option<FileStamp>,
     Option<(Arc<Peaks>, Arc<Analysis>)>,
 );
 
@@ -99,7 +101,7 @@ pub struct Sources {
     entries: HashMap<PathBuf, Entry>,
     jobs: Sender<Job>,
     done: Receiver<Done>,
-    retry: Duration,
+    files: &'static AudioFiles,
 }
 
 impl Default for Sources {
@@ -116,7 +118,7 @@ impl Default for Sources {
                     let job = queue.lock().unwrap().recv();
                     let Ok(job) = job else { break };
                     let peaks = analyse(&job.path);
-                    let _ = sender.send((job.path, job.modified, peaks));
+                    let _ = sender.send((job.path, job.stamp, peaks));
                     job.ctx.request_repaint();
                     #[cfg(test)]
                     let _ = job.done.send(());
@@ -127,19 +129,18 @@ impl Default for Sources {
             entries: HashMap::new(),
             jobs,
             done,
-            retry: RETRY,
+            files: AudioFiles::global(),
         }
     }
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
-}
-
 impl Sources {
+    /// Has the files looked at every few milliseconds, so a test need not
+    /// wait a second to see a change.
     #[cfg(test)]
-    pub fn retry_at_once(&mut self) {
-        self.retry = Duration::ZERO;
+    pub fn watch_quickly(&mut self) {
+        let files = AudioFiles::new(std::time::Duration::from_millis(5), || {});
+        self.files = Box::leak(Box::new(files));
     }
 
     /// Queues a waveform job for `path`.
@@ -149,17 +150,12 @@ impl Sources {
     /// the middle of a later `Harness::run`, whose step count it would
     /// otherwise change from run to run. A worker that dies drops its
     /// acknowledgement, so the wait ends instead of hanging the test.
-    fn submit(
-        jobs: &Sender<Job>,
-        path: PathBuf,
-        modified: Option<SystemTime>,
-        ctx: &egui::Context,
-    ) {
+    fn submit(jobs: &Sender<Job>, path: PathBuf, stamp: Option<FileStamp>, ctx: &egui::Context) {
         #[cfg(test)]
         let (done, acked) = channel();
         let job = Job {
             path,
-            modified,
+            stamp,
             ctx: ctx.clone(),
             #[cfg(test)]
             done,
@@ -180,65 +176,54 @@ impl Sources {
     ) -> Option<Loaded> {
         self.collect();
         let path = directory.unwrap_or(Path::new("")).join(name);
-        match self.entries.get_mut(&path) {
-            Some(Entry::Found(found)) => {
-                if found.checked.elapsed() < self.retry {
-                    return Some(found.loaded.clone());
-                }
-                found.checked = Instant::now();
-                ctx.request_repaint_after(self.retry);
-                if modified(&path) == found.modified {
-                    let again = matches!(found.waveform, Waveform::Failed(at) if at.elapsed() >= self.retry);
-                    if again {
-                        found.waveform = Waveform::Working;
-                        Self::submit(&self.jobs, path.clone(), found.modified, ctx);
-                    }
-                    return Some(found.loaded.clone());
-                }
-                // Changed since it was read: start over.
+        let stamp = self.files.stamp(&path);
+        match self.entries.get(&path) {
+            Some(Entry::Found(found)) if found.stamp == stamp => {
+                return Some(found.loaded.clone());
+            }
+            // Same file as the failed attempt: it would fail again. If it
+            // changes the watcher wakes the window.
+            Some(Entry::Missing(at)) if *at == stamp => return None,
+            // Changed since it was read: start over.
+            _ => {
                 self.entries.remove(&path);
             }
-            Some(Entry::Missing(since)) if since.elapsed() < self.retry => return None,
-            _ => {}
         }
         let Ok(decoder) = Decoder::open(&path) else {
-            self.entries.insert(path, Entry::Missing(Instant::now()));
-            // Look again later even if nothing else repaints.
-            ctx.request_repaint_after(self.retry);
+            self.entries.insert(path, Entry::Missing(stamp));
             return None;
         };
         let info = decoder.info();
         let loaded = Loaded {
+            path: path.clone(),
             source: Source {
                 sample_rate: info.sample_rate,
                 frames: info.frames,
             },
             peaks: None,
             analysis: None,
+            memory: None,
         };
-        let modified = modified(&path);
-        Self::submit(&self.jobs, path.clone(), modified, ctx);
+        Self::submit(&self.jobs, path.clone(), stamp, ctx);
         self.entries.insert(
             path,
             Entry::Found(Found {
                 loaded: loaded.clone(),
-                modified,
-                checked: Instant::now(),
+                stamp,
                 waveform: Waveform::Working,
             }),
         );
-        ctx.request_repaint_after(self.retry);
         Some(loaded)
     }
 
     /// Takes in the waveforms the workers have finished.
     fn collect(&mut self) {
-        for (path, modified, peaks) in self.done.try_iter() {
+        for (path, stamp, peaks) in self.done.try_iter() {
             let Some(Entry::Found(found)) = self.entries.get_mut(&path) else {
                 continue;
             };
             // A result for a file that has changed since is out of date.
-            if found.modified != modified {
+            if found.stamp != stamp {
                 continue;
             }
             match peaks {
@@ -248,7 +233,7 @@ impl Sources {
                     found.loaded.analysis = Some(analysis);
                     found.waveform = Waveform::Ready;
                 }
-                None => found.waveform = Waveform::Failed(Instant::now()),
+                None => found.waveform = Waveform::Failed,
             }
         }
     }

@@ -15,6 +15,7 @@ pub mod envelope;
 pub mod format;
 pub mod graph;
 pub mod mixing_graph;
+pub mod panner;
 pub mod param;
 pub mod taper;
 

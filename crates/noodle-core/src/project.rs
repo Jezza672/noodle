@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AutomationLane, Clip, ClipId, ClipWarp, Command, EditError, Endpoint, Frame, FrameId, Graph,
-    LaneId, NodeId, TempoMap, WarpId,
+    LaneId, NodeId, TempoMap, Tick, WarpId,
 };
 
 /// Everything that gets saved: the graph, the frames drawn around parts of
@@ -19,6 +19,7 @@ pub struct Project {
     frames: BTreeMap<FrameId, Frame>,
     next_frame_id: u64,
     tempo_map: TempoMap,
+    transport_loop: TransportLoop,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
     /// The warps audio clips refer to (see [`ClipWarp`]). Sections that show
@@ -29,8 +30,13 @@ pub struct Project {
     next_lane_id: u64,
     track_order: Vec<NodeId>,
     /// Nodes and groups whose output plays from a cached render (see
-    /// "Caching" in docs/ARCHITECTURE.md).
+    /// "Caching" in docs/architecture/caching.md).
     frozen: BTreeSet<NodeId>,
+    /// Names this project's contents, so a view can tell whether it changed
+    /// without comparing it. Drawn from one counter for all projects, so a
+    /// newly loaded project never has the revision of the one it replaces.
+    /// Not saved, and not part of equality.
+    revision: u64,
 }
 
 impl Default for Project {
@@ -40,6 +46,7 @@ impl Default for Project {
             frames: BTreeMap::new(),
             next_frame_id: 1,
             tempo_map: TempoMap::default(),
+            transport_loop: TransportLoop::default(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
             warps: BTreeMap::new(),
@@ -48,8 +55,14 @@ impl Default for Project {
             next_lane_id: 1,
             track_order: Vec::new(),
             frozen: BTreeSet::new(),
+            revision: next_revision(),
         }
     }
+}
+
+fn next_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Like [`Graph`], two projects are equal if their contents are, whichever IDs
@@ -59,6 +72,7 @@ impl PartialEq for Project {
         self.graph == other.graph
             && self.frames == other.frames
             && self.tempo_map == other.tempo_map
+            && self.transport_loop == other.transport_loop
             && self.clips == other.clips
             && self.used_warps() == other.used_warps()
             && self.lanes == other.lanes
@@ -76,6 +90,8 @@ struct ProjectFile {
     frames: BTreeMap<FrameId, Frame>,
     #[serde(default, skip_serializing_if = "is_default_tempo_map")]
     tempo_map: TempoMap,
+    #[serde(default, skip_serializing_if = "is_default_loop")]
+    transport_loop: TransportLoop,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clips: BTreeMap<ClipId, Clip>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -95,6 +111,37 @@ fn is_default_tempo_map(map: &TempoMap) -> bool {
     *map == TempoMap::default()
 }
 
+fn is_default_loop(region: &TransportLoop) -> bool {
+    *region == TransportLoop::default()
+}
+
+/// The transport's loop: a span of the timeline that playback repeats while
+/// `on`. It is saved with the project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransportLoop {
+    pub on: bool,
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl Default for TransportLoop {
+    /// Off, over the first four bars of 4/4.
+    fn default() -> Self {
+        Self {
+            on: false,
+            start: Tick(0),
+            end: Tick(16 * crate::TICKS_PER_QUARTER),
+        }
+    }
+}
+
+impl TransportLoop {
+    /// The span the engine loops, when it is on.
+    pub fn active(self) -> Option<(Tick, Tick)> {
+        self.on.then_some((self.start, self.end))
+    }
+}
+
 impl Project {
     /// The current file format version. Bump it when the format changes in a
     /// way older versions can't read, and migrate older files when loading.
@@ -106,6 +153,17 @@ impl Project {
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Changes whenever a [`Command`](crate::Command) is applied, undo and
+    /// redo included, and never otherwise. Equal revisions mean equal
+    /// contents (a clone has its original's), so views can cache what they derive from it.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn bump_revision(&mut self) {
+        self.revision = next_revision();
     }
 
     pub(crate) fn graph_mut(&mut self) -> &mut Graph {
@@ -165,6 +223,11 @@ impl Project {
         &self.tempo_map
     }
 
+    /// The transport's loop.
+    pub fn transport_loop(&self) -> TransportLoop {
+        self.transport_loop
+    }
+
     /// The order tracks are listed in, by group.
     pub fn track_order(&self) -> &[NodeId] {
         &self.track_order
@@ -200,6 +263,10 @@ impl Project {
 
     pub(crate) fn replace_track_order(&mut self, order: Vec<NodeId>) -> Vec<NodeId> {
         std::mem::replace(&mut self.track_order, order)
+    }
+
+    pub(crate) fn replace_loop(&mut self, region: TransportLoop) -> TransportLoop {
+        std::mem::replace(&mut self.transport_loop, region)
     }
 
     pub(crate) fn replace_tempo_map(&mut self, map: TempoMap) -> TempoMap {
@@ -566,6 +633,7 @@ impl Project {
             graph: self.graph.clone(),
             frames: self.frames.clone(),
             tempo_map: self.tempo_map.clone(),
+            transport_loop: self.transport_loop,
             clips: self.clips.clone(),
             warps: self
                 .used_warps()
@@ -613,6 +681,7 @@ impl Project {
             frames: file.frames,
             next_frame_id,
             tempo_map: file.tempo_map,
+            transport_loop: file.transport_loop,
             clips,
             next_clip_id,
             warps: file.warps,
@@ -621,6 +690,7 @@ impl Project {
             next_lane_id,
             track_order: file.track_order,
             frozen: file.frozen,
+            revision: next_revision(),
         };
         for (id, warp) in &project.warps {
             project.check_warp(*id, warp).map_err(LoadError::Broken)?;
@@ -881,6 +951,41 @@ mod tests {
             },
         );
         (project, history, player, clip, lane)
+    }
+
+    #[test]
+    fn the_transport_loop_is_saved_with_the_project_and_undoes() {
+        let (mut project, mut history, _, _, _) = with_timeline();
+        assert!(!project.to_ron().contains("transport_loop"));
+        let region = TransportLoop {
+            on: true,
+            start: Tick(960),
+            end: Tick(7680),
+        };
+        apply(&mut project, &mut history, Command::SetLoop(region));
+        let text = project.to_ron();
+        assert!(text.contains("transport_loop"));
+        assert_eq!(Project::from_ron(&text).unwrap().transport_loop(), region);
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.transport_loop(), TransportLoop::default());
+    }
+
+    #[test]
+    fn a_muted_clip_is_saved_muted_and_an_unmuted_one_says_nothing() {
+        let (mut project, mut history, _, id, _) = with_timeline();
+        assert!(!project.to_ron().contains("muted"));
+        let mut clip = project.clip(id).unwrap().clone();
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!("not an audio clip")
+        };
+        audio.muted = true;
+        apply(&mut project, &mut history, Command::SetClip { id, clip });
+        let text = project.to_ron();
+        assert!(text.contains("muted"));
+        let loaded = Project::from_ron(&text).unwrap();
+        assert!(loaded.clip(id).unwrap().as_audio().unwrap().muted);
+        history.undo(&mut project).unwrap();
+        assert!(!project.clip(id).unwrap().as_audio().unwrap().muted);
     }
 
     #[test]

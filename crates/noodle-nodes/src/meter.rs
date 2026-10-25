@@ -36,6 +36,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Meter {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Meter
+    }
+
     fn always_runs(&self) -> bool {
         true
     }

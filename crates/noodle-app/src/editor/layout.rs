@@ -8,7 +8,7 @@ use egui::{Pos2, Rect, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, FrameId, Graph, LaneId, Node, NodeId, Project};
-use noodle_engine::{InputKind, ParamInfo, Registry, Unit};
+use noodle_engine::{InputKind, NodeView, ParamInfo, Registry, Unit};
 use noodle_nodes::REROUTE_ID;
 
 pub const NODE_WIDTH: f32 = 160.0;
@@ -43,6 +43,8 @@ pub enum PortKind {
     Event,
     /// FFT frames, as between Analyze and Synthesize.
     Spectral,
+    /// A reference to a sample (a Sample node's output, a Sampler's input).
+    Sample,
     /// A group's port that nothing is wired to on either side yet: it takes
     /// a wire of any kind, and becomes that kind once one is connected.
     Any,
@@ -60,13 +62,14 @@ impl PortKind {
             (PortKind::Audio, PortKind::Audio | PortKind::Param(_))
                 | (PortKind::Event, PortKind::Event)
                 | (PortKind::Spectral, PortKind::Spectral)
+                | (PortKind::Sample, PortKind::Sample)
                 | (PortKind::Any, PortKind::Audio | PortKind::Param(_))
                 | (
                     PortKind::Any,
-                    PortKind::Event | PortKind::Spectral | PortKind::Any
+                    PortKind::Event | PortKind::Spectral | PortKind::Sample | PortKind::Any
                 )
                 | (
-                    PortKind::Audio | PortKind::Event | PortKind::Spectral,
+                    PortKind::Audio | PortKind::Event | PortKind::Spectral | PortKind::Sample,
                     PortKind::Any
                 )
         )
@@ -104,6 +107,8 @@ pub struct NodeGeom {
     pub reroute: bool,
     /// Space for custom drawing below the ports; see [`super::body`].
     pub body: Option<Rect>,
+    /// What the body shows, as the node type declares it.
+    pub view: NodeView,
     /// Why the node's ports couldn't be worked out, if they couldn't.
     pub error: Option<String>,
 }
@@ -128,6 +133,7 @@ pub struct WireGeom {
     pub to: Pos2,
     pub event: bool,
     pub spectral: bool,
+    pub sample: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +299,14 @@ impl Scene {
                                         PortKind::Spectral,
                                     ));
                                 }
+                                for p in &layout.sample_outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Sample,
+                                    ));
+                                }
                                 // Note inputs first: they are the way into an
                                 // instrument, and a plugin can have hundreds of
                                 // parameters below them.
@@ -305,6 +319,14 @@ impl Scene {
                                         &p.key,
                                         &p.name,
                                         PortKind::Spectral,
+                                    ));
+                                }
+                                for p in &layout.sample_inputs {
+                                    ports.push(port(
+                                        Side::Input,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Sample,
                                     ));
                                 }
                                 for p in &layout.inputs {
@@ -420,6 +442,7 @@ impl Scene {
             let rank = |p: &PortGeom| order.iter().position(|key| *key == p.key);
             ports.sort_by_key(|p| rank(p).unwrap_or(usize::MAX));
 
+            let view = super::body::view_of(registry, node);
             let origin = Pos2::new(node.position.x, node.position.y);
             let reroute = node.type_id == REROUTE_ID && error.is_none();
             let mut body = None;
@@ -439,7 +462,7 @@ impl Scene {
                 // is drawn where the port is and can be edited in place.
                 let labelled = matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT);
                 let rect = place_columns(origin, &mut ports, has_field, labelled);
-                let height = super::body::height(&node.type_id);
+                let height = super::body::height(view);
                 if height > 0.0 {
                     let top = rect.bottom() - PADDING;
                     body = Some(Rect::from_min_size(
@@ -461,6 +484,7 @@ impl Scene {
                 ports,
                 reroute,
                 body,
+                view,
                 error,
             });
         }
@@ -492,6 +516,7 @@ impl Scene {
                     lane: None,
                     event: from.kind == PortKind::Event,
                     spectral: from.kind == PortKind::Spectral,
+                    sample: from.kind == PortKind::Sample,
                     from: from.socket,
                     to: to.socket,
                     connection,
@@ -513,6 +538,7 @@ impl Scene {
                     lane: Some(lane),
                     event: false,
                     spectral: false,
+                    sample: false,
                     from: a,
                     to: b,
                     connection: Connection { from, to: target },
@@ -765,6 +791,8 @@ impl Kinds<'_> {
                     PortKind::Event
                 } else if layout.spectral_outputs.iter().any(|p| p.key == at.port) {
                     PortKind::Spectral
+                } else if layout.sample_outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Sample
                 } else if layout.outputs.iter().any(|p| p.key == at.port) {
                     PortKind::Audio
                 } else {
@@ -800,6 +828,8 @@ impl Kinds<'_> {
                     PortKind::Event
                 } else if layout.spectral_inputs.iter().any(|p| p.key == at.port) {
                     PortKind::Spectral
+                } else if layout.sample_inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Sample
                 } else if layout.inputs.iter().any(|p| p.key == at.port) {
                     PortKind::Audio
                 } else {
@@ -1035,7 +1065,7 @@ mod tests {
             HEADER_HEIGHT
                 + 2.0 * ROW_HEIGHT
                 + PADDING
-                + crate::editor::body::height("noodle.util.gain")
+                + crate::editor::body::height(NodeView::Meter)
         );
         let out = node.port(Side::Output, "out").unwrap();
         assert!(out.in_header);
@@ -1397,16 +1427,6 @@ mod tests {
             children(&project, GROUP_OUTPUT),
         );
         let target = Endpoint::new(output, group::control_key(GAIN, 1));
-        // A new track wires its track input's gain here; take that off so
-        // the lane has the port to itself.
-        history
-            .apply(
-                &mut project,
-                Command::Disconnect {
-                    input: target.clone(),
-                },
-            )
-            .unwrap();
         let id = project.new_lane_id();
         let point = AutomationPoint {
             tick: Tick(0),

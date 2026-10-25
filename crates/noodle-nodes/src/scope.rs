@@ -35,6 +35,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Scope {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Scope
+    }
+
     fn always_runs(&self) -> bool {
         true
     }

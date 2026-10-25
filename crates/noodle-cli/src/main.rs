@@ -84,8 +84,9 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         threads: usize,
     },
-    /// List the CLAP and VST3 plugins found on this machine. A plugin's node
-    /// type is `clap.<plugin id>` or `vst3.<class id>`; its ports are the plugin's audio and note ports
+    /// List the CLAP, VST3 and (on macOS) AU plugins found on this machine. A
+    /// plugin's node type is `clap.<plugin id>`, `vst3.<class id>` or
+    /// `au.<component id>`; its ports are the plugin's audio and note ports
     /// and parameters. New or changed plugin files are scanned (in a child
     /// process) and the results cached.
     Plugins,
@@ -116,6 +117,10 @@ struct DeviceArgs {
     /// Frames per device callback.
     #[arg(long)]
     buffer_size: Option<u32>,
+    /// Channels to open the output with, for surround (6 is 5.1, 8 is 7.1)
+    /// or a multichannel interface. The device's default if not given.
+    #[arg(long)]
+    channels: Option<u16>,
 }
 
 impl DeviceArgs {
@@ -130,6 +135,7 @@ impl DeviceArgs {
             },
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
+            channels: self.channels,
             midi_input: None,
             threads: 0,
         }
@@ -571,7 +577,7 @@ impl Watch {
 fn list_plugins() {
     let found = noodle_plugins::discover();
     if found.files.is_empty() {
-        println!("no CLAP or VST3 plugins found in the standard folders");
+        println!("no CLAP, VST3 or AU plugins found in the standard folders");
     }
     for file in &found.files {
         if let Some(error) = &file.error {

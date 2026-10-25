@@ -1,7 +1,7 @@
 //! The arrangement driven like a user would: pointer and keyboard events into
 //! a real [`Session`], checking the clips that result.
 
-use crate::testkit::{click_with, double_click, drag, drag_between, drop_files};
+use crate::testkit::{click, click_with, double_click, drag, drag_between, drop_files};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -23,6 +23,10 @@ struct Rig {
     picks: Vec<super::Target>,
     /// The MIDI clips it asked to open in the piano roll.
     opened: Vec<ClipId>,
+    /// Whether the last frame made edits.
+    edited: bool,
+    /// Whether every frame that made edits asked for the next one.
+    repaint_for_edits: bool,
     /// Keeps the audio files alive.
     _dir: tempfile::TempDir,
 }
@@ -56,6 +60,8 @@ fn rig() -> (H, ClipId) {
         notices: Vec::new(),
         picks: Vec::new(),
         opened: Vec::new(),
+        edited: false,
+        repaint_for_edits: true,
         _dir: dir,
     };
     let mut h = Harness::builder()
@@ -63,11 +69,23 @@ fn rig() -> (H, ClipId) {
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             |ui, rig: &mut Rig| {
+                // What the last frame asked for is what this one was run for.
+                if rig.edited {
+                    rig.repaint_for_edits &=
+                        ui.ctx().repaint_causes().iter().any(|cause| {
+                            cause.file.replace('\\', "/").ends_with("timeline/mod.rs")
+                        });
+                }
                 let out = show(ui, &mut rig.timeline, &rig.session, rig.playhead);
+                rig.edited = !out.edits.is_empty();
                 rig.session.edit(out.edits);
                 rig.seeks.extend(out.seek);
                 rig.notices.extend(out.notice);
                 rig.picks.extend(out.pick);
+                if let Some(region) = out.set_loop {
+                    rig.session.set_loop(region);
+                }
+                rig.session.settle_loop();
                 rig.opened.extend(out.open_midi);
                 for (track, kind, on) in out.arm {
                     rig.session.arm_kind(track, kind, on);
@@ -417,7 +435,7 @@ fn a_clip_gets_its_waveform_once_the_file_is_read() {
 #[test]
 fn a_file_that_turns_up_later_replaces_the_missing_mark() {
     let (mut h, _) = rig();
-    h.state_mut().timeline.sources.retry_at_once();
+    h.state_mut().timeline.sources.watch_quickly();
     let session = &mut h.state_mut().session;
     let id = session.project().next_clip_id();
     session.edit([Edit::Apply(Command::AddClip {
@@ -462,7 +480,7 @@ fn a_waveform_is_only_worked_out_again_when_the_view_changes() {
 fn a_file_that_changes_on_disk_is_read_again() {
     let (mut h, id) = rig();
     wait_for_waveforms(&mut h, 1);
-    h.state_mut().timeline.sources.retry_at_once();
+    h.state_mut().timeline.sources.watch_quickly();
     let before = rect(&h, id).width();
     // Re-exported at half the rate: the same frames take twice as long.
     let dir = h.state().session.directory().unwrap().to_owned();
@@ -475,6 +493,8 @@ fn a_file_that_changes_on_disk_is_read_again() {
         .unwrap()
         .set_modified(later)
         .unwrap();
+    // The watcher looks every few milliseconds.
+    std::thread::sleep(std::time::Duration::from_millis(100));
     h.run_steps(3);
     assert_eq!(rect(&h, id).width(), before * 2.0);
 }
@@ -575,15 +595,20 @@ fn param(h: &H, key: &str) -> Option<f32> {
     graph.node(NodeId(11)).unwrap().params.get(key).copied()
 }
 
+fn track_param(h: &H, key: &str) -> Option<f32> {
+    let graph = h.state().session.project().graph();
+    graph.node(NodeId(1)).unwrap().params.get(key).copied()
+}
+
 #[test]
-fn the_mute_button_sets_the_output_nodes_mute() {
+fn the_mute_button_sets_the_track_inputs_mute() {
     let (mut h, _) = grouped();
     h.get_by_label("M").click();
     h.run();
-    assert_eq!(param(&h, "mute.1"), Some(1.0));
+    assert_eq!(track_param(&h, "mute"), Some(1.0));
     h.get_by_label("M").click();
     h.run();
-    assert_eq!(param(&h, "mute.1"), Some(0.0));
+    assert_eq!(track_param(&h, "mute"), Some(0.0));
 }
 
 #[test]
@@ -592,22 +617,6 @@ fn the_solo_button_sets_solo() {
     h.get_by_label("S").click();
     h.run();
     assert_eq!(param(&h, "solo.1"), Some(1.0));
-}
-
-#[test]
-fn dragging_the_gain_slider_is_one_undo_step() {
-    let (mut h, _) = grouped();
-    let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
-    // From the middle to the far left: down to the bottom of the range.
-    let from = slider.center();
-    let path: Vec<Pos2> = (0..=6)
-        .map(|i| from + Vec2::new(-200.0 * i as f32 / 6.0, 0.0))
-        .collect();
-    drag(&mut h, Modifiers::NONE, &path);
-    let gain = param(&h, "gain.1").unwrap();
-    assert!(gain < -20.0, "{gain}");
-    h.state_mut().session.undo();
-    assert_eq!(param(&h, "gain.1"), None, "one undo puts it back");
 }
 
 #[test]
@@ -662,15 +671,6 @@ fn solo_on_the_input_node_shows_as_soloed() {
     h.run();
     let graph = h.state().session.project().graph();
     assert_eq!(graph.node(NodeId(12)).unwrap().params["solo.1"], 0.0);
-}
-
-#[test]
-fn double_clicking_the_gain_slider_writes_zero_db() {
-    let (mut h, _) = grouped();
-    set_param(&mut h, 11, "gain.1", -12.0);
-    let slider = h.get_by_role(egui::accesskit::Role::Slider).rect();
-    double_click(&mut h, slider.center());
-    assert_eq!(param(&h, "gain.1"), Some(0.0));
 }
 
 fn track_inputs(h: &H) -> usize {
@@ -926,29 +926,34 @@ fn a_file_that_cant_be_read_below_the_tracks_makes_no_track() {
     assert_eq!(h.state().notices.len(), 1);
 }
 
+/// Where an import from the File menu would go with the playhead at `at`.
+fn import_target(h: &H, at: Tick) -> super::Target {
+    let state = h.state();
+    state
+        .timeline
+        .import_target(state.session.project(), at)
+        .expect("there is a track")
+}
+
 #[test]
-fn the_import_button_prefers_the_highlighted_track_over_a_selected_clip() {
+fn the_import_target_prefers_the_highlighted_track_over_a_selected_clip() {
     let (mut h, id) = rig();
     h.state_mut().playhead = Some(Tick(480));
     h.run();
     // The clip is on the first track; the second track's header is picked.
     h.state_mut().timeline.selected = std::collections::BTreeSet::from([id]);
     h.state_mut().timeline.selected_track = Some(NodeId(2));
-    h.get_by_label("Import audio…").click();
-    h.run();
-    let target = h.state().picks.last().copied().unwrap();
+    let target = import_target(&h, Tick(480));
     assert_eq!((target.track, target.at), (NodeId(2), Tick(480)));
 }
 
 #[test]
-fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
+fn the_import_target_is_the_selected_clips_track_at_the_playhead() {
     let (mut h, id) = rig();
     h.state_mut().playhead = Some(Tick(960));
     h.run();
     // Nothing selected: the first track.
-    h.get_by_label("Import audio…").click();
-    h.run();
-    let first = h.state().picks.last().copied().unwrap();
+    let first = import_target(&h, Tick(960));
     assert_eq!((first.track, first.at), (NodeId(1), Tick(960)));
     // Moving the clip to the second lane and selecting it points the import there.
     drag_by(
@@ -958,9 +963,7 @@ fn the_import_button_targets_the_selected_clips_track_at_the_playhead() {
         Grab::Body,
         Vec2::new(0.0, 64.0),
     );
-    h.get_by_label("Import audio…").click();
-    h.run();
-    assert_eq!(h.state().picks.last().unwrap().track, NodeId(2));
+    assert_eq!(import_target(&h, Tick(960)).track, NodeId(2));
 }
 
 fn type_and_press(h: &mut H, text: &str, key: Key) {
@@ -1089,7 +1092,7 @@ fn drops_find_their_track_below_an_automation_lane() {
     h.state_mut().session.edit([Edit::Apply(Command::AddLane {
         id: LaneId(1),
         lane: AutomationLane::new(
-            Endpoint::new(NodeId(11), "gain"),
+            Endpoint::new(NodeId(11), "gain.1"),
             vec![point(0, 0.0), point(960, -6.0)],
         ),
     })]);
@@ -1214,6 +1217,257 @@ fn a_plain_drag_still_moves_without_copying() {
         Vec2::new(130.0, 0.0),
     );
     assert_eq!(clip_count(&h), 1);
+}
+
+#[test]
+fn pressing_command_after_the_drag_starts_still_copies_the_clip() {
+    let (mut h, id) = rig();
+    let from = centre(&h, id);
+    h.event(Event::PointerMoved(from));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    // Part of the way, with the key up: the clip itself moves.
+    h.event(Event::PointerMoved(from + Vec2::new(60.0, 0.0)));
+    h.step();
+    h.run();
+    assert_eq!(start(&h, id), Tick(960));
+    // Then the key goes down: the clip is back where it began and a copy
+    // carries on with the drag.
+    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
+    h.event(Event::PointerMoved(from + Vec2::new(130.0, 0.0)));
+    h.step();
+    h.run();
+    h.event(Event::PointerButton {
+        pos: from + Vec2::new(130.0, 0.0),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::COMMAND,
+    });
+    h.step();
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run();
+    assert_eq!(clip_count(&h), 2);
+    assert_eq!(start(&h, id), Tick(0), "the original is back");
+    let copy = *h
+        .state()
+        .session
+        .project()
+        .clips()
+        .map(|(copy, _)| copy)
+        .find(|&copy| copy != id)
+        .as_ref()
+        .unwrap();
+    assert_eq!(start(&h, copy), Tick(1920));
+    assert_eq!(h.state().timeline.selected(), &[copy].into());
+    // One undo step for the whole drag.
+    h.state_mut().session.undo();
+    assert_eq!(clip_count(&h), 1);
+    assert_eq!(start(&h, id), Tick(0));
+}
+
+/// A drag from empty lane space (the second track, right of the clip) to
+/// `to`, which is on the first clip.
+fn box_drag(h: &mut H, id: ClipId, modifiers: Modifiers, to: Pos2) {
+    let r = rect(h, id);
+    let from = Pos2::new(r.right() + 40.0, r.bottom() + 20.0);
+    drag_between(h, modifiers, from, to);
+}
+
+#[test]
+fn dragging_a_box_over_empty_space_selects_the_clips_it_touches() {
+    let (mut h, id) = rig();
+    let r = rect(&h, id);
+    box_drag(&mut h, id, Modifiers::NONE, r.center());
+    assert_eq!(h.state().timeline.selected(), &[id].into());
+    assert_eq!(start(&h, id), Tick(0), "the clip itself wasn't dragged");
+    assert!(h.state().timeline.band.is_none(), "the box goes on release");
+}
+
+#[test]
+fn a_box_that_touches_no_clip_clears_the_selection_unless_shift_is_held() {
+    let (mut h, id) = rig();
+    select(&mut h, id);
+    assert_eq!(h.state().timeline.selected(), &[id].into());
+    let r = rect(&h, id);
+    // Both ends in empty space on the second track.
+    let from = Pos2::new(r.right() + 40.0, r.bottom() + 20.0);
+    drag_between(&mut h, Modifiers::SHIFT, from, from + Vec2::new(30.0, 20.0));
+    assert_eq!(h.state().timeline.selected(), &[id].into());
+    drag_between(&mut h, Modifiers::NONE, from, from + Vec2::new(30.0, 20.0));
+    assert!(h.state().timeline.selected().is_empty());
+}
+
+fn select(h: &mut H, id: ClipId) {
+    let at = centre(h, id);
+    click(h, at, Modifiers::NONE);
+}
+
+fn key_on(h: &mut H, id: ClipId, modifiers: Modifiers, key: Key) {
+    let at = centre(h, id);
+    key_over(h, at, modifiers, key);
+}
+
+#[test]
+fn pasting_several_clips_keeps_their_spacing() {
+    let (mut h, id) = rig();
+    let second = h.state().session.project().next_clip_id();
+    h.state_mut().session.edit([Edit::Apply(Command::AddClip {
+        id: second,
+        clip: Clip::audio(NodeId(2), Tick(960), "a.wav", 96_000),
+    })]);
+    h.run();
+    h.state_mut().timeline.selected = [id, second].into();
+    h.state_mut().timeline.request(super::ClipAction::Copy);
+    h.run();
+    // On the system clipboard as Noodle's clip type, which pastes as clips.
+    assert!(crate::clipboard::holds("application/x.noodle.clip"));
+    let copied: super::Copied = crate::clipboard::paste("application/x.noodle.clip").unwrap();
+    assert_eq!(copied.clips.len(), 2);
+    h.state_mut().playhead = Some(Tick(3840));
+    h.state_mut().timeline.request(super::ClipAction::Paste);
+    h.run();
+    let new: Vec<_> = h
+        .state()
+        .session
+        .project()
+        .clips()
+        .filter(|(c, _)| *c != id && *c != second)
+        .map(|(_, c)| (c.node, c.start))
+        .collect();
+    assert_eq!(new, [(NodeId(1), Tick(3840)), (NodeId(2), Tick(4800))]);
+}
+
+fn pasted(h: &H, original: ClipId) -> ClipId {
+    h.state()
+        .session
+        .project()
+        .clips()
+        .map(|(id, _)| id)
+        .find(|&id| id != original)
+        .unwrap()
+}
+
+#[test]
+fn copy_and_paste_put_a_copy_at_the_playhead() {
+    let (mut h, id) = rig();
+    select(&mut h, id);
+    h.state_mut().playhead = Some(Tick(1920));
+    key_on(&mut h, id, Modifiers::COMMAND, Key::C);
+    assert_eq!(clip_count(&h), 1, "copying changes nothing");
+    key_on(&mut h, id, Modifiers::COMMAND, Key::V);
+    assert_eq!(clip_count(&h), 2);
+    let copy = pasted(&h, id);
+    assert_eq!(start(&h, copy), Tick(1920));
+    assert_eq!(clip(&h, copy).node, NodeId(1));
+    assert_eq!(h.state().timeline.selected(), &[copy].into());
+    h.state_mut().session.undo();
+    assert_eq!(clip_count(&h), 1);
+}
+
+#[test]
+fn cut_removes_the_clips_and_paste_brings_them_back() {
+    let (mut h, id) = rig();
+    select(&mut h, id);
+    h.state_mut().playhead = Some(Tick(960));
+    key_on(&mut h, id, Modifiers::COMMAND, Key::X);
+    assert_eq!(clip_count(&h), 0);
+    h.state_mut().timeline.request(super::ClipAction::Paste);
+    h.run();
+    assert_eq!(clip_count(&h), 1);
+    let back = h.state().session.project().clips().next().unwrap().0;
+    assert_eq!(start(&h, back), Tick(960));
+}
+
+#[test]
+fn paste_goes_to_the_selected_track_when_the_clips_came_from_one() {
+    let (mut h, id) = rig();
+    select(&mut h, id);
+    h.state_mut().timeline.request(super::ClipAction::Copy);
+    h.run();
+    h.state_mut().timeline.selected_track = Some(NodeId(2));
+    h.state_mut().timeline.selected.clear();
+    h.state_mut().timeline.request(super::ClipAction::Paste);
+    h.run();
+    assert_eq!(clip(&h, pasted(&h, id)).node, NodeId(2));
+}
+
+#[test]
+fn the_edit_menu_knows_what_it_can_do() {
+    let (mut h, id) = rig();
+    assert!(!h.state().timeline.can_copy());
+    assert!(!h.state().timeline.can_paste());
+    select(&mut h, id);
+    assert!(h.state().timeline.can_copy());
+    h.state_mut().timeline.request(super::ClipAction::Copy);
+    h.run();
+    assert!(h.state().timeline.can_paste());
+}
+
+#[test]
+fn a_render_still_being_worked_out_is_drawn_where_it_was_not_stretched() {
+    use super::warped_waves::Shown;
+    let (h, id) = rig();
+    let axis = Axis {
+        origin: 0.0,
+        pps: 120.0,
+        map: h.state().session.project().tempo_map(),
+        snap: h.state().session.snap(),
+    };
+    let peaks = std::sync::Arc::new(noodle_io::Peaks::from_audio(&noodle_io::Audio {
+        samples: vec![0.0; 100],
+        channels: 1,
+        sample_rate: 48_000,
+    }));
+    let was = (Tick(0), Tick(1920));
+    // The section has been shortened to half since.
+    let full = egui::Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(60.0, 50.0));
+    let stand_in = Shown {
+        peaks: peaks.clone(),
+        span: was,
+        current: false,
+    };
+    let area = super::warped_area(axis, full, &stand_in);
+    assert_eq!(area.width(), axis.x(was.1) - axis.x(was.0));
+    assert!(area.width() > full.width(), "it is cut off, not squeezed");
+    let current = Shown {
+        current: true,
+        ..stand_in
+    };
+    assert_eq!(super::warped_area(axis, full, &current), full);
+    let _ = id;
+}
+
+#[test]
+fn an_edit_is_followed_by_another_frame_so_the_clip_never_trails_the_pointer() {
+    let (mut h, id) = rig();
+    let r = rect(&h, id);
+    let from = Pos2::new(r.right() - 2.0, r.center().y);
+    h.event(Event::PointerMoved(from));
+    h.step();
+    h.event(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    h.event(Event::PointerMoved(from + Vec2::new(-90.0, 0.0)));
+    h.step();
+    // The next frame: was it asked for?
+    h.step();
+    assert!(
+        h.state().repaint_for_edits,
+        "every frame that made an edit asked for the one that shows it"
+    );
+    h.run();
+    // On the beat nearest the pointer, not trailing it.
+    assert!((rect(&h, id).right() - (r.right() - 90.0)).abs() <= 30.0);
 }
 
 fn key_over(h: &mut H, at: Pos2, modifiers: Modifiers, key: Key) {
@@ -1777,4 +2031,244 @@ fn the_axis_is_linear_in_seconds_so_slow_bars_are_wider() {
     for tick in [0, 100, 3840, 5000, 9999] {
         assert_eq!(axis.tick(axis.x(Tick(tick))), Tick(tick));
     }
+}
+
+/// The rig with a second second-long clip butted against the end of the
+/// first, which now plays the first second of a two second file. The second
+/// starts half a second into its file. Returns that clip's ID.
+fn butted() -> (H, ClipId, ClipId) {
+    let (mut h, first) = rig();
+    let dir = h.state()._dir.path().to_path_buf();
+    write_wav(&dir.join("b.wav"), &vec![0.0; 96_000], 1, 48_000).unwrap();
+    let mut a = clip(&h, first);
+    audio_mut(&mut a).length = 48_000;
+    let second = h.state().session.project().next_clip_id();
+    let mut b = Clip::audio(NodeId(1), Tick(1920), "b.wav", 48_000);
+    audio_mut(&mut b).offset = 24_000;
+    h.state_mut().session.edit([
+        Edit::Apply(Command::SetClip { id: first, clip: a }),
+        Edit::Apply(Command::AddClip {
+            id: second,
+            clip: b,
+        }),
+    ]);
+    for _ in 0..30 {
+        h.run();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    (h, first, second)
+}
+
+fn crossfade_of(h: &H, id: ClipId) -> Option<(i64, i64)> {
+    let x = clip(h, id).as_audio()?.crossfade?;
+    Some((x.before.0, x.after.0))
+}
+
+fn widget(h: &H, id: ClipId, grab: super::crossfade::Grab) -> egui::Rect {
+    h.state()
+        .timeline
+        .crossfade_widget(id, grab)
+        .expect("drawn")
+}
+
+#[test]
+fn dragging_the_handle_on_a_cut_makes_a_crossfade_each_side_stopping_at_its_room() {
+    use super::crossfade::Grab;
+    let (mut h, _, second) = butted();
+    assert_eq!(crossfade_of(&h, second), None);
+    let handle = widget(&h, second, Grab::Create).center();
+    // 40 points is two thirds of a beat: 640 ticks, which both sides have.
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        handle,
+        handle + Vec2::new(40.0, 0.0),
+    );
+    let (before, after) = crossfade_of(&h, second).expect("made");
+    assert!(
+        (before - 640).abs() < 20 && (after - 640).abs() < 20,
+        "{before} {after}"
+    );
+    // One undo takes it away.
+    h.state_mut().session.undo();
+    h.run();
+    assert_eq!(crossfade_of(&h, second), None);
+    // Further out, the second clip has only half a second (960 ticks) behind
+    // its start, and the first the same ahead; dragging far stops both there.
+    let handle = widget(&h, second, Grab::Create).center();
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        handle,
+        handle - Vec2::new(200.0, 0.0),
+    );
+    assert_eq!(crossfade_of(&h, second), Some((960, 960)));
+}
+
+#[test]
+fn a_crossfades_edges_resize_it_and_its_middle_slides_it() {
+    use super::crossfade::Grab;
+    let (mut h, _, second) = butted();
+    let handle = widget(&h, second, Grab::Create).center();
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        handle,
+        handle + Vec2::new(30.0, 0.0),
+    );
+    let (before, after) = crossfade_of(&h, second).unwrap();
+    assert!((before - 480).abs() < 20 && (after - 480).abs() < 20);
+    // The right edge, 15 points (240 ticks) further out.
+    let edge = widget(&h, second, Grab::Right).center();
+    drag_between(&mut h, Modifiers::NONE, edge, edge + Vec2::new(15.0, 0.0));
+    let (b, a) = crossfade_of(&h, second).unwrap();
+    assert_eq!(b, before);
+    assert!((a - after - 240).abs() < 20, "{a}");
+    // The middle slides it 15 points right: the same length, later.
+    let middle = widget(&h, second, Grab::Middle).center();
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        middle,
+        middle + Vec2::new(15.0, 0.0),
+    );
+    let (b2, a2) = crossfade_of(&h, second).unwrap();
+    assert_eq!(b2 + a2, b + a);
+    assert!((b2 - (b - 240)).abs() < 20, "{b2}");
+    // Double-clicking it takes it away.
+    let middle = widget(&h, second, Grab::Middle).center();
+    double_click(&mut h, middle);
+    assert_eq!(crossfade_of(&h, second), None);
+}
+
+#[test]
+fn clips_with_a_gap_between_them_have_no_handle() {
+    use super::crossfade::Grab;
+    let (mut h, _, second) = butted();
+    let mut moved = clip(&h, second);
+    moved.start = Tick(2400);
+    h.state_mut().session.edit([Edit::Apply(Command::SetClip {
+        id: second,
+        clip: moved,
+    })]);
+    h.run();
+    assert!(
+        h.state()
+            .timeline
+            .crossfade_widget(second, Grab::Create)
+            .is_none()
+    );
+}
+
+fn audio_mut(clip: &mut Clip) -> &mut noodle_core::AudioClip {
+    let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+        unreachable!("not an audio clip")
+    };
+    audio
+}
+
+#[test]
+fn the_loop_toggle_turns_the_transport_loop_on_and_off() {
+    let (mut h, _) = rig();
+    assert!(!h.state().session.loop_region().on);
+    h.get_by_label("⟲").click();
+    h.run();
+    let region = h.state().session.loop_region();
+    assert!(region.on && region.start < region.end);
+    h.get_by_label("⟲").click();
+    h.run();
+    assert!(!h.state().session.loop_region().on);
+}
+
+#[test]
+fn the_corner_has_no_import_button() {
+    let (h, _) = rig();
+    assert!(h.query_by_label("Import audio…").is_none());
+}
+
+#[test]
+fn dragging_a_headers_bottom_edge_resizes_the_track() {
+    let (mut h, _) = rig();
+    let first = NodeId(1);
+    assert_eq!(
+        h.state().timeline.lane_height(first),
+        super::colors::LANE_HEIGHT
+    );
+    let edge = Pos2::new(
+        60.0,
+        8.0 + super::colors::RULER_HEIGHT + super::colors::LANE_HEIGHT - 2.0,
+    );
+    drag_between(&mut h, Modifiers::NONE, edge, edge + Vec2::new(0.0, 30.0));
+    let grown = h.state().timeline.lane_height(first);
+    assert!(
+        (grown - (super::colors::LANE_HEIGHT + 30.0)).abs() < 8.0,
+        "{grown}"
+    );
+    // The other track keeps its height.
+    assert_eq!(
+        h.state().timeline.lane_height(NodeId(2)),
+        super::colors::LANE_HEIGHT
+    );
+    // And it can't be dragged away to nothing.
+    let edge = Pos2::new(60.0, 8.0 + super::colors::RULER_HEIGHT + grown - 2.0);
+    drag_between(&mut h, Modifiers::NONE, edge, edge - Vec2::new(0.0, 300.0));
+    assert!(h.state().timeline.lane_height(first) >= super::MIN_LANE);
+}
+
+#[test]
+fn alt_scroll_zooms_every_track_vertically() {
+    let (mut h, _) = rig();
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::NONE
+    };
+    h.hover_at(Pos2::new(500.0, 100.0));
+    h.event(Event::ModifiersChanged(alt));
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: Vec2::new(0.0, 100.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: alt,
+    });
+    h.step();
+    let zoom = h.state().timeline.v_zoom;
+    assert!(zoom > 1.0, "{zoom}");
+    for track in [NodeId(1), NodeId(2)] {
+        assert!(h.state().timeline.lane_height(track) > super::colors::LANE_HEIGHT);
+    }
+}
+
+#[test]
+fn clips_pasted_from_another_project_keep_their_warp_and_skip_tracks_that_are_not_here() {
+    let (mut h, id) = rig();
+    let warp = noodle_core::ClipWarp::at_tempo(100.0);
+    // As copied in another project, where warp 7 and track 9 existed.
+    let mut clip = Clip::audio(NodeId(1), Tick(0), "a.wav", 48_000);
+    if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+        audio.warp = Some(noodle_core::WarpId(7));
+    }
+    let mut stray = clip.clone();
+    stray.node = NodeId(9);
+    let copied = super::Copied {
+        clips: vec![clip, stray],
+        warps: vec![(noodle_core::WarpId(7), warp.clone())],
+    };
+    crate::clipboard::copy("application/x.noodle.clip", &copied, "2 clips");
+    h.state_mut().timeline.selected = [id].into();
+    h.state_mut().timeline.request(super::ClipAction::Paste);
+    h.run();
+    let project = h.state().session.project();
+    let pasted: Vec<_> = project.clips().filter(|(c, _)| *c != id).collect();
+    assert_eq!(
+        pasted.len(),
+        1,
+        "the clip for a track that isn't here is skipped"
+    );
+    let used = pasted[0]
+        .1
+        .as_audio()
+        .unwrap()
+        .warp
+        .expect("it kept a warp");
+    assert_eq!(project.warp(used), Some(&warp));
 }

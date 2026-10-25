@@ -8,9 +8,7 @@ offline-only nodes, export), and hosting CLAP and VST3 plugins.
 The name comes from Blender's word for the wires between nodes, and from
 *noodling*, musician slang for idly messing around on an instrument.
 
-**Status:** the real-time core works headless. Graphs compile, run with
-seamless live edits, play through your speakers, and render to WAV. The app
-has its shell (window, files, undo, playback); the node editor is next. See the [roadmap](docs/ROADMAP.md).
+**Status:** every milestone through M11 is built in code (see [what was built](docs/features/README.md)); what is left is checks on real hardware and a few deferred items, in the [roadmap](docs/ROADMAP.md).
 
 ## Trying it
 
@@ -32,7 +30,8 @@ see how its nodes are wired.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): how the engine, graph and UI fit together.
-- [Roadmap](docs/ROADMAP.md): milestones and what each one proves.
+- [Roadmap](docs/ROADMAP.md): open work.
+- [Delivered features](docs/features/README.md): what each milestone built.
 
 ## Licence
 

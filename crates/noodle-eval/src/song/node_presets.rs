@@ -278,6 +278,10 @@ fn table() -> Vec<Row> {
             "Bar",
             &[("rate", 0.0), ("width", 0.1)],
         ),
+        row("noodle.mod.tempo", "Quarter Notes", &[("division", 2.0)]),
+        row("noodle.mod.tempo", "Eighth Notes", &[("division", 3.0)]),
+        row("noodle.mod.tempo", "Dotted Eighths", &[("division", 14.0)]),
+        row("noodle.mod.tempo", "Bar", &[("division", 0.0)]),
         // Effects.
         // Dynamics.
         row(
@@ -795,6 +799,32 @@ fn table() -> Vec<Row> {
         row("noodle.util.pan", "Centre", &[("pan", 0.0)]),
         row("noodle.util.pan", "Left", &[("pan", -0.7)]),
         row("noodle.util.pan", "Right", &[("pan", 0.7)]),
+        row(
+            "noodle.util.surround_pan",
+            "Front Centre",
+            &[("azimuth", 0.0)],
+        ),
+        row("noodle.util.surround_pan", "Behind", &[("azimuth", 180.0)]),
+        row(
+            "noodle.util.surround_pan",
+            "Left Surround",
+            &[("azimuth", -110.0)],
+        ),
+        row(
+            "noodle.util.surround_pan",
+            "Right Surround",
+            &[("azimuth", 110.0)],
+        ),
+        row(
+            "noodle.util.surround_pan",
+            "Everywhere",
+            &[("spread", 1.0), ("lfe", -12.0)],
+        ),
+        row("noodle.util.convert_layout", "To Mono", &[]).text("layout", "Mono"),
+        row("noodle.util.convert_layout", "To Stereo", &[]).text("layout", "Stereo"),
+        row("noodle.util.convert_layout", "To Quad", &[]).text("layout", "Quad"),
+        row("noodle.util.convert_layout", "To 5.1", &[]).text("layout", "5.1"),
+        row("noodle.util.convert_layout", "To 7.1", &[]).text("layout", "7.1"),
         row("noodle.util.vca", "Full Level", &[("level", 1.0)]),
         row("noodle.util.vca", "Half Level", &[("level", 0.5)]),
         row(

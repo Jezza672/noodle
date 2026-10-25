@@ -1,6 +1,6 @@
 //! Cache keys and cacheability: which nodes' output is a pure function of the
 //! timeline, and what to call a render of it. See "Caching" in
-//! docs/ARCHITECTURE.md.
+//! docs/architecture/caching.md.
 //!
 //! [`analyze`] compiles the project as the live engine would, except that
 //! offline nodes stay in, then walks the schedule once, upstream first. Each
@@ -260,7 +260,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
 /// Part of every key, so renders made by another build of the DSP are never
 /// replayed from the shared per-user cache. Bump `DSP_GENERATION` in the same
 /// change as any regenerated golden render; the crate version covers releases.
-const DSP_GENERATION: u32 = 5;
+const DSP_GENERATION: u32 = 6;
 
 /// The key of a node, from everything it depends on. `wired` lists the
 /// outputs wired into signal inputs in input order, and `events` those wired
@@ -357,7 +357,10 @@ fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
         }
     }
     let lanes: Vec<_> = project.lanes().collect();
-    let keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
+    let mut keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
+    // As compiled (see `compile_with`), so a frozen group's outputs are the
+    // stages that meter them.
+    keep.extend(crate::flatten::output_stages(project.graph()));
     for &frozen in project.frozen() {
         let Some(node) = project.graph().node(frozen) else {
             continue;

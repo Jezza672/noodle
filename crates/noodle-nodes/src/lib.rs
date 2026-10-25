@@ -12,6 +12,7 @@ mod chorus;
 mod clip;
 mod clock;
 mod comparator;
+mod control;
 mod curve;
 mod delay;
 mod distortion;
@@ -21,6 +22,7 @@ mod eq;
 mod export;
 mod follower;
 mod freeze;
+mod fundamental;
 mod gain;
 mod ladder;
 mod lag;
@@ -43,12 +45,17 @@ mod reverb;
 mod reverse;
 mod sample;
 mod sample_hold;
+mod sample_input;
 mod sampler;
+mod sampler_stretch;
 mod scope;
 mod script;
 mod spectral;
+mod spectrum;
 mod stage;
+mod surround;
 mod svf;
+mod tempo;
 mod time_stretch;
 mod vca;
 mod voice_mix;
@@ -73,6 +80,9 @@ pub use clip::{
 };
 pub use clock::{CLOCK_ID, Clock, DIVISION_TICKS, DIVISIONS as CLOCK_DIVISIONS};
 pub use comparator::{COMPARATOR_ID, Comparator};
+pub use control::{
+    MIDI_CONTROL_ID, MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
+};
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
 pub use distortion::{DISTORTION_ID, Distortion, SHAPES as DISTORTION_SHAPES, shaper};
@@ -94,6 +104,7 @@ pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
     spawn_freeze,
 };
+pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
@@ -114,9 +125,10 @@ pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
 pub use reverse::Reverse;
-pub use sample::{Sample, SampleError, SampleStore};
+pub use sample::{Sample, SampleError, SampleRef, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
-pub use sampler::{SAMPLE_KEY, SAMPLER_ID, Sampler};
+pub use sample_input::{SAMPLE_INPUT_ID, SampleInput};
+pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
@@ -127,8 +139,18 @@ pub use spectral::{
     SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID, SpectralBlur, SpectralFilter,
     SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
 };
+pub use spectrum::{
+    FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
+    SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
+    columns_from_bins,
+};
 pub use stage::GroupStage;
+pub use surround::{
+    CONVERT_LAYOUT_ID, ConvertLayout, LAYOUT_KEY, MERGE_CHANNELS_ID, MergeChannels,
+    SPLIT_CHANNELS_ID, SURROUND_PAN_ID, SplitChannels, SurroundPan, default_layout,
+};
 pub use svf::{SVF_ID, Svf, svf_response};
+pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
@@ -140,9 +162,6 @@ use noodle_core::Project;
 use noodle_engine::{
     Registry, Render, RenderError, Settings, Telemetry, TempoTable, render_project,
 };
-
-/// The node types that draw a meter of their output in the editor.
-pub const METERED: [&str; 3] = [METER_ID, GAIN_ID, VOICE_MIX_ID];
 
 /// What [`register_library`] gives back.
 pub struct Library {
@@ -181,6 +200,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Square);
     registry.register(Triangle);
     registry.register(Pan);
+    registry.register(SurroundPan);
+    registry.register(ConvertLayout);
+    registry.register(SplitChannels);
+    registry.register(MergeChannels);
     registry.register(WhiteNoise);
     registry.register(Gain::new(&telemetry));
     registry.register(Button);
@@ -215,12 +238,15 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Comparator);
     registry.register(Automation);
     registry.register(Clock);
+    registry.register(Tempo);
+    registry.register(SampleInput);
     registry.register(Distortion);
     registry.register(Bitcrusher);
     registry.register(Chorus);
     registry.register(Phaser);
     registry.register(Key);
     registry.register(MonoNote);
+    registry.register(MidiControl);
     registry.register(NoteSplit);
     registry.register(Arpeggiator);
     registry.register(Voices);
@@ -229,14 +255,19 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Normalize);
     registry.register(TimeStretch);
     registry.register(Reroute);
-    registry.register(GroupStage);
+    registry.register(GroupStage::new(&telemetry));
     registry.register(Meter::new(&telemetry));
     registry.register(Scope::new(&telemetry));
+    registry.register(Spectrum::new(&telemetry));
     let midi = noodle_io::MidiBus::new();
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     let samples = SampleStore::new();
-    registry.register(Sampler::new(&samples));
+    registry.register(if clips.is_blocking() {
+        Sampler::blocking(&samples, &telemetry)
+    } else {
+        Sampler::new(&samples, &telemetry)
+    });
     Library {
         telemetry,
         clips,

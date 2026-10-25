@@ -198,7 +198,8 @@ pub enum Fx {
 /// made from, and where it sits.
 #[derive(Debug, Clone)]
 pub struct Slot {
-    /// The sample's name in `songs/samples/index.txt`.
+    /// The sample's name in `songs/samples/index.txt`; empty for a slot to be
+    /// filled by the user (the library's Drum Rack).
     pub sample: String,
     pub drum: Drum,
     /// The key that plays it.
@@ -291,13 +292,17 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         let key = f32::from(slot.key);
         set_param(p, split, &format!("low{}", i + 1), key);
         set_param(p, split, &format!("high{}", i + 1), key);
-        let label = format!("{} {}", drum_label(slot.drum), i + 1);
+        let label = if slot.sample.is_empty() {
+            format!("Slot {}", i + 1)
+        } else {
+            format!("{} {}", drum_label(slot.drum), i + 1)
+        };
         let level = p.input(&format!("{label} level"), row * 2.0 + 1.0);
         let tune = p.input(&format!("{label} tune"), row * 2.0 + 2.0);
         let slot_pan = p.input(&format!("{label} pan"), row * 2.0 + 3.0);
         let sampler = p.add(
             spec("noodle.instrument.sampler")
-                .config("sample", Value::Text(super::samples::hash(&slot.sample)))
+                .config("sample", Value::Text(sample_hash(&slot.sample)))
                 .param("keytrack", 0.0)
                 .param("mode", 0.0)
                 .param("gain", slot.db),
@@ -311,6 +316,16 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         p.connect(slot_pan, (pan, "pan"));
         p.connect((sampler, "out"), (pan, "in"));
         p.connect((pan, "out"), (mix, wire_in(i)));
+    }
+}
+
+/// The hash a slot's Sampler plays; a slot with no sample (a library
+/// template, which cannot carry audio) plays nothing until one is loaded.
+fn sample_hash(name: &str) -> String {
+    if name.is_empty() {
+        String::new()
+    } else {
+        super::samples::hash(name)
     }
 }
 

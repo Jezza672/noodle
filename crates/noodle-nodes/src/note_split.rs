@@ -88,12 +88,18 @@ impl NodeType for NoteSplit {
                 .param(
                     format!("low{n}"),
                     format!("Low key {n}"),
-                    ParamInfo::new(0.0, 127.0, 0.0).smoothing(0.0).featured(),
+                    ParamInfo::new(0.0, 127.0, 0.0)
+                        .unit(Unit::Note)
+                        .smoothing(0.0)
+                        .featured(),
                 )
                 .param(
                     format!("high{n}"),
                     format!("High key {n}"),
-                    ParamInfo::new(0.0, 127.0, 127.0).smoothing(0.0).featured(),
+                    ParamInfo::new(0.0, 127.0, 127.0)
+                        .unit(Unit::Note)
+                        .smoothing(0.0)
+                        .featured(),
                 )
                 .param(
                     format!("vel_low{n}"),
@@ -204,7 +210,7 @@ impl Node for NoteSplitNode {
                 EventKind::NoteOff { note, .. } | EventKind::Expression { note, .. } => {
                     self.lookup(note)
                 }
-                EventKind::Midi(_) => {
+                EventKind::Midi(_) | EventKind::Channel { .. } => {
                     ((1 << self.outputs) - 1) | (u32::from(self.rest) << self.outputs)
                 }
             };

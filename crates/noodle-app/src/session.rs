@@ -7,17 +7,17 @@
 //! the engine's parameter cells.
 
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod export;
 mod library;
+mod stems;
 pub use export::ExportChoice;
 pub use library::LibraryEdit;
 
-use crate::filewatch::FileWatch;
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
 use noodle_engine::{
@@ -70,6 +70,47 @@ pub enum Edit {
     /// Replaces the contents of a group with its library template's current
     /// version. One undo step.
     UpdateFromTemplate(NodeId),
+    /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
+    /// an edit itself: the tracks arrive as one undo step when the job is done.
+    SplitToStems(noodle_core::ClipId),
+    /// A choice from the monitor button's right-click menu: monitor `node`
+    /// in `mode` (alone, or added to the others), or stop. Not an undo step.
+    MonitorAs {
+        node: NodeId,
+        mode: Option<MonitorMode>,
+        add: bool,
+    },
+    /// A click on a node's monitor button. Not an undo step: the project is
+    /// untouched.
+    Monitor {
+        node: NodeId,
+        /// Ctrl or Cmd: exclusive, or with `shift` silencing every other
+        /// Output.
+        command: bool,
+        /// Shift: sum into what is monitored already.
+        shift: bool,
+    },
+}
+
+/// How the nodes being monitored meet the project's Output nodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MonitorMode {
+    /// Summed into them.
+    #[default]
+    Sum,
+    /// The Output nodes on the monitor's device are silenced.
+    Exclusive,
+    /// Every Output node is silenced.
+    SilenceOthers,
+}
+
+/// What the monitor buttons have set. Not part of the project: it isn't
+/// saved or undone.
+#[derive(Clone, Debug, Default)]
+struct NodeMonitor {
+    nodes: Vec<NodeId>,
+    mode: MonitorMode,
+    device: String,
 }
 
 /// The node types a session can use, and the hub their telemetry (meters,
@@ -129,6 +170,7 @@ impl Nodes {
             .name("noodle-plugin-scan".into())
             .spawn(move || {
                 let _ = sender.send(noodle_plugins::discover());
+                noodle_engine::wake::wake();
             });
         nodes.plugin_scan = spawned.ok().map(|_| receiver);
         nodes
@@ -142,6 +184,15 @@ impl Nodes {
 
 /// How often to look for the chosen MIDI port coming or going.
 pub const MIDI_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often the stream's health is looked at while the window is idle.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often sandboxed plugin hosts are looked at.
+const HOST_WATCH_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A frame at about 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
 
 type ListMidi = Box<dyn FnMut() -> Result<Vec<String>, noodle_io::MidiError>>;
 type OpenMidi =
@@ -204,7 +255,9 @@ pub struct Session {
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
     midi_watch: MidiWatch,
     /// Watches the audio files clips play for being replaced on disk.
-    file_watch: FileWatch,
+    /// The stamps of the clips' files as of the last look, to notice a file
+    /// that was replaced (see [`noodle_io::AudioFiles`]).
+    file_stamps: HashMap<PathBuf, Option<noodle_io::FileStamp>>,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
     /// The renders behind frozen nodes and offline nodes.
@@ -212,12 +265,13 @@ pub struct Session {
     /// Where the playhead is while no stream is open, so it can be set and
     /// read when stopped, and playing starts from it.
     parked: Tick,
+    /// Whether loop edits are sharing an undo step (see `set_loop`).
+    loop_open: bool,
     /// Where the project was loaded from or last saved to.
     path: Option<PathBuf>,
-    /// The project as it was last saved or loaded, to tell whether it has
-    /// unsaved changes.
-    saved: Project,
-    dirty: bool,
+    /// The history position when the project was last saved or loaded, to
+    /// tell whether it has unsaved changes.
+    saved_position: u64,
     /// The next ID [`Session::new_node_id`] can hand out. Views only get
     /// `&Session`, so it's a `Cell`.
     next_id: Cell<u64>,
@@ -226,6 +280,8 @@ pub struct Session {
     diagnostics: Vec<Diagnostic>,
     /// The device to play on.
     audio_config: AudioConfig,
+    /// The nodes being listened to, and how (see [`NodeMonitor`]).
+    node_monitor: NodeMonitor,
     audio: Option<Audio>,
     reroutes: Reroutes,
     /// The tracks that record audio when the record button is pressed.
@@ -247,6 +303,8 @@ pub struct Session {
     message: Option<String>,
     /// The export under way, if there is one.
     exporting: Option<export::Run>,
+    /// Split to stems: the separator and the split under way, if any.
+    stems: stems::Stems,
 }
 
 /// The settings frozen audio is rendered with when no stream is open.
@@ -428,7 +486,7 @@ impl Session {
             plugin_files,
         } = nodes;
         let mut session = Self {
-            saved: Project::new(),
+            saved_position: 0,
             project: Project::new(),
             history: History::new(),
             registry,
@@ -447,17 +505,19 @@ impl Session {
             samples,
             midi_connection: None,
             midi_watch: MidiWatch::default(),
-            file_watch: FileWatch::default(),
+            file_stamps: HashMap::new(),
             exporting: None,
+            stems: stems::Stems::new(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             parked: Tick(0),
+            loop_open: false,
             path: None,
-            dirty: false,
             next_id: Cell::new(0),
             next_frame_id: Cell::new(0),
             diagnostics: Vec::new(),
             audio_config: AudioConfig::default(),
+            node_monitor: NodeMonitor::default(),
             audio: None,
             reroutes: Reroutes::default(),
             armed_audio: BTreeSet::new(),
@@ -499,6 +559,110 @@ impl Session {
     /// Where meter and scope nodes report what they measure.
     pub fn telemetry(&self) -> &Telemetry {
         &self.telemetry
+    }
+
+    /// The nodes whose output is playing on the monitor.
+    pub fn monitored(&self) -> &[NodeId] {
+        &self.node_monitor.nodes
+    }
+
+    /// How the monitored nodes meet the project's own outputs.
+    pub fn monitor_mode(&self) -> MonitorMode {
+        self.node_monitor.mode
+    }
+
+    /// The device the monitor plays on; empty is the main output.
+    pub fn monitor_device(&self) -> &str {
+        &self.node_monitor.device
+    }
+
+    /// Chooses the monitor's device. Playback restarts if it needs a stream
+    /// the engine doesn't have.
+    pub fn set_monitor_device(&mut self, device: &str) {
+        if self.node_monitor.device != device {
+            device.clone_into(&mut self.node_monitor.device);
+            self.monitor_changed();
+        }
+    }
+
+    /// Stops monitoring, if anything is.
+    pub fn stop_monitor(&mut self) {
+        if !self.node_monitor.nodes.is_empty() {
+            self.node_monitor.nodes.clear();
+            self.node_monitor.mode = MonitorMode::Sum;
+            self.monitor_changed();
+        }
+    }
+
+    /// A click on `node`'s monitor button.
+    ///
+    /// - Plain: monitor that node alone, summed with the project's outputs;
+    ///   clicking it again stops.
+    /// - Shift: add the node to those monitored, or take it off.
+    /// - Ctrl or Cmd: monitor it alone and silence the other Output nodes on
+    ///   the monitor's device. If it has the device to itself that changes
+    ///   nothing.
+    /// - Ctrl+Shift: monitor it alone and silence every Output node.
+    ///
+    /// Clicking the node again in the mode it is already in stops.
+    pub fn click_monitor(&mut self, node: NodeId, command: bool, shift: bool) {
+        let monitor = &mut self.node_monitor;
+        let mode = match (command, shift) {
+            (true, true) => MonitorMode::SilenceOthers,
+            (true, false) => MonitorMode::Exclusive,
+            _ => MonitorMode::Sum,
+        };
+        if shift && !command {
+            match monitor.nodes.iter().position(|&n| n == node) {
+                Some(at) => {
+                    monitor.nodes.remove(at);
+                }
+                None => monitor.nodes.push(node),
+            }
+        } else if monitor.nodes == [node] && monitor.mode == mode {
+            monitor.nodes.clear();
+        } else {
+            monitor.nodes = vec![node];
+            monitor.mode = mode;
+        }
+        if monitor.nodes.is_empty() {
+            monitor.mode = MonitorMode::Sum;
+        }
+        self.monitor_changed();
+    }
+
+    /// Monitors `node` in `mode`, alone or added to those already monitored,
+    /// or stops monitoring it if `mode` is `None`.
+    pub fn monitor_as(&mut self, node: NodeId, mode: Option<MonitorMode>, add: bool) {
+        let monitor = &mut self.node_monitor;
+        match (mode, add) {
+            (None, _) => monitor.nodes.retain(|&n| n != node),
+            (Some(_), true) if monitor.nodes.contains(&node) => {}
+            (Some(_), true) => monitor.nodes.push(node),
+            (Some(mode), false) => {
+                monitor.nodes = vec![node];
+                monitor.mode = mode;
+            }
+        }
+        if monitor.nodes.is_empty() {
+            monitor.mode = MonitorMode::Sum;
+        }
+        self.monitor_changed();
+    }
+
+    /// The monitor as the engine takes it.
+    fn engine_monitor(&self) -> Option<noodle_engine::Monitor> {
+        let monitor = &self.node_monitor;
+        (!monitor.nodes.is_empty()).then(|| noodle_engine::Monitor {
+            nodes: monitor.nodes.clone(),
+            device: monitor.device.clone(),
+            exclusive: monitor.mode == MonitorMode::Exclusive,
+            silence_others: monitor.mode == MonitorMode::SilenceOthers,
+        })
+    }
+
+    fn monitor_changed(&mut self) {
+        self.recompile_with(false);
     }
 
     pub fn audio_config(&self) -> &AudioConfig {
@@ -660,7 +824,7 @@ impl Session {
         if !self.sandbox_plugins
             || self
                 .hosts_checked
-                .is_some_and(|at| now.duration_since(at) < Duration::from_millis(500))
+                .is_some_and(|at| now.duration_since(at) < HOST_WATCH_INTERVAL)
         {
             return;
         }
@@ -711,6 +875,7 @@ impl Session {
             .name("noodle-plugin-scan".into())
             .spawn(move || {
                 let _ = sender.send(noodle_plugins::discover_with(everything));
+                noodle_engine::wake::wake();
             });
         match spawned {
             Ok(_) => self.plugin_scan = Some(receiver),
@@ -850,12 +1015,12 @@ impl Session {
         }
     }
 
-    /// Looks about once a second at whether an audio file a clip plays has
+    /// Looks at whether an audio file a clip plays has
     /// been replaced on disk (re-exported from another program, say). If so,
     /// the clips are scheduled again so their streams read the new file, and
     /// anything frozen or offline that depends on it is keyed afresh, which
     /// renders it again.
-    fn watch_files(&mut self, now: Instant) {
+    fn watch_files(&mut self) {
         let base = self.base().to_owned();
         let files = self
             .project
@@ -864,7 +1029,21 @@ impl Session {
                 noodle_core::ClipContent::Audio(audio) => Some(base.join(&audio.source)),
                 noodle_core::ClipContent::Midi(_) => None,
             });
-        let mut changed = self.file_watch.changed(now, files);
+        // Reads what the watcher thread last saw: no I/O here, and the
+        // watcher wakes the window when a file differs.
+        let watcher = noodle_io::AudioFiles::global();
+        let files: Vec<PathBuf> = files.collect();
+        self.file_stamps.retain(|path, _| files.contains(path));
+        let mut changed = Vec::new();
+        for path in files {
+            let stamp = watcher.stamp(&path);
+            // A file seen for the first time is only remembered.
+            if let Some(before) = self.file_stamps.insert(path.clone(), stamp)
+                && before != stamp
+            {
+                changed.push(path);
+            }
+        }
         if changed.is_empty() {
             return;
         }
@@ -915,7 +1094,7 @@ impl Session {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.history.position() != self.saved_position
     }
 
     /// Problems found compiling the project, for the views to show where they
@@ -977,6 +1156,22 @@ impl Session {
                     self.library_edit(edit);
                     continue;
                 }
+                Edit::MonitorAs { node, mode, add } => {
+                    self.monitor_as(node, mode, add);
+                    continue;
+                }
+                Edit::Monitor {
+                    node,
+                    command,
+                    shift,
+                } => {
+                    self.click_monitor(node, command, shift);
+                    continue;
+                }
+                Edit::SplitToStems(clip) => {
+                    self.split_to_stems(clip);
+                    continue;
+                }
                 Edit::UpdateFromTemplate(group) => {
                     self.history.end_group();
                     match self.update_from_template(group) {
@@ -1016,7 +1211,6 @@ impl Session {
                 self.recompile_with(false);
             }
         }
-        self.update_dirty();
     }
 
     pub fn undo(&mut self) {
@@ -1037,7 +1231,6 @@ impl Session {
             // engine, so undoing a parameter change reaches the audio.
             Ok(true) => {
                 self.recompile();
-                self.update_dirty();
             }
             Ok(false) => {}
             Err(error) => self.message = Some(format!("Couldn't {name}: {error}")),
@@ -1061,8 +1254,7 @@ impl Session {
                 self.path = Some(path.to_owned());
                 self.save_samples();
                 self.feed_clips();
-                self.saved = self.project.clone();
-                self.dirty = false;
+                self.saved_position = self.history.position();
                 self.message = Some(format!("Saved {}", path.display()));
                 true
             }
@@ -1074,7 +1266,7 @@ impl Session {
     }
 
     /// Points the store at `samples` beside the file and writes every sample
-    /// a Sampler names into it, so a project saved anywhere takes its sounds
+    /// a Sampler or Sample node names into it, so a project saved anywhere takes its sounds
     /// along.
     fn save_samples(&mut self) {
         self.samples.set_dir(self.base().join("samples"));
@@ -1082,11 +1274,19 @@ impl Session {
             .project
             .graph()
             .nodes()
-            .filter(|(_, node)| node.type_id == noodle_nodes::SAMPLER_ID)
+            .filter(|(_, node)| {
+                matches!(
+                    node.type_id.as_str(),
+                    noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
+                )
+            })
             .filter_map(|(_, node)| match node.config.get("sample") {
-                Some(noodle_core::Value::Text(hash)) if !hash.is_empty() => Some(hash.clone()),
+                Some(noodle_core::Value::Text(text)) => {
+                    Some(noodle_nodes::SampleRef::parse(text).hash)
+                }
                 _ => None,
             })
+            .filter(|hash| !hash.is_empty())
             .collect();
         for hash in hashes {
             if let Err(error) = self.samples.save(&hash) {
@@ -1127,11 +1327,10 @@ impl Session {
         for track in std::mem::take(&mut self.armed_midi) {
             self.clips.set_monitoring(track, false);
         }
-        self.saved = project.clone();
         self.project = project;
         self.history = History::new();
+        self.saved_position = self.history.position();
         self.path = path;
-        self.dirty = false;
         self.plugin_editors.clear();
         self.message = None;
         self.parked = Tick(0);
@@ -1154,6 +1353,13 @@ impl Session {
     /// It runs whether or not the transport does.
     pub fn engine_running(&self) -> bool {
         self.audio.is_some()
+    }
+
+    /// The sample rate the engine runs at, while it runs.
+    pub fn engine_sample_rate(&self) -> Option<f32> {
+        self.audio
+            .as_ref()
+            .map(|audio| audio.controller.settings().sample_rate)
     }
 
     /// Why the engine isn't on what was chosen, if it isn't: it fell back to
@@ -1194,7 +1400,7 @@ impl Session {
             return;
         }
         // Output nodes tied to other devices play on those as well.
-        let devices = noodle_engine::output_devices(self.project.graph());
+        let devices = self.wanted_devices();
         let open = |config: &AudioConfig| {
             noodle_io::play_with_outputs_stopped(config, &devices, MAX_FRAMES, &self.midi).map(
                 |(playback, controller)| {
@@ -1245,6 +1451,10 @@ impl Session {
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
                     audio.controller.set_tempo_map(self.project.tempo_map());
+                    audio
+                        .controller
+                        .transport()
+                        .set_loop(self.project.transport_loop().active());
                     // Carry on from where the playhead was left.
                     if self.parked != Tick(0) {
                         audio.controller.transport().seek(self.parked);
@@ -1310,6 +1520,31 @@ impl Session {
         }
     }
 
+    /// The transport's loop: whether it is on and the span it repeats.
+    pub fn loop_region(&self) -> LoopRegion {
+        self.project.transport_loop()
+    }
+
+    /// Turns the loop on or off and sets its span, as an undoable edit of the
+    /// project. Takes effect at once, even while playing.
+    ///
+    /// The bar fields change it on every frame of a drag, so the edits share
+    /// one undo step until [`Session::settle_loop`] closes it.
+    pub fn set_loop(&mut self, region: LoopRegion) {
+        if region != self.project.transport_loop() {
+            self.loop_open = true;
+            self.edit([Edit::Drag(Command::SetLoop(region))]);
+        }
+    }
+
+    /// Ends the undo step the loop's edits have been sharing, once the
+    /// pointer is up.
+    pub fn settle_loop(&mut self) {
+        if std::mem::take(&mut self.loop_open) {
+            self.edit([Edit::EndDrag]);
+        }
+    }
+
     /// Moves the playhead to the start of the timeline.
     pub fn rewind(&mut self) {
         self.seek(Tick(0));
@@ -1362,6 +1597,44 @@ impl Session {
         Tick(tick.round() as i64)
     }
 
+    /// When [`maintain`](Self::maintain) next has something to do that nothing
+    /// will wake the window for, or `None` if it can sleep until something
+    /// does. Finished jobs and scans wake it themselves
+    /// (see [`noodle_engine::wake`]); this covers what has to be looked at:
+    /// the stream's health, devices coming and going, and work waiting on a
+    /// timer.
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        let mut soonest: Option<Instant> = None;
+        let mut at = |when: Instant| {
+            soonest = Some(soonest.map_or(when, |s| s.min(when)));
+        };
+        let frame = now + FRAME;
+        if self.recording.is_some() {
+            // The bus holds only so many messages.
+            at(frame);
+        }
+        if let Some(audio) = &self.audio {
+            if audio.controller.has_pending() || audio.controller.transport().is_playing() {
+                // A plan waiting for room, or the playhead moving.
+                at(frame);
+            }
+            at(now + HEALTH_INTERVAL);
+        }
+        if self.watching_midi() {
+            at(self
+                .midi_watch
+                .checked
+                .map_or(now, |c| c + MIDI_WATCH_INTERVAL));
+        }
+        if let Some(due) = self.freezing.due_at() {
+            at(due);
+        }
+        if self.sandbox_plugins {
+            at(now + HOST_WATCH_INTERVAL);
+        }
+        soonest.map(|s| s.max(now))
+    }
+
     /// Housekeeping to do every frame: frees plans the audio thread is done
     /// with, and checks the device's health.
     pub fn maintain(&mut self) {
@@ -1382,8 +1655,9 @@ impl Session {
             }
         }
         self.watch_midi(Instant::now());
-        self.watch_files(Instant::now());
+        self.watch_files();
         self.poll_export();
+        self.poll_split();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
         self.poll_plugin_hosts(Instant::now());
@@ -1394,6 +1668,11 @@ impl Session {
         if audio.controller.tempo_map() != self.project.tempo_map() {
             audio.controller.set_tempo_map(self.project.tempo_map());
         }
+        // The loop is project state, so undo and loading change it too.
+        audio
+            .controller
+            .transport()
+            .set_loop(self.project.transport_loop().active());
         let health = audio.playback.health();
         let now = Glitches {
             underruns: health.underruns(),
@@ -1957,6 +2236,20 @@ impl Session {
         self.recompile_with(true);
     }
 
+    /// The devices besides the main one the stream plays on: those Output
+    /// nodes are tied to, and the monitor's.
+    fn wanted_devices(&self) -> Vec<String> {
+        let mut devices = noodle_engine::output_devices(self.project.graph());
+        let monitor = &self.node_monitor;
+        if !monitor.nodes.is_empty()
+            && !monitor.device.is_empty()
+            && !devices.contains(&monitor.device)
+        {
+            devices.push(monitor.device.clone());
+        }
+        devices
+    }
+
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
@@ -1967,12 +2260,19 @@ impl Session {
         self.samples.set_dir_option(dir);
         // Devices are fixed for a stream's lifetime, so an Output node tied
         // to another one means playing afresh. `play` compiles.
-        let wanted = noodle_engine::output_devices(self.project.graph());
+        self.node_monitor
+            .nodes
+            .retain(|&node| self.project.graph().node(node).is_some());
+        let wanted = self.wanted_devices();
         if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
             self.reopen_stream();
             if self.audio.is_some() {
                 return;
             }
+        }
+        let monitor = self.engine_monitor();
+        if let Some(audio) = &mut self.audio {
+            audio.controller.set_monitor(monitor);
         }
         let plan = self.refresh_freezing(start);
         self.diagnostics = match (&mut self.audio, &plan) {
@@ -2005,10 +2305,6 @@ impl Session {
         }
         self.feed_clips();
     }
-
-    fn update_dirty(&mut self) {
-        self.dirty = self.project != self.saved;
-    }
 }
 
 /// Whether a command changes how a clip is warped.
@@ -2019,6 +2315,9 @@ fn edits_warp(command: &Command) -> bool {
         _ => false,
     }
 }
+
+/// The transport's loop (saved with the project).
+pub type LoopRegion = noodle_core::TransportLoop;
 
 /// What a command means for the engine.
 #[derive(Default, Debug, PartialEq)]
@@ -2050,6 +2349,17 @@ impl Effect {
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}
+            // The transport takes the loop when the edit is applied (see
+            // `Session::edit`).
+            Command::SetLoop(_) => {}
+            // Solo is read when the project is compiled: it mutes the other
+            // tracks' stages, which no parameter reaches.
+            Command::SetParam { key, .. }
+                if noodle_core::group::parse_control_key(key)
+                    .is_some_and(|(control, _)| control == noodle_core::group::SOLO) =>
+            {
+                self.structural = true;
+            }
             Command::SetParam {
                 node,
                 key,
@@ -2353,6 +2663,29 @@ mod tests {
     }
 
     #[test]
+    fn the_loop_is_saved_with_the_project_and_comes_back_on_opening_and_on_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.ron");
+        let mut session = Session::new(Nodes::all());
+        let region = LoopRegion {
+            on: true,
+            start: Tick(960),
+            end: Tick(7680),
+        };
+        // A drag of a bar field sets it many times: one undo step.
+        for end in [Tick(2000), Tick(4000), Tick(7680)] {
+            session.set_loop(LoopRegion { end, ..region });
+        }
+        session.settle_loop();
+        assert_eq!(session.loop_region(), region);
+        assert!(session.save_as(&path));
+        let reopened = Session::open(Nodes::all(), &path).unwrap();
+        assert_eq!(reopened.loop_region(), region);
+        session.undo();
+        assert_eq!(session.loop_region(), LoopRegion::default());
+    }
+
+    #[test]
     fn samples_go_with_the_project_when_it_is_saved_elsewhere() {
         let mut session = Session::new(Nodes::all());
         let hash = session.samples().insert(&noodle_io::Audio {
@@ -2638,6 +2971,7 @@ mod tests {
         sine_chain(&mut session, None);
         let whole = ExportChoice {
             format: ExportFormat::Wav16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             range: None,
         };
         assert!(
@@ -2647,6 +2981,7 @@ mod tests {
         );
         let empty = ExportChoice {
             format: ExportFormat::Wav16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             range: Some((2.0, 2.0)),
         };
         assert!(
@@ -2658,6 +2993,7 @@ mod tests {
         let path = dir.path().join("half.wav");
         let choice = ExportChoice {
             format: ExportFormat::Wav16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             range: Some((0.0, 0.5)),
         };
         session.start_export(path.clone(), choice).unwrap();
@@ -2679,6 +3015,113 @@ mod tests {
     }
 
     #[test]
+    fn a_surround_export_writes_every_channel_of_the_layout() {
+        use noodle_engine::ChannelLayout;
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        // A sine panned to the centre speaker of the default 5.1.
+        sine_chain(&mut session, Some(noodle_nodes::SURROUND_PAN_ID));
+        let path = dir.path().join("surround.wav");
+        let choice = ExportChoice {
+            format: ExportFormat::WavFloat,
+            layout: ChannelLayout::Surround51,
+            range: Some((0.0, 0.25)),
+        };
+        session.start_export(path.clone(), choice).unwrap();
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        let audio = noodle_io::decode_file(&path).unwrap();
+        assert_eq!(audio.channels, 6);
+        assert_eq!(audio.samples.len(), 12_000 * 6);
+        let peak = |channel: usize| {
+            audio
+                .samples
+                .iter()
+                .skip(channel)
+                .step_by(6)
+                .fold(0.0f32, |peak, x| peak.max(x.abs()))
+        };
+        assert!(peak(2) > 0.05, "centre {}", peak(2));
+        for channel in [0, 1, 3, 4, 5] {
+            assert_eq!(peak(channel), 0.0, "channel {channel}");
+        }
+
+        // A stereo project exported as 5.1 fills the front pair only.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache2"));
+        sine_chain(&mut session, Some("noodle.util.pan"));
+        let path = dir.path().join("stereo-in-51.wav");
+        session.start_export(path.clone(), choice).unwrap();
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        let audio = noodle_io::decode_file(&path).unwrap();
+        assert_eq!(audio.channels, 6);
+        let peak = |channel: usize| {
+            audio
+                .samples
+                .iter()
+                .skip(channel)
+                .step_by(6)
+                .fold(0.0f32, |peak, x| peak.max(x.abs()))
+        };
+        assert!(peak(0) > 0.05 && peak(1) > 0.05);
+        assert!((2..6).all(|channel| peak(channel) == 0.0));
+    }
+
+    #[test]
+    fn exporting_to_a_narrower_layout_folds_the_mix_down() {
+        use noodle_engine::ChannelLayout;
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let peak = |path: &std::path::Path, channels: usize| {
+            let audio = noodle_io::decode_file(path).unwrap();
+            assert_eq!(audio.channels, channels);
+            audio.samples.iter().fold(0.0f32, |p, x| p.max(x.abs()))
+        };
+        let export = |session: &mut Session, name: &str, layout| {
+            let path = dir.path().join(name);
+            let choice = ExportChoice {
+                format: ExportFormat::WavFloat,
+                layout,
+                range: Some((0.0, 0.25)),
+            };
+            session.start_export(path.clone(), choice).unwrap();
+            until(session, "the export finishes", |s| {
+                s.export_progress().is_none()
+            });
+            path
+        };
+
+        // A sine panned hard right, exported as mono: the right channel is
+        // not lost.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, Some("noodle.util.pan"));
+        let pan = NodeId(3);
+        session.edit(vec![Edit::Apply(Command::SetParam {
+            node: pan,
+            key: "pan".into(),
+            value: Some(1.0),
+        })]);
+        let path = export(&mut session, "mono.wav", ChannelLayout::Mono);
+        assert!(peak(&path, 1) > 0.05);
+
+        // The default 5.1 pan puts everything in the centre; as stereo it
+        // folds into both ears instead of vanishing.
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache2"));
+        sine_chain(&mut session, Some(noodle_nodes::SURROUND_PAN_ID));
+        let path = export(&mut session, "stereo.wav", ChannelLayout::Stereo);
+        assert!(peak(&path, 2) > 0.05);
+    }
+
+    #[test]
     fn an_export_includes_offline_nodes_and_can_be_cancelled() {
         use noodle_io::ExportFormat;
 
@@ -2688,6 +3131,7 @@ mod tests {
         sine_chain(&mut session, Some("noodle.offline.reverse"));
         let choice = ExportChoice {
             format: ExportFormat::Flac16,
+            layout: noodle_engine::ChannelLayout::Stereo,
             // Inside the 30 s the offline node is rendered over.
             range: Some((1.0, 2.0)),
         };
@@ -3118,6 +3562,7 @@ mod tests {
             input: noodle_io::InputChoice::Default,
             sample_rate: Some(96_000),
             buffer_size: Some(64),
+            channels: Some(6),
             midi_input: Some("Keys".into()),
             threads: 3,
         };
@@ -3347,6 +3792,13 @@ mod tests {
         let param = |value| (node, "gain".to_owned(), value);
 
         assert_eq!(Effect::of(&moved), Effect::default());
+        // Solo mutes other tracks' stages, so it recompiles.
+        let solo = Command::SetParam {
+            node,
+            key: "solo.1".into(),
+            value: Some(1.0),
+        };
+        assert!(Effect::of(&solo).structural);
         assert_eq!(
             Effect::of(&set(Some(-6.0))),
             Effect {
@@ -3898,6 +4350,27 @@ mod tests {
     use crate::testkit::virtual_audio as virtual_config;
 
     #[test]
+    fn an_idle_session_asks_for_no_wake_up_and_a_busy_one_for_the_next_look() {
+        let mut session = Session::new(Nodes::all());
+        let now = Instant::now();
+        assert_eq!(session.next_deadline(now), None, "nothing to look at");
+
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        let idle = session.next_deadline(now).expect("health is checked");
+        assert!(
+            idle - now >= Duration::from_millis(500),
+            "idle health checks are not frame-rate: {:?}",
+            idle - now
+        );
+
+        session.set_transport_running(true);
+        let playing = session.next_deadline(now).unwrap();
+        assert!(playing - now <= Duration::from_millis(20), "the playhead");
+    }
+
+    #[test]
     fn the_engine_runs_without_the_transport_and_stop_leaves_it_running() {
         let mut session = Session::new(Nodes::all());
         session.set_audio_config(virtual_config());
@@ -3972,6 +4445,178 @@ mod tests {
         assert!(heard.iter().all(|x| x.is_finite()));
         let peak = heard.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
         assert!(peak > 0.01 && peak <= 1.0, "peak {peak}");
+    }
+
+    #[test]
+    fn monitor_clicks_follow_the_modifiers() {
+        let mut session = Session::new(Nodes::all());
+        let (a, b) = (NodeId(1), NodeId(2));
+        for id in [a, b] {
+            session.edit([Edit::Apply(Command::AddNode {
+                id,
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let state = |s: &Session| (s.monitored().to_vec(), s.monitor_mode());
+        // Plain: one node, summed; again stops.
+        session.click_monitor(a, false, false);
+        assert_eq!(state(&session), (vec![a], MonitorMode::Sum));
+        session.click_monitor(b, false, false);
+        assert_eq!(state(&session), (vec![b], MonitorMode::Sum));
+        // Shift adds, and takes off again.
+        session.click_monitor(a, false, true);
+        assert_eq!(state(&session), (vec![b, a], MonitorMode::Sum));
+        session.click_monitor(b, false, true);
+        assert_eq!(state(&session), (vec![a], MonitorMode::Sum));
+        session.click_monitor(a, false, true);
+        assert!(session.monitored().is_empty());
+        // Ctrl: alone and exclusive. On a node already summed it changes the
+        // mode rather than stopping; the same again stops.
+        session.click_monitor(a, false, false);
+        session.click_monitor(a, true, false);
+        assert_eq!(state(&session), (vec![a], MonitorMode::Exclusive));
+        session.click_monitor(a, true, false);
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
+        // Ctrl+Shift silences everything else.
+        session.click_monitor(b, true, true);
+        assert_eq!(state(&session), (vec![b], MonitorMode::SilenceOthers));
+        session.stop_monitor();
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
+    }
+
+    /// How much of each of `frequencies` the first channel of interleaved
+    /// stereo `heard` holds, after its first 20 ms (the fade-in).
+    fn energy_at(heard: &[f32], frequencies: [f32; 2]) -> [f32; 2] {
+        frequencies.map(|f| {
+            let (mut sin, mut cos) = (0.0f32, 0.0f32);
+            for (n, frame) in heard.chunks(2).enumerate().skip(960) {
+                let phase = std::f32::consts::TAU * f * n as f32 / 48_000.0;
+                sin += frame[0] * phase.sin();
+                cos += frame[0] * phase.cos();
+            }
+            (sin * sin + cos * cos).sqrt() / (heard.len() / 2) as f32
+        })
+    }
+
+    #[test]
+    fn a_monitored_node_is_heard_summed_exclusively_or_alone() {
+        const A: f32 = 440.0;
+        const B: f32 = 1000.0;
+        let mut session = Session::new(Nodes::all());
+        let sines = [(NodeId(1), A), (NodeId(2), B)];
+        for (id, frequency) in sines {
+            session.edit([
+                Edit::Apply(Command::AddNode {
+                    id,
+                    node: Node::new("noodle.osc.sine"),
+                }),
+                Edit::Apply(Command::SetParam {
+                    node: id,
+                    key: "frequency".into(),
+                    value: Some(frequency),
+                }),
+            ]);
+        }
+        // Only the first sine is wired to an Output; the second is silent
+        // until it is monitored.
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: NodeId(3),
+                node: Node::new(noodle_engine::OUTPUT_ID),
+            }),
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(NodeId(1), "out"),
+                to: Endpoint::new(NodeId(3), "in"),
+            })),
+        ]);
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        session.play();
+        let tap = session.virtual_capture().expect("the virtual output");
+        let hear = |session: &Session| {
+            let _ = session;
+            tap.start();
+            std::thread::sleep(Duration::from_millis(300));
+            energy_at(&tap.take(), [A, B])
+        };
+
+        let [a, b] = hear(&session);
+        assert!(a > 0.1 && b < 0.01, "plain: {a} {b}");
+
+        session.click_monitor(NodeId(2), false, false);
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a > 0.1 && b > 0.1, "summed: {a} {b}");
+
+        session.click_monitor(NodeId(2), true, false);
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a < 0.01 && b > 0.1, "exclusive: {a} {b}");
+
+        session.click_monitor(NodeId(2), true, true);
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a < 0.01 && b > 0.1, "silencing the others: {a} {b}");
+
+        session.stop_monitor();
+        std::thread::sleep(Duration::from_millis(100));
+        let [a, b] = hear(&session);
+        assert!(a > 0.1 && b < 0.01, "stopped: {a} {b}");
+    }
+
+    #[test]
+    fn the_monitor_menu_sets_a_mode_directly() {
+        let mut session = Session::new(Nodes::all());
+        let (a, b) = (NodeId(1), NodeId(2));
+        for id in [a, b] {
+            session.edit([Edit::Apply(Command::AddNode {
+                id,
+                node: Node::new("noodle.osc.sine"),
+            })]);
+        }
+        let state = |s: &Session| (s.monitored().to_vec(), s.monitor_mode());
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: Some(MonitorMode::SilenceOthers),
+            add: false,
+        }]);
+        // Choosing a mode again keeps it, where a click would stop.
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: Some(MonitorMode::SilenceOthers),
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![a], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: b,
+            mode: Some(MonitorMode::Sum),
+            add: true,
+        }]);
+        assert_eq!(state(&session), (vec![a, b], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: a,
+            mode: None,
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![b], MonitorMode::SilenceOthers));
+        session.edit([Edit::MonitorAs {
+            node: b,
+            mode: None,
+            add: false,
+        }]);
+        assert_eq!(state(&session), (vec![], MonitorMode::Sum));
+    }
+
+    #[test]
+    fn deleting_a_monitored_node_stops_monitoring_it() {
+        let mut session = Session::new(Nodes::all());
+        session.edit([Edit::Apply(Command::AddNode {
+            id: NodeId(1),
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        session.click_monitor(NodeId(1), false, false);
+        session.edit([Edit::Apply(Command::RemoveNode { id: NodeId(1) })]);
+        assert!(session.monitored().is_empty());
     }
 
     #[test]

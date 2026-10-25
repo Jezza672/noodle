@@ -372,3 +372,35 @@ fn an_offline_render_through_the_hook_waits_for_hosts_and_matches_in_process() {
     let _sandbox = sandboxed();
     assert_eq!(render(&catalog), expected);
 }
+
+#[test]
+fn a_hosted_plugin_that_has_gone_quiet_flags_its_output_silent() {
+    let _sandbox = sandboxed();
+    let catalog = catalog();
+    let mut h = harness(node_type(&catalog));
+    let block = |h: &mut Harness, level: f32| {
+        {
+            let mut input = h.input(IN, FRAMES);
+            for channel in 0..2 {
+                if level == 0.0 {
+                    input.silence(0, channel);
+                } else {
+                    input.lane_mut(0, channel).fill(level);
+                }
+            }
+        }
+        h.run(FRAMES).unwrap();
+    };
+    for _ in 0..20 {
+        block(&mut h, 0.0);
+    }
+    let out = h.output(0);
+    assert!(out.is_silent(0, 0) && out.is_silent(0, 1), "flagged silent");
+
+    for _ in 0..4 {
+        block(&mut h, 0.5);
+    }
+    let out = h.output(0);
+    assert!(!out.is_silent(0, 0), "not flagged while it sounds");
+    assert!(out.lane(0, 0).iter().any(|&s| s.abs() > 0.1));
+}

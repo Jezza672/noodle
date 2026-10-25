@@ -23,6 +23,9 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/snare.ron"),
     include_str!("../../library/system/hat.ron"),
     include_str!("../../library/system/clap.ron"),
+    include_str!("../../library/system/tempo-echo.ron"),
+    include_str!("../../library/system/tempo-tremolo.ron"),
+    include_str!("../../library/system/drum-rack.ron"),
     include_str!("../../library/system/nodes.ron"),
 ];
 

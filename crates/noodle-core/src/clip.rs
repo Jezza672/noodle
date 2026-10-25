@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NodeId, Tick, WarpId};
+use crate::{NodeId, TICKS_PER_QUARTER, Tick, WarpId};
 
 /// Identifies a clip within a project. Like node IDs, clip IDs aren't reused
 /// within a session.
@@ -43,7 +43,25 @@ pub struct MidiClip {
     pub length: Tick,
     /// Not in any particular order; the engine sorts what it plays.
     pub notes: Vec<MidiNote>,
+    /// Whether the clip repeats a section of itself: it plays from its start
+    /// to the end of the loop, then the loop section again and again until
+    /// the clip's end. Notes after the loop's end don't play.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loop_on: bool,
+    /// Where the loop section starts, from the start of the clip.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub loop_start: Tick,
+    /// How long the loop section is; at least [`MIN_LOOP_LEN`] while looping.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub loop_len: Tick,
 }
+
+fn is_zero(tick: &Tick) -> bool {
+    *tick == Tick::ZERO
+}
+
+/// The shortest loop a MIDI clip may have: a sixteenth of a beat.
+pub const MIN_LOOP_LEN: i64 = TICKS_PER_QUARTER / 16;
 
 /// One note in a MIDI clip.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,7 +103,93 @@ impl MidiClip {
         Self {
             length,
             notes: Vec::new(),
+            loop_on: false,
+            loop_start: Tick::ZERO,
+            loop_len: Tick::ZERO,
         }
+    }
+
+    /// The first tick after the loop section.
+    pub fn loop_end(&self) -> Tick {
+        Tick(self.loop_start.0 + self.loop_len.0)
+    }
+
+    /// Turns looping on over the whole clip (or keeps the section the clip
+    /// had the last time it looped, if it still fits), or off.
+    pub fn set_looping(&mut self, on: bool) {
+        self.loop_on = on;
+        if on && (self.loop_len.0 < MIN_LOOP_LEN || self.loop_start.0 >= self.length.0) {
+            self.loop_start = Tick::ZERO;
+            self.loop_len = self.length;
+        }
+    }
+
+    /// The loop section, put right: inside the clip and at least
+    /// [`MIN_LOOP_LEN`] long.
+    pub fn set_loop(&mut self, start: Tick, end: Tick) {
+        let start = start.0.clamp(0, (self.length.0 - MIN_LOOP_LEN).max(0));
+        self.loop_start = Tick(start);
+        self.loop_len =
+            Tick((end.0 - start).clamp(MIN_LOOP_LEN, (self.length.0 - start).max(MIN_LOOP_LEN)));
+    }
+
+    /// The notes of the later passes through the loop, as they sound: each
+    /// note that starts in the loop section, shifted by whole loops and cut
+    /// at the loop's end, until the clip's end. Empty when not looping.
+    pub fn repeats(&self) -> Vec<MidiNote> {
+        let mut out = Vec::new();
+        if !self.loop_on || self.loop_len.0 < MIN_LOOP_LEN {
+            return out;
+        }
+        let (from, end) = (self.loop_start.0, self.loop_end().0);
+        let in_loop: Vec<&MidiNote> = self
+            .notes
+            .iter()
+            .filter(|n| n.start.0 >= from && n.start.0 < end)
+            .collect();
+        let mut shift = self.loop_len.0;
+        while from + shift < self.length.0 {
+            for note in &in_loop {
+                let start = note.start.0 + shift;
+                if start >= self.length.0 {
+                    continue;
+                }
+                out.push(MidiNote {
+                    start: Tick(start),
+                    length: Tick(note.length.0.min(end - note.start.0)),
+                    ..**note
+                });
+            }
+            shift += self.loop_len.0;
+        }
+        out
+    }
+
+    /// Every note as it sounds, in clip time: the first pass (cut at the
+    /// loop's end, and the notes past it dropped, if the clip loops) then the
+    /// repeats. Notes starting past the clip's end are left out; one that
+    /// runs past it is cut by whoever plays it.
+    pub fn played(&self) -> Vec<MidiNote> {
+        let mut out: Vec<MidiNote> = Vec::with_capacity(self.notes.len());
+        for note in &self.notes {
+            if note.start.0 >= self.length.0 {
+                continue;
+            }
+            if self.loop_on && self.loop_len.0 >= MIN_LOOP_LEN {
+                let end = self.loop_end().0;
+                if note.start.0 >= end {
+                    continue;
+                }
+                out.push(MidiNote {
+                    length: Tick(note.length.0.min(end - note.start.0)),
+                    ..*note
+                });
+            } else {
+                out.push(*note);
+            }
+        }
+        out.extend(self.repeats());
+        out
     }
 
     /// Gives each note whose id repeats an earlier one's a new id, so ids are
@@ -117,6 +221,9 @@ impl MidiClip {
     fn problem(&self) -> Option<&'static str> {
         if self.length <= Tick::ZERO {
             return Some("it is empty");
+        }
+        if self.loop_on && (self.loop_start < Tick::ZERO || self.loop_len.0 < MIN_LOOP_LEN) {
+            return Some("its loop starts before the clip or is too short");
         }
         for note in &self.notes {
             if note.start < Tick::ZERO {
@@ -152,6 +259,16 @@ pub struct AudioClip {
     /// Fades at either end, in sample frames of the file, inside `length`.
     pub fade_in: u64,
     pub fade_out: u64,
+    /// The gain envelope over the clip, on top of `gain`: points in timeline
+    /// time from the clip's start, sorted by time. Between points the level
+    /// moves in a straight line in dB; before the first and after the last it
+    /// holds. Empty means a flat clip.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gain_points: Vec<GainPoint>,
+    /// A crossfade into this clip from the one butted against its start (see
+    /// [`Crossfade`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossfade: Option<Crossfade>,
     /// How the clip is warped, if it is. Sections of the same clip name the
     /// same warp; `offset` and `length` still pick the part of the file this
     /// section shows, and the warp decides how that part is laid out in time.
@@ -162,6 +279,84 @@ pub struct AudioClip {
     /// clip that doesn't loop) lasts as long as the window does once warped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<Tick>,
+    /// Whether the section is silenced. It stays where it is, so it can be
+    /// brought back; Split to stems mutes its source this way.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub muted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// One control point of a clip's gain envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GainPoint {
+    /// Where, in ticks from the start of the clip.
+    pub tick: Tick,
+    pub db: f32,
+}
+
+/// Gain points as text, for a setting that holds an envelope (a Sampler's,
+/// where `tick` counts millionths of the sample): `tick:db` pairs, comma
+/// separated.
+pub fn gain_points_to_text(points: &[GainPoint]) -> String {
+    points
+        .iter()
+        .map(|p| format!("{}:{}", p.tick.0, p.db))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The points `text` holds, sorted by tick and with the levels kept in
+/// range; what can't be read is left out.
+pub fn gain_points_from_text(text: &str) -> Vec<GainPoint> {
+    let mut points: Vec<GainPoint> = text
+        .split(',')
+        .filter_map(|pair| {
+            let (tick, db) = pair.trim().split_once(':')?;
+            let db: f32 = db.parse().ok()?;
+            let tick: i64 = tick.parse().ok()?;
+            db.is_finite().then(|| GainPoint {
+                tick: Tick(tick),
+                db: db.clamp(GAIN_POINT_MIN_DB, GAIN_POINT_MAX_DB),
+            })
+        })
+        .collect();
+    points.sort_by_key(|p| p.tick);
+    points
+}
+
+/// The lowest and highest a gain point can be set to, in dB.
+pub const GAIN_POINT_MIN_DB: f32 = -60.0;
+pub const GAIN_POINT_MAX_DB: f32 = 24.0;
+
+/// How far apart, in seconds, the end of one audio clip and the start of the
+/// next can be and still count as butted together, so a crossfade can sit
+/// between them.
+pub const BUTT_SECONDS: f64 = 0.002;
+
+/// A crossfade between two audio clips butted together, stored on the later
+/// one, whose start is the cut. It lasts `before` ticks before the cut and
+/// `after` ticks after it: over that time the earlier clip fades out, playing
+/// on past its end, while this one fades in, playing from before its start
+/// (equal power). Each side is held to the audio the clip has left in that
+/// direction. In timeline time, so warped clips need nothing special.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Crossfade {
+    pub before: Tick,
+    pub after: Tick,
+}
+
+impl Crossfade {
+    /// How long the whole crossfade lasts.
+    pub fn len(&self) -> Tick {
+        Tick(self.before.0 + self.after.0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.before.0 + self.after.0 <= 0
+    }
 }
 
 impl AudioClip {
@@ -175,8 +370,11 @@ impl AudioClip {
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            gain_points: Vec::new(),
+            crossfade: None,
             warp: None,
             extent: None,
+            muted: false,
         }
     }
 }
@@ -236,6 +434,48 @@ impl Clip {
 }
 
 impl AudioClip {
+    /// The gain envelope's level in dB at `tick` from the clip's start, 0
+    /// for a clip without one.
+    pub fn envelope_db(&self, tick: Tick) -> f32 {
+        let points = &self.gain_points;
+        let after = points.partition_point(|p| p.tick <= tick);
+        match (
+            after.checked_sub(1).map(|i| points[i]),
+            points.get(after).copied(),
+        ) {
+            (None, None) => 0.0,
+            (Some(p), None) | (None, Some(p)) => p.db,
+            (Some(a), Some(b)) => {
+                let t = (tick.0 - a.tick.0) as f32 / (b.tick.0 - a.tick.0).max(1) as f32;
+                a.db + (b.db - a.db) * t
+            }
+        }
+    }
+
+    /// Moves the envelope later by `delta` ticks (the clip's start moved
+    /// earlier by that much), or earlier for a negative `delta`. Points that
+    /// fall before the start go, leaving a point at the start with the level
+    /// the envelope had there.
+    pub fn shift_gain_points(&mut self, delta: Tick) {
+        if self.gain_points.is_empty() || delta == Tick::ZERO {
+            return;
+        }
+        let at_start = self.envelope_db(Tick(-delta.0));
+        self.gain_points.retain_mut(|p| {
+            p.tick = Tick(p.tick.0 + delta.0);
+            p.tick > Tick::ZERO
+        });
+        if delta.0 < 0 {
+            self.gain_points.insert(
+                0,
+                GainPoint {
+                    tick: Tick::ZERO,
+                    db: at_start,
+                },
+            );
+        }
+    }
+
     fn problem(&self) -> Option<&'static str> {
         if self.length == 0 {
             Some("it is empty")
@@ -247,8 +487,235 @@ impl AudioClip {
             Some("its fades are longer than the clip")
         } else if self.extent.is_some_and(|e| e <= Tick::ZERO) {
             Some("its extent is empty")
+        } else if self
+            .gain_points
+            .iter()
+            .any(|p| !p.db.is_finite() || p.tick < Tick::ZERO)
+            || self.gain_points.windows(2).any(|w| w[1].tick < w[0].tick)
+        {
+            Some("its gain points are out of order or not numbers")
+        } else if self
+            .crossfade
+            .is_some_and(|x| x.before < Tick::ZERO || x.after < Tick::ZERO)
+        {
+            Some("its crossfade is negative")
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gain_points_round_trip_through_text_sorted_and_in_range() {
+        let points = vec![
+            GainPoint {
+                tick: Tick(100),
+                db: -6.5,
+            },
+            GainPoint {
+                tick: Tick(900_000),
+                db: 3.0,
+            },
+        ];
+        assert_eq!(gain_points_from_text(&gain_points_to_text(&points)), points);
+        let messy = gain_points_from_text("500:-99,junk,100:2,7:nan");
+        assert_eq!(messy.len(), 2);
+        assert_eq!(messy[0].tick, Tick(100));
+        assert_eq!(messy[1].db, GAIN_POINT_MIN_DB);
+        assert!(gain_points_from_text("").is_empty());
+    }
+
+    use super::*;
+
+    fn clip_with(points: &[(i64, f32)]) -> AudioClip {
+        let mut audio = AudioClip::new("a.wav", 1000);
+        audio.gain_points = points
+            .iter()
+            .map(|&(tick, db)| GainPoint {
+                tick: Tick(tick),
+                db,
+            })
+            .collect();
+        audio
+    }
+
+    #[test]
+    fn the_envelope_runs_straight_in_db_and_holds_at_its_ends() {
+        let audio = clip_with(&[(100, -6.0), (300, -26.0)]);
+        assert_eq!(audio.envelope_db(Tick(0)), -6.0);
+        assert_eq!(audio.envelope_db(Tick(100)), -6.0);
+        assert_eq!(audio.envelope_db(Tick(200)), -16.0);
+        assert_eq!(audio.envelope_db(Tick(900)), -26.0);
+        // No points: flat.
+        assert_eq!(clip_with(&[]).envelope_db(Tick(50)), 0.0);
+    }
+
+    #[test]
+    fn moving_the_start_shifts_the_points_and_keeps_the_level_at_the_new_start() {
+        let mut later = clip_with(&[(0, 0.0), (400, -20.0)]);
+        // The start moves 100 ticks later: the envelope is 100 ticks earlier.
+        later.shift_gain_points(Tick(-100));
+        assert_eq!(later.envelope_db(Tick(0)), -5.0);
+        assert_eq!(
+            later
+                .gain_points
+                .iter()
+                .map(|p| p.tick.0)
+                .collect::<Vec<_>>(),
+            [0, 300]
+        );
+        // The start moves 50 ticks earlier: everything is 50 ticks later.
+        let mut earlier = clip_with(&[(0, 0.0), (400, -20.0)]);
+        earlier.shift_gain_points(Tick(50));
+        assert_eq!(
+            earlier
+                .gain_points
+                .iter()
+                .map(|p| p.tick.0)
+                .collect::<Vec<_>>(),
+            [50, 450]
+        );
+        assert_eq!(earlier.envelope_db(Tick(0)), 0.0);
+    }
+
+    #[test]
+    fn a_clip_with_unordered_points_or_a_negative_crossfade_is_refused() {
+        assert!(clip_with(&[(0, 0.0), (10, 3.0)]).problem().is_none());
+        assert!(clip_with(&[(10, 0.0), (0, 3.0)]).problem().is_some());
+        assert!(clip_with(&[(0, f32::NAN)]).problem().is_some());
+        let mut audio = clip_with(&[]);
+        audio.crossfade = Some(Crossfade {
+            before: Tick(-1),
+            after: Tick(5),
+        });
+        assert!(audio.problem().is_some());
+    }
+
+    #[test]
+    fn points_and_crossfades_survive_a_round_trip() {
+        let mut audio = clip_with(&[(0, 1.5)]);
+        audio.crossfade = Some(Crossfade {
+            before: Tick(20),
+            after: Tick(30),
+        });
+        let text = ron::to_string(&audio).unwrap();
+        assert_eq!(ron::from_str::<AudioClip>(&text).unwrap(), audio);
+        // A flat clip writes neither.
+        let flat = ron::to_string(&clip_with(&[])).unwrap();
+        assert!(
+            !flat.contains("gain_points") && !flat.contains("crossfade"),
+            "{flat}"
+        );
+    }
+
+    fn looping(length: i64, from: i64, len: i64, notes: &[(i64, i64, u8)]) -> MidiClip {
+        let mut clip = MidiClip::new(Tick(length));
+        clip.notes = notes
+            .iter()
+            .map(|&(s, l, k)| MidiNote::new(Tick(s), Tick(l), k))
+            .collect();
+        clip.loop_on = true;
+        clip.loop_start = Tick(from);
+        clip.loop_len = Tick(len);
+        clip
+    }
+
+    fn shape(notes: Vec<MidiNote>) -> Vec<(i64, i64, u8)> {
+        let mut out: Vec<_> = notes
+            .iter()
+            .map(|n| (n.start.0, n.length.0, n.key))
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_clip_that_does_not_loop_plays_its_notes_once() {
+        let mut clip = looping(3840, 0, 960, &[(0, 480, 60), (4000, 10, 61)]);
+        clip.loop_on = false;
+        // A note past the clip's end is left out.
+        assert_eq!(shape(clip.played()), [(0, 480, 60)]);
+    }
+
+    #[test]
+    fn a_loop_repeats_its_section_until_the_clips_end() {
+        // Loop beats 1..2 of a four beat clip. The first note is a lead-in
+        // that plays once; the one after the loop never plays.
+        let clip = looping(
+            3840,
+            960,
+            960,
+            &[(0, 480, 59), (960, 480, 60), (2000, 100, 61)],
+        );
+        assert_eq!(
+            shape(clip.played()),
+            [
+                (0, 480, 59),
+                (960, 480, 60),
+                (1920, 480, 60),
+                (2880, 480, 60)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_note_is_cut_at_the_loops_end_on_every_pass() {
+        let clip = looping(2880, 0, 960, &[(480, 960, 60)]);
+        assert_eq!(
+            shape(clip.played()),
+            [(480, 480, 60), (1440, 480, 60), (2400, 480, 60)]
+        );
+    }
+
+    #[test]
+    fn the_last_repeat_is_not_started_past_the_clips_end() {
+        let clip = looping(1500, 0, 960, &[(0, 100, 60), (800, 100, 62)]);
+        assert_eq!(
+            shape(clip.played()),
+            [(0, 100, 60), (800, 100, 62), (960, 100, 60)]
+        );
+    }
+
+    #[test]
+    fn turning_looping_on_loops_the_whole_clip() {
+        let mut clip = MidiClip::new(Tick(3840));
+        clip.set_looping(true);
+        assert!(clip.loop_on);
+        assert_eq!((clip.loop_start, clip.loop_len), (Tick(0), Tick(3840)));
+        clip.set_loop(Tick(960), Tick(1920));
+        clip.set_looping(false);
+        clip.set_looping(true);
+        assert_eq!((clip.loop_start, clip.loop_len), (Tick(960), Tick(960)));
+    }
+
+    #[test]
+    fn set_loop_keeps_the_section_in_the_clip_and_not_tiny() {
+        let mut clip = MidiClip::new(Tick(3840));
+        clip.set_loop(Tick(-50), Tick(100000));
+        assert_eq!((clip.loop_start, clip.loop_len), (Tick(0), Tick(3840)));
+        clip.set_loop(Tick(960), Tick(960));
+        assert_eq!(clip.loop_len, Tick(MIN_LOOP_LEN));
+    }
+
+    #[test]
+    fn a_loop_that_is_too_short_is_a_problem() {
+        let mut clip = looping(3840, 0, 960, &[]);
+        assert_eq!(MidiClip::problem(&clip), None);
+        clip.loop_len = Tick(MIN_LOOP_LEN - 1);
+        assert!(clip.problem().is_some());
+        // Not looping, the loop's numbers don't matter.
+        clip.loop_on = false;
+        assert_eq!(clip.problem(), None);
+    }
+
+    #[test]
+    fn the_loop_survives_a_round_trip_and_an_old_file_has_none() {
+        let clip = looping(3840, 960, 1920, &[(0, 10, 60)]);
+        let text = ron::to_string(&clip).unwrap();
+        assert_eq!(ron::from_str::<MidiClip>(&text).unwrap(), clip);
+        let old = ron::from_str::<MidiClip>("(length: 960, notes: [])").unwrap();
+        assert!(!old.loop_on);
     }
 }

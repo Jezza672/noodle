@@ -27,6 +27,11 @@ pub fn format_value(info: &ParamInfo, value: f32) -> String {
         Unit::Decibels => format!("{value:.1} dB"),
         Unit::Semitones => format!("{value:+.2} st"),
         Unit::Cents => format!("{value:+.0} ct"),
+        Unit::Degrees => format!("{value:+.0}°"),
+        Unit::Note => {
+            let note = value.round();
+            format!("{note:.0} {}", note_name(note as i32))
+        }
         unit => with_unit(&significant(value), unit),
     }
 }
@@ -36,6 +41,19 @@ pub fn format_value(info: &ParamInfo, value: f32) -> String {
 /// clamped to the range; `None` if the text isn't a value.
 pub fn parse_value(info: &ParamInfo, text: &str) -> Option<f32> {
     let text = text.trim();
+    if info.unit == Unit::Note
+        && let Some(note) = parse_note_name(text)
+    {
+        return Some(taper::clamp(info, note as f32));
+    }
+    if info.unit == Unit::Note
+        && let Some(number) = text
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse::<f32>().ok())
+    {
+        return Some(taper::clamp(info, number));
+    }
     if let ParamKind::Stepped { labels } = &info.kind
         && let Some(index) = labels.iter().position(|l| l.eq_ignore_ascii_case(text))
     {
@@ -69,6 +87,7 @@ fn scale_for(unit: Unit, suffix: &str) -> Option<f32> {
         (Unit::Seconds, "ms") => 1e-3,
         (Unit::Semitones, "st" | "semi" | "semitones") => 1.0,
         (Unit::Cents, "ct" | "cents") => 1.0,
+        (Unit::Degrees, "°" | "deg" | "degrees") => 1.0,
         (Unit::Percent, "%") => 1.0,
         _ => return None,
     };
@@ -90,8 +109,48 @@ pub fn unit_symbol(unit: Unit) -> &'static str {
         Unit::Seconds => "s",
         Unit::Semitones => "st",
         Unit::Cents => "ct",
+        Unit::Degrees => "°",
         Unit::Percent => "%",
+        Unit::Note => "",
     }
+}
+
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
+/// A MIDI note's name, with 60 as C4.
+pub fn note_name(note: i32) -> String {
+    format!(
+        "{}{}",
+        NOTE_NAMES[note.rem_euclid(12) as usize],
+        note.div_euclid(12) - 1
+    )
+}
+
+/// A MIDI note number from a name such as "C4", "f#3" or "Db2" (60 is C4).
+pub fn parse_note_name(text: &str) -> Option<i32> {
+    let text = text.trim().to_ascii_lowercase();
+    let mut chars = text.chars();
+    let letter = chars.next()?;
+    let base = match letter {
+        'c' => 0,
+        'd' => 2,
+        'e' => 4,
+        'f' => 5,
+        'g' => 7,
+        'a' => 9,
+        'b' => 11,
+        _ => return None,
+    };
+    let rest = chars.as_str();
+    let (shift, octave) = match rest.chars().next()? {
+        '#' => (1, &rest[1..]),
+        'b' => (-1, &rest[1..]),
+        _ => (0, rest),
+    };
+    let octave: i32 = octave.parse().ok()?;
+    Some((octave + 1) * 12 + base + shift)
 }
 
 /// Three significant figures, without going past three decimal places, so
@@ -124,6 +183,19 @@ mod tests {
         ParamInfo::new(0.01, 20_000.0, 440.0)
             .log()
             .unit(Unit::Hertz)
+    }
+
+    #[test]
+    fn notes_show_and_read_their_names() {
+        let key = ParamInfo::new(0.0, 127.0, 60.0).unit(Unit::Note);
+        assert_eq!(format_value(&key, 60.0), "60 C4");
+        assert_eq!(format_value(&key, 61.0), "61 C#4");
+        assert_eq!(format_value(&key, 0.0), "0 C-1");
+        assert_eq!(parse_value(&key, "C4"), Some(60.0));
+        assert_eq!(parse_value(&key, "db3"), Some(49.0));
+        assert_eq!(parse_value(&key, "a#2"), Some(46.0));
+        assert_eq!(parse_value(&key, "36"), Some(36.0));
+        assert_eq!(parse_value(&key, "200"), Some(127.0));
     }
 
     #[test]
