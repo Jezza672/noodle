@@ -1205,6 +1205,47 @@
         ),
     )),
     NodePreset((
+        name: "No Repeats",
+        slug: "random-select-no-repeats",
+        node_type: "noodle.util.randselect",
+        values: (
+            params: {
+                "avoid_repeat": 1.0,
+            },
+            config: {
+                "inputs": 3,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Click-free Switching",
+        slug: "random-select-click-free-switching",
+        node_type: "noodle.util.randselect",
+        values: (
+            params: {
+                "avoid_repeat": 1.0,
+                "switch": 1.0,
+            },
+            config: {
+                "inputs": 2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Notes, Cut Held",
+        slug: "random-select-notes-cut-held",
+        node_type: "noodle.util.randselect",
+        values: (
+            params: {
+                "switch": 1.0,
+            },
+            config: {
+                "inputs": 2,
+                "kind": 1,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Middle C",
         slug: "key-middle-c",
         node_type: "noodle.event.key",

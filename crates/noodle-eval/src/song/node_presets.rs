@@ -727,6 +727,25 @@ fn table() -> Vec<Row> {
         .int("outputs", 1)
         .int("rest", 1),
         row(
+            "noodle.util.randselect",
+            "No Repeats",
+            &[("avoid_repeat", 1.0)],
+        )
+        .int("inputs", 3),
+        row(
+            "noodle.util.randselect",
+            "Click-free Switching",
+            &[("switch", 1.0), ("avoid_repeat", 1.0)],
+        )
+        .int("inputs", 2),
+        row(
+            "noodle.util.randselect",
+            "Notes, Cut Held",
+            &[("switch", 1.0)],
+        )
+        .int("inputs", 2)
+        .int("kind", 1),
+        row(
             "noodle.event.key",
             "Middle C",
             &[("note", 60.0), ("velocity", 0.8)],

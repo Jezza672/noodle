@@ -65,4 +65,5 @@ need a person and hardware, plus a few deliberately deferred items.
   arrangement, piano roll and clip editor (only the piano roll's snap is done), a
   sandbox monitor that sleeps with no tick, and one retry policy for files that
   fail to open.
+- **Random Select editor behaviour** (#211): resolve the node's `kind` (signal or notes) from the first wire and grow `inputs` as you wire, as the mixer does (`spare.rs`).
 - **Flaky test** #138 stays open (no recurrence).
