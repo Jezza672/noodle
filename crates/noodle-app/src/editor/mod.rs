@@ -1123,8 +1123,8 @@ fn pointer(
     let unused = state.unused_menu;
     // The group the menu is about, and the name being typed for it, if it is
     // about one. The name is taken out of the state for the menu to work on,
-    // and put back afterwards.
-    let group = state.group_menu;
+    // and put back afterwards. A group that has gone leaves the menu empty.
+    let group = state.group_menu.filter(|id| is_group(f.project, *id));
     let mut group_name = state.group_name.take();
     // The template the group was made from, if the library still lists it.
     let source_name = group.and_then(|id| template_name(f, id, inputs.library));
@@ -1133,7 +1133,7 @@ fn pointer(
     let mut shown = false;
     // The canvas's context menu, but it only closes on a click outside it, so
     // that a group's menu can ask for the name in the same popup.
-    egui::Popup::context_menu(&response)
+    egui::Popup::context_menu(response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             shown = true;
@@ -2551,6 +2551,10 @@ fn group_items(
     name: &mut Option<GroupName>,
     edits: &mut Vec<Edit>,
 ) {
+    // A name being typed for another group is not this menu's.
+    if name.as_ref().is_some_and(|n| n.group != group) {
+        *name = None;
+    }
     match name {
         None => {
             if ui.button("Save group to library...").clicked() {

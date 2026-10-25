@@ -2926,6 +2926,23 @@ fn right_clicking_a_group_opens_the_canvass_context_menu() {
 }
 
 #[test]
+fn the_name_being_typed_is_for_the_group_the_menu_is_about() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let one = add(&mut h, Node::new(GROUP).at(100.0, 0.0));
+    let two = add(&mut h, Node::new(GROUP).at(600.0, 0.0));
+    h.run();
+    open_group_menu(&mut h, one);
+    h.get_by_label("Save group to library...").click();
+    h.run();
+    h.get_by_label("Name in the library");
+    // Right-clicking another group starts that group's menu afresh.
+    open_group_menu(&mut h, two);
+    h.get_by_label("Save group to library...");
+    assert!(h.query_by_label("Name in the library").is_none());
+}
+
+#[test]
 fn right_clicking_a_group_saves_it_to_the_user_library() {
     use noodle_core::group::GROUP;
     let mut h = rig();
