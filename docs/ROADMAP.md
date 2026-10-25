@@ -17,6 +17,11 @@ need a person and hardware, plus a few deliberately deferred items.
 
 - **Mac listening checks** for M0 to M2: a short `noodle play`, plus the batched
   macOS tests on the latest main. Never produce real audio there without asking.
+- **AirPods mic on the Mac** (live input resampling, #36): select the AirPods
+  as input and the built-in speakers or wired headphones as output (the AirPods
+  mic runs at 24 kHz): an Input node plays through with no clicks or dropouts
+  over several minutes, at the right pitch, and Health shows no input glitches.
+  Never produce real audio there without asking.
 - **Real MIDI hardware** (M3): a keyboard playing a polyphonic synth; device input
   as UMP is blocked on midir, which delivers MIDI 1.0 bytes (MIDI-CI likewise).
 - **Real plugins** (Surge XT, Vital, Dragonfly) on Mac and Windows: CLAP and

@@ -807,6 +807,7 @@ impl Playback {
             output_buffer_frames: self.fade.period.load(Ordering::Relaxed),
             output_driver: self.output_latency(),
             input: self.input_meter.as_ref().map(|meter| InputLatency {
+                sample_rate: meter.sample_rate(),
                 buffer_frames: meter.callback_frames(),
                 driver: self.input_latency(),
                 backlog_frames: meter.backlog_frames(),
@@ -905,10 +906,12 @@ pub struct LatencyReport {
 }
 
 /// The input half of a [`LatencyReport`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InputLatency {
-    /// Frames in the input device's callbacks, as granted: zero until the
-    /// first.
+    /// The input device's sample rate, which may differ from the engine's.
+    pub sample_rate: f32,
+    /// Frames in the input device's callbacks, as granted, at its rate: zero
+    /// until the first.
     pub buffer_frames: u32,
     /// How long before its callback the driver says the input was captured:
     /// zero if it doesn't say.
@@ -940,7 +943,7 @@ impl LatencyReport {
     pub fn input_side(&self) -> Option<Duration> {
         let input = self.input?;
         Some(if input.driver.is_zero() {
-            self.frames(input.buffer_frames)
+            Duration::from_secs_f32(input.buffer_frames as f32 / input.sample_rate.max(1.0))
         } else {
             input.driver
         })
@@ -1046,11 +1049,11 @@ impl Reporter {
 
 /// Starts an engine playing on an output device, chosen by `choice`, with
 /// `max_frames` frames per engine block. The channel count is the device's.
-/// If `choice` turns input on, the input device records into Input nodes at
-/// the output's sample rate. Input that can't be opened, e.g. because the
-/// device doesn't support that rate, leaves Input nodes silent rather than
-/// failing: see [`Playback::input_problem`]. Send the engine graphs
-/// with the returned [`Controller`].
+/// If `choice` turns input on, the input device records into Input nodes,
+/// converted to the output's sample rate if it runs at another. Input that
+/// can't be opened leaves Input nodes silent rather than failing: see
+/// [`Playback::input_problem`]. Send the engine graphs with the returned
+/// [`Controller`].
 ///
 /// `midi` is told when the blocks run, so the MIDI In nodes on it place
 /// notes within a block and recordings know where the transport was.
@@ -1499,8 +1502,9 @@ fn choice_id(choice: &InputChoice) -> Option<Option<&str>> {
     }
 }
 
-/// Opens (but doesn't start) an input stream at the engine's sample rate,
-/// returning it, the device's name, its channel count and the feed for the
+/// Opens (but doesn't start) an input stream, at the engine's sample rate if
+/// the device has it and at its own otherwise (the feed converts), returning
+/// it, the device's name, its channel count and the feed for the
 /// output callback.
 ///
 /// The input gets the same buffer size as the output (see
@@ -1520,7 +1524,14 @@ fn open_input(
     let name = device_name(&device);
     let ranges: Vec<_> = device.supported_input_configs()?.collect();
     let default = device.default_input_config()?;
-    let rate = settings.sample_rate as u32;
+    // The engine's rate if the device has it; otherwise its own, which the
+    // feed converts.
+    let engine_rate = settings.sample_rate as u32;
+    let rate = if ranges.iter().any(|range| range.contains_rate(engine_rate)) {
+        engine_rate
+    } else {
+        default.sample_rate()
+    };
     let buffer = if buffer_size.is_none() && !live_default {
         None
     } else {
@@ -1534,6 +1545,7 @@ fn open_input(
     let channels = usize::from(config.channels);
     let (capture, feed, recorder) = recordable_input_path(
         channels,
+        config.sample_rate as f32,
         settings.sample_rate,
         settings.max_frames,
         Arc::clone(&health.input_glitches),
@@ -1650,19 +1662,27 @@ mod tests {
         let diagnostics = controller.update(project.graph(), &Registry::with_builtins());
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let glitches = Arc::new(AtomicU64::new(0));
-        let (capture, feed) = input_path(2, SETTINGS.sample_rate, SETTINGS.max_frames, glitches);
+        let (capture, feed) = input_path(
+            2,
+            SETTINGS.sample_rate,
+            SETTINGS.sample_rate,
+            SETTINGS.max_frames,
+            glitches,
+        );
         (DeviceWriter::with_input(processor, feed), capture)
     }
 
     #[test]
     fn input_plays_through_the_graph() {
         let (mut writer, mut capture) = passthrough();
-        // Longer than a block, and not a multiple of one.
-        let input: Vec<f32> = (0..150 * 2).map(|x| x as f32 / 1000.0).collect();
-        capture.capture(&input);
+        // Longer than a block, and not a multiple of one. The input is
+        // converted, so it comes out after the converter's short delay.
         let mut output = vec![0.0f32; 150 * 2];
-        writer.write(&mut output);
-        assert_eq!(output, input);
+        for _ in 0..6 {
+            capture.capture(&[0.5f32; 150 * 2]);
+            writer.write(&mut output);
+        }
+        assert!(output.iter().all(|x| (x - 0.5).abs() < 0.01), "{output:?}");
     }
 
     #[test]
@@ -2346,6 +2366,7 @@ mod tests {
             output_buffer_frames: 256,
             output_driver: Duration::from_millis(output_driver_ms),
             input: Some(InputLatency {
+                sample_rate: 48_000.0,
                 buffer_frames: 256,
                 driver: Duration::from_millis(input_driver_ms),
                 backlog_frames: 112,
