@@ -1213,7 +1213,10 @@ mod tests {
 
     #[test]
     fn a_new_envelope_reaches_a_sounding_note_without_cutting_it() {
-        let (store, config) = ramp(100_000);
+        // Long enough that the note cannot run out while the test waits: it
+        // lasts more than 20 s of blocks, however slowly the worker thread
+        // gets scheduled.
+        let (store, config) = ramp(2_000_000);
         let sampler = Sampler::new(&store, &Telemetry::new());
         let mut h = Harness::new(&sampler, &config, &[], RATE, 256).unwrap();
         h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
@@ -1225,10 +1228,12 @@ mod tests {
         sampler.retune(noodle_core::NodeId(0), &quieter);
         let mut blocks = 1;
         let mut level = 1.0f32;
-        // Wait for the gain to settle on -20 dB: the new curve arrives from
-        // another thread, then the gain slews towards it, so stopping at the
-        // first sign of change would catch it mid-slew.
-        while (level - 0.1).abs() >= 0.01 && blocks < 800 {
+        // Wait for the new curve to arrive from the worker thread. The gain
+        // does not slew: it steps to the new level at the block the curve
+        // lands in. The wait is bounded by the clock, not by a block count,
+        // because under load the thread can take a long time to run.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while (level - 0.1).abs() >= 0.01 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));
             h.run(256).unwrap();
             blocks += 1;
