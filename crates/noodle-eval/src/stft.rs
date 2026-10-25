@@ -68,6 +68,54 @@ impl Frames {
         &self.data[frame * self.bins..(frame + 1) * self.bins]
     }
 
+    /// The frames with each cell scaled by the matching `mask` value.
+    pub fn masked(&self, mask: &[f32]) -> Self {
+        assert_eq!(mask.len(), self.data.len(), "one mask value per cell");
+        Self {
+            data: self.data.iter().zip(mask).map(|(c, m)| c * m).collect(),
+            ..*self
+        }
+    }
+
+    /// Overlap-adds the frames back into `len` samples (the inverse of
+    /// [`Frames::analyse`] with the same `size`). Each sample is divided by
+    /// the analysis window's total weight there, so unmasked frames give back
+    /// the input, including at the edges where fewer frames overlap.
+    pub fn synthesise(&self, len: usize, size: usize) -> Vec<f32> {
+        let mut planner = RealFftPlanner::<f32>::new();
+        let ifft = planner.plan_fft_inverse(size);
+        let window: Vec<f32> = (0..size)
+            .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / size as f32).cos())
+            .collect();
+        let half = size / 2;
+        let mut out = vec![0.0f32; len];
+        let mut weight = vec![0.0f32; len];
+        let mut spectrum = ifft.make_input_vec();
+        let mut frame = ifft.make_output_vec();
+        let mut scratch = ifft.make_scratch_vec();
+        for f in 0..self.frames {
+            spectrum.copy_from_slice(self.row(f));
+            spectrum[0].im = 0.0;
+            spectrum[self.bins - 1].im = 0.0;
+            ifft.process_with_scratch(&mut spectrum, &mut frame, &mut scratch)
+                .expect("fft sizes match");
+            let centre = (f * self.hop) as isize;
+            for n in 0..size {
+                let dst = centre + n as isize - half as isize;
+                if dst >= 0 && (dst as usize) < len {
+                    out[dst as usize] += frame[(n + half) % size] / size as f32;
+                    weight[dst as usize] += window[n];
+                }
+            }
+        }
+        for (o, w) in out.iter_mut().zip(&weight) {
+            if *w > 1e-3 {
+                *o /= w;
+            }
+        }
+        out
+    }
+
     pub fn hop_seconds(&self) -> f64 {
         self.hop as f64 / f64::from(self.rate)
     }

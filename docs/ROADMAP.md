@@ -39,7 +39,10 @@ need a person and hardware, plus a few deliberately deferred items.
 
 - **M10 batch 3, Stem warp** (a warp mode that separates, warps each stem with its
   own mode and adds them back). Research (`research/stem-warp/findings.md` in the
-  project folder) finds no published gain over whole-mix warping. Prerequisite:
+  project folder) finds no published gain over whole-mix warping, and the perfect-stem
+  ceiling experiment (`features/m10-stems.md`, `noodle-eval songs --ceiling`) found a
+  trade, not a clear gain: better spectral fidelity, worse transients, level overall.
+  Prerequisite:
   real mixes with vocals in `eval/clips.csv`, and a run on real weights. It ships
   only if the evaluation shows a clear gain on most songs and clips. Not started.
   Out of scope: streaming separation, models other than HT-Demucs, note-level
