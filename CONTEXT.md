@@ -72,10 +72,6 @@ _Avoid_: Audio track, MIDI track, channel strip
 The node inside a track that plays the track's clips out of its audio and MIDI outputs.
 _Avoid_: Clip player, source
 
-**Clip**:
-A piece of audio or MIDI placed on a track at a point on the timeline.
-_Avoid_: Region, item
-
 **Lane**:
 Automation of one parameter over time, stored with the arrangement rather than as a wire.
 _Avoid_: Envelope (that is a synthesis node), automation track
