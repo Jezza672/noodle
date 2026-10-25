@@ -296,7 +296,8 @@ It has these views:
   scrolls: a node with more parameters than fit would otherwise draw them
   off screen, out of reach. The offset is kept in egui's own state, so it
   survives from frame to frame and from one selected node to the next, and
-  the wheel over the panel scrolls it.
+  the wheel over the panel scrolls it. It is session state, so the panel
+  opens at the top the next time the app starts.
   The Remap node's curve gets a curve editor
   (`widgets/curve.rs`): drag points and handles, click the line to add a
   point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
