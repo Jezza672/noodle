@@ -407,7 +407,7 @@ impl App {
                 // The wheel over the panel scrolls it.
                 let offset = ui
                     .ctx()
-                    .data_mut(|d| d.get_persisted::<f32>(properties_scroll()))
+                    .data_mut(|d| d.get_temp::<f32>(properties_scroll()))
                     .unwrap_or(0.0);
                 let body = egui::ScrollArea::vertical()
                     .id_salt("properties body")
@@ -460,7 +460,7 @@ impl App {
                     // reaches that far down, so it was drawn at the wrong
                     // place. Keep the new offset and draw it again.
                     ui.ctx()
-                        .data_mut(|d| d.insert_persisted(properties_scroll(), body.state.offset.y));
+                        .data_mut(|d| d.insert_temp(properties_scroll(), body.state.offset.y));
                     ui.ctx().request_repaint();
                 }
                 body.inner
