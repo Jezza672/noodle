@@ -26,3 +26,11 @@ for spectral wires (`SpectralDelay`) came in the same batch.
 ## Node monitoring (#208)
 
 A monitor button in each node's header listens to its first audio output through a selectable monitor device, tapped after mute/solo; shift sums more nodes, Ctrl/Cmd silences the other outputs on the device, Ctrl+Shift silences all, Escape stops. See [transport-and-devices.md](../architecture/transport-and-devices.md#node-monitoring).
+
+## Signal-kind tag on outputs (#258)
+
+`Port` has an optional `SignalKind` (`Audio` by default, or `Control`), set with
+`Layout::control_output` / `#[control_output]`. It is for display only: the
+editor's port tooltip says "Control signal" on LFO, ADSR, Envelope, Follower,
+Remap, Comparator, Clock, Control, Automation and Tempo outputs, and shows a
+parameter port's range and unit whether or not it is wired.
