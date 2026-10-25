@@ -770,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rate_the_input_lacks_is_dropped() {
+    fn a_rate_the_input_lacks_is_kept_because_the_input_is_converted() {
         let mut harness = harness(AudioConfig {
             sample_rate: Some(96_000),
             buffer_size: Some(4096),
@@ -778,7 +778,10 @@ mod tests {
         });
         choose(&mut harness, "Input", "Microphone");
         let draft = &harness.state().picker.draft;
-        assert_eq!((draft.sample_rate, draft.buffer_size), (None, Some(4096)));
+        assert_eq!(
+            (draft.sample_rate, draft.buffer_size),
+            (Some(96_000), Some(4096))
+        );
     }
 
     #[test]
