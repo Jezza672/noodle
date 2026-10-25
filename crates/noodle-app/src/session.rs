@@ -1362,6 +1362,11 @@ impl Session {
             .map(|audio| audio.controller.settings().sample_rate)
     }
 
+    /// Where the time from input to output goes, while the engine runs.
+    pub fn latency_report(&self) -> Option<noodle_io::LatencyReport> {
+        Some(self.audio.as_ref()?.playback.latency_report())
+    }
+
     /// Why the engine isn't on what was chosen, if it isn't: it fell back to
     /// the system default output, or to the virtual output, which plays to
     /// nowhere. Lasts as long as the engine runs.
