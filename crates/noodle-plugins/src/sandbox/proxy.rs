@@ -31,7 +31,7 @@ use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
@@ -58,6 +58,11 @@ const HUNG_PATIENT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const TICK: Duration = Duration::from_millis(20);
+
+/// How often the monitor looks at a host that is working: it wakes early (see
+/// [`Shared::wake_monitor`]) when a block is dropped, and ticks at [`TICK`]
+/// while one is pending or the host is down.
+const HEALTHY_TICK: Duration = Duration::from_millis(250);
 
 const STARTING: u8 = 0;
 const RUNNING: u8 = 1;
@@ -99,7 +104,7 @@ pub(crate) struct Shared {
     dropped: AtomicU64,
     editor_open: AtomicBool,
     last_error: Mutex<Option<String>>,
-    monitor: Mutex<Option<Thread>>,
+    monitor: OnceLock<Thread>,
 }
 
 // SAFETY: `link` is guarded as described above; everything else is atomic or
@@ -108,6 +113,13 @@ unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    /// Wakes the monitor to look now. Real-time safe.
+    fn wake_monitor(&self) {
+        if let Some(thread) = self.monitor.get() {
+            thread.unpark();
+        }
+    }
+
     fn set_error(&self, error: String) {
         *self
             .last_error
@@ -211,7 +223,7 @@ impl SandboxedNode {
             dropped: AtomicU64::new(0),
             editor_open: AtomicBool::new(false),
             last_error: Mutex::new(None),
-            monitor: Mutex::new(None),
+            monitor: OnceLock::new(),
         });
         shared.state.store(RUNNING, Ordering::SeqCst);
         let monitor = Monitor {
@@ -223,10 +235,7 @@ impl SandboxedNode {
             .name("noodle-plugin-monitor".into())
             .spawn(move || monitor.run())
             .map_err(|e| e.to_string())?;
-        *shared
-            .monitor
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(handle.thread().clone());
+        let _ = shared.monitor.set(handle.thread().clone());
         let node = Self {
             shared: Arc::clone(&shared),
             spec: params.spec.clone(),
@@ -370,6 +379,7 @@ impl SandboxedNode {
                 && started.elapsed() > limit
             {
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                self.shared.wake_monitor();
                 return false;
             }
         }
@@ -449,15 +459,7 @@ impl Drop for SandboxedNode {
     fn drop(&mut self) {
         super::unregister(self.key);
         self.shared.shutdown.store(true, Ordering::SeqCst);
-        if let Some(thread) = self
-            .shared
-            .monitor
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            thread.unpark();
-        }
+        self.shared.wake_monitor();
     }
 }
 
@@ -575,7 +577,10 @@ impl Monitor {
     fn run(mut self) {
         let mut pending: Option<(u64, Instant)> = None;
         loop {
-            thread::park_timeout(TICK);
+            // Healthy and idle: sleep long, and be woken if a block is dropped
+            // or the node is dropped.
+            let healthy = pending.is_none() && self.shared.state.load(Ordering::SeqCst) == RUNNING;
+            thread::park_timeout(if healthy { HEALTHY_TICK } else { TICK });
             if self.shared.shutdown.load(Ordering::SeqCst) {
                 self.teardown();
                 return;

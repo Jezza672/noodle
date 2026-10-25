@@ -73,16 +73,20 @@ pool, so nothing allocates.
   inactive therefore starts the oscillator at phase 0 rather than wherever it
   free-ran to.
 - **Real-time rules** hold: a skip is a branch and a memset.
+- **Plugins join silence skipping.** A hosted plugin that has said it is done
+  (CLAP `Sleep`, VST3 output `silenceFlags`, AU `OutputIsSilence`) while its
+  inputs are silent and nothing woke it is not called; its outputs are flagged
+  silent. It is also a node like any other for liveness: it runs only while its
+  outputs reach an Output. See "The bridge" in [plugins.md](plugins.md).
 - **Nodes nobody listens to don't run.** At the start of each block the plan
   works out which nodes are live (`Plan::update_liveness`): those that always
   run (Output nodes, taps, and types whose `NodeType::always_runs` is true:
-  scope, meter, MIDI In, track input, plugins, metronome) and every node whose
+  scope, meter, MIDI In, track input, metronome) and every node whose
   outputs a live node reads. A node whose outputs are unconnected, or are read
   only by nodes that are *silenced* (`Node::silenced_by`: a stage with its
   mute settled on, a VCA or multiplier whose level is a constant 0), stops, and
   so does everything that only feeds it, back to the sources. A silenced
   node's other inputs may come from a source whose output is known without
-  running it (`Node::constant_output`, used by the track input's gain and
-  mute). A stopped node whose outputs a live node still reads has them
+  running it (`Node::constant_output`, used by the track input's mute). A stopped node whose outputs a live node still reads has them
   zeroed. When a node becomes live again it is `reset()` and its delay lines
   cleared, so it starts fresh rather than playing stale state.

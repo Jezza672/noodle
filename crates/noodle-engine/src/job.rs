@@ -1,5 +1,6 @@
 //! Background jobs: work that runs on its own thread with progress and
-//! cancellation, polled from the UI. The offline renderer is one; freezes and
+//! cancellation, polled from the UI, which is woken
+//! (see [`crate::wake`]) when one finishes. The offline renderer is one; freezes and
 //! exports are others.
 
 use std::sync::Arc;
@@ -39,10 +40,13 @@ impl<T: Send + 'static> Job<T> {
         let progress = Arc::new(Progress::new());
         let (sender, receiver) = channel();
         let theirs = Arc::clone(&progress);
+        let waker = crate::wake::current();
         thread::Builder::new()
             .name("noodle-job".into())
             .spawn(move || {
                 // The receiver may be gone (job dropped); that's fine.
+                // Wakes when the thread ends either way, a panic included.
+                let _wake = WakeOnDrop(waker);
                 let _ = sender.send(work(&theirs));
             })
             .expect("can't start a thread");
@@ -51,6 +55,16 @@ impl<T: Send + 'static> Job<T> {
             receiver,
             finished: None,
             taken: false,
+        }
+    }
+}
+
+struct WakeOnDrop(Option<crate::wake::Waker>);
+
+impl Drop for WakeOnDrop {
+    fn drop(&mut self) {
+        if let Some(waker) = &self.0 {
+            waker();
         }
     }
 }

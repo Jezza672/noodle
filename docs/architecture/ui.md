@@ -106,10 +106,13 @@ It has these views:
     the first input and output of the wire's signal type, the main signal
     port before a parameter port, and is part of the move's undo step.
     Copy, Cut and Paste (Ctrl/Cmd+C, X, V) keep the nodes, the wires
-    between them and frames in an in-app clipboard, pasted at the pointer
-    into the group being edited as one undo step. The window turns Ctrl/Cmd+V
-    into a paste only while the system clipboard holds text, so a copy also
-    puts a short line of text there.
+    between them and frames on the system clipboard as
+    `application/x.noodle.node` (RON), pasted at the pointer into the group
+    being edited as one undo step. A short line of plain text goes with it,
+    because the window turns Ctrl/Cmd+V into a paste only while the clipboard
+    holds text. `clipboard.rs` is the one place that talks to the system
+    clipboard (`clipboard-rs`); with no clipboard to open, and in tests, it
+    keeps the copy in memory.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -117,7 +120,12 @@ It has these views:
     after the node is painted, so nodes in front cover them, and a field
     under a node in front ignores the pointer so the front node gets it.
   - **Custom node bodies.** Nodes that draw something other than parameters,
-    such as meters and scopes, reserve space and draw it in `editor/body.rs`.
+    such as meters and scopes, declare a `NodeView` from `NodeType::view`
+    (the engine crate; groups' boundaries use `GroupMeter`). `editor/body.rs`
+    keeps the one table from view to height, painter and telemetry reader,
+    and `Scene` stores the view on each `NodeGeom`. A new visual node needs no
+    app change if it reuses a view. The editor repaints from
+    `Bodies::update`'s `Liveness`, see "Idle cost" in transport-and-devices.
 - **Timeline** (`noodle-app/src/timeline`, the arrangement above the node
   editor): a lane per track input node, a ruler of bars and beats from the
   tempo map, and clips as wide as their audio at that tempo.
@@ -127,11 +135,10 @@ It has these views:
     optional stepped lane under the ruler (`timeline/tempo_lane.rs`): click to
     add a change on the beat, drag a point to move it and set its tempo, and
     right-click or Delete removes it (the first change stays at the start).
-    Right-clicking the ruler (`timeline/ruler_menu.rs`) offers "Add tempo
-    change" and "Add time signature change" at the bar nearest the click;
+    The ruler's right-click menu also adds a tempo change at the bar
+    clicked ("Add tempo change at bar N"), next to its time signature items;
     signature changes live in the same tempo map, on bar lines only, and show
-    as markers on the ruler. Right-click a marker to change or remove it (the
-    first signature is the transport's).
+    as markers on the ruler.
     Every edit is a `SetTempoMap` command, so undo and the engine's table follow
     as for any tempo change.
   - **Warped sections' waveforms** (`timeline/warped_waves.rs`) are not the
@@ -146,7 +153,10 @@ It has these views:
     whose runs are drawn separately, show the file's own waveform). The worker
     keeps the last file it decoded, so the steps of an edit do not read it
     again. There is no on-disk cache of it: a render is cheap next to
-    the stretcher's speed, and the engine itself stretches live.
+    the stretcher's speed, and the engine itself stretches live. A render that
+    is still being worked out is drawn where it was worked out (the render
+    knows its span in ticks), so resizing a section shows more or less of it
+    instead of squeezing it into the new width.
   - **Seconds on the x axis**: time is linear, so a clip is as wide as its
     audio is long. In a slower section a bar lasts longer, so its bar lines
     sit further apart. Every tick/x conversion (clips, automation, tempo
@@ -159,14 +169,48 @@ It has these views:
     divisions of the beat); Alt turns that off. Trimming turns the dragged tick
     back into file frames (`timeline/clips.rs`), and shortens fades that no
     longer fit.
+  - **Selecting.** Dragging over empty lane space draws a box and selects
+    the clips it touches (Shift keeps the earlier selection).
   - **Copying.** Ctrl/Cmd-dragging a clip adds copies in the drag's own undo
-    step and moves those, leaving the originals. With a clip selected,
+    step and moves those, leaving the originals. Pressing Ctrl/Cmd after a
+    move has begun puts the clips back, adds copies and carries on with those.
+    Cmd+C, Cmd+X and Cmd+V (with the pointer over the arrangement, or from the
+    Edit menu and the clips' right-click menu) put the clips on the system clipboard as
+    `application/x.noodle.clip` (RON) and paste them, earliest clip at the playhead, on the
+    clips' own tracks or on the selected track when they all came from one;
+    right-clicking a lane pastes at that point. Cmd+D duplicates the selection
+    just after itself. Each is one undo step. With a clip selected,
     Ctrl/Cmd+Left and Right take the playhead to the start of the earliest
     selected clip or the end of the latest, scrolling to keep it in view.
   - **Fades** are dragged by the handles on a clip's top corners (clips too
     narrow to trim have none). A handle turns the pointer's tick into
     frames, never snaps, and stops where the other fade begins. Each drag is
     one undo step.
+  - **Crossfades** (`timeline/crossfade.rs`). Where two audio clips are butted
+    (one ends within `BUTT_SECONDS` of the other's start) a round handle sits on
+    the cut, halfway down the lane. Dragging it sideways makes a crossfade as
+    long before the cut as after it; each side stops where its clip has no more
+    audio (`clips::head_room` and `tail_room`, and half the clip) while the
+    other keeps following the pointer. A crossfade is drawn as a shaded span
+    with the two equal-power curves; its edges resize it (one side each), its
+    middle slides it along the cut at the same length, and double-click or the
+    right-click menu removes it. Each drag is one undo step on the later clip.
+  - **Clip gain** is set in the clip editor (`clip_editor/gain_line.rs`) for an
+    unwarped audio clip: the gain line is drawn over the waveform; double-click
+    the waveform to add a point, drag a point (it stops at its neighbours),
+    double-click a point to remove it. The scalar is in the clip panel. A
+    warped clip plays its envelope but has no editor for it yet.
+  - **Carrying out of the timeline** (`carry.rs`). Dragging an audio clip's
+    body, or a track header, out of the timeline's area carries it: the clip
+    goes back where it was, a label follows the pointer, and letting go
+    over a view hands that view the drop. Over a Sampler (its node, or the
+    sample section of the properties panel) a clip sets the sample, `start` and
+    `end` from the part of the file the clip plays, and the root from the
+    sample's pitch, as one undo step. Over empty canvas a clip makes a `Sample`
+    node there, holding the same part of the file (a snapshot: the clip can
+    change afterwards). A track dropped on the canvas places the track's group
+    node there, if it is at the level being edited. The Sample node's own
+    properties take a clip dropped on them too.
   - **Adding audio.** Dropping files on a lane, or Import audio (the button
     in the corner and File → Import Audio…, which open a file dialog and
     target the highlighted track (its header picked), else the selected
@@ -302,7 +346,8 @@ parameters have no wire, and is greyed when neither is free. The envelope's time
 envelope when idle and holds still during a drag, so a point follows the
 pointer; dragging past the right edge asks for longer times, and the graph
 rescales when you let go. To add a graph for a node type, add a `Kind` and
-its drawing and handles to `graph.rs`, and a height in `body::height`.
+its drawing and handles to `graph.rs`, a `GraphKind` in the engine for the node
+type to return from `view`, and a height in `body::height`.
 
 `widgets/mixing_graph.rs` draws two more. Dynamics shows its transfer curve
 (input against output level, from `reduction_db`) with points for threshold,

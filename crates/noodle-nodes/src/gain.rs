@@ -50,6 +50,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Gain {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Meter
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

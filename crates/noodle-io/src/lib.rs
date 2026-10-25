@@ -5,12 +5,14 @@ mod cache;
 mod decode;
 mod devices;
 mod export;
+mod files;
 mod hash;
 mod input;
 mod midi;
 mod onsets;
 mod output;
 mod peaks;
+pub mod pool;
 mod record;
 mod resample;
 mod stream;
@@ -25,6 +27,7 @@ pub use devices::{
     virtual_output,
 };
 pub use export::{ExportError, ExportFormat, ExportWriter};
+pub use files::{AudioFiles, FileStamp};
 pub use hash::{FileHasher, Peek};
 pub use input::{Capture, Feed, input_path, recordable_input_path};
 pub use midi::{

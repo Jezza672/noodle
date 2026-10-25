@@ -142,8 +142,22 @@ These are primitives; instruments and racks built from them are groups.
   file. A sample the store doesn't have is silence, and makes the node
   uncacheable, so a render of silence is never remembered. Parameters: `root`,
   `tune` (cents), `keytrack`, `start`, `end`, `mode` (one-shot or gate), `loop`
-  and loop points (gate mode only), `release`, `gain`. Interpolation is
-  four-point Catmull-Rom.
+  and loop points (gate mode only), `release`, `gain`. Two more settings are
+  config text: `gain_env`, a gain envelope across the sample, and `warp`, a
+  `ClipWarp` that times the sample like a clip's (Repitch, Grain or Beats; with
+  *follow tempo* it plays at the transport's tempo; see
+  [time-warping.md](time-warping.md)), both of them live config that doesn't
+  rebuild the node. Each voice's place in the sample is reported through
+  `Telemetry::open_positions`, for the editor's playhead, which lists the voices
+  of every instance still reporting.
+  Interpolation is four-point Catmull-Rom. The `sample` option is also a sample input (see
+  "Sample" in [signals.md](signals.md)): a wire from a `Sample` node
+  (`noodle.instrument.sample`, which holds a hash and a window) overrides it.
+  **Choosing a sample sets the root**: the app finds the sample's fundamental
+  from its first 0.3 s (`noodle_nodes::fundamental`, YIN on frames, a pitch
+  only if at least half the loud frames agree; remembered per hash in the
+  `SampleStore`) and sets `root` to it, to a hundredth of a semitone. A drum or
+  a noise with no pitch leaves `root` alone.
 - **Note Split** (`noodle.event.note_split`) routes notes to `outputs` event
   outputs (config, 1 to 16) by key range and velocity range, with `transpose`
   per output and an optional `rest` output (config) for what nothing took.

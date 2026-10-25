@@ -9,7 +9,7 @@ use egui::{RichText, Ui};
 use noodle_core::group::GROUP;
 use noodle_core::library::{SYSTEM, USER};
 use noodle_core::{Command, Endpoint, Node, NodeId};
-use noodle_engine::{InputKind, Location, NodeType, ParamReading};
+use noodle_engine::{InputKind, Location, NodeType, NodeView, ParamReading};
 
 use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
@@ -57,7 +57,7 @@ pub fn show<'a>(
     problems(ui, session, id);
     presets(ui, session, id, node, &mut edits);
     plugin_editor(ui, session, id, &mut edits);
-    if node.type_id == noodle_nodes::SPECTRUM_ID {
+    if node_type.is_some_and(|t| t.view(&node.config) == NodeView::Spectrum) {
         spectrum_views(ui, session, spectra(id));
     }
     match node_type {
@@ -330,10 +330,15 @@ fn sample_picker(
     node: &Node,
     edits: &mut Vec<Edit>,
 ) {
+    use noodle_nodes::{SAMPLE_INPUT_ID, SampleRef};
+    let sampler = node.type_id != SAMPLE_INPUT_ID;
+    let top = ui.cursor().top();
     let store = session.samples();
-    let hash = info.get_text(&node.config);
+    // A Sample node's option can name a window of the sample.
+    let reference = SampleRef::parse(&info.get_text(&node.config));
+    let hash = reference.hash.clone();
     ui.label(info.name);
-    let status = if hash.is_empty() {
+    let mut status = if hash.is_empty() {
         "No sample loaded".to_owned()
     } else if let Some(sample) = store.get(&hash) {
         format!(
@@ -348,8 +353,18 @@ fn sample_picker(
             &hash[..8.min(hash.len())]
         )
     };
+    if !reference.is_whole() {
+        status.push_str(&format!(
+            ", the part from {:.0}% to {:.0}%",
+            reference.start * 100.0,
+            reference.end * 100.0
+        ));
+    }
     ui.label(RichText::new(status).weak());
     crate::sample_view::preview(ui, session, id, 64.0);
+    if node.type_id == noodle_nodes::SAMPLER_ID {
+        crate::clip_panel::sampler_warp(ui, session, id, edits);
+    }
     let error_id = egui::Id::new((id, "sample_error"));
     if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
         ui.colored_label(crate::theme::MUTE, error);
@@ -366,14 +381,48 @@ fn sample_picker(
         match store.import(&path) {
             Ok(hash) => {
                 ui.data_mut(|d| d.remove_temp::<String>(error_id));
-                edits.push(Edit::Apply(Command::SetConfig {
-                    node: id,
-                    key: info.key.to_owned(),
-                    value: Some(noodle_core::Value::Text(hash)),
+                edits.push(Edit::Apply(if sampler {
+                    crate::sample_drop::choose(session, id, &hash)
+                } else {
+                    Command::SetConfig {
+                        node: id,
+                        key: info.key.to_owned(),
+                        value: Some(noodle_core::Value::Text(hash)),
+                    }
                 }));
             }
             Err(error) => {
                 ui.data_mut(|d| d.insert_temp(error_id, error.to_string()));
+            }
+        }
+    }
+    // A clip carried here from the timeline sets the sample.
+    let area = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+    let over = crate::carry::carried(ui.ctx())
+        .is_some_and(|(item, at)| matches!(item, crate::carry::Item::Clip(_)) && area.contains(at));
+    if over {
+        ui.painter().rect_stroke(
+            area,
+            4.0,
+            egui::Stroke::new(2.0, crate::theme::editor::SAMPLE_SOCKET),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if let Some(drop) = crate::carry::drop_in(ui.ctx(), area)
+        && let crate::carry::Item::Clip(clip) = drop.item
+    {
+        crate::carry::take_drop(ui.ctx());
+        match crate::sample_drop::from_clip(session, clip) {
+            Ok(dropped) if sampler => {
+                edits.push(Edit::Apply(crate::sample_drop::onto_sampler(id, &dropped)));
+            }
+            Ok(dropped) => edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: info.key.to_owned(),
+                value: Some(noodle_core::Value::Text(dropped.reference.to_text())),
+            })),
+            Err(error) => {
+                ui.data_mut(|d| d.insert_temp(error_id, error));
             }
         }
     }
@@ -462,6 +511,15 @@ fn config(
             }
             continue;
         }
+        // Edited in the sample editor and the Warp section above.
+        if node_type.info().id == noodle_nodes::SAMPLER_ID
+            && matches!(
+                info.key,
+                noodle_nodes::GAIN_ENV_KEY | noodle_nodes::WARP_KEY
+            )
+        {
+            continue;
+        }
         if info.key == noodle_nodes::LAYOUT_KEY
             && let Some(default) = noodle_nodes::default_layout(node_type.info().id)
         {
@@ -472,7 +530,11 @@ fn config(
             script_editor(ui, id, info, node, edits);
             continue;
         }
-        if node_type.info().id == noodle_nodes::SAMPLER_ID && info.key == noodle_nodes::SAMPLE_KEY {
+        if matches!(
+            node_type.info().id,
+            noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
+        ) && info.key == noodle_nodes::SAMPLE_KEY
+        {
             sample_picker(ui, session, id, info, node, edits);
             continue;
         }
@@ -914,10 +976,10 @@ fn params(
     ui.separator();
     ui.label(RichText::new("Parameters").strong());
     let params: Vec<_> = std::iter::once(first).chain(params).collect();
-    if let Some(kind) = GraphKind::of(&node.type_id) {
-        graph(ui, session, kind, id, node, &params, live, edits);
-    } else if node.type_id == noodle_nodes::SURROUND_PAN_ID {
-        panner(ui, session, id, node, &params, live, edits);
+    match node_type.view(&node.config) {
+        NodeView::Graph(kind) => graph(ui, session, kind.into(), id, node, &params, live, edits),
+        NodeView::Panner => panner(ui, session, id, node, &params, live, edits),
+        _ => {}
     }
     for (input, info) in params {
         let key = input.key.as_ref();

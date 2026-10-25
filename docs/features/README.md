@@ -18,4 +18,8 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [m11-spectral-signals.md](m11-spectral-signals.md) | M11: Spectral signals |
 | [tempo-sync-and-drum-rack.md](tempo-sync-and-drum-rack.md) | Tempo sync and the drum rack |
 | [tempo-and-meter.md](tempo-and-meter.md) | Ruler tempo and meter changes, Beat Length node |
+| [track-model.md](track-model.md) | Track mute, clip gain envelopes and crossfades |
+| [timeline-clip-editing.md](timeline-clip-editing.md) | Timeline clip editing |
 | [scripting-and-midi2.md](scripting-and-midi2.md) | Scripting node, MIDI 2.0 and later follow-ups |
+| [sample-routing.md](sample-routing.md) | Sample routing |
+| [code-cleanup.md](code-cleanup.md) | Code cleanup audit: idle power, derived state, file watching |

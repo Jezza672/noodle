@@ -67,7 +67,11 @@ Code that runs on the audio thread (everything reachable from
 - allocate or free memory
 - take a lock, including the locks hidden inside `Arc` drop or channel internals
 - make a system call: file I/O, logging, thread spawning, sleeping (waking a
-  parked worker thread is the one exception; see Parallel processing)
+  parked worker thread is the one exception; see Parallel processing). The
+  sanctioned way to tell a background thread there is work is a `Doorbell`
+  (`noodle-engine/src/doorbell.rs`): `ring()` is two atomic operations and an
+  `unpark` only if the thread is asleep. Background workers wait on one rather
+  than polling on a timer
 - run a loop whose length isn't bounded by the block size, voice count or
   graph size
 

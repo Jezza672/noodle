@@ -255,6 +255,50 @@ fn never_allocates(
             .iter()
             .any(|&s| s != 0.0);
     }
+    // Every note was released, so with silence in and nothing changing, the
+    // plugin goes quiet: putting it to sleep and waking it up allocates
+    // nothing either.
+    for block in 0..12usize {
+        for channel in 0..2 {
+            input_buffers[0].as_out(FRAMES).silence(0, channel);
+        }
+        input_buffers[1].as_out(FRAMES).fill(0.75);
+        let inputs: Vec<SignalIn<'_>> = input_buffers
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let signal = b.as_in(FRAMES);
+                if i == 1 {
+                    signal.with_constant(0.75)
+                } else {
+                    signal
+                }
+            })
+            .collect();
+        let mut outputs: Vec<SignalOut<'_>> = vec![output_buffer.as_out(FRAMES)];
+        let mut event_outputs: Vec<EventsOut<'_>> = Vec::new();
+        let violations = realtime(|| {
+            node.process(
+                &ctx,
+                Io {
+                    inputs: &inputs,
+                    outputs: &mut outputs,
+                    event_inputs: &[&[], &[]],
+                    event_outputs: &mut event_outputs,
+                    spectral_inputs: &[],
+                    spectral_outputs: &mut [],
+                },
+            );
+        });
+        assert_eq!(violations, 0, "quiet block {block} allocated or freed");
+    }
+    // (An editor's edits leave the test plugin with a bias, which never sleeps.)
+    if !sandboxed && !editor {
+        assert!(
+            output_buffer.as_in(FRAMES).is_silent(0, 0),
+            "the plugin went quiet"
+        );
+    }
     // The blocks were real: the notes made sound. (A node in a host process
     // plays silence for a block its host is late with, so on a loaded machine
     // a short run of them can all be dropped; the guarantee tested then is

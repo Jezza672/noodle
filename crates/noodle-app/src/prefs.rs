@@ -28,6 +28,8 @@ pub struct Prefs {
     /// Run each plugin in a process of its own (see
     /// `noodle_plugins::set_sandbox`).
     pub sandbox_plugins: bool,
+    /// The device node monitoring plays on; empty is the main output.
+    pub monitor_device: String,
 }
 
 thread_local! {
@@ -98,6 +100,20 @@ pub fn remember_sandbox(on: bool) {
     });
 }
 
+/// Saves the device the node monitor plays on, with the other preferences, if
+/// [`init`] has been called.
+pub fn remember_monitor_device(device: &str) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        device.clone_into(&mut prefs.monitor_device);
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 #[derive(Debug)]
 pub enum PrefsError {
     Io(PathBuf, io::Error),
@@ -155,6 +171,7 @@ mod tests {
                 threads: 2,
             },
             sandbox_plugins: false,
+            monitor_device: String::new(),
         }
     }
 
@@ -206,7 +223,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"")"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;

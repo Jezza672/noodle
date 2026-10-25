@@ -42,14 +42,14 @@ mod view;
 mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
-use noodle_engine::OUTPUT_ID;
-use noodle_engine::{Diagnostic, Location, Registry};
-use noodle_nodes::{REROUTE_ID, SCOPE_ID};
+use noodle_engine::{Diagnostic, Location, NodeView, Registry};
+use noodle_nodes::REROUTE_ID;
 
 use crate::freezing::Badge;
 use crate::session::{Edit, Session};
@@ -96,7 +96,7 @@ pub struct EditorState {
     /// back. Keyed by the group, `None` for the top level.
     views: BTreeMap<Option<NodeId>, View>,
     /// Where the canvas was last drawn, on screen.
-    canvas: Rect,
+    pub(crate) canvas: Rect,
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
@@ -104,11 +104,16 @@ pub struct EditorState {
     group_menu: Option<GroupMenu>,
     /// What meters and scopes show.
     bodies: body::Bodies,
+    /// The last scene built, and what it was built from. It is reused while
+    /// none of that changes.
+    scene_cache: Option<(SceneKey, Rc<Scene>)>,
     /// What Copy and Cut last took, for Paste.
-    clipboard: Option<Clipboard>,
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
+    /// Something carried out of the timeline and let go of over the canvas,
+    /// until the app takes it.
+    dropped: Option<Dropped>,
     /// Set by View → Fit Graph, done on the next frame like arranging.
     fit_requested: bool,
     /// A node whose view was asked for with a double-click, until the app
@@ -119,16 +124,53 @@ pub struct EditorState {
     open_request: Option<NodeId>,
     /// The group port a right-click landed on, which its menu removes.
     port_menu: Option<group::GroupPort>,
+    /// The node whose monitor button was right-clicked.
+    monitor_menu: Option<NodeId>,
+    /// The node the context menu offers to remove unused ports of.
+    unused_menu: Option<NodeId>,
     /// Which nodes are frozen or offline, and how their renders are doing.
     freeze: BTreeMap<NodeId, Badge>,
+    /// The nodes whose monitor button is lit, from the session.
+    monitored: Vec<NodeId>,
 }
 
-/// Nodes, the wires between them and frames, as copied.
-#[derive(Clone, Default)]
+/// Nodes, the wires between them and frames, as copied: what goes on the
+/// system clipboard under `application/x.noodle.node`.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Clipboard {
     nodes: Vec<(NodeId, Node)>,
     wires: Vec<Connection>,
     frames: Vec<Frame>,
+}
+
+/// What a [`Scene`] is built from: the project (by revision), the node types
+/// and the group shown.
+type SceneKey = (u64, u64, Option<NodeId>);
+
+impl EditorState {
+    /// The scene for the group being shown, rebuilt only if the project, the
+    /// registry or the group changed since the last one.
+    fn scene(&mut self, project: &Project, registry: &Registry) -> Rc<Scene> {
+        let key = (project.revision(), registry.generation(), self.group);
+        if let Some((cached, scene)) = &self.scene_cache
+            && *cached == key
+        {
+            return scene.clone();
+        }
+        let scene = Rc::new(Scene::build(project, registry, self.group));
+        self.scene_cache = Some((key, scene.clone()));
+        scene
+    }
+
+    /// Like [`scene`](Self::scene), without remembering a new one.
+    #[cfg(test)]
+    fn peek_scene(&self, project: &Project, registry: &Registry) -> Rc<Scene> {
+        let key = (project.revision(), registry.generation(), self.group);
+        match &self.scene_cache {
+            Some((cached, scene)) if *cached == key => scene.clone(),
+            _ => Rc::new(Scene::build(project, registry, self.group)),
+        }
+    }
 }
 
 impl Default for EditorState {
@@ -147,13 +189,17 @@ impl Default for EditorState {
             group_menu: None,
             rename: None,
             bodies: body::Bodies::default(),
-            clipboard: None,
+            scene_cache: None,
             arrange_requested: false,
+            dropped: None,
             fit_requested: false,
             view_request: None,
             open_request: None,
             port_menu: None,
+            monitor_menu: None,
+            unused_menu: None,
             freeze: BTreeMap::new(),
+            monitored: Vec::new(),
         }
     }
 }
@@ -180,7 +226,29 @@ pub fn draw_scope(painter: &egui::Painter, area: Rect, view: Option<&noodle_engi
     body::scope(painter, area, 1.0, view);
 }
 
+/// What was let go of over the canvas, and where it landed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dropped {
+    pub item: crate::carry::Item,
+    pub on: DropOn,
+    /// The level being edited: the group, or `None` for the top.
+    pub group: Option<NodeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DropOn {
+    /// On a Sampler node.
+    Sampler(NodeId),
+    /// On the canvas, at this point in graph coordinates.
+    Canvas(Pos2),
+}
+
 impl EditorState {
+    /// What was dropped on the canvas since the last call, if anything.
+    pub fn take_dropped(&mut self) -> Option<Dropped> {
+        self.dropped.take()
+    }
+
     /// Asks for the nodes to be auto-arranged (see [`arrange`]) on the next
     /// frame: the selection, or everything if nothing is selected.
     pub fn request_arrange(&mut self) {
@@ -298,7 +366,18 @@ impl EditorState {
         }
     }
 
-    fn select_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
+    /// Shows the top level, with `node` selected and the view fitted round
+    /// the graph, so a node added from outside the editor (an automation
+    /// track in the sequencer) is seen where it was made.
+    pub fn reveal_top_level(&mut self, node: NodeId) {
+        if self.group.is_some() {
+            self.enter(None, None);
+        }
+        self.select_only([node]);
+        self.request_fit();
+    }
+
+    pub(crate) fn select_only(&mut self, nodes: impl IntoIterator<Item = NodeId>) {
         self.selected = nodes.into_iter().collect();
         self.active = self.selected.iter().next_back().copied();
         self.selected_frames.clear();
@@ -442,6 +521,8 @@ enum Hit {
 pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Vec<Edit> {
     let dt = ui.input(|i| i.stable_dt);
     state.freeze.clone_from(session.freeze_badges());
+    state.monitored.clear();
+    state.monitored.extend_from_slice(session.monitored());
     if session.freeze_pending() {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -449,12 +530,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     state
         .bodies
         .set_sample_rate(session.engine_sample_rate().unwrap_or(0.0));
-    state
-        .bodies
-        .update(session.telemetry(), session.project(), dt);
-    // Meters and scopes move with the audio, so keep drawing while it plays.
-    if session.engine_running() && state.bodies.is_live() {
-        ui.ctx().request_repaint();
+    let liveness = state.bodies.update(
+        session.telemetry(),
+        session.project(),
+        session.registry(),
+        dt,
+    );
+    // Meters and scopes move with the audio, so keep drawing while they do,
+    // and while their peaks and traces fall back. A still graph, silent or
+    // with the transport stopped, costs nothing.
+    if session.engine_running() {
+        // Nothing else wakes a still editor when sound starts without input
+        // (live MIDI with the transport stopped), so look again now and then.
+        let wait = if liveness == body::Liveness::Still {
+            body::IDLE_POLL
+        } else {
+            body::METER_FRAME
+        };
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(wait));
     }
     let mut new_node_id = || session.new_node_id();
     let mut new_frame_id = || session.new_frame_id();
@@ -508,7 +602,7 @@ impl Problems {
 /// One frame of the editor, with everything it needs worked out.
 struct Frame_<'a> {
     project: &'a Project,
-    scene: Scene,
+    scene: Rc<Scene>,
     t: Transform,
     /// Indices into `scene.nodes`, bottom first. Selected nodes are on top.
     order: Vec<usize>,
@@ -522,6 +616,15 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     state.retain_in(project);
     let (canvas, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
     let response = ui.interact(canvas, canvas_id(), Sense::click_and_drag());
+    // A panel resized above the canvas moves its top-left; keep the graph
+    // where it was on screen instead of dragging the content with the corner.
+    // (The first frame has no previous canvas to compare against.)
+    if state.canvas.is_positive()
+        && let moved = canvas.min - state.canvas.min
+        && moved != Vec2::ZERO
+    {
+        state.view.offset -= moved / state.view.zoom;
+    }
     state.canvas = canvas;
     // Tab is how egui moves focus, so the canvas has to hold focus, and say
     // it wants Tab, for the editor to be given it.
@@ -541,7 +644,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             );
         });
     }
-    let scene = Scene::build(project, inputs.registry, state.group);
+    let scene = state.scene(project, inputs.registry);
     let problems = Problems::new(inputs.diagnostics);
     let mut edits = Vec::new();
 
@@ -561,6 +664,23 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         order,
         frame_order,
     };
+
+    if let Some(drop) = crate::carry::drop_in(ui.ctx(), canvas) {
+        crate::carry::take_drop(ui.ctx());
+        let sampler = match hit(&f, drop.at) {
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => project
+                .graph()
+                .node(id)
+                .is_some_and(|n| n.type_id == noodle_nodes::SAMPLER_ID)
+                .then_some(id),
+            _ => None,
+        };
+        state.dropped = Some(Dropped {
+            item: drop.item,
+            on: sampler.map_or(DropOn::Canvas(f.t.to_graph(drop.at)), DropOn::Sampler),
+            group: state.group,
+        });
+    }
 
     pointer(ui, state, &f, &response, &mut inputs, &mut edits);
     // Not mid-drag, in the editor (its gestures are all canvas drags) or in
@@ -596,7 +716,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         _ => None,
     });
     let mut fields = params::Fields::new(ui, canvas, front);
-    draw::nodes(&painter, &f, state, &problems, |node| {
+    draw::nodes(&painter, &f, state, &problems, front, |node| {
         fields.show(&f, &state.bodies, node, &mut edits);
     });
     fields.finish(&mut edits);
@@ -706,6 +826,30 @@ fn navigate(
         state.view.fit(canvas, bounds);
     }
 }
+
+/// The monitor button in a node's header, in graph units, if the node has an
+/// audio output to listen to.
+fn monitor_button(project: &Project, node: &layout::NodeGeom) -> Option<Rect> {
+    let boundary = project
+        .graph()
+        .node(node.id)
+        .is_none_or(|n| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT));
+    let audio_out = node
+        .ports
+        .iter()
+        .any(|p| p.side == Side::Output && p.kind == PortKind::Audio);
+    if node.reroute || node.error.is_some() || boundary || !audio_out {
+        return None;
+    }
+    let header = node.header();
+    Some(Rect::from_center_size(
+        header.right_center() - Vec2::new(MONITOR_BUTTON.x / 2.0 + 8.0, 0.0),
+        MONITOR_BUTTON,
+    ))
+}
+
+/// How big the monitor button is, in graph units.
+const MONITOR_BUTTON: Vec2 = Vec2::new(14.0, 14.0);
 
 /// How close to one of `node`'s sockets counts as on it, in screen points.
 /// Smaller when zoomed out, so neighbouring sockets don't overlap and a
@@ -891,22 +1035,87 @@ fn pointer(
     // Right-clicking a port row of a group's input or output node offers to
     // remove the port.
     if response.secondary_clicked() {
-        state.port_menu = latest.and_then(|p| boundary_port_at(f, p));
+        state.monitor_menu = latest.and_then(|p| monitor_button_at(f, p));
+        state.port_menu = latest
+            .filter(|_| state.monitor_menu.is_none())
+            .and_then(|p| boundary_port_at(f, p));
+    }
+    if response.secondary_clicked() {
+        state.unused_menu =
+            latest
+                .filter(|_| state.monitor_menu.is_none())
+                .and_then(|p| match hit(f, p) {
+                    Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _)
+                        if !is_group(f.project, id) =>
+                    {
+                        spare::remove_unused_ports(f.project, id).map(|_| id)
+                    }
+                    _ => None,
+                });
     }
     let port = state.port_menu.clone();
+    let monitor = state.monitor_menu;
+    let monitored = state.monitored.clone();
+    let unused = state.unused_menu;
     let mut remove = false;
-    response.context_menu(|ui| match &port {
-        Some(port) => {
-            if ui
+    let mut remove_unused = false;
+    response.context_menu(|ui| {
+        if let Some(port) = &port
+            && ui
                 .button(format!("Remove port \"{}\"", port.name))
                 .clicked()
+        {
+            remove = true;
+            ui.close();
+        }
+        if unused.is_some() && ui.button("Remove unused ports").clicked() {
+            remove_unused = true;
+            ui.close();
+        }
+        if let Some(node) = monitor {
+            use crate::session::MonitorMode::{Exclusive, SilenceOthers, Sum};
+            let choices = [
+                ("Monitor", Some(Sum), false),
+                ("Add to monitor", Some(Sum), true),
+                (
+                    "Monitor, silence other outputs on its device",
+                    Some(Exclusive),
+                    false,
+                ),
+                (
+                    "Monitor, silence all other outputs",
+                    Some(SilenceOthers),
+                    false,
+                ),
+            ];
+            for (label, mode, add) in choices {
+                if ui.button(label).clicked() {
+                    edits.push(Edit::MonitorAs { node, mode, add });
+                    ui.close();
+                }
+            }
+            if ui
+                .add_enabled(
+                    monitored.contains(&node),
+                    egui::Button::new("Stop monitoring"),
+                )
+                .clicked()
             {
-                remove = true;
+                edits.push(Edit::MonitorAs {
+                    node,
+                    mode: None,
+                    add: false,
+                });
                 ui.close();
             }
         }
-        None => ui.close(),
+        if port.is_none() && unused.is_none() && monitor.is_none() {
+            ui.close();
+        }
     });
+    if remove_unused && let Some(node) = state.unused_menu.take() {
+        edits.extend(spare::remove_unused_ports(f.project, node).map(Edit::Apply));
+    }
     if remove && let Some(port) = state.port_menu.take() {
         edits.extend(spare::remove_group_port(f.project, &port).map(Edit::Apply));
     }
@@ -914,12 +1123,21 @@ fn pointer(
     if response.clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
-        click(state, f, p, modifiers);
+        if let Some(node) = monitor_button_at(f, p) {
+            edits.push(Edit::Monitor {
+                node,
+                command: modifiers.command,
+                shift: modifiers.shift,
+            });
+        } else {
+            click(state, f, p, modifiers);
+        }
     }
     if response.secondary_clicked()
         && let Some(p) = latest
         && !modifiers.command
         && !modifiers.shift
+        && monitor_button_at(f, p).is_none()
         && let Hit::Node(id) = hit(f, p)
         && is_group(f.project, id)
     {
@@ -930,7 +1148,16 @@ fn pointer(
             focused: false,
         });
     }
+    // Ctrl+double-click removes a node's unused ports; anywhere else it does
+    // nothing, so it can't open or rename by mistake.
     if response.double_clicked_by(PointerButton::Primary)
+        && modifiers.command
+        && let Some(p) = latest
+    {
+        if let Hit::Node(id) = hit(f, p) {
+            edits.extend(spare::remove_unused_ports(f.project, id).map(Edit::Apply));
+        }
+    } else if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
         match hit(f, p) {
@@ -961,9 +1188,9 @@ fn pointer(
             // Mixers, scopes and outputs (which have a scope) have a view of
             // their own.
             Hit::Node(id)
-                if f.project.graph().node(id).is_some_and(|n| {
-                    matches!(n.type_id.as_str(), spare::MIXER | SCOPE_ID | OUTPUT_ID)
-                }) =>
+                if f.scene
+                    .node(id)
+                    .is_some_and(|n| matches!(n.view, NodeView::Mixer | NodeView::Scope)) =>
             {
                 state.view_request = Some(id);
             }
@@ -978,6 +1205,21 @@ fn pointer(
             _ => {}
         }
     }
+}
+
+/// The node whose monitor button is under the screen point `p`.
+fn monitor_button_at(f: &Frame_<'_>, p: Pos2) -> Option<NodeId> {
+    let g = f.t.to_graph(p);
+    // Topmost node first, so a button under another node can't be pressed.
+    let node = f
+        .order
+        .iter()
+        .rev()
+        .map(|&i| &f.scene.nodes[i])
+        .find(|node| node.rect.contains(g))?;
+    monitor_button(f.project, node)
+        .filter(|button| button.contains(g))
+        .map(|_| node.id)
 }
 
 /// The wire under the screen point `p`, the nearest if several are in reach.
@@ -1600,7 +1842,7 @@ fn stroke(
     let mut commands = Vec::new();
     for wire in &f.scene.wires {
         // Reroutes only pass audio, so they can't go on an event or spectral wire.
-        if action == StrokeAction::Reroute && (wire.event || wire.spectral) {
+        if action == StrokeAction::Reroute && (wire.event || wire.spectral || wire.sample) {
             continue;
         }
         let line = wire::flatten(wire::curve(wire.from, wire.to));
@@ -1722,17 +1964,6 @@ fn keyboard(
     let cut = event(|e| matches!(e, Event::Cut)) || pressed(Modifiers::COMMAND, Key::X);
     let paste = event(|e| matches!(e, Event::Paste(_))) || pressed(Modifiers::COMMAND, Key::V);
     let copied = (copy || cut) && copy_selection(state, f);
-    if copied {
-        // The window only turns Ctrl/Cmd+V into a paste while the system
-        // clipboard holds text, so leave some for it to find. The nodes
-        // themselves wait in `state.clipboard`.
-        let (nodes, frames) = state
-            .clipboard
-            .as_ref()
-            .map_or((0, 0), |c| (c.nodes.len(), c.frames.len()));
-        ui.ctx()
-            .copy_text(format!("Noodle: {nodes} nodes, {frames} frames"));
-    }
     if cut && copied {
         edits.extend(state.delete_selection());
     }
@@ -1836,25 +2067,32 @@ fn copy_selection(state: &mut EditorState, f: &Frame_<'_>) -> bool {
         .connections()
         .filter(|c| copied.contains(&c.from.node) && copied.contains(&c.to.node))
         .collect();
-    let frames = frames
+    let frames: Vec<Frame> = frames
         .into_iter()
         .filter_map(|id| f.project.frame(id).cloned())
         .collect();
     if nodes.is_empty() && state.selected_frames.is_empty() {
         return false;
     }
-    state.clipboard = Some(Clipboard {
-        nodes,
-        wires,
-        frames,
-    });
+    // The plain text is there so the window sees a paste and other apps
+    // get something readable.
+    let summary = format!("Noodle: {} nodes, {} frames", nodes.len(), frames.len());
+    crate::clipboard::copy(
+        crate::clipboard::NODE_MIME,
+        &Clipboard {
+            nodes,
+            wires,
+            frames,
+        },
+        &summary,
+    );
     true
 }
 
 /// Puts the clipboard down with its top-left corner at `at`, as one edit.
 /// The pasted nodes are selected afterwards.
 fn paste(state: &mut EditorState, at: Pos2, inputs: &mut Inputs<'_>, edits: &mut Vec<Edit>) {
-    let Some(clip) = state.clipboard.clone() else {
+    let Some(clip) = crate::clipboard::paste::<Clipboard>(crate::clipboard::NODE_MIME) else {
         return;
     };
     let corner = clip
@@ -2249,6 +2487,14 @@ fn group_menu(
                     if ui.button("Save group to library...").clicked() {
                         menu.name = Some(default_name.clone());
                     }
+                    if spare::remove_unused_ports(f.project, menu.group).is_some()
+                        && ui.button("Remove unused ports").clicked()
+                    {
+                        edits.extend(
+                            spare::remove_unused_ports(f.project, menu.group).map(Edit::Apply),
+                        );
+                        close = true;
+                    }
                     if let Some(name) = source_name.as_deref() {
                         let text = format!("Update from {name}");
                         if ui
@@ -2354,7 +2600,22 @@ fn popups(
                             }
                             node.config = group::ports_config(&[]);
                         }
-                        edits.push(Edit::Apply(Command::AddNode { id, node }));
+                        // An Automation node gets its track in the sequencer
+                        // in the same undo step.
+                        let add = Command::AddNode { id, node };
+                        edits.push(Edit::Apply(
+                            if type_id == noodle_nodes::AUTOMATION_NODE_ID {
+                                Command::Batch(vec![
+                                    add,
+                                    crate::timeline::add_track::automation_lane(
+                                        id,
+                                        f.project.next_lane_id(),
+                                    ),
+                                ])
+                            } else {
+                                add
+                            },
+                        ));
                         state.select_only([id]);
                     }
                     Choice::Template(entry) => {
@@ -2574,7 +2835,7 @@ pub(crate) fn socket_on_screen(
     key: &str,
 ) -> Option<Pos2> {
     let side = if output { Side::Output } else { Side::Input };
-    let scene = Scene::build(session.project(), session.registry(), state.group);
+    let scene = state.peek_scene(session.project(), session.registry());
     let socket = scene.node(node)?.port(side, key)?.socket;
     Some(state.view.on(state.canvas).to_screen(socket))
 }

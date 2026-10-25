@@ -102,6 +102,10 @@ pub fn output_devices(graph: &noodle_core::Graph) -> Vec<String> {
 const SCOPE_SECONDS: f32 = 1.0;
 
 impl NodeType for Output {
+    fn view(&self, _config: &Config) -> crate::NodeView {
+        crate::NodeView::Scope
+    }
+
     fn info(&self) -> &NodeInfo {
         &OUTPUT
     }

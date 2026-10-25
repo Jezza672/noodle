@@ -284,7 +284,9 @@ pub(crate) fn build(
     // At most one Output node plays on each named device: the lowest ID.
     let mut device_owners: HashMap<String, NodeId> = HashMap::new();
     for scheduled in &schedule.nodes {
-        if scheduled.node_type.info().id == OUTPUT_ID {
+        if scheduled.node_type.info().id == OUTPUT_ID
+            && !crate::monitor::is_monitor_config(&scheduled.config)
+        {
             let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let owner = device_owners.entry(device).or_insert(scheduled.id);
             *owner = (*owner).min(scheduled.id);
@@ -336,9 +338,15 @@ pub(crate) fn build(
         if scheduled.phase == Phase::Output {
             output_halves.insert(id, slot);
         }
+        // The live keys are left out, so a change to them keeps the instance.
+        let live = scheduled.node_type.live_config();
+        let mut key_config = scheduled.config.clone();
+        for key in live {
+            key_config.remove(key);
+        }
         let key = NodeKey {
             type_id: scheduled.node_type.info().id,
-            config: scheduled.config.clone(),
+            config: key_config,
             input_shapes: scheduled.input_shapes.clone(),
             output_shapes: scheduled.output_shapes.clone(),
         };
@@ -352,6 +360,9 @@ pub(crate) fn build(
         let (instance, carries_over) = match carried {
             None if input_half => (None, false),
             Some(&(_, old_slot)) => {
+                if !live.is_empty() {
+                    scheduled.node_type.retune(id, &scheduled.config);
+                }
                 migrations.push((old_slot, slot));
                 carried_ids.insert(id);
                 (None, true)
@@ -567,7 +578,10 @@ pub(crate) fn build(
         if is_output {
             let device = canonical(OUTPUT_DEVICE.get_text(&scheduled.config));
             let device = device.as_str();
-            if !device.is_empty() && device_owners.get(device) != Some(&id) {
+            if !device.is_empty()
+                && device_owners.get(device) != Some(&id)
+                && !crate::monitor::is_monitor_config(&scheduled.config)
+            {
                 diagnostics.push(Diagnostic::node(
                     id,
                     Problem::DeviceTaken(device.to_owned()),

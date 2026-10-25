@@ -50,13 +50,13 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Boundary parameters.** Every port carries gain (dB), mute and solo as
     parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
     `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten
-    keeps a port as a `noodle.group.stage` node, under the port's
+    keeps a port as a `noodle.group.stage` node (a group's output ports always do, for their meters), under the port's
     `stage_id` (a node ID no project node can have, built from the boundary
     node's ID and the port's), and points a lane or a wire aimed at the
     port's gain or mute at it, once its gain or mute has been set at all
     (even back to its default), is wired, or it is muted, and drops the rest.
-    So a group nobody has touched costs nothing and renders bit-for-bit like
-    the flat patch, and a touched one costs a stage that is exact at unity.
+    So a group nobody has touched costs nothing on its inputs, a stage at each
+    output (for the meter) that is exact at unity, and a touched one costs a stage that is exact at unity.
     The stage stays once set because adding or removing a node in the audible
     path makes the engine fade the whole output out and in (5 ms each way):
     the first touch of a control on a group costs that one fade, and after
@@ -86,10 +86,10 @@ The **Project** is the single source of truth. It holds one global graph:
     (see [Library and presets](synths-and-library.md#library-and-presets-m9)): the group, a group
     input `in`, a `noodle.track.input` node (outputs `audio` and `midi`), and
     a group output `out` with `audio` wired to it, in that ID order. The
-    output starts with gain 0 dB and mute 0 already set, so the track's stage
-    exists from creation (solo and mute act at the output, so the input needs
-    none) and the first fader or mute touch is a parameter change, not a
-    graph change with a fade. The track input's `midi` output is left unwired,
+    output starts with mute 0 already set, so the track's stage exists from
+    creation (solo and mute act at the output, so the input needs none) and
+    the first mute touch is a parameter change, not a graph change with a
+    fade. The track input's `midi` output is left unwired,
     and the group has no MIDI port: a track plays a synth by wiring `midi` to
     one inside the group. The arrangement view calls it.
   - **Edits.** Removing a group removes its contents, and undo restores them.
@@ -108,21 +108,41 @@ The **Project** is the single source of truth. It holds one global graph:
     group's output node in one step, with the input's `audio` output wired
     into the group's output by default. Undo removes all of it. The new
     group is named "Track N", as the timeline would call it.
-  - **A track's gain and mute are the track input's parameters** (`gain`,
-    `mute`), passed on as outputs of the same names, which creation wires into
-    the group output's gain and mute. The mixer strip, the track header and
-    automation lanes all set those parameters
-    (`Graph::control_target`); a track whose gain or mute is wired some other
-    way falls back to the group output's own.
+  - **A track's mute is the track input's `mute` parameter**, also passed on
+    as an output of the same name for wiring (an oscillator that should
+    follow mute, say). The engine applies it at the track's outputs: when
+    nothing is wired to a track group output's own mute, flatten drives that
+    output's stage from the track input's `mute`, so muting needs no wire and
+    is smoothed like any stage mute. The track input also stops its MIDI while
+    muted and ends the notes it holds as it engages (notes that begin during
+    the mute are not played after it). The header, the mixer strip and
+    automation lanes set the parameter (`Graph::control_target`); a track
+    whose output mute is wired some other way falls back to the output's own.
+  - **There is no track gain.** Level belongs to clips: an audio clip has a
+    `gain` and an envelope of `gain_points` (below). A group output's `gain`
+    still exists as a boundary-node control, for nested groups and wiring,
+    but a track has no fader.
+  - **Clip gain and crossfades** are audio clip data. `AudioClip::gain` is
+    the scalar (linear, shown in dB) and `gain_points` is the envelope: points
+    of (ticks from the clip's start, dB), straight lines in dB between them,
+    held before the first and after the last. Trimming a clip's start shifts
+    its points. A `Crossfade { before, after }` (ticks) is stored on the *later*
+    of two audio clips whose end and start are within `BUTT_SECONDS` of each
+    other; it is not created by overlapping. The engine lays it out in
+    `schedule.rs`: the earlier clip is extended to play on `after` past its end
+    and the later one `before` ahead of its start, as far as each file has audio
+    (a warped clip's map is extended at its end speed), each side also held to
+    half its clip; the two fade equal-power across the whole stretch and the
+    node plays both at once (`ScheduledClip::under`). A crossfade whose clips
+    are no longer butted is kept but ignored.
   - **Mixers are named** by their `name` config (`spare::mixer_name`); the
     default mixer, the one Add track feeds, is "Main". F2 in the graph and a
     text field in the mixer view rename one.
   - **A group's output port carries its controls** as parameters of the
     group's output node: gain, mute and solo. Gain and mute are ordinary
     runtime parameters, so they can be automated and wired like any other.
-    For a track they are wired from the track input (below), so the track's
-    buttons set the track input's parameters; only solo is set on the output.
-    Solo is the exception (below).
+    A track's mute comes from its track input (above) and solo is set on the
+    output. Solo is the exception (below).
   - Every group has such ports, not only tracks, so a nested group has the
     same controls.
   - **Solo** is a mixer-level behaviour: soloing a track mutes the tracks
@@ -151,10 +171,24 @@ The **Project** is the single source of truth. It holds one global graph:
   - **Mix inputs.** A Mix node has `in1`…`inN` audio inputs, then `gain1`…
     `gainN` (dB) and `mute1`…`muteN` parameter inputs, so each channel's
     fader and mute can be wired or automated like any other parameter. Its
-    per-input meters read after the gain and mute. A track's own gain, mute
-    and solo stay on the track (its header); the mixer view never touches
-    them.
+    per-input meters read after the gain and mute. A track's own mute and
+    solo stay on the track (its header); the mixer view never touches them.
 
 Every change goes through a **command**. Applying a command returns its
 inverse, which gives undo/redo for free and gives the UI one place to hook
 dirty-tracking and recompiling.
+
+Two cheap questions answer "has anything changed?":
+
+- `Project::revision()` is a number drawn from one process-wide counter and
+  replaced by every applied command (undo and redo are commands). Equal
+  revisions mean equal contents, so a view can cache what it derives from the
+  project: the editor's `Scene`, the timeline's track list and the set of wired
+  ports are rebuilt only when the revision (or, for the first and last, the
+  registry's `generation()`) moves. It is not saved and not part of equality.
+- `History::position()` names the state in the history: the number of the latest
+  step still applied. A step keeps its number through undo and redo, and a new
+  step never reuses one. `Session` stores the position when it saves or loads;
+  the project is dirty when the position differs. That is O(1), exact under undo
+  back to the saved state, and keeps no copy of the saved project. (An edit that
+  changes nothing still counts as a change.)

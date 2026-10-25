@@ -101,6 +101,8 @@ pub mod editor {
     /// A selected node's outline: the accent.
     pub const SELECTED: Color32 = Color32::from_rgb(200, 241, 105);
     /// The active node's outline: the one the properties panel shows.
+    /// The outline of the node under the pointer.
+    pub const HOVERED: Color32 = Color32::from_rgb(120, 140, 180);
     pub const ACTIVE: Color32 = Color32::from_rgb(255, 255, 255);
     pub const PROBLEM: Color32 = Color32::from_rgb(255, 90, 79);
     /// A node using a fair share of the audio thread's time.
@@ -116,6 +118,8 @@ pub mod editor {
     pub const PARAM_SOCKET: Color32 = Color32::from_rgb(138, 138, 147);
     pub const EVENT_SOCKET: Color32 = Color32::from_rgb(240, 160, 64);
     pub const SPECTRAL_SOCKET: Color32 = Color32::from_rgb(176, 124, 255);
+    pub const SAMPLE_WIRE: Color32 = Color32::from_rgb(240, 170, 80);
+    pub const SAMPLE_SOCKET: Color32 = Color32::from_rgb(240, 170, 80);
     /// Frames are barely tinted; the outline carries them.
     pub const FRAME: Color32 = Color32::from_rgba_premultiplied(6, 9, 16, 20);
     /// The border around a frame.

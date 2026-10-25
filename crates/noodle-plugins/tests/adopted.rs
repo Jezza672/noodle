@@ -58,6 +58,9 @@ fn an_adopted_thread_runs_the_plugins_and_their_timers_when_it_pumps() {
     // On the adopted thread itself, nothing waits for a pump.
     let local = NodeId(9_101);
     let instance = build(node_type, local);
+    // Loaded, but with no timer registered and no editor open, there is
+    // nothing to pump for: the app's window can sleep.
+    assert_eq!(pump(), None, "an idle plugin needs no pump");
     open_editor(local).expect("opens at once");
     assert!(editor_is_open(local));
     // Its timer only runs when we pump.

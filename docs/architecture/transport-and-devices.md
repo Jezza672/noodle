@@ -20,9 +20,24 @@ rewind only touch the transport:
 - **Idle cost.** A graph with nothing to do renders silence, which the engine
   already skips (a silent lane is a branch and a memset), so an idle engine is
   cheap. A graph that makes sound on its own, like a drone, sounds as soon as
-  the engine is on; that's the price of ADR 0001. The window repaints at about
-  10 frames a second while the engine runs with the transport stopped, and 60
-  while it runs.
+  the engine is on; that's the price of ADR 0001. The node editor repaints
+  (at most 30 times a second) only while something it shows is moving or
+  falling: `Telemetry::activity` goes up when a meter, scope, parameter or
+  position writer reports a change, and `Bodies::update` says `Moving`,
+  `Decaying` (peaks, holds and spectra still falling) or `Still`. A silent
+  graph with the transport stopped only looks again every 250 ms, to
+  catch sound that starts without input, such as live MIDI. The playhead keeps its own
+  repaint while it plays.
+- **The window sleeps until there is news.** Background work wakes it:
+  `noodle_engine::wake` (the app registers a repaint request) is called when a
+  `Job` ends (freezes, exports, stem splits, renders), when the plugin scan
+  finishes and when the audio file watcher sees a file change. For what has to
+  be looked at, `Session::next_deadline` says when: the next frame while the
+  transport plays, a recording is open or a plan waits for room in the queue; one
+  second for the stream's health and for MIDI hot-plug; the freeze debounce;
+  half a second for sandboxed plugin hosts. `App::show` asks for one repaint at
+  the earliest, so an idle project with the transport stopped runs about one
+  frame a second, plus the editor's own liveness repaints above.
 - **The fallback.** `Session::start_engine` tries the saved output, then the
   system default (as `play` always did), then the **virtual output**. Either
   fallback is not saved, shows a message in the status bar, and sets
@@ -126,6 +141,29 @@ the conventions and nodes that make them usable.
   management (a crossover to the LFE), ambisonics, binaural rendering, a
   channel-mask field in exported WAVs matching the layout, and playing extra
   devices as part of one surround bus.
+
+## Node monitoring
+
+The speaker button in a node's header (any node with an audio output) listens
+to its first audio output through the **monitor device**, chosen in the top
+bar (default: the main output, saved in the preferences). It is session state
+(`Session::node_monitor`), not project state: not saved, not undone.
+
+- **How it taps.** `Controller::set_monitor` hands the compiler a `Monitor`
+  (`noodle-engine/src/monitor.rs`). After flattening it adds a hidden Output
+  node (marked with the `monitor` config key) per monitored node, wired to the
+  node's flat output. For a group that is the output after its gain, mute and
+  solo stage, so a node that is not sounding in the mix is silent in the
+  monitor too. A node inside a group that is muted, or that solo leaves out, is not tapped at all.
+  Hidden Outputs sum onto a device other Output nodes play on, instead of
+  being refused as a second owner. Offline renders never include a monitor.
+- **Clicks.** Plain: monitor that node alone, summed into the mix; again
+  stops. Shift: add or remove a node. Ctrl/Cmd: alone, and the Output nodes
+  on the monitor's device are silenced (when the monitor has the device to
+  itself this changes nothing). Ctrl+Shift: alone, and every Output node is
+  silenced. Right-clicking the button offers the same modes as menu items (monitor, add to monitor, silence the device's other outputs, silence all, stop). Escape or the top bar's Stop button ends it.
+- **Devices.** A monitor on a named device opens a stream for it like an
+  Output node would (`Session::wanted_devices`).
 
 ## Live monitoring
 

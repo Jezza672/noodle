@@ -86,6 +86,10 @@ pub fn default_layout(type_id: &str) -> Option<ChannelLayout> {
 }
 
 impl NodeType for SurroundPan {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Panner
+    }
+
     fn info(&self) -> &NodeInfo {
         &PAN_INFO
     }

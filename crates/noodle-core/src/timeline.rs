@@ -271,18 +271,6 @@ impl TempoMap {
         unreachable!("the last signature runs forever")
     }
 
-    /// The bar whose downbeat is nearest `tick`; a tie goes to the later bar.
-    /// Ticks before the start are bar 0.
-    pub fn nearest_bar(&self, tick: Tick) -> u32 {
-        let bar = self.position(tick).bar;
-        let (before, after) = (self.bar_start(bar), self.bar_start(bar + 1));
-        if tick.0 - before.0 < after.0 - tick.0 {
-            bar
-        } else {
-            bar + 1
-        }
-    }
-
     /// Where `tick` falls in the bars. Ticks before the start are at the start.
     pub fn position(&self, tick: Tick) -> MusicalPosition {
         let mut remaining = tick.0.max(0);
@@ -423,11 +411,7 @@ mod tests {
         for bar in 0..5 {
             let start = map.bar_start(bar);
             assert_eq!(map.position(start).bar, bar);
-            assert_eq!(map.nearest_bar(start), bar);
         }
-        assert_eq!(map.nearest_bar(Tick(3840 + 1919)), 1);
-        assert_eq!(map.nearest_bar(Tick(3840 + 1920)), 2);
-        assert_eq!(map.nearest_bar(Tick(-500)), 0);
     }
 
     #[test]

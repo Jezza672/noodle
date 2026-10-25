@@ -35,6 +35,12 @@ pub struct Strip {
     /// The boundary node the controls are set on. `None` for a group with
     /// no input or output node, which has nothing to set.
     pub node: Option<NodeId>,
+    /// The node the mute is set on: `node`, or the track input of a track,
+    /// whose mute the engine applies to its outputs.
+    pub mute_node: Option<NodeId>,
+    /// Whether the strip has a fader. A track has none: its level is set by
+    /// the gain of its clips.
+    pub has_fader: bool,
     /// A lane or wire drives the gain, so the fader would do nothing.
     pub gain_automated: bool,
     /// The same for mute.
@@ -85,6 +91,8 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
                     solo: false,
                 },
                 node: Some(mixer),
+                mute_node: Some(mixer),
+                has_fader: true,
                 gain_automated: driven(project, Some(mixer), &gain_key),
                 mute_automated: driven(project, Some(mixer), &mute_key),
                 channel: Some(i - 1),
@@ -107,26 +115,16 @@ pub fn strips(project: &Project) -> Vec<Strip> {
     ids.into_iter()
         .filter_map(|id| Some((id, graph.node(id)?)))
         .map(|(id, node)| {
-            // The strip sets the gain and mute of the group's control port,
-            // or of the track input that feeds them. The strip has one node,
-            // so a gain and a mute that follow different nodes fall back to
-            // the port's own.
+            // The strip sets the gain of the group's control port, and the
+            // mute of the track input that feeds a track's outputs.
             let port = graph.control_port(id);
-            let own = |control: &str| {
-                port.as_ref()
-                    .map(|port| (port.node, port.control_key(control)))
+            let (node_id, gain_key) = match &port {
+                Some(port) => (port.node, port.control_key(GAIN)),
+                None => (NodeId(0), GAIN.to_owned()),
             };
-            let followed = (
-                graph.control_target(id, GAIN),
-                graph.control_target(id, MUTE),
-            );
-            let ((node_id, gain_key), (_, mute_key)) = match followed {
-                (Some(gain), Some(mute)) if gain.0 == mute.0 => (gain, mute),
-                _ => match (own(GAIN), own(MUTE)) {
-                    (Some(gain), Some(mute)) => (gain, mute),
-                    _ => ((NodeId(0), GAIN.to_owned()), (NodeId(0), MUTE.to_owned())),
-                },
-            };
+            let (mute_id, mute_key) = graph
+                .control_target(id, MUTE)
+                .unwrap_or((NodeId(0), MUTE.to_owned()));
             let node_id = port.as_ref().map(|_| node_id);
             Strip {
                 group: id,
@@ -136,8 +134,10 @@ pub fn strips(project: &Project) -> Vec<Strip> {
                 },
                 controls: graph.group_controls(id),
                 node: node_id,
+                mute_node: port.as_ref().map(|_| mute_id),
+                has_fader: graph.track_input(id).is_none(),
                 gain_automated: driven(project, node_id, &gain_key),
-                mute_automated: driven(project, node_id, &mute_key),
+                mute_automated: driven(project, Some(mute_id), &mute_key),
                 channel: None,
                 gain_key,
                 mute_key,
@@ -271,12 +271,14 @@ fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut
                         MeterAxis::Vertical,
                     );
                 }
-                let faded = ui.add_enabled_ui(
-                    strip.node.is_some() && !silent && !strip.gain_automated,
-                    |ui| ui.vertical(|ui| fader(ui, strip, edits)),
-                );
-                if strip.gain_automated {
-                    faded.response.on_disabled_hover_text(header::AUTOMATED);
+                if strip.has_fader {
+                    let faded = ui.add_enabled_ui(
+                        strip.node.is_some() && !silent && !strip.gain_automated,
+                        |ui| ui.vertical(|ui| fader(ui, strip, edits)),
+                    );
+                    if strip.gain_automated {
+                        faded.response.on_disabled_hover_text(header::AUTOMATED);
+                    }
                 }
             });
             ui.add_enabled_ui(strip.node.is_some(), |ui| {
@@ -295,7 +297,7 @@ fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut
                         .on_hover_text(tip)
                         .on_disabled_hover_text(tip)
                         .clicked()
-                        && let Some(node) = strip.node
+                        && let Some(node) = strip.mute_node
                     {
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
                         edits.push(Edit::Apply(set(node, &strip.mute_key, value)));

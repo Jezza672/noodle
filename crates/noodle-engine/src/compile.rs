@@ -18,6 +18,7 @@
 //! Each problem is reported as a [`Diagnostic`], so the UI can show it on the
 //! node or wire where it happened.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
@@ -322,6 +323,8 @@ pub(crate) struct Options<'a> {
     pub replacements: Option<&'a Replacements>,
     /// Sinks to watch outputs with. The graph is cut down to what feeds them.
     pub taps: &'a [TapSpec],
+    /// A monitor to add, and the main device's ID for matching its device.
+    pub monitor: Option<(&'a crate::Monitor, Option<&'a str>)>,
 }
 
 /// [`compile_with_lanes`], also replacing outputs and adding taps.
@@ -332,18 +335,30 @@ pub(crate) fn compile_with(
     options: &Options<'_>,
 ) -> (Schedule, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    let mut keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    // A group's outputs keep their stages, which meter what leaves the group.
+    keep.extend(crate::flatten::output_stages(graph));
     let retargeted = crate::automation::retarget_lanes(graph, lanes);
     let lanes: Vec<_> = retargeted.iter().map(|(id, lane)| (*id, lane)).collect();
+    let original = graph;
     let graph = crate::flatten::flatten_keeping(graph, &keep);
-    let graph = &*crate::automation::add_lanes(&graph, &lanes, registry, &mut diagnostics);
+    let monitored;
+    let graph = match options.monitor {
+        Some((monitor, main)) => {
+            monitored = crate::monitor::apply(original, &graph, &keep, registry, monitor, main);
+            &monitored
+        }
+        None => &*graph,
+    };
+    let graph = &*crate::automation::add_lanes(graph, &lanes, registry, &mut diagnostics);
     let no_replacements = Replacements::new();
     let rewritten = crate::replace::rewrite(
         graph,
         options.replacements.unwrap_or(&no_replacements),
         options.taps,
     );
-    let graph = &*rewritten.graph;
+    let sampled = resolve_samples(&rewritten.graph, registry);
+    let graph = &*sampled;
     let overrides = &rewritten.overrides;
     let mut candidates = resolve_nodes(graph, registry, overrides, options, &mut diagnostics);
     let mut wires = resolve_wires(graph, &candidates, &mut diagnostics);
@@ -387,6 +402,61 @@ pub(crate) fn compile_with(
         options.independent_buffers,
     );
     (schedule, diagnostics)
+}
+
+/// Resolves the sample wires, which carry a reference to a sample, not
+/// signal: each node with a wire into a sample input gets the sample the wire
+/// comes from in its config, under the input's key, and the wires are dropped.
+/// A wire from a port that has no sample (or from a node that isn't there)
+/// leaves the receiver with an empty one, which is silence. A sample wire that
+/// doesn't join a sample output to a sample input is left for
+/// [`resolve_wires`] to report.
+fn resolve_samples<'a>(graph: &'a Graph, registry: &Registry) -> Cow<'a, Graph> {
+    let sample_port = |node: NodeId, key: &str, output: bool| -> Option<Arc<dyn NodeType>> {
+        let node = graph.node(node)?;
+        let node_type = registry.get(&node.type_id)?;
+        let layout = node_type.layout(&node.config).ok()?;
+        let ports = if output {
+            &layout.sample_outputs
+        } else {
+            &layout.sample_inputs
+        };
+        ports
+            .iter()
+            .any(|p| p.key == key)
+            .then(|| Arc::clone(node_type))
+    };
+    let mut resolved = Vec::new();
+    for c in graph.connections() {
+        if sample_port(c.to.node, &c.to.port, false).is_none() {
+            continue;
+        }
+        if let Some(source) = sample_port(c.from.node, &c.from.port, true) {
+            let config = &graph.node(c.from.node).expect("found above").config;
+            let sample = source.sample_output(config, &c.from.port);
+            resolved.push((c, sample));
+        }
+    }
+    if resolved.is_empty() {
+        return Cow::Borrowed(graph);
+    }
+    let mut nodes: Vec<(NodeId, noodle_core::Node)> =
+        graph.nodes().map(|(id, n)| (id, n.clone())).collect();
+    for (c, sample) in &resolved {
+        if let Some((_, node)) = nodes.iter_mut().find(|(id, _)| *id == c.to.node) {
+            node.config.set(
+                c.to.port.clone(),
+                noodle_core::Value::Text(sample.clone().unwrap_or_default()),
+            );
+        }
+    }
+    let connections: Vec<_> = graph
+        .connections()
+        .filter(|c| !resolved.iter().any(|(r, _)| r == c))
+        .collect();
+    Cow::Owned(
+        Graph::from_parts(nodes, connections).expect("a graph stays valid with wires removed"),
+    )
 }
 
 fn resolve_nodes<'a>(

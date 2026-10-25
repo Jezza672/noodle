@@ -4,6 +4,7 @@
 use crate::testkit::{double_click, drag, drag_between};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use noodle_core::{Clip, ClipId, Command, MidiNote, Node, NodeId, Tick};
 
 use super::*;
@@ -25,6 +26,11 @@ fn note(start: i64, length: i64, key: u8) -> MidiNote {
 
 /// A four beat clip (3840 ticks) holding `notes`, open in the roll.
 fn rig(notes: &[MidiNote]) -> H {
+    rig_at(Tick(960), notes)
+}
+
+/// The same, starting at `start`.
+fn rig_at(start: Tick, notes: &[MidiNote]) -> H {
     let mut session = Session::new(Nodes::all());
     session.set_snap(240);
     session.edit([Edit::Apply(Command::AddNode {
@@ -32,7 +38,7 @@ fn rig(notes: &[MidiNote]) -> H {
         node: Node::new(TRACK_INPUT),
     })]);
     let clip = session.project().next_clip_id();
-    let mut midi = Clip::midi(NodeId(1), Tick(960), Tick(3840));
+    let mut midi = Clip::midi(NodeId(1), start, Tick(3840));
     let ClipContent::Midi(content) = &mut midi.content else {
         unreachable!()
     };
@@ -342,4 +348,132 @@ fn the_toolbar_keeps_its_close_button_and_follows_the_snap_setting() {
     h.state_mut().session.set_snap(960);
     h.run();
     h.get_by_label("Snap: Beat");
+}
+
+fn midi_of(h: &H) -> MidiClip {
+    let rig = h.state();
+    rig.session
+        .project()
+        .clip(rig.clip)
+        .unwrap()
+        .as_midi()
+        .unwrap()
+        .clone()
+}
+
+/// Looping on, over `from..to` ticks of the clip.
+fn loop_over(h: &mut H, from: i64, to: i64) {
+    let rig = h.state_mut();
+    let mut clip = rig.session.project().clip(rig.clip).unwrap().clone();
+    let ClipContent::Midi(midi) = &mut clip.content else {
+        unreachable!()
+    };
+    midi.set_looping(true);
+    midi.set_loop(Tick(from), Tick(to));
+    rig.session
+        .edit([Edit::Apply(Command::SetClip { id: rig.clip, clip })]);
+    h.run();
+}
+
+fn ruler_y(h: &H) -> f32 {
+    geometry(h).grid.top() - RULER / 2.0
+}
+
+#[test]
+fn the_loop_checkbox_loops_the_whole_clip_and_undoes() {
+    let mut h = rig(&[note(0, 240, 60)]);
+    assert!(!midi_of(&h).loop_on);
+    h.get_by_label("Loop").click();
+    h.run();
+    let midi = midi_of(&h);
+    assert!(midi.loop_on);
+    assert_eq!((midi.loop_start, midi.loop_len), (Tick(0), Tick(3840)));
+    h.state_mut().session.undo();
+    assert!(!midi_of(&h).loop_on);
+}
+
+#[test]
+fn dragging_the_loops_end_resizes_it_on_the_grid() {
+    let mut h = rig(&[note(0, 240, 60)]);
+    loop_over(&mut h, 0, 3840);
+    let y = ruler_y(&h);
+    let g = geometry(&h);
+    let from = Pos2::new(g.x(3840) - 1.0, y);
+    let to = Pos2::new(g.x(1930), y);
+    drag_between(&mut h, Modifiers::NONE, from, to);
+    let midi = midi_of(&h);
+    assert_eq!((midi.loop_start, midi.loop_len), (Tick(0), Tick(1920)));
+    // Notes repeat inside the clip now.
+    assert_eq!(midi.repeats().len(), 1);
+}
+
+#[test]
+fn dragging_the_loops_start_moves_only_the_start() {
+    let mut h = rig(&[]);
+    loop_over(&mut h, 960, 2880);
+    let y = ruler_y(&h);
+    let g = geometry(&h);
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.x(960) + 1.0, y),
+        Pos2::new(g.x(1440), y),
+    );
+    let midi = midi_of(&h);
+    assert_eq!((midi.loop_start, midi.loop_end()), (Tick(1440), Tick(2880)));
+}
+
+#[test]
+fn dragging_the_braces_body_slides_the_loop() {
+    let mut h = rig(&[]);
+    loop_over(&mut h, 0, 960);
+    let y = ruler_y(&h);
+    let g = geometry(&h);
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(g.x(480), y),
+        Pos2::new(g.x(480 + 1920), y),
+    );
+    let midi = midi_of(&h);
+    assert_eq!((midi.loop_start, midi.loop_len), (Tick(1920), Tick(960)));
+    h.state_mut().session.undo();
+    assert_eq!(midi_of(&h).loop_start, Tick(0), "one gesture, one undo");
+}
+
+/// The tick (from the clip's start) a double click at `tick` makes a note at,
+/// with the snap on a beat.
+fn note_added_at(h: &mut H, tick: i64) -> i64 {
+    h.state_mut().session.set_snap(TICKS_PER_QUARTER);
+    h.run();
+    let pos = at(h, tick, 65);
+    double_click(h, pos);
+    notes_of(h)[0].start.0
+}
+
+#[test]
+fn notes_snap_to_the_beat_lines_drawn_even_in_a_clip_off_the_beat() {
+    // A clip starting at tick 100, as Alt-placing one can: the beat lines are
+    // at 960 and 1920 absolute, so 860 and 1820 from the clip's start.
+    let mut h = rig_at(Tick(100), &[]);
+    let start = note_added_at(&mut h, 900);
+    assert_eq!(start, 860, "absolute {}", start + 100);
+}
+
+#[test]
+fn notes_snap_to_the_beat_lines_of_the_time_signature() {
+    let mut h = rig_at(Tick(960), &[]);
+    let map = crate::tempo::with_signature(
+        h.state().session.project().tempo_map(),
+        noodle_core::TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        },
+    )
+    .unwrap();
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetTempoMap(map))]);
+    // In 6/8 a beat is 480 ticks, and the nearest line to 500 is at 480.
+    assert_eq!(note_added_at(&mut h, 500), 480);
 }

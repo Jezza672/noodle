@@ -591,10 +591,10 @@ fn muting_a_track_whose_stage_is_in_place_does_not_dip_the_others() {
     // The stage already exists, so muting is a parameter change.
     let lowest = lowest_peak_across(true, mute);
     assert!(lowest > 0.3, "the playing track dipped to {lowest}");
-    // The first touch adds the stage, which fades the whole output once. This
-    // is what the test above guards against, and shows it can fail.
+    // A group's output keeps its stage for the meter, so even the first
+    // touch is a parameter change.
     let first = lowest_peak_across(false, mute);
-    assert!(first < 0.2, "expected the structural fade, lowest {first}");
+    assert!(first > 0.3, "the playing track dipped to {first}");
 }
 
 #[test]
@@ -1305,16 +1305,38 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     // from the first sampler) -> EQ -> reverb -> output.
     let mut s = Session::new();
     let store = SampleStore::new();
-    s.registry.replace(Sampler::new(&store));
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
     let hash = store.insert(&Audio {
         samples: (0..4800).map(|i| (i as f32 * 0.07).sin() * 0.5).collect(),
         channels: 1,
         sample_rate: 48_000,
     });
+    // Both play a gain envelope and a warp with a marker, at the project's
+    // tempo.
+    let mut warp = noodle_core::ClipWarp::at_tempo(90.0);
+    for (seconds, beat) in [(0.02, 0.05), (0.05, 0.2)] {
+        warp.set_marker(noodle_core::WarpMarker { seconds, beat });
+    }
+    let envelope = noodle_core::gain_points_to_text(&[
+        noodle_core::GainPoint {
+            tick: noodle_core::Tick(100_000),
+            db: -12.0,
+        },
+        noodle_core::GainPoint {
+            tick: noodle_core::Tick(700_000),
+            db: 3.0,
+        },
+    ]);
     let sampler = |s: &mut Session| {
         s.add(
             Node::new("noodle.instrument.sampler")
-                .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash.clone())))
+                .with_config(
+                    Config::new()
+                        .with(SAMPLE_KEY, Value::Text(hash.clone()))
+                        .with(noodle_nodes::GAIN_ENV_KEY, Value::Text(envelope.clone()))
+                        .with(noodle_nodes::WARP_KEY, Value::Text(warp.to_text())),
+                )
                 .with_param("mode", 1.0)
                 .with_param("loop", 1.0)
                 .with_param("loop_start", 0.2)
@@ -1405,6 +1427,89 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
     assert!(heard, "the patch never sounded");
+}
+
+#[test]
+fn a_sampler_plays_a_stretched_warp_and_takes_live_edits_without_allocating() {
+    use noodle_io::Audio;
+    use noodle_nodes::{GAIN_ENV_KEY, SAMPLE_KEY, SampleStore, Sampler, WARP_KEY};
+
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let hash = store.insert(&Audio {
+        samples: (0..48_000).map(|i| (i as f32 * 0.07).sin() * 0.5).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let warp = |beats: f64| {
+        let mut warp = noodle_core::ClipWarp::at_tempo(90.0);
+        warp.mode = noodle_core::WarpMode::Grain;
+        warp.set_marker(noodle_core::WarpMarker {
+            seconds: 0.5,
+            beat: beats,
+        });
+        warp.to_text()
+    };
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let sampler = s.add(
+        Node::new("noodle.instrument.sampler")
+            .with_config(
+                Config::new()
+                    .with(SAMPLE_KEY, Value::Text(hash))
+                    .with(WARP_KEY, Value::Text(warp(1.0))),
+            )
+            .with_param("mode", 1.0)
+            .with_param("loop", 1.0)
+            .with_param("loop_start", 0.2)
+            .with_param("loop_end", 0.8),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", sampler, "in");
+    s.wire(sampler, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut play = |s: &mut Session, rounds: usize| {
+        for round in 0..rounds {
+            s.controller.maintain();
+            let violations = realtime(|| s.processor.process(&mut out));
+            assert_eq!(violations, 0, "allocated in round {round}");
+            assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+        }
+        out.iter().fold(0.0f32, |peak, x| peak.max(x.abs()))
+    };
+    // Let the worker settle and stretch, then hear the note through it.
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        play(&mut s, 1);
+    }
+    assert!(play(&mut s, 4) > 0.01, "the stretched sampler is silent");
+
+    // Edits to the envelope and the warp, which the Sampler takes while it
+    // sounds: the held note keeps going through every one.
+    for round in 0..12 {
+        let (key, value) = if round % 2 == 0 {
+            (GAIN_ENV_KEY, "0:-6,500000:-12".to_owned())
+        } else {
+            (WARP_KEY, warp(1.0 + round as f64 * 0.1))
+        };
+        s.edit(Command::SetConfig {
+            node: sampler,
+            key: key.into(),
+            value: Some(Value::Text(value)),
+        });
+        s.update();
+        let mut peak = 0.0f32;
+        for _ in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            peak = peak.max(play(&mut s, 1));
+        }
+        assert!(peak > 0.001, "the note was cut by edit {round}");
+    }
 }
 
 #[test]
@@ -1760,4 +1865,74 @@ fn a_script_with_loops_arrays_and_events_never_allocates() {
         assert_eq!(violations, 0, "allocated in round {round}");
     }
     assert!(heard, "the keys were summed");
+}
+
+#[test]
+fn a_groups_output_reports_its_level() {
+    let mut s = Session::new();
+    let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(sine, "out", output, "in");
+    let (group, command) =
+        noodle_core::group::group_nodes(&s.project.clone(), &[sine], || s.project.new_node_id())
+            .unwrap();
+    s.edit(command);
+    let port = s.project.graph().group_ports(group).outputs[0].stage();
+    s.update();
+    let mut out = vec![0.0; 4800 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    let levels = s.telemetry.meter_reader().meter(port).expect("metered");
+    assert!(levels[0].peak > 0.5, "{levels:?}");
+}
+
+#[test]
+fn ringing_a_doorbell_never_touches_the_allocator() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Asleep, so the ring has to wake it; and awake, so it doesn't.
+    let bell = Arc::new(noodle_engine::Doorbell::new());
+    let sleeper = {
+        let bell = bell.clone();
+        std::thread::spawn(move || bell.wait(Some(Duration::from_secs(10))))
+    };
+    while !bell.is_sleeping() {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "woke a sleeper"
+    );
+    assert!(sleeper.join().unwrap());
+    assert_eq!(
+        realtime(|| {
+            let _ = bell.ring();
+        }),
+        0,
+        "rang an awake worker"
+    );
+}
+
+#[test]
+fn ringing_a_pool_task_never_touches_the_allocator() {
+    use noodle_io::pool::{self, Next, Task};
+
+    struct Idle;
+    impl Task for Idle {
+        fn run(&mut self) -> Next {
+            Next::Idle
+        }
+    }
+    let handle = pool::io().spawn(Idle);
+    let bell = handle.bell();
+    // Let the first run finish, so the pool's threads are asleep.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    for _ in 0..50 {
+        assert_eq!(realtime(|| bell.ring()), 0);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(handle.runs() > 1);
 }

@@ -104,7 +104,7 @@ impl State {
 
 /// Whether `node` is an Automation node: a free control signal drawn on the
 /// timeline.
-fn is_automation_node(project: &Project, node: NodeId) -> bool {
+pub(super) fn is_automation_node(project: &Project, node: NodeId) -> bool {
     project
         .graph()
         .node(node)
@@ -141,6 +141,8 @@ pub fn lanes_for(project: &Project, input: NodeId) -> Vec<LaneId> {
 /// the track's own lane, then a row for each of its automation lanes.
 pub struct Rows {
     tops: Vec<f32>,
+    /// Each track's own lane height.
+    heights: Vec<f32>,
     lanes: Vec<Vec<LaneId>>,
     /// Lanes on Automation nodes that no track claims, after the last track.
     free: Vec<LaneId>,
@@ -149,14 +151,15 @@ pub struct Rows {
 }
 
 impl Rows {
-    pub fn new(project: &Project, tracks: &[NodeId]) -> Self {
+    /// `heights` is each track's own lane height, parallel to `tracks`.
+    pub fn new(project: &Project, tracks: &[NodeId], heights: &[f32]) -> Self {
         let mut tops = Vec::with_capacity(tracks.len());
         let mut lanes = Vec::with_capacity(tracks.len());
         let mut at = 0.0;
-        for &track in tracks {
+        for (&track, &height) in tracks.iter().zip(heights) {
             let own = lanes_for(project, track);
             tops.push(at);
-            at += colors::LANE_HEIGHT + own.len() as f32 * HEIGHT;
+            at += height + own.len() as f32 * HEIGHT;
             lanes.push(own);
         }
         let claimed: std::collections::BTreeSet<LaneId> = lanes.iter().flatten().copied().collect();
@@ -171,6 +174,7 @@ impl Rows {
         at += free.len() as f32 * HEIGHT;
         Self {
             tops,
+            heights: heights.to_vec(),
             lanes,
             free,
             free_top,
@@ -212,7 +216,12 @@ impl Rows {
 
     /// The height of track `index`'s block, automation included.
     pub fn height(&self, index: usize) -> f32 {
-        colors::LANE_HEIGHT + self.lanes[index].len() as f32 * HEIGHT
+        self.heights[index] + self.lanes[index].len() as f32 * HEIGHT
+    }
+
+    /// The height of track `index`'s own lane, without its automation.
+    pub fn lane_height(&self, index: usize) -> f32 {
+        self.heights[index]
     }
 
     /// The height of everything.
@@ -227,7 +236,7 @@ impl Rows {
 
     /// Where the row for the `k`th automation lane of track `index` begins.
     pub fn lane_top(&self, index: usize, k: usize) -> f32 {
-        self.tops[index] + colors::LANE_HEIGHT + k as f32 * HEIGHT
+        self.tops[index] + self.heights[index] + k as f32 * HEIGHT
     }
 
     /// The track whose block contains `y`, in points below the top of the
@@ -597,14 +606,13 @@ pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: b
     edits
 }
 
-/// A track header's menu for adding a lane for the track's gain or mute,
-/// which starts as one point holding the control's value now, so adding it
+/// A track header's menu for adding a lane for the track's mute, which
+/// starts as one point holding the control's value now, so adding it
 /// changes nothing you hear.
 pub fn add_menu(
     ui: &mut egui::Ui,
     spot: Rect,
     project: &Project,
-    gain: &(NodeId, String),
     mute: &(NodeId, String),
     controls: Controls,
 ) -> Vec<Edit> {
@@ -615,25 +623,24 @@ pub fn add_menu(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     child.menu_button("~", |ui| {
-        for ((key, (node, port)), now, curve) in [
-            ((group::GAIN, gain), controls.gain_db, Curve::Linear),
-            ((group::MUTE, mute), f32::from(controls.mute), Curve::Hold),
-        ] {
-            let target = Endpoint::new(*node, port.as_str());
-            let taken = project.lane_for(&target).is_some();
-            let item = ui.add_enabled(!taken, egui::Button::new(format!("Automate {}", name(key))));
-            if item.on_disabled_hover_text("Already automated").clicked() {
-                let point = AutomationPoint {
-                    tick: Tick::ZERO,
-                    value: now,
-                    curve,
-                };
-                edits.push(Edit::Apply(Command::AddLane {
-                    id: project.next_lane_id(),
-                    lane: AutomationLane::new(target, vec![point]),
-                }));
-                ui.close();
-            }
+        let (node, port) = mute;
+        let target = Endpoint::new(*node, port.as_str());
+        let taken = project.lane_for(&target).is_some();
+        let item = ui.add_enabled(
+            !taken,
+            egui::Button::new(format!("Automate {}", name(group::MUTE))),
+        );
+        if item.on_disabled_hover_text("Already automated").clicked() {
+            let point = AutomationPoint {
+                tick: Tick::ZERO,
+                value: f32::from(controls.mute),
+                curve: Curve::Hold,
+            };
+            edits.push(Edit::Apply(Command::AddLane {
+                id: project.next_lane_id(),
+                lane: AutomationLane::new(target, vec![point]),
+            }));
+            ui.close();
         }
     });
     edits
