@@ -155,6 +155,35 @@ bar (default: the main output, saved in the preferences). It is session state
 - **Devices.** A monitor on a named device opens a stream for it like an
   Output node would (`Session::wanted_devices`).
 
+## Live input
+
+The input device is a separate cpal stream (`noodle-io/src/input.rs`). Its
+callback (`Capture`) queues samples in a lock-free ring at the device's own
+rate; the output callback (`Feed::read`) takes them out one engine block at a
+time. `open_input` asks for the engine's rate and falls back to the device's
+default, so a 24 kHz Bluetooth mic works against a 48 kHz output.
+
+`Feed` converts in the output callback, with a rubato `Async` sinc resampler:
+a short kernel (32 taps, linear table interpolation, well under a millisecond
+of delay) that makes 16 output frames a call, so a block of any size is served
+from whole calls and a few frames held over. It has no thread of its own and
+nothing in it allocates: the buffers are sized up front, and
+`noodle-nodes/tests/realtime.rs` runs it under the counting allocator. It is
+always on, even at equal rates, because two nominally equal clocks still drift.
+
+The ratio is steered, not fixed. Every 50 ms the feed looks at the smallest
+backlog left after a read and compares it with a margin (the largest block plus 32 frames).
+A PI controller moves the ratio by up to 5%: the proportional term pulls in an
+offset in about a second, the integral term learns the clocks' steady
+difference (hundreds of ppm in practice), so the backlog holds at the margin
+with no frame dropped or repeated. Backlog 50 ms or more over the margin (a
+stream that opens early, or a stall) is cut back at once as a last resort. A
+gap, where the input is late, plays silence. Both count as input glitches in
+`Health`.
+
+The recorder taps the device's samples before conversion and writes them at the
+device's rate; import converts them like any other file.
+
 ## Live monitoring
 
 A track **armed for MIDI** (RM on its header, `Session::arm_kind`) plays live MIDI

@@ -570,7 +570,8 @@ mod tests {
     fn the_capture_callback_feeds_the_recording_without_the_output() {
         let path = temp("through-capture.wav");
         let glitches = Arc::new(AtomicU64::new(0));
-        let (mut capture, _feed, mut recorder) = crate::recordable_input_path(1, RATE, 4, glitches);
+        let (mut capture, _feed, mut recorder) =
+            crate::recordable_input_path(1, RATE, RATE, 4, glitches);
         recorder.start(&path).unwrap();
         // Nothing ever reads the feed.
         capture.capture(&[1.0f32, 2.0, 3.0]);

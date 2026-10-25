@@ -935,10 +935,9 @@ impl Reporter {
 
 /// Starts an engine playing on an output device, chosen by `choice`, with
 /// `max_frames` frames per engine block. The channel count is the device's.
-/// If `choice` turns input on, the input device records into Input nodes at
-/// the output's sample rate. Input that can't be opened, e.g. because the
-/// device doesn't support that rate, leaves Input nodes silent rather than
-/// failing: see [`Playback::input_problem`]. Send the engine graphs
+/// If `choice` turns input on, the input device records into Input nodes,
+/// converted to the output's sample rate if it runs at another. Input that
+/// can't be opened leaves Input nodes silent rather than failing: see [`Playback::input_problem`]. Send the engine graphs
 /// with the returned [`Controller`].
 ///
 /// `midi` is told when the blocks run, so the MIDI In nodes on it place
@@ -1336,8 +1335,9 @@ fn choice_id(choice: &InputChoice) -> Option<Option<&str>> {
     }
 }
 
-/// Opens (but doesn't start) an input stream at the engine's sample rate,
-/// returning it, the device's name, its channel count and the feed for the
+/// Opens (but doesn't start) an input stream, at the engine's sample rate if
+/// the device has it and at its own otherwise (the feed converts), returning
+/// it, the device's name, its channel count and the feed for the
 /// output callback.
 fn open_input(
     host: &cpal::Host,
@@ -1348,10 +1348,15 @@ fn open_input(
     let device = find_device(host, id, Direction::Input)?;
     let name = device_name(&device);
     let ranges: Vec<_> = device.supported_input_configs()?.collect();
+    let engine_rate = settings.sample_rate as u32;
+    let wanted = ranges
+        .iter()
+        .any(|range| range.contains_rate(engine_rate))
+        .then_some(engine_rate);
     let Chosen { config, format } = choose_config(
         &ranges,
         device.default_input_config()?,
-        Some(settings.sample_rate as u32),
+        wanted,
         // The ring decouples the two callbacks, so the input can use
         // whatever buffer size suits it.
         None,
@@ -1360,6 +1365,7 @@ fn open_input(
     let channels = usize::from(config.channels);
     let (capture, feed, recorder) = recordable_input_path(
         channels,
+        config.sample_rate as f32,
         settings.sample_rate,
         settings.max_frames,
         Arc::clone(&health.input_glitches),
@@ -1468,7 +1474,13 @@ mod tests {
         let diagnostics = controller.update(project.graph(), &Registry::with_builtins());
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let glitches = Arc::new(AtomicU64::new(0));
-        let (capture, feed) = input_path(2, SETTINGS.sample_rate, SETTINGS.max_frames, glitches);
+        let (capture, feed) = input_path(
+            2,
+            SETTINGS.sample_rate,
+            SETTINGS.sample_rate,
+            SETTINGS.max_frames,
+            glitches,
+        );
         (DeviceWriter::with_input(processor, feed), capture)
     }
 

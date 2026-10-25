@@ -331,7 +331,13 @@ fn the_device_writer_never_allocates_with_input() {
     s.wire(svf, "low", output, "in");
     s.update();
     let glitches = Arc::new(AtomicU64::new(0));
-    let (mut capture, feed) = input_path(1, SETTINGS.sample_rate, SETTINGS.max_frames, glitches);
+    let (mut capture, feed) = input_path(
+        1,
+        SETTINGS.sample_rate,
+        SETTINGS.sample_rate,
+        SETTINGS.max_frames,
+        glitches,
+    );
     let mut writer = DeviceWriter::with_input(s.processor, feed);
     let recorded: Vec<i16> = (0..1000).map(|x| (x % 200) * 100).collect();
     let mut out = vec![0i16; 1000 * SETTINGS.channels];
@@ -348,6 +354,47 @@ fn the_device_writer_never_allocates_with_input() {
     capture.capture(&recorded);
     writer.write(&mut out);
     assert!(out.iter().any(|&x| x != 0), "should be playing the input");
+}
+
+#[test]
+fn the_device_writer_never_allocates_resampling_input() {
+    // A 24 kHz mic against the engine's rate, and a clock running 0.5% fast
+    // so the controller keeps moving the ratio, including a gap at the end.
+    for input_rate in [SETTINGS.sample_rate / 2.0, SETTINGS.sample_rate * 1.005] {
+        let mut s = Session::new();
+        let input = s.add(Node::new(INPUT_ID));
+        let output = s.add(Node::new(OUTPUT_ID));
+        s.wire(input, "out", output, "in");
+        s.update();
+        let glitches = Arc::new(AtomicU64::new(0));
+        let (mut capture, feed) = input_path(
+            1,
+            input_rate,
+            SETTINGS.sample_rate,
+            SETTINGS.max_frames,
+            glitches,
+        );
+        let mut writer = DeviceWriter::with_input(s.processor, feed);
+        let recorded: Vec<f32> = (0..4000).map(|x| (x as f32 * 0.05).sin() * 0.5).collect();
+        // An odd length, so blocks are split mid-chunk.
+        let mut out = vec![0i16; 333 * SETTINGS.channels];
+        let violations = realtime(|| {
+            // Several controller windows' worth, then running dry.
+            for _ in 0..60 {
+                capture.capture(&recorded[..1000]);
+                writer.write(&mut out);
+            }
+            for _ in 0..20 {
+                writer.write(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated at {input_rate} Hz");
+        capture.capture(&recorded);
+        for _ in 0..4 {
+            writer.write(&mut out);
+        }
+        assert!(out.iter().any(|&x| x != 0), "should be playing the input");
+    }
 }
 
 #[test]

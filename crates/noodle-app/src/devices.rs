@@ -92,13 +92,9 @@ impl DevicePicker {
                 .num_columns(2)
                 .spacing([12.0, 6.0])
                 .show(ui, |ui| self.fields(ui));
-            let warning = match &self.devices {
-                Err(error) => Some(error.clone()),
-                Ok(_) => self.input_rate_warning(),
-            };
-            if let Some(warning) = warning {
+            if let Err(error) = &self.devices {
                 ui.add_space(4.0);
-                ui.colored_label(ui.visuals().warn_fg_color, warning);
+                ui.colored_label(ui.visuals().warn_fg_color, error);
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -288,17 +284,6 @@ impl DevicePicker {
         self.draft.channels = channels;
     }
 
-    /// With input on and the rate left to the output, a warning when the
-    /// input can't run at that rate. Playback would go on without input.
-    fn input_rate_warning(&self) -> Option<String> {
-        let (output, input) = selected(&self.devices, &self.draft);
-        let input = input?;
-        let rate = self.draft.sample_rate.or(output?.default_sample_rate)?;
-        (!input.sample_rates.contains(&rate)).then(|| {
-            format!("The input doesn't support {rate} Hz, so it would be off. Pick a sample rate both devices support.")
-        })
-    }
-
     /// Switches host. The output has to be on the chosen host, so it goes
     /// back to the default. A named input opens on its own host, so it stays.
     fn change_host(&mut self, host: Option<String>) {
@@ -450,20 +435,13 @@ fn chosen<'a>(devices: &'a [DeviceInfo], id: Option<&str>) -> Option<&'a Capabil
         .map(|d| &d.capabilities)
 }
 
-/// The rates to offer: the output's, and when input is on, only those the
-/// input supports too, since it runs at the output's rate. With the output
-/// unknown, any rate the input supports.
+/// The rates to offer: the output's. An input at another rate is converted,
+/// so it doesn't limit the choice. With the output unknown, any rate the
+/// input supports.
 fn sample_rates(output: Option<&Capabilities>, input: Option<&Capabilities>) -> Vec<u32> {
-    match (output, input) {
-        (Some(output), Some(input)) => output
-            .sample_rates
-            .iter()
-            .copied()
-            .filter(|rate| input.sample_rates.contains(rate))
-            .collect(),
-        (Some(caps), None) | (None, Some(caps)) => caps.sample_rates.clone(),
-        (None, None) => Vec::new(),
-    }
+    output
+        .or(input)
+        .map_or_else(Vec::new, |caps| caps.sample_rates.clone())
 }
 
 /// The buffer sizes to offer: the usual powers of two, within the output's
@@ -724,25 +702,13 @@ mod tests {
     }
 
     #[test]
-    fn warns_when_the_input_cant_run_at_the_default_rate() {
-        let mut harness = harness(AudioConfig::default());
-        choose(&mut harness, "Input", "USB Interface");
-        harness.get_by_label(
-            "The input doesn't support 44100 Hz, so it would be off. Pick a sample rate both devices support.",
-        );
-        choose(&mut harness, "Sample rate", "48000 Hz");
-        assert!(
-            harness
-                .query_by_label_contains("The input doesn't support")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn with_input_on_only_rates_both_devices_take_are_offered() {
+    fn the_outputs_rates_are_offered_whatever_the_input_supports() {
         let output = caps(&[44_100, 48_000, 96_000], None);
         let input = caps(&[48_000, 96_000, 192_000], None);
-        assert_eq!(sample_rates(Some(&output), Some(&input)), [48_000, 96_000]);
+        assert_eq!(
+            sample_rates(Some(&output), Some(&input)),
+            [44_100, 48_000, 96_000]
+        );
         assert_eq!(sample_rates(Some(&output), None), [44_100, 48_000, 96_000]);
         assert_eq!(sample_rates(None, Some(&input)), [48_000, 96_000, 192_000]);
         assert!(sample_rates(None, None).is_empty());

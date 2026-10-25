@@ -26,3 +26,8 @@ A plugin that changes its latency after loading (restart request, latency
   editor really embeds and gets focus from a background host).
 - CPU meters per node (done: View > CPU meters), and profiling tools (done:
   `noodle profile`, per-block statistics with deadline misses).
+- Live input at any rate (#36): the input device runs at its own rate and clock,
+  and the output callback converts it with a short sinc resampler whose ratio a
+  PI controller steers from the backlog, so a 24 kHz mic works and drift drops
+  nothing (see "Live input" in `architecture/transport-and-devices.md`). The
+  AirPods hand check is owed (ROADMAP).

@@ -39,8 +39,8 @@ pub struct AudioConfig {
     /// default.
     pub output: Option<String>,
     pub input: InputChoice,
-    /// `None` uses the output device's default rate. The input always runs
-    /// at the output's rate: Noodle doesn't resample between devices.
+    /// `None` uses the output device's default rate. An input device that
+    /// doesn't support the rate runs at its own and is converted.
     pub sample_rate: Option<u32>,
     /// Frames per device callback. `None` lets the device decide.
     pub buffer_size: Option<u32>,
