@@ -28,6 +28,7 @@ pub mod refs;
 pub mod report;
 pub mod song;
 pub mod spectral;
+pub mod stems;
 pub mod stereo;
 pub mod stft;
 pub mod table;

@@ -6,6 +6,10 @@
 //! the output callback, one engine block at a time. Both are real-time safe
 //! and can be tested without a device.
 //!
+//! [`InputMeter`] is the one place the two callbacks publish what they see
+//! (callback sizes, backlog), for the latency readout and for sizing the
+//! backlog margin.
+//!
 //! The input device runs at its own sample rate and on its own clock, so the
 //! feed resamples in the output callback: the ring holds input at the
 //! device's rate, and each engine block is converted to the engine's rate on
@@ -18,7 +22,7 @@
 //! glitches in [`Health`].
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use cpal::{FromSample, Sample};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -36,11 +40,45 @@ use crate::record::{RecordTap, Recorder, record_path};
 const RING_SECONDS: f32 = 0.5;
 
 /// Frames of backlog (at the engine's rate) the controller aims to keep in
-/// hand at its tightest point, beyond the largest block asked for. A block's
-/// worth is needed because when the input callback slips a block later
-/// against the output's, the backlog dips by that much; the rest covers the
-/// converter's look-ahead and jitter.
-const MARGIN_FRAMES: usize = 32;
+/// hand at its tightest point until it has seen the input callback's size.
+/// After that the margin is one input callback plus one engine block (see
+/// [`Feed::margin`]).
+const MARGIN_FRAMES: usize = 64;
+
+/// The smallest margin, in frames, whatever the callbacks look like.
+const MIN_MARGIN_FRAMES: usize = 16;
+
+/// What the two ends of an input path see, shared so they can be read from
+/// another thread. Stores and loads are relaxed atomics, safe in a callback.
+#[derive(Debug)]
+pub struct InputMeter {
+    /// The input device's sample rate.
+    sample_rate: f32,
+    /// Frames in the input device's latest callback, at the device's rate:
+    /// its buffer size, as granted.
+    callback_frames: AtomicU32,
+    /// Frames queued after the feed's latest read, at the engine's rate.
+    backlog_frames: AtomicU32,
+}
+
+impl InputMeter {
+    /// The input device's sample rate.
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
+    /// Frames in the input device's latest callback, at the device's rate:
+    /// zero before the first.
+    pub fn callback_frames(&self) -> u32 {
+        self.callback_frames.load(Ordering::Relaxed)
+    }
+
+    /// Frames waiting between the input and the engine after the latest
+    /// read, at the engine's rate.
+    pub fn backlog_frames(&self) -> u32 {
+        self.backlog_frames.load(Ordering::Relaxed)
+    }
+}
 
 /// Output frames the converter produces per call. Blocks that aren't a
 /// multiple of this leave a few frames waiting, so it's kept small.
@@ -134,8 +172,15 @@ fn build(
     let ring_frames = ((input_rate * RING_SECONDS) as usize)
         .max(4 * max_frames * (input_rate / output_rate).ceil() as usize);
     let (producer, consumer) = RingBuffer::new(ring_frames * channels);
+    let meter = Arc::new(InputMeter {
+        sample_rate: input_rate,
+        callback_frames: AtomicU32::new(0),
+        backlog_frames: AtomicU32::new(0),
+    });
     let capture = Capture {
         producer,
+        channels,
+        meter: Arc::clone(&meter),
         glitches: Arc::clone(&glitches),
         tap,
     };
@@ -162,6 +207,7 @@ fn build(
         in_rate,
         out_rate,
         largest: 0,
+        meter,
         window: ((out_rate * WINDOW_SECONDS) as usize).max(1),
         since_window: 0,
         least_backlog: usize::MAX,
@@ -176,6 +222,8 @@ fn build(
 /// The input callback's end: converts samples to f32 and queues them.
 pub struct Capture {
     producer: Producer<f32>,
+    channels: usize,
+    meter: Arc<InputMeter>,
     glitches: Arc<AtomicU64>,
     tap: Option<RecordTap>,
 }
@@ -198,6 +246,9 @@ impl Capture {
         if let Some(tap) = &mut self.tap {
             tap.push(input);
         }
+        self.meter
+            .callback_frames
+            .store((input.len() / self.channels) as u32, Ordering::Relaxed);
         // Both ends move whole frames, so this is a whole number of them.
         let fits = input.len().min(self.producer.slots());
         if fits < input.len() {
@@ -233,6 +284,7 @@ pub struct Feed {
     out_rate: f64,
     /// The largest block asked for so far.
     largest: usize,
+    meter: Arc<InputMeter>,
     /// Output frames between looks at the backlog.
     window: usize,
     since_window: usize,
@@ -251,6 +303,26 @@ pub struct Feed {
 impl Feed {
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// The handle to read this path's callback sizes and backlog with.
+    pub fn meter(&self) -> Arc<InputMeter> {
+        Arc::clone(&self.meter)
+    }
+
+    /// Frames of backlog (at the engine's rate) worth keeping: one input
+    /// callback plus one engine block, so a large input buffer isn't forced
+    /// to sit a block behind and a tiny one gets a tighter margin. Until the
+    /// input has called back there's nothing to go on, and the fixed margin
+    /// stands.
+    fn margin(&self) -> usize {
+        match self.meter.callback_frames() as usize {
+            0 => MARGIN_FRAMES,
+            input => {
+                let input = (input as f64 * self.out_rate / self.in_rate).ceil() as usize;
+                (input + self.largest).max(MIN_MARGIN_FRAMES)
+            }
+        }
     }
 
     /// The next `frames` frames of input, interleaved, at the engine's rate.
@@ -333,6 +405,10 @@ impl Feed {
     /// left alone.
     fn steer(&mut self, frames: usize) {
         let backlog = self.consumer.slots() / self.channels;
+        self.meter.backlog_frames.store(
+            (backlog as f64 * self.out_rate / self.in_rate) as u32,
+            Ordering::Relaxed,
+        );
         self.least_backlog = self.least_backlog.min(backlog);
         self.since_window += frames;
         if self.since_window < self.window {
@@ -344,7 +420,7 @@ impl Feed {
         if !self.primed {
             return;
         }
-        let target = (self.largest + MARGIN_FRAMES) as f64 * self.in_rate / self.out_rate;
+        let target = self.margin() as f64 * self.in_rate / self.out_rate;
         let mut error = (least as f64 - target) / self.in_rate;
         // Too far ahead for steering: the stream opened early, or the output
         // stalled. Skip to the margin, as a gap would.
@@ -568,7 +644,7 @@ mod tests {
         assert_eq!(glitches(&counter), before, "dropped or repeated input");
         // At the margin, plus the device's buffer swinging it.
         assert!(
-            callbacks.most <= 128 + 32 + 512 + 128,
+            callbacks.most <= 512 + 128 + 512 + 128,
             "{} behind",
             callbacks.most
         );
@@ -627,5 +703,31 @@ mod tests {
                 "{input_rate} Hz: {crossings} cycles a second"
             );
         }
+    }
+
+    #[test]
+    fn the_meter_reports_the_callback_size_and_the_backlog() {
+        let (mut capture, mut feed, _) = path(2, 24_000.0);
+        let meter = feed.meter();
+        assert_eq!((meter.callback_frames(), meter.backlog_frames()), (0, 0));
+        capture.capture(&[0.0f32; 2 * 4000]);
+        assert_eq!(meter.callback_frames(), 4000);
+        feed.read(128);
+        // The device's frames are twice as long as the engine's.
+        let backlog = meter.backlog_frames();
+        assert!((7800..=7950).contains(&backlog), "{backlog}");
+    }
+
+    #[test]
+    fn the_margin_is_one_input_callback_plus_one_block() {
+        let (mut capture, mut feed, _) = path(1, RATE);
+        assert_eq!(feed.margin(), MARGIN_FRAMES, "nothing to go on yet");
+        capture.capture(&[0.0f32; 512]);
+        feed.read(16);
+        assert_eq!(feed.margin(), 512 + 16);
+        let (mut capture, mut feed, _) = path(1, 24_000.0);
+        capture.capture(&[0.0f32; 512]);
+        feed.read(16);
+        assert_eq!(feed.margin(), 1024 + 16, "in engine frames");
     }
 }

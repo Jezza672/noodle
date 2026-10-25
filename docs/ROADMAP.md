@@ -33,7 +33,8 @@ need a person and hardware, plus a few deliberately deferred items.
   MIDI output from AU instruments, AUv3 async instantiation.
 - **`noodle profile --threads`** showing real-time workers on Mac and Windows;
   the macOS audio workgroup join is not done.
-- **Recording with a real microphone**, to check the latency compensation.
+- **Recording with a real microphone**, to check the latency compensation, and
+  that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
   stems. There is no Intel Mac ONNX Runtime build.
 - **Warp evaluation:** CC0 clips for `eval/clips.csv` (`eval/fetch.sh --pin`),
@@ -42,9 +43,16 @@ need a person and hardware, plus a few deliberately deferred items.
 
 ## Deferred on purpose
 
+- **Live input latency, part two (#36):** let the input run at its own sample rate
+  (the 24 kHz AirPods microphone is off today) and steer a resampler on the
+  backlog so drift costs no clicks, instead of trimming and silence gaps.
+
 - **M10 batch 3, Stem warp** (a warp mode that separates, warps each stem with its
   own mode and adds them back). Research (`research/stem-warp/findings.md` in the
-  project folder) finds no published gain over whole-mix warping. Prerequisite:
+  project folder) finds no published gain over whole-mix warping, and the perfect-stem
+  ceiling experiment (`features/m10-stems.md`, `noodle-eval songs --ceiling`) found a
+  trade, not a clear gain: better spectral fidelity, worse transients, level overall.
+  Prerequisite:
   real mixes with vocals in `eval/clips.csv`, and a run on real weights. It ships
   only if the evaluation shows a clear gain on most songs and clips. Not started.
   Out of scope: streaming separation, models other than HT-Demucs, note-level
@@ -53,7 +61,7 @@ need a person and hardware, plus a few deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Piano roll and recording:** quantise and copy/paste in the piano roll, more
+- **Piano roll and recording:** quantise, more
   than one MIDI port at a time, overdubbing into an existing clip, a count-in,
   keeping the raw take for re-quantising. The 128-frame engine block is fixed;
   it could follow the device period.
@@ -66,4 +74,9 @@ need a person and hardware, plus a few deliberately deferred items.
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
 - **Beat view gain envelope.** The beat view draws no gain envelope (clip or
   sample).
+- **Cleanup leftovers** (see `features/code-cleanup.md`): one `TimeAxis` for the
+  arrangement, piano roll and clip editor (only the piano roll's snap is done), a
+  sandbox monitor that sleeps with no tick, and one retry policy for files that
+  fail to open.
+- **Random Select editor behaviour** (#211): resolve the node's `kind` (signal or notes) from the first wire and grow `inputs` as you wire, as the mixer does (`spare.rs`).
 - **Flaky test** #138 stays open (no recurrence).

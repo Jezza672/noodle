@@ -42,6 +42,7 @@ mod view;
 mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
@@ -103,10 +104,15 @@ pub struct EditorState {
     group_menu: Option<GroupMenu>,
     /// What meters and scopes show.
     bodies: body::Bodies,
+    /// The last scene built, and what it was built from. It is reused while
+    /// none of that changes.
+    scene_cache: Option<(SceneKey, Rc<Scene>)>,
     /// What Copy and Cut last took, for Paste.
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
     arrange_requested: bool,
+    /// Copy, cut, paste or duplicate, asked for by the Edit menu.
+    clip_requested: Option<crate::timeline::ClipAction>,
     /// Something carried out of the timeline and let go of over the canvas,
     /// until the app takes it.
     dropped: Option<Dropped>,
@@ -139,6 +145,36 @@ struct Clipboard {
     frames: Vec<Frame>,
 }
 
+/// What a [`Scene`] is built from: the project (by revision), the node types
+/// and the group shown.
+type SceneKey = (u64, u64, Option<NodeId>);
+
+impl EditorState {
+    /// The scene for the group being shown, rebuilt only if the project, the
+    /// registry or the group changed since the last one.
+    fn scene(&mut self, project: &Project, registry: &Registry) -> Rc<Scene> {
+        let key = (project.revision(), registry.generation(), self.group);
+        if let Some((cached, scene)) = &self.scene_cache
+            && *cached == key
+        {
+            return scene.clone();
+        }
+        let scene = Rc::new(Scene::build(project, registry, self.group));
+        self.scene_cache = Some((key, scene.clone()));
+        scene
+    }
+
+    /// Like [`scene`](Self::scene), without remembering a new one.
+    #[cfg(test)]
+    fn peek_scene(&self, project: &Project, registry: &Registry) -> Rc<Scene> {
+        let key = (project.revision(), registry.generation(), self.group);
+        match &self.scene_cache {
+            Some((cached, scene)) if *cached == key => scene.clone(),
+            _ => Rc::new(Scene::build(project, registry, self.group)),
+        }
+    }
+}
+
 impl Default for EditorState {
     fn default() -> Self {
         Self {
@@ -155,7 +191,9 @@ impl Default for EditorState {
             group_menu: None,
             rename: None,
             bodies: body::Bodies::default(),
+            scene_cache: None,
             arrange_requested: false,
+            clip_requested: None,
             dropped: None,
             fit_requested: false,
             view_request: None,
@@ -218,6 +256,17 @@ impl EditorState {
     /// frame: the selection, or everything if nothing is selected.
     pub fn request_arrange(&mut self) {
         self.arrange_requested = true;
+    }
+
+    /// Asks for the selected nodes to be copied, cut or duplicated, or the
+    /// copied ones pasted (at the centre of the view), on the next frame.
+    pub fn request_clip(&mut self, action: crate::timeline::ClipAction) {
+        self.clip_requested = Some(action);
+    }
+
+    /// Whether there are copied nodes to paste.
+    pub fn can_paste(&self) -> bool {
+        crate::clipboard::holds(crate::clipboard::NODE_MIME)
     }
 
     /// Asks for the view to be fitted around the whole graph at the current
@@ -567,7 +616,8 @@ impl Problems {
 /// One frame of the editor, with everything it needs worked out.
 struct Frame_<'a> {
     project: &'a Project,
-    scene: Scene,
+    registry: &'a Registry,
+    scene: Rc<Scene>,
     t: Transform,
     /// Indices into `scene.nodes`, bottom first. Selected nodes are on top.
     order: Vec<usize>,
@@ -609,7 +659,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             );
         });
     }
-    let scene = Scene::build(project, inputs.registry, state.group);
+    let scene = state.scene(project, inputs.registry);
     let problems = Problems::new(inputs.diagnostics);
     let mut edits = Vec::new();
 
@@ -624,6 +674,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     });
     let f = Frame_ {
         project,
+        registry: inputs.registry,
         t: state.view.on(canvas),
         scene,
         order,
@@ -663,6 +714,26 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     // From the menu, so the pointer isn't over the canvas.
     if std::mem::take(&mut state.arrange_requested) {
         arrange_nodes(state, &f, &mut edits);
+    }
+    if let Some(action) = state.clip_requested.take() {
+        use crate::timeline::ClipAction;
+        match action {
+            ClipAction::Copy => {
+                copy_selection(state, &f);
+            }
+            ClipAction::Cut => {
+                if copy_selection(state, &f) {
+                    edits.extend(state.delete_selection());
+                }
+            }
+            ClipAction::Paste => paste(
+                state,
+                f.t.to_graph(canvas.center()),
+                &mut inputs,
+                &mut edits,
+            ),
+            ClipAction::Duplicate => duplicate(state, &f, &mut inputs, &mut edits),
+        }
     }
 
     let painter = ui.painter_at(canvas);
@@ -2800,7 +2871,7 @@ pub(crate) fn socket_on_screen(
     key: &str,
 ) -> Option<Pos2> {
     let side = if output { Side::Output } else { Side::Input };
-    let scene = Scene::build(session.project(), session.registry(), state.group);
+    let scene = state.peek_scene(session.project(), session.registry());
     let socket = scene.node(node)?.port(side, key)?.socket;
     Some(state.view.on(state.canvas).to_screen(socket))
 }

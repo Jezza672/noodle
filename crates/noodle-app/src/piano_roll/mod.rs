@@ -15,11 +15,13 @@ mod notes;
 use std::collections::BTreeSet;
 
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
-use noodle_core::{Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, Tick};
+use noodle_core::{
+    Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, TICKS_PER_QUARTER, Tick,
+};
 
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
-use crate::timeline::grid;
+use crate::timeline::{ClipAction, grid};
 use noodle_core::Command;
 
 const TOOLBAR: f32 = crate::toolbar::HEIGHT;
@@ -72,6 +74,8 @@ pub struct PianoRoll {
     focus: bool,
     step: i64,
     selected: BTreeSet<u32>,
+    /// Asked for by the Edit menu, done on the next frame.
+    pending: Option<ClipAction>,
     drag: Option<Drag>,
     /// A drag on the loop brace on the ruler.
     loop_drag: Option<looping::LoopDrag>,
@@ -100,7 +104,7 @@ pub struct Geometry {
 #[cfg(test)]
 impl Geometry {
     pub fn x(&self, tick: i64) -> f32 {
-        self.origin + tick as f32 / 960.0 * self.ppq
+        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
     }
 
     /// The vertical centre of `key`'s row.
@@ -119,6 +123,7 @@ impl Default for PianoRoll {
             focus: false,
             step: 240,
             selected: BTreeSet::new(),
+            pending: None,
             drag: None,
             loop_drag: None,
             sounding: None,
@@ -131,6 +136,21 @@ impl Default for PianoRoll {
 }
 
 impl PianoRoll {
+    /// Asks for `action` to be done to the selected notes on the next frame.
+    pub fn request(&mut self, action: ClipAction) {
+        self.pending = Some(action);
+    }
+
+    /// Whether there are selected notes to copy, cut or duplicate.
+    pub fn can_copy(&self) -> bool {
+        !self.selected.is_empty()
+    }
+
+    /// Whether there are copied notes to paste.
+    pub fn can_paste(&self) -> bool {
+        self.clip.is_some() && crate::clipboard::holds(crate::clipboard::NOTE_MIME)
+    }
+
     /// Shows the notes of `clip`.
     pub fn open(&mut self, clip: ClipId) {
         if self.clip != Some(clip) {
@@ -227,11 +247,11 @@ struct Axes {
 
 impl Axes {
     fn x(self, tick: i64) -> f32 {
-        self.origin + tick as f32 / 960.0 * self.ppq
+        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
     }
 
     fn tick(self, x: f32) -> i64 {
-        ((x - self.origin) / self.ppq * 960.0).round() as i64
+        ((x - self.origin) / self.ppq * TICKS_PER_QUARTER as f32).round() as i64
     }
 
     fn y_top(self, key: u8) -> f32 {
@@ -329,7 +349,7 @@ pub fn show(
 
     if state.focus {
         state.focus = false;
-        let beats = (length as f32 / 960.0).max(1.0);
+        let beats = (length as f32 / TICKS_PER_QUARTER as f32).max(1.0);
         state.ppq = ((grid_rect.width() - 24.0) / beats).clamp(MIN_PPQ, MAX_PPQ);
         state.scroll_x = 0.0;
         let middle = match (
@@ -376,7 +396,7 @@ pub fn show(
         Sense::click_and_drag(),
     );
     let free = ui.input(|i| i.modifiers.alt);
-    let snap = |tick: i64| notes::snap(tick, if free { 1 } else { state.step });
+    let snap = |tick: i64| notes::snap(map, clip.start, tick, if free { 1 } else { state.step });
     let min_length = if free { 1 } else { state.step.max(1) };
     let shift = ui.input(|i| i.modifiers.shift);
     let mut hit_note = false;
@@ -545,7 +565,7 @@ pub fn show(
         midi,
         ruler_rect,
         axes,
-        &|t| notes::snap(t, step),
+        &|t| notes::snap(map, clip.start, t, step),
     );
 
     // The velocity lane, with a bar per note.
@@ -571,6 +591,38 @@ pub fn show(
     let typing = ui.ctx().egui_wants_keyboard_input();
     if hovered && !typing && !state.selected.is_empty() {
         keyboard_edits(ui, state, &mut out, id, clip, midi);
+    }
+    if !typing {
+        let chord = |ui: &egui::Ui| {
+            ui.input_mut(|i| {
+                let event = |wanted: fn(&egui::Event) -> bool| i.events.iter().any(wanted);
+                let copy = event(|e| matches!(e, egui::Event::Copy));
+                let cut = event(|e| matches!(e, egui::Event::Cut));
+                let paste = event(|e| matches!(e, egui::Event::Paste(_)));
+                let command = egui::Modifiers::COMMAND;
+                if i.consume_key(command, Key::X) | cut {
+                    Some(ClipAction::Cut)
+                } else if i.consume_key(command, Key::C) | copy {
+                    Some(ClipAction::Copy)
+                } else if i.consume_key(command, Key::V) | paste {
+                    Some(ClipAction::Paste)
+                } else if i.consume_key(command, Key::D) {
+                    Some(ClipAction::Duplicate)
+                } else {
+                    None
+                }
+            })
+        };
+        if hovered && let Some(action) = chord(ui) {
+            state.pending = Some(action);
+        }
+        if let Some(action) = state.pending.take() {
+            let local = playhead
+                .map(|p| p.0 - clip.start.0)
+                .filter(|at| (0..length).contains(at))
+                .unwrap_or(0);
+            clipboard_edits(action, state, &mut out, id, clip, midi, local);
+        }
     }
     if response.contains_pointer() || hit_note {
         // Keep the pointer's note hot for the cursor above.
@@ -651,6 +703,60 @@ fn keyboard_edits(
     }
 }
 
+/// Copy, cut, paste and duplicate: the notes go on the clipboard with their
+/// spacing, and come off it as one edit, selected.
+fn clipboard_edits(
+    action: ClipAction,
+    state: &mut PianoRoll,
+    out: &mut Output,
+    id: ClipId,
+    clip: &Clip,
+    midi: &MidiClip,
+    playhead: i64,
+) {
+    use crate::clipboard::{NOTE_MIME, copy, paste};
+    let held = notes::copied(&midi.notes, &state.selected);
+    let summary = || {
+        let n = held.len();
+        format!("{n} note{}", if n == 1 { "" } else { "s" })
+    };
+    match action {
+        ClipAction::Copy | ClipAction::Cut if !held.is_empty() => {
+            copy(NOTE_MIME, &held, &summary());
+            if action == ClipAction::Cut {
+                let changed = notes::removed(&midi.notes, &state.selected);
+                state.selected.clear();
+                out.edits.push(set_notes(id, clip, changed, false));
+            }
+        }
+        ClipAction::Duplicate if !held.is_empty() => {
+            let earliest = midi
+                .notes
+                .iter()
+                .filter(|n| state.selected.contains(&n.id))
+                .map(|n| n.start.0)
+                .min()
+                .unwrap_or(0);
+            let at = earliest + notes::span(&held);
+            if let Some((changed, ids)) = notes::pasted(&midi.notes, &held, at, midi.length.0) {
+                state.selected = ids;
+                out.edits.push(set_notes(id, clip, changed, false));
+            }
+        }
+        ClipAction::Paste => {
+            let Some(held) = paste::<Vec<MidiNote>>(NOTE_MIME) else {
+                return;
+            };
+            if let Some((changed, ids)) = notes::pasted(&midi.notes, &held, playhead, midi.length.0)
+            {
+                state.selected = ids;
+                out.edits.push(set_notes(id, clip, changed, false));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Scroll and zoom while the pointer is over the roll.
 fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
     let (scroll, zoom, pointer) =
@@ -664,7 +770,7 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
         state.scroll_x -= scroll.x;
         state.scroll_y -= scroll.y;
     }
-    let width = length as f32 / 960.0 * state.ppq;
+    let width = length as f32 / TICKS_PER_QUARTER as f32 * state.ppq;
     state.scroll_x = state
         .scroll_x
         .clamp(0.0, (width - grid.width() * 0.5).max(0.0));

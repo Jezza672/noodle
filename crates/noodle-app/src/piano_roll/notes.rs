@@ -5,15 +5,19 @@
 
 use std::collections::BTreeSet;
 
-use noodle_core::{MidiNote, Tick};
+use noodle_core::{MidiNote, TempoMap, Tick};
 
-/// Rounds `tick` to the nearest multiple of `step` (1 or less is free).
-pub fn snap(tick: i64, step: i64) -> i64 {
-    if step <= 1 {
-        tick
-    } else {
-        (tick + step / 2).div_euclid(step) * step
+use crate::timeline::grid;
+
+/// Snaps `tick`, counted from the start of a clip that begins at `clip_start`,
+/// to the grid drawn on the timeline: the same lines whatever the clip's own
+/// start, and following the time signature. 1 or less is free.
+pub fn snap(map: &TempoMap, clip_start: Tick, tick: i64, step: i64) -> i64 {
+    let absolute = clip_start.0 + tick;
+    if step <= 1 || absolute < 0 {
+        return tick;
     }
+    grid::snap_to(map, Tick(absolute), step).0 - clip_start.0
 }
 
 /// The selected notes moved by `d_tick` ticks and `d_key` keys. The group
@@ -123,6 +127,56 @@ pub fn removed(notes: &[MidiNote], selected: &BTreeSet<u32>) -> Vec<MidiNote> {
         .collect()
 }
 
+/// The selected notes as they are copied: their starts counted from the
+/// earliest, in time order.
+pub fn copied(notes: &[MidiNote], selected: &BTreeSet<u32>) -> Vec<MidiNote> {
+    let mut chosen: Vec<MidiNote> = notes
+        .iter()
+        .filter(|n| selected.contains(&n.id))
+        .copied()
+        .collect();
+    let earliest = chosen.iter().map(|n| n.start.0).min().unwrap_or(0);
+    for note in &mut chosen {
+        note.start = Tick(note.start.0 - earliest);
+    }
+    chosen.sort_by_key(|n| n.start.0);
+    chosen
+}
+
+/// How far the copied notes reach: the end of the last one to finish.
+pub fn span(copied: &[MidiNote]) -> i64 {
+    copied.iter().map(|n| n.end().0).max().unwrap_or(0)
+}
+
+/// `notes` with the copied ones put down so the earliest starts at `at`, and
+/// the ids of the new notes. Notes that would start past the clip's end are
+/// dropped, and the last is cut at it. `None` if none fit.
+pub fn pasted(
+    notes: &[MidiNote],
+    copied: &[MidiNote],
+    at: i64,
+    clip_length: i64,
+) -> Option<(Vec<MidiNote>, BTreeSet<u32>)> {
+    let mut out = notes.to_vec();
+    let mut next = notes.iter().map(|n| n.id).max().map_or(0, |max| max + 1);
+    let mut ids = BTreeSet::new();
+    for note in copied {
+        let start = at + note.start.0;
+        if !(0..clip_length).contains(&start) {
+            continue;
+        }
+        out.push(MidiNote {
+            id: next,
+            start: Tick(start),
+            length: Tick(note.length.0.min(clip_length - start).max(1)),
+            ..*note
+        });
+        ids.insert(next);
+        next += 1;
+    }
+    (!ids.is_empty()).then_some((out, ids))
+}
+
 /// `notes` with note `index`'s velocity set.
 pub fn with_velocity(notes: &[MidiNote], index: usize, velocity: f32) -> Vec<MidiNote> {
     let mut notes = notes.to_vec();
@@ -153,13 +207,19 @@ mod tests {
     }
 
     #[test]
-    fn snapping_rounds_to_the_nearest_step() {
-        assert_eq!(snap(0, 240), 0);
-        assert_eq!(snap(119, 240), 0);
-        assert_eq!(snap(120, 240), 240);
-        assert_eq!(snap(-130, 240), -240);
-        assert_eq!(snap(133, 1), 133);
-        assert_eq!(snap(133, 0), 133);
+    fn snapping_follows_the_drawn_grid_from_the_clips_own_start() {
+        let map = TempoMap::default();
+        let at = |start, tick, step| snap(&map, Tick(start), tick, step);
+        // A clip on a beat: multiples of the step.
+        assert_eq!(at(960, 0, 240), 0);
+        assert_eq!(at(960, 119, 240), 0);
+        assert_eq!(at(960, 121, 240), 240);
+        // A clip off the beat: the same absolute lines.
+        assert_eq!(at(100, 140, 240), 140);
+        assert_eq!(at(100, 100, 240), 140);
+        // Snap off.
+        assert_eq!(at(960, 133, 1), 133);
+        assert_eq!(at(960, 133, 0), 133);
     }
 
     #[test]
@@ -237,6 +297,36 @@ mod tests {
         assert!(added(&notes, 0, 480, 128, 0.5, 3840).is_none());
         assert_eq!(removed(&out, &BTreeSet::from([0])), [out[1]]);
         assert_eq!(removed(&out, &all(2)), []);
+    }
+
+    #[test]
+    fn copied_notes_are_counted_from_the_earliest() {
+        let notes = ided([note(960, 240, 64), note(480, 120, 60), note(2000, 10, 70)]);
+        let out = copied(&notes, &BTreeSet::from([0, 1]));
+        assert_eq!((out[0].start.0, out[0].key), (0, 60));
+        assert_eq!((out[1].start.0, out[1].key), (480, 64));
+        assert_eq!(span(&out), 720);
+        assert!(copied(&notes, &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn pasting_keeps_the_spacing_gives_new_ids_and_stays_in_the_clip() {
+        let notes = ided([note(0, 240, 60)]);
+        let held = copied(&ided([note(0, 240, 64), note(480, 480, 67)]), &all(2));
+        let (out, ids) = pasted(&notes, &held, 3600, 3840).unwrap();
+        // The second would start at 4080, past the end.
+        assert_eq!(out.len(), 2);
+        assert_eq!(ids, BTreeSet::from([1]));
+        assert_eq!(out[1].start.0, 3600);
+        let (out, ids) = pasted(&notes, &held, 3000, 3840).unwrap();
+        assert_eq!(ids, BTreeSet::from([1, 2]));
+        assert_eq!(
+            (out[2].start.0, out[2].length.0),
+            (3480, 360),
+            "cut at the end"
+        );
+        assert!(pasted(&notes, &held, 4000, 3840).is_none());
+        assert!(pasted(&notes, &[], 0, 3840).is_none());
     }
 
     #[test]

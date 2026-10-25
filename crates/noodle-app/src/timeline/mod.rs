@@ -70,6 +70,8 @@ const MIN_PPS: f32 = 16.0;
 const MAX_PPS: f32 = 1200.0;
 
 pub struct TimelineState {
+    /// The track list for the project revision it was worked out at.
+    tracks_cache: Option<(u64, std::rc::Rc<[NodeId]>)>,
     /// Zoom: screen points per second.
     pps: f32,
     /// How far the view is scrolled, in screen points.
@@ -124,6 +126,7 @@ pub struct TimelineState {
 impl Default for TimelineState {
     fn default() -> Self {
         Self {
+            tracks_cache: None,
             pps: 120.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
@@ -160,6 +163,18 @@ impl Default for TimelineState {
 }
 
 impl TimelineState {
+    /// [`tracks`], worked out again only when the project changed.
+    fn tracks(&mut self, project: &Project) -> std::rc::Rc<[NodeId]> {
+        match &self.tracks_cache {
+            Some((revision, tracks)) if *revision == project.revision() => tracks.clone(),
+            _ => {
+                let tracks: std::rc::Rc<[NodeId]> = tracks(project).into();
+                self.tracks_cache = Some((project.revision(), tracks.clone()));
+                tracks
+            }
+        }
+    }
+
     /// How far the tracks are scrolled down, for tests.
     #[cfg(test)]
     pub fn scroll_y(&self) -> f32 {
@@ -332,12 +347,15 @@ impl TimelineState {
 
     /// Whether there are selected clips to copy, cut or duplicate.
     pub fn can_copy(&self) -> bool {
-        !self.selected.is_empty()
+        !self.selected.is_empty() || self.automation.selected().is_some()
     }
 
-    /// Whether there is anything to paste.
+    /// Whether there is anything to paste: clips, or a point where one is
+    /// selected to paste onto its lane.
     pub fn can_paste(&self) -> bool {
         crate::clipboard::holds(crate::clipboard::CLIP_MIME)
+            || (self.automation.selected().is_some()
+                && crate::clipboard::holds(crate::clipboard::POINT_MIME))
     }
 }
 
@@ -378,10 +396,11 @@ enum Mode {
 /// The track lanes, top to bottom: every track input node, and any other node
 /// that has clips.
 pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
+    let with_clips: BTreeSet<NodeId> = project.clips().map(|(_, clip)| clip.node).collect();
     let mut tracks: Vec<NodeId> = project
         .graph()
         .nodes()
-        .filter(|(id, node)| node.type_id == TRACK_INPUT || project.clips_on(*id).next().is_some())
+        .filter(|(id, node)| node.type_id == TRACK_INPUT || with_clips.contains(id))
         .map(|(id, _)| id)
         .collect();
     // Track order is the order of the groups the inputs sit in; an input
@@ -463,7 +482,7 @@ pub fn show(
 ) -> Output {
     let project = session.project();
     state.retain_existing(project);
-    let tracks = tracks(project);
+    let tracks = state.tracks(project);
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
     let rows = automation::Rows::new(project, &tracks, &heights);
     let map = project.tempo_map();
@@ -1172,6 +1191,12 @@ pub fn show(
                             .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                     })
                 };
+                edits.extend(automation::act(
+                    action,
+                    &mut state.automation,
+                    project,
+                    playhead.unwrap_or(Tick::ZERO),
+                ));
                 let chosen: Vec<(ClipId, Clip)> = state
                     .selected
                     .iter()
@@ -1267,7 +1292,9 @@ pub fn show(
         });
     state.scroll_y = scroll.state.offset.y;
 
-    draw_ruler(ui, rect, axis, &lines);
+    let _markers = draw_ruler(ui, rect, axis, &lines);
+    #[cfg(test)]
+    state.drawn_text.extend(_markers);
     let ruler = Rect::from_min_max(
         Pos2::new(content.left(), rect.top()),
         Pos2::new(rect.right(), rect.top() + colors::RULER_HEIGHT),
@@ -1431,6 +1458,18 @@ pub fn show(
             });
         }
         ui.separator();
+        if ui
+            .button(format!("Add tempo change at bar {}", bar + 1))
+            .clicked()
+        {
+            ui.close();
+            let at = map.bar_start(bar);
+            edits.extend(
+                crate::tempo::with_change(map, at, map.bpm_at(at))
+                    .filter(|(new, _)| new != map)
+                    .map(|(new, _)| Edit::Apply(Command::SetTempoMap(new))),
+            );
+        }
         for (numerator, denominator) in crate::tempo::SIGNATURES {
             let signature = noodle_core::TimeSignature {
                 numerator,
@@ -2392,7 +2431,8 @@ fn draw_headers(
     (edits, arm)
 }
 
-fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) {
+/// Draws the ruler, and returns the time signature markers it drew.
+fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) -> Vec<String> {
     let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), colors::RULER_HEIGHT));
     let painter = ui.painter_at(strip);
     painter.rect_filled(strip, 0.0, colors::RULER);
@@ -2432,11 +2472,31 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) {
             grid::Kind::Beat => {}
         }
     }
+    // A marker at every time signature change after the first, which the
+    // transport shows.
+    let mut markers = Vec::new();
+    for change in axis.map.signatures().iter().skip(1) {
+        let x = axis.x(axis.map.bar_start(change.bar));
+        painter.vline(
+            x,
+            strip.y_range(),
+            Stroke::new(1.5, colors::AUTOMATION_LINE),
+        );
+        painter.text(
+            Pos2::new(x + 4.0, strip.bottom() - 2.0),
+            Align2::LEFT_BOTTOM,
+            change.signature.to_string(),
+            FontId::proportional(10.0),
+            colors::AUTOMATION_LINE,
+        );
+        markers.push(change.signature.to_string());
+    }
     painter.hline(
         strip.x_range(),
         strip.bottom() - 0.5,
         Stroke::new(1.0, colors::BACKGROUND),
     );
+    markers
 }
 
 #[cfg(test)]

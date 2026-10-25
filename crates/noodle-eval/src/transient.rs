@@ -73,7 +73,7 @@ fn median(buf: &mut [f32]) -> f32 {
 
 /// The harmonic-smoothed and percussive-smoothed magnitudes (median filters
 /// along time and along frequency).
-fn medians(s: &Spectrogram) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn medians(s: &Spectrogram) -> (Vec<f32>, Vec<f32>) {
     let (frames, bins) = (s.frames, s.bins);
     let mut buf = Vec::with_capacity(2 * HPSS_HALF + 1);
     let mut harmonic = vec![0.0f32; s.mag.len()];

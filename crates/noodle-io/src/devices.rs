@@ -42,7 +42,9 @@ pub struct AudioConfig {
     /// `None` uses the output device's default rate. An input device that
     /// doesn't support the rate runs at its own and is converted.
     pub sample_rate: Option<u32>,
-    /// Frames per device callback. `None` lets the device decide.
+    /// Frames per device callback, for the output and the input. `None` asks
+    /// for [`LIVE_BUFFER`] frames where the device allows, and otherwise
+    /// lets the device decide.
     pub buffer_size: Option<u32>,
     /// Channels to open the main output device with, for surround or a
     /// multichannel interface. `None` uses the device's default (usually
@@ -256,6 +258,29 @@ fn buffer_span<'a>(
             SupportedBufferSize::Unknown => None,
         })
         .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+}
+
+/// The buffer size asked for when none is chosen and the device takes it:
+/// small enough for live playing, large enough to rarely glitch.
+pub const LIVE_BUFFER: u32 = 256;
+
+/// The buffer size to ask a device for at `rate`, given its `ranges`.
+///
+/// With `wanted`, that size, moved into the span the device takes at the
+/// rate (the input may take less than the output); `None` if it doesn't say
+/// which sizes it takes. Without, [`LIVE_BUFFER`] if the device says it takes
+/// that, else `None`, which leaves the choice to the device: asking for a
+/// size it never promised could fail the stream.
+pub fn buffer_request(
+    ranges: &[SupportedStreamConfigRange],
+    rate: u32,
+    wanted: Option<u32>,
+) -> Option<u32> {
+    let (min, max) = buffer_span(ranges.iter().filter(|r| r.contains_rate(rate)))?;
+    match wanted {
+        Some(frames) => Some(frames.clamp(min, max)),
+        None => (min..=max).contains(&LIVE_BUFFER).then_some(LIVE_BUFFER),
+    }
 }
 
 /// Picks the configuration to open a stream with: the device's default, at
@@ -658,6 +683,28 @@ mod tests {
             matches!(error, AudioError::UnsupportedSampleRate(384_000)),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_buffer_asked_for_is_live_sized_where_the_device_allows() {
+        let (ranges, _) = device();
+        assert_eq!(buffer_request(&ranges, 44_100, None), Some(LIVE_BUFFER));
+        // A chosen size is kept, or moved into what the device takes.
+        assert_eq!(buffer_request(&ranges, 44_100, Some(128)), Some(128));
+        assert_eq!(buffer_request(&ranges, 44_100, Some(16)), Some(32));
+        assert_eq!(buffer_request(&ranges, 44_100, Some(65_536)), Some(8192));
+        // Nothing at 8 kHz says which sizes it takes but the stereo f32
+        // range, which doesn't say.
+        assert_eq!(buffer_request(&ranges, 8_000, None), None);
+        assert_eq!(buffer_request(&ranges, 8_000, Some(128)), None);
+        let big = [range(
+            2,
+            (48_000, 48_000),
+            Some((512, 4096)),
+            SampleFormat::F32,
+        )];
+        assert_eq!(buffer_request(&big, 48_000, None), None, "256 not allowed");
+        assert_eq!(buffer_request(&big, 48_000, Some(128)), Some(512));
     }
 
     #[test]

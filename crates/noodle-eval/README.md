@@ -187,6 +187,20 @@ detected tempo is what the app would find on that instrument exported as a file.
 Run it with `--baseline` to diff against a file of your own, or `--update` to add
 the rows to the committed baseline.
 
+`--ceiling` is the M10 perfect-stem experiment (ROADMAP M10, ADR 0006): what Stem warp could
+score if the separator were flawless. The song's parts are mapped to stems (`stems.rs`:
+drums, bass, other; the songs have no vocals) and rendered alone through the mix's master
+chain, and what they do not add up to is the residual. `stems` warps each stem (Beats for
+drums, Grain for the rest, residual Grain) at the true source tempo and adds them up;
+`stems-beats` and `stems-grain` warp the same stems all in one mode (the cost of splitting without a mode per stem); `stems-30`, `stems-20` and `stems-10` first bleed that many dB of the other stems into each
+(the sum is unchanged, only where the sound sits); `hpss` is the model-free baseline, the
+mix split into harmonic (Grain) and percussive (Beats) parts by median filtering. They are
+scored against the native mix next to `auto`, `grain` and `beats`, and the run ends with a
+verdict: how often and by how much each split contender beats the best whole-mix mode per
+metric, Auto, Grain and Beats alone, and a table per metric (read it: a pooled median can net
+spectral gains against transient losses to 1). The grid takes about an hour on four cores;
+`songs --verdict` prints the verdict again from `baseline/ceiling.json`.
+
 Things to know when reading a song's numbers:
 
 - Where a note starts and how long its gate is follow the tempo; the sounds'

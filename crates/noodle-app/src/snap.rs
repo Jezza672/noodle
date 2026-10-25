@@ -3,19 +3,20 @@
 //! the menu bar.
 
 use egui::Ui;
+use noodle_core::TICKS_PER_QUARTER;
 
 /// The steps on offer, in ticks. 1 is "Off": no snapping.
 pub const STEPS: [(&str, i64); 6] = [
-    ("Beat", 960),
-    ("1/2 beat", 480),
-    ("1/4 beat", 240),
-    ("1/8 beat", 120),
-    ("1/16 beat", 60),
+    ("Beat", TICKS_PER_QUARTER),
+    ("1/2 beat", TICKS_PER_QUARTER / 2),
+    ("1/4 beat", TICKS_PER_QUARTER / 4),
+    ("1/8 beat", TICKS_PER_QUARTER / 8),
+    ("1/16 beat", TICKS_PER_QUARTER / 16),
     ("Off", 1),
 ];
 
 /// What a new session snaps to.
-pub const DEFAULT: i64 = 960;
+pub const DEFAULT: i64 = TICKS_PER_QUARTER;
 
 /// The name of a step, or "Custom" for a tick count not on offer.
 pub fn label(ticks: i64) -> &'static str {
@@ -46,7 +47,7 @@ mod tests {
 
     #[test]
     fn steps_are_named() {
-        assert_eq!(label(240), "1/4 beat");
+        assert_eq!(label(TICKS_PER_QUARTER / 4), "1/4 beat");
         assert_eq!(label(7), "Custom");
     }
 }

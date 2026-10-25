@@ -208,7 +208,12 @@ impl Song {
 
         // The notes, as a MIDI clip on each track.
         let length = Tick::from_quarters(range.beats());
-        for (input, part) in sources.into_iter().filter(|(_, part)| keep(part)) {
+        // Every part takes a clip ID, kept or not. A note's identity is a hash
+        // of its clip ID, so the IDs set the order of notes that start together
+        // and so which voice (with its free-running oscillator) each gets: a
+        // part sounds the same alone as in the mix only if its clip has the same
+        // ID in both.
+        for (input, part) in sources {
             let mut clip = Clip::midi(input, Tick::ZERO, length);
             let ClipContent::Midi(midi) = &mut clip.content else {
                 unreachable!("a MIDI clip")
@@ -225,10 +230,12 @@ impl Song {
                 n.velocity = note.vel;
                 midi.notes.push(n);
             }
-            if midi.notes.is_empty() {
+            // Taken even for a part with no notes in `range`, so a part's ID
+            // is the same whatever the range.
+            let id = project.new_clip_id();
+            if midi.notes.is_empty() || !keep(part) {
                 continue;
             }
-            let id = project.new_clip_id();
             history
                 .apply(&mut project, Command::AddClip { id, clip })
                 .expect("a valid clip");

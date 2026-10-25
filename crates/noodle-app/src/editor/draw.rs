@@ -338,36 +338,43 @@ fn boxed(
                 body::MeterAxis::Horizontal,
             );
         }
+        // Any other wired audio input shows the level arriving at it.
+        if text
+            && !port.spare
+            && port.side == Side::Input
+            && mixer_channel(graph, node.id, &port.key).is_none()
+        {
+            let levels = bodies.tap(node.id, &port.key);
+            if !levels.is_empty() {
+                let row = f.t.rect_to_screen(port.row);
+                let area = Rect::from_center_size(
+                    Pos2::new(row.right() - 30.0 * z, row.center().y),
+                    Vec2::new(48.0 * z, 7.0 * z),
+                );
+                body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+            }
+        }
         socket(painter, f, port);
     }
 
     if let Some(area) = node.body {
         let node_id = node.id;
-        // What each parameter is now: a wire's live value, else the node's
-        // own, else the default.
+        // What each parameter is now: a wired one's live value, else the
+        // node's own, else its default, shown on the node or not (a graph
+        // reads parameters the node doesn't list as ports).
+        let defaults = param_defaults(f.registry, graph.node(node_id));
         let values = |key: &str| {
-            if let Some(node) = graph.node(node.id)
-                && let Some(value) = crate::widgets::graph::special_value(key, node, &|channel| {
-                    bodies.param_live(node_id, channel).map(|live| live.value)
-                })
-            {
-                return value;
-            }
-            let default = node.ports.iter().find_map(|port| match &port.kind {
-                PortKind::Param(info) if port.key == key => Some(info.default),
-                _ => None,
-            });
-            // As in the properties panel, only a wired parameter reads live;
-            // an unwired one is its own value, so both views draw one curve.
-            let wired = graph.source(&Endpoint::new(node_id, key)).is_some();
-            let live = if wired {
-                bodies.param_live(node.id, key).map(|live| live.value)
-            } else {
-                None
+            let Some(own) = graph.node(node_id) else {
+                return 0.0;
             };
-            live.or_else(|| graph.node(node.id)?.params.get(key).copied())
-                .or(default)
-                .unwrap_or(0.0)
+            let default = defaults.iter().find(|(k, _)| k == key).map(|&(_, d)| d);
+            crate::widgets::graph::graph_value(
+                key,
+                own,
+                graph.source(&Endpoint::new(node_id, key)).is_some(),
+                &|channel| bodies.param_live(node_id, channel).map(|live| live.value),
+                default.unwrap_or(0.0),
+            )
         };
         let curve = match graph
             .node(node.id)
@@ -390,7 +397,7 @@ fn boxed(
     }
 }
 
-/// A speaker, lit while its node is monitored.
+/// A pair of headphones, lit while its node is monitored.
 fn monitor_button(painter: &Painter, rect: Rect, on: bool) {
     let color = if on {
         colors::ACTIVE
@@ -403,24 +410,23 @@ fn monitor_button(painter: &Painter, rect: Rect, on: bool) {
     let u = rect.width() / 14.0;
     let c = rect.center();
     let at = |x: f32, y: f32| c + Vec2::new(x * u, y * u);
-    // The cone, then two arcs of sound.
-    painter.add(Shape::convex_polygon(
-        vec![
-            at(-5.0, -2.0),
-            at(-2.0, -2.0),
-            at(1.0, -5.0),
-            at(1.0, 5.0),
-            at(-2.0, 2.0),
-            at(-5.0, 2.0),
-        ],
-        color,
-        Stroke::NONE,
+    // The band over the head, then the two ear cups it ends in.
+    let band: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let angle = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 12.0;
+            at(4.6 * angle.cos(), 0.9 + 4.6 * angle.sin())
+        })
+        .collect();
+    painter.add(PathShape::line(
+        band,
+        Stroke::new((2.0 * u).max(1.0), color),
     ));
-    for reach in [3.0, 5.5] {
-        painter.add(Shape::line(
-            vec![at(2.5, -reach), at(4.0 + reach / 2.0, 0.0), at(2.5, reach)],
-            Stroke::new((1.2 * u).max(0.8), color),
-        ));
+    for (left, right) in [(-6.2, -2.6), (2.6, 6.2)] {
+        painter.rect_filled(
+            Rect::from_min_max(at(left, -0.7), at(right, 4.7)),
+            1.6 * u,
+            color,
+        );
     }
 }
 
@@ -708,4 +714,44 @@ fn mixer_channel(graph: &noodle_core::Graph, id: noodle_core::NodeId, key: &str)
     let mixer = graph.node(id)?.type_id == noodle_core::spare::MIXER;
     let index = noodle_core::spare::mixer_input_index(key)?;
     mixer.then(|| index - 1)
+}
+
+/// Every parameter's default by key, shown on the node as a port or not: a
+/// graph reads parameters the node doesn't list.
+fn param_defaults(
+    registry: &noodle_engine::Registry,
+    node: Option<&noodle_core::Node>,
+) -> Vec<(String, f32)> {
+    let Some(node) = node else {
+        return Vec::new();
+    };
+    let Some(layout) = registry
+        .get(&node.type_id)
+        .and_then(|t| t.layout(&node.config).ok())
+    else {
+        return Vec::new();
+    };
+    layout
+        .inputs
+        .iter()
+        .filter_map(|input| match &input.kind {
+            noodle_engine::InputKind::Param(info) => Some((input.key.to_string(), info.default)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn a_graph_node_knows_the_defaults_of_parameters_it_does_not_show() {
+        let nodes = crate::session::Nodes::all();
+        let node = noodle_core::Node::new("noodle.effect.eq");
+        let defaults = param_defaults(&nodes.registry, Some(&node));
+        let get = |key: &str| defaults.iter().find(|(k, _)| k == key).map(|&(_, d)| d);
+        assert_eq!(get("freq2"), Some(400.0));
+        assert!((get("q1").unwrap() - 0.707).abs() < 1e-3);
+    }
 }

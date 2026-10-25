@@ -19,9 +19,9 @@ use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
     BlockWriter, Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource,
-    Instance, Io, MAX_LATENCY, Node, NodeError, ParamInfo, ParamKind, ParamWriter, Phase, Problem,
-    Schedule, Settings, Setup, Shape, SignalIn, SignalOut, SpectralBuf, SpectralDelay, SpectralIn,
-    SpectralOut, Telemetry,
+    Instance, Io, Level, MAX_LATENCY, MeterWriter, Node, NodeError, ParamInfo, ParamKind,
+    ParamWriter, Phase, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
+    SpectralBuf, SpectralDelay, SpectralIn, SpectralOut, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -192,6 +192,8 @@ struct PlanNode {
     is_input: bool,
     /// Reports the signals wired into parameters, by input index.
     probes: Vec<(usize, ParamWriter)>,
+    /// Reports the level arriving at each wired audio input, by input index.
+    input_meters: Vec<(usize, MeterWriter)>,
     /// Reports how long the node takes, when something is watching.
     cpu: Option<CpuWriter>,
     /// The node runs whatever is downstream of it: an Output node, a tap, or
@@ -214,6 +216,27 @@ struct PlanNode {
     /// `frames * channels` samples, added to the device output at the end
     /// of the block in schedule order. Empty unless `bus` is set.
     bus_out: Box<[f32]>,
+}
+
+/// The level of one channel of `signal` over a block, with its voices summed
+/// as the Meter node does. The RMS is that of the block alone.
+fn input_level(signal: &SignalIn<'_>, channel: usize) -> Level {
+    let voices = signal.shape().voices;
+    if (0..voices).all(|voice| signal.is_silent(voice, channel)) {
+        return Level::default();
+    }
+    let (mut peak, mut power) = (0.0f32, 0.0f32);
+    for frame in 0..signal.frames() {
+        let x: f32 = (0..voices)
+            .map(|voice| signal.lane(voice, channel)[frame])
+            .sum();
+        peak = peak.max(x.abs());
+        power += x * x;
+    }
+    Level {
+        peak,
+        rms: (power / signal.frames().max(1) as f32).sqrt(),
+    }
 }
 
 /// Where a signal lives in the pool.
@@ -573,6 +596,29 @@ pub(crate) fn build(
             })
             .collect();
 
+        let input_meters: Vec<(usize, MeterWriter)> = telemetry
+            .into_iter()
+            .flat_map(|telemetry| {
+                scheduled
+                    .layout
+                    .inputs
+                    .iter()
+                    .zip(&scheduled.inputs)
+                    .zip(&scheduled.input_shapes)
+                    .enumerate()
+                    .filter(|(_, ((port, source), _))| {
+                        matches!(port.kind, InputKind::Audio)
+                            && matches!(source, InputSource::Buffer(_))
+                    })
+                    .map(move |(index, ((port, _), shape))| {
+                        (
+                            index,
+                            telemetry.open_input_meter(id, &port.key, shape.channels),
+                        )
+                    })
+            })
+            .collect();
+
         let is_output = scheduled.node_type.info().id == OUTPUT_ID;
         let mut bus = None;
         if is_output {
@@ -652,6 +698,7 @@ pub(crate) fn build(
             }),
             is_input: scheduled.node_type.info().id == INPUT_ID,
             probes,
+            input_meters,
             cpu: telemetry
                 .filter(|_| !input_half)
                 .map(|telemetry| telemetry.open_cpu(id)),
@@ -1223,6 +1270,14 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         let signal = &inputs[*index];
         if signal.shape().lanes() > 0 {
             probe.write(signal.lane(0, 0));
+        }
+    }
+
+    for (index, meter) in &node.input_meters {
+        let signal = &inputs[*index];
+        let shape = signal.shape();
+        for channel in 0..shape.channels.min(meter.channels()) {
+            meter.write(channel, input_level(signal, channel));
         }
     }
 

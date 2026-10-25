@@ -577,6 +577,28 @@
         ),
     )),
     NodePreset((
+        name: "Quarter Notes",
+        slug: "beat-length-quarter-notes",
+        node_type: "noodle.mod.beat_length",
+        values: (
+            params: {
+                "bpm": 120.0,
+                "division": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Dotted Eighths",
+        slug: "beat-length-dotted-eighths",
+        node_type: "noodle.mod.beat_length",
+        values: (
+            params: {
+                "bpm": 120.0,
+                "division": 14.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Compressor",
         slug: "dynamics-compressor",
         node_type: "noodle.effect.dynamics",
@@ -1201,6 +1223,47 @@
             config: {
                 "outputs": 1,
                 "rest": 1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "No Repeats",
+        slug: "random-select-no-repeats",
+        node_type: "noodle.util.randselect",
+        values: (
+            params: {
+                "avoid_repeat": 1.0,
+            },
+            config: {
+                "inputs": 3,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Click-free Switching",
+        slug: "random-select-click-free-switching",
+        node_type: "noodle.util.randselect",
+        values: (
+            params: {
+                "avoid_repeat": 1.0,
+                "switch": 1.0,
+            },
+            config: {
+                "inputs": 2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Notes, Cut Held",
+        slug: "random-select-notes-cut-held",
+        node_type: "noodle.util.randselect",
+        values: (
+            params: {
+                "switch": 1.0,
+            },
+            config: {
+                "inputs": 2,
+                "kind": 1,
             },
         ),
     )),

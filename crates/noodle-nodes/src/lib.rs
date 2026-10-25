@@ -5,6 +5,7 @@ mod adsr;
 mod arpeggiator;
 mod automation;
 mod background;
+mod beat_length;
 mod bitcrush;
 mod button;
 mod cached;
@@ -39,6 +40,7 @@ mod notes;
 mod osc;
 mod pan;
 mod phaser;
+mod random_select;
 mod remap;
 mod reroute;
 mod reverb;
@@ -70,6 +72,7 @@ pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
     render_streaming, spawn_render, spawn_render_to_cache,
 };
+pub use beat_length::{BEAT_LENGTH_ID, BeatLength};
 pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
@@ -121,6 +124,7 @@ pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
+pub use random_select::{MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID, RandomSelect};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
@@ -239,6 +243,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Automation);
     registry.register(Clock);
     registry.register(Tempo);
+    registry.register(BeatLength);
     registry.register(SampleInput);
     registry.register(Distortion);
     registry.register(Bitcrusher);
@@ -248,6 +253,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(MonoNote);
     registry.register(MidiControl);
     registry.register(NoteSplit);
+    registry.register(RandomSelect);
     registry.register(Arpeggiator);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));

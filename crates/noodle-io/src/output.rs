@@ -18,10 +18,10 @@ use noodle_engine::{
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::devices::{
-    AudioConfig, AudioError, Chosen, Direction, InputChoice, VIRTUAL_OUTPUT, choose_config,
-    device_name, find_device, host_for,
+    AudioConfig, AudioError, Chosen, Direction, InputChoice, VIRTUAL_OUTPUT, buffer_request,
+    choose_config, device_name, find_device, host_for,
 };
-use crate::input::{Capture, Feed, recordable_input_path};
+use crate::input::{Capture, Feed, InputMeter, recordable_input_path};
 use crate::midi::{AudioClock, MidiBus, now_micros};
 use crate::record::{RecordError, Recorder, Take};
 use crate::resample::StreamResampler;
@@ -591,6 +591,7 @@ pub struct Playback {
     outputs: Vec<OutputStatus>,
     device: String,
     input: Option<(String, usize)>,
+    input_meter: Option<Arc<InputMeter>>,
     input_problem: Option<AudioError>,
     settings: Settings,
     health: Health,
@@ -796,6 +797,24 @@ impl Playback {
             .map_or(Duration::ZERO, Recorder::input_latency)
     }
 
+    /// Where the time between an input sound and its output goes, as far as
+    /// the drivers and the callbacks tell. It fills in over the first
+    /// callbacks and then follows the backlog live.
+    pub fn latency_report(&self) -> LatencyReport {
+        LatencyReport {
+            sample_rate: self.settings.sample_rate,
+            block_frames: self.settings.max_frames as u32,
+            output_buffer_frames: self.fade.period.load(Ordering::Relaxed),
+            output_driver: self.output_latency(),
+            input: self.input_meter.as_ref().map(|meter| InputLatency {
+                sample_rate: meter.sample_rate(),
+                buffer_frames: meter.callback_frames(),
+                driver: self.input_latency(),
+                backlog_frames: meter.backlog_frames(),
+            }),
+        }
+    }
+
     /// The input device's name and channel count, if input is on.
     pub fn input(&self) -> Option<(&str, usize)> {
         self.input
@@ -867,6 +886,101 @@ pub enum Stream {
     /// An output device other than the main one. Losing it silences the
     /// Output nodes tied to it and nothing else.
     ExtraOutput,
+}
+
+/// Where the time from a sound entering the input to it leaving the output
+/// goes. Built by [`Playback::latency_report`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LatencyReport {
+    pub sample_rate: f32,
+    /// The engine's block size, the most frames it renders at once.
+    pub block_frames: u32,
+    /// Frames in the output device's callbacks, as granted: zero until the
+    /// first.
+    pub output_buffer_frames: u32,
+    /// How long after the callback the device plays, as the driver reports:
+    /// zero if it doesn't say, or before the first callback.
+    pub output_driver: Duration,
+    /// `None` when input is off.
+    pub input: Option<InputLatency>,
+}
+
+/// The input half of a [`LatencyReport`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputLatency {
+    /// The input device's sample rate, which may differ from the engine's.
+    pub sample_rate: f32,
+    /// Frames in the input device's callbacks, as granted, at its rate: zero
+    /// until the first.
+    pub buffer_frames: u32,
+    /// How long before its callback the driver says the input was captured:
+    /// zero if it doesn't say.
+    pub driver: Duration,
+    /// Frames queued between the input and the engine.
+    pub backlog_frames: u32,
+}
+
+/// Drivers that report a playback latency over this are slow enough that
+/// live playing suffers; Bluetooth output is the usual cause.
+pub const SLOW_OUTPUT: Duration = Duration::from_millis(80);
+
+impl LatencyReport {
+    fn frames(&self, frames: u32) -> Duration {
+        Duration::from_secs_f32(frames as f32 / self.sample_rate.max(1.0))
+    }
+
+    /// The output side: the driver's figure, or the buffer when it gives
+    /// none (ALSA reports zero).
+    pub fn output(&self) -> Duration {
+        if self.output_driver.is_zero() {
+            self.frames(self.output_buffer_frames)
+        } else {
+            self.output_driver
+        }
+    }
+
+    /// The input side, the same way. `None` when input is off.
+    pub fn input_side(&self) -> Option<Duration> {
+        let input = self.input?;
+        Some(if input.driver.is_zero() {
+            Duration::from_secs_f32(input.buffer_frames as f32 / input.sample_rate.max(1.0))
+        } else {
+            input.driver
+        })
+    }
+
+    /// The backlog's wait, with one engine block for the block being
+    /// rendered. `None` when input is off.
+    pub fn queue(&self) -> Option<Duration> {
+        let input = self.input?;
+        Some(self.frames(input.backlog_frames + self.block_frames))
+    }
+
+    /// An estimate of the time from a sound entering the input to it leaving
+    /// the output: the input's capture delay, the wait in the backlog, and
+    /// the output's delay. `None` when input is off or hasn't called back
+    /// yet.
+    pub fn round_trip(&self) -> Option<Duration> {
+        let input = self.input?;
+        if input.buffer_frames == 0 || self.output_buffer_frames == 0 {
+            return None;
+        }
+        Some(self.input_side()? + self.queue()? + self.output())
+    }
+
+    /// Whether the output is slow enough to hurt live playing.
+    pub fn output_is_slow(&self) -> bool {
+        self.output_driver > SLOW_OUTPUT
+    }
+}
+
+/// Whether a device's name suggests a Bluetooth link, for when its driver
+/// doesn't report the delay.
+pub fn looks_like_bluetooth(name: &str) -> bool {
+    let name = name.to_lowercase();
+    ["bluetooth", "airpods", "buds", "wh-1000", "wf-1000", "bt "]
+        .iter()
+        .any(|hint| name.contains(hint))
 }
 
 /// What the devices have reported. Some backends (ALSA among them) report
@@ -966,7 +1080,7 @@ pub fn play_with_outputs(
     max_frames: usize,
     midi: &MidiBus,
 ) -> Result<(Playback, Controller), AudioError> {
-    open_playback(choice, extra, max_frames, midi, true)
+    open_playback_retrying(choice, extra, max_frames, midi, true)
 }
 
 /// [`play_with_outputs`] with the transport stopped from the first block, for
@@ -978,7 +1092,26 @@ pub fn play_with_outputs_stopped(
     max_frames: usize,
     midi: &MidiBus,
 ) -> Result<(Playback, Controller), AudioError> {
-    open_playback(choice, extra, max_frames, midi, false)
+    open_playback_retrying(choice, extra, max_frames, midi, false)
+}
+
+/// [`open_playback`], and when the automatic live-sized buffer made it fail
+/// (a driver that lists a range but refuses a fixed size when it builds the
+/// stream), once more leaving the size to the device. A size the user chose
+/// still fails loudly.
+fn open_playback_retrying(
+    choice: &AudioConfig,
+    extra: &[String],
+    max_frames: usize,
+    midi: &MidiBus,
+    running: bool,
+) -> Result<(Playback, Controller), AudioError> {
+    match open_playback(choice, extra, max_frames, midi, running, true) {
+        Err(_) if choice.buffer_size.is_none() => {
+            open_playback(choice, extra, max_frames, midi, running, false)
+        }
+        result => result,
+    }
 }
 
 fn open_playback(
@@ -987,6 +1120,7 @@ fn open_playback(
     max_frames: usize,
     midi: &MidiBus,
     running: bool,
+    live_default: bool,
 ) -> Result<(Playback, Controller), AudioError> {
     let (host_id, target, name, main_id, main_channels, rate) =
         if choice.output.as_deref() == Some(VIRTUAL_OUTPUT) {
@@ -1033,13 +1167,31 @@ fn open_playback(
             let name = device_name(&device);
             let main_id = device.id().ok().map(|id| id.to_string());
             let ranges: Vec<_> = device.supported_output_configs()?.collect();
-            let Chosen { config, format } = choose_config(
-                &ranges,
-                device.default_output_config()?,
-                choice.sample_rate,
-                choice.buffer_size,
-                choice.channels,
-            )?;
+            let default = device.default_output_config()?;
+            // Left to the device, the buffer is often large (512 on macOS):
+            // ask for a live-sized one where the device allows.
+            let live = match choice.buffer_size {
+                Some(_) => None,
+                None if !live_default => None,
+                None => buffer_request(
+                    &ranges,
+                    choice.sample_rate.unwrap_or(default.sample_rate()),
+                    None,
+                ),
+            };
+            let chosen = |buffer| {
+                choose_config(
+                    &ranges,
+                    default,
+                    choice.sample_rate,
+                    buffer,
+                    choice.channels,
+                )
+            };
+            let Chosen { config, format } = match live {
+                Some(frames) => chosen(Some(frames)).or_else(|_| chosen(None))?,
+                None => chosen(choice.buffer_size)?,
+            };
             let channels = usize::from(config.channels);
             let rate = config.sample_rate;
             (
@@ -1111,6 +1263,7 @@ fn open_playback(
     // Input that can't be opened doesn't stop the sound: playback goes on
     // without it, and says why.
     let mut input_problem = None;
+    let mut input_meter = None;
     let (writer, input) = match choice_id(&choice.input) {
         None => (DeviceWriter::new(processor), None),
         Some(id) => {
@@ -1122,12 +1275,24 @@ fn open_playback(
                 None => Ok(host_id),
             }
             .and_then(open_host)
-            .and_then(|host| open_input(&host, id, &settings, &mut health));
+            .and_then(|host| {
+                open_input(
+                    &host,
+                    id,
+                    &settings,
+                    choice.buffer_size,
+                    live_default,
+                    &mut health,
+                )
+            });
             match opened {
-                Ok((stream, name, channels, feed, recorder)) => (
-                    DeviceWriter::with_input(processor, feed),
-                    Some((stream, name, channels, recorder)),
-                ),
+                Ok((stream, name, channels, feed, recorder)) => {
+                    input_meter = Some(feed.meter());
+                    (
+                        DeviceWriter::with_input(processor, feed),
+                        Some((stream, name, channels, recorder)),
+                    )
+                }
                 Err(error) => {
                     input_problem = Some(error);
                     (DeviceWriter::new(processor), None)
@@ -1229,6 +1394,7 @@ fn open_playback(
             outputs: statuses,
             device: name,
             input,
+            input_meter,
             input_problem,
             settings,
             health,
@@ -1339,29 +1505,42 @@ fn choice_id(choice: &InputChoice) -> Option<Option<&str>> {
 /// the device has it and at its own otherwise (the feed converts), returning
 /// it, the device's name, its channel count and the feed for the
 /// output callback.
+///
+/// The input gets the same buffer size as the output (see
+/// [`AudioConfig::buffer_size`]): the ring decouples the two callbacks, but
+/// a smaller input buffer cuts latency directly. A size the device can't
+/// take is moved into its range, and a device that doesn't say which sizes
+/// it takes keeps its default.
 fn open_input(
     host: &cpal::Host,
     id: Option<&str>,
     settings: &Settings,
+    buffer_size: Option<u32>,
+    live_default: bool,
     health: &mut Health,
 ) -> Result<(cpal::Stream, String, usize, Feed, Recorder), AudioError> {
     let device = find_device(host, id, Direction::Input)?;
     let name = device_name(&device);
     let ranges: Vec<_> = device.supported_input_configs()?.collect();
+    let default = device.default_input_config()?;
+    // The engine's rate if the device has it; otherwise its own, which the
+    // feed converts.
     let engine_rate = settings.sample_rate as u32;
-    let wanted = ranges
-        .iter()
-        .any(|range| range.contains_rate(engine_rate))
-        .then_some(engine_rate);
-    let Chosen { config, format } = choose_config(
-        &ranges,
-        device.default_input_config()?,
-        wanted,
-        // The ring decouples the two callbacks, so the input can use
-        // whatever buffer size suits it.
-        None,
-        None,
-    )?;
+    let rate = if ranges.iter().any(|range| range.contains_rate(engine_rate)) {
+        engine_rate
+    } else {
+        default.sample_rate()
+    };
+    let buffer = if buffer_size.is_none() && !live_default {
+        None
+    } else {
+        buffer_request(&ranges, rate, buffer_size)
+    };
+    let chosen = |buffer| choose_config(&ranges, default, Some(rate), buffer, None);
+    let Chosen { config, format } = match buffer {
+        Some(frames) => chosen(Some(frames)).or_else(|_| chosen(None))?,
+        None => chosen(None)?,
+    };
     let channels = usize::from(config.channels);
     let (capture, feed, recorder) = recordable_input_path(
         channels,
@@ -1383,7 +1562,15 @@ fn open_input(
         SampleFormat::U16 => record::<u16>(&device, config, capture, on_error),
         SampleFormat::U32 => record::<u32>(&device, config, capture, on_error),
         format => return Err(AudioError::UnsupportedFormat(format)),
-    }?;
+    };
+    // A device can list a range and still refuse the size when the stream
+    // builds: leave it to the device, unless the size was chosen.
+    let stream = match stream {
+        Err(_) if buffer.is_some() && buffer_size.is_none() => {
+            return open_input(host, id, settings, None, false, health);
+        }
+        stream => stream?,
+    };
     Ok((stream, name, channels, feed, recorder))
 }
 
@@ -1487,12 +1674,14 @@ mod tests {
     #[test]
     fn input_plays_through_the_graph() {
         let (mut writer, mut capture) = passthrough();
-        // Longer than a block, and not a multiple of one.
-        let input: Vec<f32> = (0..150 * 2).map(|x| x as f32 / 1000.0).collect();
-        capture.capture(&input);
+        // Longer than a block, and not a multiple of one. The input is
+        // converted, so it comes out after the converter's short delay.
         let mut output = vec![0.0f32; 150 * 2];
-        writer.write(&mut output);
-        assert_eq!(output, input);
+        for _ in 0..6 {
+            capture.capture(&[0.5f32; 150 * 2]);
+            writer.write(&mut output);
+        }
+        assert!(output.iter().all(|x| (x - 0.5).abs() < 0.01), "{output:?}");
     }
 
     #[test]
@@ -2167,5 +2356,57 @@ mod tests {
         transport.play();
         std::thread::sleep(Duration::from_millis(150));
         assert!(transport.position() > 0);
+    }
+
+    fn report(output_driver_ms: u64, input_driver_ms: u64) -> LatencyReport {
+        LatencyReport {
+            sample_rate: 48_000.0,
+            block_frames: 128,
+            output_buffer_frames: 256,
+            output_driver: Duration::from_millis(output_driver_ms),
+            input: Some(InputLatency {
+                sample_rate: 48_000.0,
+                buffer_frames: 256,
+                driver: Duration::from_millis(input_driver_ms),
+                backlog_frames: 112,
+            }),
+        }
+    }
+
+    #[test]
+    fn the_round_trip_adds_the_input_the_queue_and_the_output() {
+        // 112 + 128 frames queued is 5 ms at 48 kHz.
+        let trip = report(6, 4).round_trip().unwrap();
+        assert_eq!(trip, Duration::from_millis(15));
+    }
+
+    #[test]
+    fn a_driver_that_reports_no_latency_falls_back_to_the_buffers() {
+        // 256 frames at 48 kHz is 5.33 ms, each side.
+        let trip = report(0, 0).round_trip().unwrap();
+        let expected = Duration::from_secs_f32((256.0 + 256.0 + 240.0) / 48_000.0);
+        assert!(
+            trip.abs_diff(expected) < Duration::from_micros(10),
+            "{trip:?}"
+        );
+    }
+
+    #[test]
+    fn there_is_no_round_trip_without_input_or_before_the_callbacks() {
+        let mut off = report(6, 4);
+        off.input = None;
+        assert_eq!(off.round_trip(), None);
+        let mut early = report(6, 4);
+        early.output_buffer_frames = 0;
+        assert_eq!(early.round_trip(), None);
+    }
+
+    #[test]
+    fn slow_outputs_and_bluetooth_names_are_recognised() {
+        assert!(report(150, 0).output_is_slow());
+        assert!(!report(10, 0).output_is_slow());
+        assert!(looks_like_bluetooth("Jeremy's AirPods Pro"));
+        assert!(looks_like_bluetooth("Bluetooth Speaker"));
+        assert!(!looks_like_bluetooth("MacBook Pro Speakers"));
     }
 }

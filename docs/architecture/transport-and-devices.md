@@ -28,6 +28,16 @@ rewind only touch the transport:
   graph with the transport stopped only looks again every 250 ms, to
   catch sound that starts without input, such as live MIDI. The playhead keeps its own
   repaint while it plays.
+- **The window sleeps until there is news.** Background work wakes it:
+  `noodle_engine::wake` (the app registers a repaint request) is called when a
+  `Job` ends (freezes, exports, stem splits, renders), when the plugin scan
+  finishes and when the audio file watcher sees a file change. For what has to
+  be looked at, `Session::next_deadline` says when: the next frame while the
+  transport plays, a recording is open or a plan waits for room in the queue; one
+  second for the stream's health and for MIDI hot-plug; the freeze debounce;
+  half a second for sandboxed plugin hosts. `App::show` asks for one repaint at
+  the earliest, so an idle project with the transport stopped runs about one
+  frame a second, plus the editor's own liveness repaints above.
 - **The fallback.** `Session::start_engine` tries the saved output, then the
   system default (as `play` always did), then the **virtual output**. Either
   fallback is not saved, shows a message in the status bar, and sets
@@ -44,6 +54,41 @@ rewind only touch the transport:
   depend on the clock moving at audio speed. It is for machines with no
   device, CI, tests and `noodle play --output virtual`. Output nodes tied to
   other devices and audio input still open as usual around it.
+
+## Live input latency
+
+Input is its own cpal stream, so it crosses to the output callback through a
+ring (`noodle-io/src/input.rs`): `Capture` fills it, `Feed` empties it one
+engine block at a time. The time from a sound entering the input to it leaving
+the output is the input's capture delay, the wait in that ring, and the
+output's delay.
+
+- **Buffer size.** `AudioConfig::buffer_size` applies to the input stream as
+  well as the output (`buffer_request` moves it into the span the input takes;
+  a device that doesn't say keeps its default). With no size chosen, both ask
+  for `LIVE_BUFFER` (256 frames) when the device says it takes that, and
+  otherwise leave it to the device: a size it never promised could fail the
+  stream. If the device refuses the automatic size when the stream is built, the output
+  and the input each retry once with the device's own choice; a size the user
+  chose fails loudly instead.
+- **Margin.** The feed's controller (see "Live input") holds the smallest
+  backlog at what is needed: one input callback plus one engine block
+  (`Feed::margin`), so a large input buffer isn't forced to sit a block behind
+  and a small one sits closer. Until the input has called back, the fixed 64
+  frames stand.
+- **Readout.** `InputMeter` holds the input callback's size and the backlog
+  after each read, as relaxed atomics, so the callbacks publish them without
+  locking. `Playback::latency_report` combines them with the output period and
+  the drivers' own latencies into a `LatencyReport`. Where a driver reports
+  zero (ALSA does), the buffer's duration stands in. `round_trip` is
+  `input + (backlog + block) + output`: an estimate, not a measurement. The
+  Audio Settings dialog shows it live with its parts, and the Audio button's
+  tooltip shows the figure.
+- **Bluetooth.** The dialog warns when a chosen device's name looks like
+  Bluetooth (`looks_like_bluetooth`) or the running output reports over
+  `SLOW_OUTPUT` (80 ms). The delay is the link's, which Noodle cannot remove.
+  A Bluetooth headset's microphone also runs at 16 or 24 kHz, and the input
+  still has to match the output's rate until it can resample.
 
 ## Playing on several devices
 
@@ -172,9 +217,9 @@ nothing in it allocates: the buffers are sized up front, and
 always on, even at equal rates, because two nominally equal clocks still drift.
 
 The ratio is steered, not fixed. Every 50 ms the feed looks at the smallest
-backlog left after a read and compares it with a margin (the largest block plus 32 frames).
+backlog left after a read and compares it with the margin (one input callback plus one block, above).
 A PI controller moves the ratio by up to 5%: the proportional term pulls in an
-offset in about a second, the integral term learns the clocks' steady
+offset in about half a second, the integral term learns the clocks' steady
 difference (hundreds of ppm in practice), so the backlog holds at the margin
 with no frame dropped or repeated. Backlog 50 ms or more over the margin (a
 stream that opens early, or a stall) is cut back at once as a last resort. A

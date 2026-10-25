@@ -31,3 +31,10 @@ A plugin that changes its latency after loading (restart request, latency
   PI controller steers from the backlog, so a 24 kHz mic works and drift drops
   nothing (see "Live input" in `architecture/transport-and-devices.md`). The
   AirPods hand check is owed (ROADMAP).
+- Live input latency, part one (done, #36): the Audio Settings dialog and the
+  Audio button's tooltip show the estimated round trip and where it goes; the
+  buffer size applies to the input stream, and defaults to 256 frames where
+  the device allows; the input backlog margin follows the two callbacks' sizes
+  rather than a fixed 64 frames; a Bluetooth note appears for devices that
+  look like it or report over 80 ms. Owed: checking the readout against a real
+  interface on the Mac.

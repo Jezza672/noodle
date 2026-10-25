@@ -93,4 +93,5 @@ pub use telemetry::{
     Telemetry,
 };
 pub use tempo::TempoTable;
+pub mod wake;
 pub use transport::TransportControl;

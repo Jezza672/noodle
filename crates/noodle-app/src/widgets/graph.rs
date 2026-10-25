@@ -161,6 +161,24 @@ pub fn special_value(
     }
 }
 
+/// What a graph reads for `key` of `node`, shared by the node's body and the
+/// properties panel so both draw one curve: the special values, else a wired
+/// parameter's live value, else the node's own value, else `default`.
+/// `live` reads the node's telemetry channel `key`.
+pub fn graph_value(
+    key: &str,
+    node: &noodle_core::Node,
+    wired: bool,
+    live: &dyn Fn(&str) -> Option<f32>,
+    default: f32,
+) -> f32 {
+    if let Some(value) = special_value(key, node, live) {
+        return value;
+    }
+    let own = node.params.get(key).copied().unwrap_or(default);
+    if wired { live(key).unwrap_or(own) } else { own }
+}
+
 fn adsr_shape(values: Values<'_>) -> AdsrShape {
     AdsrShape {
         attack: values("attack"),
@@ -953,5 +971,15 @@ mod tests {
         assert!((lfo_y(0.0, 1.0, 0.0) - 0.5).abs() < 1e-6);
         assert!(lfo_y(0.5, 1.0, 1.0) > lfo_y(0.0, 1.0, 1.0));
         assert_eq!(lfo_y(1.0, 1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn a_wired_parameter_reads_live_and_an_unwired_one_its_own_value() {
+        let mut node = noodle_core::Node::new("noodle.eq");
+        node.params.insert("freq4".to_owned(), 1_800.0);
+        let live = |_: &str| Some(157.0);
+        assert_eq!(graph_value("freq4", &node, true, &live, 100.0), 157.0);
+        assert_eq!(graph_value("freq4", &node, false, &live, 100.0), 1_800.0);
+        assert_eq!(graph_value("freq1", &node, true, &|_| None, 100.0), 100.0);
     }
 }

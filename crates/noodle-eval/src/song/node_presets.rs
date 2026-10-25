@@ -282,6 +282,16 @@ fn table() -> Vec<Row> {
         row("noodle.mod.tempo", "Eighth Notes", &[("division", 3.0)]),
         row("noodle.mod.tempo", "Dotted Eighths", &[("division", 14.0)]),
         row("noodle.mod.tempo", "Bar", &[("division", 0.0)]),
+        row(
+            "noodle.mod.beat_length",
+            "Quarter Notes",
+            &[("bpm", 120.0), ("division", 2.0)],
+        ),
+        row(
+            "noodle.mod.beat_length",
+            "Dotted Eighths",
+            &[("bpm", 120.0), ("division", 14.0)],
+        ),
         // Effects.
         // Dynamics.
         row(
@@ -726,6 +736,25 @@ fn table() -> Vec<Row> {
         )
         .int("outputs", 1)
         .int("rest", 1),
+        row(
+            "noodle.util.randselect",
+            "No Repeats",
+            &[("avoid_repeat", 1.0)],
+        )
+        .int("inputs", 3),
+        row(
+            "noodle.util.randselect",
+            "Click-free Switching",
+            &[("switch", 1.0), ("avoid_repeat", 1.0)],
+        )
+        .int("inputs", 2),
+        row(
+            "noodle.util.randselect",
+            "Notes, Cut Held",
+            &[("switch", 1.0)],
+        )
+        .int("inputs", 2)
+        .int("kind", 1),
         row(
             "noodle.event.key",
             "Middle C",

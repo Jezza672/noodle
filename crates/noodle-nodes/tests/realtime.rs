@@ -338,6 +338,7 @@ fn the_device_writer_never_allocates_with_input() {
         SETTINGS.max_frames,
         glitches,
     );
+    let meter = feed.meter();
     let mut writer = DeviceWriter::with_input(s.processor, feed);
     let recorded: Vec<i16> = (0..1000).map(|x| (x % 200) * 100).collect();
     let mut out = vec![0i16; 1000 * SETTINGS.channels];
@@ -350,6 +351,8 @@ fn the_device_writer_never_allocates_with_input() {
         writer.write(&mut out);
     });
     assert_eq!(violations, 0, "allocated in the audio callbacks");
+    // The meter's atomics were written in those callbacks.
+    assert_eq!(meter.callback_frames(), 1000);
     // The last block ran dry, so look at a fresh one.
     capture.capture(&recorded);
     writer.write(&mut out);
@@ -751,6 +754,29 @@ fn the_metronome_never_allocates_through_seeks_loops_and_button_presses() {
     assert!(transport.position() < 30_000, "the loop never wrapped");
     assert!(heard, "the metronome never sounded");
     assert!(out.iter().all(|x| x.is_finite()));
+}
+
+#[test]
+fn input_meters_report_without_allocating() {
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw"));
+    let svf = s.add(Node::new("noodle.filter.svf"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", svf, "in");
+    s.wire(svf, "low", output, "in");
+    s.update();
+    let reader = s.telemetry.meter_reader();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    s.processor.process(&mut out);
+    let violations = realtime(|| {
+        for _ in 0..8 {
+            s.processor.process(&mut out);
+        }
+    });
+    assert_eq!(violations, 0, "allocated while metering inputs");
+    let level = reader.input_meter(svf, "in").expect("it reports")[0];
+    assert!(level.peak > 0.0 && level.rms > 0.0, "{level:?}");
+    assert!(reader.input_meter(output, "in").is_some());
 }
 
 #[test]
@@ -1577,6 +1603,7 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
     );
     let compare = s.add(Node::new("noodle.mod.comparator"));
     let tempo = s.add(Node::new("noodle.mod.tempo"));
+    let beat_length = s.add(Node::new("noodle.mod.beat_length"));
     let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 4.0));
     let multi = s.add(Node::new("noodle.mod.envelope").with_param("length", 0.1));
     let single = s.add(
@@ -1605,6 +1632,8 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
     s.wire(noise, "out", hold, "in");
     s.wire(hold, "out", lag, "in");
     s.wire(lag, "out", chorus, "rate");
+    s.wire(lag, "out", beat_length, "bpm");
+    s.wire(beat_length, "rate", clock, "rate");
     s.wire(sine, "out", follower, "in");
     s.wire(sine, "out", distortion, "in");
     s.wire(automation, "out", distortion, "mix");
@@ -1979,4 +2008,52 @@ fn ringing_a_pool_task_never_touches_the_allocator() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert!(handle.runs() > 1);
+}
+
+#[test]
+fn random_select_never_allocates_through_triggers_reseeds_and_resizes() {
+    // Three oscillators go through a Random Select that a fast clock
+    // triggers (zero-crossing switching, avoiding repeats), reseeded and
+    // resized mid-run. (The note kind is covered by its unit tests.)
+    let mut s = Session::new();
+    let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 6.0));
+    let select = s.add(
+        Node::new("noodle.util.randselect")
+            .with_config(Config::new().with("inputs", Value::Int(3)))
+            .with_param("switch", 1.0)
+            .with_param("avoid_repeat", 1.0),
+    );
+    for (i, hz) in [220.0, 330.0, 440.0].into_iter().enumerate() {
+        let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        s.wire(osc, "out", select, &format!("in{}", i + 1));
+    }
+    s.wire(clock, "out", select, "trigger");
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(select, "out", output, "in");
+
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        s.controller.set_param(select, "seed", round as f32);
+        if round == 8 {
+            s.edit(Command::SetConfig {
+                node: select,
+                key: "inputs".into(),
+                value: Some(Value::Int(4)),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
 }
