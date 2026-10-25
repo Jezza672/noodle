@@ -42,7 +42,7 @@ struct LfoPorts {
     shape: (),
     #[param("phase", "Phase", ParamInfo::new(0.0, 1.0, 0.0))]
     phase: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
 }
 

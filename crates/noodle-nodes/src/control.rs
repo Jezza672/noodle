@@ -32,7 +32,7 @@ struct ControlPorts {
     #[param("glide", "Glide", ParamInfo::new(0.0, 500.0, 5.0).smoothing(0.0))]
     glide: (),
     /// 0 to 1, or -1 to 1 for pitch bend.
-    #[output("out", "Value")]
+    #[control_output("out", "Value")]
     out: (),
 }
 

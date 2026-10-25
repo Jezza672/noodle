@@ -50,9 +50,9 @@ struct AdsrPorts {
         ParamInfo::new(0.001, 10.0, 0.3).log().unit(Unit::Seconds)
     )]
     release: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
-    #[output("active", "Active")]
+    #[control_output("active", "Active")]
     active: (),
 }
 

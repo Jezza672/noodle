@@ -40,7 +40,7 @@ struct FollowerPorts {
     release: (),
     #[param("mode", "Mode", ParamInfo::choice(["Peak", "RMS"]))]
     mode: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
 }
 

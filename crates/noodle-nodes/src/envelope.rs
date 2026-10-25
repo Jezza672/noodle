@@ -72,9 +72,9 @@ struct EnvelopePorts {
         ParamInfo::new(0.0625, 64.0, 1.0).log()
     )]
     beats: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
-    #[output("active", "Active")]
+    #[control_output("active", "Active")]
     active: (),
 }
 

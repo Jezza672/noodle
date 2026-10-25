@@ -37,7 +37,9 @@ use syn::{Attribute, DeriveInput, Expr, Ident, LitStr, Token, parse_macro_input}
 ///   `Ports::EVENT_OUTPUTS`, `Ports::SPECTRAL_INPUTS` and `Ports::SPECTRAL_OUTPUTS`, the port counts.
 ///
 /// Field attributes: `#[input(key, name)]`, `#[param(key, name, ParamInfo)]`,
-/// `#[output(key, name)]`, `#[event_input(key, name)]` and
+/// `#[output(key, name)]`, `#[control_output(key, name)]` (an output tagged as
+/// a control signal, shown as such in the editor; it shares `output`'s indices),
+/// `#[event_input(key, name)]` and
 /// `#[event_output(key, name)]`, `#[spectral_input(key, name)]` and
 /// `#[spectral_output(key, name)]`, `#[sample_input(key, name)]` and
 /// `#[sample_output(key, name)]`. Nodes whose ports depend on config, such as
@@ -48,6 +50,7 @@ use syn::{Attribute, DeriveInput, Expr, Ident, LitStr, Token, parse_macro_input}
         input,
         param,
         output,
+        control_output,
         event_input,
         event_output,
         spectral_input,
@@ -69,6 +72,7 @@ enum Kind {
     Input,
     Param,
     Output,
+    ControlOutput,
     EventInput,
     EventOutput,
     SpectralInput,
@@ -86,6 +90,8 @@ impl Kind {
             Kind::Param
         } else if path.is_ident("output") {
             Kind::Output
+        } else if path.is_ident("control_output") {
+            Kind::ControlOutput
         } else if path.is_ident("event_input") {
             Kind::EventInput
         } else if path.is_ident("event_output") {
@@ -107,7 +113,7 @@ impl Kind {
     fn space(self) -> usize {
         match self {
             Kind::Input | Kind::Param => 0,
-            Kind::Output => 1,
+            Kind::Output | Kind::ControlOutput => 1,
             Kind::EventInput => 2,
             Kind::EventOutput => 3,
             Kind::SpectralInput => 4,
@@ -215,6 +221,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 quote!(.param(#key, #display, #info))
             }
             Kind::Output => quote!(.output(#key, #display)),
+            Kind::ControlOutput => quote!(.control_output(#key, #display)),
             Kind::EventInput => quote!(.event_input(#key, #display)),
             Kind::EventOutput => quote!(.event_output(#key, #display)),
             Kind::SpectralInput => quote!(.spectral_input(#key, #display)),

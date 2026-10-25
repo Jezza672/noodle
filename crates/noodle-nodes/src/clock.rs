@@ -49,7 +49,7 @@ struct ClockPorts {
     rate: (),
     #[param("width", "Width", ParamInfo::new(0.01, 1.0, 0.5))]
     width: (),
-    #[output("out", "Out")]
+    #[control_output("out", "Out")]
     out: (),
 }
 

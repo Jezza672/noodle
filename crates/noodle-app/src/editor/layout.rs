@@ -8,7 +8,7 @@ use egui::{Pos2, Rect, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, FrameId, Graph, LaneId, Node, NodeId, Project};
-use noodle_engine::{InputKind, NodeView, ParamInfo, Registry, Unit};
+use noodle_engine::{InputKind, NodeView, ParamInfo, Registry, SignalKind, Unit};
 use noodle_nodes::REROUTE_ID;
 
 pub const NODE_WIDTH: f32 = 160.0;
@@ -95,6 +95,8 @@ pub struct PortGeom {
     /// An output nothing feeds, such as a track's `midi` with no MIDI clips.
     /// Drawn greyed, but it can still be wired.
     pub idle: bool,
+    /// An output tagged as a control signal rather than sound, as an LFO's.
+    pub control: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -274,14 +276,13 @@ impl Scene {
                                     in_header: false,
                                     spare: false,
                                     idle: false,
+                                    control: false,
                                 };
                                 for p in &layout.outputs {
-                                    ports.push(port(
-                                        Side::Output,
-                                        &p.key,
-                                        &p.name,
-                                        PortKind::Audio,
-                                    ));
+                                    ports.push(PortGeom {
+                                        control: p.signal == SignalKind::Control,
+                                        ..port(Side::Output, &p.key, &p.name, PortKind::Audio)
+                                    });
                                 }
                                 for p in &layout.event_outputs {
                                     ports.push(port(
@@ -404,6 +405,7 @@ impl Scene {
                             in_header: false,
                             spare: false,
                             idle: false,
+                            control: false,
                         });
                     }
                 }
@@ -421,6 +423,7 @@ impl Scene {
                         in_header: false,
                         spare: false,
                         idle: false,
+                        control: false,
                     });
                 }
             }
@@ -586,6 +589,7 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
         in_header: false,
         spare: true,
         idle: false,
+        control: false,
     };
     match node.type_id.as_str() {
         spare::MIXER if !ports.is_empty() => {
@@ -859,6 +863,7 @@ fn structure(
         in_header: false,
         spare: false,
         idle: false,
+        control: false,
     };
     let category = "Group".to_owned();
     let kinds = Kinds { project, registry };
@@ -1622,6 +1627,7 @@ mod tests {
             in_header: false,
             spare: false,
             idle: false,
+            control: false,
         }
     }
 

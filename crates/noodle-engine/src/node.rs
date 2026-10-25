@@ -243,6 +243,19 @@ pub struct Layout {
 pub struct Port {
     pub key: Cow<'static, str>,
     pub name: Cow<'static, str>,
+    /// What the port carries, for display and warnings only: the engine
+    /// treats every signal output alike.
+    pub signal: SignalKind,
+}
+
+/// A lightweight tag on a signal output: is it sound, or a control signal
+/// meant to move parameters? Nothing is enforced; the editor shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SignalKind {
+    #[default]
+    Audio,
+    /// An LFO, an envelope, a remapped range: meant for parameters, not ears.
+    Control,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -378,6 +391,19 @@ impl Layout {
         self
     }
 
+    /// An output that carries a control signal rather than sound.
+    pub fn control_output(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.outputs.push(Port {
+            signal: SignalKind::Control,
+            ..port(key, name)
+        });
+        self
+    }
+
     pub fn event_input(
         mut self,
         key: impl Into<Cow<'static, str>>,
@@ -444,6 +470,7 @@ fn port(key: impl Into<Cow<'static, str>>, name: impl Into<Cow<'static, str>>) -
     Port {
         key: key.into(),
         name: name.into(),
+        signal: SignalKind::Audio,
     }
 }
 
