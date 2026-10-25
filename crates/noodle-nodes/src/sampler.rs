@@ -707,6 +707,7 @@ impl SamplerNode {
             if bpm.to_bits() != self.last_bpm {
                 self.last_bpm = bpm.to_bits();
                 links.bpm.store(self.last_bpm, Ordering::Relaxed);
+                links.bell.ring();
             }
             links.flush();
             while let Ok(message) = links.inbox.pop() {
