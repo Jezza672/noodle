@@ -1,7 +1,8 @@
 //! The editor driven like a user would: pointer and keyboard events into a
 //! real [`Session`], checking the project that results.
 
-use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, TouchPhase, Vec2};
+use crate::testkit::{click, double_click, drag_with as drag, press, wheel};
+use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use noodle_core::{Command, Connection, Endpoint, Frame, FrameId, Node, NodeId, Position};
@@ -109,47 +110,6 @@ fn socket(h: &H, node: NodeId, side: Side, key: &str) -> Pos2 {
 fn title(h: &H, node: NodeId) -> Pos2 {
     let rect = scene(h).node(node).unwrap().rect;
     screen(h, rect.min + Vec2::new(rect.width() / 2.0, 8.0))
-}
-
-/// Presses `button` at the first point, moves through the rest, and releases
-/// at the last, holding `modifiers` throughout.
-fn drag(h: &mut H, button: PointerButton, modifiers: Modifiers, path: &[Pos2]) {
-    h.event(Event::ModifiersChanged(modifiers));
-    h.event(Event::PointerMoved(path[0]));
-    h.step();
-    h.event(Event::PointerButton {
-        pos: path[0],
-        button,
-        pressed: true,
-        modifiers,
-    });
-    h.step();
-    for &p in &path[1..] {
-        // In small steps, as a real pointer moves.
-        h.event(Event::PointerMoved(p));
-        h.step();
-    }
-    let last = *path.last().unwrap();
-    h.event(Event::PointerButton {
-        pos: last,
-        button,
-        pressed: false,
-        modifiers,
-    });
-    h.step();
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
-}
-
-fn click(h: &mut H, p: Pos2, modifiers: Modifiers) {
-    drag(h, PointerButton::Primary, modifiers, &[p]);
-}
-
-fn press(h: &mut H, at: Pos2, modifiers: Modifiers, key: Key) {
-    h.hover_at(at);
-    h.step();
-    h.key_press_modifiers(modifiers, key);
-    h.run();
 }
 
 fn empty_space(h: &H) -> Pos2 {
@@ -372,6 +332,32 @@ fn box_select_takes_the_nodes_it_touches() {
 }
 
 #[test]
+fn the_monitor_button_monitors_without_selecting() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let out = add(&mut h, Node::new(OUTPUT_ID).at(250.0, 0.0));
+    h.run();
+    let button = |h: &H, node| {
+        let geom = scene(h).node(node).unwrap().clone();
+        let at = super::monitor_button(h.state().session.project(), &geom);
+        at.map(|rect| screen(h, rect.center()))
+    };
+    // An Output has no audio out to listen to.
+    assert!(button(&h, out).is_none());
+    let p = button(&h, sine).expect("a sine has a monitor button");
+    click(&mut h, p, Modifiers::NONE);
+    assert_eq!(h.state().session.monitored(), [sine]);
+    assert!(h.state().editor.selected.is_empty());
+    click(&mut h, p, Modifiers::NONE);
+    assert!(h.state().session.monitored().is_empty());
+    click(&mut h, p, Modifiers::COMMAND);
+    assert_eq!(
+        h.state().session.monitor_mode(),
+        crate::session::MonitorMode::Exclusive
+    );
+}
+
+#[test]
 fn clicking_selects_and_shift_toggles() {
     let mut h = rig();
     let a = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
@@ -489,20 +475,6 @@ fn backspace_deletes_the_selection_like_delete() {
     let p = empty_space(&h);
     press(&mut h, p, Modifiers::NONE, Key::Backspace);
     assert!(h.state().session.project().graph().node(sine).is_none());
-}
-
-fn double_click(h: &mut H, at: Pos2) {
-    h.event(Event::PointerMoved(at));
-    for pressed in [true, false, true, false] {
-        h.event(Event::PointerButton {
-            pos: at,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-    }
-    h.step();
-    h.run();
 }
 
 #[test]
@@ -703,6 +675,87 @@ fn shift_a_searches_and_adds_at_the_pointer() {
 }
 
 #[test]
+fn an_automation_node_added_in_the_graph_gets_its_track_in_one_undo_step() {
+    let mut h = rig();
+    let before = h.state().session.project().graph().nodes().count();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("automation".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let project = h.state().session.project();
+    let node = project
+        .graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::AUTOMATION_NODE_ID)
+        .map(|(id, _)| id)
+        .expect("an Automation node was added");
+    let value = noodle_core::Endpoint::new(node, noodle_nodes::AUTOMATION_VALUE);
+    assert!(
+        project.lane_for(&value).is_some(),
+        "and a lane on its value"
+    );
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(project.graph().nodes().count(), before);
+    assert_eq!(project.lanes().count(), 0);
+}
+
+/// A node type whose new nodes start with a setting, as plugin nodes with
+/// many parameters do.
+struct StartsWithConfig;
+
+static STARTS_WITH_CONFIG: noodle_engine::NodeInfo = noodle_engine::NodeInfo {
+    id: "test.starts_with_config",
+    version: 1,
+    name: "Starts With Config",
+    category: "Test",
+};
+
+impl noodle_engine::NodeType for StartsWithConfig {
+    fn info(&self) -> &noodle_engine::NodeInfo {
+        &STARTS_WITH_CONFIG
+    }
+    fn initial_config(&self) -> noodle_core::Config {
+        noodle_core::Config::new().with("start", noodle_core::Value::Text("none".into()))
+    }
+    fn layout(
+        &self,
+        _config: &noodle_core::Config,
+    ) -> Result<noodle_engine::Layout, noodle_engine::NodeError> {
+        Ok(noodle_engine::Layout::realtime())
+    }
+    fn instantiate(
+        &self,
+        _setup: &noodle_engine::Setup<'_>,
+    ) -> Result<noodle_engine::Instance, noodle_engine::NodeError> {
+        Err(noodle_engine::NodeError::config("test stub"))
+    }
+}
+
+#[test]
+fn a_node_added_from_the_search_starts_with_its_types_initial_config() {
+    let mut nodes = crate::session::Nodes::all();
+    nodes.registry.register(StartsWithConfig);
+    let mut h = rig();
+    h.state_mut().session = Session::new(nodes);
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("starts with".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    let (_, node) = graph.nodes().next().expect("a node was added");
+    assert_eq!(node.type_id, "test.starts_with_config");
+    assert_eq!(
+        node.config.get("start"),
+        Some(&noodle_core::Value::Text("none".into()))
+    );
+}
+
+#[test]
 fn escape_closes_the_search() {
     let mut h = rig();
     let p = empty_space(&h);
@@ -728,19 +781,6 @@ fn the_search_box_can_be_driven_with_arrows() {
     h.run();
     let graph = h.state().session.project().graph();
     assert_eq!(graph.nodes().next().unwrap().1.type_id, "noodle.osc.sine");
-}
-
-fn wheel(h: &mut H, at: Pos2, unit: MouseWheelUnit, delta: Vec2) {
-    h.hover_at(at);
-    h.event(Event::MouseWheel {
-        unit,
-        delta,
-        phase: TouchPhase::Move,
-        modifiers: Modifiers::NONE,
-    });
-    // Not run(): egui keeps repainting while it smooths the scroll, which the
-    // editor doesn't use.
-    h.step();
 }
 
 #[test]
@@ -802,6 +842,124 @@ fn home_fits_everything_in_view() {
     let canvas = h.state().editor.canvas;
     let rect = scene(&h).node(far).unwrap().rect;
     assert!(canvas.contains(screen(&h, rect.max)));
+}
+
+#[test]
+fn f_fits_everything_in_view_and_so_does_the_menu_request() {
+    let mut h = rig();
+    let far = add(&mut h, Node::new("noodle.osc.sine").at(2000.0, 1200.0));
+    add(&mut h, Node::new("noodle.osc.sine").at(-1000.0, 0.0));
+    h.run();
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::NONE, Key::F);
+    let canvas = h.state().editor.canvas;
+    let rect = scene(&h).node(far).unwrap().rect;
+    assert!(canvas.contains(screen(&h, rect.max)));
+    // Shift+F is freeze, not fit.
+    let zoom = h.state().editor.view.zoom;
+    h.state_mut().editor.view = super::View::default();
+    press(&mut h, p, Modifiers::SHIFT, Key::F);
+    assert_eq!(h.state().editor.view, super::View::default());
+    assert!(zoom < 1.0);
+    // The View menu asks for the same thing.
+    h.state_mut().editor.request_fit();
+    h.run();
+    assert!(canvas.contains(screen(&h, rect.max)));
+}
+
+#[test]
+fn a_dropdown_on_a_node_opens_and_picks() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
+    h.run();
+    h.get_by_value("Sine").click();
+    h.run();
+    h.get_by_label("Saw").click();
+    h.run();
+    assert_eq!(param(&h, lfo, "shape"), Some(2.0));
+    // The list closed behind the pick.
+    assert!(h.query_by_label("Square").is_none());
+}
+
+#[test]
+fn a_node_with_many_ports_shows_only_its_featured_parameters() {
+    let mut h = rig();
+    let chorus = add(&mut h, Node::new("noodle.effect.chorus").at(0.0, 0.0));
+    h.run();
+    let shown = |h: &H, key: &str| {
+        scene(h)
+            .node(chorus)
+            .unwrap()
+            .port(Side::Input, key)
+            .is_some()
+    };
+    for key in ["in", "rate", "depth", "feedback", "mix"] {
+        assert!(shown(&h, key), "{key} is on the node");
+    }
+    assert!(!shown(&h, "delay"), "the others are left off");
+    // A node with few ports shows every one.
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    h.run();
+    assert!(
+        scene(&h)
+            .node(gain)
+            .unwrap()
+            .port(Side::Input, "gain")
+            .is_some()
+    );
+}
+
+#[test]
+fn the_dot_puts_a_parameter_on_the_node_or_takes_it_off() {
+    let mut h = rig();
+    let chorus = add(&mut h, Node::new("noodle.effect.chorus").at(0.0, 0.0));
+    let command = |key: &str, shown| {
+        Edit::Apply(Command::SetParamShown {
+            node: chorus,
+            key: key.into(),
+            shown: Some(shown),
+        })
+    };
+    h.state_mut()
+        .session
+        .edit([command("delay", true), command("rate", false)]);
+    h.run();
+    let shown = |h: &H, key: &str| {
+        scene(h)
+            .node(chorus)
+            .unwrap()
+            .port(Side::Input, key)
+            .is_some()
+    };
+    assert!(shown(&h, "delay"));
+    assert!(!shown(&h, "rate"));
+    // Undo puts it back as it was.
+    h.state_mut().session.undo();
+    h.state_mut().session.undo();
+    h.run();
+    assert!(!shown(&h, "delay"));
+    assert!(shown(&h, "rate"));
+}
+
+#[test]
+fn a_hidden_parameter_keeps_its_port_while_a_wire_goes_into_it() {
+    let mut h = rig();
+    let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(-300.0, 0.0));
+    let chorus = add(&mut h, Node::new("noodle.effect.chorus").at(0.0, 0.0));
+    connect(&mut h, lfo, "out", chorus, "delay");
+    h.run();
+    let node = scene(&h);
+    assert!(
+        node.node(chorus)
+            .unwrap()
+            .port(Side::Input, "delay")
+            .is_some()
+    );
+    assert!(
+        node.wires
+            .iter()
+            .any(|w| w.connection.to == Endpoint::new(chorus, "delay"))
+    );
 }
 
 #[test]
@@ -890,17 +1048,7 @@ fn frames_resize_from_the_corner_and_rename_on_double_click() {
     );
 
     let label = screen(&h, Pos2::new(40.0, 10.0));
-    h.event(Event::PointerMoved(label));
-    for pressed in [true, false, true, false] {
-        h.event(Event::PointerButton {
-            pos: label,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        });
-    }
-    h.step();
-    h.run();
+    double_click(&mut h, label);
     assert!(h.state().editor.rename.is_some());
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.event(Event::Text("Drums".into()));
@@ -1255,7 +1403,7 @@ fn a_wired_choice_has_no_field() {
     let lfo = add(&mut h, Node::new("noodle.mod.lfo").at(0.0, 0.0));
     h.run();
     // A drop-down on a node shows its choice, here the default.
-    let combos = |h: &H| h.query_all_by_role(egui::accesskit::Role::ComboBox).count();
+    let combos = |h: &H| h.query_all_by_value("Sine").count();
     assert_eq!(combos(&h), 1);
     connect(&mut h, lfo, "out", lfo, "shape");
     h.run();
@@ -1551,12 +1699,14 @@ fn nodes_added_inside_a_group_belong_to_it() {
     h.key_press(Key::Enter);
     h.run();
 
+    // The node is added empty: its ports come from wiring to its spare.
     let graph = h.state().session.project().graph();
-    let ports = graph.group_ports(group);
-    assert_eq!(ports.outputs.len(), 1);
-    assert_eq!(ports.outputs[0].name, "out1");
-    let node = graph.node(ports.outputs[0].node).unwrap();
-    assert_eq!(node.parent, Some(group));
+    let (_, node) = graph
+        .children(Some(group))
+        .find(|(_, n)| n.type_id == noodle_core::group::GROUP_OUTPUT)
+        .expect("a group output node");
+    assert!(node.boundary_ports().is_empty());
+    assert!(graph.group_ports(group).outputs.is_empty());
 }
 
 #[test]
@@ -1575,6 +1725,27 @@ fn double_clicking_a_group_enters_it_and_the_breadcrumb_leads_back() {
     h.run();
     assert_eq!(h.state().editor.group, None);
     assert!(h.state().editor.selected.contains(&group));
+}
+
+#[test]
+fn double_clicking_a_plain_node_asks_the_app_to_open_it() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let p = title(&h, gain);
+    double_click(&mut h, p);
+    assert_eq!(h.state_mut().editor.take_open_request(), Some(gain));
+}
+
+#[test]
+fn double_clicking_a_group_enters_it_rather_than_asking_to_open_it() {
+    let mut h = rig();
+    let (_, gain, _) = wired(&mut h);
+    let group = group_selection(&mut h, &[gain]);
+    h.run();
+    let p = title(&h, group);
+    double_click(&mut h, p);
+    assert_eq!(h.state().editor.group, Some(group));
+    assert_eq!(h.state_mut().editor.take_open_request(), None);
 }
 
 #[test]
@@ -1609,7 +1780,7 @@ fn deleting_a_group_removes_what_is_inside_and_undo_brings_it_back() {
 /// Tab still enters and leaves a group with another widget in the window.
 /// This does not prove the `tab: true` focus filter: kittest delivers Tab to
 /// the editor either way, so that line needs a manual Tab press in the real
-/// window (see ARCHITECTURE.md).
+/// window (see docs/architecture/ui.md).
 #[test]
 fn tab_enters_and_leaves_a_group_with_another_widget_present() {
     let mut h = rig_with(true);
@@ -1647,43 +1818,6 @@ fn shift_d_skips_groups_and_their_ports() {
     press(&mut h, p, Modifiers::SHIFT, Key::D);
     let inside = h.state().session.project().graph().nodes().count();
     assert_eq!(inside, after + 1, "only the gain was copied");
-}
-
-#[test]
-fn new_ports_take_the_first_free_name() {
-    let mut project = noodle_core::Project::new();
-    let mut history = noodle_core::History::new();
-    let group = project.new_node_id();
-    history
-        .apply(
-            &mut project,
-            Command::AddNode {
-                id: group,
-                node: Node::new(noodle_core::group::GROUP),
-            },
-        )
-        .unwrap();
-    for name in ["in1", "in3"] {
-        let id = project.new_node_id();
-        let node = Node::new(noodle_core::group::GROUP_INPUT)
-            .in_group(group)
-            .with_config(noodle_core::Config::new().with(
-                noodle_core::group::PORT_NAME,
-                noodle_core::Value::Text(name.into()),
-            ));
-        history
-            .apply(&mut project, Command::AddNode { id, node })
-            .unwrap();
-    }
-    use noodle_core::group::{GROUP_INPUT, GROUP_OUTPUT};
-    assert_eq!(
-        super::free_port_name(&project, Some(group), GROUP_INPUT),
-        "in2"
-    );
-    assert_eq!(
-        super::free_port_name(&project, Some(group), GROUP_OUTPUT),
-        "out1"
-    );
 }
 
 #[test]
@@ -1929,6 +2063,10 @@ fn copy_and_paste_put_the_nodes_and_the_wires_between_them_at_the_pointer() {
     h.state_mut().editor.select_only([sine, gain]);
     let at = empty_space(&h);
     clipboard_event(&mut h, at, Event::Copy);
+    // The nodes are on the system clipboard under Noodle's own type, and not
+    // under the clips'.
+    assert!(crate::clipboard::holds("application/x.noodle.node"));
+    assert!(!crate::clipboard::holds("application/x.noodle.clip"));
     // Copying changes nothing.
     assert_eq!(
         h.state().session.project().graph().connections().count(),
@@ -2193,7 +2331,7 @@ fn a_port_name_already_taken_is_refused() {
             name,
             id,
         );
-        session.edit([Edit::Apply(command)]);
+        session.edit([Edit::Apply(command.0)]);
     }
     h.run();
     let row = scene(&h)
@@ -2254,9 +2392,14 @@ fn a_wire_cannot_be_dropped_on_a_lanes_port() {
     };
     let (input, output) = (find(&h, TRACK_INPUT), find(&h, GROUP_OUTPUT));
     let session = &mut h.state_mut().session;
+    // A new track wires its track input's gain here; take that off so the
+    // lane has the port to itself.
+    session.edit([Edit::Apply(Command::Disconnect {
+        input: Endpoint::new(output, noodle_core::group::control_key(GAIN, 1)),
+    })]);
     let id = session.project().next_lane_id();
     let lane = AutomationLane::new(
-        Endpoint::new(output, GAIN),
+        Endpoint::new(output, noodle_core::group::control_key(GAIN, 1)),
         vec![AutomationPoint {
             tick: Tick(0),
             value: 0.0,
@@ -2278,7 +2421,12 @@ fn a_wire_cannot_be_dropped_on_a_lanes_port() {
         socket(&h, input, Side::Output, &key),
     );
     // Dragging the other way round, from a parameter input onto the lane.
-    let gain_in = socket(&h, output, Side::Input, GAIN);
+    let gain_in = socket(
+        &h,
+        output,
+        Side::Input,
+        &noodle_core::group::control_key(GAIN, 1),
+    );
     link(&mut h, from, to);
     link(&mut h, gain_in, to);
     let graph = h.state().session.project().graph();
@@ -2432,4 +2580,428 @@ fn cpu_labels_round_by_size_and_warn_as_the_load_grows() {
     assert_eq!(at(0.6, 0.6).1, colors::CPU_HIGH);
     // A single bad block shows even when the average is low.
     assert_eq!(at(0.05, 0.95).1, colors::CPU_HIGH);
+}
+
+/// A group with one wired input, the node wired into it, and the group input
+/// node inside it.
+fn group_with_wired_input(h: &mut H) -> (NodeId, NodeId, NodeId) {
+    use noodle_core::group::{GROUP, GROUP_INPUT};
+    let group = add(h, Node::new(GROUP).at(400.0, 0.0));
+    let src = add(h, Node::new("noodle.osc.sine").at(-100.0, 300.0));
+    h.run();
+    let from = socket(h, src, Side::Output, "out");
+    let spare = socket(h, group, Side::Input, "in1");
+    link(h, from, spare);
+    h.run();
+    let input = h
+        .state()
+        .session
+        .project()
+        .graph()
+        .children(Some(group))
+        .find(|(_, n)| n.type_id == GROUP_INPUT)
+        .map(|(id, _)| id)
+        .unwrap();
+    (group, input, src)
+}
+
+fn boundary_name(h: &H, node: NodeId) -> Option<String> {
+    let graph = h.state().session.project().graph();
+    let (_, name) = graph.node(node)?.boundary_ports().into_iter().next()?;
+    Some(name)
+}
+
+#[test]
+fn a_group_input_name_follows_the_group_port_both_ways() {
+    let mut h = rig();
+    let (group, input, src) = group_with_wired_input(&mut h);
+    // Outside: double-click the group's port row and type a new name.
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "in1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    type_name(&mut h, "feed");
+    assert_eq!(boundary_name(&h, input).as_deref(), Some("feed"));
+    assert_eq!(source(&h, group, "feed"), Some(Endpoint::new(src, "out")));
+
+    // Inside: F2 on the group input renames the port outside too.
+    h.state_mut().editor.enter(Some(group), None);
+    h.run();
+    let at = title(&h, input);
+    click(&mut h, at, Modifiers::NONE);
+    press(&mut h, at, Modifiers::NONE, Key::F2);
+    type_name(&mut h, "inside");
+    assert_eq!(boundary_name(&h, input).as_deref(), Some("inside"));
+    h.state_mut().editor.enter(None, None);
+    h.run();
+    assert!(
+        h.state()
+            .session
+            .project()
+            .graph()
+            .group_ports(group)
+            .input("inside")
+            .is_some()
+    );
+    assert!(h.state().session.diagnostics().is_empty());
+}
+
+#[test]
+fn double_clicking_a_group_inputs_own_port_row_renames_it_in_place() {
+    let mut h = rig();
+    let (group, input, _) = group_with_wired_input(&mut h);
+    h.state_mut().editor.enter(Some(group), None);
+    h.run();
+    let row = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(40.0, 0.0));
+    double_click(&mut h, at);
+    let rename = h
+        .state()
+        .editor
+        .rename
+        .as_ref()
+        .expect("the port's box opened");
+    assert!(matches!(rename.target, super::RenameTarget::Port { .. }));
+    type_name(&mut h, "kick");
+    assert_eq!(boundary_name(&h, input).as_deref(), Some("kick"));
+    assert!(h.state().session.diagnostics().is_empty());
+}
+
+/// A group with an input node and an output node inside it, each with no
+/// ports yet, and the editor inside the group, with a gain to wire up.
+fn inside_a_group(h: &mut H) -> (NodeId, NodeId, NodeId, NodeId) {
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, ports_config};
+    let group = add(h, Node::new(GROUP));
+    let input = add(
+        h,
+        Node::new(GROUP_INPUT)
+            .with_config(ports_config(&[]))
+            .at(0.0, 0.0)
+            .in_group(group),
+    );
+    let output = add(
+        h,
+        Node::new(GROUP_OUTPUT)
+            .with_config(ports_config(&[]))
+            .at(700.0, 0.0)
+            .in_group(group),
+    );
+    let gain = add(
+        h,
+        Node::new("noodle.util.gain").at(350.0, 0.0).in_group(group),
+    );
+    h.state_mut().editor.enter(Some(group), None);
+    h.run();
+    (group, input, output, gain)
+}
+
+#[test]
+fn wiring_from_a_group_inputs_spare_adds_a_port_to_that_node() {
+    let mut h = rig();
+    let (group, input, output, gain) = inside_a_group(&mut h);
+    let before = h.state().session.project().clone();
+
+    // The spare is named for the next free input, and there is one node.
+    let spare = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p1")
+        .unwrap()
+        .clone();
+    assert!(spare.spare);
+    assert_eq!(spare.name, "in1");
+    let from = socket(&h, input, Side::Output, "p1");
+    let to = socket(&h, gain, Side::Input, "in");
+    link(&mut h, from, to);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(input, "p1")));
+
+    // A second port goes on the same node, and the outputs on theirs.
+    let to_output = socket(&h, output, Side::Input, "p1");
+    let from_gain = socket(&h, gain, Side::Output, "out");
+    link(&mut h, from_gain, to_output);
+    let graph = h.state().session.project().graph();
+    let ports = graph.group_ports(group);
+    assert_eq!(
+        ports
+            .inputs
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["in1"]
+    );
+    assert_eq!(
+        ports
+            .outputs
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["out1"]
+    );
+    assert_eq!(
+        graph
+            .children(Some(group))
+            .filter(|(_, n)| !n.boundary_ports().is_empty())
+            .count(),
+        2
+    );
+    let spare_after = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p2")
+        .unwrap()
+        .spare;
+    assert!(spare_after, "a new spare follows the new port");
+    assert!(h.state().session.diagnostics().is_empty());
+    // Both wires and both ports undo together with their steps.
+    h.state_mut().session.undo();
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn a_second_group_input_from_the_add_list_selects_the_one_there() {
+    use noodle_core::group::GROUP_INPUT;
+    let mut h = rig();
+    let (group, input, _, _) = inside_a_group(&mut h);
+    let at = empty_space(&h);
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("group input".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    assert_eq!(
+        graph
+            .children(Some(group))
+            .filter(|(_, n)| n.type_id == GROUP_INPUT)
+            .count(),
+        1
+    );
+    assert!(h.state().editor.selected.contains(&input));
+}
+
+#[test]
+fn right_clicking_a_group_port_removes_just_that_port() {
+    let mut h = rig();
+    let (group, input, _, gain) = inside_a_group(&mut h);
+    // Two inputs, both wired.
+    let b = socket(&h, input, Side::Output, "p1");
+    let to = socket(&h, gain, Side::Input, "in");
+    link(&mut h, b, to);
+    h.run();
+    let second = socket(&h, input, Side::Output, "p2");
+    let level = socket(&h, gain, Side::Input, "gain");
+    link(&mut h, second, level);
+    h.run();
+    assert_eq!(
+        h.state()
+            .session
+            .project()
+            .graph()
+            .group_ports(group)
+            .inputs
+            .len(),
+        2
+    );
+
+    // Right-click the first port's row, and take the menu item.
+    let row = scene(&h)
+        .node(input)
+        .unwrap()
+        .port(Side::Output, "p1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(40.0, 0.0));
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at);
+    h.run();
+    h.get_by_label_contains("Remove port").click();
+    h.run();
+
+    let graph = h.state().session.project().graph();
+    let names: Vec<_> = graph
+        .group_ports(group)
+        .inputs
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, ["in2"]);
+    assert_eq!(source(&h, gain, "in"), None, "its wire went with it");
+    assert_eq!(
+        source(&h, gain, "gain"),
+        Some(Endpoint::new(input, "p2")),
+        "the other port keeps its wire"
+    );
+    h.state_mut().session.undo();
+    let graph = h.state().session.project().graph();
+    assert_eq!(graph.group_ports(group).inputs.len(), 2);
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(input, "p1")));
+}
+
+#[test]
+fn the_add_menu_lists_library_groups_and_adds_an_unlinked_copy() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("kick".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    let (group, node) = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == GROUP)
+        .expect("the group was added");
+    assert_eq!(node.template.as_deref(), Some("system:template:kick"));
+    assert_eq!(node.position, Position { x: 120.0, y: 80.0 });
+    assert!(node.parent.is_none());
+    assert!(graph.descendants(group).len() > 4, "its contents came too");
+    assert!(graph.group_ports(group).input("gate").is_some());
+    assert_eq!(h.state().editor.active, Some(group));
+    // One undo step takes it all away.
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project().graph().nodes().count(), 0);
+}
+
+#[test]
+fn the_add_menu_searches_the_groups_section() {
+    let mut h = rig();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("groups".into()));
+    h.run();
+    h.get_by_label("Subtractive Voice  ·  Groups");
+    h.get_by_label("Mono Synth  ·  Groups");
+    // The hidden track template is not offered.
+    h.event(Event::Text(" track".into()));
+    h.run();
+    assert!(h.query_by_label("Track  ·  Groups").is_none());
+}
+
+#[test]
+fn right_clicking_a_group_saves_it_to_the_user_library() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    let p = title(&h, group);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+    h.get_by_label("Save group to library...").click();
+    h.run();
+    type_name(&mut h, "My Group");
+    let library = h.state().session.library();
+    let (id, template) = library
+        .templates()
+        .find(|(id, _)| id.starts_with("user:"))
+        .expect("a user template");
+    assert_eq!(id, "user:template:my-group");
+    assert_eq!(template.name, "My Group");
+    assert!(h.state().editor.group_menu.is_none(), "the menu closed");
+    // Saving doesn't touch the project.
+    assert!(h.state().session.can_undo());
+    h.state_mut().session.undo();
+    assert!(!h.state().session.can_undo());
+}
+
+#[test]
+fn right_clicking_a_group_made_from_a_template_updates_it_from_the_template() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let at = screen(&h, Pos2::new(120.0, 80.0));
+    press(&mut h, at, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("kick".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let graph = h.state().session.project().graph();
+    let group = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == GROUP)
+        .map(|(id, _)| id)
+        .expect("the group was added");
+    // A parameter inside, edited away from the template's value.
+    let (inner, key, original) = graph
+        .descendants(group)
+        .into_iter()
+        .find_map(|id| {
+            let (key, value) = graph.node(id)?.params.iter().next()?;
+            Some((id, key.clone(), *value))
+        })
+        .expect("the kick has parameters");
+    h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+        node: inner,
+        key: key.clone(),
+        value: Some(original + 1.0),
+    })]);
+    h.run();
+    let p = title(&h, group);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+    h.get_by_label("Update from Kick").click();
+    h.run();
+    let graph = h.state().session.project().graph();
+    let value = |graph: &noodle_core::Graph| {
+        let inner = graph
+            .descendants(group)
+            .into_iter()
+            .find(|&id| graph.node(id).is_some_and(|n| n.params.contains_key(&key)))
+            .unwrap();
+        graph.node(inner).unwrap().params[&key]
+    };
+    assert_eq!(value(graph), original, "back to the template's value");
+    assert!(h.state().editor.group_menu.is_none(), "the menu closed");
+    // One undo step puts the edit back.
+    h.state_mut().session.undo();
+    assert_eq!(value(h.state().session.project().graph()), original + 1.0);
+}
+
+#[test]
+fn a_group_with_no_template_has_no_update_item() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    let p = title(&h, group);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, p);
+    h.run();
+    h.get_by_label("Save group to library...");
+    assert!(h.query_by_label_contains("Update from").is_none());
+}
+
+#[test]
+fn the_scene_is_built_again_only_when_the_project_changes() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine"));
+    h.run();
+    let cached = |h: &H| h.state().editor.scene_cache.as_ref().unwrap().1.clone();
+    let first = cached(&h);
+    h.run();
+    h.run();
+    assert!(
+        std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        "no edit, so the same scene"
+    );
+    h.state_mut().session.edit([Edit::Apply(Command::SetParam {
+        node: sine,
+        key: "frequency".into(),
+        value: Some(880.0),
+    })]);
+    h.run();
+    assert!(
+        !std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        "an edit builds it again"
+    );
 }

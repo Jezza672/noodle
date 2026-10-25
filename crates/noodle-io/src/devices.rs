@@ -44,11 +44,18 @@ pub struct AudioConfig {
     pub sample_rate: Option<u32>,
     /// Frames per device callback. `None` lets the device decide.
     pub buffer_size: Option<u32>,
+    /// Channels to open the main output device with, for surround or a
+    /// multichannel interface. `None` uses the device's default (usually
+    /// two); a count the device lacks is an error rather than a guess.
+    pub channels: Option<u16>,
     /// The MIDI input port to play from, by name (see
     /// [`midi_inputs`](crate::midi_inputs)). `None` opens none. It lives
     /// here because it is chosen in the same dialog and saved with the rest;
     /// changing it doesn't restart the audio.
     pub midi_input: Option<String>,
+    /// Extra threads that help the audio thread render graphs whose branches
+    /// can run side by side. 0 renders on the audio thread alone.
+    pub threads: usize,
 }
 
 /// Which device, if any, records into Input nodes. Off by default, since
@@ -152,7 +159,28 @@ pub fn devices(host: Option<&str>) -> Result<DeviceList, AudioError> {
             });
         }
     }
+    list.outputs.push(virtual_output());
     Ok(list)
+}
+
+/// The ID of the virtual output in [`AudioConfig::output`]. It has no host
+/// (no colon), so it never matches a real device's ID.
+pub const VIRTUAL_OUTPUT: &str = "virtual";
+
+/// The virtual output as a device: it runs the engine in real time on a
+/// timer and plays to nowhere. Always listed last.
+pub fn virtual_output() -> DeviceInfo {
+    DeviceInfo {
+        id: VIRTUAL_OUTPUT.to_owned(),
+        name: "Virtual (no sound)".to_owned(),
+        is_default: false,
+        capabilities: Capabilities {
+            max_channels: crate::output::VIRTUAL_MAX_CHANNELS as u16,
+            default_sample_rate: Some(48_000),
+            sample_rates: COMMON_SAMPLE_RATES.to_vec(),
+            buffer_sizes: Some(crate::output::VIRTUAL_BUFFERS),
+        },
+    }
 }
 
 /// A device's configurations in formats Noodle can play, if it has any.
@@ -237,14 +265,16 @@ fn buffer_span<'a>(
 /// When the default won't do, it picks among the configurations that have
 /// the rate, a format Noodle can play, and room for the buffer size (a
 /// device that doesn't say which sizes it takes is given the benefit of the
-/// doubt). It prefers one that keeps the default's channel count, then its
-/// sample format, then 32-bit float, then one that says it takes the
-/// buffer size, then the most channels.
+/// doubt). It prefers one that has `channels` channels (the default's count
+/// if none are asked for), then its sample format, then 32-bit float, then
+/// one that says it takes the buffer size, then the most channels. Asking
+/// for a count that no usable configuration has is an error.
 pub fn choose_config(
     ranges: &[SupportedStreamConfigRange],
     default: SupportedStreamConfig,
     sample_rate: Option<u32>,
     buffer_size: Option<u32>,
+    channels: Option<u16>,
 ) -> Result<Chosen, AudioError> {
     if buffer_size == Some(0) {
         return Err(AudioError::UnsupportedBufferSize {
@@ -262,7 +292,9 @@ pub fn choose_config(
         _ => None,
     };
     let rate = sample_rate.unwrap_or(default.sample_rate());
+    let wanted = channels.unwrap_or(default.channels());
     let supported = if rate == default.sample_rate()
+        && default.channels() == wanted
         && is_supported(default.sample_format())
         && takes_buffer(default.buffer_size()) != Some(false)
     {
@@ -283,7 +315,7 @@ pub fn choose_config(
             .filter(|r| takes_buffer(r.buffer_size()) != Some(false))
             .max_by_key(|r| {
                 (
-                    r.channels() == default.channels(),
+                    r.channels() == wanted,
                     r.sample_format() == default.sample_format(),
                     r.sample_format() == SampleFormat::F32,
                     takes_buffer(r.buffer_size()) == Some(true),
@@ -291,6 +323,10 @@ pub fn choose_config(
                 )
             });
         match (best, buffer_size) {
+            (Some(range), _) if channels.is_some() && range.channels() != wanted => {
+                let max = at_rate.iter().map(|r| r.channels()).max().unwrap_or(0);
+                return Err(AudioError::UnsupportedChannels { wanted, max });
+            }
             (Some(range), _) => range.with_sample_rate(rate),
             // Every range at this rate said no, so they all have a span.
             (None, Some(frames)) => {
@@ -427,6 +463,20 @@ pub enum AudioError {
         min: u32,
         max: u32,
     },
+    /// The device has no configuration with this many channels.
+    UnsupportedChannels {
+        wanted: u16,
+        max: u16,
+    },
+    /// The virtual output's thread wouldn't start.
+    Virtual {
+        reason: String,
+    },
+    /// The sample rate converter for an output device at another rate than
+    /// the engine's couldn't start.
+    Resample {
+        reason: String,
+    },
 }
 
 impl From<DeviceError> for AudioError {
@@ -464,6 +514,19 @@ impl fmt::Display for AudioError {
             Self::UnsupportedSampleRate(rate) => {
                 write!(f, "the device doesn't support a sample rate of {rate} Hz")
             }
+            Self::Virtual { reason } => {
+                write!(f, "couldn't start the virtual output: {reason}")
+            }
+            Self::Resample { reason } => {
+                write!(
+                    f,
+                    "couldn't change the sample rate for the device: {reason}"
+                )
+            }
+            Self::UnsupportedChannels { wanted, max } => write!(
+                f,
+                "the device can't play {wanted} channels (it has up to {max})"
+            ),
             Self::UnsupportedBufferSize { frames, min, max } => write!(
                 f,
                 "a buffer of {frames} frames isn't supported (the device takes {min} to {max})"
@@ -530,7 +593,7 @@ mod tests {
     #[test]
     fn with_nothing_chosen_the_default_is_used() {
         let (ranges, default) = device();
-        let chosen = choose_config(&ranges, default, None, None).unwrap();
+        let chosen = choose_config(&ranges, default, None, None, None).unwrap();
         assert_eq!(chosen.config.sample_rate, 44_100);
         assert_eq!(chosen.config.channels, 2);
         assert_eq!(chosen.config.buffer_size, BufferSize::Default);
@@ -540,7 +603,7 @@ mod tests {
     #[test]
     fn a_new_rate_keeps_the_default_channels_and_format_if_it_can() {
         let (ranges, default) = device();
-        let chosen = choose_config(&ranges, default, Some(48_000), None).unwrap();
+        let chosen = choose_config(&ranges, default, Some(48_000), None, None).unwrap();
         assert_eq!(
             (chosen.config.sample_rate, chosen.config.channels),
             (48_000, 2)
@@ -552,21 +615,45 @@ mod tests {
     fn a_rate_the_default_format_lacks_prefers_matching_channels() {
         let (ranges, default) = device();
         // Both f32 ranges have 96 kHz; only one is stereo.
-        let chosen = choose_config(&ranges, default, Some(96_000), None).unwrap();
+        let chosen = choose_config(&ranges, default, Some(96_000), None, None).unwrap();
         assert_eq!(
             (chosen.config.sample_rate, chosen.config.channels),
             (96_000, 2)
         );
         assert_eq!(chosen.format, SampleFormat::F32);
         // Only the four-channel range has 192 kHz.
-        let chosen = choose_config(&ranges, default, Some(192_000), None).unwrap();
+        let chosen = choose_config(&ranges, default, Some(192_000), None, None).unwrap();
         assert_eq!(chosen.config.channels, 4);
+    }
+
+    #[test]
+    fn asking_for_channels_picks_a_range_that_has_them() {
+        let (ranges, default) = device();
+        let chosen = choose_config(&ranges, default, None, None, Some(4)).unwrap();
+        assert_eq!(
+            (chosen.config.sample_rate, chosen.config.channels),
+            (44_100, 4)
+        );
+        assert_eq!(chosen.format, SampleFormat::F32);
+        // The default's own count keeps the default.
+        let chosen = choose_config(&ranges, default, None, None, Some(2)).unwrap();
+        assert_eq!(chosen.format, SampleFormat::I16);
+    }
+
+    #[test]
+    fn channels_no_range_has_are_an_error_not_a_guess() {
+        let (ranges, default) = device();
+        let error = choose_config(&ranges, default, None, None, Some(6)).unwrap_err();
+        assert!(
+            matches!(error, AudioError::UnsupportedChannels { wanted: 6, max: 4 }),
+            "{error}"
+        );
     }
 
     #[test]
     fn an_unsupported_rate_is_an_error() {
         let (ranges, default) = device();
-        let error = choose_config(&ranges, default, Some(384_000), None).unwrap_err();
+        let error = choose_config(&ranges, default, Some(384_000), None, None).unwrap_err();
         assert!(
             matches!(error, AudioError::UnsupportedSampleRate(384_000)),
             "{error}"
@@ -576,12 +663,12 @@ mod tests {
     #[test]
     fn a_buffer_size_the_default_lacks_picks_another_range() {
         let (ranges, default) = device();
-        let chosen = choose_config(&ranges, default, None, Some(256)).unwrap();
+        let chosen = choose_config(&ranges, default, None, Some(256), None).unwrap();
         assert_eq!(chosen.config.buffer_size, BufferSize::Fixed(256));
         assert_eq!(chosen.format, SampleFormat::I16, "the default takes 256");
         // The default takes 64 to 4096. The stereo f32 range doesn't say,
         // so it's tried rather than the four-channel one that does.
-        let chosen = choose_config(&ranges, default, None, Some(32)).unwrap();
+        let chosen = choose_config(&ranges, default, None, Some(32), None).unwrap();
         assert_eq!(chosen.config.buffer_size, BufferSize::Fixed(32));
         assert_eq!(
             (chosen.config.channels, chosen.format),
@@ -599,9 +686,9 @@ mod tests {
             range(2, (48_000, 48_000), Some((16, 64)), SampleFormat::F32),
         ];
         let default = range(1, (44_100, 44_100), None, SampleFormat::F32).with_sample_rate(44_100);
-        let chosen = choose_config(&ranges, default, Some(48_000), Some(32)).unwrap();
+        let chosen = choose_config(&ranges, default, Some(48_000), Some(32), None).unwrap();
         assert_eq!(chosen.config.channels, 2);
-        let chosen = choose_config(&ranges, default, Some(48_000), None).unwrap();
+        let chosen = choose_config(&ranges, default, Some(48_000), None, None).unwrap();
         assert_eq!(chosen.config.channels, 4);
     }
 
@@ -609,7 +696,7 @@ mod tests {
     fn a_buffer_size_no_range_takes_is_an_error() {
         let (ranges, default) = device();
         // Only the four-channel range has 192 kHz, and it takes 32 to 8192.
-        let error = choose_config(&ranges, default, Some(192_000), Some(16)).unwrap_err();
+        let error = choose_config(&ranges, default, Some(192_000), Some(16), None).unwrap_err();
         assert!(
             matches!(
                 error,
@@ -630,13 +717,13 @@ mod tests {
             range(2, (44_100, 48_000), None, SampleFormat::I16),
         ];
         let default = ranges[0].with_sample_rate(48_000);
-        let chosen = choose_config(&ranges, default, None, None).unwrap();
+        let chosen = choose_config(&ranges, default, None, None, None).unwrap();
         assert_eq!(chosen.format, SampleFormat::I16);
         assert_eq!(chosen.config.sample_rate, 48_000);
 
         let caps = capabilities(&ranges[..1], Some(&default));
         assert_eq!(caps.max_channels, 0);
-        let error = choose_config(&ranges[..1], default, None, None).unwrap_err();
+        let error = choose_config(&ranges[..1], default, None, None, None).unwrap_err();
         assert!(
             matches!(error, AudioError::UnsupportedFormat(SampleFormat::U64)),
             "{error}"
@@ -684,7 +771,7 @@ mod tests {
     #[test]
     fn a_zero_buffer_size_is_an_error() {
         let (ranges, default) = device();
-        let error = choose_config(&ranges, default, Some(96_000), Some(0)).unwrap_err();
+        let error = choose_config(&ranges, default, Some(96_000), Some(0), None).unwrap_err();
         assert!(
             matches!(error, AudioError::UnsupportedBufferSize { frames: 0, .. }),
             "{error}"

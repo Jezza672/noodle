@@ -2,8 +2,8 @@
 
 use egui::epaint::{CornerRadius, CubicBezierShape, PathShape, StrokeKind};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
-use noodle_core::Endpoint;
-use noodle_engine::CpuReading;
+use noodle_core::{Endpoint, NodeId};
+use noodle_engine::{BlockStats, CpuReading};
 
 use super::layout::{NodeGeom, PortGeom, PortKind, Side};
 use super::view::Transform;
@@ -114,6 +114,10 @@ pub fn wires(
             colors::ACTIVE
         } else if wire.event {
             colors::EVENT_WIRE
+        } else if wire.spectral {
+            colors::SPECTRAL_WIRE
+        } else if wire.sample {
+            colors::SAMPLE_WIRE
         } else if selected {
             colors::WIRE_SELECTED
         } else {
@@ -135,6 +139,7 @@ pub fn nodes(
     f: &Frame_<'_>,
     state: &EditorState,
     problems: &Problems,
+    hovered: Option<NodeId>,
     mut then: impl FnMut(&NodeGeom),
 ) {
     for &i in &f.order {
@@ -146,21 +151,15 @@ pub fn nodes(
             Stroke::new(1.5, colors::ACTIVE)
         } else if state.selected.contains(&node.id) {
             Stroke::new(1.5, colors::SELECTED)
+        } else if hovered == Some(node.id) {
+            Stroke::new(1.5, colors::HOVERED)
         } else {
             Stroke::new(1.0, colors::NODE_OUTLINE)
         };
         if node.reroute {
             reroute(painter, f, node, outline);
         } else {
-            boxed(
-                painter,
-                f,
-                node,
-                outline,
-                problem,
-                &state.bodies,
-                state.freeze.get(&node.id),
-            );
+            boxed(painter, f, node, outline, problem, state);
         }
         then(node);
     }
@@ -181,9 +180,11 @@ fn boxed(
     node: &NodeGeom,
     outline: Stroke,
     problem: bool,
-    bodies: &body::Bodies,
-    badge: Option<&Badge>,
+    state: &EditorState,
 ) {
+    let bodies = &state.bodies;
+    let badge = state.freeze.get(&node.id);
+    let monitored = state.monitored.contains(&node.id);
     let z = f.t.zoom;
     let rect = f.t.rect_to_screen(node.rect);
     let radius = f32::from(theme::NODE_RADIUS) * z;
@@ -210,11 +211,18 @@ fn boxed(
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
 
     let text = z >= MIN_TEXT_ZOOM;
+    let monitor = super::monitor_button(f.project, node);
+    // The button sits at the right end of the header, ahead of what is
+    // drawn there.
+    let button_room = if monitor.is_some() { 20.0 } else { 0.0 };
+    if let Some(button) = monitor {
+        monitor_button(painter, f.t.rect_to_screen(button), monitored);
+    }
     if text {
         // Leave room on the right for the warning and a header socket.
         let clipped = painter.with_clip_rect(Rect::from_min_max(
             header.min + Vec2::splat(2.0 * z),
-            header.max - Vec2::new(22.0 * z, 2.0 * z),
+            header.max - Vec2::new((22.0 + button_room) * z, 2.0 * z),
         ));
         clipped.text(
             header.left_center() + Vec2::new(24.0 * z, 0.0),
@@ -226,12 +234,12 @@ fn boxed(
         if problem {
             warning(
                 painter,
-                header.right_center() - Vec2::new(8.0 * z, 0.0),
+                header.right_center() - Vec2::new((8.0 + button_room) * z, 0.0),
                 z,
                 Align2::RIGHT_CENTER,
             );
         }
-        let mut right = if problem { 24.0 } else { 10.0 };
+        let mut right = button_room + if problem { 24.0 } else { 10.0 };
         if let Some(cpu) = bodies.cpu(node.id) {
             let (label, color) = cpu_label(cpu);
             let galley = painter.text(
@@ -334,28 +342,83 @@ fn boxed(
     }
 
     if let Some(area) = node.body {
+        let node_id = node.id;
         // What each parameter is now: a wire's live value, else the node's
         // own, else the default.
         let values = |key: &str| {
+            if let Some(node) = graph.node(node.id)
+                && let Some(value) = crate::widgets::graph::special_value(key, node, &|channel| {
+                    bodies.param_live(node_id, channel).map(|live| live.value)
+                })
+            {
+                return value;
+            }
             let default = node.ports.iter().find_map(|port| match &port.kind {
                 PortKind::Param(info) if port.key == key => Some(info.default),
                 _ => None,
             });
-            bodies
-                .param_live(node.id, key)
-                .map(|live| live.value)
-                .or_else(|| graph.node(node.id)?.params.get(key).copied())
+            // As in the properties panel, only a wired parameter reads live;
+            // an unwired one is its own value, so both views draw one curve.
+            let wired = graph.source(&Endpoint::new(node_id, key)).is_some();
+            let live = if wired {
+                bodies.param_live(node.id, key).map(|live| live.value)
+            } else {
+                None
+            };
+            live.or_else(|| graph.node(node.id)?.params.get(key).copied())
                 .or(default)
                 .unwrap_or(0.0)
+        };
+        let curve = match graph
+            .node(node.id)
+            .and_then(|n| n.config.get("curve").or_else(|| n.config.get("layout")))
+        {
+            Some(noodle_core::Value::Text(text)) => text.clone(),
+            _ => String::new(),
         };
         body::paint(
             painter,
             f.t.rect_to_screen(area),
             z,
             node.id,
+            node.view,
             graph.node(node.id).map_or("", |n| &n.type_id),
             bodies,
             &values,
+            &curve,
+        );
+    }
+}
+
+/// A pair of headphones, lit while its node is monitored.
+fn monitor_button(painter: &Painter, rect: Rect, on: bool) {
+    let color = if on {
+        colors::ACTIVE
+    } else {
+        colors::TEXT_WEAK
+    };
+    if on {
+        painter.rect_filled(rect.expand(1.0), rect.width() / 4.0, colors::NODE_OUTLINE);
+    }
+    let u = rect.width() / 14.0;
+    let c = rect.center();
+    let at = |x: f32, y: f32| c + Vec2::new(x * u, y * u);
+    // The band over the head, then the two ear cups it ends in.
+    let band: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let angle = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 12.0;
+            at(4.6 * angle.cos(), 0.9 + 4.6 * angle.sin())
+        })
+        .collect();
+    painter.add(PathShape::line(
+        band,
+        Stroke::new((2.0 * u).max(1.0), color),
+    ));
+    for (left, right) in [(-6.2, -2.6), (2.6, 6.2)] {
+        painter.rect_filled(
+            Rect::from_min_max(at(left, -0.7), at(right, 4.7)),
+            1.6 * u,
+            color,
         );
     }
 }
@@ -379,6 +442,32 @@ pub(crate) fn cpu_label(reading: CpuReading) -> (String, Color32) {
         colors::TEXT_WEAK
     };
     (label, color)
+}
+
+/// How the slowest recent block did against its time, and how many ran over
+/// (each is an underrun on a live stream).
+pub(crate) fn block_label(stats: &BlockStats) -> (String, Color32) {
+    let worst = (stats.worst * 100.0).round();
+    if stats.panics > 0 {
+        (
+            format!("a node panicked in {} blocks", stats.panics),
+            colors::CPU_HIGH,
+        )
+    } else if stats.misses > 0 {
+        (
+            format!("worst block {worst}%, {} over budget", stats.misses),
+            colors::CPU_HIGH,
+        )
+    } else {
+        let color = if stats.worst >= 0.9 {
+            colors::CPU_HIGH
+        } else if stats.worst >= 0.5 {
+            colors::CPU_MEDIUM
+        } else {
+            colors::TEXT_WEAK
+        };
+        (format!("worst block {worst}%"), color)
+    }
 }
 
 /// What a frozen or offline node says about its render, and in what colour.
@@ -413,9 +502,36 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
             Color32::TRANSPARENT,
             Stroke::new(1.0, colors::TEXT_WEAK),
         );
+        if port.kind == PortKind::Any {
+            any_marks(
+                painter,
+                center,
+                radius,
+                Stroke::new(1.5, colors::AUDIO_SOCKET),
+                Stroke::new(1.5, colors::EVENT_SOCKET),
+            );
+        }
         return;
     }
     match port.kind {
+        // Takes any kind of wire: half the colour of each, until one is
+        // wired and the port becomes that kind.
+        PortKind::Any => {
+            painter.circle(center, radius, colors::AUDIO_SOCKET, outline);
+            let half: Vec<Pos2> = (0..=8)
+                .map(|i| {
+                    let angle =
+                        -3.0 * std::f32::consts::FRAC_PI_4 + std::f32::consts::PI * i as f32 / 8.0;
+                    center + Vec2::angled(angle) * radius
+                })
+                .collect();
+            painter.add(PathShape::convex_polygon(
+                half,
+                colors::EVENT_SOCKET,
+                Stroke::NONE,
+            ));
+            painter.circle_stroke(center, radius, outline);
+        }
         PortKind::Event => {
             let r = radius * 1.2;
             let points = vec![
@@ -427,6 +543,31 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
             painter.add(PathShape::convex_polygon(
                 points,
                 colors::EVENT_SOCKET,
+                outline,
+            ));
+        }
+        // A square, for frames of spectrum.
+        PortKind::Spectral => {
+            let r = radius * 0.9;
+            painter.rect(
+                Rect::from_center_size(center, Vec2::splat(2.0 * r)),
+                1.0,
+                colors::SPECTRAL_SOCKET,
+                outline,
+                egui::StrokeKind::Middle,
+            );
+        }
+        // A triangle, for a reference to a sample.
+        PortKind::Sample => {
+            let r = radius * 1.2;
+            let points = vec![
+                center + Vec2::new(-r, -r * 0.9),
+                center + Vec2::new(r, 0.0),
+                center + Vec2::new(-r, r * 0.9),
+            ];
+            painter.add(PathShape::convex_polygon(
+                points,
+                colors::SAMPLE_SOCKET,
                 outline,
             ));
         }
@@ -444,6 +585,22 @@ fn socket(painter: &Painter, f: &Frame_<'_>, port: &PortGeom) {
             painter.circle(center, radius, fill, outline);
         }
     }
+}
+
+/// The marks on a spare socket that takes any kind of wire: an arc of each
+/// kind's colour over the grey ring.
+fn any_marks(painter: &Painter, center: Pos2, radius: f32, audio: Stroke, event: Stroke) {
+    let arc = |from: f32, to: f32| -> Vec<Pos2> {
+        (0..=8)
+            .map(|i| {
+                let angle = from + (to - from) * i as f32 / 8.0;
+                center + Vec2::angled(angle) * radius
+            })
+            .collect()
+    };
+    let quarter = std::f32::consts::FRAC_PI_2;
+    painter.add(PathShape::line(arc(quarter, 3.0 * quarter), audio));
+    painter.add(PathShape::line(arc(-quarter, quarter), event));
 }
 
 fn warning(painter: &Painter, at: Pos2, z: f32, align: Align2) {

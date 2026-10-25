@@ -25,6 +25,11 @@ use crate::session::write_atomically;
 #[serde(default)]
 pub struct Prefs {
     pub audio: AudioConfig,
+    /// Run each plugin in a process of its own (see
+    /// `noodle_plugins::set_sandbox`).
+    pub sandbox_plugins: bool,
+    /// The device node monitoring plays on; empty is the main output.
+    pub monitor_device: String,
 }
 
 thread_local! {
@@ -37,6 +42,14 @@ thread_local! {
 /// `~/Library/Application Support/Noodle/prefs.ron` on macOS.
 pub fn default_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "Noodle").map(|dirs| dirs.config_dir().join("prefs.ron"))
+}
+
+/// Where the user's library of saved groups and presets lives: one `.ron`
+/// file per entry, in the data directory, e.g.
+/// `~/.local/share/noodle/library` on Linux. Copy files in or out to share
+/// them.
+pub fn library_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "Noodle").map(|dirs| dirs.data_dir().join("library"))
 }
 
 /// Reads the preferences at `path` and keeps them for [`remember_audio`].
@@ -67,6 +80,34 @@ pub fn remember_audio(audio: &AudioConfig) {
             return;
         };
         prefs.audio = audio.clone();
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves whether plugins run in their own processes, with the other
+/// preferences, if [`init`] has been called.
+pub fn remember_sandbox(on: bool) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.sandbox_plugins = on;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves the device the node monitor plays on, with the other preferences, if
+/// [`init`] has been called.
+pub fn remember_monitor_device(device: &str) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        device.clone_into(&mut prefs.monitor_device);
         if let Err(error) = save(path, prefs) {
             eprintln!("noodle: couldn't save preferences: {error}");
         }
@@ -125,8 +166,12 @@ mod tests {
                 input: InputChoice::Device("alsa:hw:CARD=Mic".into()),
                 sample_rate: Some(48_000),
                 buffer_size: Some(256),
+                channels: Some(6),
                 midi_input: Some("Keystation 49".into()),
+                threads: 2,
             },
+            sandbox_plugins: false,
+            monitor_device: String::new(),
         }
     }
 
@@ -178,13 +223,27 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),midi_input:Some("Keystation 49")))"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"")"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
         let prefs: Prefs = ron::from_str(old).unwrap();
         assert_eq!(prefs.audio.midi_input, None);
+        assert_eq!(prefs.audio.threads, 0);
         assert_eq!(prefs.audio.buffer_size, Some(256));
+        assert!(!prefs.sandbox_plugins);
+    }
+
+    #[test]
+    fn the_plugin_process_choice_is_saved_beside_the_audio_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        remember_audio(&chosen().audio);
+        remember_sandbox(true);
+        let saved = load(&path).unwrap();
+        assert!(saved.sandbox_plugins);
+        assert_eq!(saved.audio, chosen().audio);
     }
 
     #[test]

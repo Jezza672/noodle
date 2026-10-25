@@ -1,6 +1,6 @@
 //! Cache keys and cacheability: which nodes' output is a pure function of the
 //! timeline, and what to call a render of it. See "Caching" in
-//! docs/ARCHITECTURE.md.
+//! docs/architecture/caching.md.
 //!
 //! [`analyze`] compiles the project as the live engine would, except that
 //! offline nodes stay in, then walks the schedule once, upstream first. Each
@@ -172,6 +172,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
     let mut analysis = Analysis::default();
     let mut signal_writers: HashMap<BufferId, (NodeId, usize)> = HashMap::new();
     let mut event_writers: HashMap<EventBufferId, (NodeId, usize)> = HashMap::new();
+    let mut spectral_writers: HashMap<crate::SpectralBufferId, (NodeId, usize)> = HashMap::new();
     for node in &schedule.nodes {
         let (id, layout) = (node.id, &node.layout);
         let info = node.node_type.info();
@@ -206,10 +207,16 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
                 InputOrigin::Wire(n, p) | InputOrigin::Modulated(n, p, _) => Some((*n, *p)),
                 InputOrigin::Value(_) => None,
             };
+            // Spectral wires are keyed like event wires, after them.
             let events: Vec<_> = node
                 .event_inputs
                 .iter()
                 .map(|e| e.and_then(|e| event_writers.get(&e).copied()))
+                .chain(
+                    node.spectral_inputs
+                        .iter()
+                        .map(|s| s.and_then(|s| spectral_writers.get(&s).copied())),
+                )
                 .collect();
             Some(node_key(
                 &analysis,
@@ -239,6 +246,11 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
         for (port, &e) in node.event_outputs.iter().enumerate() {
             event_writers.insert(e, (id, port));
         }
+        // After the signal outputs, so a spectral output's key differs from
+        // any signal output's.
+        for (port, &b) in node.spectral_outputs.iter().enumerate() {
+            spectral_writers.insert(b, (id, node.outputs.len() + port));
+        }
     }
 
     analysis.targets = targets(project, &analysis);
@@ -248,7 +260,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
 /// Part of every key, so renders made by another build of the DSP are never
 /// replayed from the shared per-user cache. Bump `DSP_GENERATION` in the same
 /// change as any regenerated golden render; the crate version covers releases.
-const DSP_GENERATION: u32 = 3;
+const DSP_GENERATION: u32 = 6;
 
 /// The key of a node, from everything it depends on. `wired` lists the
 /// outputs wired into signal inputs in input order, and `events` those wired
@@ -345,7 +357,10 @@ fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
         }
     }
     let lanes: Vec<_> = project.lanes().collect();
-    let keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
+    let mut keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
+    // As compiled (see `compile_with`), so a frozen group's outputs are the
+    // stages that meter them.
+    keep.extend(crate::flatten::output_stages(project.graph()));
     for &frozen in project.frozen() {
         let Some(node) = project.graph().node(frozen) else {
             continue;

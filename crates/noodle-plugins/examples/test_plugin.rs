@@ -10,13 +10,16 @@
 //!   timer (host timer support) plays the user: the first tick turns `Gain`
 //!   down to 0.25, as if a knob had been dragged. That makes the editor, the
 //!   host's timers and capturing parameters from a live plugin testable.
+//! - Status: it says `Sleep` once a block had no events, no input and no
+//!   held note (and no `bias`), and counts its `process` calls for tests
+//!   (`noodle_test_process_calls`).
 //! - State: `bias`, a number that is not a parameter and so can only come back
 //!   through saved state. State may carry a second number after it, the gain
 //!   (a plugin whose live value isn't the default it reports).
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, PluginAudioPorts, PluginAudioPortsImpl,
@@ -35,11 +38,21 @@ use clack_extensions::params::{
 };
 use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_extensions::timer::{HostTimer, PluginTimer, PluginTimerImpl, TimerId};
+use clack_plugin::entry::prelude::*;
 use clack_plugin::events::event_types::{NoteOffEvent, NoteOnEvent};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use std::io::{Read, Write};
+
+/// How many times the host has called `process`, for tests that check a
+/// quiet plugin isn't called (read through the exported symbol).
+static PROCESS_CALLS: AtomicU64 = AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn noodle_test_process_calls() -> u64 {
+    PROCESS_CALLS.load(Ordering::Relaxed)
+}
 
 const GAIN: ClapId = ClapId::new(1);
 const INVERT: ClapId = ClapId::new(2);
@@ -433,6 +446,8 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for Processor<'a> {
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         const MAX: usize = 512;
+        PROCESS_CALLS.fetch_add(1, Ordering::Relaxed);
+        let mut busy = false;
         let frames = (audio.frames_count() as usize).min(MAX);
         let bias = f32::from_bits(self.shared.bias.load(Ordering::Relaxed));
 
@@ -444,6 +459,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for Processor<'a> {
         let mut pending = events.input.into_iter().peekable();
         for i in 0..frames {
             while let Some(event) = pending.next_if(|e| e.header().time() as usize <= i) {
+                busy = true;
                 apply(self.shared, event);
                 self.note_event(event);
             }
@@ -461,6 +477,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for Processor<'a> {
         }
         // Events past the last frame still count.
         for event in pending {
+            busy = true;
             apply(self.shared, event);
             self.note_event(event);
         }
@@ -478,11 +495,13 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for Processor<'a> {
                         }
                     }
                     ChannelPair::InputOutput(input, out) => {
+                        busy |= input.iter().take(frames).any(|&x| x != 0.0);
                         for (i, (o, x)) in out.iter_mut().zip(input).enumerate().take(frames) {
                             *o = (x * signs[i] + synth[i]) * gains[i] + bias;
                         }
                     }
                     ChannelPair::InPlace(buffer) => {
+                        busy |= buffer.iter().take(frames).any(|&x| x != 0.0);
                         for (i, b) in buffer.iter_mut().enumerate().take(frames) {
                             *b = (*b * signs[i] + synth[i]) * gains[i] + bias;
                         }
@@ -490,7 +509,13 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for Processor<'a> {
                 }
             }
         }
-        Ok(ProcessStatus::Continue)
+        let held = self.voices.iter().any(Option::is_some);
+        let bias = f32::from_bits(self.shared.bias.load(Ordering::Relaxed));
+        Ok(if busy || held || bias != 0.0 {
+            ProcessStatus::Continue
+        } else {
+            ProcessStatus::Sleep
+        })
     }
 }
 
@@ -537,4 +562,27 @@ impl PluginAudioProcessorParams for Processor<'_> {
     }
 }
 
-clack_export_entry!(SinglePluginEntry<TestPlugin>);
+/// The entry, which writes a file named by `NOODLE_TEST_DEINIT_MARKER` when
+/// the host deinitialises the plugin (dropping the entry). A test can then
+/// see whether the host unloaded it.
+struct TestEntry(SinglePluginEntry<TestPlugin>);
+
+impl Entry for TestEntry {
+    fn new(plugin_path: Option<&std::ffi::CStr>) -> Result<Self, EntryLoadError> {
+        SinglePluginEntry::new(plugin_path).map(Self)
+    }
+
+    fn declare_factories<'a>(&'a self, builder: &mut EntryFactories<'a>) {
+        self.0.declare_factories(builder);
+    }
+}
+
+impl Drop for TestEntry {
+    fn drop(&mut self) {
+        if let Some(path) = std::env::var_os("NOODLE_TEST_DEINIT_MARKER") {
+            let _ = std::fs::write(path, b"deinit");
+        }
+    }
+}
+
+clack_export_entry!(TestEntry);

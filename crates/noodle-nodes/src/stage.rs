@@ -1,11 +1,25 @@
 use noodle_engine::{
-    Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Ports, Setup, Skip, Unit,
+    Config, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
+    ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
 };
 
-/// What a group's boundary node becomes when its gain or mute is in use. The
-/// compiler swaps it in (see `flatten`); users don't add it themselves.
-pub struct GroupStage;
+use crate::meter::{LevelProbe, voice_sum_out};
+
+/// What a group's boundary node becomes when its gain or mute is in use, and
+/// always at a group's outputs. The compiler swaps it in (see `flatten`);
+/// users don't add it themselves. It reports its output's level through
+/// [`Telemetry`], for the meters on the group and its output node.
+pub struct GroupStage {
+    telemetry: Telemetry,
+}
+
+impl GroupStage {
+    pub fn new(telemetry: &Telemetry) -> Self {
+        Self {
+            telemetry: telemetry.clone(),
+        }
+    }
+}
 
 #[derive(Ports)]
 struct StagePorts {
@@ -52,7 +66,56 @@ impl NodeType for GroupStage {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(PerLane::new(StageKernel, setup)))
+        let channels = setup.output_shapes[OUT].channels;
+        Ok(Instance::realtime(StageNode {
+            stage: PerLane::new(StageKernel, setup),
+            probe: LevelProbe::new(&self.telemetry, setup.node, channels, setup.sample_rate),
+        }))
+    }
+}
+
+struct StageNode {
+    stage: PerLane<StageKernel>,
+    probe: LevelProbe,
+}
+
+impl Node for StageNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let Io {
+            inputs,
+            outputs,
+            event_inputs,
+            event_outputs,
+            spectral_inputs,
+            spectral_outputs,
+        } = io;
+        self.stage.process(
+            ctx,
+            Io {
+                inputs,
+                outputs: &mut *outputs,
+                event_inputs,
+                event_outputs: &mut *event_outputs,
+                spectral_inputs,
+                spectral_outputs: &mut *spectral_outputs,
+            },
+        );
+        let out = &mut outputs[OUT];
+        for channel in 0..self.probe.slots() {
+            self.probe.measure(channel, ctx.frames, |frame| {
+                let x = voice_sum_out(out, channel, frame);
+                (x * x, x.abs())
+            });
+        }
+    }
+
+    fn reset(&mut self) {
+        self.probe.reset();
+        self.stage.reset();
+    }
+
+    fn stopped(&mut self) {
+        self.probe.silence();
     }
 }
 
@@ -64,6 +127,14 @@ impl LaneKernel for StageKernel {
     /// Gain times silence is silence, so a group's stage passes the flags on.
     fn skip(&self) -> Skip {
         Skip::AnySilent(&[IN])
+    }
+
+    /// Muted for good (the mute has finished ramping up), the stage writes
+    /// zeros, so nothing that only feeds it needs to run.
+    fn silenced_by(&self, constants: &[Option<f32>]) -> bool {
+        [MUTE, SOLO_MUTE]
+            .iter()
+            .any(|&port| constants[port].is_some_and(|value| value >= 1.0))
     }
 
     fn process_lane(&mut self, _: &mut (), _: &Context, mut lane: Lane<'_, '_>) {
@@ -89,7 +160,7 @@ mod tests {
 
     fn run(gain_db: f32, mute: f32) -> Vec<f32> {
         let mut h = Harness::new(
-            &GroupStage,
+            &GroupStage::new(&Telemetry::new()),
             &Config::new(),
             &[(IN, Shape::MONO)],
             48_000.0,
@@ -109,7 +180,9 @@ mod tests {
             GAIN as GAIN_KEY, GROUP_STAGE, MUTE as MUTE_KEY, SOLO_MUTE as SOLO_KEY,
         };
         assert_eq!(INFO.id, GROUP_STAGE);
-        let layout = GroupStage.layout(&Config::new()).unwrap();
+        let layout = GroupStage::new(&Telemetry::new())
+            .layout(&Config::new())
+            .unwrap();
         assert_eq!(layout.inputs[GAIN].key, GAIN_KEY);
         assert_eq!(layout.inputs[MUTE].key, MUTE_KEY);
         assert_eq!(layout.inputs[SOLO_MUTE].key, SOLO_KEY);
@@ -130,7 +203,7 @@ mod tests {
     #[test]
     fn a_solo_mute_silences_it_whatever_the_mute() {
         let mut h = Harness::new(
-            &GroupStage,
+            &GroupStage::new(&Telemetry::new()),
             &Config::new(),
             &[(IN, Shape::MONO)],
             48_000.0,
@@ -147,7 +220,14 @@ mod tests {
     #[test]
     fn silent_lanes_stay_silent_through_the_stage() {
         let poly = Shape::new(2, 1);
-        let mut h = Harness::new(&GroupStage, &Config::new(), &[(IN, poly)], 48_000.0, 4).unwrap();
+        let mut h = Harness::new(
+            &GroupStage::new(&Telemetry::new()),
+            &Config::new(),
+            &[(IN, poly)],
+            48_000.0,
+            4,
+        )
+        .unwrap();
         let mut input = h.input(IN, 4);
         input.lane_mut(0, 0).fill(1.0);
         input.silence(1, 0);

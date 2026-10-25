@@ -8,7 +8,12 @@ use noodle_engine::{
 /// A click on every beat while the transport plays, with a higher one on the
 /// first beat of the bar. It follows the tempo map and the time signature, so
 /// it stays in time through tempo changes (from the next block, as for any
-/// node that reads the transport) and through seeks and loops.
+/// node that reads the transport) and through seeks and loops. Beats are
+/// counted from where the time signature in force began, so a bar starts on
+/// the downbeat after a change of meter too.
+///
+/// `pitch` is the beat click's frequency and `accent` the bar click's pitch
+/// and loudness (off: every click is a plain beat).
 ///
 /// Its `on` parameter is what the transport bar's metronome button drives,
 /// through a [`Button`](crate::Button) node.
@@ -21,11 +26,14 @@ pub const METRONOME_ON: &str = "on";
 
 const ON: usize = 0;
 const LEVEL: usize = 1;
+const PITCH: usize = 2;
+const ACCENT: usize = 3;
 const OUT: usize = 0;
 
 /// Ticks to a quarter note; see `noodle_core::Tick`.
 const TICKS_PER_QUARTER: f64 = 960.0;
-const BAR_HZ: f32 = 1_500.0;
+/// The bar click's pitch relative to the beat's.
+const ACCENT_RATIO: f32 = 1.5;
 const BEAT_HZ: f32 = 1_000.0;
 /// The click's loudness before the level, relative to the bar click.
 const BEAT_GAIN: f32 = 0.7;
@@ -44,6 +52,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Metronome {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -62,6 +74,19 @@ impl NodeType for Metronome {
                 "level",
                 "Level",
                 ParamInfo::new(-60.0, 0.0, -12.0).unit(Unit::Decibels),
+            )
+            .param(
+                "pitch",
+                "Pitch",
+                ParamInfo::new(200.0, 4_000.0, BEAT_HZ).unit(Unit::Hertz),
+            )
+            .param(
+                "accent",
+                "Accent",
+                ParamInfo {
+                    default: 1.0,
+                    ..ParamInfo::choice(["Off", "On"])
+                },
             )
             .output("out", "Out"))
     }
@@ -107,6 +132,16 @@ impl Node for Click {
             .copied()
             .unwrap_or(-12.0);
         let level = 10f32.powf(db / 20.0);
+        let beat_hz = io.inputs[PITCH]
+            .lane(0, 0)
+            .first()
+            .copied()
+            .unwrap_or(BEAT_HZ)
+            .clamp(20.0, 0.45 * ctx.sample_rate);
+        let accent = io.inputs[ACCENT]
+            .lane(0, 0)
+            .first()
+            .is_none_or(|&accent| accent >= 0.5);
 
         // The first beat to start in this block, as a frame. Beats are
         // counted from tick 0 (see the roadmap for signature changes). A
@@ -116,14 +151,15 @@ impl Node for Click {
         let frames_per_tick =
             60.0 * f64::from(ctx.sample_rate) / (transport.bpm.max(1.0) * TICKS_PER_QUARTER);
         let end_tick = transport.tick + ctx.frames as f64 / frames_per_tick;
-        let mut beat = ((transport.tick - EPSILON) / beat_ticks).ceil() as i64;
+        let origin = transport.signature_start;
+        let mut beat = ((transport.tick - origin - EPSILON) / beat_ticks).ceil() as i64;
         if self
             .last_tick
-            .is_some_and(|last| beat as f64 * beat_ticks <= last + EPSILON)
+            .is_some_and(|last| origin + beat as f64 * beat_ticks <= last + EPSILON)
         {
             beat += 1;
         }
-        let beat_tick = beat as f64 * beat_ticks;
+        let beat_tick = origin + beat as f64 * beat_ticks;
         let starts = playing && beat_tick < end_tick - EPSILON;
         let start = (starts && on).then(|| {
             let frame = ((beat_tick - transport.tick).max(0.0) * frames_per_tick) as usize;
@@ -139,8 +175,12 @@ impl Node for Click {
             if let Some((frame, beat)) = start
                 && i == frame
             {
-                let first = beat.rem_euclid(numerator) == 0;
-                self.hz = if first { BAR_HZ } else { BEAT_HZ };
+                let first = accent && beat.rem_euclid(numerator) == 0;
+                self.hz = if first {
+                    beat_hz * ACCENT_RATIO
+                } else {
+                    beat_hz
+                };
                 self.peak = if first { 1.0 } else { BEAT_GAIN };
                 self.phase = 0.0;
                 self.envelope = 1.0;
@@ -175,6 +215,10 @@ mod tests {
         on: bool,
         position: u64,
         signature: TimeSignature,
+        /// The tick the signature began on.
+        signature_start: f64,
+        accent: bool,
+        pitch: f32,
     }
 
     impl Rig {
@@ -184,6 +228,9 @@ mod tests {
                 on: true,
                 position: 0,
                 signature: TimeSignature::COMMON,
+                signature_start: 0.0,
+                accent: true,
+                pitch: BEAT_HZ,
             }
         }
 
@@ -199,14 +246,19 @@ mod tests {
                     tick,
                     bpm: 120.0,
                     signature: self.signature,
+                    signature_start: self.signature_start,
                     ..Transport::default()
                 },
             };
             let on = vec![f32::from(self.on); frames];
             let level = vec![-12.0; frames];
+            let pitch = vec![self.pitch; frames];
+            let accent = vec![f32::from(self.accent); frames];
             let inputs = [
                 SignalIn::new(&on, Shape::MONO, frames),
                 SignalIn::new(&level, Shape::MONO, frames),
+                SignalIn::new(&pitch, Shape::MONO, frames),
+                SignalIn::new(&accent, Shape::MONO, frames),
             ];
             let mut data = vec![0.0; frames];
             let mut outputs = [SignalOut::new(&mut data, Shape::MONO, frames)];
@@ -215,6 +267,8 @@ mod tests {
                 outputs: &mut outputs,
                 event_inputs: &[],
                 event_outputs: &mut [],
+                spectral_inputs: &[],
+                spectral_outputs: &mut [],
             };
             self.click.process(&ctx, io);
             self.position += frames as u64;
@@ -329,5 +383,46 @@ mod tests {
         rig.position = 0;
         let samples = rig.block(512, true);
         assert!(peak(&samples) > 0.1);
+    }
+
+    #[test]
+    fn a_new_signature_starts_its_bar_where_it_begins() {
+        // 3/4 began at tick 960 (one beat in): bars start at 960, 3840, ...
+        let mut rig = Rig::new();
+        rig.signature = TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        };
+        rig.signature_start = 960.0;
+        rig.position = BEAT_FRAMES as u64;
+        let samples = rig.run(BEAT_FRAMES * 4, 512);
+        let loud = |n: usize| peak(&samples[n * BEAT_FRAMES..(n + 1) * BEAT_FRAMES]);
+        // Beats at 960 (bar start), 1920, 2880, then 3840 (bar start).
+        assert!(loud(0) > loud(1) * 1.2 && loud(3) > loud(2) * 1.2);
+    }
+
+    #[test]
+    fn without_the_accent_every_click_is_a_beat() {
+        let mut rig = Rig::new();
+        rig.accent = false;
+        let samples = rig.run(BEAT_FRAMES * 8, 512);
+        let loud = |n: usize| peak(&samples[n * BEAT_FRAMES..(n + 1) * BEAT_FRAMES]);
+        assert!((loud(0) - loud(1)).abs() < 1e-3 && (loud(4) - loud(3)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_pitch_sets_the_click_frequency() {
+        let crossings = |pitch: f32| {
+            let mut rig = Rig::new();
+            rig.accent = false;
+            rig.pitch = pitch;
+            let samples = rig.run(2_400, 512);
+            samples
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count()
+        };
+        // A tenth of a second of 500 Hz against 2 000 Hz, before the click dies.
+        assert!(crossings(2_000.0) > 3 * crossings(500.0));
     }
 }

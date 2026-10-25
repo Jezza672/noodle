@@ -1,6 +1,6 @@
 //! Time as the project document counts it: ticks, and the tempo map that
 //! turns them into audio samples. See "Time and transport" in
-//! docs/ARCHITECTURE.md.
+//! docs/architecture/data-model.md.
 
 use std::fmt;
 
@@ -213,6 +213,28 @@ impl TempoMap {
         seconds
     }
 
+    /// The tick, fraction included, at `seconds` from the start. Before the
+    /// start the first tempo carries on backwards.
+    pub fn tick_at_seconds(&self, seconds: f64) -> f64 {
+        let first = 60.0 / self.tempos[0].bpm / TICKS_PER_QUARTER as f64;
+        if seconds <= 0.0 {
+            return seconds / first;
+        }
+        let mut remaining = seconds;
+        for (i, change) in self.tempos.iter().enumerate() {
+            let seconds_per_tick = 60.0 / change.bpm / TICKS_PER_QUARTER as f64;
+            if let Some(next) = self.tempos.get(i + 1) {
+                let segment = (next.tick.0 - change.tick.0) as f64 * seconds_per_tick;
+                if remaining >= segment {
+                    remaining -= segment;
+                    continue;
+                }
+            }
+            return change.tick.0 as f64 + remaining / seconds_per_tick;
+        }
+        unreachable!("a tempo map has a tempo")
+    }
+
     /// The sample `tick` falls on at `sample_rate`, rounded to the nearest.
     pub fn sample_at(&self, tick: Tick, sample_rate: f64) -> u64 {
         (self.seconds_at(tick) * sample_rate).round() as u64
@@ -267,6 +289,23 @@ mod tests {
     use super::*;
 
     const RATE: f64 = 48_000.0;
+
+    #[test]
+    fn tick_at_seconds_inverts_seconds_at() {
+        let map = TempoMap::new(
+            vec![tempo(0, 120.0), tempo(3840, 60.0)],
+            vec![SignatureChange {
+                bar: 0,
+                signature: TimeSignature::COMMON,
+            }],
+        )
+        .unwrap();
+        for t in [0, 960, 3840, 5000, 20_000] {
+            let back = map.tick_at_seconds(map.seconds_at(Tick(t)));
+            assert!((back - t as f64).abs() < 1e-6, "{t} came back as {back}");
+        }
+        assert_eq!(map.tick_at_seconds(-1.0), -1920.0);
+    }
 
     fn tempo(tick: i64, bpm: f64) -> TempoChange {
         TempoChange {

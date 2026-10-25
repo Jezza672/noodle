@@ -8,7 +8,7 @@ use noodle_core::{AudioClip, ClipId};
 use noodle_io::{Peak, Peaks};
 
 /// The strip along the top of a clip that its name goes in.
-const LABEL: f32 = 15.0;
+pub(super) const LABEL: f32 = 15.0;
 /// At most this many columns, however wide the clip is zoomed.
 const MAX_COLUMNS: usize = 4096;
 
@@ -16,7 +16,7 @@ const MAX_COLUMNS: usize = 4096;
 /// again when the zoom, the scroll, the clip or the file changes.
 #[derive(Default)]
 pub struct Cache {
-    columns: HashMap<ClipId, (Key, Vec<Peak>)>,
+    columns: HashMap<(ClipId, u8), (Key, Vec<Peak>)>,
     #[cfg(test)]
     computed: usize,
 }
@@ -41,7 +41,7 @@ impl Key {
 impl Cache {
     fn columns(
         &mut self,
-        id: ClipId,
+        id: (ClipId, u8),
         peaks: &Arc<Peaks>,
         start: u64,
         end: u64,
@@ -76,7 +76,7 @@ impl Cache {
 
     /// Forgets clips that are gone.
     pub fn retain(&mut self, keep: impl Fn(ClipId) -> bool) {
-        self.columns.retain(|&id, _| keep(id));
+        self.columns.retain(|&(id, _), _| keep(id));
     }
 
     #[cfg(test)]
@@ -85,9 +85,16 @@ impl Cache {
     }
 }
 
-/// The waveform's colour on a clip of `clip_colour`.
-fn ink(clip_colour: Color32) -> Color32 {
-    clip_colour.gamma_multiply(0.45)
+/// The waveform's colour on a clip of `clip_colour`: a darker shade of it.
+/// (Not `gamma_multiply`, which dims the alpha too and so would draw the clip's
+/// own colour, half see-through, over itself: no waveform at all.)
+pub(super) fn ink(clip_colour: Color32) -> Color32 {
+    let dark = |c: u8| (f32::from(c) * 0.4) as u8;
+    Color32::from_rgb(
+        dark(clip_colour.r()),
+        dark(clip_colour.g()),
+        dark(clip_colour.b()),
+    )
 }
 
 /// The clip a waveform belongs to.
@@ -109,28 +116,44 @@ pub fn draw(
     visible: Rect,
     clip: &Clip<'_>,
 ) -> bool {
+    let range = (clip.audio.offset, clip.audio.offset + clip.audio.length);
+    draw_range(painter, cache, (clip.id, 0), full, visible, clip, range)
+}
+
+/// Draws the file's frames `range` across `full`, of which `visible` is in
+/// view. Runs of one clip that are drawn in turn (the repeats of a loop) take
+/// a `slot` each, so they don't push each other out of the cache.
+pub fn draw_range(
+    painter: &Painter,
+    cache: &mut Cache,
+    key: (ClipId, u8),
+    full: Rect,
+    visible: Rect,
+    clip: &Clip<'_>,
+    range: (u64, u64),
+) -> bool {
     let Clip {
-        id,
         peaks,
         audio,
         colour: clip_colour,
+        ..
     } = *clip;
     let area = Rect::from_min_max(full.min + vec2(0.0, LABEL), full.max);
-    if area.height() < 4.0 || full.width() <= 0.0 {
+    if area.height() < 4.0 || full.width() <= 0.0 || visible.width() <= 0.0 {
         return false;
     }
-    // The visible part of the clip as a part of its audio.
+    // The visible part of the run as a part of its audio.
     let from = f64::from((visible.left() - full.left()) / full.width());
     let to = f64::from((visible.right() - full.left()) / full.width());
-    let length = audio.length as f64;
-    let start = audio.offset + (length * from).round() as u64;
-    let end = audio.offset + (length * to).round() as u64;
+    let length = range.1.saturating_sub(range.0) as f64;
+    let start = range.0 + (length * from).round() as u64;
+    let end = range.0 + (length * to).round() as u64;
     let columns = (visible.width().ceil() as usize).clamp(1, MAX_COLUMNS);
     let stroke = Stroke::new(visible.width() / columns as f32, ink(clip_colour));
     let middle = area.center().y;
     let half = area.height() / 2.0 - 1.0;
     for (i, &peak) in cache
-        .columns(id, peaks, start, end, columns)
+        .columns(key, peaks, start, end, columns)
         .iter()
         .enumerate()
     {
@@ -155,6 +178,19 @@ fn scaled(peak: Peak, gain: f32) -> Peak {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ink_stands_out_from_the_clip_it_is_drawn_on() {
+        for index in 0..8 {
+            let clip = crate::theme::timeline::track_colour(index);
+            let ink = ink(clip);
+            assert_eq!(ink.a(), 255, "see-through ink is the clip's own colour");
+            assert!(
+                clip.intensity() - ink.intensity() > 0.25,
+                "track {index}: {clip:?} vs {ink:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_clips_gain_scales_a_peak_but_not_off_the_screen() {
@@ -188,11 +224,11 @@ mod tests {
             Arc::new(Peaks::from_audio(&audio)),
         );
         let mut cache = Cache::default();
-        cache.columns(ClipId(1), &old, 0, 4096, 8);
-        cache.columns(ClipId(1), &old, 0, 4096, 8);
+        cache.columns((ClipId(1), 0), &old, 0, 4096, 8);
+        cache.columns((ClipId(1), 0), &old, 0, 4096, 8);
         assert_eq!(cache.computed(), 1);
         // Identical contents and range, but a different load.
-        cache.columns(ClipId(1), &new, 0, 4096, 8);
+        cache.columns((ClipId(1), 0), &new, 0, 4096, 8);
         assert_eq!(cache.computed(), 2);
     }
 }

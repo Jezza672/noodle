@@ -4,8 +4,8 @@
 use std::fmt;
 
 use crate::{
-    AutomationLane, Clip, ClipId, Connection, Endpoint, Frame, FrameId, LaneId, Node, NodeId,
-    Position, Project, TempoMap, Value,
+    AutomationLane, Clip, ClipId, ClipWarp, Connection, Endpoint, Frame, FrameId, LaneId, Node,
+    NodeId, Position, Project, TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +45,20 @@ pub enum Command {
         node: NodeId,
         order: Vec<String>,
     },
+    /// Shows a parameter on the node in the graph (`Some(true)`), hides it
+    /// (`Some(false)`), or leaves it to the node type's default (`None`).
+    /// Display only.
+    SetParamShown {
+        node: NodeId,
+        key: String,
+        shown: Option<bool>,
+    },
+    /// Records which library preset was last applied to a node or group, or
+    /// `None` to forget it. Changes nothing the engine sees.
+    SetPreset {
+        node: NodeId,
+        preset: Option<String>,
+    },
     /// Moves a node into a group, or `None` out to the top level. The node
     /// can't be wired to nodes outside its new group.
     SetParent {
@@ -66,6 +80,8 @@ pub enum Command {
     },
     /// Replaces the tempo map.
     SetTempoMap(TempoMap),
+    /// Replaces the transport's loop.
+    SetLoop(TransportLoop),
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
@@ -85,6 +101,21 @@ pub enum Command {
     SetClip {
         id: ClipId,
         clip: Clip,
+    },
+    /// Adds a warp for audio clips to share. Do this before the `SetClip` or
+    /// `AddClip` that uses it.
+    AddWarp {
+        id: WarpId,
+        warp: ClipWarp,
+    },
+    /// Removes a warp no clip uses.
+    RemoveWarp {
+        id: WarpId,
+    },
+    /// Replaces a warp, which changes every section that shows its clip.
+    SetWarp {
+        id: WarpId,
+        warp: ClipWarp,
     },
     AddLane {
         id: LaneId,
@@ -106,6 +137,14 @@ impl Command {
     /// Applies the command and returns its inverse. On error, the project is
     /// left unchanged.
     pub fn apply(self, project: &mut Project) -> Result<Command, EditError> {
+        let result = self.apply_inner(project);
+        if result.is_ok() {
+            project.bump_revision();
+        }
+        result
+    }
+
+    fn apply_inner(self, project: &mut Project) -> Result<Command, EditError> {
         if let Command::Batch(commands) = self {
             let mut inverses = Vec::with_capacity(commands.len());
             for command in commands {
@@ -141,6 +180,9 @@ impl Command {
             Command::SetTempoMap(map) => {
                 return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
             }
+            Command::SetLoop(region) => {
+                return Ok(Command::SetLoop(project.replace_loop(region)));
+            }
             Command::SetFrozen { node, frozen } => {
                 if project.graph().node(node).is_none() {
                     return Err(EditError::NoSuchNode(node));
@@ -162,6 +204,18 @@ impl Command {
             Command::SetClip { id, clip } => {
                 let old = project.replace_clip(id, clip)?;
                 return Ok(Command::SetClip { id, clip: old });
+            }
+            Command::AddWarp { id, warp } => {
+                project.insert_warp(id, warp)?;
+                return Ok(Command::RemoveWarp { id });
+            }
+            Command::RemoveWarp { id } => {
+                let warp = project.remove_warp(id)?;
+                return Ok(Command::AddWarp { id, warp });
+            }
+            Command::SetWarp { id, warp } => {
+                let old = project.replace_warp(id, warp)?;
+                return Ok(Command::SetWarp { id, warp: old });
             }
             Command::AddLane { id, lane } => {
                 project.insert_lane(id, lane)?;
@@ -262,9 +316,25 @@ impl Command {
                 let old = std::mem::replace(&mut graph.node_mut(node)?.port_order, order);
                 Command::SetPortOrder { node, order: old }
             }
+            Command::SetParamShown { node, key, shown } => {
+                let map = &mut graph.node_mut(node)?.param_shown;
+                let old = match shown {
+                    Some(shown) => map.insert(key.clone(), shown),
+                    None => map.remove(&key),
+                };
+                Command::SetParamShown {
+                    node,
+                    key,
+                    shown: old,
+                }
+            }
             Command::SetParent { node, parent } => {
                 let old = graph.set_parent(node, parent)?;
                 Command::SetParent { node, parent: old }
+            }
+            Command::SetPreset { node, preset } => {
+                let old = std::mem::replace(&mut graph.node_mut(node)?.preset, preset);
+                Command::SetPreset { node, preset: old }
             }
             Command::Batch(_)
             | Command::RemoveNode { .. }
@@ -272,11 +342,15 @@ impl Command {
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
+            | Command::SetLoop(_)
             | Command::SetTrackOrder(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
+            | Command::AddWarp { .. }
+            | Command::RemoveWarp { .. }
+            | Command::SetWarp { .. }
             | Command::AddLane { .. }
             | Command::RemoveLane { .. }
             | Command::SetLane { .. } => unreachable!("handled above"),
@@ -292,8 +366,10 @@ enum Target<'a> {
     Frame(FrameId),
     Param(NodeId, &'a str),
     Clip(ClipId),
+    Warp(WarpId),
     Lane(LaneId),
     TempoMap,
+    Loop,
     TrackOrder,
     Frozen(NodeId),
 }
@@ -304,8 +380,10 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetFrame { id, .. } => Some(Target::Frame(*id)),
         Command::SetParam { node, key, .. } => Some(Target::Param(*node, key)),
         Command::SetClip { id, .. } => Some(Target::Clip(*id)),
+        Command::SetWarp { id, .. } => Some(Target::Warp(*id)),
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
+        Command::SetLoop(_) => Some(Target::Loop),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
@@ -357,6 +435,12 @@ pub enum EditError {
     BoundaryNode(NodeId),
     GroupInsideItself(NodeId),
     NoSuchClip(ClipId),
+    NoSuchWarp(WarpId),
+    WarpExists(WarpId),
+    /// A clip still uses the warp.
+    WarpInUse(WarpId),
+    /// What's wrong with the warp.
+    InvalidWarp(WarpId, &'static str),
     ClipExists(ClipId),
     /// What's wrong with the clip.
     InvalidClip(ClipId, &'static str),
@@ -389,6 +473,10 @@ impl fmt::Display for EditError {
             Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
             Self::NoSuchClip(id) => write!(f, "there's no {id}"),
             Self::ClipExists(id) => write!(f, "there's already a {id}"),
+            Self::NoSuchWarp(id) => write!(f, "there's no {id}"),
+            Self::WarpExists(id) => write!(f, "there's already a {id}"),
+            Self::WarpInUse(id) => write!(f, "a clip still uses {id}"),
+            Self::InvalidWarp(id, why) => write!(f, "the {id} can't be used: {why}"),
             Self::InvalidClip(id, why) => write!(f, "the {id} can't be used: {why}"),
             Self::NoSuchLane(id) => write!(f, "there's no {id}"),
             Self::LaneExists(id) => write!(f, "there's already a {id}"),
@@ -403,10 +491,14 @@ impl std::error::Error for EditError {}
 /// The undo and redo stacks.
 #[derive(Debug, Default)]
 pub struct History {
-    undo: Vec<Command>,
-    redo: Vec<Command>,
-    /// Inverses collected while a group is open, in the order they were made.
-    group: Option<Vec<Command>>,
+    /// Each step carries the number it was made with, which it keeps through
+    /// undo and redo (see [`position`](Self::position)).
+    undo: Vec<(u64, Command)>,
+    redo: Vec<(u64, Command)>,
+    /// Inverses collected while a group is open, in the order they were made,
+    /// and the number the group will have.
+    group: Option<(u64, Vec<Command>)>,
+    last: u64,
 }
 
 impl History {
@@ -418,10 +510,25 @@ impl History {
         let inverse = command.apply(project)?;
         self.redo.clear();
         match &mut self.group {
-            Some(group) => push_coalesced(group, inverse),
-            None => self.undo.push(inverse),
+            Some((_, group)) => push_coalesced(group, inverse),
+            None => {
+                self.last += 1;
+                self.undo.push((self.last, inverse));
+            }
         }
         Ok(())
+    }
+
+    /// Names the project's state in the history: the number of the latest step
+    /// still applied, or 0 before any. A step keeps its number through undo
+    /// and redo and a new step never reuses one, so equal positions mean the
+    /// same state. Saving records it, and the project has unsaved changes
+    /// when it differs.
+    pub fn position(&self) -> u64 {
+        match &self.group {
+            Some((number, group)) if !group.is_empty() => *number,
+            _ => self.undo.last().map_or(0, |(number, _)| *number),
+        }
     }
 
     /// Until [`end_group`](Self::end_group), everything applied becomes one
@@ -432,15 +539,18 @@ impl History {
     /// from before the group. So a long drag stays one small undo step rather
     /// than one inverse per frame.
     pub fn begin_group(&mut self) {
-        self.group.get_or_insert_with(Vec::new);
+        if self.group.is_none() {
+            self.last += 1;
+            self.group = Some((self.last, Vec::new()));
+        }
     }
 
     pub fn end_group(&mut self) {
-        if let Some(mut inverses) = self.group.take()
+        if let Some((number, mut inverses)) = self.group.take()
             && !inverses.is_empty()
         {
             inverses.reverse();
-            self.undo.push(Command::Batch(inverses));
+            self.undo.push((number, Command::Batch(inverses)));
         }
     }
 
@@ -457,7 +567,7 @@ impl History {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty() || self.group.as_ref().is_some_and(|g| !g.is_empty())
+        !self.undo.is_empty() || self.group.as_ref().is_some_and(|(_, g)| !g.is_empty())
     }
 
     pub fn can_redo(&self) -> bool {
@@ -466,19 +576,19 @@ impl History {
 
     fn step(
         project: &mut Project,
-        from: &mut Vec<Command>,
-        to: &mut Vec<Command>,
+        from: &mut Vec<(u64, Command)>,
+        to: &mut Vec<(u64, Command)>,
     ) -> Result<bool, EditError> {
-        let Some(command) = from.pop() else {
+        let Some((number, command)) = from.pop() else {
             return Ok(false);
         };
         match command.clone().apply(project) {
             Ok(inverse) => {
-                to.push(inverse);
+                to.push((number, inverse));
                 Ok(true)
             }
             Err(error) => {
-                from.push(command);
+                from.push((number, command));
                 Err(error)
             }
         }
@@ -607,6 +717,16 @@ mod tests {
                 node: mix,
                 order: vec!["in2".into(), "in".into()],
             },
+            Command::SetParamShown {
+                node: a,
+                key: "frequency".into(),
+                shown: Some(false),
+            },
+            Command::SetParamShown {
+                node: a,
+                key: "frequency".into(),
+                shown: None,
+            },
             Command::SetParam {
                 node: a,
                 key: "frequency".into(),
@@ -729,7 +849,7 @@ mod tests {
         h.apply(&mut p, Command::RemoveNode { id: b }).unwrap();
         h.end_group();
 
-        let Some(Command::Batch(step)) = h.undo.last() else {
+        let Some(Command::Batch(step)) = h.undo.last().map(|(_, c)| c) else {
             panic!("one undo step");
         };
         assert_eq!(step.len(), 6, "{step:?}");
@@ -753,5 +873,94 @@ mod tests {
         );
         assert!(!h.can_redo());
         assert_ne!(p.graph().nodes().next().unwrap().0, id, "IDs aren't reused");
+    }
+
+    #[test]
+    fn revision_changes_with_every_applied_command_and_nothing_else() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let start = p.revision();
+        let _ = (p.graph(), p.clone(), p.to_ron());
+        assert_eq!(p.revision(), start, "reading does not bump it");
+        assert_ne!(Project::new().revision(), start, "new projects differ");
+
+        let id = add(&mut h, &mut p, Node::new("noodle.osc.sine"));
+        let after_add = p.revision();
+        assert!(after_add > 0);
+        let frame_id = p.new_frame_id();
+        assert_eq!(p.revision(), after_add, "reserving an id is not an edit");
+
+        let steps: Vec<Command> = vec![
+            Command::AddFrame {
+                id: frame_id,
+                frame: frame("A"),
+            },
+            Command::SetParam {
+                node: id,
+                key: "frequency".into(),
+                value: Some(3.0),
+            },
+            Command::Batch(vec![Command::RemoveFrame { id: frame_id }]),
+            Command::RemoveNode { id },
+        ];
+        for command in steps {
+            let before = p.revision();
+            h.apply(&mut p, command.clone()).unwrap();
+            assert!(p.revision() > before, "{command:?}");
+        }
+        let before = p.revision();
+        assert!(h.apply(&mut p, Command::RemoveNode { id }).is_err());
+        assert_eq!(p.revision(), before, "a failed command is not an edit");
+
+        while h.can_undo() {
+            let before = p.revision();
+            h.undo(&mut p).unwrap();
+            assert!(p.revision() > before, "undo");
+        }
+        let before = p.revision();
+        h.redo(&mut p).unwrap();
+        assert!(p.revision() > before, "redo");
+    }
+
+    #[test]
+    fn position_returns_to_a_state_by_undo_but_not_by_a_new_edit() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        assert_eq!(h.position(), 0);
+        let a = add(&mut h, &mut p, Node::new("noodle.osc.sine"));
+        let saved = h.position();
+        add(&mut h, &mut p, Node::new("noodle.osc.sine"));
+        assert_ne!(h.position(), saved);
+        h.undo(&mut p).unwrap();
+        assert_eq!(h.position(), saved);
+        h.redo(&mut p).unwrap();
+        assert_ne!(h.position(), saved);
+        h.undo(&mut p).unwrap();
+        let next_frame = p.next_frame_id();
+        // A different edit from the same state is a different state.
+        h.apply(
+            &mut p,
+            Command::AddFrame {
+                id: next_frame,
+                frame: frame("A"),
+            },
+        )
+        .unwrap();
+        assert_ne!(h.position(), saved);
+        // A drag moves it as soon as it changes something.
+        let before = h.position();
+        h.begin_group();
+        assert_eq!(h.position(), before);
+        let set = |value| Command::SetParam {
+            node: a,
+            key: "frequency".into(),
+            value: Some(value),
+        };
+        h.apply(&mut p, set(1.0)).unwrap();
+        let during = h.position();
+        assert_ne!(during, before);
+        h.apply(&mut p, set(2.0)).unwrap();
+        h.end_group();
+        assert_eq!(h.position(), during);
+        h.undo(&mut p).unwrap();
+        assert_eq!(h.position(), before);
     }
 }

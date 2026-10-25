@@ -7,7 +7,8 @@
 //! system and can take a moment, so it happens when the view opens and on
 //! Refresh, never every frame.
 
-use egui::{ComboBox, RichText, Ui};
+use crate::widgets::Dropdown;
+use egui::{RichText, Ui};
 use noodle_core::{Command, Config, Node, NodeId, Project, Value};
 use noodle_engine::{OUTPUT_DEVICE, OUTPUT_DEVICE_KEY, OUTPUT_ID, Problem};
 use noodle_io::{AudioError, DeviceInfo, DeviceList, OutputStatus};
@@ -96,7 +97,13 @@ impl OutputsView {
     pub fn refresh(&mut self, host: Option<&str>) {
         self.devices = Some(
             (self.list_devices)(host)
-                .map(|list| list.outputs)
+                // The virtual output runs the main engine; an Output node
+                // can't be tied to it.
+                .map(|list| {
+                    let mut outputs = list.outputs;
+                    outputs.retain(|d| d.id != noodle_io::VIRTUAL_OUTPUT);
+                    outputs
+                })
                 .map_err(|error| error.to_string()),
         );
     }
@@ -110,6 +117,26 @@ impl OutputsView {
                 .find(|d| d.is_default)
                 .map(|d| d.id.clone())
         })
+    }
+
+    /// Lists the devices if they never were.
+    pub fn ensure_listed(&mut self, host: Option<&str>) {
+        if self.devices.is_none() {
+            self.refresh(host);
+        }
+    }
+
+    /// The output devices last listed (none before the first listing).
+    pub fn devices(&self) -> &[DeviceInfo] {
+        self.listed()
+    }
+
+    /// The name of the listed device `id`.
+    pub fn device_name(&self, id: &str) -> Option<String> {
+        self.listed()
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.name.clone())
     }
 
     /// The output devices last listed.
@@ -182,7 +209,7 @@ impl OutputsView {
                         ui,
                         row,
                         status,
-                        session.is_playing(),
+                        session.engine_running(),
                         main.as_deref(),
                         problem,
                     );
@@ -216,7 +243,7 @@ impl OutputsView {
             name_of(&row.device)
         };
         let mut chosen = None;
-        let combo = ComboBox::from_id_salt(("output device", row.node))
+        let combo = Dropdown::from_id_salt(("output device", row.node))
             .selected_text(selected)
             .width(260.0)
             .show_ui(ui, |ui| {
@@ -319,6 +346,27 @@ mod tests {
     }
 
     #[test]
+    fn the_virtual_output_is_not_offered_to_output_nodes() {
+        let mut view =
+            OutputsView::with_lister(|_| Ok(noodle_io::devices(None).unwrap_or_default()));
+        view.refresh(None);
+        assert!(
+            view.listed()
+                .iter()
+                .all(|d| d.id != noodle_io::VIRTUAL_OUTPUT)
+        );
+        // It is in the audio settings' list, though.
+        assert!(
+            noodle_io::devices(None)
+                .map(|list| list
+                    .outputs
+                    .iter()
+                    .any(|d| d.id == noodle_io::VIRTUAL_OUTPUT))
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
     fn rows_list_the_output_nodes_with_their_devices() {
         let rows = rows(&project(&["", "alsa:b"]));
         assert_eq!(rows.len(), 2);
@@ -395,15 +443,10 @@ mod tests {
             view: OutputsView::with_lister(fake_devices),
             session,
         };
-        let mut harness = Harness::new_ui_state(
-            |ui, state: &mut State| {
-                let edits = state.view.show(ui, &state.session);
-                state.session.edit(edits);
-            },
-            state,
-        );
-        harness.run();
-        harness
+        crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
+            let edits = state.view.show(ui, &state.session);
+            state.session.edit(edits);
+        })
     }
 
     fn shown(harness: &Harness<'_, State>, label: &str) -> String {

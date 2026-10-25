@@ -4,7 +4,7 @@
 //! Merkle-style: a node's key hashes its own description together with the
 //! keys of everything upstream, so any change anywhere upstream gives a new
 //! key and a stale render can never be served (see "Caching" in
-//! `docs/ARCHITECTURE.md`). This module only supplies the hashing; deciding
+//! `docs/architecture/caching.md`). This module only supplies the hashing; deciding
 //! what goes into a key is the compiler's job.
 
 use std::fmt;

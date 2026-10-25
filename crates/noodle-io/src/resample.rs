@@ -1,5 +1,6 @@
-//! Converting audio to another sample rate, for importing a file recorded at
-//! a different rate from the engine's.
+//! Converting audio to another sample rate: whole files, for importing one
+//! recorded at a different rate from the engine's, and a continuous stream,
+//! for a device that runs at a different rate from the engine.
 
 use std::fmt;
 
@@ -7,6 +8,14 @@ use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
     Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
+};
+
+pub(crate) const SINC_PARAMETERS: SincInterpolationParameters = SincInterpolationParameters {
+    sinc_len: 128,
+    f_cutoff: Some(0.95),
+    interpolation: SincInterpolationType::Cubic,
+    oversampling_factor: 128,
+    window: WindowFunction::BlackmanHarris2,
 };
 
 use crate::Audio;
@@ -36,17 +45,10 @@ pub fn resample(audio: &Audio, rate: u32) -> Result<Audio, ResampleError> {
     let err = |e: &dyn fmt::Display| ResampleError(e.to_string());
     let channels = audio.channels;
     let frames = audio.samples.len() / channels;
-    let params = SincInterpolationParameters {
-        sinc_len: 128,
-        f_cutoff: Some(0.95),
-        interpolation: SincInterpolationType::Cubic,
-        oversampling_factor: 128,
-        window: WindowFunction::BlackmanHarris2,
-    };
     let mut resampler = Async::<f32>::new_sinc(
         f64::from(rate) / f64::from(audio.sample_rate),
         1.1,
-        &params,
+        &SINC_PARAMETERS,
         1024,
         channels,
         FixedAsync::Input,
@@ -64,6 +66,87 @@ pub fn resample(audio: &Audio, rate: u32) -> Result<Audio, ResampleError> {
         channels,
         sample_rate: rate,
     })
+}
+
+/// Converts audio that arrives as a continuous stream, in interleaved pieces
+/// of any size, from one rate to another. It buffers input until it has a
+/// chunk to convert, so the output comes in bursts and lags by a chunk and the
+/// filter's delay (see [`delay`](Self::delay)).
+///
+/// Creating one allocates, and so can processing (the buffers grow to the
+/// largest piece they are given), so use it off the audio thread.
+pub struct StreamResampler {
+    inner: Async<f32>,
+    channels: usize,
+    /// Input frames per conversion.
+    chunk: usize,
+    pending: Vec<f32>,
+    out: Vec<f32>,
+}
+
+impl StreamResampler {
+    /// A converter from `from` Hz to `to` Hz that works `chunk` input frames
+    /// at a time.
+    pub fn new(from: u32, to: u32, channels: usize, chunk: usize) -> Result<Self, ResampleError> {
+        let err = |e: &dyn fmt::Display| ResampleError(e.to_string());
+        if from == 0 || to == 0 || channels == 0 || chunk == 0 {
+            return Err(ResampleError("nothing to convert".into()));
+        }
+        let inner = Async::<f32>::new_sinc(
+            f64::from(to) / f64::from(from),
+            1.1,
+            &SINC_PARAMETERS,
+            chunk,
+            channels,
+            FixedAsync::Input,
+        )
+        .map_err(|e| err(&e))?;
+        let out = vec![0.0; inner.output_frames_max() * channels];
+        Ok(Self {
+            inner,
+            channels,
+            chunk,
+            pending: Vec::with_capacity(chunk * channels * 2),
+            out,
+        })
+    }
+
+    /// How many output frames the first sound is late by, beyond the chunk
+    /// being filled.
+    pub fn delay(&self) -> usize {
+        self.inner.output_delay()
+    }
+
+    /// Takes `input` (whole interleaved frames) and passes each block that
+    /// can be converted to `emit`, as interleaved frames at the new rate.
+    pub fn process(&mut self, input: &[f32], mut emit: impl FnMut(&[f32])) {
+        let channels = self.channels;
+        self.pending
+            .extend_from_slice(&input[..input.len() / channels * channels]);
+        let mut used = 0;
+        let size = self.chunk * channels;
+        while self.pending.len() - used >= size {
+            let frames = self.out.len() / channels;
+            let converted = {
+                let source =
+                    InterleavedSlice::new(&self.pending[used..used + size], channels, self.chunk);
+                let target = InterleavedSlice::new_mut(&mut self.out, channels, frames);
+                match (source, target) {
+                    (Ok(source), Ok(mut target)) => self
+                        .inner
+                        .process_into_buffer(&source, &mut target, None)
+                        .map(|(_, written)| written)
+                        .ok(),
+                    _ => None,
+                }
+            };
+            used += size;
+            if let Some(written) = converted {
+                emit(&self.out[..written * channels]);
+            }
+        }
+        self.pending.drain(..used);
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +245,53 @@ mod tests {
             sample_rate: 44_100,
         };
         assert!(resample(&empty, 48_000).unwrap().samples.is_empty());
+    }
+
+    #[test]
+    fn a_stream_in_odd_pieces_keeps_its_pitch_and_length() {
+        for (from, to) in [(48_000u32, 44_100u32), (44_100, 48_000), (48_000, 96_000)] {
+            let audio = sine(1000.0, from, from as usize);
+            let mut stream = StreamResampler::new(from, to, 1, 128).unwrap();
+            let mut out = Vec::new();
+            let mut at = 0;
+            let mut size = 1;
+            while at < audio.samples.len() {
+                let end = (at + size).min(audio.samples.len());
+                stream.process(&audio.samples[at..end], |block| {
+                    out.extend_from_slice(block)
+                });
+                at = end;
+                size = size % 700 + 37;
+            }
+            // Nearly all of a second comes out, less what is still buffered.
+            let expected = to as usize;
+            assert!(
+                out.len() <= expected && out.len() + 128 * 2 + stream.delay() >= expected - 4,
+                "{from} -> {to}: {} of {expected}",
+                out.len()
+            );
+            let f = measured_freq(&Audio {
+                samples: out,
+                channels: 1,
+                sample_rate: to,
+            });
+            assert!((f - 1000.0).abs() < 5.0, "{from} -> {to}: {f} Hz");
+        }
+    }
+
+    #[test]
+    fn a_stream_keeps_channels_apart() {
+        let mut stream = StreamResampler::new(48_000, 44_100, 2, 128).unwrap();
+        let input: Vec<f32> = (0..4800).flat_map(|i| [0.5, -(i as f32 * 0.0)]).collect();
+        let mut out = Vec::new();
+        stream.process(&input, |block| out.extend_from_slice(block));
+        // After the filter has settled the left holds a steady 0.5.
+        let settled = &out[out.len() / 4 * 2..];
+        for frame in settled.chunks(2) {
+            assert!(
+                (frame[0] - 0.5).abs() < 0.01 && frame[1].abs() < 0.01,
+                "{frame:?}"
+            );
+        }
     }
 }

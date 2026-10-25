@@ -7,6 +7,7 @@ use crate::NodeType;
 #[derive(Default)]
 pub struct Registry {
     types: BTreeMap<&'static str, Arc<dyn NodeType>>,
+    generation: u64,
 }
 
 impl Registry {
@@ -19,6 +20,7 @@ impl Registry {
         let id = node_type.info().id;
         let previous = self.types.insert(id, Arc::new(node_type));
         assert!(previous.is_none(), "node type {id} registered twice");
+        self.generation += 1;
     }
 
     /// Registers a type, replacing one with the same ID if there is one.
@@ -26,10 +28,45 @@ impl Registry {
     /// [`with_builtins`](Self::with_builtins) and a fuller one elsewhere.
     pub fn replace(&mut self, node_type: impl NodeType) {
         self.types.insert(node_type.info().id, Arc::new(node_type));
+        self.generation += 1;
+    }
+
+    /// Changes whenever a type is registered or replaced, so what was derived
+    /// from the registry (a node's layout) can be told to be stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<dyn NodeType>> {
         self.types.get(id)
+    }
+
+    /// The keys of a node's ports as one string, sorted, so the order ports
+    /// are declared in doesn't matter: `i:key` for an audio or parameter
+    /// input, `o:key` for an output, `ei:` and `eo:` for events, separated by
+    /// `;`. `None` if the type is unknown or its config is invalid. Presets
+    /// use this to tell whether a node has the ports they set, by name.
+    pub fn layout_signature(&self, node: &noodle_core::Node) -> Option<String> {
+        let layout = self.get(&node.type_id)?.layout(&node.config).ok()?;
+        let mut keys: Vec<String> = Vec::new();
+        keys.extend(layout.inputs.iter().map(|p| format!("i:{}", p.key)));
+        keys.extend(layout.outputs.iter().map(|p| format!("o:{}", p.key)));
+        keys.extend(layout.event_inputs.iter().map(|p| format!("ei:{}", p.key)));
+        keys.extend(layout.event_outputs.iter().map(|p| format!("eo:{}", p.key)));
+        keys.extend(
+            layout
+                .spectral_inputs
+                .iter()
+                .map(|p| format!("si:{}", p.key)),
+        );
+        keys.extend(
+            layout
+                .spectral_outputs
+                .iter()
+                .map(|p| format!("so:{}", p.key)),
+        );
+        keys.sort();
+        Some(keys.join(";"))
     }
 
     /// All types, ordered by ID.

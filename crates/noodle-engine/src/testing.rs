@@ -2,7 +2,8 @@
 
 use crate::{
     Cancelled, Config, Context, Event, EventsOut, Instance, Io, NodeError, NodeType, Progress,
-    Setup, Shape, SignalBuffer, SignalIn, SignalOut, Transport,
+    Setup, Shape, SignalBuffer, SignalIn, SignalOut, SpectralBuf, SpectralIn, SpectralOut,
+    Transport,
 };
 
 /// Hosts one node with its own buffers.
@@ -17,6 +18,8 @@ pub struct Harness {
     outputs: Vec<SignalBuffer>,
     event_inputs: Vec<Vec<Event>>,
     event_outputs: Vec<Vec<Event>>,
+    spectral_inputs: Vec<(Shape, SpectralBuf)>,
+    spectral_outputs: Vec<(Shape, SpectralBuf)>,
     sample_rate: f32,
     position: u64,
     frames: usize,
@@ -52,9 +55,33 @@ impl Harness {
             node_type,
             config,
             connected,
+            &[],
             sample_rate,
             max_frames,
             seed,
+            0,
+        )
+    }
+
+    /// Like [`new`](Self::new) for a node with spectral inputs, which are all
+    /// connected; `spectral` gives each one's shape, by port. Fill them with
+    /// [`spectral_input`](Self::spectral_input).
+    pub fn with_spectral(
+        node_type: &dyn NodeType,
+        config: &Config,
+        connected: &[(usize, Shape)],
+        spectral: &[Shape],
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Result<Self, NodeError> {
+        Self::build(
+            node_type,
+            config,
+            connected,
+            spectral,
+            sample_rate,
+            max_frames,
+            0,
             0,
         )
     }
@@ -74,6 +101,7 @@ impl Harness {
             node_type,
             config,
             connected,
+            &[],
             sample_rate,
             max_frames,
             0,
@@ -81,10 +109,12 @@ impl Harness {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         node_type: &dyn NodeType,
         config: &Config,
         connected: &[(usize, Shape)],
+        spectral: &[Shape],
         sample_rate: f32,
         max_frames: usize,
         seed: u64,
@@ -94,13 +124,20 @@ impl Harness {
             |port: usize| connected.iter().find(|(p, _)| *p == port).map(|(_, s)| *s);
 
         let layout = node_type.layout(config)?;
-        let input_shapes: Vec<Shape> = (0..layout.inputs.len())
+        assert_eq!(
+            spectral.len(),
+            layout.spectral_inputs.len(),
+            "give a shape for each spectral input"
+        );
+        let signal_inputs = layout.inputs.len();
+        let input_shapes: Vec<Shape> = (0..signal_inputs)
             .map(|port| connected_shape(port).unwrap_or(Shape::MONO))
+            .chain(spectral.iter().copied())
             .collect();
         let output_shapes = node_type.output_shapes(config, &layout, &input_shapes)?;
         assert_eq!(
             output_shapes.len(),
-            layout.outputs.len(),
+            layout.outputs.len() + layout.spectral_outputs.len(),
             "output_shapes must return one shape per output"
         );
 
@@ -139,9 +176,17 @@ impl Harness {
         Ok(Self {
             instance,
             inputs,
-            outputs: output_shapes
+            outputs: output_shapes[..layout.outputs.len()]
                 .iter()
                 .map(|&shape| SignalBuffer::new(shape, max_frames))
+                .collect(),
+            spectral_inputs: spectral
+                .iter()
+                .map(|&shape| (shape, SpectralBuf::new(shape.lanes(), max_frames)))
+                .collect(),
+            spectral_outputs: output_shapes[layout.outputs.len()..]
+                .iter()
+                .map(|&shape| (shape, SpectralBuf::new(shape.lanes(), max_frames)))
                 .collect(),
             event_inputs: layout.event_inputs.iter().map(|_| Vec::new()).collect(),
             event_outputs: layout
@@ -181,6 +226,13 @@ impl Harness {
         self.event_inputs[port] = events.to_vec();
     }
 
+    /// The frames a spectral input receives in the next `run`, written by the
+    /// caller. They stay for every following `run` until replaced.
+    pub fn spectral_input(&mut self, port: usize) -> SpectralOut<'_> {
+        let (shape, buf) = &mut self.spectral_inputs[port];
+        buf.as_out(*shape)
+    }
+
     /// Processes one block. For an offline node, renders `frames` frames as
     /// the whole range.
     pub fn run(&mut self, frames: usize) -> Result<(), Cancelled> {
@@ -204,11 +256,24 @@ impl Harness {
         let mut event_outputs: Vec<EventsOut<'_>> =
             self.event_outputs.iter_mut().map(EventsOut::new).collect();
 
+        let spectral_inputs: Vec<SpectralIn<'_>> = self
+            .spectral_inputs
+            .iter()
+            .map(|(shape, buf)| buf.as_in(*shape))
+            .collect();
+        let mut spectral_outputs: Vec<SpectralOut<'_>> = self
+            .spectral_outputs
+            .iter_mut()
+            .map(|(shape, buf)| buf.as_out(*shape))
+            .collect();
+
         let io = Io {
             inputs: &inputs,
             outputs: &mut outputs,
             event_inputs: &event_inputs,
             event_outputs: &mut event_outputs,
+            spectral_inputs: &spectral_inputs,
+            spectral_outputs: &mut spectral_outputs,
         };
         let ctx = Context {
             sample_rate: self.sample_rate,
@@ -216,6 +281,8 @@ impl Harness {
             transport: Transport {
                 playing: true,
                 position: self.position,
+                // 120 beats per minute, the default tempo.
+                tick: self.position as f64 * 2.0 * 960.0 / f64::from(self.sample_rate),
                 ..Transport::default()
             },
         };
@@ -232,6 +299,12 @@ impl Harness {
     /// The events an event output wrote in the last run.
     pub fn events(&self, port: usize) -> &[Event] {
         &self.event_outputs[port]
+    }
+
+    /// The frames a spectral output wrote in the last run.
+    pub fn spectral(&self, port: usize) -> SpectralIn<'_> {
+        let (shape, buf) = &self.spectral_outputs[port];
+        buf.as_in(*shape)
     }
 
     /// An output from the last run.

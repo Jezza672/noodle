@@ -17,8 +17,8 @@ use std::fmt;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ use cpal::{FromSample, Sample};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use crate::WavError;
+use crate::{Peak, PeaksBuilder, WavError};
 
 /// How much the ring holds, in seconds. The writer drains it every few
 /// milliseconds, so this only fills if the disk stalls.
@@ -91,9 +91,19 @@ pub struct RecordTap {
     armed: Arc<AtomicBool>,
     /// Samples that didn't fit.
     dropped: Arc<AtomicU64>,
+    /// How long ago the driver captured the block being delivered, in
+    /// microseconds (see [`Recorder::input_latency`]).
+    latency_micros: Arc<AtomicU64>,
 }
 
 impl RecordTap {
+    /// Notes how long before this callback the driver captured its input.
+    /// Real-time safe.
+    pub fn set_latency(&self, latency: Duration) {
+        self.latency_micros
+            .store(latency.as_micros() as u64, Ordering::Relaxed);
+    }
+
     /// Queues interleaved input, in whole frames, if recording is on. Real-time
     /// safe, like [`Capture::capture`](crate::Capture::capture).
     pub fn push<T: Sample>(&mut self, input: &[T])
@@ -107,7 +117,8 @@ impl RecordTap {
             input.len().is_multiple_of(self.channels),
             "input is whole frames"
         );
-        let fits = input.len().min(self.producer.slots());
+        // Whole frames only, or the channels would swap after a drop.
+        let fits = input.len().min(self.producer.slots()) / self.channels * self.channels;
         if fits < input.len() {
             self.dropped
                 .fetch_add((input.len() - fits) as u64, Ordering::Relaxed);
@@ -142,9 +153,13 @@ struct Written {
 pub struct Recorder {
     armed: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
+    latency_micros: Arc<AtomicU64>,
     channels: usize,
     sample_rate: u32,
     flush_every: usize,
+    /// The waveform of the recording so far, which the writer keeps up to
+    /// date for drawing it while it runs.
+    live: Arc<Mutex<PeaksBuilder>>,
     /// The ring's reading end, while no writer has it.
     idle: Option<Consumer<f32>>,
     active: Option<Active>,
@@ -167,18 +182,22 @@ fn record_path_with(
     let (producer, consumer) = RingBuffer::new(ring_frames * channels);
     let armed = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicU64::new(0));
+    let latency_micros = Arc::new(AtomicU64::new(0));
     let tap = RecordTap {
         producer,
         channels,
         armed: Arc::clone(&armed),
         dropped: Arc::clone(&dropped),
+        latency_micros: Arc::clone(&latency_micros),
     };
     let recorder = Recorder {
         armed,
         dropped,
+        latency_micros,
         channels,
         sample_rate: sample_rate as u32,
         flush_every: (flush_frames * channels).max(1),
+        live: Arc::new(Mutex::new(PeaksBuilder::new(channels, sample_rate as u32))),
         idle: Some(consumer),
         active: None,
     };
@@ -186,6 +205,14 @@ fn record_path_with(
 }
 
 impl Recorder {
+    /// How long before it reached the app the driver captured the input, as
+    /// far as the driver says: zero until the first callback. A recording is
+    /// this much later than the sound that made it, on top of the output
+    /// latency the player heard the project through.
+    pub fn input_latency(&self) -> Duration {
+        Duration::from_micros(self.latency_micros.load(Ordering::Relaxed))
+    }
+
     /// Whether a recording is running. It stops being true if the writer
     /// fails, and [`stop`](Self::stop) then says why.
     pub fn is_recording(&self) -> bool {
@@ -218,11 +245,14 @@ impl Recorder {
         self.dropped.store(0, Ordering::Relaxed);
         let stop = Arc::new(AtomicBool::new(false));
         let flush_every = self.flush_every;
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) =
+            PeaksBuilder::new(self.channels, self.sample_rate);
+        let live = Arc::clone(&self.live);
         let thread = std::thread::Builder::new()
             .name("noodle-record".into())
             .spawn({
                 let stop = Arc::clone(&stop);
-                move || write_out(writer, consumer, &stop, flush_every)
+                move || write_out(writer, consumer, &stop, flush_every, &live)
             })
             .map_err(WavError::IoError)?;
         self.active = Some(Active {
@@ -232,6 +262,16 @@ impl Recorder {
         });
         self.armed.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// The recording so far as `columns` peaks spread over all of it, and
+    /// its length in frames, for drawing it as it grows. Only complete
+    /// blocks of [`BLOCK_FRAMES`](crate::BLOCK_FRAMES) frames count, so it
+    /// trails the input by a few milliseconds.
+    pub fn live_peaks(&self, columns: usize) -> (u64, Vec<Peak>) {
+        let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        let frames = live.frames();
+        (frames, live.columns(0, frames, columns))
     }
 
     /// Stops recording and finishes the file.
@@ -273,6 +313,7 @@ fn write_out(
     mut consumer: Consumer<f32>,
     stop: &AtomicBool,
     flush_every: usize,
+    live: &Mutex<PeaksBuilder>,
 ) -> Written {
     let mut samples = 0u64;
     let mut since_flush = 0usize;
@@ -288,6 +329,11 @@ fn write_out(
         let (first, second) = chunk.as_slices();
         for &sample in first.iter().chain(second) {
             writer.write_sample(sample)?;
+        }
+        {
+            let mut live = live.lock().unwrap_or_else(|e| e.into_inner());
+            live.push(first);
+            live.push(second);
         }
         samples += available as u64;
         since_flush += available;
@@ -352,6 +398,14 @@ mod tests {
     }
 
     #[test]
+    fn the_input_latency_is_what_the_callback_last_reported() {
+        let (tap, recorder) = record_path(1, RATE);
+        assert_eq!(recorder.input_latency(), Duration::ZERO);
+        tap.set_latency(Duration::from_micros(12_500));
+        assert_eq!(recorder.input_latency(), Duration::from_micros(12_500));
+    }
+
+    #[test]
     fn a_recording_is_what_the_input_delivered() {
         let path = temp("recorded.wav");
         let (mut tap, mut recorder) = record_path(2, RATE);
@@ -372,6 +426,24 @@ mod tests {
     }
 
     #[test]
+    fn the_waveform_is_available_while_recording() {
+        let (mut tap, mut recorder) = record_path(1, RATE);
+        recorder.start(&temp("live.wav")).unwrap();
+        let mut block = vec![0.0f32; crate::BLOCK_FRAMES as usize];
+        block[3] = 0.75;
+        tap.push(&block);
+        eventually(|| recorder.live_peaks(1).0 == crate::BLOCK_FRAMES.into());
+        let (frames, peaks) = recorder.live_peaks(2);
+        assert_eq!(frames, u64::from(crate::BLOCK_FRAMES));
+        assert_eq!(peaks.iter().map(|p| p.max).fold(0.0, f32::max), 0.75);
+        recorder.stop().unwrap();
+        // A new recording starts with a clean waveform.
+        recorder.start(&temp("live2.wav")).unwrap();
+        assert_eq!(recorder.live_peaks(1).0, 0);
+        recorder.stop().unwrap();
+    }
+
+    #[test]
     fn nothing_is_recorded_outside_a_recording() {
         let path = temp("outside.wav");
         let (mut tap, mut recorder) = record_path(1, RATE);
@@ -385,6 +457,24 @@ mod tests {
         tap.push(&[5.0f32]);
         recorder.stop().unwrap();
         assert_eq!(read_wav(&path).unwrap().samples, [5.0]);
+    }
+
+    #[test]
+    fn a_full_ring_drops_whole_frames_and_the_recording_survives() {
+        // Three frames of room in a stereo ring: a four frame block fits
+        // only three, and not 6.5 of them.
+        let (producer, consumer) = RingBuffer::new(7);
+        let armed = Arc::new(AtomicBool::new(true));
+        let mut tap = RecordTap {
+            producer,
+            channels: 2,
+            armed,
+            dropped: Arc::new(AtomicU64::new(0)),
+            latency_micros: Arc::new(AtomicU64::new(0)),
+        };
+        tap.push(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(consumer.slots(), 6);
+        assert_eq!(tap.dropped.load(Ordering::Relaxed), 2);
     }
 
     #[test]

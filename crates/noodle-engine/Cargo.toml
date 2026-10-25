@@ -9,3 +9,8 @@ license.workspace = true
 noodle-core.workspace = true
 noodle-macros.workspace = true
 rtrb = "0.4.0"
+realfft = "3.5.0"
+
+# Real-time priority for worker threads (`priority.rs`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

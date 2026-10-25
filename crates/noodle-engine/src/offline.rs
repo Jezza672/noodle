@@ -237,6 +237,8 @@ pub fn render_offline_node(
         outputs: &mut views,
         event_inputs: &[],
         event_outputs: &mut [],
+        spectral_inputs: &[],
+        spectral_outputs: &mut [],
     };
     offline.render(&ctx, io, progress)?;
     drop(views);

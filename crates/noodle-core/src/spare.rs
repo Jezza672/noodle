@@ -9,19 +9,23 @@
 //!   then [`prepare_mixer_input`] raises `inputs` in the same command. Ports
 //!   the config has beyond the last wired one are just not shown.
 //! - A **group** has the ports its boundary nodes give it, plus a spare input
-//!   and a spare output. Wiring to one makes a boundary node inside
-//!   ([`add_group_port`]); nothing is ever removed on its own, because the
-//!   boundary node may be wired up inside.
+//!   and a spare output. Wiring to one adds a port to the group's boundary
+//!   node inside ([`add_group_port`]); nothing is ever removed on its own,
+//!   because the port may be wired up inside.
 //!
 //! Every edit made on the user's behalf like this goes through [`wire`]: it
 //! replaces whatever was feeding the input it takes over and leaves every
 //! node alone. Outputs can fan out, so wires leaving an output stay.
 
-use crate::group::{GROUP_INPUT, GROUP_OUTPUT, PORT_NAME};
-use crate::{Command, Config, Connection, Endpoint, Graph, Node, NodeId, Position, Project, Value};
+use crate::group::{GROUP_INPUT, GROUP_OUTPUT, GroupPort, control_key, ports_config, ports_value};
+use crate::{Command, Connection, Endpoint, Graph, Node, NodeId, Position, Project, Value};
 
 /// The mixer node type: a sum of its inputs.
 pub const MIXER: &str = "noodle.util.mix";
+/// The mixer's config key for its name, which the user can change.
+pub const MIXER_NAME: &str = "name";
+/// What the mixer a project starts with is called.
+pub const DEFAULT_MIXER_NAME: &str = "Main";
 /// The mixer's config key for how many inputs it has.
 pub const MIXER_INPUTS: &str = "inputs";
 /// How many inputs a mixer has when `inputs` isn't set.
@@ -62,6 +66,25 @@ pub fn mixer_param_index(key: &str) -> Option<usize> {
         .strip_prefix("gain")
         .or_else(|| key.strip_prefix("mute"))?;
     digits.parse().ok().filter(|&i| i >= 1)
+}
+
+/// The default mixer: the first Mix node at the top level, which Add Track
+/// feeds.
+pub fn default_mixer(graph: &Graph) -> Option<NodeId> {
+    graph
+        .nodes()
+        .find(|(_, node)| node.type_id == MIXER && node.parent.is_none())
+        .map(|(id, _)| id)
+}
+
+/// A mixer's name: its `name` config if it has one, else "Main" for the
+/// default mixer and "Mixer N" (its node ID) for any other.
+pub fn mixer_name(graph: &Graph, mixer: NodeId) -> String {
+    match graph.node(mixer).and_then(|n| n.config.get(MIXER_NAME)) {
+        Some(Value::Text(name)) if !name.is_empty() => name.clone(),
+        _ if default_mixer(graph) == Some(mixer) => DEFAULT_MIXER_NAME.to_owned(),
+        _ => format!("Mixer {}", mixer.0),
+    }
 }
 
 /// How many inputs a mixer's config gives it.
@@ -127,44 +150,60 @@ pub fn spare_group_name(graph: &Graph, group: NodeId, side: Side) -> String {
         .expect("an unbounded range has a free name")
 }
 
-/// Adds a boundary node to `group` for a new port named `name` on `side`,
-/// below the others of its kind and outside the nodes inside.
+/// Adds a port named `name` on `side` of `group`, and returns the command with
+/// the new port's key on its boundary node. The port goes on the group's
+/// boundary node of that side; if it has none yet, `new_id` is the ID of the
+/// one made, placed outside the nodes inside.
 pub fn add_group_port(
     graph: &Graph,
     group: NodeId,
     side: Side,
     name: &str,
     new_id: NodeId,
-) -> Command {
+) -> (Command, String) {
     let (kind, edge) = match side {
         Side::Input => (GROUP_INPUT, f32::min as fn(f32, f32) -> f32),
         Side::Output => (GROUP_OUTPUT, f32::max as fn(f32, f32) -> f32),
     };
-    let inside: Vec<&Node> = graph.children(Some(group)).map(|(_, n)| n).collect();
-    let x = inside
-        .iter()
-        .map(|n| n.position.x)
+    if let Some((node_id, node)) = graph.children(Some(group)).find(|(_, n)| n.type_id == kind) {
+        let mut ports = node.boundary_ports();
+        let id = ports.iter().map(|&(id, _)| id).max().map_or(1, |id| id + 1);
+        ports.push((id, name.to_owned()));
+        let command = Command::SetConfig {
+            node: node_id,
+            key: crate::group::PORTS.into(),
+            value: Some(ports_value(&ports)),
+        };
+        return (command, crate::group::port_key(id));
+    }
+    let x = graph
+        .children(Some(group))
+        .map(|(_, n)| n.position.x)
         .reduce(edge)
         .map_or(0.0, |x| match side {
             Side::Input => x - 250.0,
             Side::Output => x + 250.0,
         });
-    let y = inside
-        .iter()
-        .filter(|n| n.type_id == kind)
-        .map(|n| n.position.y + 80.0)
-        .fold(0.0, f32::max);
-    let config = Config::new().with(PORT_NAME, Value::Text(name.into()));
-    let mut node = Node::new(kind).with_config(config);
-    node.position = Position { x, y };
+    let mut node = Node::new(kind).with_config(ports_config(&[(1, name.to_owned())]));
+    node.position = Position { x, y: 0.0 };
     node.parent = Some(group);
-    Command::AddNode { id: new_id, node }
+    (
+        Command::AddNode { id: new_id, node },
+        crate::group::port_key(1),
+    )
 }
 
-/// Renames the port that boundary node `boundary` gives its group, keeping
-/// the wires on it. `None` if the name is empty or another port on the same
-/// side has it, or the node isn't a boundary node.
-pub fn rename_group_port(project: &Project, boundary: NodeId, name: &str) -> Option<Command> {
+/// Renames port `port` of boundary node `boundary`, keeping the wires on it:
+/// the group's wires move to the new name, and nothing inside changes, since
+/// the port is found there by its ID. `None` if the name is empty or has a
+/// line break, or another port on the same side has it, or `boundary` isn't a
+/// boundary node with that port.
+pub fn rename_group_port(
+    project: &Project,
+    boundary: NodeId,
+    port: u32,
+    name: &str,
+) -> Option<Command> {
     let graph = project.graph();
     let node = graph.node(boundary)?;
     let group = node.parent?;
@@ -173,30 +212,37 @@ pub fn rename_group_port(project: &Project, boundary: NodeId, name: &str) -> Opt
         GROUP_OUTPUT => Side::Output,
         _ => return None,
     };
-    let old = crate::group::port_name(boundary, node);
-    if name.is_empty() {
+    let mut ports = node.boundary_ports();
+    let old = ports.iter().find(|&&(id, _)| id == port)?.1.clone();
+    if name.is_empty() || name.contains(['\n', '\r']) {
         return None;
     }
     if name == old {
         return Some(Command::Batch(Vec::new()));
     }
-    let ports = graph.group_ports(group);
+    let group_ports = graph.group_ports(group);
     let list = match side {
-        Side::Input => &ports.inputs,
-        Side::Output => &ports.outputs,
+        Side::Input => &group_ports.inputs,
+        Side::Output => &group_ports.outputs,
     };
     if list.iter().any(|p| p.name == name) {
         return None;
     }
+    for entry in &mut ports {
+        if entry.0 == port {
+            entry.1 = name.to_owned();
+        }
+    }
     let rename = Command::SetConfig {
         node: boundary,
-        key: PORT_NAME.into(),
-        value: Some(Value::Text(name.into())),
+        key: crate::group::PORTS.into(),
+        value: Some(ports_value(&ports)),
     };
     let mut commands = vec![rename];
     let from_old = Endpoint::new(group, old.clone());
     let to_new = Endpoint::new(group, name);
-    // A port is found by its name, so wires on it move to the new one.
+    // The group's port is found by its name, so wires on it move to the new
+    // one.
     match side {
         Side::Input => {
             if let Some(source) = graph.source(&from_old) {
@@ -230,6 +276,126 @@ pub fn rename_group_port(project: &Project, boundary: NodeId, name: &str) -> Opt
         commands.push(Command::SetPortOrder { node: group, order });
     }
     Some(Command::Batch(commands))
+}
+
+/// Removes `port` from its boundary node, with everything that points at it:
+/// the wires on the port and on its gain and mute, outside the group too,
+/// its controls, and the automation lanes on them.
+pub fn remove_group_port(project: &Project, port: &GroupPort) -> Option<Command> {
+    let graph = project.graph();
+    let node = graph.node(port.node)?;
+    let group = node.parent?;
+    let side = match node.type_id.as_str() {
+        GROUP_INPUT => Side::Input,
+        GROUP_OUTPUT => Side::Output,
+        _ => return None,
+    };
+    let mut ports = node.boundary_ports();
+    let before = ports.len();
+    ports.retain(|&(id, _)| id != port.id);
+    if ports.len() == before {
+        return None;
+    }
+    let key = port.key();
+    let controls: Vec<String> = [crate::group::GAIN, crate::group::MUTE, crate::group::SOLO]
+        .iter()
+        .map(|c| control_key(c, port.id))
+        .collect();
+    let outside = Endpoint::new(group, port.name.clone());
+    let mut commands = Vec::new();
+    for c in graph.connections() {
+        let inside = (c.to.node == port.node
+            && (c.to.port == key || controls.contains(&c.to.port)))
+            || (c.from.node == port.node && c.from.port == key);
+        let outer = match side {
+            Side::Input => c.to == outside,
+            Side::Output => c.from == outside,
+        };
+        if inside || outer {
+            commands.push(Command::Disconnect { input: c.to });
+        }
+    }
+    for control in &controls {
+        if node.params.contains_key(control) {
+            commands.push(Command::SetParam {
+                node: port.node,
+                key: control.clone(),
+                value: None,
+            });
+        }
+    }
+    for (id, lane) in project.lanes() {
+        if lane.target.node == port.node && controls.contains(&lane.target.port) {
+            commands.push(Command::RemoveLane { id });
+        }
+    }
+    commands.push(Command::SetConfig {
+        node: port.node,
+        key: crate::group::PORTS.into(),
+        value: Some(ports_value(&ports)),
+    });
+    Some(Command::Batch(commands))
+}
+
+/// Removes what is unused on `node`, as one command: for a mixer, the inputs
+/// past the last wired one (and its gain or mute); for a group, or a group's
+/// input or output node, each port with no wire to it outside or inside the
+/// group. `None` for any other node, or when nothing is unused.
+pub fn remove_unused_ports(project: &Project, node: NodeId) -> Option<Command> {
+    let graph = project.graph();
+    let found = graph.node(node)?;
+    let group = match found.type_id.as_str() {
+        MIXER => {
+            let used = (mixer_used(graph, node) as i64).max(1);
+            if mixer_inputs(found) <= used {
+                return None;
+            }
+            return Some(Command::SetConfig {
+                node,
+                key: MIXER_INPUTS.into(),
+                value: Some(Value::Int(used)),
+            });
+        }
+        crate::group::GROUP => node,
+        GROUP_INPUT | GROUP_OUTPUT => found.parent?,
+        _ => return None,
+    };
+    let ports = graph.group_ports(group);
+    let boundary_only = found.type_id != crate::group::GROUP;
+    let mut scratch = project.clone();
+    let mut commands = Vec::new();
+    for (side, list) in [(Side::Input, &ports.inputs), (Side::Output, &ports.outputs)] {
+        for port in list {
+            if boundary_only && port.node != node {
+                continue;
+            }
+            let graph = scratch.graph();
+            let outside = Endpoint::new(group, port.name.clone());
+            let keys = [
+                port.key(),
+                port.control_key(crate::group::GAIN),
+                port.control_key(crate::group::MUTE),
+            ];
+            let used = graph.connections().any(|c| {
+                let outer = match side {
+                    Side::Input => c.to == outside,
+                    Side::Output => c.from == outside,
+                };
+                outer
+                    || (c.from.node == port.node && c.from.port == port.key())
+                    || (c.to.node == port.node && keys.contains(&c.to.port))
+            });
+            if used {
+                continue;
+            }
+            if let Some(command) = remove_group_port(&scratch, port)
+                && command.clone().apply(&mut scratch).is_ok()
+            {
+                commands.push(command);
+            }
+        }
+    }
+    (!commands.is_empty()).then_some(Command::Batch(commands))
 }
 
 #[cfg(test)]
@@ -281,35 +447,114 @@ mod tests {
         assert!(prepare_mixer_input(p.graph(), mix, "in65").is_empty());
     }
 
+    /// Adds a port to `group` through [`add_group_port`], returning its
+    /// boundary node and ID.
+    fn port(
+        p: &mut Project,
+        h: &mut History,
+        group: NodeId,
+        side: Side,
+        name: &str,
+    ) -> (NodeId, u32) {
+        let id = p.new_node_id();
+        let (command, key) = add_group_port(p.graph(), group, side, name, id);
+        h.apply(p, command).unwrap();
+        let ports = p.graph().group_ports(group);
+        let list = if side == Side::Input {
+            ports.inputs
+        } else {
+            ports.outputs
+        };
+        let port = list.into_iter().find(|port| port.name == name).unwrap();
+        assert_eq!(port.key(), key);
+        (port.node, port.id)
+    }
+
+    #[test]
+    fn unused_mixer_inputs_are_dropped_to_the_last_wired() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let (mix, src) = (mixer(&mut p, &mut h), add(&mut p, &mut h, Node::new("s")));
+        let raise = prepare_mixer_input(p.graph(), mix, "in5").remove(0);
+        h.apply(&mut p, raise).unwrap();
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(src, "out"), Endpoint::new(mix, "in2")),
+        )
+        .unwrap();
+        let command = remove_unused_ports(&p, mix).unwrap();
+        h.apply(&mut p, command).unwrap();
+        assert_eq!(mixer_inputs(p.graph().node(mix).unwrap()), 2);
+        assert!(remove_unused_ports(&p, mix).is_none());
+    }
+
+    #[test]
+    fn only_unwired_group_ports_are_removed_in_one_step() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let group = add(&mut p, &mut h, Node::new(GROUP));
+        let src = add(&mut p, &mut h, Node::new("s"));
+        let (a, _) = port(&mut p, &mut h, group, Side::Input, "a");
+        port(&mut p, &mut h, group, Side::Input, "b");
+        port(&mut p, &mut h, group, Side::Output, "o");
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(src, "out"), Endpoint::new(group, "a")),
+        )
+        .unwrap();
+        let command = remove_unused_ports(&p, group).unwrap();
+        h.apply(&mut p, command).unwrap();
+        let ports = p.graph().group_ports(group);
+        assert_eq!(
+            (ports.inputs.len(), ports.outputs.len()),
+            (1, 0),
+            "{ports:?}"
+        );
+        assert_eq!(ports.inputs[0].node, a);
+        assert!(remove_unused_ports(&p, group).is_none());
+        h.undo(&mut p).unwrap();
+        assert_eq!(p.graph().group_ports(group).inputs.len(), 2);
+    }
+
     #[test]
     fn group_spares_take_the_first_free_name() {
         let (mut p, mut h) = (Project::new(), History::new());
         let group = add(&mut p, &mut h, Node::new(GROUP));
         assert_eq!(spare_group_name(p.graph(), group, Side::Input), "in1");
-        let id = p.new_node_id();
-        let add_port = add_group_port(p.graph(), group, Side::Input, "in1", id);
-        h.apply(&mut p, add_port).unwrap();
+        let (node, _) = port(&mut p, &mut h, group, Side::Input, "in1");
         assert_eq!(spare_group_name(p.graph(), group, Side::Input), "in2");
         assert_eq!(spare_group_name(p.graph(), group, Side::Output), "out1");
-        let ports = p.graph().group_ports(group);
-        assert_eq!(ports.inputs.len(), 1);
-        assert_eq!(p.graph().node(id).unwrap().parent, Some(group));
+        assert_eq!(p.graph().node(node).unwrap().parent, Some(group));
+    }
+
+    #[test]
+    fn a_groups_ports_share_one_node_per_side() {
+        let (mut p, mut h) = (Project::new(), History::new());
+        let group = add(&mut p, &mut h, Node::new(GROUP));
+        let (a, a_id) = port(&mut p, &mut h, group, Side::Input, "a");
+        let (b, b_id) = port(&mut p, &mut h, group, Side::Input, "b");
+        let (out, _) = port(&mut p, &mut h, group, Side::Output, "out");
+        assert_eq!((a, a_id, b, b_id), (a, 1, a, 2));
+        assert_ne!(a, out);
+        assert_eq!(p.graph().children(Some(group)).count(), 2);
+        assert_eq!(p.graph().group_ports(group).inputs.len(), 2);
+        // One undo takes the second port off the node, and no more.
+        h.undo(&mut p).unwrap();
+        h.undo(&mut p).unwrap();
+        assert_eq!(p.graph().group_ports(group).inputs.len(), 1);
+        assert_eq!(p.graph().node(a).unwrap().boundary_ports().len(), 1);
     }
 
     #[test]
     fn renaming_a_port_keeps_its_wires() {
         let (mut p, mut h) = (Project::new(), History::new());
         let group = add(&mut p, &mut h, Node::new(GROUP));
-        let (i, o) = (p.new_node_id(), p.new_node_id());
-        let inp = add_group_port(p.graph(), group, Side::Input, "in1", i);
-        let out = add_group_port(p.graph(), group, Side::Output, "out1", o);
-        h.apply(&mut p, inp).unwrap();
-        h.apply(&mut p, out).unwrap();
+        let (i, i_id) = port(&mut p, &mut h, group, Side::Input, "in1");
+        let (o, o_id) = port(&mut p, &mut h, group, Side::Output, "out1");
         let (src, dst, dst2) = (
             add(&mut p, &mut h, Node::new("s")),
             add(&mut p, &mut h, Node::new("d")),
             add(&mut p, &mut h, Node::new("d")),
         );
+        // Inside, the input feeds the output.
         for command in [
             wire(Endpoint::new(src, "out"), Endpoint::new(group, "in1")),
             wire(Endpoint::new(group, "out1"), Endpoint::new(dst, "in")),
@@ -318,8 +563,8 @@ mod tests {
             h.apply(&mut p, command).unwrap();
         }
         let before = p.clone();
-        for (boundary, name) in [(i, "feed"), (o, "mix")] {
-            let command = rename_group_port(&p, boundary, name).unwrap();
+        for (boundary, id, name) in [(i, i_id, "feed"), (o, o_id, "mix")] {
+            let command = rename_group_port(&p, boundary, id, name).unwrap();
             h.apply(&mut p, command).unwrap();
         }
         let g = p.graph();
@@ -334,6 +579,8 @@ mod tests {
                 Some(&Endpoint::new(group, "mix"))
             );
         }
+        // The port's ID, and so its key inside, is unchanged.
+        assert_eq!(g.group_ports(group).inputs[0].id, i_id);
         // Two undo steps, one per rename.
         h.undo(&mut p).unwrap();
         h.undo(&mut p).unwrap();
@@ -344,18 +591,81 @@ mod tests {
     fn a_name_that_is_empty_or_taken_is_refused() {
         let (mut p, mut h) = (Project::new(), History::new());
         let group = add(&mut p, &mut h, Node::new(GROUP));
-        let (a, b) = (p.new_node_id(), p.new_node_id());
-        for (id, name) in [(a, "x"), (b, "y")] {
-            let command = add_group_port(p.graph(), group, Side::Input, name, id);
-            h.apply(&mut p, command).unwrap();
-        }
-        assert!(rename_group_port(&p, a, "y").is_none());
-        assert!(rename_group_port(&p, a, "").is_none());
+        let (a, a_id) = port(&mut p, &mut h, group, Side::Input, "x");
+        port(&mut p, &mut h, group, Side::Input, "y");
+        assert!(rename_group_port(&p, a, a_id, "y").is_none());
+        assert!(rename_group_port(&p, a, a_id, "").is_none());
+        assert!(rename_group_port(&p, a, a_id, "a\nb").is_none());
+        assert!(rename_group_port(&p, a, 99, "z").is_none(), "no such port");
         assert!(
-            rename_group_port(&p, group, "z").is_none(),
+            rename_group_port(&p, group, 1, "z").is_none(),
             "not a boundary node"
         );
-        assert!(rename_group_port(&p, a, "z").is_some());
+        assert!(rename_group_port(&p, a, a_id, "z").is_some());
+    }
+
+    #[test]
+    fn removing_a_port_takes_its_wires_controls_and_lanes_with_it() {
+        use crate::group::{GAIN, control_key};
+        use crate::{AutomationLane, LaneId};
+        let (mut p, mut h) = (Project::new(), History::new());
+        let group = add(&mut p, &mut h, Node::new(GROUP));
+        let (node, _) = port(&mut p, &mut h, group, Side::Output, "a");
+        port(&mut p, &mut h, group, Side::Output, "b");
+        let (src, dst) = (
+            add(&mut p, &mut h, Node::new("s").in_group(group)),
+            add(&mut p, &mut h, Node::new("d")),
+        );
+        let ports = p.graph().group_ports(group);
+        let (a, b) = (ports.outputs[0].clone(), ports.outputs[1].clone());
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(src, "out"), Endpoint::new(node, a.key())),
+        )
+        .unwrap();
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(src, "out"), Endpoint::new(node, b.key())),
+        )
+        .unwrap();
+        h.apply(
+            &mut p,
+            wire(Endpoint::new(group, "a"), Endpoint::new(dst, "in")),
+        )
+        .unwrap();
+        h.apply(
+            &mut p,
+            Command::SetParam {
+                node,
+                key: control_key(GAIN, a.id),
+                value: Some(-3.0),
+            },
+        )
+        .unwrap();
+        h.apply(
+            &mut p,
+            Command::AddLane {
+                id: LaneId(1),
+                lane: AutomationLane::new(Endpoint::new(node, control_key(GAIN, a.id)), Vec::new()),
+            },
+        )
+        .unwrap();
+        let before = p.clone();
+        let command = remove_group_port(&p, &a).unwrap();
+        h.apply(&mut p, command).unwrap();
+        let g = p.graph();
+        assert_eq!(g.group_ports(group).outputs.len(), 1);
+        assert_eq!(g.group_ports(group).outputs[0].name, "b");
+        assert_eq!(g.source(&Endpoint::new(node, a.key())), None);
+        assert!(
+            g.source(&Endpoint::new(node, b.key())).is_some(),
+            "b stays wired"
+        );
+        assert_eq!(g.source(&Endpoint::new(dst, "in")), None);
+        assert!(g.node(node).unwrap().params.is_empty());
+        assert_eq!(p.lanes().count(), 0);
+        h.undo(&mut p).unwrap();
+        assert_eq!(p, before);
     }
 
     #[test]

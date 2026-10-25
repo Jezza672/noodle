@@ -35,6 +35,12 @@ pub struct Strip {
     /// The boundary node the controls are set on. `None` for a group with
     /// no input or output node, which has nothing to set.
     pub node: Option<NodeId>,
+    /// The node the mute is set on: `node`, or the track input of a track,
+    /// whose mute the engine applies to its outputs.
+    pub mute_node: Option<NodeId>,
+    /// Whether the strip has a fader. A track has none: its level is set by
+    /// the gain of its clips.
+    pub has_fader: bool,
     /// A lane or wire drives the gain, so the fader would do nothing.
     pub gain_automated: bool,
     /// The same for mute.
@@ -85,6 +91,8 @@ pub fn mixer_strips(project: &Project, mixer: NodeId) -> Vec<Strip> {
                     solo: false,
                 },
                 node: Some(mixer),
+                mute_node: Some(mixer),
+                has_fader: true,
                 gain_automated: driven(project, Some(mixer), &gain_key),
                 mute_automated: driven(project, Some(mixer), &mute_key),
                 channel: Some(i - 1),
@@ -106,19 +114,34 @@ pub fn strips(project: &Project) -> Vec<Strip> {
     project.sort_tracks(&mut ids);
     ids.into_iter()
         .filter_map(|id| Some((id, graph.node(id)?)))
-        .map(|(id, node)| Strip {
-            group: id,
-            name: match node.config.get(NAME) {
-                Some(Value::Text(name)) if !name.is_empty() => name.clone(),
-                _ => format!("Group {}", id.0),
-            },
-            controls: graph.group_controls(id),
-            node: graph.control_node(id),
-            gain_automated: driven(project, graph.control_node(id), GAIN),
-            mute_automated: driven(project, graph.control_node(id), MUTE),
-            channel: None,
-            gain_key: GAIN.to_owned(),
-            mute_key: MUTE.to_owned(),
+        .map(|(id, node)| {
+            // The strip sets the gain of the group's control port, and the
+            // mute of the track input that feeds a track's outputs.
+            let port = graph.control_port(id);
+            let (node_id, gain_key) = match &port {
+                Some(port) => (port.node, port.control_key(GAIN)),
+                None => (NodeId(0), GAIN.to_owned()),
+            };
+            let (mute_id, mute_key) = graph
+                .control_target(id, MUTE)
+                .unwrap_or((NodeId(0), MUTE.to_owned()));
+            let node_id = port.as_ref().map(|_| node_id);
+            Strip {
+                group: id,
+                name: match node.config.get(NAME) {
+                    Some(Value::Text(name)) if !name.is_empty() => name.clone(),
+                    _ => format!("Group {}", id.0),
+                },
+                controls: graph.group_controls(id),
+                node: node_id,
+                mute_node: port.as_ref().map(|_| mute_id),
+                has_fader: graph.track_input(id).is_none(),
+                gain_automated: driven(project, node_id, &gain_key),
+                mute_automated: driven(project, Some(mute_id), &mute_key),
+                channel: None,
+                gain_key,
+                mute_key,
+            }
         })
         .collect()
 }
@@ -161,24 +184,25 @@ pub fn show(
         ui.weak("There is no mixer yet. Add a Mix node, or add a track.");
         return Vec::new();
     };
-    if mixers.len() > 1 {
-        ui.horizontal(|ui| {
+    let mut edits = Vec::new();
+    ui.horizontal(|ui| {
+        if mixers.len() > 1 {
             ui.label("Mixer");
-            egui::ComboBox::from_id_salt("mixer view")
-                .selected_text(format!("Mix {}", mixer.0))
+            crate::widgets::Dropdown::from_id_salt("mixer view")
+                .selected_text(spare::mixer_name(graph, mixer))
                 .show_ui(ui, |ui| {
                     for &m in &mixers {
-                        ui.selectable_value(view, Some(m), format!("Mix {}", m.0));
+                        ui.selectable_value(view, Some(m), spare::mixer_name(graph, m));
                     }
                 });
-        });
-    }
+        }
+        edits.extend(rename_field(ui, graph, mixer));
+    });
     let strips = mixer_strips(project, mixer);
     if strips.is_empty() {
         ui.weak("Nothing is wired into this mixer.");
-        return Vec::new();
+        return edits;
     }
-    let mut edits = Vec::new();
     egui::ScrollArea::horizontal().show(ui, |ui| {
         ui.horizontal_top(|ui| {
             for (index, strip) in strips.iter().enumerate() {
@@ -191,6 +215,34 @@ pub fn show(
         });
     });
     edits
+}
+
+/// The mixer's name as a text field. The name is kept while it is typed and
+/// written when the field loses focus; an empty name puts the default back.
+fn rename_field(ui: &mut Ui, graph: &noodle_core::Graph, mixer: NodeId) -> Option<Edit> {
+    let shown = spare::mixer_name(graph, mixer);
+    let id = ui.id().with(("mixer name", mixer));
+    let mut text: String = ui
+        .data_mut(|data| data.get_temp(id))
+        .unwrap_or_else(|| shown.clone());
+    let field = ui
+        .add(egui::TextEdit::singleline(&mut text).desired_width(120.0))
+        .on_hover_text("Rename this mixer");
+    if field.changed() {
+        ui.data_mut(|data| data.insert_temp(id, text.clone()));
+    }
+    if !field.lost_focus() {
+        return None;
+    }
+    ui.data_mut(|data| data.remove_temp::<String>(id));
+    let text = text.trim().to_owned();
+    (text != shown).then(|| {
+        Edit::Apply(Command::SetConfig {
+            node: mixer,
+            key: spare::MIXER_NAME.into(),
+            value: (!text.is_empty()).then_some(Value::Text(text)),
+        })
+    })
 }
 
 fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut Vec<Edit>) {
@@ -219,12 +271,14 @@ fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut
                         MeterAxis::Vertical,
                     );
                 }
-                let faded = ui.add_enabled_ui(
-                    strip.node.is_some() && !silent && !strip.gain_automated,
-                    |ui| ui.vertical(|ui| fader(ui, strip, edits)),
-                );
-                if strip.gain_automated {
-                    faded.response.on_disabled_hover_text(header::AUTOMATED);
+                if strip.has_fader {
+                    let faded = ui.add_enabled_ui(
+                        strip.node.is_some() && !silent && !strip.gain_automated,
+                        |ui| ui.vertical(|ui| fader(ui, strip, edits)),
+                    );
+                    if strip.gain_automated {
+                        faded.response.on_disabled_hover_text(header::AUTOMATED);
+                    }
                 }
             });
             ui.add_enabled_ui(strip.node.is_some(), |ui| {
@@ -243,7 +297,7 @@ fn strip_ui(ui: &mut Ui, strip: &Strip, level: Option<MeterChannel>, edits: &mut
                         .on_hover_text(tip)
                         .on_disabled_hover_text(tip)
                         .clicked()
-                        && let Some(node) = strip.node
+                        && let Some(node) = strip.mute_node
                     {
                         let value = Some(f32::from(u8::from(!strip.controls.mute)));
                         edits.push(Edit::Apply(set(node, &strip.mute_key, value)));
@@ -305,7 +359,7 @@ mod tests {
     use egui::vec2;
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
-    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT, PORT_NAME};
+    use noodle_core::group::{GROUP, GROUP_INPUT, GROUP_OUTPUT};
     use noodle_core::{Config, Node};
 
     use super::*;
@@ -325,7 +379,7 @@ mod tests {
             }));
             for (offset, kind) in [(1, GROUP_INPUT), (2, GROUP_OUTPUT)] {
                 let node = Node::new(kind)
-                    .with_config(Config::new().with(PORT_NAME, Value::Text("p".into())))
+                    .with_config(noodle_core::group::ports_config(&[(1, "p".into())]))
                     .in_group(group);
                 edits.push(Edit::Apply(Command::AddNode {
                     id: NodeId(group.0 + offset),
@@ -338,16 +392,10 @@ mod tests {
     }
 
     fn harness(session: Session) -> Harness<'static, Session> {
-        let mut harness = Harness::new_ui_state(
-            |ui, session: &mut Session| {
-                let edits = show(ui, session.project(), &mut None, &|_, _| None);
-                session.edit(edits);
-            },
-            session,
-        );
-        harness.set_size(vec2(600.0, 600.0));
-        harness.run();
-        harness
+        crate::testkit::harness(session, vec2(600.0, 600.0), |ui, session: &mut Session| {
+            let edits = show(ui, session.project(), &mut None, &|_, _| None);
+            session.edit(edits);
+        })
     }
 
     fn param(harness: &Harness<'_, Session>, node: u64, key: &str) -> Option<f32> {
@@ -370,7 +418,7 @@ mod tests {
             }),
             Edit::Apply(Command::SetParam {
                 node: NodeId(6),
-                key: GAIN.into(),
+                key: noodle_core::group::control_key(GAIN, 1),
                 value: Some(-6.0),
             }),
         ]);
@@ -457,23 +505,7 @@ mod tests {
         let fader = harness.get_all_by_role(Role::Slider).next().unwrap();
         let from = fader.rect().center();
         let to = from + vec2(0.0, -40.0);
-        harness.event(egui::Event::PointerMoved(from));
-        let button = |pressed, pos| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        harness.event(button(true, from));
-        harness.step();
-        for i in 1..=4 {
-            harness.event(egui::Event::PointerMoved(
-                from + (to - from) * (i as f32 / 4.0),
-            ));
-            harness.step();
-        }
-        harness.event(button(false, to));
-        harness.run();
+        crate::testkit::drag_between(&mut harness, egui::Modifiers::NONE, from, to);
         let gain = param(&harness, 100, "gain1").expect("the fader moved");
         assert!(gain > 0.0, "dragged up: {gain}");
         // The whole drag is one step.
@@ -580,7 +612,7 @@ mod tests {
         session.edit([
             // Bass (the first input) is quiet as a track, and the mixer's
             // second input is muted and turned down.
-            Edit::Apply(set(NodeId(6), GAIN, Some(-9.0))),
+            Edit::Apply(set(NodeId(6), "gain.1", Some(-9.0))),
             Edit::Apply(set(NodeId(100), "gain2", Some(-3.0))),
             Edit::Apply(set(NodeId(100), "mute2", Some(1.0))),
         ]);
@@ -598,29 +630,25 @@ mod tests {
             ]
         );
 
-        let mut harness = Harness::new_ui_state(
-            |ui, session: &mut Session| {
+        let mut harness =
+            crate::testkit::harness(session, vec2(600.0, 600.0), |ui, session: &mut Session| {
                 let mut view = Some(NodeId(100));
                 let edits = show(ui, session.project(), &mut view, &|_, _| None);
                 session.edit(edits);
-            },
-            session,
-        );
-        harness.set_size(vec2(600.0, 600.0));
-        harness.run();
+            });
         // Solo is the track's, so a mixer view has none.
         assert!(harness.query_by_label("S").is_none());
         // Mute on the first input is the mixer's `mute1`.
         harness.get_all_by_label("M").next().unwrap().click();
         harness.run();
         assert_eq!(param(&harness, 100, "mute1"), Some(1.0));
-        assert_eq!(param(&harness, 6, MUTE), None);
+        assert_eq!(param(&harness, 6, "mute.1"), None);
         // Resetting the third reading writes `gain3`.
         let third = harness.get_all_by_label("+0.0 dB").last().unwrap();
         third.click();
         harness.run();
         assert_eq!(param(&harness, 100, "gain3"), Some(0.0));
-        assert_eq!(param(&harness, 6, GAIN), Some(-9.0));
+        assert_eq!(param(&harness, 6, "gain.1"), Some(-9.0));
     }
 
     #[test]

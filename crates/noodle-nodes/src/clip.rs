@@ -8,15 +8,18 @@
 //! the audio streams ahead of the playhead, so nothing in
 //! [`Node::process`] opens a file, allocates, frees or waits.
 //!
-//! What plays at each sample follows the rule in `docs/ARCHITECTURE.md`: one
+//! What plays at each sample follows the rule in `docs/architecture/` (see "Time warping" and the track input): one
 //! audio clip at a time, the one that started last, with no crossfade but the
 //! clip's own fades. On top of that the node declicks itself: it fades out
 //! when the transport stops, fades in when it starts or jumps, and dips (out
 //! and back in over about 5 ms) when an edit changes what is heard at the
 //! playhead.
 
+mod ahead;
 mod hub;
 mod schedule;
+mod stretch;
+mod warp;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -25,22 +28,35 @@ use std::time::{Duration, Instant};
 use noodle_core::ClipId;
 use noodle_engine::{
     Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, Setup, Shape,
+    NoteId, ParamInfo, Setup, Shape,
 };
-use noodle_io::ClipStream;
+use noodle_io::pool::{Bell, Handle};
+use noodle_io::{ClipStream, MidiBus};
 use rtrb::{Consumer, Producer, PushError};
 
-use hub::{Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, Prepared, Retired, Shared, ToNode};
+use ahead::{AheadLinks, Lane, MAX_LANES};
+use hub::{
+    Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, POSITION_STEP, Prepared, Retired, Shared, ToNode,
+};
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
-    ScheduledNote, active_at,
+    ScheduledNote, WarpMap, active_at,
 };
 use schedule::{Segments, same_sound};
+pub use stretch::{Source as StretchSource, Stretcher};
+use warp::cubic;
+
+use crate::midi_in::LiveMidi;
 
 pub const TRACK_INPUT_ID: &str = "noodle.track.input";
 
 const AUDIO: usize = 0;
 const MIDI: usize = 0;
+/// The track's mute: a parameter (input 0), passed on as output 1 so the
+/// track's graph can follow it. The node itself stops its MIDI while muted;
+/// the engine mutes the audio at the track's group output.
+const MUTE_IN: usize = 0;
+const MUTE_OUT: usize = 1;
 /// The most MIDI notes one track sounds at once; more are dropped.
 const MAX_SOUNDING: usize = 128;
 /// The note IDs of keys auditioned from the piano roll; see
@@ -54,35 +70,85 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10);
 /// How far behind a stream may be and still catch up by reading and dropping
 /// audio, which is quicker than seeking.
 const MAX_SKIP: u64 = 8192;
+/// Source frames a warped clip keeps in hand to interpolate between: the
+/// most any one stretch of output may reach over.
+const WINDOW_FRAMES: usize = 8192;
+const MAX_SPAN: f64 = (WINDOW_FRAMES - 16) as f64;
+/// Warped clips are played in pieces of at most this many output frames.
+const WARP_CHUNK: usize = 256;
+
+/// Source frames of a warped clip, `start..end` of its stream, interleaved.
+/// The stream is at `end`.
+struct Window {
+    buf: Vec<f32>,
+    start: u64,
+    end: u64,
+    /// The stream (by serial) the window was read from.
+    serial: Option<u64>,
+}
+
+impl Window {
+    fn new() -> Self {
+        Self {
+            buf: vec![0.0; WINDOW_FRAMES * MAX_CHANNELS],
+            start: 0,
+            end: 0,
+            serial: None,
+        }
+    }
+}
 
 static INFO: NodeInfo = NodeInfo {
     id: TRACK_INPUT_ID,
-    version: 1,
+    version: 3,
     name: "Track Input",
     category: "Track",
 };
 
+/// The note IDs of live monitoring; see [`TrackInput::with_midi`].
+const LIVE_ID: u32 = 0x2000_0000;
+
 /// Registered by [`register_library`](crate::register_library).
 pub struct TrackInput {
     feeds: ClipFeeds,
+    midi: Option<MidiBus>,
 }
 
 impl TrackInput {
     pub fn new(feeds: &ClipFeeds) -> Self {
         Self {
             feeds: feeds.clone(),
+            midi: None,
+        }
+    }
+
+    /// A track input that, while its track is monitored (see
+    /// [`ClipFeeds::set_monitoring`]), also plays what arrives on `bus`, from
+    /// every source on every channel, whatever the transport is doing. A MIDI
+    /// In node wired to the same synth plays the notes a second time: the
+    /// two make their own note IDs.
+    pub fn with_midi(feeds: &ClipFeeds, bus: &MidiBus) -> Self {
+        Self {
+            midi: Some(bus.clone()),
+            ..Self::new(feeds)
         }
     }
 }
 
 impl NodeType for TrackInput {
+    fn always_runs(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(Layout::realtime()
+            .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
             .output("audio", "Audio")
+            .output("mute", "Mute")
             .event_output("midi", "MIDI"))
     }
 
@@ -92,7 +158,7 @@ impl NodeType for TrackInput {
         _layout: &Layout,
         _inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
-        Ok(vec![Shape::STEREO])
+        Ok(vec![Shape::STEREO, Shape::MONO])
     }
 
     fn cache_inputs(
@@ -108,6 +174,10 @@ impl NodeType for TrackInput {
         for (id, clip) in env.project.clips_on(node) {
             key.u64(id.0).i64(clip.start.0);
             match &clip.content {
+                noodle_core::ClipContent::Audio(audio) if audio.muted => {
+                    // Silent, so its file doesn't matter, only that it is.
+                    key.str("muted");
+                }
                 noodle_core::ClipContent::Audio(audio) => {
                     let file = (env.file_key)(&audio.source).ok_or_else(|| {
                         noodle_engine::Uncacheable::Because(format!("can't read {}", audio.source))
@@ -119,6 +189,44 @@ impl NodeType for TrackInput {
                         .f32(audio.gain)
                         .u64(audio.fade_in)
                         .u64(audio.fade_out);
+                    // Only what a clip has is keyed, so the keys of clips
+                    // without an envelope or a crossfade stay as they were.
+                    if !audio.gain_points.is_empty() {
+                        key.str("gain points").u64(audio.gain_points.len() as u64);
+                        for point in &audio.gain_points {
+                            key.i64(point.tick.0).f32(point.db);
+                        }
+                    }
+                    if let Some(x) = audio.crossfade.filter(|x| !x.is_empty()) {
+                        key.str("crossfade").i64(x.before.0).i64(x.after.0);
+                    }
+                    // Only a warp that changes the sound is keyed, so the
+                    // keys of clips that aren't warped stay as they were.
+                    if let Some(warp) = audio
+                        .warp
+                        .and_then(|id| env.project.warp(id))
+                        .filter(|warp| !warp.is_identity())
+                    {
+                        // Repitch is left out, so keys made before there
+                        // were other modes still match.
+                        if warp.mode.keeps_pitch() {
+                            key.str("mode").str(&format!("{:?}", warp.mode));
+                        }
+                        key.str("warp")
+                            .bool(warp.tempo_conversion)
+                            .bool(warp.use_markers)
+                            .u64(warp.tempo.points().len() as u64);
+                        for point in warp.tempo.points() {
+                            key.f64(point.seconds).f64(point.bpm);
+                        }
+                        // The markers as they play, so warp quantise (and the
+                        // groove it follows) is in the key.
+                        let markers = warp.effective_markers();
+                        key.u64(markers.len() as u64);
+                        for marker in markers.iter() {
+                            key.f64(marker.seconds).f64(marker.beat);
+                        }
+                    }
                 }
                 noodle_core::ClipContent::Midi(midi) => {
                     key.str("midi")
@@ -138,13 +246,16 @@ impl NodeType for TrackInput {
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let shared = self.feeds.shared(setup.node);
-        let links = hub::spawn(shared.clone(), setup.sample_rate.round() as u32);
-        Ok(Instance::realtime(TrackInputNode::new(
-            shared,
-            links,
-            setup.sample_rate,
-            setup.max_frames,
-        )))
+        let rate = setup.sample_rate.round() as u32;
+        let links = hub::spawn(shared.clone(), rate);
+        let ahead = ahead::spawn(shared.clone(), rate);
+        let mut node =
+            TrackInputNode::new(shared, links, ahead, setup.sample_rate, setup.max_frames);
+        node.live = self
+            .midi
+            .as_ref()
+            .map(|bus| LiveMidi::new(bus, None, LIVE_ID));
+        Ok(Instance::realtime(node))
     }
 }
 
@@ -152,14 +263,43 @@ struct TrackInputNode {
     shared: Arc<Shared>,
     from_hub: Consumer<ToNode>,
     to_hub: Producer<Retired>,
+    /// Rings the hub and the stretch worker, which sleep until then.
+    bells: [Bell; 2],
+    /// Where the playhead and the loop were when they were last rung, and how
+    /// far the playhead goes before they are rung again.
+    rung_at: u64,
+    rung_loop: (u64, u64),
+    ring_step: u64,
+    /// Stop the hub and the stretch worker when the node is dropped.
+    _handles: [Handle; 2],
     schedule: Option<Box<Schedule>>,
     /// A newer schedule waiting for the dip to reach silence.
     pending: Option<Box<Schedule>>,
     streams: Vec<Option<Box<Prepared>>>,
+    /// Stretched sections (Grain and Beats), rendered ahead by a worker.
+    lanes: Vec<Option<Box<Lane>>>,
+    new_lanes: Consumer<Box<Lane>>,
+    spent_lanes: Producer<Box<Lane>>,
+    /// Stereo frames taken from a lane for the stretch being played.
+    lane_frames: Vec<f32>,
     /// Decoded frames for the stretch being played.
     scratch: Vec<f32>,
     left: Vec<f32>,
     right: Vec<f32>,
+    /// Source frames of the warped clip being played: frames
+    /// `window_start..window_end` of its stream, interleaved. The stream is
+    /// at `window_end`.
+    window: Window,
+    /// The same for the clip a crossfade fades out under the one being
+    /// played; swapped in while that clip plays.
+    window_under: Window,
+    /// Whether warped clips are being played as cheap Repitch (see
+    /// [`ClipFeeds::set_preview`]), as of the last time the node switched.
+    preview: bool,
+    /// The preview switch was thrown while sound was playing; the node is
+    /// dipping to silence and takes it on there, so the change of sound
+    /// doesn't click.
+    preview_dip: bool,
     /// The declick gain, from 0 to 1.
     level: f32,
     step: f32,
@@ -184,6 +324,8 @@ struct TrackInputNode {
     recheck: bool,
     /// The keys of the piano roll's keyboard that have a note-on out.
     audition_held: [u64; 2],
+    /// Live MIDI for monitoring, if the node was given a bus.
+    live: Option<LiveMidi>,
 }
 
 /// A MIDI note that has started and not yet ended.
@@ -195,18 +337,37 @@ struct Sounding {
 }
 
 impl TrackInputNode {
-    fn new(shared: Arc<Shared>, links: Links, sample_rate: f32, max_frames: usize) -> Self {
+    fn new(
+        shared: Arc<Shared>,
+        links: Links,
+        ahead: AheadLinks,
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Self {
         let fade_len = (sample_rate * FADE_SECONDS).round().max(1.0);
         Self {
             shared,
             from_hub: links.from_hub,
             to_hub: links.to_hub,
+            bells: [links.bell, ahead.bell],
+            rung_at: 0,
+            rung_loop: (0, 0),
+            ring_step: (f64::from(sample_rate) * POSITION_STEP) as u64,
+            _handles: [links._handle, ahead._handle],
             schedule: None,
             pending: None,
             streams: (0..MAX_STREAMS + MAX_HEADS).map(|_| None).collect(),
+            lanes: (0..MAX_LANES).map(|_| None).collect(),
+            new_lanes: ahead.lanes,
+            spent_lanes: ahead.returned,
+            lane_frames: vec![0.0; max_frames * 2],
             scratch: vec![0.0; max_frames * MAX_CHANNELS],
             left: vec![0.0; max_frames],
             right: vec![0.0; max_frames],
+            window: Window::new(),
+            window_under: Window::new(),
+            preview: false,
+            preview_dip: false,
             level: 0.0,
             step: 1.0 / fade_len,
             version: 0,
@@ -219,6 +380,7 @@ impl TrackInputNode {
             played_to: None,
             recheck: false,
             audition_held: [0; 2],
+            live: None,
         }
     }
 
@@ -229,6 +391,26 @@ impl TrackInputNode {
         if let Err(PushError::Full(item)) = self.to_hub.push(item) {
             std::mem::forget(item);
         }
+        self.bells[0].ring();
+    }
+
+    /// Tells the hub the node plays from a stream that was opened ahead.
+    fn promoted(&mut self, serial: u64) {
+        let _ = self.to_hub.push(Retired::Promoted(serial));
+        self.bells[0].ring();
+    }
+
+    /// Rings the hub and the stretch worker when the playhead has gone far
+    /// enough that they may have clips to open, or the loop has changed.
+    fn ring_if_moved(&mut self, position: u64, looping: Option<(u64, u64)>) {
+        let looped = looping.unwrap_or((0, 0));
+        if position.abs_diff(self.rung_at) >= self.ring_step || looped != self.rung_loop {
+            self.rung_at = position;
+            self.rung_loop = looped;
+            for bell in &self.bells {
+                bell.ring();
+            }
+        }
     }
 
     fn adopt_pending(&mut self) {
@@ -237,15 +419,42 @@ impl TrackInputNode {
         {
             self.retire(Retired::Schedule(old));
         }
+        self.preview = self.shared.preview.load(Ordering::Relaxed);
+        self.preview_dip = false;
+    }
+
+    /// Whether the node is running down to silence to take on a new schedule
+    /// or the preview switch.
+    fn dipping(&self) -> bool {
+        self.pending.is_some() || self.preview_dip
+    }
+
+    /// Notices the preview switch being thrown. While sound plays the node
+    /// dips (about 5 ms out and back in) and switches at the bottom; silent,
+    /// it switches at once.
+    fn watch_preview(&mut self) {
+        let want = self.shared.preview.load(Ordering::Relaxed);
+        if want == self.preview {
+            return;
+        }
+        if self.level > 0.0 {
+            self.preview_dip = true;
+        } else {
+            self.preview = want;
+            self.preview_dip = false;
+        }
     }
 
     /// Takes what the hub has sent. A new schedule that changes what is heard
     /// over this block waits for the dip; any other takes over at once.
     fn receive(&mut self, position: u64, frames: usize) {
+        self.take_lanes();
         if let Some((version, next, notes)) = self.deferred.take() {
             self.take_schedule(version, next, notes, position, frames);
         }
+        let mut took = false;
         while let Ok(message) = self.from_hub.pop() {
+            took = true;
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
                 ToNode::Schedule(version, next, notes) => {
@@ -253,13 +462,20 @@ impl TrackInputNode {
                 }
             }
         }
+        if took {
+            // There is room in the queue again.
+            self.bells[0].ring();
+        }
     }
 
     /// Like [`receive`](Self::receive) in the middle of a block, where the
     /// schedule is in use: streams are taken in, and a schedule is kept for
     /// the start of the next block.
     fn receive_streams(&mut self) {
+        self.take_lanes();
+        let mut took = false;
         while let Ok(message) = self.from_hub.pop() {
+            took = true;
             match message {
                 ToNode::Stream(prepared) => self.take_stream(prepared),
                 ToNode::Schedule(version, next, notes) => {
@@ -272,6 +488,30 @@ impl TrackInputNode {
                 }
             }
         }
+        if took {
+            self.bells[0].ring();
+        }
+    }
+
+    /// Takes in the lanes the worker has opened. One that has no room is sent
+    /// straight back to be dropped there.
+    fn take_lanes(&mut self) {
+        while let Ok(lane) = self.new_lanes.pop() {
+            self.bells[1].ring();
+            match self.lanes.iter_mut().find(|slot| slot.is_none()) {
+                Some(slot) => *slot = Some(lane),
+                None => self.retire_lane(lane),
+            }
+        }
+    }
+
+    /// Like [`retire`](Self::retire), for a lane. If the queue were ever full
+    /// the lane is leaked rather than freed on the audio thread.
+    fn retire_lane(&mut self, lane: Box<Lane>) {
+        if let Err(PushError::Full(lane)) = self.spent_lanes.push(lane) {
+            std::mem::forget(lane);
+        }
+        self.bells[1].ring();
     }
 
     fn take_stream(&mut self, prepared: Box<Prepared>) {
@@ -390,7 +630,28 @@ impl TrackInputNode {
                 self.retire(Retired::Stream(stream));
             }
         }
-        let bound = self.streams.iter().flatten().count();
+        for i in 0..self.lanes.len() {
+            let Some(lane) = &self.lanes[i] else { continue };
+            let wanted = |schedule: Option<&[ScheduledClip]>| {
+                schedule.is_some_and(|s| {
+                    s.iter().any(|c| {
+                        c.stretched()
+                            && c.lane_key() == (lane.id, lane.key)
+                            && if lane.head {
+                                looping.is_some_and(|(start, _)| c.end() > start)
+                            } else {
+                                c.end() > position && !(position < c.start && lane.expected() != 0)
+                            }
+                    })
+                })
+            };
+            if !(wanted(current) || wanted(self.pending.as_deref().map(Vec::as_slice)))
+                && let Some(lane) = self.lanes[i].take()
+            {
+                self.retire_lane(lane);
+            }
+        }
+        let bound = self.streams.iter().flatten().count() + self.lanes.iter().flatten().count();
         self.shared.bound.store(bound, Ordering::Relaxed);
     }
 
@@ -444,16 +705,29 @@ impl TrackInputNode {
         let Some(clip) = self.schedule.as_ref().and_then(|s| active_at(s, position)) else {
             return;
         };
+        if clip.stretched() && !self.preview {
+            let rel = position - clip.start;
+            if let Some(lane) = self
+                .lanes
+                .iter_mut()
+                .flatten()
+                .find(|l| (l.id, l.key) == clip.lane_key() && !l.head)
+                && lane.expected() != rel
+            {
+                lane.seek(rel);
+            }
+            return;
+        }
         let key = clip.stream_key();
-        let rel = position - clip.start;
+        let at = clip.stream_start(position - clip.start);
         if let Some(prepared) = self
             .streams
             .iter_mut()
             .flatten()
             .find(|p| (p.id, p.key) == key)
-            && prepared.stream.position() != rel
+            && prepared.stream.position() != at
         {
-            prepared.stream.seek(rel);
+            prepared.stream.seek(at);
         }
     }
 
@@ -466,7 +740,18 @@ impl TrackInputNode {
         for (a, b, clip) in Segments::new(&schedule, position + from as u64, position + to as u64) {
             let (fa, fb) = ((a - position) as usize, (b - position) as usize);
             match clip {
-                Some(clip) => self.play(clip, &schedule, a, fa, fb, target),
+                Some(clip) => {
+                    // A crossfade plays the clip it fades out as well, from
+                    // its own stream and window, adding into the output.
+                    if let Some(under) = schedule::under_at(&schedule, clip, a) {
+                        let level = self.level;
+                        std::mem::swap(&mut self.window, &mut self.window_under);
+                        self.play(under, &schedule, a, fa, fb, target);
+                        std::mem::swap(&mut self.window, &mut self.window_under);
+                        self.level = level;
+                    }
+                    self.play(clip, &schedule, a, fa, fb, target)
+                }
                 None => self.advance(target, fb - fa),
             }
         }
@@ -484,6 +769,14 @@ impl TrackInputNode {
         fb: usize,
         target: f32,
     ) {
+        if let Some(map) = &clip.warp {
+            if clip.stretched() && !self.preview {
+                self.play_stretched(clip, schedule, a, fa, fb, target);
+                return;
+            }
+            self.play_warped(clip, map, schedule, a, fa, fb, target);
+            return;
+        }
         let len = fb - fa;
         let key = clip.stream_key();
         let rel = a - clip.start;
@@ -495,7 +788,8 @@ impl TrackInputNode {
         let Some(slot) = found else {
             // Not opened yet: silence, and the hub is on it.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         };
         let blocking = self.shared.blocking;
@@ -525,14 +819,15 @@ impl TrackInputNode {
         if stream.position() != rel {
             // Still catching up: nothing to play yet.
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            self.advance(target, len);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
             return;
         }
         let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
         let got = read_frames(stream, &mut self.scratch[..len * channels], blocking);
         if let Some(serial) = promoted {
             // Playing from it now, so it is an ordinary stream.
-            let _ = self.to_hub.push(Retired::Promoted(serial));
+            self.promoted(serial);
         }
         if got < len {
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
@@ -542,18 +837,8 @@ impl TrackInputNode {
                 self.abandoned.push(key);
             }
         }
-        let fade_in = clip.fade_in as f32;
-        let fade_out = clip.fade_out as f32;
         for i in 0..got {
-            let at = rel + i as u64;
-            let mut gain = clip.gain;
-            if clip.fade_in > 0 && at < clip.fade_in {
-                gain *= (at as f32 + 0.5) / fade_in;
-            }
-            let left_in_clip = clip.length - at;
-            if clip.fade_out > 0 && left_in_clip <= clip.fade_out {
-                gain *= (left_in_clip as f32 - 0.5) / fade_out;
-            }
+            let mut gain = clip.level(rel + i as u64);
             self.advance(target, 1);
             gain *= self.level;
             let frame = &self.scratch[i * channels..(i + 1) * channels];
@@ -561,10 +846,339 @@ impl TrackInputNode {
                 1 => (frame[0], frame[0]),
                 _ => (frame[0], frame[1]),
             };
-            self.left[fa + i] = l * gain;
-            self.right[fa + i] = r * gain;
+            self.left[fa + i] += l * gain;
+            self.right[fa + i] += r * gain;
         }
         self.advance(target, len - got);
+    }
+}
+
+impl TrackInputNode {
+    /// Plays a warped `clip` over block frames `fa..fb`, which start at
+    /// timeline sample `a`. The map says where in the source each output
+    /// frame reads, and the audio there is interpolated between the source's
+    /// own frames (Repitch: the pitch follows the speed).
+    #[allow(clippy::too_many_arguments)]
+    fn play_warped(
+        &mut self,
+        clip: &ScheduledClip,
+        map: &WarpMap,
+        schedule: &[ScheduledClip],
+        a: u64,
+        fa: usize,
+        fb: usize,
+        target: f32,
+    ) {
+        let key = clip.stream_key();
+        let total = map.source_len() as u64;
+        let mut at = a;
+        let mut index = fa;
+        while index < fb {
+            let rel = at - clip.start;
+            let mut n = (fb - index).min(WARP_CHUNK);
+            let first = map.source_at(rel as f64);
+            let mut last = map.source_at((rel + n as u64) as f64);
+            if last - first > MAX_SPAN {
+                // Playing very fast: take fewer output frames at a time so the
+                // source they reach over fits in the window.
+                n = ((n as f64 * MAX_SPAN / (last - first)) as usize).max(1);
+                last = map.source_at((rel + n as u64) as f64);
+            }
+            // The cubic reads one frame before and two after.
+            let lo = (first.floor().max(1.0) as u64 - 1).min(total);
+            let hi = ((last.floor().max(0.0) as u64) + 3)
+                .clamp(lo, total.min(lo + WINDOW_FRAMES as u64));
+            if !self.ready_window(schedule, key, lo, hi, at) {
+                // Silent until the stream delivers, and ramp in then, not
+                // behind the gap.
+                self.level = 0.0;
+                at += n as u64;
+                index += n;
+                continue;
+            }
+            let channels = self
+                .streams
+                .iter()
+                .flatten()
+                .find(|p| Some(p.serial) == self.window.serial)
+                .map_or(2, |p| p.stream.channels());
+            for k in 0..n {
+                let s = map.source_at((rel + k as u64) as f64);
+                let whole = s.floor();
+                let t = (s - whole) as f32;
+                let j = whole as i64;
+                let l = self.tap(j, 0, t, channels, total);
+                let r = if channels > 1 {
+                    self.tap(j, 1, t, channels, total)
+                } else {
+                    l
+                };
+                self.put(clip, rel + k as u64, index + k, l, r, target);
+            }
+            at += n as u64;
+            index += n;
+        }
+    }
+
+    /// Gets source frames `lo..hi` of `clip` into the window, from the stream
+    /// playing it. False if they can't be had yet (no stream, or it is still
+    /// catching up after a seek), in which case the caller plays silence.
+    fn ready_window(
+        &mut self,
+        schedule: &[ScheduledClip],
+        key: (ClipId, u64),
+        lo: u64,
+        hi: u64,
+        at: u64,
+    ) -> bool {
+        let blocking = self.shared.blocking;
+        // The stream the window came from, if it carries on from here.
+        let held = self.streams.iter().position(|slot| {
+            slot.as_ref().is_some_and(|p| {
+                Some(p.serial) == self.window.serial
+                    && (p.id, p.key) == key
+                    && p.stream.position() == self.window.end
+            })
+        });
+        let carry_on = held.is_some() && self.window.start <= lo && lo <= self.window.end;
+        let found = if carry_on {
+            held
+        } else if blocking {
+            self.wait_for_stream(key, lo, at, schedule)
+        } else {
+            self.pick(key, lo)
+        };
+        let Some(slot) = found else {
+            // Not opened yet: silence, and the hub is on it.
+            self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        let prepared = self.streams[slot].as_mut().expect("found above");
+        let stream = &mut prepared.stream;
+        let channels = stream.channels();
+        if carry_on {
+            // Forget the frames behind `lo`.
+            let drop = (lo - self.window.start) as usize;
+            if drop > 0 {
+                let keep = (self.window.end - lo) as usize;
+                self.window
+                    .buf
+                    .copy_within(drop * channels..(drop + keep) * channels, 0);
+                self.window.start = lo;
+            }
+        } else {
+            // Line the stream up with `lo`, as a clip that isn't warped does
+            // with the playhead: join in by dropping audio if it is a little
+            // behind, and seek otherwise.
+            let here = stream.position();
+            if here < lo && lo - here <= MAX_SKIP {
+                while stream.position() < lo {
+                    let want = (lo - stream.position()).min((self.scratch.len() / channels) as u64);
+                    if read_frames(
+                        stream,
+                        &mut self.scratch[..want as usize * channels],
+                        blocking,
+                    ) == 0
+                    {
+                        break;
+                    }
+                }
+            } else if here != lo {
+                stream.seek(lo);
+            }
+            if stream.position() != lo {
+                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            self.window.start = lo;
+            self.window.end = lo;
+            self.window.serial = Some(prepared.serial);
+        }
+        let promoted = std::mem::take(&mut prepared.head).then_some(prepared.serial);
+        if hi > self.window.end {
+            let want = (hi - self.window.end) as usize;
+            let from = (self.window.end - self.window.start) as usize * channels;
+            let got = read_frames(
+                stream,
+                &mut self.window.buf[from..from + want * channels],
+                blocking,
+            );
+            self.window.end += got as u64;
+            if got < want {
+                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                if blocking && stream.position() < stream.total_frames() {
+                    // Waited and the disk still didn't answer: stop waiting
+                    // on this clip.
+                    self.abandoned.push(key);
+                }
+            }
+        }
+        if let Some(serial) = promoted {
+            // Playing from it now, so it is an ordinary stream.
+            let _ = self.to_hub.push(Retired::Promoted(serial));
+        }
+        true
+    }
+
+    /// Source frame `j`, channel `c`, between it and the next by `t`, by
+    /// cubic interpolation. The first and last frames of the clip hold past
+    /// its ends, so the cut doesn't ring; frames the window lacks are silent.
+    fn tap(&self, j: i64, c: usize, t: f32, channels: usize, total: u64) -> f32 {
+        let at = |j: i64| -> f32 {
+            let j = (j.max(0) as u64).min(total.saturating_sub(1));
+            if j < self.window.start || j >= self.window.end {
+                return 0.0;
+            }
+            self.window.buf[(j - self.window.start) as usize * channels + c]
+        };
+        cubic(at(j - 1), at(j), at(j + 1), at(j + 2), t)
+    }
+
+    /// Puts one frame of `clip` in the output at block index `index`, with the
+    /// clip's gain and fades (`at` is the frame's place in the clip) and the
+    /// declick level.
+    fn put(&mut self, clip: &ScheduledClip, at: u64, index: usize, l: f32, r: f32, target: f32) {
+        let mut gain = clip.level(at);
+        self.advance(target, 1);
+        gain *= self.level;
+        self.left[index] += l * gain;
+        self.right[index] += r * gain;
+    }
+}
+
+impl TrackInputNode {
+    /// Plays a stretched `clip` (Grain or Beats) over block frames `fa..fb`,
+    /// which start at timeline sample `a`, by copying out of its lane: the
+    /// worker has rendered it already.
+    fn play_stretched(
+        &mut self,
+        clip: &ScheduledClip,
+        schedule: &[ScheduledClip],
+        a: u64,
+        fa: usize,
+        fb: usize,
+        target: f32,
+    ) {
+        let len = fb - fa;
+        let key = clip.lane_key();
+        let rel = a - clip.start;
+        let blocking = self.shared.blocking;
+        let found = if blocking {
+            self.wait_for_lane(clip, rel, a, schedule)
+        } else {
+            self.pick_lane(key, rel)
+        };
+        let Some(slot) = found else {
+            // Not opened yet: silence, and the worker is on it.
+            self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+            // Hold the declick at silence, so it ramps in on the first real frame.
+            self.level = 0.0;
+            return;
+        };
+        let lane = self.lanes[slot].as_mut().expect("found above");
+        lane.promote();
+        if lane.expected() != rel {
+            lane.seek(rel);
+        }
+        // Offline, wait for the worker to deliver everything the clip has in
+        // this stretch; live, take what is there.
+        let want = (clip.length.saturating_sub(rel)).min(len as u64) as usize;
+        let started = Instant::now();
+        let mut got = 0;
+        loop {
+            if lane.catch_up() {
+                got += lane.read(&mut self.lane_frames[got * 2..want * 2]);
+            }
+            if got >= want || !blocking {
+                break;
+            }
+            if started.elapsed() > WAIT_LIMIT {
+                self.abandoned.push(key);
+                break;
+            }
+            std::thread::sleep(WAIT_STEP);
+        }
+        if got < want {
+            lane.miss(want - got);
+            self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+        }
+        for i in 0..got {
+            let (l, r) = (self.lane_frames[i * 2], self.lane_frames[i * 2 + 1]);
+            self.put(clip, rel + i as u64, fa + i, l, r, target);
+        }
+        if got == 0 && want > 0 {
+            // Nothing to play: stay silent until the lane delivers, and ramp
+            // in then, not behind the gap. (A block that is only short keeps
+            // its level, or a lane that runs a little behind would never get
+            // loud.)
+            self.level = 0.0;
+        } else {
+            self.advance(target, len - got);
+        }
+    }
+
+    /// Finds the lane to play `key` from at section frame `rel`: one that is
+    /// already there, else any. Once one is, lanes for the section that are
+    /// ahead of the playhead are left over from before a loop wrap and are
+    /// handed back.
+    fn pick_lane(&mut self, key: (ClipId, u64), rel: u64) -> Option<usize> {
+        let mut exact = None;
+        let (mut normal, mut head) = (None, None);
+        for (i, slot) in self.lanes.iter().enumerate() {
+            let Some(lane) = slot else { continue };
+            if (lane.id, lane.key) != key {
+                continue;
+            }
+            // A lane opened ahead for the loop's start is only for when the
+            // playhead wraps, so it is the last resort.
+            if lane.head {
+                head.get_or_insert(i);
+            } else {
+                normal.get_or_insert(i);
+            }
+            if lane.expected() == rel {
+                exact.get_or_insert(i);
+            }
+        }
+        if let Some(keep) = exact {
+            for i in 0..self.lanes.len() {
+                let stale = i != keep
+                    && self.lanes[i]
+                        .as_ref()
+                        .is_some_and(|l| (l.id, l.key) == key && !l.head && l.expected() > rel);
+                if stale && let Some(old) = self.lanes[i].take() {
+                    self.retire_lane(old);
+                }
+            }
+        }
+        exact.or(normal).or(head)
+    }
+
+    /// Offline: waits until the worker has opened the lane for `key`.
+    fn wait_for_lane(
+        &mut self,
+        clip: &ScheduledClip,
+        rel: u64,
+        at: u64,
+        current: &[ScheduledClip],
+    ) -> Option<usize> {
+        let key = clip.lane_key();
+        let started = Instant::now();
+        loop {
+            if self.abandoned.contains(&key) || self.shared.has_failed(clip.stream_key()) {
+                return None;
+            }
+            if let Some(slot) = self.pick_lane(key, rel) {
+                return Some(slot);
+            }
+            if started.elapsed() > WAIT_LIMIT {
+                self.abandoned.push(key);
+                return None;
+            }
+            std::thread::sleep(WAIT_STEP);
+            self.receive_streams();
+            self.sweep(at, self.looping, Some(current));
+        }
     }
 }
 
@@ -594,7 +1208,7 @@ impl TrackInputNode {
         // A note that can't be ended because the buffer is full stays
         // sounding and is tried again next block.
         if !playing || !continuing {
-            self.sounding.retain(|s| out.push(off(s.id, 0)).is_err());
+            self.sounding.retain(|s| out.insert(off(s.id, 0)).is_err());
         }
         let notes = self.notes.take();
         if self.recheck {
@@ -611,7 +1225,7 @@ impl TrackInputNode {
                         s.end = note.end;
                         true
                     }
-                    None => out.push(off(s.id, 0)).is_err(),
+                    None => out.insert(off(s.id, 0)).is_err(),
                 }
             });
         }
@@ -634,7 +1248,7 @@ impl TrackInputNode {
                     }
                     (_, Some((i, s))) => {
                         let time = s.end.max(position) - position;
-                        if out.push(off(s.id, time)).is_err() {
+                        if out.insert(off(s.id, time)).is_err() {
                             break;
                         }
                         self.sounding.swap_remove(i);
@@ -675,7 +1289,7 @@ impl TrackInputNode {
                     }
                 };
                 // A full buffer leaves the key as it was, to try again.
-                if out.push(Event { time: 0, kind }).is_ok() {
+                if out.insert(Event { time: 0, kind }).is_ok() {
                     self.audition_held[word] ^= 1 << bit;
                 }
             }
@@ -700,7 +1314,7 @@ impl TrackInputNode {
                 velocity: note.velocity,
             },
         };
-        if out.push(on).is_ok() {
+        if out.insert(on).is_ok() {
             self.sounding.push(Sounding {
                 id: note.id,
                 start: note.start,
@@ -732,8 +1346,24 @@ fn read_frames(stream: &mut ClipStream, out: &mut [f32], blocking: bool) -> usiz
 }
 
 impl Node for TrackInputNode {
+    fn constant_output(&self, output: usize, constants: &[Option<f32>]) -> Option<f32> {
+        match output {
+            MUTE_OUT => constants[MUTE_IN],
+            _ => None,
+        }
+    }
+
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let n = ctx.frames;
+        // The track's mute, passed on for the track's graph to follow.
+        // (A rig that drives the node by hand may have only the audio output.)
+        let mut muted = false;
+        if let Some(input) = io.inputs.get(MUTE_IN) {
+            muted = input.lane(0, 0).first().is_some_and(|&m| m >= 0.5);
+            if let Some(output) = io.outputs.get_mut(MUTE_OUT) {
+                output.lane_mut(0, 0).copy_from_slice(input.lane(0, 0));
+            }
+        }
         let transport = ctx.transport;
         self.shared
             .position
@@ -743,7 +1373,9 @@ impl Node for TrackInputNode {
         self.shared.loop_end.store(end, Ordering::Relaxed);
         self.block = (transport.position, n);
         self.looping = transport.loop_range;
+        self.ring_if_moved(transport.position, transport.loop_range);
         self.receive(transport.position, n);
+        self.watch_preview();
         if self.shared.blocking {
             self.wait_for_schedule();
         }
@@ -756,17 +1388,30 @@ impl Node for TrackInputNode {
         self.schedule = current;
         self.left[..n].fill(0.0);
         self.right[..n].fill(0.0);
+        // Live notes are played whatever the transport does. A track that
+        // isn't monitored lets go of any it holds.
+        if let Some(live) = &mut self.live {
+            let monitoring = self.shared.monitoring.load(Ordering::Relaxed);
+            live.process(
+                ctx,
+                (monitoring && !muted).then_some(0),
+                &mut io.event_outputs[MIDI],
+            );
+        }
+        // A muted track plays no notes, and lets go of the ones it holds as
+        // it is muted. (Notes that begin while it is muted stay unplayed
+        // after it is unmuted: it carries on with the next.)
         self.play_notes(
             transport.position,
             n,
-            transport.playing,
+            transport.playing && !muted,
             &mut io.event_outputs[MIDI],
         );
 
         // While stopped the playhead holds still, but a fade-out still plays
         // on from it, so the streams end up a little past it. Once silent,
         // line them up with the playhead ready for the next start.
-        if !transport.playing && self.level <= 0.0 && self.pending.is_none() {
+        if !transport.playing && self.level <= 0.0 && !self.dipping() {
             self.park(transport.position);
             let out = io.outputs;
             out[AUDIO].lane_mut(0, 0).copy_from_slice(&self.left[..n]);
@@ -775,16 +1420,16 @@ impl Node for TrackInputNode {
         }
         let mut from = 0;
         while from < n {
-            if self.pending.is_some() && self.level <= 0.0 {
+            if self.dipping() && self.level <= 0.0 {
                 self.adopt_pending();
             }
-            let target = if transport.playing && self.pending.is_none() {
+            let target = if transport.playing && !self.dipping() {
                 1.0
             } else {
                 0.0
             };
             let mut to = n;
-            if self.pending.is_some() {
+            if self.dipping() {
                 // Run the old schedule down to silence, then swap.
                 let frames = (self.level / self.step).ceil() as usize;
                 to = (from + frames.max(1)).min(n);

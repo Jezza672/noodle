@@ -1,0 +1,21 @@
+// A script with memory: a saw through a three-tap echo. The array is the delay
+// line (its write head wraps), a loop adds the taps, and the "wet" parameter is
+// swept by an LFO.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.osc.saw", params: {"frequency": 220.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.osc.sine", params: {"frequency": 6.0}, position: (x: 0.0, y: 200.0)),
+            3: (type: "noodle.util.script", config: {"script": "// Three echoes, 5 ms apart, each quieter.\ninput x\nparam wet = 0.5 [0, 1]\noutput out\narray line[512]\nstate head\nline[head] = x\nlet echo = 0\nfor tap in 1 to 4 {\n  echo += line[head - tap * 240] / (tap + 1)\n}\nhead = (head + 1) % len(line)\nout = wet * echo + (1 - wet) * x"}, position: (x: 300.0, y: 0.0)),
+            4: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 600.0, y: 0.0)),
+            5: (type: "noodle.io.output", position: (x: 800.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 3, port: "x")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "wet")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+        ],
+    ),
+)

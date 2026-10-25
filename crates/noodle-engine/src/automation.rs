@@ -1,12 +1,14 @@
 //! Automation lanes in the engine: each lane becomes a hidden node wired into
 //! the parameter it drives, so it modulates what a wire would and the target
-//! needs no support for it. See "Automation" in docs/ARCHITECTURE.md.
+//! needs no support for it. See "Automation" in docs/architecture/automation.md.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use noodle_core::group::{GAIN, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO};
+use noodle_core::group::{
+    GAIN, GROUP_INPUT, GROUP_OUTPUT, MUTE, SOLO, parse_control_key, stage_id,
+};
 use noodle_core::{
     AutomationLane, AutomationPoint, Config, Connection, Curve, Endpoint, Graph, LaneId, Node,
     NodeId, Tick, Value,
@@ -36,10 +38,10 @@ fn source_id(lane: LaneId) -> NodeId {
     NodeId(u64::MAX - lane.0)
 }
 
-/// The group boundary nodes whose gain or mute a lane drives. They need to
-/// keep a stage through flattening, since that is the node the lane wires
-/// into. A lane on a boundary's solo gets a diagnostic, and other ports of a
-/// boundary node are ignored.
+/// The stage IDs of the group boundary ports whose gain or mute a lane
+/// drives. They need to keep a stage through flattening, since that is the
+/// node the lane wires into. A lane on a port's solo gets a diagnostic, and
+/// other keys of a boundary node are ignored.
 pub(crate) fn boundary_targets(
     graph: &Graph,
     lanes: &Lanes<'_>,
@@ -54,15 +56,39 @@ pub(crate) fn boundary_targets(
         if !is_boundary || lane.points.is_empty() {
             continue;
         }
-        match target.port.as_str() {
-            GAIN | MUTE => {
-                keep.insert(target.node);
+        match parse_control_key(&target.port) {
+            Some((GAIN | MUTE, port)) => {
+                keep.insert(stage_id(target.node, port));
             }
-            SOLO => diagnostics.push(Diagnostic::node(target.node, Problem::LaneOnSolo)),
+            Some((SOLO, _)) => {
+                diagnostics.push(Diagnostic::node(target.node, Problem::LaneOnSolo));
+            }
             _ => {}
         }
     }
     keep
+}
+
+/// The lanes with each one aimed at a boundary port's gain or mute pointed
+/// at that port's stage in the flattened graph instead, which is where the
+/// parameter is after [`flatten_keeping`](crate::flatten::flatten_keeping).
+pub(crate) fn retarget_lanes(graph: &Graph, lanes: &Lanes<'_>) -> Vec<(LaneId, AutomationLane)> {
+    lanes
+        .iter()
+        .map(|&(id, lane)| {
+            let target = &lane.target;
+            let on_boundary = graph
+                .node(target.node)
+                .is_some_and(|n| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT));
+            let target = match parse_control_key(&target.port) {
+                Some((control @ (GAIN | MUTE), port)) if on_boundary => {
+                    Endpoint::new(stage_id(target.node, port), control)
+                }
+                _ => target.clone(),
+            };
+            (id, AutomationLane::new(target, lane.points.clone()))
+        })
+        .collect()
 }
 
 /// Returns `graph` with each lane's source node added and wired into its
@@ -124,6 +150,9 @@ pub(crate) fn add_lanes<'a>(
                 position: Default::default(),
                 parent: None,
                 port_order: Vec::new(),
+                param_shown: Default::default(),
+                template: None,
+                preset: None,
             },
         ));
         connections.push(Connection {

@@ -70,6 +70,30 @@ pub fn snap(map: &TempoMap, tick: Tick) -> Tick {
         .unwrap_or(tick)
 }
 
+/// `tick` moved to the nearest multiple of `step` ticks, counted from the
+/// beat line before it, so a grid finer than a beat follows the time signature.
+/// A step of a beat or more is the beat lines; one of 1 or less (snap off)
+/// leaves `tick` alone.
+pub fn snap_to(map: &TempoMap, tick: Tick, step: i64) -> Tick {
+    if step <= 1 {
+        return tick;
+    }
+    let beat = snap(map, tick);
+    // The beat line before `tick` and the one after it.
+    let from = Tick((tick.0 - 3840).max(0));
+    let around = lines(map, from, Tick(tick.0 + 3840));
+    let before = around.iter().rev().find(|l| l.tick <= tick).map(|l| l.tick);
+    let after = around.iter().find(|l| l.tick > tick).map(|l| l.tick);
+    let (Some(before), Some(after)) = (before, after) else {
+        return beat;
+    };
+    if step >= after.0 - before.0 {
+        return beat;
+    }
+    let n = ((tick.0 - before.0) as f64 / step as f64).round() as i64;
+    Tick((before.0 + n * step).min(after.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +143,20 @@ mod tests {
                 (4800, None),
             ]
         );
+    }
+
+    #[test]
+    fn a_finer_step_snaps_between_the_beat_lines() {
+        let four = map(&[(0, 4, 4)]);
+        assert_eq!(snap_to(&four, Tick(1300), 960), Tick(960));
+        assert_eq!(snap_to(&four, Tick(1300), 480), Tick(1440));
+        assert_eq!(snap_to(&four, Tick(1300), 240), Tick(1200));
+        assert_eq!(snap_to(&four, Tick(1300), 1), Tick(1300), "off");
+        // After a signature change the beats are counted from the new bar.
+        let mixed = map(&[(0, 4, 4), (1, 3, 8)]);
+        // The bar of 3/8 starts at 3840; its beats are 480 ticks long.
+        assert_eq!(snap_to(&mixed, Tick(3840 + 700), 240), Tick(3840 + 720));
+        assert_eq!(snap_to(&mixed, Tick(3840 + 700), 960), Tick(3840 + 480));
     }
 
     #[test]

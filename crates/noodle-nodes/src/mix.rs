@@ -43,6 +43,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Mix {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Mixer
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -132,6 +136,10 @@ impl Node for MixNode {
     fn reset(&mut self) {
         self.probe.reset();
         self.sum.reset();
+    }
+
+    fn stopped(&mut self) {
+        self.probe.silence();
     }
 }
 

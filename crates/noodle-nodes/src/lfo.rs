@@ -61,6 +61,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Lfo {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Lfo)
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

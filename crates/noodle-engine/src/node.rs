@@ -26,7 +26,10 @@ use std::fmt;
 
 use noodle_core::{Config, NodeId, Value};
 
-use crate::{Event, EventsOut, OfflineNode, ParamInfo, Shape, ShapeError, SignalIn, SignalOut};
+use crate::{
+    Event, EventsOut, OfflineNode, ParamInfo, Shape, ShapeError, SignalIn, SignalOut, SpectralIn,
+    SpectralOut,
+};
 
 /// Facts about a node type that never depend on config.
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +42,55 @@ pub struct NodeInfo {
     pub name: &'static str,
     /// Where the node is listed in the add-node menu.
     pub category: &'static str,
+}
+
+/// What a node draws below its ports in the node editor, and so which of
+/// its telemetry the editor reads. A node type declares it with
+/// [`NodeType::view`]; the editor keeps one table from view to height,
+/// painter and reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeView {
+    /// Nothing: just ports and parameters.
+    None,
+    /// Level bars for what the node's `in` passes, from a `MeterWriter`.
+    Meter,
+    /// A mixer: one level per input, shown beside the input rows.
+    Mixer,
+    /// A scope of what the node's scope channel records.
+    Scope,
+    /// A spectrum and spectrogram of the node's scope channel.
+    Spectrum,
+    /// An Envelope node's drawn curve.
+    Envelope,
+    /// A panner's speaker layout with the source on it.
+    Panner,
+    /// A graph of what the node does, drawn from its parameters.
+    Graph(GraphKind),
+    /// Group boundaries show the levels at their output stages. The engine
+    /// flattens groups away, so only the editor uses this.
+    GroupMeter,
+}
+
+/// The kinds of parameter graph a node can draw, see [`NodeView::Graph`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphKind {
+    Adsr,
+    Svf,
+    Ladder,
+    Lfo,
+    Dynamics,
+    Eq,
+}
+
+impl GraphKind {
+    /// The telemetry parameters the graph reads from the node even when
+    /// nothing is wired, for its live dot.
+    pub fn reports(self) -> &'static [&'static str] {
+        match self {
+            Self::Dynamics => &["level", "reduction"],
+            _ => &[],
+        }
+    }
 }
 
 pub trait NodeType: Send + Sync + 'static {
@@ -56,6 +108,44 @@ pub trait NodeType: Send + Sync + 'static {
     /// a delay line) must leave this false.
     fn stateless(&self) -> bool {
         false
+    }
+
+    /// The config keys that reach a running instance through
+    /// [`retune`](Self::retune) instead of by rebuilding it. A change to only
+    /// these leaves the instance in place, with its state (a sounding note,
+    /// say), so a drag that sets one many times a second doesn't cut it off.
+    fn live_config(&self) -> &[&'static str] {
+        &[]
+    }
+
+    /// Tells the node's running instances the node's config, whenever a plan
+    /// is built that keeps them. Runs off the audio thread. A node type that
+    /// lists [`live_config`](Self::live_config) keys passes them on here, to
+    /// the instances it has made for `node`; an instance made later reads its
+    /// config when it is instantiated.
+    fn retune(&self, _node: NodeId, _config: &Config) {}
+
+    /// True if the node does something besides turn its inputs into its
+    /// outputs, such as reporting to the UI, reading a device or hosting a
+    /// plugin, so the engine runs it even when nothing downstream of it is
+    /// listening. Every other node is only run while a path from it leads to
+    /// an Output node (see "Silence skipping" in the architecture notes).
+    fn always_runs(&self) -> bool {
+        false
+    }
+
+    /// What the node editor draws in the node's body. Anything that reports
+    /// to the UI (see [`always_runs`](Self::always_runs)) says here what it
+    /// reports.
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::None
+    }
+
+    /// The config a newly added node of this type starts with, for settings
+    /// whose first value isn't the same as leaving them out. Whatever adds a
+    /// node from the UI (the add-node search, the plugin browser) applies it.
+    fn initial_config(&self) -> Config {
+        Config::new()
     }
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError>;
@@ -89,9 +179,25 @@ pub trait NodeType: Send + Sync + 'static {
         Ok(())
     }
 
+    /// The sample a sample output port carries, as the text its receiver is
+    /// given: a content hash, optionally followed by `:start:end`, a window
+    /// as fractions of the sample (see `noodle_nodes::SampleRef`). The
+    /// compiler writes it into the config of the node wired to the port, under
+    /// the receiving sample input's key, in place of whatever was set there.
+    /// `None` is no sample, which the receiver treats as silence.
+    fn sample_output(&self, _config: &Config, _key: &str) -> Option<String> {
+        None
+    }
+
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.
+    ///
+    /// A node with spectral ports gets the shapes of its spectral inputs
+    /// after those of its signal inputs, and returns the shapes of its
+    /// spectral outputs after those of its signal outputs. The default
+    /// therefore gives a spectral output the shape of the audio it came
+    /// from, and an audio output the shape of the spectrum it plays.
     fn output_shapes(
         &self,
         _config: &Config,
@@ -99,7 +205,10 @@ pub trait NodeType: Send + Sync + 'static {
         inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
         let shape = Shape::broadcast_all(inputs.iter().copied())?;
-        Ok(vec![shape; layout.outputs.len()])
+        Ok(vec![
+            shape;
+            layout.outputs.len() + layout.spectral_outputs.len()
+        ])
     }
 
     /// Runs off the audio thread, so it may allocate.
@@ -114,6 +223,14 @@ pub struct Layout {
     pub outputs: Vec<Port>,
     pub event_inputs: Vec<Port>,
     pub event_outputs: Vec<Port>,
+    /// Spectral (FFT frame) ports; see [`crate::spectral`](crate::Analyzer).
+    pub spectral_inputs: Vec<Port>,
+    pub spectral_outputs: Vec<Port>,
+    /// Sample ports carry a reference to a sample, not signal. The compiler
+    /// resolves them before scheduling (see [`NodeType::sample_output`]), so
+    /// they have no buffers and no place in the shapes.
+    pub sample_inputs: Vec<Port>,
+    pub sample_outputs: Vec<Port>,
     pub mode: Mode,
     /// False if identical inputs can give different output, e.g. unseeded
     /// randomness. Nondeterministic nodes are never cached.
@@ -162,6 +279,46 @@ pub enum Mode {
 }
 
 impl Layout {
+    /// The most parameters a node shows on itself by default once it has
+    /// more than [`Self::MANY_PORTS`] inputs or outputs.
+    pub const DEFAULT_SHOWN: usize = 4;
+    /// A node with more inputs or more outputs than this shows only some of
+    /// its parameters by default.
+    pub const MANY_PORTS: usize = 4;
+
+    /// Whether the parameter `key` is drawn on the node in the graph, given
+    /// the node's own choices (`chosen`, by key). A parameter nobody chose
+    /// for shows by default on a node with few ports; on one with many it
+    /// shows if the type marks it [`featured`](ParamInfo::featured), or, when
+    /// the type marks none, if it is one of the first few. Audio and event
+    /// ports always show.
+    pub fn param_shown(
+        &self,
+        chosen: &std::collections::BTreeMap<String, bool>,
+        key: &str,
+    ) -> bool {
+        if let Some(&shown) = chosen.get(key) {
+            return shown;
+        }
+        let many = self.inputs.len() + self.event_inputs.len() + self.spectral_inputs.len()
+            > Self::MANY_PORTS
+            || self.outputs.len() + self.event_outputs.len() + self.spectral_outputs.len()
+                > Self::MANY_PORTS;
+        if !many {
+            return true;
+        }
+        let params = || {
+            self.inputs.iter().filter_map(|input| match &input.kind {
+                InputKind::Param(info) => Some((input.key.as_ref(), info)),
+                InputKind::Audio => None,
+            })
+        };
+        if params().any(|(_, info)| info.featured) {
+            return params().any(|(k, info)| k == key && info.featured);
+        }
+        params().take(Self::DEFAULT_SHOWN).any(|(k, _)| k == key)
+    }
+
     pub fn realtime() -> Self {
         Self::with_mode(Mode::Realtime)
     }
@@ -176,6 +333,10 @@ impl Layout {
             outputs: Vec::new(),
             event_inputs: Vec::new(),
             event_outputs: Vec::new(),
+            spectral_inputs: Vec::new(),
+            spectral_outputs: Vec::new(),
+            sample_inputs: Vec::new(),
+            sample_outputs: Vec::new(),
             mode,
             deterministic: true,
         }
@@ -232,6 +393,42 @@ impl Layout {
         name: impl Into<Cow<'static, str>>,
     ) -> Self {
         self.event_outputs.push(port(key, name));
+        self
+    }
+
+    pub fn spectral_input(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.spectral_inputs.push(port(key, name));
+        self
+    }
+
+    pub fn spectral_output(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.spectral_outputs.push(port(key, name));
+        self
+    }
+
+    pub fn sample_input(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.sample_inputs.push(port(key, name));
+        self
+    }
+
+    pub fn sample_output(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.sample_outputs.push(port(key, name));
         self
     }
 
@@ -307,7 +504,9 @@ pub struct Setup<'a> {
     pub sample_rate: f32,
     /// The most frames any block will have.
     pub max_frames: usize,
+    /// The shapes of the signal inputs, then those of the spectral inputs.
     pub input_shapes: &'a [Shape],
+    /// The shapes of the signal outputs, then those of the spectral outputs.
     pub output_shapes: &'a [Shape],
     /// A seed for anything random. It's the same for this node on every run,
     /// so renders repeat exactly (and can be cached), but different for every
@@ -373,8 +572,34 @@ pub trait Node: Send + 'static {
     }
 
     /// Clears internal state such as filter memory, e.g. when the transport
-    /// jumps.
+    /// jumps, or when the node starts running again after the engine stopped
+    /// it because nothing downstream was listening.
     fn reset(&mut self) {}
+
+    /// Called once when the engine stops running the node because nothing
+    /// downstream is listening (see "Silence skipping" in the architecture
+    /// notes). A node that reports a level to the UI writes zero here, so its
+    /// meter doesn't hold the last reading.
+    fn stopped(&mut self) {}
+
+    /// Whether the node's outputs are exactly zero for this block whatever
+    /// its connected inputs hold, given the inputs that are the same for the
+    /// whole block (`constants[i]` is `Some` for input `i` if it is
+    /// unconnected, and has settled). The engine then doesn't run the nodes
+    /// that only feed it. Must be cheap and real-time safe; false is always
+    /// safe.
+    fn silenced_by(&self, _constants: &[Option<f32>]) -> bool {
+        false
+    }
+
+    /// The value signal output `output` holds for the whole block, if it is
+    /// known from the inputs that are constant for the block (`constants`, as
+    /// for [`silenced_by`](Self::silenced_by)) without running the node. A
+    /// node wired from it can then be [silenced](Self::silenced_by) by it
+    /// as if the value were its own parameter. `None` is always safe.
+    fn constant_output(&self, _output: usize, _constants: &[Option<f32>]) -> Option<f32> {
+        None
+    }
 }
 
 /// The most latency, in samples, the engine will compensate for a single
@@ -413,6 +638,9 @@ pub struct Transport {
     pub bpm: f64,
     /// The time signature at the block's start.
     pub signature: noodle_core::TimeSignature,
+    /// The tick where that time signature began (0 until the first change),
+    /// so bars and beats count from it.
+    pub signature_start: f64,
 }
 
 impl Default for Transport {
@@ -425,6 +653,7 @@ impl Default for Transport {
             tick: 0.0,
             bpm: 120.0,
             signature: noodle_core::TimeSignature::COMMON,
+            signature_start: 0.0,
         }
     }
 }
@@ -440,6 +669,8 @@ pub struct Io<'a, 'b> {
     pub outputs: &'a mut [SignalOut<'b>],
     pub event_inputs: &'a [&'a [Event]],
     pub event_outputs: &'a mut [EventsOut<'b>],
+    pub spectral_inputs: &'a [SpectralIn<'a>],
+    pub spectral_outputs: &'a mut [SpectralOut<'b>],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -470,3 +701,76 @@ impl fmt::Display for NodeError {
 }
 
 impl std::error::Error for NodeError {}
+
+#[cfg(test)]
+mod layout_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn params(keys: &[(&str, bool)]) -> Layout {
+        let mut layout = Layout::realtime().input("in", "In");
+        for &(key, featured) in keys {
+            let info = ParamInfo::new(0.0, 1.0, 0.0);
+            layout = layout.param(
+                key.to_owned(),
+                key.to_owned(),
+                if featured { info.featured() } else { info },
+            );
+        }
+        layout
+    }
+
+    #[test]
+    fn a_node_with_few_ports_shows_every_parameter() {
+        let layout = params(&[("a", false), ("b", false), ("c", false), ("d", false)]);
+        assert!(
+            ["a", "b", "c", "d"]
+                .iter()
+                .all(|k| layout.param_shown(&BTreeMap::new(), k))
+        );
+    }
+
+    #[test]
+    fn a_node_with_many_ports_shows_its_featured_parameters() {
+        let layout = params(&[
+            ("a", false),
+            ("b", true),
+            ("c", false),
+            ("d", true),
+            ("e", false),
+        ]);
+        let shown = |k| layout.param_shown(&BTreeMap::new(), k);
+        assert_eq!(
+            [shown("a"), shown("b"), shown("c"), shown("d"), shown("e")],
+            [false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn with_none_featured_the_first_four_show() {
+        let layout = params(&[
+            ("a", false),
+            ("b", false),
+            ("c", false),
+            ("d", false),
+            ("e", false),
+        ]);
+        let shown = |k| layout.param_shown(&BTreeMap::new(), k);
+        assert_eq!([shown("a"), shown("d"), shown("e")], [true, true, false]);
+    }
+
+    #[test]
+    fn the_users_choice_beats_the_default() {
+        let layout = params(&[
+            ("a", false),
+            ("b", false),
+            ("c", false),
+            ("d", false),
+            ("e", false),
+        ]);
+        let chosen = BTreeMap::from([("a".to_owned(), false), ("e".to_owned(), true)]);
+        assert!(!layout.param_shown(&chosen, "a"));
+        assert!(layout.param_shown(&chosen, "e"));
+    }
+}

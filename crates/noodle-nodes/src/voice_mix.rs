@@ -35,6 +35,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for VoiceMix {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Meter
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -67,6 +71,10 @@ struct VoiceMixNode {
 impl Node for VoiceMixNode {
     fn reset(&mut self) {
         self.probe.reset();
+    }
+
+    fn stopped(&mut self) {
+        self.probe.silence();
     }
 
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {

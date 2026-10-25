@@ -57,6 +57,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Ladder {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Ladder)
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

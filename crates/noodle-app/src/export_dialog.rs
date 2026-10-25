@@ -5,6 +5,7 @@
 //! on the session, which runs it in the background. The dialog stays up with
 //! a progress bar until it ends.
 
+use noodle_engine::ChannelLayout;
 use noodle_io::ExportFormat;
 
 use crate::session::{ExportChoice, Session};
@@ -19,6 +20,7 @@ enum Part {
 pub struct ExportDialog {
     open: bool,
     format: ExportFormat,
+    layout: ChannelLayout,
     part: Part,
     /// The range in seconds.
     from: f64,
@@ -36,6 +38,7 @@ impl Default for ExportDialog {
         Self {
             open: false,
             format: ExportFormat::Wav24,
+            layout: ChannelLayout::Stereo,
             part: Part::Whole,
             from: 0.0,
             to: 0.0,
@@ -44,6 +47,16 @@ impl Default for ExportDialog {
             started: false,
         }
     }
+}
+
+/// A layout with its channel count, as the channel dropdowns list it.
+pub(crate) fn layout_label(layout: ChannelLayout) -> String {
+    let channels = layout.channels();
+    format!(
+        "{} ({channels} channel{})",
+        layout.name(),
+        if channels == 1 { "" } else { "s" }
+    )
 }
 
 /// Minutes and seconds, as 1:05.3.
@@ -121,6 +134,7 @@ impl ExportDialog {
                 {
                     self.chosen = Some(ExportChoice {
                         format: self.format,
+                        layout: self.layout,
                         range: (self.part == Part::Range).then_some((self.from, self.to)),
                     });
                 }
@@ -151,11 +165,20 @@ impl ExportDialog {
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 ui.label("Format");
-                egui::ComboBox::from_id_salt("export format")
+                crate::widgets::Dropdown::from_id_salt("export format")
                     .selected_text(self.format.label())
                     .show_ui(ui, |ui| {
                         for format in ExportFormat::ALL {
                             ui.selectable_value(&mut self.format, format, format.label());
+                        }
+                    });
+                ui.end_row();
+                ui.label("Channels");
+                crate::widgets::Dropdown::from_id_salt("export channels")
+                    .selected_text(layout_label(self.layout))
+                    .show_ui(ui, |ui| {
+                        for layout in ChannelLayout::ALL {
+                            ui.selectable_value(&mut self.layout, layout, layout_label(layout));
                         }
                     });
                 ui.end_row();

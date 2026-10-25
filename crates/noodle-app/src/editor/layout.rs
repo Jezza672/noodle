@@ -8,7 +8,7 @@ use egui::{Pos2, Rect, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
 use noodle_core::spare;
 use noodle_core::{Command, Connection, Endpoint, FrameId, Graph, LaneId, Node, NodeId, Project};
-use noodle_engine::{InputKind, ParamInfo, Registry, Unit};
+use noodle_engine::{InputKind, NodeView, ParamInfo, Registry, Unit};
 use noodle_nodes::REROUTE_ID;
 
 pub const NODE_WIDTH: f32 = 160.0;
@@ -41,6 +41,13 @@ pub enum PortKind {
     Audio,
     Param(ParamInfo),
     Event,
+    /// FFT frames, as between Analyze and Synthesize.
+    Spectral,
+    /// A reference to a sample (a Sample node's output, a Sampler's input).
+    Sample,
+    /// A group's port that nothing is wired to on either side yet: it takes
+    /// a wire of any kind, and becomes that kind once one is connected.
+    Any,
     /// A port the node doesn't have, but that a wire in the project refers
     /// to, e.g. on a node whose type is missing. Drawn so the wire has
     /// somewhere to go.
@@ -54,6 +61,17 @@ impl PortKind {
             (self, input),
             (PortKind::Audio, PortKind::Audio | PortKind::Param(_))
                 | (PortKind::Event, PortKind::Event)
+                | (PortKind::Spectral, PortKind::Spectral)
+                | (PortKind::Sample, PortKind::Sample)
+                | (PortKind::Any, PortKind::Audio | PortKind::Param(_))
+                | (
+                    PortKind::Any,
+                    PortKind::Event | PortKind::Spectral | PortKind::Sample | PortKind::Any
+                )
+                | (
+                    PortKind::Audio | PortKind::Event | PortKind::Spectral | PortKind::Sample,
+                    PortKind::Any
+                )
         )
     }
 }
@@ -89,6 +107,8 @@ pub struct NodeGeom {
     pub reroute: bool,
     /// Space for custom drawing below the ports; see [`super::body`].
     pub body: Option<Rect>,
+    /// What the body shows, as the node type declares it.
+    pub view: NodeView,
     /// Why the node's ports couldn't be worked out, if they couldn't.
     pub error: Option<String>,
 }
@@ -112,6 +132,8 @@ pub struct WireGeom {
     pub from: Pos2,
     pub to: Pos2,
     pub event: bool,
+    pub spectral: bool,
+    pub sample: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -147,6 +169,17 @@ pub fn is_lane_port(graph: &Graph, endpoint: &Endpoint) -> bool {
             .is_some_and(|n| n.type_id == group::TRACK_INPUT)
 }
 
+/// What a lane's wire is called: its port's name and the control it drives,
+/// e.g. "out gain lane".
+fn lane_name(graph: &Graph, target: &Endpoint) -> String {
+    let (control, id) = group::parse_control_key(&target.port).unwrap_or((group::GAIN, 0));
+    let name = graph
+        .node(target.node)
+        .and_then(|n| n.boundary_ports().into_iter().find(|&(p, _)| p == id))
+        .map_or_else(|| target.port.clone(), |(_, name)| name);
+    format!("{name} {control} lane")
+}
+
 /// The lanes shown as wires from `node`, when it is a track's input: those
 /// driving a boundary node of its group. A lane has no wire of its own in
 /// the project, so the first track input in a group stands for all of them.
@@ -166,8 +199,10 @@ fn lane_wires(project: &Project, node: NodeId) -> Vec<(LaneId, Endpoint)> {
         .lanes()
         .filter(|(_, lane)| {
             // Solo has no port, and a real wire in the way hides the lane.
-            matches!(lane.target.port.as_str(), group::GAIN | group::MUTE)
-                && graph.source(&lane.target).is_none()
+            matches!(
+                group::parse_control_key(&lane.target.port),
+                Some((group::GAIN | group::MUTE, _))
+            ) && graph.source(&lane.target).is_none()
                 && !lane.points.is_empty()
                 && graph.node(lane.target.node).is_some_and(|n| {
                     n.parent == input.parent
@@ -219,7 +254,7 @@ impl Scene {
             let mut ports = Vec::new();
             let mut error = None;
             let (title, category) = if let Some((title, category, structural)) =
-                structure(graph, id, node)
+                structure(project, registry, id, node)
             {
                 ports = structural;
                 (title, category)
@@ -256,13 +291,59 @@ impl Scene {
                                         PortKind::Event,
                                     ));
                                 }
+                                for p in &layout.spectral_outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Spectral,
+                                    ));
+                                }
+                                for p in &layout.sample_outputs {
+                                    ports.push(port(
+                                        Side::Output,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Sample,
+                                    ));
+                                }
                                 // Note inputs first: they are the way into an
                                 // instrument, and a plugin can have hundreds of
                                 // parameters below them.
                                 for p in &layout.event_inputs {
                                     ports.push(port(Side::Input, &p.key, &p.name, PortKind::Event));
                                 }
+                                for p in &layout.spectral_inputs {
+                                    ports.push(port(
+                                        Side::Input,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Spectral,
+                                    ));
+                                }
+                                for p in &layout.sample_inputs {
+                                    ports.push(port(
+                                        Side::Input,
+                                        &p.key,
+                                        &p.name,
+                                        PortKind::Sample,
+                                    ));
+                                }
                                 for p in &layout.inputs {
+                                    // A parameter the user (or the node type)
+                                    // leaves off the node keeps its port while
+                                    // a wire or a lane goes into it.
+                                    let endpoint = Endpoint::new(id, p.key.to_string());
+                                    // (A mixer's gains and mutes come and go with
+                                    // its inputs; `add_spares` trims them.)
+                                    if matches!(p.kind, InputKind::Param(_))
+                                        && node.type_id != spare::MIXER
+                                        && !layout.param_shown(&node.param_shown, &p.key)
+                                        && graph.source(&endpoint).is_none()
+                                        && project.lane_for(&endpoint).is_none()
+                                    {
+                                        continue;
+                                    }
                                     let kind = match &p.kind {
                                         InputKind::Audio => PortKind::Audio,
                                         InputKind::Param(info) => PortKind::Param(info.clone()),
@@ -276,7 +357,7 @@ impl Scene {
                     }
                     None => {
                         error = Some(format!("unknown node type `{}`", node.type_id));
-                        (node.type_id.clone(), String::new())
+                        (friendly_type_name(&node.type_id), String::new())
                     }
                 }
             };
@@ -293,6 +374,13 @@ impl Scene {
                     }
                 }
                 _ => title,
+            };
+
+            // A mixer shows the name it was given.
+            let title = if node.type_id == noodle_core::spare::MIXER {
+                noodle_core::spare::mixer_name(graph, id)
+            } else {
+                title
             };
 
             // Ports that wires refer to but the node doesn't have.
@@ -325,14 +413,7 @@ impl Scene {
                 for (lane, target) in lane_wires(project, id) {
                     ports.push(PortGeom {
                         key: lane_key(lane),
-                        name: format!(
-                            "{} {} lane",
-                            match graph.node(target.node).map(|n| n.type_id.as_str()) {
-                                Some(GROUP_INPUT) => "In",
-                                _ => "Out",
-                            },
-                            target.port
-                        ),
+                        name: lane_name(graph, &target),
                         side: Side::Output,
                         kind: PortKind::Audio,
                         socket: Pos2::ZERO,
@@ -361,6 +442,7 @@ impl Scene {
             let rank = |p: &PortGeom| order.iter().position(|key| *key == p.key);
             ports.sort_by_key(|p| rank(p).unwrap_or(usize::MAX));
 
+            let view = super::body::view_of(registry, node);
             let origin = Pos2::new(node.position.x, node.position.y);
             let reroute = node.type_id == REROUTE_ID && error.is_none();
             let mut body = None;
@@ -376,8 +458,11 @@ impl Scene {
                             .lane_for(&Endpoint::new(id, p.key.clone()))
                             .is_none()
                 };
-                let rect = place_columns(origin, &mut ports, has_field);
-                let height = super::body::height(&node.type_id);
+                // A group's input or output node labels its port, so the name
+                // is drawn where the port is and can be edited in place.
+                let labelled = matches!(node.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT);
+                let rect = place_columns(origin, &mut ports, has_field, labelled);
+                let height = super::body::height(view);
                 if height > 0.0 {
                     let top = rect.bottom() - PADDING;
                     body = Some(Rect::from_min_size(
@@ -399,6 +484,7 @@ impl Scene {
                 ports,
                 reroute,
                 body,
+                view,
                 error,
             });
         }
@@ -429,6 +515,8 @@ impl Scene {
                 Some(WireGeom {
                     lane: None,
                     event: from.kind == PortKind::Event,
+                    spectral: from.kind == PortKind::Spectral,
+                    sample: from.kind == PortKind::Sample,
                     from: from.socket,
                     to: to.socket,
                     connection,
@@ -449,6 +537,8 @@ impl Scene {
                 scene.wires.push(WireGeom {
                     lane: Some(lane),
                     event: false,
+                    spectral: false,
+                    sample: false,
                     from: a,
                     to: b,
                     connection: Connection { from, to: target },
@@ -486,7 +576,11 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
         },
         key,
         side,
-        kind: PortKind::Audio,
+        kind: if matches!(node.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT) {
+            PortKind::Any
+        } else {
+            PortKind::Audio
+        },
         socket: Pos2::ZERO,
         row: Rect::NOTHING,
         in_header: false,
@@ -519,6 +613,28 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
                 )
             });
         }
+        GROUP_INPUT | GROUP_OUTPUT => {
+            let Some(group) = node.parent else { return };
+            let (side, port_side) = if node.type_id == GROUP_INPUT {
+                (spare::Side::Input, Side::Output)
+            } else {
+                (spare::Side::Output, Side::Input)
+            };
+            // The next port's key on this node, drawn under the ports.
+            let next = node
+                .boundary_ports()
+                .iter()
+                .map(|&(pid, _)| pid)
+                .max()
+                .map_or(1, |pid| pid + 1);
+            let mut port = spare(port_side, group::port_key(next));
+            port.name = spare::spare_group_name(graph, group, side);
+            let at = ports
+                .iter()
+                .rposition(|p| p.side == port_side && group::parse_port_key(&p.key).is_some())
+                .map_or(0, |i| i + 1);
+            ports.insert(at, port);
+        }
         GROUP => {
             let input = spare::spare_group_name(graph, id, spare::Side::Input);
             let output = spare::spare_group_name(graph, id, spare::Side::Output);
@@ -529,6 +645,22 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
     }
 }
 
+/// A readable name for a node type the registry doesn't know, from the last
+/// part of its ID: `noodle.effect.low_pass` is "Low pass".
+pub fn friendly_type_name(type_id: &str) -> String {
+    let last = type_id.rsplit('.').next().unwrap_or(type_id);
+    capitalised(&last.replace(['_', '-'], " "))
+}
+
+/// `text` with its first letter in upper case.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// A group's name, from its `name` config, or just "Group".
 pub fn group_title(graph: &Graph, id: NodeId) -> String {
     match graph.node(id).and_then(|n| n.config.get(group::PORT_NAME)) {
@@ -537,9 +669,186 @@ pub fn group_title(graph: &Graph, id: NodeId) -> String {
     }
 }
 
+/// Whether a boundary port shows its gain and mute ports: the group's
+/// control port ([`Graph::control_port`]), which the mixer and track header
+/// drive, or any port that has a value, a wire or a lane on either, so none
+/// of them is left hidden while it still affects the sound.
+fn show_controls(project: &Project, id: NodeId, node: &Node, port: u32) -> bool {
+    let graph = project.graph();
+    let control = node.parent.and_then(|group| graph.control_port(group));
+    control.is_some_and(|c| (c.node, c.id) == (id, port))
+        || node.has_gain_or_mute(port)
+        || [group::GAIN, group::MUTE].iter().any(|control| {
+            graph
+                .source(&Endpoint::new(id, group::control_key(control, port)))
+                .is_some()
+        })
+        || project.lanes().any(|(_, lane)| {
+            lane.target.node == id
+                && [group::GAIN, group::MUTE]
+                    .iter()
+                    .any(|control| lane.target.port == group::control_key(control, port))
+        })
+}
+
+/// Works out what kind of signal a group's port carries from the wires on
+/// either side of the boundary. The port is whatever the wires on one side
+/// say it is, so the other side then only takes that kind; with no wire on
+/// either side it is [`PortKind::Any`].
+struct Kinds<'a> {
+    project: &'a Project,
+    registry: &'a Registry,
+}
+
+impl Kinds<'_> {
+    /// How many groups deep to look through, so a chain of pass-through
+    /// ports and a loop of them both end.
+    const DEPTH: u8 = 6;
+
+    /// The kind of port `id` of the boundary node `node` (and of the group's
+    /// port of the same name).
+    fn boundary(&self, node: NodeId, id: u32, depth: u8) -> PortKind {
+        let graph = self.project.graph();
+        let Some(boundary) = graph.node(node) else {
+            return PortKind::Any;
+        };
+        let (Some(group), Some(name)) = (
+            boundary.parent,
+            boundary
+                .boundary_ports()
+                .into_iter()
+                .find(|&(p, _)| p == id)
+                .map(|(_, name)| name),
+        ) else {
+            return PortKind::Any;
+        };
+        if depth == 0 {
+            return PortKind::Any;
+        }
+        let key = Endpoint::new(node, group::port_key(id));
+        let outer = Endpoint::new(group, name);
+        // Inside the group, then outside it: what a group input's wires go
+        // to and what feeds it, and the other way round for an output.
+        if boundary.type_id == GROUP_INPUT {
+            self.first_known(&[self.sinks(&key, depth), self.source_of(&outer, depth)])
+        } else {
+            self.first_known(&[self.source_of(&key, depth), self.sinks(&outer, depth)])
+        }
+    }
+
+    fn first_known(&self, kinds: &[PortKind]) -> PortKind {
+        kinds
+            .iter()
+            .find(|kind| **kind != PortKind::Any)
+            .cloned()
+            .unwrap_or(PortKind::Any)
+    }
+
+    /// The kind of the output feeding `input`, or Any with nothing wired.
+    fn source_of(&self, input: &Endpoint, depth: u8) -> PortKind {
+        match self.project.graph().source(input) {
+            Some(from) => self.output(from, depth - 1),
+            None => PortKind::Any,
+        }
+    }
+
+    /// The kind the inputs fed by output `from` want, or Any with none.
+    fn sinks(&self, from: &Endpoint, depth: u8) -> PortKind {
+        let kinds: Vec<PortKind> = self
+            .project
+            .graph()
+            .connections()
+            .filter(|c| c.from == *from)
+            .map(|c| self.input(&c.to, depth - 1))
+            .collect();
+        self.first_known(&kinds)
+    }
+
+    /// The kind of the output port `at`: audio or events for a node, and for
+    /// a group's boundary whatever it was worked out to be.
+    fn output(&self, at: &Endpoint, depth: u8) -> PortKind {
+        let graph = self.project.graph();
+        let Some(node) = graph.node(at.node) else {
+            return PortKind::Any;
+        };
+        match node.type_id.as_str() {
+            GROUP => graph
+                .group_ports(at.node)
+                .output(&at.port)
+                .map_or(PortKind::Any, |p| self.boundary(p.node, p.id, depth)),
+            GROUP_INPUT => group::parse_port_key(&at.port)
+                .map_or(PortKind::Any, |id| self.boundary(at.node, id, depth)),
+            GROUP_OUTPUT => PortKind::Any,
+            _ => {
+                let Some(layout) = self
+                    .registry
+                    .get(&node.type_id)
+                    .and_then(|t| t.layout(&node.config).ok())
+                else {
+                    return PortKind::Any;
+                };
+                if layout.event_outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Event
+                } else if layout.spectral_outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Spectral
+                } else if layout.sample_outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Sample
+                } else if layout.outputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Audio
+                } else {
+                    PortKind::Any
+                }
+            }
+        }
+    }
+
+    /// The kind of the input port `at`.
+    fn input(&self, at: &Endpoint, depth: u8) -> PortKind {
+        let graph = self.project.graph();
+        let Some(node) = graph.node(at.node) else {
+            return PortKind::Any;
+        };
+        match node.type_id.as_str() {
+            GROUP => graph
+                .group_ports(at.node)
+                .input(&at.port)
+                .map_or(PortKind::Any, |p| self.boundary(p.node, p.id, depth)),
+            GROUP_OUTPUT => group::parse_port_key(&at.port)
+                .map_or(PortKind::Any, |id| self.boundary(at.node, id, depth)),
+            GROUP_INPUT => PortKind::Any,
+            _ => {
+                let Some(layout) = self
+                    .registry
+                    .get(&node.type_id)
+                    .and_then(|t| t.layout(&node.config).ok())
+                else {
+                    return PortKind::Any;
+                };
+                if layout.event_inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Event
+                } else if layout.spectral_inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Spectral
+                } else if layout.sample_inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Sample
+                } else if layout.inputs.iter().any(|p| p.key == at.port) {
+                    PortKind::Audio
+                } else {
+                    PortKind::Any
+                }
+            }
+        }
+    }
+}
+
 /// What a group node, or a boundary node inside one, looks like. These have
 /// no entry in the registry, because the engine flattens them away.
-fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, Vec<PortGeom>)> {
+fn structure(
+    project: &Project,
+    registry: &Registry,
+    id: NodeId,
+    node: &Node,
+) -> Option<(String, String, Vec<PortGeom>)> {
+    let graph = project.graph();
     let port = |side, name: &str| PortGeom {
         key: name.to_owned(),
         name: name.to_owned(),
@@ -552,21 +861,28 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
         idle: false,
     };
     let category = "Group".to_owned();
-    // A boundary node's gain and mute are parameters, so they have ports and
+    let kinds = Kinds { project, registry };
+    // A boundary port's gain and mute are parameters, so they have ports and
     // can be wired like any other. Solo is read from the project, so it has
-    // none.
-    let controls = || {
+    // none. A group has one gain and mute, on its control port, so only that
+    // port shows them, plus any port that has them in use.
+    let controls = |pid: u32, name: &str, only: bool| {
         [
             (
                 group::GAIN,
-                "Gain",
+                "gain",
                 ParamInfo::new(-60.0, 24.0, 0.0).unit(Unit::Decibels),
             ),
-            (group::MUTE, "Mute", ParamInfo::choice(["Off", "On"])),
+            (group::MUTE, "mute", ParamInfo::choice(["Off", "On"])),
         ]
-        .map(|(key, name, info)| {
-            let mut port = port(Side::Input, name);
-            port.key = key.to_owned();
+        .map(|(control, what, info)| {
+            let label = if only {
+                what.to_owned()
+            } else {
+                format!("{name} {what}")
+            };
+            let mut port = port(Side::Input, &capitalised(&label));
+            port.key = group::control_key(control, pid);
             port.kind = PortKind::Param(info);
             port
         })
@@ -575,29 +891,44 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
         GROUP => {
             let ports = graph.group_ports(id);
             let title = group_title(graph, id);
+            let typed = |side, p: &group::GroupPort| {
+                let mut port = port(side, &p.name);
+                port.kind = kinds.boundary(p.node, p.id, Kinds::DEPTH);
+                port
+            };
             let mut all: Vec<PortGeom> = ports
                 .outputs
                 .iter()
-                .map(|p| port(Side::Output, &p.name))
+                .map(|p| typed(Side::Output, p))
                 .collect();
-            all.extend(ports.inputs.iter().map(|p| port(Side::Input, &p.name)));
+            all.extend(ports.inputs.iter().map(|p| typed(Side::Input, p)));
             Some((title, category, all))
         }
-        GROUP_INPUT => {
-            let name = group::port_name(id, node);
-            let mut input = port(Side::Output, &name);
-            input.key = group::INPUT_PORT.to_owned();
-            let mut ports = vec![input];
-            ports.extend(controls());
-            Some(("Group Input".to_owned(), category, ports))
-        }
-        GROUP_OUTPUT => {
-            let name = group::port_name(id, node);
-            let mut output = port(Side::Input, &name);
-            output.key = group::OUTPUT_PORT.to_owned();
-            let mut ports = vec![output];
-            ports.extend(controls());
-            Some(("Group Output".to_owned(), category, ports))
+        GROUP_INPUT | GROUP_OUTPUT => {
+            let is_input = node.type_id == GROUP_INPUT;
+            // The group's input signals come out of its input node.
+            let side = if is_input { Side::Output } else { Side::Input };
+            let list = node.boundary_ports();
+            let mut ports: Vec<PortGeom> = list
+                .iter()
+                .map(|(pid, name)| {
+                    let mut port = port(side, name);
+                    port.key = group::port_key(*pid);
+                    port.kind = kinds.boundary(id, *pid, Kinds::DEPTH);
+                    port
+                })
+                .collect();
+            for (pid, name) in &list {
+                if show_controls(project, id, node, *pid) {
+                    ports.extend(controls(*pid, name, list.len() == 1));
+                }
+            }
+            let title = if is_input {
+                "Group Input"
+            } else {
+                "Group Output"
+            };
+            Some((title.to_owned(), category, ports))
         }
         _ => None,
     }
@@ -606,15 +937,16 @@ fn structure(graph: &Graph, id: NodeId, node: &Node) -> Option<(String, String, 
 /// Lays out a normal node: a header, then rows with inputs down the left and
 /// outputs down the right. The two sides fill rows independently, except that
 /// an input with a field (`has_field`) takes its whole row. A side with only
-/// one port puts its socket on the header instead. Returns the node's
-/// rectangle.
+/// one port puts its socket on the header instead, unless `labelled` keeps
+/// it on a row so its name is drawn. Returns the node's rectangle.
 fn place_columns(
     origin: Pos2,
     ports: &mut [PortGeom],
     has_field: impl Fn(&PortGeom) -> bool,
+    labelled: bool,
 ) -> Rect {
     let count = |side| ports.iter().filter(|p| p.side == side).count();
-    let lone = |side, p: &PortGeom| count(side) == 1 && !has_field(p);
+    let lone = |side, p: &PortGeom| !labelled && count(side) == 1 && !has_field(p);
     // The row each port takes, or None for the header.
     let mut rows: Vec<Option<usize>> = vec![None; ports.len()];
     let mut next = 0;
@@ -733,7 +1065,7 @@ mod tests {
             HEADER_HEIGHT
                 + 2.0 * ROW_HEIGHT
                 + PADDING
-                + crate::editor::body::height("noodle.util.gain")
+                + crate::editor::body::height(NodeView::Meter)
         );
         let out = node.port(Side::Output, "out").unwrap();
         assert!(out.in_header);
@@ -893,21 +1225,182 @@ mod tests {
     }
 
     #[test]
-    fn boundary_nodes_have_gain_and_mute_ports() {
+    fn boundary_ports_have_gain_and_mute_ports() {
         let (mut project, mut history) = (Project::new(), History::new());
         let group = add(&mut project, &mut history, Node::new(GROUP));
         let output = add(
             &mut project,
             &mut history,
-            Node::new(GROUP_OUTPUT).in_group(group),
+            Node::new(GROUP_OUTPUT)
+                .with_config(group::ports_config(&[(1, "out".into())]))
+                .in_group(group),
         );
         let scene = Scene::build(&project, &registry(), Some(group));
         let node = scene.node(output).unwrap();
-        for key in ["gain", "mute"] {
-            let port = node.port(Side::Input, key).unwrap();
+        for control in [group::GAIN, group::MUTE] {
+            let key = group::control_key(control, 1);
+            let port = node.port(Side::Input, &key).unwrap();
             assert!(matches!(port.kind, PortKind::Param(_)), "{key}");
         }
-        assert!(node.port(Side::Input, "solo").is_none());
+        assert!(node.port(Side::Input, "solo.1").is_none());
+        // Its signal port is keyed by ID, and named for the group's output.
+        assert_eq!(node.port(Side::Input, "p1").unwrap().name, "out");
+    }
+
+    #[test]
+    fn a_boundary_node_has_a_spare_port_for_the_next_wire() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let input = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_INPUT)
+                .with_config(group::ports_config(&[(1, "a".into()), (3, "b".into())]))
+                .in_group(group),
+        );
+        let scene = Scene::build(&project, &registry(), Some(group));
+        let node = scene.node(input).unwrap();
+        let spare = node.port(Side::Output, "p4").unwrap();
+        assert!(spare.spare);
+        assert_eq!(spare.name, "in1", "named as the group's next free input");
+        assert!(node.port(Side::Output, "p3").is_some_and(|p| !p.spare));
+    }
+
+    /// A group with one input "a" (port 1) and one output "b" (port 1), and
+    /// its two boundary nodes.
+    fn passthrough(project: &mut Project, history: &mut History) -> (NodeId, NodeId, NodeId) {
+        let group = add(project, history, Node::new(GROUP));
+        let input = add(
+            project,
+            history,
+            Node::new(GROUP_INPUT)
+                .with_config(group::ports_config(&[(1, "a".into())]))
+                .in_group(group),
+        );
+        let output = add(
+            project,
+            history,
+            Node::new(GROUP_OUTPUT)
+                .with_config(group::ports_config(&[(1, "b".into())]))
+                .in_group(group),
+        );
+        (group, input, output)
+    }
+
+    fn kind_of(scene: &Scene, node: NodeId, side: Side, key: &str) -> PortKind {
+        scene
+            .node(node)
+            .unwrap()
+            .port(side, key)
+            .unwrap()
+            .kind
+            .clone()
+    }
+
+    #[test]
+    fn unknown_node_types_get_a_readable_name() {
+        assert_eq!(friendly_type_name("noodle.effect.low_pass"), "Low pass");
+        assert_eq!(friendly_type_name("plain"), "Plain");
+        assert_eq!(friendly_type_name(""), "");
+    }
+
+    #[test]
+    fn a_group_port_with_nothing_wired_takes_any_kind() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let (group, input, output) = passthrough(&mut project, &mut history);
+        let inside = Scene::build(&project, &registry(), Some(group));
+        let outside = Scene::build(&project, &registry(), None);
+        assert_eq!(kind_of(&inside, input, Side::Output, "p1"), PortKind::Any);
+        assert_eq!(kind_of(&inside, output, Side::Input, "p1"), PortKind::Any);
+        assert_eq!(kind_of(&outside, group, Side::Input, "a"), PortKind::Any);
+        // The spare ports take anything too.
+        assert!(
+            inside
+                .node(input)
+                .unwrap()
+                .ports
+                .iter()
+                .any(|p| p.spare && p.kind == PortKind::Any)
+        );
+        assert!(PortKind::Any.feeds(&PortKind::Event));
+        assert!(PortKind::Any.feeds(&PortKind::Audio));
+        assert!(PortKind::Event.feeds(&PortKind::Any));
+        assert!(PortKind::Audio.feeds(&PortKind::Any));
+        assert!(!PortKind::Event.feeds(&PortKind::Audio));
+    }
+
+    #[test]
+    fn a_group_port_becomes_the_kind_of_the_wire_on_either_side() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let (group, input, output) = passthrough(&mut project, &mut history);
+        // Events wired in from outside make the port's far side events.
+        let keys = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.event.midi_in"),
+        );
+        history
+            .apply(
+                &mut project,
+                Command::Connect(Connection {
+                    from: Endpoint::new(keys, "out"),
+                    to: Endpoint::new(group, "a"),
+                }),
+            )
+            .unwrap();
+        let inside = Scene::build(&project, &registry(), Some(group));
+        assert_eq!(kind_of(&inside, input, Side::Output, "p1"), PortKind::Event);
+        // Audio wired inside, at the output, makes it audio outside.
+        let osc = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.osc.sine").in_group(group),
+        );
+        history
+            .apply(
+                &mut project,
+                Command::Connect(Connection {
+                    from: Endpoint::new(osc, "out"),
+                    to: Endpoint::new(output, "p1"),
+                }),
+            )
+            .unwrap();
+        let outside = Scene::build(&project, &registry(), None);
+        assert_eq!(kind_of(&outside, group, Side::Output, "b"), PortKind::Audio);
+        assert_eq!(kind_of(&outside, group, Side::Input, "a"), PortKind::Event);
+        // Taking the wire away frees the port again.
+        history
+            .apply(
+                &mut project,
+                Command::Disconnect {
+                    input: Endpoint::new(group, "a"),
+                },
+            )
+            .unwrap();
+        let inside = Scene::build(&project, &registry(), Some(group));
+        assert_eq!(kind_of(&inside, input, Side::Output, "p1"), PortKind::Any);
+    }
+
+    #[test]
+    fn a_group_port_takes_the_kind_of_what_it_feeds_inside() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let (group, input, _) = passthrough(&mut project, &mut history);
+        let arp = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.event.arpeggiator").in_group(group),
+        );
+        history
+            .apply(
+                &mut project,
+                Command::Connect(Connection {
+                    from: Endpoint::new(input, "p1"),
+                    to: Endpoint::new(arp, "in"),
+                }),
+            )
+            .unwrap();
+        let outside = Scene::build(&project, &registry(), None);
+        assert_eq!(kind_of(&outside, group, Side::Input, "a"), PortKind::Event);
     }
 
     #[test]
@@ -933,7 +1426,7 @@ mod tests {
             children(&project, TRACK_INPUT),
             children(&project, GROUP_OUTPUT),
         );
-        let target = Endpoint::new(output, GAIN);
+        let target = Endpoint::new(output, group::control_key(GAIN, 1));
         let id = project.new_lane_id();
         let point = AutomationPoint {
             tick: Tick(0),
@@ -965,6 +1458,72 @@ mod tests {
     }
 
     #[test]
+    fn a_groups_gain_and_mute_show_on_one_port() {
+        use noodle_core::group::{GAIN, MUTE, control_key};
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let input = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_INPUT)
+                .with_config(group::ports_config(&[(1, "a".into()), (2, "b".into())]))
+                .in_group(group),
+        );
+        let output = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_OUTPUT)
+                .with_config(group::ports_config(&[(1, "out".into())]))
+                .in_group(group),
+        );
+        let shows = |scene: &Scene, id, port| {
+            let node = scene.node(id).unwrap();
+            [GAIN, MUTE]
+                .iter()
+                .all(|c| node.ports.iter().any(|p| p.key == control_key(c, port)))
+        };
+        let scene = Scene::build(&project, &registry(), Some(group));
+        // The group's control port is its first output, so only that shows them.
+        assert!(shows(&scene, output, 1));
+        assert!(!shows(&scene, input, 1) && !shows(&scene, input, 2));
+
+        // A port with gain set shows its controls too, so the value that
+        // affects the sound stays visible.
+        let set = Command::SetParam {
+            node: input,
+            key: control_key(GAIN, 2),
+            value: Some(-3.0),
+        };
+        history.apply(&mut project, set).unwrap();
+        let scene = Scene::build(&project, &registry(), Some(group));
+        assert!(shows(&scene, input, 2));
+        assert!(!shows(&scene, input, 1));
+        // With several ports on the node, the controls say whose they are.
+        let node = scene.node(input).unwrap();
+        assert_eq!(node.port(Side::Input, "gain.2").unwrap().name, "B gain");
+    }
+
+    #[test]
+    fn a_group_input_labels_its_port_on_a_row() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let input = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_INPUT)
+                .with_config(group::ports_config(&[(1, "a".into())]))
+                .in_group(group),
+        );
+        let scene = Scene::build(&project, &registry(), Some(group));
+        let port = scene
+            .node(input)
+            .unwrap()
+            .port(Side::Output, &group::port_key(1))
+            .unwrap();
+        assert!(!port.in_header, "the name is drawn on its row");
+    }
+
+    #[test]
     fn a_group_has_a_spare_input_and_output() {
         let (mut project, mut history) = (Project::new(), History::new());
         let group = add(&mut project, &mut history, Node::new(GROUP));
@@ -989,7 +1548,7 @@ mod tests {
             test_port(Side::Output, "y"),
             test_port(Side::Output, "z"),
         ];
-        let rect = place_columns(Pos2::ZERO, &mut ports, |_| false);
+        let rect = place_columns(Pos2::ZERO, &mut ports, |_| false, false);
         // Three rows, because the outputs outgrow the inputs on their own.
         assert_eq!(rect.height(), HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING);
         assert_eq!(ports[0].socket.y, ports[2].socket.y);
@@ -1007,7 +1566,7 @@ mod tests {
         ];
         // The first input has a field, so the first output goes beside the
         // second input instead.
-        let rect = place_columns(Pos2::ZERO, &mut ports, |p| p.key == "freq");
+        let rect = place_columns(Pos2::ZERO, &mut ports, |p| p.key == "freq", false);
         assert_eq!(rect.height(), HEADER_HEIGHT + 3.0 * ROW_HEIGHT + PADDING);
         assert_eq!(ports[2].socket.y, ports[1].socket.y);
         assert!(ports[3].socket.y > ports[1].socket.y);
@@ -1176,5 +1735,49 @@ mod tests {
         assert!(!PortKind::Event.feeds(&param));
         assert!(!PortKind::Unknown.feeds(&PortKind::Audio));
         assert!(!PortKind::Audio.feeds(&PortKind::Unknown));
+        // Spectrum joins only spectrum (and a group port that is still any).
+        assert!(PortKind::Spectral.feeds(&PortKind::Spectral));
+        assert!(!PortKind::Spectral.feeds(&PortKind::Audio));
+        assert!(!PortKind::Spectral.feeds(&param));
+        assert!(!PortKind::Audio.feeds(&PortKind::Spectral));
+        assert!(!PortKind::Event.feeds(&PortKind::Spectral));
+        assert!(PortKind::Any.feeds(&PortKind::Spectral));
+        assert!(PortKind::Spectral.feeds(&PortKind::Any));
+    }
+
+    #[test]
+    fn spectral_ports_and_their_wires_are_spectral() {
+        let (mut project, mut history) = (Project::new(), History::new());
+        let analyze = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.spectral.analyze"),
+        );
+        let synth = add(
+            &mut project,
+            &mut history,
+            Node::new("noodle.spectral.synthesize"),
+        );
+        history
+            .apply(
+                &mut project,
+                Command::Connect(Connection {
+                    from: Endpoint::new(analyze, "spectrum"),
+                    to: Endpoint::new(synth, "spectrum"),
+                }),
+            )
+            .unwrap();
+        let scene = Scene::build(&project, &registry(), None);
+        assert_eq!(
+            kind_of(&scene, analyze, Side::Output, "spectrum"),
+            PortKind::Spectral
+        );
+        assert_eq!(
+            kind_of(&scene, synth, Side::Input, "spectrum"),
+            PortKind::Spectral
+        );
+        assert_eq!(kind_of(&scene, analyze, Side::Input, "in"), PortKind::Audio);
+        assert_eq!(kind_of(&scene, synth, Side::Output, "out"), PortKind::Audio);
+        assert!(scene.wires.iter().all(|w| w.spectral && !w.event));
     }
 }

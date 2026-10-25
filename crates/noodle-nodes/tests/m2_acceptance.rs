@@ -22,7 +22,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use noodle_core::group::{GAIN, GROUP_OUTPUT, TRACK_INPUT, create_track};
+use noodle_core::group::{GROUP_OUTPUT, TRACK_INPUT, create_track};
 use noodle_core::{
     AutomationLane, AutomationPoint, Clip, ClipContent, Command, Config, Connection, Curve,
     Endpoint, History, Node, NodeId, Position, Project, Tick, Value,
@@ -127,12 +127,12 @@ fn arrangement() -> Arrangement {
         &mut project,
         &mut history,
         Command::Disconnect {
-            input: Endpoint::new(one_out, "in"),
+            input: Endpoint::new(one_out, "p1"),
         },
     );
     for (from, to) in [
         (Endpoint::new(one_in, "audio"), Endpoint::new(gain, "in")),
-        (Endpoint::new(gain, "out"), Endpoint::new(one_out, "in")),
+        (Endpoint::new(gain, "out"), Endpoint::new(one_out, "p1")),
     ] {
         apply(
             &mut project,
@@ -175,7 +175,7 @@ fn arrangement() -> Arrangement {
         curve: Curve::Hold,
     };
     let automation = AutomationLane::new(
-        Endpoint::new(two_out, GAIN),
+        Endpoint::new(two_out, noodle_core::group::control_key("gain", 1)),
         vec![point(0, 0.0), point(3, HALF_DB)],
     );
     apply(
@@ -296,7 +296,7 @@ fn soloing_a_track_leaves_only_that_track_in_the_mix() {
         &mut history,
         Command::SetParam {
             node: two_out,
-            key: "solo".into(),
+            key: "solo.1".into(),
             value: Some(1.0),
         },
     );
@@ -337,10 +337,13 @@ fn the_same_mix_plays_live() {
         controller.maintain();
         std::thread::sleep(Duration::from_millis(5));
     }
-    // Give the others their lookahead too.
+    // Give the others their lookahead too. Blocks take as long as the audio
+    // callback would give them, so a disk worker is never outrun by a test
+    // that runs faster than the sound.
+    let pace = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
     for _ in 0..40 {
         processor.process(&mut block);
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(pace);
     }
     transport.play();
 
@@ -349,7 +352,7 @@ fn the_same_mix_plays_live() {
         processor.process(&mut block);
         samples.extend_from_slice(&block);
         controller.maintain();
-        std::thread::sleep(Duration::from_millis(3));
+        std::thread::sleep(pace);
     }
     check_mix(&samples, expect_level);
     // Right levels by luck would still be a disk that fell behind.

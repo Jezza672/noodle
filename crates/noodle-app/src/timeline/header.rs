@@ -1,23 +1,20 @@
-//! The track headers: a name, mute and solo buttons and a gain slider, which
+//! The track headers: a name, arm, mute and solo buttons, which
 //! show and set the controls on the track group's boundary nodes.
 //!
 //! A track is a group, and its clips are played by the track input node
-//! inside it. Gain and mute live on the group's first output node (its first
-//! input node if it has no output), and are written there. Solo counts if
-//! either boundary node has it, so turning it off clears it on all of them.
+//! inside it. Mute is the track input's parameter, which the engine applies
+//! at the group's outputs; there is no track gain (a clip has its own). Solo
+//! lives on the group's boundary nodes and counts if either has it, so
+//! turning it off clears it on all of them.
 
 use std::collections::BTreeSet;
 
-use egui::{Align, Layout, Pos2, Rect, RichText, Slider, Stroke, UiBuilder, vec2};
+use egui::{Align, Layout, Pos2, Rect, RichText, Stroke, UiBuilder, vec2};
 use noodle_core::group::{self, Controls};
 use noodle_core::{Command, Graph, NodeId, Value};
 
 use crate::session::Edit;
 use crate::theme::timeline as colors;
-
-/// The slider's range, in decibels: what the group stage takes, and what the
-/// mixer's faders cover, so a gain set in one shows in the other.
-const GAIN_RANGE: std::ops::RangeInclusive<f32> = -60.0..=24.0;
 
 /// The group's config setting that holds the track's name; the mixer reads
 /// the same one.
@@ -43,23 +40,28 @@ fn stored_name(graph: &Graph, group: NodeId) -> Option<String> {
 /// left doing nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Automated {
-    pub gain: bool,
     pub mute: bool,
 }
 
 pub(crate) const AUTOMATED: &str = "Driven by a lane or a wire; edit or remove that to change it";
 
 /// A track's controls: where they are set and what they say now.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackControls {
-    /// The boundary node that holds gain and mute, and gets solo turned on.
+    /// The boundary node that holds gain and mute, and gets solo turned on,
+    /// and the ID of the port on it they belong to.
     pub node: NodeId,
+    pub port: u32,
+    /// Where mute is set: the track input's parameter, or else the group
+    /// output's own if something else is wired to that.
+    pub mute_target: (NodeId, String),
     pub controls: Controls,
     /// Silent because another track is soloed.
     pub muted_by_solo: bool,
     /// Armed for recording. Session state, so `controls_for` leaves it off
     /// for the caller to set.
-    pub armed: bool,
+    pub armed_audio: bool,
+    pub armed_midi: bool,
 }
 
 /// The controls for the track whose clips `input` plays, if it sits in a group
@@ -71,35 +73,41 @@ pub fn controls_for(
     muted_by_solo: &BTreeSet<NodeId>,
 ) -> Option<TrackControls> {
     let group = graph.node(input)?.parent?;
-    let ports = graph.group_ports(group);
-    let node = ports.outputs.first().or(ports.inputs.first())?.node;
+    let port = graph.control_port(group)?;
     Some(TrackControls {
-        node,
+        node: port.node,
+        port: port.id,
+        mute_target: graph.control_target(group, group::MUTE)?,
         controls: graph.group_controls(group),
         muted_by_solo: muted_by_solo.contains(&group),
-        armed: false,
+        armed_audio: false,
+        armed_midi: false,
     })
 }
 
-/// Turns solo on at `node`, or off everywhere in the track's group, since it
-/// counts wherever it is.
-fn solo_edit(graph: &Graph, input: NodeId, node: NodeId, on: bool) -> Command {
-    let off = |node| set(node, group::SOLO, Some(0.0));
+/// Turns solo on at port `port` of `node`, or off everywhere in the track's
+/// group, since it counts wherever it is.
+fn solo_edit(graph: &Graph, input: NodeId, node: NodeId, port: u32, on: bool) -> Command {
+    let off = |node, port| set(node, &group::control_key(group::SOLO, port), Some(0.0));
     if on {
-        return set(node, group::SOLO, Some(1.0));
+        return set(node, &group::control_key(group::SOLO, port), Some(1.0));
     }
-    let boundary: Vec<NodeId> = graph
+    let soloed: Vec<(NodeId, u32)> = graph
         .node(input)
         .and_then(|n| n.parent)
         .map(|group| {
             let ports = graph.group_ports(group);
             let all = ports.inputs.iter().chain(&ports.outputs);
-            all.map(|p| p.node)
-                .filter(|&id| graph.node(id).is_some_and(|n| n.controls().solo))
-                .collect()
+            all.filter(|p| {
+                graph
+                    .node(p.node)
+                    .is_some_and(|n| n.port_controls(p.id).solo)
+            })
+            .map(|p| (p.node, p.id))
+            .collect()
         })
         .unwrap_or_default();
-    Command::Batch(boundary.into_iter().map(off).collect())
+    Command::Batch(soloed.into_iter().map(|(n, p)| off(n, p)).collect())
 }
 
 /// Removes a track: its group, with the track input, the clips it plays and
@@ -131,8 +139,9 @@ pub struct Lane {
 #[derive(Default)]
 pub struct Changes {
     pub edits: Vec<Edit>,
-    /// The record-arm button was pressed: the arm state it asks for.
-    pub arm: Option<bool>,
+    /// A record-arm button was pressed: the arm state it asks for.
+    pub arm_audio: Option<bool>,
+    pub arm_midi: Option<bool>,
     /// The header was clicked: the track is now the selected one.
     pub select: bool,
     /// The header is being dragged to a new place in the track order.
@@ -142,14 +151,16 @@ pub struct Changes {
 /// A header being dragged by its background.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeaderDrag {
-    /// The pointer's screen y.
+    /// The pointer's screen position.
+    pub x: f32,
     pub y: f32,
     /// The button was let go, so the track lands here.
     pub released: bool,
 }
 
 /// Draws one track's header in `lane` and returns what the user changed.
-/// `armed` is whether the track is armed for recording.
+/// `armed_audio` and `armed_midi` are whether the track is armed for
+/// recording each kind of input.
 pub fn show(
     ui: &mut egui::Ui,
     graph: &Graph,
@@ -178,6 +189,7 @@ pub fn show(
         && let Some(pos) = background.interact_pointer_pos()
     {
         changes.drag = Some(HeaderDrag {
+            x: pos.x,
             y: pos.y,
             released: background.drag_stopped(),
         });
@@ -223,7 +235,7 @@ pub fn show(
             .layout(Layout::top_down(Align::Min)),
     );
     child.set_clip_rect(lane.intersect(ui.clip_rect()));
-    let silenced = track.is_some_and(|t| t.muted_by_solo);
+    let silenced = track.as_ref().is_some_and(|t| t.muted_by_solo);
     let group = graph.node(input).and_then(|n| n.parent);
     let stored = group.and_then(|group| stored_name(graph, group));
     let shown = stored
@@ -274,69 +286,54 @@ pub fn show(
     }
     let Some(TrackControls {
         node,
+        port,
+        mute_target,
         controls,
-        armed,
+        armed_audio,
+        armed_midi,
         ..
     }) = track
     else {
         return changes;
     };
-    let arm = &mut changes.arm;
+    let (arm_audio, arm_midi) = (&mut changes.arm_audio, &mut changes.arm_midi);
     child.horizontal(|ui| {
         let button = |ui: &mut egui::Ui, text: &str, on: bool, tip: &str| {
-            let text = RichText::new(text).size(11.0);
-            ui.add_sized(vec2(20.0, 18.0), egui::Button::new(text).selected(on))
+            let text = RichText::new(text).size(10.0);
+            let width = if text.text().len() > 1 { 23.0 } else { 18.0 };
+            ui.add_sized(vec2(width, 18.0), egui::Button::new(text).selected(on))
                 .on_hover_text(tip)
                 .clicked()
         };
-        if button(ui, "R", armed, "Arm for recording") {
-            *arm = Some(!armed);
+        if button(ui, "RA", armed_audio, "Arm for recording audio") {
+            *arm_audio = Some(!armed_audio);
+        }
+        if button(
+            ui,
+            "RM",
+            armed_midi,
+            "Arm for recording MIDI, and playing it live",
+        ) {
+            *arm_midi = Some(!armed_midi);
         }
         let mute = ui
             .add_enabled_ui(!automated.mute, |ui| button(ui, "M", controls.mute, "Mute"))
             .inner;
         if mute {
             edits.push(Edit::Apply(set(
-                node,
-                group::MUTE,
+                mute_target.0,
+                &mute_target.1,
                 Some(f32::from(!controls.mute)),
             )));
         }
         if button(ui, "S", controls.solo, "Solo") {
-            edits.push(Edit::Apply(solo_edit(graph, input, node, !controls.solo)));
-        }
-        let mut gain = controls.gain_db;
-        ui.spacing_mut().slider_width = (ui.available_width() - 6.0).max(20.0);
-        let slider = ui
-            .add_enabled(
-                !automated.gain,
-                Slider::new(&mut gain, GAIN_RANGE)
-                    .show_value(false)
-                    .smart_aim(false),
-            )
-            .on_hover_text(if automated.gain {
-                AUTOMATED.to_owned()
-            } else {
-                format!("Gain {:+.1} dB (double-click to reset)", gain)
-            })
-            .on_disabled_hover_text(AUTOMATED);
-        // A slider only senses drags, so its response never reports a double
-        // click; ask the pointer instead.
-        let double = !automated.gain
-            && slider.contains_pointer()
-            && ui.input(|i| {
-                i.pointer
-                    .button_double_clicked(egui::PointerButton::Primary)
-            });
-        if double {
-            // Written, not removed: a control that has been set keeps its stage in
-            // the compiled graph, so resetting it can't change the graph's shape.
-            edits.push(Edit::Apply(set(node, group::GAIN, Some(0.0))));
-        } else if slider.changed() {
-            edits.push(Edit::Drag(set(node, group::GAIN, Some(gain))));
-        }
-        if slider.drag_stopped() {
-            edits.push(Edit::EndDrag);
+            edits.push(Edit::Apply(solo_edit(
+                graph,
+                input,
+                node,
+                port,
+                !controls.solo,
+            )));
         }
     });
     changes

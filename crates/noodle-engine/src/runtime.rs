@@ -9,17 +9,21 @@
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
+use std::time::Duration;
 
 use noodle_core::{Graph, NodeId, Project, TempoMap};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::compile::{Options, compile_with};
 use crate::denormals::Flush;
+use crate::parallel::Workers;
 pub use crate::plan::Bus;
-use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo};
+use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo, PlanShape};
 use crate::tempo::TempoTable;
 use crate::transport::TransportControl;
-use crate::{Context, Diagnostic, Lanes, Registry, Replacements, TapSpec, Telemetry, Transport};
+use crate::{
+    Context, Diagnostic, Lanes, Monitor, Registry, Replacements, TapSpec, Telemetry, Transport,
+};
 
 /// Fixed for an engine's lifetime. Changing the device or its settings means
 /// making a new engine.
@@ -92,10 +96,12 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         returned,
         pending: None,
         sent: None,
+        parallel: false,
         next_generation: 0,
         cells: Cells::new(),
         telemetry: None,
         buses: None,
+        monitor: None,
         control: control.clone(),
         tempo_map: TempoMap::default(),
         tempo_out,
@@ -119,7 +125,23 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         tempo_returns,
         seen_seek: 0,
         pending_seek: None,
+        workers: None,
     };
+    Ok((controller, processor))
+}
+
+/// [`engine`] whose processor has `workers` threads helping it, and whose
+/// controller compiles plans that can use them (`always` as for
+/// `Processor::start_workers`). Spawns the threads, so call it off the
+/// audio thread.
+pub fn engine_with_workers(
+    settings: Settings,
+    workers: usize,
+    always: bool,
+) -> Result<(Controller, Processor), SettingsError> {
+    let (mut controller, mut processor) = engine(settings)?;
+    processor.start_workers(workers, always);
+    controller.parallel = workers > 0;
     Ok((controller, processor))
 }
 
@@ -132,6 +154,8 @@ pub struct Controller {
     pending: Option<(Box<Plan>, PlanInfo)>,
     /// The last plan sent, which the next plan takes over from.
     sent: Option<PlanInfo>,
+    /// Plans are compiled to run on worker threads (see [`engine_with_workers`]).
+    pub(crate) parallel: bool,
     next_generation: u64,
     cells: Cells,
     /// Where wired parameters report their signals, if anything reads them.
@@ -139,6 +163,8 @@ pub struct Controller {
     /// The devices sharing the output channels. `None` sends every Output
     /// node to all of them, as in an offline render.
     buses: Option<Vec<Bus>>,
+    /// A node being listened to, added to every plan (see [`Monitor`]).
+    monitor: Option<Monitor>,
     control: Arc<TransportControl>,
     tempo_map: TempoMap,
     tempo_out: Producer<Box<TempoTable>>,
@@ -172,6 +198,12 @@ impl Controller {
         }
         self.buses = Some(buses);
         Ok(())
+    }
+
+    /// Listens to `monitor`'s nodes from the next update on, or stops
+    /// listening if it's `None`. Offline renders never include it.
+    pub fn set_monitor(&mut self, monitor: Option<Monitor>) {
+        self.monitor = monitor;
     }
 
     /// The tempo map the engine is using.
@@ -267,6 +299,17 @@ impl Controller {
         options: &Options<'_>,
     ) -> Vec<Diagnostic> {
         self.free_returned();
+        let main = self
+            .buses
+            .as_deref()
+            .and_then(|buses| buses.first())
+            .map(|bus| bus.device.as_str())
+            .filter(|device| !device.is_empty());
+        let options = &Options {
+            independent_buffers: self.parallel,
+            monitor: self.monitor.as_ref().map(|monitor| (monitor, main)),
+            ..*options
+        };
         let (schedule, mut diagnostics) = compile_with(graph, lanes, registry, options);
         let generation = self.next_generation;
         self.next_generation += 1;
@@ -308,6 +351,16 @@ impl Controller {
             .map_or(0, |info| info.output_latency as usize)
     }
 
+    /// How much of the latest plan could run at once, for judging whether
+    /// worker threads would help.
+    pub fn plan_shape(&self) -> PlanShape {
+        self.pending
+            .as_ref()
+            .map(|(_, info)| info)
+            .or(self.sent.as_ref())
+            .map_or_else(PlanShape::default, |info| info.shape)
+    }
+
     /// Sets an unconnected input's value without recompiling. The change is
     /// smoothed if the input is a continuous parameter. Does nothing if the
     /// node has no such unconnected input in the current plan, or if `value`
@@ -327,6 +380,12 @@ impl Controller {
         self.free_returned();
         self.send_pending();
         self.send_tempo();
+    }
+
+    /// Whether a plan or tempo table is waiting for room in the queue, so
+    /// [`maintain`](Self::maintain) has to be called again soon.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some() || self.tempo_pending.is_some()
     }
 
     fn free_returned(&mut self) {
@@ -388,9 +447,52 @@ pub struct Processor {
     seen_seek: u64,
     /// A seek waiting for the output to go silent.
     pending_seek: Option<noodle_core::Tick>,
+    /// Threads that share out a wide plan's steps with the audio thread.
+    workers: Option<Workers>,
 }
 
 impl Processor {
+    /// Starts `count` worker threads that help render plans whose steps can
+    /// overlap, replacing any already running; 0 stops them. Spawns threads,
+    /// so it is only reachable through [`engine_with_workers`], which also
+    /// makes the controller compile plans that can use them.
+    ///
+    /// Only plans wide enough to pay for the hand-off run in parallel, unless
+    /// `always` is set. Output differs from the single-threaded render at
+    /// most in the last bits of a float sum.
+    pub(crate) fn start_workers(&mut self, count: usize, always: bool) {
+        let period = Duration::from_secs_f64(
+            self.settings.max_frames as f64 / f64::from(self.settings.sample_rate),
+        );
+        self.workers = (count > 0).then(|| Workers::start(count, always, self.flush, period));
+    }
+
+    /// Whether the workers would take part in rendering a plan of this shape.
+    pub(crate) fn parallel_for(&self, shape: PlanShape) -> bool {
+        self.workers.as_ref().is_some_and(|w| w.worth(shape))
+    }
+
+    /// How many worker threads got real-time priority, and how many a raised
+    /// priority short of that (the rest are ordinary threads). The workers
+    /// ask as they start, so read it a moment after
+    /// [`engine_with_workers`].
+    pub fn worker_priorities(&self) -> (usize, usize) {
+        self.workers.as_ref().map_or((0, 0), Workers::priorities)
+    }
+
+    /// How many workers have parked and woken at least once (see
+    /// [`workers`](Self::workers) for how many there are). Idle workers park
+    /// after a moment; a test that counts allocations waits until all have,
+    /// so the first use of parking is not inside what it counts.
+    pub fn workers_cycled(&self) -> usize {
+        self.workers.as_ref().map_or(0, Workers::cycled)
+    }
+
+    /// How many worker threads help the audio thread.
+    pub fn workers(&self) -> usize {
+        self.workers.as_ref().map_or(0, Workers::count)
+    }
+
     pub fn settings(&self) -> Settings {
         self.settings
     }
@@ -432,6 +534,13 @@ impl Processor {
         } = self.settings;
         debug_assert_eq!(output.len() % channels, 0);
         let _flush = self.flush.enable();
+        // The deadline is the whole callback, not the chunks it is cut into.
+        let started = self
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.times_blocks())
+            .then(std::time::Instant::now);
+        let callback_frames = output.len() / channels;
 
         let mut rest = output;
         let mut input_rest = input.samples;
@@ -473,9 +582,10 @@ impl Processor {
                             tick,
                             bpm: self.table.bpm_at(tick),
                             signature: self.table.signature_at(tick),
+                            signature_start: self.table.signature_start_at(tick),
                         },
                     };
-                    plan.run(&ctx, input_chunk, chunk, channels);
+                    plan.run(&ctx, input_chunk, chunk, channels, self.workers.as_ref());
                 }
                 None => chunk.fill(0.0),
             }
@@ -488,6 +598,13 @@ impl Processor {
                     self.position = start;
                 }
             }
+        }
+        if let (Some(started), Some(plan)) = (started, &self.plan) {
+            plan.record_block(
+                started.elapsed().as_nanos() as u64,
+                callback_frames,
+                sample_rate,
+            );
         }
         self.control.publish(self.position);
     }

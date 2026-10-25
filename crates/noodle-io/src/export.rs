@@ -127,6 +127,7 @@ pub struct ExportWriter {
     inner: Option<Inner>,
     partial: PathBuf,
     path: PathBuf,
+    channels: usize,
 }
 
 enum Inner {
@@ -239,6 +240,7 @@ impl ExportWriter {
             inner: Some(inner),
             partial,
             path: path.to_owned(),
+            channels,
         })
     }
 
@@ -269,7 +271,10 @@ impl ExportWriter {
     /// Completes the file and moves it into place.
     pub fn finish(mut self) -> Result<(), ExportError> {
         match self.inner.take().expect("finished twice") {
-            Inner::Wav { writer, .. } => writer.finalize()?,
+            Inner::Wav { writer, .. } => {
+                writer.finalize()?;
+                crate::wav::set_wav_channel_mask(&self.partial, self.channels)?;
+            }
             Inner::Flac(mut state) => {
                 let waiting = state.pending.len() / state.channels;
                 let mut size = state.block;
@@ -360,6 +365,25 @@ impl Drop for ExportWriter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_surround_wav_export_carries_the_layouts_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        for (channels, mask) in [(4usize, 0x33u32), (8, 0x63F)] {
+            let path = dir.path().join(format!("{channels}.wav"));
+            let mut writer =
+                ExportWriter::create(&path, ExportFormat::Wav24, channels, 48_000, Some(10))
+                    .unwrap();
+            writer.write(&vec![0.1; channels * 10]).unwrap();
+            writer.finish().unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(
+                u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+                mask,
+                "{channels} channels"
+            );
+        }
+    }
+
     use super::*;
     use crate::decode_file;
 

@@ -11,7 +11,7 @@ const LABEL: f32 = 15.0;
 /// The fewest keys the preview spans, so one note doesn't fill the block.
 const MIN_SPAN: u8 = 12;
 
-pub fn draw(painter: &Painter, axis: Axis, full: Rect, start: Tick, midi: &MidiClip) {
+pub fn draw(painter: &Painter, axis: Axis<'_>, full: Rect, start: Tick, midi: &MidiClip) {
     let (Some(low), Some(high)) = (
         midi.notes.iter().map(|n| n.key).min(),
         midi.notes.iter().map(|n| n.key).max(),
@@ -30,7 +30,7 @@ pub fn draw(painter: &Painter, axis: Axis, full: Rect, start: Tick, midi: &MidiC
     // Centre the notes' range in the block.
     let slack = f32::from(span - (high - low + 1)) / 2.0;
     let ink = Color32::BLACK.gamma_multiply(0.6);
-    for note in &midi.notes {
+    for note in &midi.played() {
         let x0 = axis.x(Tick(start.0 + note.start.0));
         let x1 = axis
             .x(Tick(start.0 + note.start.0 + note.length.0))

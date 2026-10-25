@@ -18,6 +18,7 @@
 //! Each problem is reported as a [`Diagnostic`], so the UI can show it on the
 //! node or wire where it happened.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
@@ -37,6 +38,9 @@ pub struct BufferId(pub usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EventBufferId(pub usize);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SpectralBufferId(pub usize);
+
 /// The result of compiling a graph. Nothing here has been instantiated yet.
 pub struct Schedule {
     /// In execution order: every node comes after the nodes it reads from.
@@ -46,6 +50,9 @@ pub struct Schedule {
     /// so this is usually far shorter than the number of outputs.
     pub buffer_lanes: Vec<usize>,
     pub event_buffers: usize,
+    /// How many lanes each spectral buffer must hold, where a lane holds one
+    /// block of FFT frames.
+    pub spectral_lanes: Vec<usize>,
 }
 
 /// Which part of a node a schedule step runs. Only a node on a feedback loop
@@ -77,6 +84,9 @@ pub struct ScheduledNode {
     /// One per event input; `None` if unconnected.
     pub event_inputs: Vec<Option<EventBufferId>>,
     pub event_outputs: Vec<EventBufferId>,
+    /// One per spectral input; `None` if unconnected.
+    pub spectral_inputs: Vec<Option<SpectralBufferId>>,
+    pub spectral_outputs: Vec<SpectralBufferId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -123,7 +133,7 @@ pub enum Problem {
     /// value is ignored but kept in the project.
     UnknownParam(String),
     UnknownPort(Endpoint),
-    /// A wire between an audio port and an event port.
+    /// A wire between ports of different kinds: audio, events or spectral.
     KindMismatch,
     /// The wire closes a loop, and the loop doesn't pass through a node that
     /// can break it (a Delay), or it feeds a parameter of that node rather
@@ -160,7 +170,9 @@ impl fmt::Display for Problem {
             Self::UnknownPort(endpoint) => {
                 write!(f, "node {} has no port `{}`", endpoint.node, endpoint.port)
             }
-            Self::KindMismatch => f.write_str("can't connect an audio port to an event port"),
+            Self::KindMismatch => {
+                f.write_str("can't connect ports of different kinds (audio, events, spectral)")
+            }
             Self::Loop => f.write_str(
                 "this wire closes a loop, which has to pass through a Delay \
                  (into its signal input) or another node that breaks loops",
@@ -248,6 +260,7 @@ struct Step {
 enum Kind {
     Signal,
     Event,
+    Spectral,
 }
 
 /// A wire between two candidates, with its ports resolved to indices.
@@ -296,8 +309,12 @@ pub fn compile_replacing(
 }
 
 /// What else to do while compiling.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Options<'a> {
+    /// Reuse a buffer only where that adds no ordering between steps that
+    /// could otherwise run at the same time, so a plan can run on several
+    /// threads. Costs memory for wide graphs.
+    pub independent_buffers: bool,
     /// Keep offline nodes in the schedule, which the cache analysis needs to
     /// see them. Otherwise they are refused, since a plan can't run them:
     /// they are replaced by cached audio first.
@@ -306,6 +323,8 @@ pub(crate) struct Options<'a> {
     pub replacements: Option<&'a Replacements>,
     /// Sinks to watch outputs with. The graph is cut down to what feeds them.
     pub taps: &'a [TapSpec],
+    /// A monitor to add, and the main device's ID for matching its device.
+    pub monitor: Option<(&'a crate::Monitor, Option<&'a str>)>,
 }
 
 /// [`compile_with_lanes`], also replacing outputs and adding taps.
@@ -316,16 +335,30 @@ pub(crate) fn compile_with(
     options: &Options<'_>,
 ) -> (Schedule, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    let mut keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    // A group's outputs keep their stages, which meter what leaves the group.
+    keep.extend(crate::flatten::output_stages(graph));
+    let retargeted = crate::automation::retarget_lanes(graph, lanes);
+    let lanes: Vec<_> = retargeted.iter().map(|(id, lane)| (*id, lane)).collect();
+    let original = graph;
     let graph = crate::flatten::flatten_keeping(graph, &keep);
-    let graph = &*crate::automation::add_lanes(&graph, lanes, registry, &mut diagnostics);
+    let monitored;
+    let graph = match options.monitor {
+        Some((monitor, main)) => {
+            monitored = crate::monitor::apply(original, &graph, &keep, registry, monitor, main);
+            &monitored
+        }
+        None => &*graph,
+    };
+    let graph = &*crate::automation::add_lanes(graph, &lanes, registry, &mut diagnostics);
     let no_replacements = Replacements::new();
     let rewritten = crate::replace::rewrite(
         graph,
         options.replacements.unwrap_or(&no_replacements),
         options.taps,
     );
-    let graph = &*rewritten.graph;
+    let sampled = resolve_samples(&rewritten.graph, registry);
+    let graph = &*sampled;
     let overrides = &rewritten.overrides;
     let mut candidates = resolve_nodes(graph, registry, overrides, options, &mut diagnostics);
     let mut wires = resolve_wires(graph, &candidates, &mut diagnostics);
@@ -337,14 +370,17 @@ pub(crate) fn compile_with(
     // Which wire feeds each input, if any.
     let mut signal_source = vec![Vec::new(); candidates.len()];
     let mut event_source = vec![Vec::new(); candidates.len()];
+    let mut spectral_source = vec![Vec::new(); candidates.len()];
     for (i, c) in candidates.iter().enumerate() {
         signal_source[i] = vec![None; c.layout.inputs.len()];
         event_source[i] = vec![None; c.layout.event_inputs.len()];
+        spectral_source[i] = vec![None; c.layout.spectral_inputs.len()];
     }
     for (w, wire) in wires.iter().enumerate() {
         match wire.kind {
             Kind::Signal => signal_source[wire.to][wire.to_port] = Some(w),
             Kind::Event => event_source[wire.to][wire.to_port] = Some(w),
+            Kind::Spectral => spectral_source[wire.to][wire.to_port] = Some(w),
         }
     }
 
@@ -353,10 +389,74 @@ pub(crate) fn compile_with(
         &order,
         &wires,
         &signal_source,
+        &spectral_source,
         &mut diagnostics,
     );
-    let schedule = allocate(candidates, &order, &wires, &signal_source, &event_source);
+    let schedule = allocate(
+        candidates,
+        &order,
+        &wires,
+        &signal_source,
+        &event_source,
+        &spectral_source,
+        options.independent_buffers,
+    );
     (schedule, diagnostics)
+}
+
+/// Resolves the sample wires, which carry a reference to a sample, not
+/// signal: each node with a wire into a sample input gets the sample the wire
+/// comes from in its config, under the input's key, and the wires are dropped.
+/// A wire from a port that has no sample (or from a node that isn't there)
+/// leaves the receiver with an empty one, which is silence. A sample wire that
+/// doesn't join a sample output to a sample input is left for
+/// [`resolve_wires`] to report.
+fn resolve_samples<'a>(graph: &'a Graph, registry: &Registry) -> Cow<'a, Graph> {
+    let sample_port = |node: NodeId, key: &str, output: bool| -> Option<Arc<dyn NodeType>> {
+        let node = graph.node(node)?;
+        let node_type = registry.get(&node.type_id)?;
+        let layout = node_type.layout(&node.config).ok()?;
+        let ports = if output {
+            &layout.sample_outputs
+        } else {
+            &layout.sample_inputs
+        };
+        ports
+            .iter()
+            .any(|p| p.key == key)
+            .then(|| Arc::clone(node_type))
+    };
+    let mut resolved = Vec::new();
+    for c in graph.connections() {
+        if sample_port(c.to.node, &c.to.port, false).is_none() {
+            continue;
+        }
+        if let Some(source) = sample_port(c.from.node, &c.from.port, true) {
+            let config = &graph.node(c.from.node).expect("found above").config;
+            let sample = source.sample_output(config, &c.from.port);
+            resolved.push((c, sample));
+        }
+    }
+    if resolved.is_empty() {
+        return Cow::Borrowed(graph);
+    }
+    let mut nodes: Vec<(NodeId, noodle_core::Node)> =
+        graph.nodes().map(|(id, n)| (id, n.clone())).collect();
+    for (c, sample) in &resolved {
+        if let Some((_, node)) = nodes.iter_mut().find(|(id, _)| *id == c.to.node) {
+            node.config.set(
+                c.to.port.clone(),
+                noodle_core::Value::Text(sample.clone().unwrap_or_default()),
+            );
+        }
+    }
+    let connections: Vec<_> = graph
+        .connections()
+        .filter(|c| !resolved.iter().any(|(r, _)| r == c))
+        .collect();
+    Cow::Owned(
+        Graph::from_parts(nodes, connections).expect("a graph stays valid with wires removed"),
+    )
 }
 
 fn resolve_nodes<'a>(
@@ -458,17 +558,21 @@ fn resolve_wires(
 fn output_port(layout: &Layout, key: &str) -> Option<(Kind, usize)> {
     let signal = layout.outputs.iter().position(|p| p.key == key);
     let event = || layout.event_outputs.iter().position(|p| p.key == key);
+    let spectral = || layout.spectral_outputs.iter().position(|p| p.key == key);
     signal
         .map(|i| (Kind::Signal, i))
         .or_else(|| event().map(|i| (Kind::Event, i)))
+        .or_else(|| spectral().map(|i| (Kind::Spectral, i)))
 }
 
 fn input_port(layout: &Layout, key: &str) -> Option<(Kind, usize)> {
     let signal = layout.inputs.iter().position(|p| p.key == key);
     let event = || layout.event_inputs.iter().position(|p| p.key == key);
+    let spectral = || layout.spectral_inputs.iter().position(|p| p.key == key);
     signal
         .map(|i| (Kind::Signal, i))
         .or_else(|| event().map(|i| (Kind::Event, i)))
+        .or_else(|| spectral().map(|i| (Kind::Spectral, i)))
 }
 
 /// Drops every wire that closes a loop, found as the back edges of a
@@ -641,6 +745,7 @@ fn infer_shapes(
     order: &[Step],
     wires: &[Wire],
     signal_source: &[Vec<Option<usize>>],
+    spectral_source: &[Vec<Option<usize>>],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // A split node's outputs are inferred before its loop input exists, so
@@ -670,6 +775,18 @@ fn infer_shapes(
                         .unwrap_or(Shape::MONO)
                 })
                 .collect();
+            // Then the spectral inputs, whose wires come from the spectral
+            // outputs that follow the signal outputs.
+            input_shapes.extend(spectral_source[i].iter().map(|source| {
+                source
+                    .and_then(|w| {
+                        let wire = &wires[w];
+                        let from = &candidates[wire.from];
+                        let shapes = from.output_shapes.as_ref()?;
+                        Some(shapes[from.layout.outputs.len() + wire.from_port])
+                    })
+                    .unwrap_or(Shape::MONO)
+            }));
             let c = &candidates[i];
             if step.phase == Phase::Output {
                 input_shapes[c.loop_input.expect("split nodes have a loop input")] = assumed[i];
@@ -707,12 +824,16 @@ fn infer_shapes(
                 continue;
             }
             let output_shapes = match result {
-                Ok(shapes) if shapes.len() == c.layout.outputs.len() => Some(shapes),
+                Ok(shapes)
+                    if shapes.len() == c.layout.outputs.len() + c.layout.spectral_outputs.len() =>
+                {
+                    Some(shapes)
+                }
                 Ok(shapes) => {
                     let message = format!(
                         "node type bug: {} output shapes for {} outputs",
                         shapes.len(),
-                        c.layout.outputs.len()
+                        c.layout.outputs.len() + c.layout.spectral_outputs.len()
                     );
                     found.push(Diagnostic::node(
                         c.id,
@@ -774,12 +895,18 @@ fn blame_shape(
 /// A buffer is freed once the last node reading it has run, and reused for a
 /// later output. A node's outputs are allocated before its own inputs are
 /// freed, so they never share a buffer with them.
+///
+/// With `independent`, a buffer is reused only by a step that already follows
+/// everything that used it: the reuse then orders nothing that wasn't
+/// ordered by the signal flow, so steps that could overlap still can.
 fn allocate(
     candidates: Vec<Candidate<'_>>,
     order: &[Step],
     wires: &[Wire],
     signal_source: &[Vec<Option<usize>>],
     event_source: &[Vec<Option<usize>>],
+    spectral_source: &[Vec<Option<usize>>],
+    independent: bool,
 ) -> Schedule {
     let n = candidates.len();
     let runs: Vec<Step> = order
@@ -822,7 +949,16 @@ fn allocate(
     let mut free_buffers = Vec::new();
     let mut event_buffers = 0;
     let mut free_events = Vec::new();
+    let mut spectral_lanes = Vec::new();
+    let mut free_spectral = Vec::new();
     let mut written: HashMap<(Kind, usize, usize), usize> = HashMap::new();
+    // For `independent`: the steps before each step in the signal flow (as
+    // bit sets), the step that wrote each output, and the steps that used
+    // each buffer since it was last written.
+    let words = runs.len().div_ceil(64);
+    let mut before: Vec<Vec<u64>> = Vec::new();
+    let mut writer_step: HashMap<(Kind, usize, usize), usize> = HashMap::new();
+    let mut users: [Vec<Vec<usize>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut nodes = Vec::with_capacity(runs.len());
     let mut candidates: Vec<Option<Candidate<'_>>> = candidates.into_iter().map(Some).collect();
 
@@ -898,29 +1034,113 @@ fn allocate(
                     .map(|w| EventBufferId(source_buffer(w)))
             })
             .collect();
+        let spectral_inputs = spectral_source[i]
+            .iter()
+            .map(|source| {
+                source
+                    .filter(live)
+                    .filter(|_| events > 0)
+                    .map(|w| SpectralBufferId(source_buffer(w)))
+            })
+            .collect();
+
+        if independent {
+            let mut mine = vec![0u64; words];
+            let mut preds: Vec<usize> = Vec::new();
+            if phase == Phase::Input {
+                // The input half follows its own output half.
+                preds.extend((0..runs.len()).filter(|&t| runs[t].node == i && t < s));
+            }
+            let sources = signal_source[i]
+                .iter()
+                .enumerate()
+                .filter(|(port, _)| reads(*port))
+                .map(|(_, source)| source)
+                .chain(event_source[i].iter().take(events))
+                .chain(spectral_source[i].iter().take(events))
+                .flatten()
+                .filter(|w| live(w));
+            for &w in sources {
+                let wire = &wires[w];
+                let key = (wire.kind, wire.from, wire.from_port);
+                preds.push(writer_step[&key]);
+                let kind = wire.kind as usize;
+                users[kind][written[&key]].push(s);
+            }
+            for p in preds {
+                mine[p / 64] |= 1 << (p % 64);
+                for (word, &theirs) in mine.iter_mut().zip(&before[p]) {
+                    *word |= theirs;
+                }
+            }
+            before.push(mine);
+        }
+        let follows = |used: &[usize]| {
+            !independent || used.iter().all(|&t| before[s][t / 64] >> (t % 64) & 1 == 1)
+        };
 
         let output_shapes = c.output_shapes.clone().unwrap();
         let written_here = if phase == Phase::Input { 0 } else { usize::MAX };
         let outputs: Vec<BufferId> = output_shapes
             .iter()
-            .take(written_here)
+            .take(c.layout.outputs.len().min(written_here))
             .enumerate()
             .map(|(port, shape)| {
-                let b = take_buffer(&mut buffer_lanes, &mut free_buffers, shape.lanes());
+                let b = take_buffer(&mut buffer_lanes, &mut free_buffers, shape.lanes(), |b| {
+                    follows(used(&users[0], b))
+                });
                 written.insert((Kind::Signal, i, port), b);
+                writer_step.insert((Kind::Signal, i, port), s);
+                if independent {
+                    if users[0].len() <= b {
+                        users[0].resize(b + 1, Vec::new());
+                    }
+                    users[0][b] = vec![s];
+                }
                 BufferId(b)
             })
             .collect();
         let event_outputs: Vec<EventBufferId> = (0..c.layout.event_outputs.len().min(events))
             .map(|port| {
-                let b = free_events.pop().unwrap_or_else(|| {
-                    event_buffers += 1;
-                    event_buffers - 1
-                });
+                let reusable = free_events
+                    .iter()
+                    .rposition(|&b| follows(used(&users[1], b)));
+                let b = reusable
+                    .map(|at| free_events.swap_remove(at))
+                    .unwrap_or_else(|| {
+                        event_buffers += 1;
+                        event_buffers - 1
+                    });
                 written.insert((Kind::Event, i, port), b);
+                writer_step.insert((Kind::Event, i, port), s);
+                if independent {
+                    if users[1].len() <= b {
+                        users[1].resize(b + 1, Vec::new());
+                    }
+                    users[1][b] = vec![s];
+                }
                 EventBufferId(b)
             })
             .collect();
+
+        let spectral_outputs: Vec<SpectralBufferId> =
+            (0..c.layout.spectral_outputs.len().min(events))
+                .map(|port| {
+                    let lanes = output_shapes[c.layout.outputs.len() + port].lanes();
+                    let b = take_buffer(&mut spectral_lanes, &mut free_spectral, lanes, |b| {
+                        follows(used(&users[2], b))
+                    });
+                    written.insert((Kind::Spectral, i, port), b);
+                    writer_step.insert((Kind::Spectral, i, port), s);
+                    if independent {
+                        if users[2].len() <= b {
+                            users[2].resize(b + 1, Vec::new());
+                        }
+                        users[2][b] = vec![s];
+                    }
+                    SpectralBufferId(b)
+                })
+                .collect();
 
         // Free whatever this step was the last to read, then any outputs
         // nothing reads at all.
@@ -930,6 +1150,7 @@ fn allocate(
             .filter(|(port, _)| reads(*port))
             .map(|(_, source)| source)
             .chain(event_source[i].iter().take(events))
+            .chain(spectral_source[i].iter().take(events))
             .flatten()
             .filter(|w| live(w))
             .map(|&w| (wires[w].kind, wires[w].from, wires[w].from_port))
@@ -938,11 +1159,13 @@ fn allocate(
         let unread = (0..outputs.len())
             .map(|port| (Kind::Signal, i, port))
             .chain((0..event_outputs.len()).map(|port| (Kind::Event, i, port)))
+            .chain((0..spectral_outputs.len()).map(|port| (Kind::Spectral, i, port)))
             .filter(|key| !last_read.contains_key(key));
         for key in finished.into_iter().chain(unread) {
             match key.0 {
                 Kind::Signal => free_buffers.push(written[&key]),
                 Kind::Event => free_events.push(written[&key]),
+                Kind::Spectral => free_spectral.push(written[&key]),
             }
         }
 
@@ -958,6 +1181,8 @@ fn allocate(
             outputs,
             event_inputs,
             event_outputs,
+            spectral_inputs,
+            spectral_outputs,
         });
     }
 
@@ -965,21 +1190,34 @@ fn allocate(
         nodes,
         buffer_lanes,
         event_buffers,
+        spectral_lanes,
     }
+}
+
+/// The steps that have used `buffer` since it was written.
+fn used(users: &[Vec<usize>], buffer: usize) -> &[usize] {
+    users.get(buffer).map_or(&[], Vec::as_slice)
 }
 
 /// Takes the smallest free buffer that's big enough. Failing that, it grows
 /// the biggest free buffer, and failing that, it adds a new one.
-fn take_buffer(buffer_lanes: &mut Vec<usize>, free: &mut Vec<usize>, lanes: usize) -> usize {
+fn take_buffer(
+    buffer_lanes: &mut Vec<usize>,
+    free: &mut Vec<usize>,
+    lanes: usize,
+    usable: impl Fn(usize) -> bool,
+) -> usize {
     let big_enough = free
         .iter()
         .enumerate()
+        .filter(|(_, b)| usable(**b))
         .filter(|(_, b)| buffer_lanes[**b] >= lanes)
         .min_by_key(|(_, b)| buffer_lanes[**b])
         .map(|(i, _)| i);
     let biggest = || {
         free.iter()
             .enumerate()
+            .filter(|(_, b)| usable(**b))
             .max_by_key(|(_, b)| buffer_lanes[**b])
             .map(|(i, _)| i)
     };

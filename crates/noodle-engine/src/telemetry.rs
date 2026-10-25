@@ -35,7 +35,7 @@
 //! with its own hub.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use noodle_core::NodeId;
@@ -45,6 +45,14 @@ use noodle_core::NodeId;
 #[derive(Clone, Default)]
 pub struct Telemetry {
     inner: Arc<Mutex<Channels>>,
+    /// How long whole blocks take, for every plan that reports.
+    blocks: Arc<BlockCells>,
+    /// Counts the times a writer reported something that moved, see
+    /// [`Telemetry::activity`].
+    activity: Arc<AtomicU64>,
+    /// Counts position reports across every node, to tell the instances that
+    /// are still running from those left over from an old plan.
+    position_clock: Arc<AtomicU64>,
 }
 
 /// Each node's open channels, oldest first.
@@ -56,6 +64,8 @@ struct Channels {
     params: HashMap<(NodeId, String), Vec<Arc<ParamCells>>>,
     /// How much of the block budget each node's processing takes.
     cpu: HashMap<NodeId, Vec<Arc<CpuCells>>>,
+    /// Where a sampling node's voices are in their sample.
+    positions: HashMap<NodeId, Vec<Arc<PositionCells>>>,
     /// The IDs of the live [`MeterReader`]s.
     readers: HashSet<u64>,
     next_reader: u64,
@@ -83,6 +93,10 @@ impl Channels {
             list.retain(|cells| Arc::strong_count(cells) > 1);
             !list.is_empty()
         });
+        self.positions.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
         let meters = &self.meters;
         self.held.retain(|(node, _), _| meters.contains_key(node));
     }
@@ -97,6 +111,15 @@ fn live<T>(list: &[T], written: impl Fn(&T) -> bool) -> Option<&T> {
 impl Telemetry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A count that goes up whenever a meter, scope, parameter or position
+    /// writer reports something that moved: a level above [`ACTIVITY_FLOOR`]
+    /// (or falling from one), a scope block with a non-zero sample, a value
+    /// that changed. A silent, steady graph leaves it alone, so a view that
+    /// sees it hold still can stop redrawing.
+    pub fn activity(&self) -> u64 {
+        self.activity.load(Ordering::Relaxed)
     }
 
     fn lock(&self) -> MutexGuard<'_, Channels> {
@@ -115,6 +138,7 @@ impl Telemetry {
         let cells = Arc::new(MeterCells {
             levels: (0..channels).map(|_| LevelCells::default()).collect(),
             written: AtomicBool::new(false),
+            activity: self.activity.clone(),
         });
         self.lock()
             .meters
@@ -139,7 +163,11 @@ impl Telemetry {
             written: false,
         };
         self.lock().scopes.entry(node).or_default().push(reader);
-        ScopeWriter { producer, channels }
+        ScopeWriter {
+            producer,
+            channels,
+            activity: self.activity.clone(),
+        }
     }
 
     /// A new reader of meter levels. Each reader sees every peak, so a view
@@ -160,7 +188,7 @@ impl Telemetry {
     /// Opens a channel reporting the signal wired into parameter `key` of
     /// `node`. Call this when building a plan, not on the audio thread.
     pub fn open_param(&self, node: NodeId, key: &str) -> ParamWriter {
-        let cells = Arc::new(ParamCells::default());
+        let cells = Arc::new(ParamCells::new(self.activity.clone()));
         self.lock()
             .params
             .entry((node, key.to_owned()))
@@ -196,6 +224,59 @@ impl Telemetry {
         })
     }
 
+    /// Opens a channel for where `node`'s `voices` voices are in their
+    /// sample. Call this when building a plan, not on the audio thread.
+    pub fn open_positions(&self, node: NodeId, voices: usize) -> PositionWriter {
+        let cells = Arc::new(PositionCells {
+            at: (0..voices)
+                .map(|_| AtomicU32::new(IDLE.to_bits()))
+                .collect(),
+            written: AtomicBool::new(false),
+            activity: self.activity.clone(),
+            stamp: AtomicU64::new(0),
+        });
+        self.lock()
+            .positions
+            .entry(node)
+            .or_default()
+            .push(cells.clone());
+        PositionWriter {
+            cells,
+            clock: self.position_clock.clone(),
+        }
+    }
+
+    /// Where each sounding voice of `node` is in its sample, as a fraction of
+    /// it from 0 to 1, as of the latest block. Empty when nothing is playing
+    /// or nothing has reported.
+    ///
+    /// Every instance that is still reporting counts (a Sampler in a
+    /// voice-instanced group has one per voice), so the voices of all of them
+    /// are listed. An instance that has stopped, because a newer plan took
+    /// over, is told by its reports falling behind the rest.
+    pub fn read_positions(&self, node: NodeId) -> Vec<f32> {
+        let channels = self.lock();
+        let Some(list) = channels.positions.get(&node) else {
+            return Vec::new();
+        };
+        let stamps = |cells: &Arc<PositionCells>| cells.stamp.load(Ordering::Relaxed);
+        let reported = || list.iter().filter(|c| c.written.load(Ordering::Acquire));
+        let Some(newest) = reported().map(stamps).max() else {
+            return Vec::new();
+        };
+        // A running instance reports once per block, and the clock moves once
+        // per report of any node, so it falls behind by at most the number of
+        // channels open.
+        let open: usize = channels.positions.values().map(Vec::len).sum();
+        let window = 2 * open as u64 + 2;
+        reported()
+            .filter(|c| newest - stamps(c) <= window)
+            .flat_map(|cells| cells.at.iter())
+            .map(|cell| f32::from_bits(cell.load(Ordering::Relaxed)))
+            .filter(|at| *at >= 0.0)
+            .collect()
+    }
+
     /// Opens a channel for `node`'s processing time. Call this when building
     /// a plan, not on the audio thread.
     pub fn open_cpu(&self, node: NodeId) -> CpuWriter {
@@ -205,6 +286,8 @@ impl Telemetry {
             cells,
             load: 0.0,
             peak: 0.0,
+            nanos: 0,
+            blocks: 0,
         }
     }
 
@@ -227,6 +310,77 @@ impl Telemetry {
             .collect();
         all.sort_by_key(|(node, _)| *node);
         all
+    }
+
+    /// Every node's total processing time since its plan started running, for
+    /// a profile. Nodes that haven't reported are left out.
+    pub fn read_all_cpu_totals(&self) -> Vec<(NodeId, CpuTotals)> {
+        let channels = self.lock();
+        let mut all: Vec<_> = channels
+            .cpu
+            .iter()
+            .filter_map(|(&node, list)| {
+                let cells = live(list, |cells| cells.written.load(Ordering::Acquire))?;
+                cells.written.load(Ordering::Acquire).then(|| {
+                    (
+                        node,
+                        CpuTotals {
+                            nanos: cells.nanos.load(Ordering::Relaxed),
+                            blocks: cells.blocks.load(Ordering::Relaxed),
+                        },
+                    )
+                })
+            })
+            .collect();
+        all.sort_by_key(|(node, _)| *node);
+        all
+    }
+
+    /// A writer for whole-block timing, for a plan to time its blocks with.
+    /// Every writer feeds the same [`BlockStats`].
+    pub fn block_writer(&self) -> BlockWriter {
+        BlockWriter(self.blocks.clone())
+    }
+
+    /// How long blocks have taken since the last [`reset_blocks`](Self::reset_blocks).
+    pub fn read_blocks(&self) -> BlockStats {
+        let cells = &*self.blocks;
+        let blocks = cells.blocks.load(Ordering::Relaxed);
+        let used = cells.used_ns.load(Ordering::Relaxed);
+        let budget = cells.budget_ns.load(Ordering::Relaxed);
+        let mut histogram = [0u64; LOAD_BUCKETS];
+        for (out, cell) in histogram.iter_mut().zip(&cells.histogram) {
+            *out = cell.load(Ordering::Relaxed);
+        }
+        BlockStats {
+            blocks,
+            mean: if budget == 0 {
+                0.0
+            } else {
+                (used as f64 / budget as f64) as f32
+            },
+            worst: f32::from_bits(cells.worst.load(Ordering::Relaxed)),
+            misses: cells.misses.load(Ordering::Relaxed),
+            panics: cells.panics.load(Ordering::Relaxed),
+            histogram,
+        }
+    }
+
+    /// Starts the block statistics over.
+    pub fn reset_blocks(&self) {
+        let cells = &*self.blocks;
+        for cell in [
+            &cells.blocks,
+            &cells.used_ns,
+            &cells.budget_ns,
+            &cells.misses,
+        ] {
+            cell.store(0, Ordering::Relaxed);
+        }
+        cells.worst.store(0, Ordering::Relaxed);
+        for cell in &cells.histogram {
+            cell.store(0, Ordering::Relaxed);
+        }
     }
 
     /// Copies `node`'s most recent scope frames into `view`, reusing its
@@ -336,7 +490,19 @@ pub struct CpuReading {
 struct CpuCells {
     load: AtomicU32,
     peak: AtomicU32,
+    /// Everything the node has used since its plan started, and the blocks
+    /// that took it.
+    nanos: AtomicU64,
+    blocks: AtomicU64,
     written: AtomicBool,
+}
+
+/// What a node has used in total, for a profile (unlike [`CpuReading`], which
+/// smooths).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuTotals {
+    pub nanos: u64,
+    pub blocks: u64,
 }
 
 /// The audio thread's end of a node's CPU channel.
@@ -344,6 +510,8 @@ pub struct CpuWriter {
     cells: Arc<CpuCells>,
     load: f32,
     peak: f32,
+    nanos: u64,
+    blocks: u64,
 }
 
 impl CpuWriter {
@@ -357,13 +525,162 @@ impl CpuWriter {
         // About a second of smoothing at typical block sizes: slow enough to
         // read, quick enough to follow an edit.
         self.load += (used - self.load) * 0.02;
-        self.peak = used.max(self.peak * 0.995);
+        // The peak decays more slowly than the load follows, but not provably
+        // so for every sequence; the peak is never below the load it sits over.
+        self.peak = used.max(self.peak * 0.995).max(self.load);
         self.cells
             .load
             .store(self.load.to_bits(), Ordering::Relaxed);
         self.cells
             .peak
             .store(self.peak.to_bits(), Ordering::Relaxed);
+        self.nanos += used_ns;
+        self.blocks += 1;
+        self.cells.nanos.store(self.nanos, Ordering::Relaxed);
+        self.cells.blocks.store(self.blocks, Ordering::Relaxed);
+        self.cells.written.store(true, Ordering::Release);
+    }
+}
+
+/// Buckets in [`BlockStats::histogram`]: ten for each tenth of the budget up
+/// to all of it, then up to one and a half times it, then beyond.
+pub const LOAD_BUCKETS: usize = 12;
+
+/// How long whole blocks took to render against the time they last, since
+/// statistics were last reset. A block that takes more than its budget is a
+/// deadline miss: on a live stream, an underrun.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockStats {
+    pub blocks: u64,
+    /// Time used over time available, across all blocks. 1.0 is one core's
+    /// whole real-time budget.
+    pub mean: f32,
+    /// The slowest block, as a fraction of its budget.
+    pub worst: f32,
+    /// Blocks that took longer than their budget.
+    pub misses: u64,
+    /// Blocks in which a node panicked (only caught, and its output silenced,
+    /// when the plan runs on worker threads).
+    pub panics: u64,
+    /// Blocks by load: bucket `i` (below 10) holds loads from `i`/10 up to
+    /// (`i` + 1)/10; bucket 10 up to 1.5, bucket 11 beyond.
+    pub histogram: [u64; LOAD_BUCKETS],
+}
+
+impl BlockStats {
+    /// The load that `fraction` of blocks stayed under (0.99 for the 99th
+    /// percentile), to the resolution of the histogram: the top of the bucket
+    /// that crosses it, or `worst` if that is the last one.
+    pub fn percentile(&self, fraction: f64) -> f32 {
+        if self.blocks == 0 {
+            return 0.0;
+        }
+        let target = (self.blocks as f64 * fraction).ceil() as u64;
+        let mut seen = 0;
+        for (bucket, &count) in self.histogram.iter().enumerate() {
+            seen += count;
+            if seen >= target {
+                return match bucket {
+                    0..=9 => (bucket + 1) as f32 / 10.0,
+                    10 => 1.5,
+                    _ => self.worst,
+                }
+                .min(self.worst.max(0.0));
+            }
+        }
+        self.worst
+    }
+}
+
+#[derive(Default)]
+struct BlockCells {
+    blocks: AtomicU64,
+    used_ns: AtomicU64,
+    budget_ns: AtomicU64,
+    /// Bits of the slowest block's load. Loads are never negative, so the
+    /// bits order like the numbers.
+    worst: AtomicU32,
+    misses: AtomicU64,
+    panics: AtomicU64,
+    histogram: [AtomicU64; LOAD_BUCKETS],
+}
+
+/// The audio thread's end of the block statistics.
+pub struct BlockWriter(Arc<BlockCells>);
+
+impl BlockWriter {
+    /// Reports that a node panicked in a block.
+    pub fn note_panic(&self) {
+        self.0.panics.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reports that a block took `used_ns` of the `budget_ns` it lasts.
+    pub fn record(&self, used_ns: u64, budget_ns: f64) {
+        if budget_ns <= 0.0 {
+            return;
+        }
+        let cells = &*self.0;
+        let load = (used_ns as f64 / budget_ns) as f32;
+        let bucket = match load {
+            l if l < 1.0 => ((l * 10.0) as usize).min(9),
+            l if l < 1.5 => 10,
+            _ => 11,
+        };
+        cells.histogram[bucket].fetch_add(1, Ordering::Relaxed);
+        cells.blocks.fetch_add(1, Ordering::Relaxed);
+        cells.used_ns.fetch_add(used_ns, Ordering::Relaxed);
+        cells
+            .budget_ns
+            .fetch_add(budget_ns as u64, Ordering::Relaxed);
+        cells.worst.fetch_max(load.to_bits(), Ordering::Relaxed);
+        if load > 1.0 {
+            cells.misses.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// What a silent voice reports.
+const IDLE: f32 = -1.0;
+
+struct PositionCells {
+    at: Vec<AtomicU32>,
+    written: AtomicBool,
+    activity: Arc<AtomicU64>,
+    /// The clock's value at the latest report.
+    stamp: AtomicU64,
+}
+
+/// The audio thread's end of a position channel.
+pub struct PositionWriter {
+    cells: Arc<PositionCells>,
+    clock: Arc<AtomicU64>,
+}
+
+impl PositionWriter {
+    /// How many voices the channel has room for.
+    pub fn voices(&self) -> usize {
+        self.cells.at.len()
+    }
+
+    /// Reports voice `voice`: its place in the sample as a fraction from 0
+    /// to 1, or `None` when it is silent. A voice past the channel's room is
+    /// ignored.
+    pub fn write(&self, voice: usize, fraction: Option<f32>) {
+        if let Some(cell) = self.cells.at.get(voice) {
+            let at = fraction
+                .filter(|f| f.is_finite())
+                .map_or(IDLE, |f| f.clamp(0.0, 1.0));
+            if cell.swap(at.to_bits(), Ordering::Relaxed) != at.to_bits() {
+                self.cells.activity.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Marks the reports as coming from a running plan. Call it after each
+    /// block's writes.
+    pub fn publish(&self) {
+        let stamp = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        self.cells.stamp.store(stamp, Ordering::Relaxed);
         self.cells.written.store(true, Ordering::Release);
     }
 }
@@ -385,11 +702,13 @@ struct ParamCells {
     max: AtomicU32,
     /// Set once the writer has reported, which shows its plan is running.
     written: AtomicBool,
+    activity: Arc<AtomicU64>,
 }
 
-impl Default for ParamCells {
-    fn default() -> Self {
+impl ParamCells {
+    fn new(activity: Arc<AtomicU64>) -> Self {
         Self {
+            activity,
             value: AtomicU32::new(0),
             min: AtomicU32::new(f32::INFINITY.to_bits()),
             max: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
@@ -413,7 +732,11 @@ impl ParamWriter {
             min = min.min(x);
             max = max.max(x);
         }
-        self.0.value.store(last.to_bits(), Ordering::Relaxed);
+        // A steady value, the same block after block, is not activity.
+        let before = self.0.value.swap(last.to_bits(), Ordering::Relaxed);
+        if before != last.to_bits() || min != max {
+            self.0.activity.fetch_add(1, Ordering::Relaxed);
+        }
         // Floats compare differently from their bits when negative, so
         // these take the extreme with a compare-and-swap.
         let _ = self
@@ -446,6 +769,7 @@ struct MeterCells {
     levels: Box<[LevelCells]>,
     /// Set once the writer has reported, which shows its instance is playing.
     written: AtomicBool,
+    activity: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -477,14 +801,18 @@ impl MeterWriter {
             return;
         };
         self.0.written.store(true, Ordering::Relaxed);
-        cells
-            .peak
-            .fetch_max(non_negative(level.peak).to_bits(), Ordering::Relaxed);
-        cells
-            .rms
-            .store(non_negative(level.rms).to_bits(), Ordering::Relaxed);
+        let (peak, rms) = (non_negative(level.peak), non_negative(level.rms));
+        cells.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        let before = f32::from_bits(cells.rms.swap(rms.to_bits(), Ordering::Relaxed));
+        // Audible now, or just was: the fall to silence is still a change.
+        if peak > ACTIVITY_FLOOR || rms > ACTIVITY_FLOOR || before > ACTIVITY_FLOOR {
+            self.0.activity.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
+
+/// The level below which a meter reports no activity: -90 dBFS.
+pub const ACTIVITY_FLOOR: f32 = 3.162_277_7e-5;
 
 /// Maps NaN and negative values (including -0.0, whose bits are huge) to 0.
 fn non_negative(x: f32) -> f32 {
@@ -495,6 +823,7 @@ fn non_negative(x: f32) -> f32 {
 pub struct ScopeWriter {
     producer: rtrb::Producer<f32>,
     channels: usize,
+    activity: Arc<AtomicU64>,
 }
 
 impl ScopeWriter {
@@ -510,11 +839,25 @@ impl ScopeWriter {
             return 0;
         };
         let channels = self.channels;
+        let mut moved = false;
         chunk.fill_from_iter(
             (0..fit)
                 .flat_map(|frame| (0..channels).map(move |channel| (frame, channel)))
-                .map(|(frame, channel)| sample(frame, channel)),
+                .map(|(frame, channel)| {
+                    let x = sample(frame, channel);
+                    moved |= x != 0.0;
+                    x
+                }),
         );
+        // Frames the full ring has no room for are lost to the view, but
+        // signal in them is still activity: the view must come and drain.
+        if !moved {
+            moved = (fit..frames)
+                .any(|frame| (0..self.channels).any(|channel| sample(frame, channel) != 0.0));
+        }
+        if moved {
+            self.activity.fetch_add(1, Ordering::Relaxed);
+        }
         fit
     }
 }
@@ -595,6 +938,55 @@ mod tests {
     use super::*;
 
     const NODE: NodeId = NodeId(7);
+
+    #[test]
+    fn block_statistics_count_loads_misses_and_percentiles() {
+        let telemetry = Telemetry::new();
+        assert_eq!(telemetry.read_blocks(), BlockStats::default());
+        assert_eq!(telemetry.read_blocks().percentile(0.99), 0.0);
+        let writer = telemetry.block_writer();
+        // 98 blocks at 5%, one at 55%, one over budget at 130%.
+        for _ in 0..98 {
+            writer.record(50, 1000.0);
+        }
+        writer.record(550, 1000.0);
+        writer.record(1300, 1000.0);
+        let stats = telemetry.read_blocks();
+        assert_eq!(stats.blocks, 100);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.histogram[0], 98);
+        assert_eq!(stats.histogram[5], 1);
+        assert_eq!(stats.histogram[10], 1);
+        assert!((stats.worst - 1.3).abs() < 1e-6, "{}", stats.worst);
+        let expected_mean = (98.0 * 50.0 + 550.0 + 1300.0) / 100_000.0;
+        assert!((stats.mean - expected_mean as f32).abs() < 1e-6);
+        // Percentiles are the top of the bucket they land in.
+        assert!((stats.percentile(0.5) - 0.1).abs() < 1e-6);
+        assert!((stats.percentile(0.99) - 0.6).abs() < 1e-6);
+        assert!((stats.percentile(1.0) - 1.3).abs() < 1e-6);
+
+        telemetry.reset_blocks();
+        assert_eq!(telemetry.read_blocks(), BlockStats::default());
+    }
+
+    #[test]
+    fn cpu_totals_add_up_over_blocks() {
+        let telemetry = Telemetry::new();
+        let mut writer = telemetry.open_cpu(NODE);
+        assert!(telemetry.read_all_cpu_totals().is_empty());
+        writer.record(300, 1000.0);
+        writer.record(200, 1000.0);
+        assert_eq!(
+            telemetry.read_all_cpu_totals(),
+            [(
+                NODE,
+                CpuTotals {
+                    nanos: 500,
+                    blocks: 2
+                }
+            )]
+        );
+    }
 
     #[test]
     fn a_param_reports_its_value_and_the_range_since_the_last_read() {
@@ -828,6 +1220,36 @@ mod tests {
     }
 
     #[test]
+    fn positions_list_the_sounding_voices_and_follow_the_playing_instance() {
+        let telemetry = Telemetry::new();
+        assert!(telemetry.read_positions(NODE).is_empty());
+        let playing = telemetry.open_positions(NODE, 3);
+        playing.write(0, Some(0.25));
+        playing.write(1, None);
+        playing.write(2, Some(2.0));
+        // Nothing is read until a block has been published.
+        assert!(telemetry.read_positions(NODE).is_empty());
+        playing.publish();
+        assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0]);
+
+        let pending = telemetry.open_positions(NODE, 3);
+        pending.write(0, Some(0.5));
+        assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0]);
+        // Both are reporting, as the instances of a voice-instanced group do.
+        pending.publish();
+        playing.publish();
+        assert_eq!(telemetry.read_positions(NODE), [0.25, 1.0, 0.5]);
+        // The old plan stops reporting; the new one carries on.
+        for _ in 0..10 {
+            pending.publish();
+        }
+        assert_eq!(telemetry.read_positions(NODE), [0.5]);
+        drop((playing, pending));
+        assert!(telemetry.read_positions(NODE).is_empty());
+        assert!(telemetry.lock().positions.is_empty());
+    }
+
+    #[test]
     fn dropping_the_writer_closes_the_channel() {
         let telemetry = Telemetry::new();
         let reader = telemetry.meter_reader();
@@ -842,5 +1264,54 @@ mod tests {
         let channels = telemetry.lock();
         assert!(channels.meters.is_empty() && channels.scopes.is_empty());
         assert!(channels.held.is_empty());
+    }
+
+    #[test]
+    fn activity_moves_only_when_a_writer_reports_something_that_moved() {
+        let telemetry = Telemetry::new();
+        let meter = telemetry.open_meter(NODE, 1);
+        let mut scope = telemetry.open_scope(NODE, 1, 64);
+        let param = telemetry.open_param(NODE, "x");
+        let positions = telemetry.open_positions(NODE, 1);
+        let quiet = Level::default();
+        for _ in 0..100 {
+            meter.write(0, quiet);
+            scope.write(16, |_, _| 0.0);
+            param.write(&[0.5; 8]);
+            positions.write(0, None);
+        }
+        // The first parameter block is a change from zero; nothing after it.
+        let settled = telemetry.activity();
+        assert!(settled <= 1);
+        for _ in 0..100 {
+            meter.write(0, quiet);
+            scope.write(16, |_, _| 0.0);
+            param.write(&[0.5; 8]);
+            positions.write(0, None);
+        }
+        assert_eq!(telemetry.activity(), settled);
+
+        let loud = Level {
+            peak: 0.5,
+            rms: 0.3,
+        };
+        meter.write(0, loud);
+        let after_meter = telemetry.activity();
+        assert!(after_meter > settled);
+        // The fall back to silence counts once, then it is still.
+        meter.write(0, quiet);
+        meter.write(0, quiet);
+        assert_eq!(telemetry.activity(), after_meter + 1);
+        // The silent blocks filled the ring: signal it has no room for still
+        // counts, so the view comes to drain it.
+        scope.write(16, |_, _| 0.5);
+        assert_eq!(telemetry.activity(), after_meter + 2);
+        telemetry.read_scope(NODE, &mut ScopeView::tail(64));
+        scope.write(16, |frame, _| frame as f32 * 0.01);
+        assert_eq!(telemetry.activity(), after_meter + 3);
+        param.write(&[0.6; 8]);
+        assert_eq!(telemetry.activity(), after_meter + 4);
+        positions.write(0, Some(0.5));
+        assert_eq!(telemetry.activity(), after_meter + 5);
     }
 }

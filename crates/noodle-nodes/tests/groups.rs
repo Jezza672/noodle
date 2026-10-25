@@ -91,7 +91,7 @@ fn set(project: &mut Project, history: &mut History, node: NodeId, key: &str, va
 #[test]
 fn a_groups_gain_scales_what_comes_out_of_it() {
     let (mut project, mut history, flat, output) = grouped_output();
-    set(&mut project, &mut history, output, "gain", -6.0206);
+    set(&mut project, &mut history, output, "gain.1", -6.0206);
     let quieter = render_project(&project);
     assert_eq!(quieter.len(), flat.len());
     for (a, b) in quieter.iter().zip(&flat) {
@@ -123,8 +123,8 @@ fn wire_constant(project: &mut Project, history: &mut History, output: NodeId, p
 fn a_wire_can_drive_a_groups_gain() {
     let (mut project, mut history, flat, output) = grouped_output();
     // The wire replaces the value set on the node.
-    set(&mut project, &mut history, output, "gain", -40.0);
-    wire_constant(&mut project, &mut history, output, "gain", -6.0206);
+    set(&mut project, &mut history, output, "gain.1", -40.0);
+    wire_constant(&mut project, &mut history, output, "gain.1", -6.0206);
     let quieter = render_project(&project);
     assert_eq!(quieter.len(), flat.len());
     for (a, b) in quieter.iter().zip(&flat) {
@@ -135,13 +135,13 @@ fn a_wire_can_drive_a_groups_gain() {
 #[test]
 fn a_wire_can_drive_a_groups_mute() {
     let (mut project, mut history, flat, output) = grouped_output();
-    wire_constant(&mut project, &mut history, output, "mute", 1.0);
+    wire_constant(&mut project, &mut history, output, "mute.1", 1.0);
     let mut registry = Registry::with_builtins();
     let _telemetry = noodle_nodes::register_all(&mut registry);
     let silent = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
     assert!(silent.diagnostics.is_empty(), "{:?}", silent.diagnostics);
     assert!(silent.samples.iter().all(|&x| x == 0.0));
-    wire_constant(&mut project, &mut history, output, "mute", 0.0);
+    wire_constant(&mut project, &mut history, output, "mute.1", 0.0);
     assert_eq!(render_project(&project), flat);
 }
 
@@ -151,10 +151,10 @@ fn a_wire_wins_over_a_lane_on_the_same_port() {
     add_lane(
         &mut project,
         &mut history,
-        noodle_core::Endpoint::new(output, "gain"),
+        noodle_core::Endpoint::new(output, "gain.1"),
         -40.0,
     );
-    wire_constant(&mut project, &mut history, output, "gain", 0.0);
+    wire_constant(&mut project, &mut history, output, "gain.1", 0.0);
     let rendered = render_lanes(&project);
     assert_eq!(rendered.samples, flat);
     assert!(
@@ -170,7 +170,7 @@ fn a_wire_wins_over_a_lane_on_the_same_port() {
 #[test]
 fn a_muted_group_is_silent_and_unmuting_restores_it() {
     let (mut project, mut history, flat, output) = grouped_output();
-    set(&mut project, &mut history, output, "mute", 1.0);
+    set(&mut project, &mut history, output, "mute.1", 1.0);
     let mut registry = Registry::with_builtins();
     let _telemetry = noodle_nodes::register_all(&mut registry);
     let silent = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
@@ -190,17 +190,14 @@ fn solo_another_group(project: &mut Project, history: &mut History) -> NodeId {
     history.apply(project, command).unwrap();
     let solo_out = project.new_node_id();
     let boundary = noodle_core::Node::new(noodle_core::group::GROUP_OUTPUT)
-        .with_config(noodle_core::Config::new().with(
-            noodle_core::group::PORT_NAME,
-            noodle_core::Value::Text("out".into()),
-        ))
+        .with_config(noodle_core::group::ports_config(&[(1, "out".into())]))
         .in_group(group);
     let command = noodle_core::Command::AddNode {
         id: solo_out,
         node: boundary,
     };
     history.apply(project, command).unwrap();
-    set(project, history, solo_out, "solo", 1.0);
+    set(project, history, solo_out, "solo.1", 1.0);
     solo_out
 }
 
@@ -246,7 +243,7 @@ fn a_lane_can_drive_a_groups_gain() {
     add_lane(
         &mut project,
         &mut history,
-        noodle_core::Endpoint::new(output, "gain"),
+        noodle_core::Endpoint::new(output, "gain.1"),
         -6.0206,
     );
     let rendered = render_lanes(&project);
@@ -266,7 +263,7 @@ fn a_lane_can_drive_a_groups_mute() {
     add_lane(
         &mut project,
         &mut history,
-        noodle_core::Endpoint::new(output, "mute"),
+        noodle_core::Endpoint::new(output, "mute.1"),
         1.0,
     );
     let rendered = render_lanes(&project);
@@ -284,7 +281,7 @@ fn a_lane_on_solo_is_refused_and_changes_nothing() {
     add_lane(
         &mut project,
         &mut history,
-        noodle_core::Endpoint::new(output, "solo"),
+        noodle_core::Endpoint::new(output, "solo.1"),
         1.0,
     );
     let rendered = render_lanes(&project);
@@ -304,7 +301,7 @@ fn a_mute_lane_cannot_undo_another_groups_solo() {
     add_lane(
         &mut project,
         &mut history,
-        noodle_core::Endpoint::new(output, "mute"),
+        noodle_core::Endpoint::new(output, "mute.1"),
         0.0,
     );
     let rendered = render_lanes(&project);
@@ -354,7 +351,7 @@ fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
     let ports = project.graph().group_ports(group);
     let command = Command::SetParam {
         node: ports.outputs[0].node,
-        key: GAIN.into(),
+        key: noodle_core::group::control_key(GAIN, 1),
         value: Some(-6.0),
     };
     history.apply(&mut project, command).unwrap();
@@ -363,4 +360,84 @@ fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
         before,
         "a control change reshaped the graph"
     );
+}
+
+#[test]
+fn muting_a_track_silences_everything_leaving_it_with_no_wire_for_the_mute() {
+    use noodle_core::group::{GROUP_OUTPUT, TRACK_INPUT, TRACK_MUTE, create_track};
+    use noodle_core::{Command, Connection, Endpoint, Node, Position};
+
+    let mut project = Project::new();
+    let mut history = History::new();
+    let (group, command) = create_track(None, Position::default(), || project.new_node_id());
+    history.apply(&mut project, command).unwrap();
+    let inside = |project: &Project, kind: &str| {
+        project
+            .graph()
+            .children(Some(group))
+            .find(|(_, n)| n.type_id == kind)
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    let (input, output) = (
+        inside(&project, TRACK_INPUT),
+        inside(&project, GROUP_OUTPUT),
+    );
+    // An oscillator that always sounds, in place of the track's audio, and
+    // the project's output after the track.
+    let osc = project.new_node_id();
+    let out = project.new_node_id();
+    for (id, node) in [
+        (
+            osc,
+            Node::new("noodle.osc.sine")
+                .with_param("frequency", 440.0)
+                .in_group(group),
+        ),
+        (out, Node::new("noodle.io.output")),
+    ] {
+        history
+            .apply(&mut project, Command::AddNode { id, node })
+            .unwrap();
+    }
+    history
+        .apply(
+            &mut project,
+            Command::Disconnect {
+                input: Endpoint::new(output, "p1"),
+            },
+        )
+        .unwrap();
+    for (from, to) in [
+        (Endpoint::new(osc, "out"), Endpoint::new(output, "p1")),
+        (Endpoint::new(group, "out"), Endpoint::new(out, "in")),
+    ] {
+        history
+            .apply(&mut project, Command::Connect(Connection { from, to }))
+            .unwrap();
+    }
+    let playing = render_project(&project);
+    assert!(playing[2_400..].iter().any(|&x| x.abs() > 0.1));
+
+    let shape = |project: &Project| {
+        let flat = noodle_engine::flatten(project.graph());
+        let ids: Vec<NodeId> = flat.nodes().map(|(id, _)| id).collect();
+        (ids, flat.connections().collect::<Vec<_>>())
+    };
+    let before = shape(&project);
+    set(&mut project, &mut history, input, TRACK_MUTE, 1.0);
+    // The mute ramps in, then nothing leaves the track, wired or not.
+    let registry = {
+        let mut registry = Registry::with_builtins();
+        let _telemetry = noodle_nodes::register_all(&mut registry);
+        registry
+    };
+    let muted = render(project.graph(), &registry, SETTINGS, FRAMES).unwrap();
+    assert!(muted.diagnostics.is_empty(), "{:?}", muted.diagnostics);
+    assert!(muted.samples[2_400..].iter().all(|&x| x == 0.0));
+    assert_eq!(shape(&project), before, "muting reshaped the graph");
+
+    set(&mut project, &mut history, input, TRACK_MUTE, 0.0);
+    let again = render_project(&project);
+    assert!(again[2_400..].iter().any(|&x| x.abs() > 0.1));
 }

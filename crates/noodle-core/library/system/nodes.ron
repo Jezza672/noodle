@@ -1,0 +1,1949 @@
+[
+    NodePreset((
+        name: "Sub 55 Hz",
+        slug: "sine-sub-55-hz",
+        node_type: "noodle.osc.sine",
+        values: (
+            params: {
+                "frequency": 55.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Concert A",
+        slug: "sine-concert-a",
+        node_type: "noodle.osc.sine",
+        values: (
+            params: {
+                "frequency": 440.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slow Wobble",
+        slug: "sine-slow-wobble",
+        node_type: "noodle.osc.sine",
+        values: (
+            params: {
+                "frequency": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Low Saw",
+        slug: "saw-low-saw",
+        node_type: "noodle.osc.saw",
+        values: (
+            params: {
+                "frequency": 110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Concert A",
+        slug: "saw-concert-a",
+        node_type: "noodle.osc.saw",
+        values: (
+            params: {
+                "frequency": 440.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Low Triangle",
+        slug: "triangle-low-triangle",
+        node_type: "noodle.osc.triangle",
+        values: (
+            params: {
+                "frequency": 110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Concert A",
+        slug: "triangle-concert-a",
+        node_type: "noodle.osc.triangle",
+        values: (
+            params: {
+                "frequency": 440.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Hollow Square",
+        slug: "square-hollow-square",
+        node_type: "noodle.osc.square",
+        values: (
+            params: {
+                "frequency": 220.0,
+                "width": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pulse 25%",
+        slug: "square-pulse-25",
+        node_type: "noodle.osc.square",
+        values: (
+            params: {
+                "frequency": 220.0,
+                "width": 0.25,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Thin Pulse",
+        slug: "square-thin-pulse",
+        node_type: "noodle.osc.square",
+        values: (
+            params: {
+                "frequency": 220.0,
+                "width": 0.1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Warm Low Pass",
+        slug: "state-variable-filter-warm-low-pass",
+        node_type: "noodle.filter.svf",
+        values: (
+            params: {
+                "cutoff": 800.0,
+                "resonance": 0.1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bright Low Pass",
+        slug: "state-variable-filter-bright-low-pass",
+        node_type: "noodle.filter.svf",
+        values: (
+            params: {
+                "cutoff": 5000.0,
+                "resonance": 0.15,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Resonant Peak",
+        slug: "state-variable-filter-resonant-peak",
+        node_type: "noodle.filter.svf",
+        values: (
+            params: {
+                "cutoff": 1200.0,
+                "resonance": 0.8,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Mellow Ladder",
+        slug: "ladder-filter-mellow-ladder",
+        node_type: "noodle.filter.ladder",
+        values: (
+            params: {
+                "cutoff": 600.0,
+                "drive": 1.0,
+                "resonance": 0.1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Acid Squelch",
+        slug: "ladder-filter-acid-squelch",
+        node_type: "noodle.filter.ladder",
+        values: (
+            params: {
+                "cutoff": 700.0,
+                "drive": 2.5,
+                "resonance": 0.75,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Driven Open",
+        slug: "ladder-filter-driven-open",
+        node_type: "noodle.filter.ladder",
+        values: (
+            params: {
+                "cutoff": 6000.0,
+                "drive": 4.0,
+                "resonance": 0.2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pluck",
+        slug: "adsr-pluck",
+        node_type: "noodle.mod.adsr",
+        values: (
+            params: {
+                "attack": 0.002,
+                "decay": 0.18,
+                "release": 0.1,
+                "sustain": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Organ",
+        slug: "adsr-organ",
+        node_type: "noodle.mod.adsr",
+        values: (
+            params: {
+                "attack": 0.005,
+                "decay": 0.05,
+                "release": 0.05,
+                "sustain": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slow Pad",
+        slug: "adsr-slow-pad",
+        node_type: "noodle.mod.adsr",
+        values: (
+            params: {
+                "attack": 0.8,
+                "decay": 0.5,
+                "release": 1.5,
+                "sustain": 0.8,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Stab",
+        slug: "adsr-stab",
+        node_type: "noodle.mod.adsr",
+        values: (
+            params: {
+                "attack": 0.001,
+                "decay": 0.25,
+                "release": 0.15,
+                "sustain": 0.3,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Vibrato",
+        slug: "lfo-vibrato",
+        node_type: "noodle.mod.lfo",
+        values: (
+            params: {
+                "depth": 0.05,
+                "rate": 5.5,
+                "shape": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Tremolo",
+        slug: "lfo-tremolo",
+        node_type: "noodle.mod.lfo",
+        values: (
+            params: {
+                "depth": 0.5,
+                "offset": 0.0,
+                "rate": 6.0,
+                "shape": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slow Sweep",
+        slug: "lfo-slow-sweep",
+        node_type: "noodle.mod.lfo",
+        values: (
+            params: {
+                "depth": 1.0,
+                "rate": 0.1,
+                "shape": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Sample and Hold Noise",
+        slug: "lfo-sample-and-hold-noise",
+        node_type: "noodle.mod.lfo",
+        values: (
+            params: {
+                "depth": 1.0,
+                "rate": 8.0,
+                "shape": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pluck",
+        slug: "envelope-pluck",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "length": 0.3,
+                "time": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Swell",
+        slug: "envelope-swell",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "length": 2.0,
+                "time": 0.0,
+            },
+            config: {
+                "curve": "0 0 0.5;0.85 1 -0.6;1 0 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Stab",
+        slug: "envelope-stab",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "length": 0.6,
+                "time": 0.0,
+            },
+            config: {
+                "curve": "0 0 0;0.02 1 -0.4;0.5 0.5 -0.5;1 0 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Riser, 4 Beats",
+        slug: "envelope-riser-4-beats",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "beats": 4.0,
+                "time": 1.0,
+            },
+            config: {
+                "curve": "0 0 0.6;1 1 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Faller, 1 Beat",
+        slug: "envelope-faller-1-beat",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "beats": 1.0,
+                "time": 1.0,
+            },
+            config: {
+                "curve": "0 1 -0.7;1 0 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pump, 1 Beat",
+        slug: "envelope-pump-1-beat",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "beats": 1.0,
+                "time": 1.0,
+            },
+            config: {
+                "curve": "0 0 0.8;1 1 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Sweep, 2 Beats",
+        slug: "envelope-sweep-2-beats",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "beats": 2.0,
+                "time": 1.0,
+            },
+            config: {
+                "curve": "0 0 0.4;0.3 1 -0.6;1 0.2 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Looping Swell, Half Beat",
+        slug: "envelope-looping-swell-half-beat",
+        node_type: "noodle.mod.envelope",
+        values: (
+            params: {
+                "beats": 0.5,
+                "loop": 1.0,
+                "time": 1.0,
+            },
+            config: {
+                "curve": "0 0 0;0.5 1 0;1 0 0",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fast Peak",
+        slug: "envelope-follower-fast-peak",
+        node_type: "noodle.mod.follower",
+        values: (
+            params: {
+                "attack": 0.001,
+                "mode": 0.0,
+                "release": 0.05,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Smooth RMS",
+        slug: "envelope-follower-smooth-rms",
+        node_type: "noodle.mod.follower",
+        values: (
+            params: {
+                "attack": 0.02,
+                "mode": 1.0,
+                "release": 0.25,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Glide",
+        slug: "lag-glide",
+        node_type: "noodle.mod.lag",
+        values: (
+            params: {
+                "fall": 0.08,
+                "rise": 0.08,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slow Rise, Fast Fall",
+        slug: "lag-slow-rise-fast-fall",
+        node_type: "noodle.mod.lag",
+        values: (
+            params: {
+                "fall": 0.05,
+                "rise": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slew Smoother",
+        slug: "lag-slew-smoother",
+        node_type: "noodle.mod.lag",
+        values: (
+            params: {
+                "fall": 0.01,
+                "rise": 0.01,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Zero Crossing",
+        slug: "comparator-zero-crossing",
+        node_type: "noodle.mod.comparator",
+        values: (
+            params: {
+                "hysteresis": 0.02,
+                "threshold": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Half Level Gate",
+        slug: "comparator-half-level-gate",
+        node_type: "noodle.mod.comparator",
+        values: (
+            params: {
+                "hysteresis": 0.1,
+                "threshold": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Sample on Trigger",
+        slug: "sample-hold-sample-on-trigger",
+        node_type: "noodle.mod.samplehold",
+        values: (
+            params: {
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Track and Hold",
+        slug: "sample-hold-track-and-hold",
+        node_type: "noodle.mod.samplehold",
+        values: (
+            params: {
+                "mode": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Quarter Notes",
+        slug: "clock-quarter-notes",
+        node_type: "noodle.generator.clock",
+        values: (
+            params: {
+                "rate": 2.0,
+                "width": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eighth Notes, Short",
+        slug: "clock-eighth-notes-short",
+        node_type: "noodle.generator.clock",
+        values: (
+            params: {
+                "rate": 3.0,
+                "width": 0.2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Sixteenth Notes",
+        slug: "clock-sixteenth-notes",
+        node_type: "noodle.generator.clock",
+        values: (
+            params: {
+                "rate": 4.0,
+                "width": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triplet Eighths",
+        slug: "clock-triplet-eighths",
+        node_type: "noodle.generator.clock",
+        values: (
+            params: {
+                "rate": 8.0,
+                "width": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bar",
+        slug: "clock-bar",
+        node_type: "noodle.generator.clock",
+        values: (
+            params: {
+                "rate": 0.0,
+                "width": 0.1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Quarter Notes",
+        slug: "tempo-quarter-notes",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eighth Notes",
+        slug: "tempo-eighth-notes",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Dotted Eighths",
+        slug: "tempo-dotted-eighths",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 14.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bar",
+        slug: "tempo-bar",
+        node_type: "noodle.mod.tempo",
+        values: (
+            params: {
+                "division": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Compressor",
+        slug: "dynamics-compressor",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.01,
+                "knee": 6.0,
+                "makeup": 0.0,
+                "mode": 0.0,
+                "ratio": 4.0,
+                "release": 0.1,
+                "threshold": -18.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Vocal Compressor",
+        slug: "dynamics-vocal-compressor",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.005,
+                "knee": 8.0,
+                "makeup": 4.0,
+                "mode": 0.0,
+                "ratio": 3.0,
+                "release": 0.12,
+                "threshold": -20.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bus Glue",
+        slug: "dynamics-bus-glue",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.03,
+                "knee": 10.0,
+                "makeup": 1.5,
+                "mode": 0.0,
+                "ratio": 2.0,
+                "release": 0.2,
+                "threshold": -14.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Limiter",
+        slug: "dynamics-limiter",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.0005,
+                "knee": 0.0,
+                "makeup": 0.0,
+                "mode": 1.0,
+                "ratio": 100.0,
+                "release": 0.05,
+                "threshold": -1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Gate",
+        slug: "dynamics-gate",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.002,
+                "knee": 0.0,
+                "makeup": 0.0,
+                "mode": 2.0,
+                "ratio": 10.0,
+                "release": 0.1,
+                "threshold": -50.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Drum Gate",
+        slug: "dynamics-drum-gate",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.0005,
+                "knee": 0.0,
+                "makeup": 0.0,
+                "mode": 2.0,
+                "ratio": 10.0,
+                "release": 0.06,
+                "threshold": -40.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Expander",
+        slug: "dynamics-expander",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.01,
+                "knee": 6.0,
+                "makeup": 0.0,
+                "mode": 3.0,
+                "ratio": 2.0,
+                "release": 0.15,
+                "threshold": -45.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "De-noise",
+        slug: "dynamics-de-noise",
+        node_type: "noodle.effect.dynamics",
+        values: (
+            params: {
+                "attack": 0.02,
+                "knee": 12.0,
+                "makeup": 0.0,
+                "mode": 3.0,
+                "ratio": 1.6,
+                "release": 0.3,
+                "threshold": -55.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Warm Overdrive",
+        slug: "distortion-warm-overdrive",
+        node_type: "noodle.effect.distortion",
+        values: (
+            params: {
+                "drive": 10.0,
+                "level": -6.0,
+                "mix": 1.0,
+                "shape": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Hard Fuzz",
+        slug: "distortion-hard-fuzz",
+        node_type: "noodle.effect.distortion",
+        values: (
+            params: {
+                "drive": 28.0,
+                "level": -12.0,
+                "mix": 1.0,
+                "shape": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Wavefolder",
+        slug: "distortion-wavefolder",
+        node_type: "noodle.effect.distortion",
+        values: (
+            params: {
+                "drive": 18.0,
+                "level": -10.0,
+                "mix": 1.0,
+                "shape": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Subtle Grit",
+        slug: "distortion-subtle-grit",
+        node_type: "noodle.effect.distortion",
+        values: (
+            params: {
+                "drive": 6.0,
+                "level": -3.0,
+                "mix": 0.4,
+                "shape": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Lo-fi",
+        slug: "bitcrusher-lo-fi",
+        node_type: "noodle.effect.bitcrusher",
+        values: (
+            params: {
+                "bits": 10.0,
+                "mix": 1.0,
+                "rate": 18000.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "8-bit",
+        slug: "bitcrusher-8-bit",
+        node_type: "noodle.effect.bitcrusher",
+        values: (
+            params: {
+                "bits": 8.0,
+                "mix": 1.0,
+                "rate": 11025.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Crunch",
+        slug: "bitcrusher-crunch",
+        node_type: "noodle.effect.bitcrusher",
+        values: (
+            params: {
+                "bits": 4.0,
+                "mix": 0.6,
+                "rate": 8000.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Classic Chorus",
+        slug: "chorus-classic-chorus",
+        node_type: "noodle.effect.chorus",
+        values: (
+            params: {
+                "delay": 12.0,
+                "depth": 3.0,
+                "feedback": 0.0,
+                "mix": 0.5,
+                "rate": 0.6,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Wide Shimmer",
+        slug: "chorus-wide-shimmer",
+        node_type: "noodle.effect.chorus",
+        values: (
+            params: {
+                "delay": 18.0,
+                "depth": 6.0,
+                "feedback": 0.2,
+                "mix": 0.6,
+                "rate": 0.3,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Flanger",
+        slug: "chorus-flanger",
+        node_type: "noodle.effect.chorus",
+        values: (
+            params: {
+                "delay": 2.0,
+                "depth": 2.0,
+                "feedback": 0.7,
+                "mix": 0.5,
+                "rate": 0.25,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slow Phaser",
+        slug: "phaser-slow-phaser",
+        node_type: "noodle.effect.phaser",
+        values: (
+            params: {
+                "centre": 600.0,
+                "depth": 0.7,
+                "feedback": 0.3,
+                "mix": 0.5,
+                "rate": 0.2,
+                "stages": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Jet Sweep",
+        slug: "phaser-jet-sweep",
+        node_type: "noodle.effect.phaser",
+        values: (
+            params: {
+                "centre": 1200.0,
+                "depth": 1.0,
+                "feedback": 0.7,
+                "mix": 0.6,
+                "rate": 0.08,
+                "stages": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fast Swirl",
+        slug: "phaser-fast-swirl",
+        node_type: "noodle.effect.phaser",
+        values: (
+            params: {
+                "centre": 900.0,
+                "depth": 0.5,
+                "feedback": 0.1,
+                "mix": 0.5,
+                "rate": 3.0,
+                "stages": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Small Room",
+        slug: "reverb-small-room",
+        node_type: "noodle.effect.reverb",
+        values: (
+            params: {
+                "damping": 0.5,
+                "decay": 0.6,
+                "mix": 0.2,
+                "predelay": 0.005,
+                "size": 0.6,
+                "width": 0.8,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Large Hall",
+        slug: "reverb-large-hall",
+        node_type: "noodle.effect.reverb",
+        values: (
+            params: {
+                "damping": 0.4,
+                "decay": 3.5,
+                "mix": 0.3,
+                "predelay": 0.025,
+                "size": 1.2,
+                "width": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Dark Plate",
+        slug: "reverb-dark-plate",
+        node_type: "noodle.effect.reverb",
+        values: (
+            params: {
+                "damping": 0.8,
+                "decay": 2.0,
+                "mix": 0.3,
+                "predelay": 0.01,
+                "size": 0.9,
+                "width": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Endless Wash",
+        slug: "reverb-endless-wash",
+        node_type: "noodle.effect.reverb",
+        values: (
+            params: {
+                "damping": 0.3,
+                "decay": 12.0,
+                "mix": 0.5,
+                "predelay": 0.04,
+                "size": 1.5,
+                "width": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slapback",
+        slug: "delay-slapback",
+        node_type: "noodle.util.delay",
+        values: (
+            params: {
+                "time": 0.09,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eighth at 120 bpm",
+        slug: "delay-eighth-at-120-bpm",
+        node_type: "noodle.util.delay",
+        values: (
+            params: {
+                "time": 0.25,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Quarter at 120 bpm",
+        slug: "delay-quarter-at-120-bpm",
+        node_type: "noodle.util.delay",
+        values: (
+            params: {
+                "time": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Long Echo",
+        slug: "delay-long-echo",
+        node_type: "noodle.util.delay",
+        values: (
+            params: {
+                "time": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Low Cut and Presence",
+        slug: "parametric-eq-low-cut-and-presence",
+        node_type: "noodle.effect.eq",
+        values: (
+            params: {
+                "freq1": 80.0,
+                "freq2": 400.0,
+                "freq3": 3000.0,
+                "freq4": 9000.0,
+                "gain2": 0.0,
+                "gain3": 2.5,
+                "gain4": 1.5,
+                "q1": 0.707,
+                "q3": 0.8,
+                "type1": 3.0,
+                "type2": 0.0,
+                "type3": 0.0,
+                "type4": 2.0,
+            },
+            config: {
+                "bands": 4,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Scoop Mids",
+        slug: "parametric-eq-scoop-mids",
+        node_type: "noodle.effect.eq",
+        values: (
+            params: {
+                "freq1": 100.0,
+                "freq2": 500.0,
+                "freq3": 1600.0,
+                "freq4": 8000.0,
+                "gain1": 2.0,
+                "gain2": -4.0,
+                "gain3": -2.0,
+                "gain4": 2.5,
+                "q2": 0.8,
+                "q3": 0.8,
+                "type1": 1.0,
+                "type2": 0.0,
+                "type3": 0.0,
+                "type4": 2.0,
+            },
+            config: {
+                "bands": 4,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Telephone",
+        slug: "parametric-eq-telephone",
+        node_type: "noodle.effect.eq",
+        values: (
+            params: {
+                "freq1": 400.0,
+                "freq2": 1000.0,
+                "freq3": 2000.0,
+                "freq4": 3500.0,
+                "gain2": 4.0,
+                "gain3": 3.0,
+                "q1": 0.9,
+                "q2": 1.2,
+                "q3": 1.2,
+                "q4": 0.9,
+                "type1": 3.0,
+                "type2": 0.0,
+                "type3": 0.0,
+                "type4": 4.0,
+            },
+            config: {
+                "bands": 4,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Warm and Smooth",
+        slug: "parametric-eq-warm-and-smooth",
+        node_type: "noodle.effect.eq",
+        values: (
+            params: {
+                "freq1": 150.0,
+                "freq2": 350.0,
+                "freq3": 3500.0,
+                "freq4": 12000.0,
+                "gain1": 2.5,
+                "gain2": -1.5,
+                "gain3": -1.5,
+                "q2": 0.8,
+                "q3": 0.8,
+                "q4": 0.707,
+                "type1": 1.0,
+                "type2": 0.0,
+                "type3": 0.0,
+                "type4": 4.0,
+            },
+            config: {
+                "bands": 4,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Up Eighths",
+        slug: "arpeggiator-up-eighths",
+        node_type: "noodle.event.arpeggiator",
+        values: (
+            params: {
+                "gate": 0.6,
+                "octaves": 0.0,
+                "pattern": 0.0,
+                "rate": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Up-Down Sixteenths",
+        slug: "arpeggiator-up-down-sixteenths",
+        node_type: "noodle.event.arpeggiator",
+        values: (
+            params: {
+                "gate": 0.5,
+                "octaves": 1.0,
+                "pattern": 2.0,
+                "rate": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Trance Gate",
+        slug: "arpeggiator-trance-gate",
+        node_type: "noodle.event.arpeggiator",
+        values: (
+            params: {
+                "gate": 0.3,
+                "octaves": 2.0,
+                "pattern": 0.0,
+                "rate": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Swung Random",
+        slug: "arpeggiator-swung-random",
+        node_type: "noodle.event.arpeggiator",
+        values: (
+            params: {
+                "gate": 0.5,
+                "octaves": 1.0,
+                "pattern": 5.0,
+                "rate": 3.0,
+                "swing": 0.4,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Held Down Eighths",
+        slug: "arpeggiator-held-down-eighths",
+        node_type: "noodle.event.arpeggiator",
+        values: (
+            params: {
+                "gate": 0.8,
+                "hold": 1.0,
+                "octaves": 0.0,
+                "pattern": 1.0,
+                "rate": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Keyboard Split at C3",
+        slug: "note-split-keyboard-split-at-c3",
+        node_type: "noodle.event.note_split",
+        values: (
+            params: {
+                "high1": 59.0,
+                "low2": 60.0,
+            },
+            config: {
+                "outputs": 2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Velocity Layers",
+        slug: "note-split-velocity-layers",
+        node_type: "noodle.event.note_split",
+        values: (
+            params: {
+                "vel_high1": 0.6,
+                "vel_low2": 0.6,
+            },
+            config: {
+                "outputs": 2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Layer Up",
+        slug: "note-split-octave-layer-up",
+        node_type: "noodle.event.note_split",
+        values: (
+            params: {
+                "transpose2": 12.0,
+            },
+            config: {
+                "outputs": 2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Low Notes and Rest",
+        slug: "note-split-low-notes-and-rest",
+        node_type: "noodle.event.note_split",
+        values: (
+            params: {
+                "high1": 47.0,
+            },
+            config: {
+                "outputs": 1,
+                "rest": 1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Middle C",
+        slug: "key-middle-c",
+        node_type: "noodle.event.key",
+        values: (
+            params: {
+                "note": 60.0,
+                "velocity": 0.8,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bass C",
+        slug: "key-bass-c",
+        node_type: "noodle.event.key",
+        values: (
+            params: {
+                "note": 36.0,
+                "velocity": 0.9,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Soft High C",
+        slug: "key-soft-high-c",
+        node_type: "noodle.event.key",
+        values: (
+            params: {
+                "note": 84.0,
+                "velocity": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "All Channels",
+        slug: "midi-in-all-channels",
+        node_type: "noodle.event.midi_in",
+        values: (
+            params: {
+                "channel": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Channel 1",
+        slug: "midi-in-channel-1",
+        node_type: "noodle.event.midi_in",
+        values: (
+            params: {
+                "channel": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Channel 10 (Drums)",
+        slug: "midi-in-channel-10-drums",
+        node_type: "noodle.event.midi_in",
+        values: (
+            params: {
+                "channel": 10.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "One-shot",
+        slug: "sampler-one-shot",
+        node_type: "noodle.instrument.sampler",
+        values: (
+            params: {
+                "loop": 0.0,
+                "mode": 0.0,
+                "release": 0.02,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Gated Loop",
+        slug: "sampler-gated-loop",
+        node_type: "noodle.instrument.sampler",
+        values: (
+            params: {
+                "loop": 1.0,
+                "mode": 1.0,
+                "release": 0.15,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pitched Hit",
+        slug: "sampler-pitched-hit",
+        node_type: "noodle.instrument.sampler",
+        values: (
+            params: {
+                "keytrack": 1.0,
+                "mode": 0.0,
+                "release": 0.05,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fixed Pitch Hit",
+        slug: "sampler-fixed-pitch-hit",
+        node_type: "noodle.instrument.sampler",
+        values: (
+            params: {
+                "keytrack": 0.0,
+                "mode": 0.0,
+                "release": 0.05,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Eight Voices",
+        slug: "voices-eight-voices",
+        node_type: "noodle.poly.voices",
+        values: (
+            params: {
+                "steal_fade": 0.005,
+                "tail": 10.0,
+            },
+            config: {
+                "voices": 8,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Four Voices, Quick Steal",
+        slug: "voices-four-voices-quick-steal",
+        node_type: "noodle.poly.voices",
+        values: (
+            params: {
+                "steal_fade": 0.002,
+                "tail": 4.0,
+            },
+            config: {
+                "voices": 4,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Sixteen Voices, Long Tails",
+        slug: "voices-sixteen-voices-long-tails",
+        node_type: "noodle.poly.voices",
+        values: (
+            params: {
+                "steal_fade": 0.01,
+                "tail": 20.0,
+            },
+            config: {
+                "voices": 16,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Unity",
+        slug: "gain-unity",
+        node_type: "noodle.util.gain",
+        values: (
+            params: {
+                "gain": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Minus 6 dB",
+        slug: "gain-minus-6-db",
+        node_type: "noodle.util.gain",
+        values: (
+            params: {
+                "gain": -6.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Headroom, Minus 12 dB",
+        slug: "gain-headroom-minus-12-db",
+        node_type: "noodle.util.gain",
+        values: (
+            params: {
+                "gain": -12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Boost 6 dB",
+        slug: "gain-boost-6-db",
+        node_type: "noodle.util.gain",
+        values: (
+            params: {
+                "gain": 6.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Centre",
+        slug: "pan-centre",
+        node_type: "noodle.util.pan",
+        values: (
+            params: {
+                "pan": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Left",
+        slug: "pan-left",
+        node_type: "noodle.util.pan",
+        values: (
+            params: {
+                "pan": -0.7,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Right",
+        slug: "pan-right",
+        node_type: "noodle.util.pan",
+        values: (
+            params: {
+                "pan": 0.7,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Front Centre",
+        slug: "surround-pan-front-centre",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Behind",
+        slug: "surround-pan-behind",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 180.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Left Surround",
+        slug: "surround-pan-left-surround",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": -110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Right Surround",
+        slug: "surround-pan-right-surround",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "azimuth": 110.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Everywhere",
+        slug: "surround-pan-everywhere",
+        node_type: "noodle.util.surround_pan",
+        values: (
+            params: {
+                "lfe": -12.0,
+                "spread": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Mono",
+        slug: "convert-layout-to-mono",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Mono",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Stereo",
+        slug: "convert-layout-to-stereo",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Stereo",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To Quad",
+        slug: "convert-layout-to-quad",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "Quad",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To 5.1",
+        slug: "convert-layout-to-5-1",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "5.1",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "To 7.1",
+        slug: "convert-layout-to-7-1",
+        node_type: "noodle.util.convert_layout",
+        values: (
+            config: {
+                "layout": "7.1",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Full Level",
+        slug: "vca-full-level",
+        node_type: "noodle.util.vca",
+        values: (
+            params: {
+                "level": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Half Level",
+        slug: "vca-half-level",
+        node_type: "noodle.util.vca",
+        values: (
+            params: {
+                "level": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Quiet Click",
+        slug: "metronome-quiet-click",
+        node_type: "noodle.util.metronome",
+        values: (
+            params: {
+                "accent": 1.0,
+                "level": -18.0,
+                "on": 1.0,
+                "pitch": 1000.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Loud High Click",
+        slug: "metronome-loud-high-click",
+        node_type: "noodle.util.metronome",
+        values: (
+            params: {
+                "accent": 1.0,
+                "level": -6.0,
+                "on": 1.0,
+                "pitch": 2000.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Even Click",
+        slug: "metronome-even-click",
+        node_type: "noodle.util.metronome",
+        values: (
+            params: {
+                "accent": 0.0,
+                "level": -12.0,
+                "on": 1.0,
+                "pitch": 1500.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Scale and Offset",
+        slug: "math-scale-and-offset",
+        node_type: "noodle.util.math",
+        values: (
+            params: {
+                "b": 1.0,
+                "c": 0.0,
+            },
+            config: {
+                "expr": "a * b + c",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Invert",
+        slug: "math-invert",
+        node_type: "noodle.util.math",
+        values: (
+            config: {
+                "expr": "1 - a",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bipolar to Unipolar",
+        slug: "math-bipolar-to-unipolar",
+        node_type: "noodle.util.math",
+        values: (
+            config: {
+                "expr": "a * 0.5 + 0.5",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Crossfade",
+        slug: "math-crossfade",
+        node_type: "noodle.util.math",
+        values: (
+            params: {
+                "c": 0.5,
+            },
+            config: {
+                "expr": "mix(a, b, c)",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Soft Clip",
+        slug: "math-soft-clip",
+        node_type: "noodle.util.math",
+        values: (
+            params: {
+                "b": 2.0,
+            },
+            config: {
+                "expr": "tanh(a * b)",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Rectify",
+        slug: "math-rectify",
+        node_type: "noodle.util.math",
+        values: (
+            config: {
+                "expr": "abs(a)",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Semitones to Ratio",
+        slug: "math-semitones-to-ratio",
+        node_type: "noodle.util.math",
+        values: (
+            config: {
+                "expr": "2 ^ (a / 12)",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Clamp",
+        slug: "math-clamp",
+        node_type: "noodle.util.math",
+        values: (
+            params: {
+                "b": -1.0,
+                "c": 1.0,
+            },
+            config: {
+                "expr": "clamp(a, b, c)",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Unipolar to Bipolar",
+        slug: "remap-unipolar-to-bipolar",
+        node_type: "noodle.util.remap",
+        values: (
+            params: {
+                "in_max": 1.0,
+                "in_min": 0.0,
+                "out_max": 1.0,
+                "out_min": -1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Invert",
+        slug: "remap-invert",
+        node_type: "noodle.util.remap",
+        values: (
+            params: {
+                "in_max": 1.0,
+                "in_min": 0.0,
+                "out_max": 0.0,
+                "out_min": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Cutoff Range",
+        slug: "remap-cutoff-range",
+        node_type: "noodle.util.remap",
+        values: (
+            params: {
+                "in_max": 1.0,
+                "in_min": 0.0,
+                "out_max": 8000.0,
+                "out_min": 200.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Denoise",
+        slug: "spectral-gate-denoise",
+        node_type: "noodle.spectral.gate",
+        values: (
+            params: {
+                "knee": 9.0,
+                "reduction": 30.0,
+                "threshold": -55.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Loudest Partials Only",
+        slug: "spectral-gate-loudest-partials-only",
+        node_type: "noodle.spectral.gate",
+        values: (
+            params: {
+                "knee": 6.0,
+                "reduction": 80.0,
+                "threshold": -25.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Telephone Band",
+        slug: "spectral-filter-telephone-band",
+        node_type: "noodle.spectral.filter",
+        values: (
+            params: {
+                "high": 3400.0,
+                "low": 300.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Notch Out the Mids",
+        slug: "spectral-filter-notch-out-the-mids",
+        node_type: "noodle.spectral.filter",
+        values: (
+            params: {
+                "high": 2500.0,
+                "low": 800.0,
+                "mode": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Low End Only",
+        slug: "spectral-filter-low-end-only",
+        node_type: "noodle.spectral.filter",
+        values: (
+            params: {
+                "high": 250.0,
+                "low": 20.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "One Bin Up",
+        slug: "spectral-shift-one-bin-up",
+        node_type: "noodle.spectral.shift",
+        values: (
+            params: {
+                "shift": 24.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Bell-like",
+        slug: "spectral-shift-bell-like",
+        node_type: "noodle.spectral.shift",
+        values: (
+            params: {
+                "shift": 90.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Down a Little",
+        slug: "spectral-shift-down-a-little",
+        node_type: "noodle.spectral.shift",
+        values: (
+            params: {
+                "shift": -40.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Held",
+        slug: "spectral-freeze-held",
+        node_type: "noodle.spectral.freeze",
+        values: (
+            params: {
+                "freeze": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Live",
+        slug: "spectral-freeze-live",
+        node_type: "noodle.spectral.freeze",
+        values: (
+            params: {
+                "freeze": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Soften",
+        slug: "spectral-blur-soften",
+        node_type: "noodle.spectral.blur",
+        values: (
+            params: {
+                "amount": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Haze",
+        slug: "spectral-blur-haze",
+        node_type: "noodle.spectral.blur",
+        values: (
+            params: {
+                "amount": 0.9,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Wash",
+        slug: "spectral-blur-wash",
+        node_type: "noodle.spectral.blur",
+        values: (
+            params: {
+                "amount": 0.98,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Full Vocode",
+        slug: "cross-full-vocode",
+        node_type: "noodle.spectral.cross",
+        values: (
+            params: {
+                "mix": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Half and Half",
+        slug: "cross-half-and-half",
+        node_type: "noodle.spectral.cross",
+        values: (
+            params: {
+                "mix": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Peak to Minus 1 dB",
+        slug: "normalize-peak-to-minus-1-db",
+        node_type: "noodle.offline.normalize",
+        values: (
+            params: {
+                "level": -1.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Peak to Zero",
+        slug: "normalize-peak-to-zero",
+        node_type: "noodle.offline.normalize",
+        values: (
+            params: {
+                "level": 0.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Loudness to Minus 16 dB RMS",
+        slug: "normalize-loudness-to-minus-16-db-rms",
+        node_type: "noodle.offline.normalize",
+        values: (
+            params: {
+                "level": -16.0,
+                "mode": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Half Speed",
+        slug: "time-stretch-half-speed",
+        node_type: "noodle.offline.time_stretch",
+        values: (
+            params: {
+                "grain": 0.04,
+                "ratio": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Double Speed",
+        slug: "time-stretch-double-speed",
+        node_type: "noodle.offline.time_stretch",
+        values: (
+            params: {
+                "grain": 0.04,
+                "ratio": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Slight Slowdown, Long Grain",
+        slug: "time-stretch-slight-slowdown-long-grain",
+        node_type: "noodle.offline.time_stretch",
+        values: (
+            params: {
+                "grain": 0.08,
+                "ratio": 1.1,
+            },
+        ),
+    )),
+]

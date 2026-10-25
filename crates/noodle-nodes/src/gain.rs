@@ -50,6 +50,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Gain {
+    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
+        noodle_engine::NodeView::Meter
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -79,6 +83,8 @@ impl Node for GainNode {
             outputs,
             event_inputs,
             event_outputs,
+            spectral_inputs,
+            spectral_outputs,
         } = io;
         self.gain.process(
             ctx,
@@ -87,6 +93,8 @@ impl Node for GainNode {
                 outputs: &mut *outputs,
                 event_inputs,
                 event_outputs: &mut *event_outputs,
+                spectral_inputs,
+                spectral_outputs: &mut *spectral_outputs,
             },
         );
         let out = &mut outputs[OUT];
@@ -101,6 +109,10 @@ impl Node for GainNode {
     fn reset(&mut self) {
         self.probe.reset();
         self.gain.reset();
+    }
+
+    fn stopped(&mut self) {
+        self.probe.silence();
     }
 }
 

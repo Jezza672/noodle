@@ -1,0 +1,246 @@
+[
+    Template((
+        name: "Tempo Echo",
+        slug: "tempo-echo",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Tempo Echo"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:division\n3:feedback\n4:wet"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.mod.tempo",
+                params: {"division": 14.0},
+                position: (x: 220.0, y: 130.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.util.math",
+                config: {"expr": "a / 2"},
+                position: (x: 440.0, y: 130.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.mod.lag",
+                params: {"fall": 0.05, "rise": 0.05},
+                position: (x: 550.0, y: 130.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.mix",
+                config: {"inputs": 2},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.util.delay",
+                params: {"time": 0.0},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.util.gain",
+                params: {"gain": -8.0},
+                position: (x: 660.0, y: 260.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.util.mix",
+                params: {"gain2": -6.0},
+                config: {"inputs": 2},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 3, port: "division"),
+            ),
+            (
+                from: (node: 3, port: "time"),
+                to: (node: 4, port: "a"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 6, port: "in1"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 6, port: "in2"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 7, port: "time"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 8, port: "gain"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 8, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 9, port: "gain2"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 9, port: "in1"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 9, port: "in2"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 10, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Dotted Eighth",
+        slug: "tempo-echo-dotted-eighth",
+        topology: "a6904797ce5bc5d7",
+        nodes: [
+            (),
+            (
+                params: {"fall": 0.05, "rise": 0.05},
+            ),
+            (
+                params: {"division": 14.0},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"gain": -8.0},
+            ),
+            (),
+            (
+                params: {"gain2": -6.0},
+                config: {"inputs": 2},
+            ),
+            (
+                config: {"expr": "a / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Eighth Echo",
+        slug: "tempo-echo-eighth-echo",
+        topology: "a6904797ce5bc5d7",
+        nodes: [
+            (),
+            (
+                params: {"fall": 0.05, "rise": 0.05},
+            ),
+            (
+                params: {"division": 3.0},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"gain": -9.0},
+            ),
+            (),
+            (
+                params: {"gain2": -6.0},
+                config: {"inputs": 2},
+            ),
+            (
+                config: {"expr": "a / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Quarter Slap",
+        slug: "tempo-echo-quarter-slap",
+        topology: "a6904797ce5bc5d7",
+        nodes: [
+            (),
+            (
+                params: {"fall": 0.05, "rise": 0.05},
+            ),
+            (
+                params: {"division": 2.0},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"gain": -14.0},
+            ),
+            (),
+            (
+                params: {"gain2": -8.0},
+                config: {"inputs": 2},
+            ),
+            (
+                config: {"expr": "a / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Long Tail",
+        slug: "tempo-echo-long-tail",
+        topology: "a6904797ce5bc5d7",
+        nodes: [
+            (),
+            (
+                params: {"fall": 0.05, "rise": 0.05},
+            ),
+            (
+                params: {"division": 1.0},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"gain": -5.0},
+            ),
+            (),
+            (
+                params: {"gain2": -7.0},
+                config: {"inputs": 2},
+            ),
+            (
+                config: {"expr": "a / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+        ],
+    )),
+]

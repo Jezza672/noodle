@@ -9,19 +9,22 @@
 //! Clicking a key on the keyboard plays it on the clip's track (see
 //! [`Output::audition`]).
 
+mod looping;
 mod notes;
 
 use std::collections::BTreeSet;
 
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
-use noodle_core::{Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, Tick};
+use noodle_core::{
+    Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, TICKS_PER_QUARTER, Tick,
+};
 
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
 use crate::timeline::grid;
 use noodle_core::Command;
 
-const TOOLBAR: f32 = 26.0;
+const TOOLBAR: f32 = crate::toolbar::HEIGHT;
 const RULER: f32 = 18.0;
 const KEYBOARD: f32 = 64.0;
 const VELOCITY: f32 = 56.0;
@@ -60,16 +63,6 @@ struct Drag {
     press: Pos2,
 }
 
-/// The grid step notes snap to, in ticks. 1 is free.
-const STEPS: [(&str, i64); 6] = [
-    ("Beat", 960),
-    ("1/2 beat", 480),
-    ("1/4 beat", 240),
-    ("1/8 beat", 120),
-    ("1/16 beat", 60),
-    ("Off", 1),
-];
-
 pub struct PianoRoll {
     clip: Option<ClipId>,
     /// Points per quarter note.
@@ -82,6 +75,8 @@ pub struct PianoRoll {
     step: i64,
     selected: BTreeSet<u32>,
     drag: Option<Drag>,
+    /// A drag on the loop brace on the ruler.
+    loop_drag: Option<looping::LoopDrag>,
     /// The key being auditioned from the keyboard.
     sounding: Option<u8>,
     /// A key that was down when the roll closed, still to be let go.
@@ -107,7 +102,7 @@ pub struct Geometry {
 #[cfg(test)]
 impl Geometry {
     pub fn x(&self, tick: i64) -> f32 {
-        self.origin + tick as f32 / 960.0 * self.ppq
+        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
     }
 
     /// The vertical centre of `key`'s row.
@@ -127,6 +122,7 @@ impl Default for PianoRoll {
             step: 240,
             selected: BTreeSet::new(),
             drag: None,
+            loop_drag: None,
             sounding: None,
             release: None,
             last_length: None,
@@ -233,11 +229,11 @@ struct Axes {
 
 impl Axes {
     fn x(self, tick: i64) -> f32 {
-        self.origin + tick as f32 / 960.0 * self.ppq
+        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
     }
 
     fn tick(self, x: f32) -> i64 {
-        ((x - self.origin) / self.ppq * 960.0).round() as i64
+        ((x - self.origin) / self.ppq * TICKS_PER_QUARTER as f32).round() as i64
     }
 
     fn y_top(self, key: u8) -> f32 {
@@ -294,32 +290,17 @@ pub fn show(
 
     // The toolbar.
     let toolbar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR));
-    let mut closed = false;
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(toolbar.shrink2(vec2(8.0, 2.0))),
+    // The snap is the app-wide setting, in the menu bar.
+    state.step = session.snap();
+    let closed = crate::toolbar::show(
+        ui,
+        toolbar,
+        &format!("Piano roll · {id}"),
+        "Drag to draw · Alt: no snap · Delete removes",
         |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.label(format!("Piano roll · {id}"));
-                ui.separator();
-                let label = STEPS
-                    .iter()
-                    .find(|(_, step)| *step == state.step)
-                    .map_or("Grid", |(name, _)| *name);
-                egui::ComboBox::from_id_salt("piano roll grid")
-                    .selected_text(format!("Grid: {label}"))
-                    .show_ui(ui, |ui| {
-                        for (name, step) in STEPS {
-                            ui.selectable_value(&mut state.step, step, name);
-                        }
-                    });
-                ui.add_space(8.0);
-                ui.weak("Drag to draw · Alt: no snap · Delete removes");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        closed = true;
-                    }
-                });
-            });
+            ui.label(format!("Snap: {}", crate::snap::label(state.step)));
+            ui.separator();
+            looping::controls(ui, &mut out, id, clip, midi);
         },
     );
     if closed {
@@ -350,7 +331,7 @@ pub fn show(
 
     if state.focus {
         state.focus = false;
-        let beats = (length as f32 / 960.0).max(1.0);
+        let beats = (length as f32 / TICKS_PER_QUARTER as f32).max(1.0);
         state.ppq = ((grid_rect.width() - 24.0) / beats).clamp(MIN_PPQ, MAX_PPQ);
         state.scroll_x = 0.0;
         let middle = match (
@@ -397,7 +378,7 @@ pub fn show(
         Sense::click_and_drag(),
     );
     let free = ui.input(|i| i.modifiers.alt);
-    let snap = |tick: i64| notes::snap(tick, if free { 1 } else { state.step });
+    let snap = |tick: i64| notes::snap(map, clip.start, tick, if free { 1 } else { state.step });
     let min_length = if free { 1 } else { state.step.max(1) };
     let shift = ui.input(|i| i.modifiers.shift);
     let mut hit_note = false;
@@ -554,6 +535,20 @@ pub fn show(
     }
 
     draw_notes(ui, axes, midi, &state.selected);
+    looping::draw_repeats(ui, axes, midi);
+    looping::draw_lines(ui, axes, midi);
+    let step = if free { 1 } else { state.step };
+    looping::brace(
+        ui,
+        state,
+        &mut out,
+        id,
+        clip,
+        midi,
+        ruler_rect,
+        axes,
+        &|t| notes::snap(map, clip.start, t, step),
+    );
 
     // The velocity lane, with a bar per note.
     draw_velocity(ui, state, &mut out, id, clip, midi, velocity_rect, axes);
@@ -671,7 +666,7 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
         state.scroll_x -= scroll.x;
         state.scroll_y -= scroll.y;
     }
-    let width = length as f32 / 960.0 * state.ppq;
+    let width = length as f32 / TICKS_PER_QUARTER as f32 * state.ppq;
     state.scroll_x = state
         .scroll_x
         .clamp(0.0, (width - grid.width() * 0.5).max(0.0));

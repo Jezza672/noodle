@@ -10,19 +10,31 @@ mod edit;
 mod frame;
 mod graph;
 pub mod group;
+pub mod library;
 mod project;
 pub mod spare;
 mod timeline;
+mod warp;
 
 pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};
 pub use cache_key::{CacheKey, KeyBuilder};
-pub use clip::{AudioClip, Clip, ClipContent, ClipId, MidiClip, MidiNote};
+pub use clip::{
+    AudioClip, BUTT_SECONDS, Clip, ClipContent, ClipId, Crossfade, GAIN_POINT_MAX_DB,
+    GAIN_POINT_MIN_DB, GainPoint, MIN_LOOP_LEN, MidiClip, MidiNote, gain_points_from_text,
+    gain_points_to_text,
+};
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
-pub use project::{LoadError, Project};
+pub use project::{LoadError, Project, TransportLoop};
 pub use timeline::{
     MusicalPosition, SignatureChange, TICKS_PER_QUARTER, TempoChange, TempoMap, TempoMapError,
     Tick, TimeSignature,
+};
+pub use warp::{
+    ClipWarp, ENGINE_MAX_SPEED, GROOVE_SLOT, GROOVE_SLOTS, Groove, LoopRegion, MAX_CLIP_BPM,
+    MAX_GRID_OFFSET, MAX_WARP_SPEED, MIN_CLIP_BPM, MIN_LOOP_BEATS, MIN_LOOP_SECONDS,
+    MIN_WARP_SPEED, PiecewiseLinear, QUANTISE_GRIDS, TempoCurve, TempoPoint, WarpAxis, WarpCurve,
+    WarpId, WarpMarker, WarpMode, WarpQuantise,
 };

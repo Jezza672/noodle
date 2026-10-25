@@ -64,6 +64,21 @@ pub struct Node {
     /// Ports it doesn't name go last, in their own order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub port_order: Vec<String>,
+    /// Parameters the user chose to show on the node in the graph (`true`)
+    /// or hide (`false`), by port key. A parameter not listed follows the
+    /// node type's own default. Display only, and a parameter with a wire or
+    /// a lane is shown whatever this says.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub param_shown: BTreeMap<String, bool>,
+    /// The library template this group was made from, by entry ID (see
+    /// [`library`](crate::library)). It's a copy, not a link: the template
+    /// changing never changes this group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// The library preset last applied to this node or group, by entry ID,
+    /// so the editor can say whether it has been edited since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 impl PartialEq for Node {
@@ -73,6 +88,9 @@ impl PartialEq for Node {
             && self.config == other.config
             && self.position == other.position
             && self.port_order == other.port_order
+            && self.param_shown == other.param_shown
+            && self.template == other.template
+            && self.preset == other.preset
             && self.params.len() == other.params.len()
             && self
                 .params
@@ -91,6 +109,9 @@ impl Node {
             position: Position::default(),
             parent: None,
             port_order: Vec::new(),
+            param_shown: BTreeMap::new(),
+            template: None,
+            preset: None,
         }
     }
 

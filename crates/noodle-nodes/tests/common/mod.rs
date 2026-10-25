@@ -30,10 +30,13 @@ pub struct Rig {
     pub problems: Vec<ClipProblem>,
     /// The loop in samples, handed to the node with every block.
     pub looping: Option<(u64, u64)>,
+    /// The track's mute input, as a parameter would give it.
+    muted: bool,
     /// The node waits for the hub (see [`ClipFeeds::blocking`]), so there is
     /// nothing to wait out.
     blocking: bool,
     out: SignalBuffer,
+    mute_in: SignalBuffer,
     midi: Vec<noodle_engine::Event>,
 }
 
@@ -51,7 +54,19 @@ impl Rig {
         rig
     }
 
+    /// A rig whose track input plays the live MIDI sent on `bus` while its
+    /// track is monitored.
+    pub fn monitored(name: &str, bus: &noodle_io::MidiBus) -> Self {
+        let mut rig = Self::build(name, ClipFeeds::blocking(), Some(bus));
+        rig.blocking = true;
+        rig
+    }
+
     pub fn with_feeds(name: &str, feeds: ClipFeeds) -> Self {
+        Self::build(name, feeds, None)
+    }
+
+    fn build(name: &str, feeds: ClipFeeds, bus: Option<&noodle_io::MidiBus>) -> Self {
         let dir = std::env::temp_dir().join(format!("noodle-track-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         let mut project = Project::new();
@@ -66,7 +81,10 @@ impl Rig {
                 },
             )
             .unwrap();
-        let node_type = TrackInput::new(&feeds);
+        let node_type = match bus {
+            Some(bus) => TrackInput::with_midi(&feeds, bus),
+            None => TrackInput::new(&feeds),
+        };
         let config = Config::new();
         let instance = node_type
             .instantiate(&Setup {
@@ -92,8 +110,10 @@ impl Rig {
             dir,
             problems: Vec::new(),
             looping: None,
+            muted: false,
             blocking: false,
             out: SignalBuffer::new(Shape::STEREO, BLOCK),
+            mute_in: SignalBuffer::new(Shape::MONO, BLOCK),
             midi: Vec::with_capacity(16),
         }
     }
@@ -175,6 +195,22 @@ impl Rig {
         self.update();
     }
 
+    /// Changes how a clip is warped and feeds the result to the node.
+    pub fn warp_clip(&mut self, id: ClipId, change: impl FnOnce(&mut noodle_core::ClipWarp)) {
+        let command = self.project.warp_edit(id, change).unwrap();
+        self.history.apply(&mut self.project, command).unwrap();
+        self.update();
+    }
+
+    /// Mutes or unmutes the track from the next block, by the mute input.
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        self.mute_in
+            .as_out(BLOCK)
+            .lane_mut(0, 0)
+            .fill(f32::from(u8::from(muted)));
+    }
+
     /// Waits for the hub to hand the node the schedule from the last update.
     /// The hub is a background thread, so a loaded CI machine (macOS runners
     /// in particular) can take much longer than a quiet one.
@@ -218,15 +254,26 @@ impl Rig {
         };
         let mut outputs = [self.out.as_out(frames)];
         let mut events = [EventsOut::new(&mut self.midi)];
+        let muted = [self.mute_in.as_in(frames)];
         self.node.process(
             &ctx,
             Io {
-                inputs: &[],
+                inputs: if self.muted { &muted } else { &[] },
                 outputs: &mut outputs,
                 event_inputs: &[],
                 event_outputs: &mut events,
+                spectral_inputs: &[],
+                spectral_outputs: &mut [],
             },
         );
+    }
+
+    /// The loudest sample of the last block run.
+    pub fn output_peak(&self) -> f32 {
+        let out = self.out.as_in(BLOCK);
+        (0..2)
+            .flat_map(|c| out.lane(0, c).iter().copied())
+            .fold(0.0, |m, x: f32| m.max(x.abs()))
     }
 
     /// Plays from `from` to `to` in blocks and returns the whole output.
@@ -245,10 +292,45 @@ impl Rig {
         (left, right)
     }
 
+    /// Like [`play`](Self::play), but each block takes as long as the audio
+    /// callback would have, for tests of the live path (a worker that renders
+    /// ahead is not outrun by a test that runs several times faster than the
+    /// sound, however slowly the machine schedules its threads).
+    pub fn play_realtime(&mut self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut at = from;
+        while at < to {
+            let n = BLOCK.min((to - at) as usize);
+            let (l, r) = self.run(at, n, true);
+            left.extend(l);
+            right.extend(r);
+            at += n as u64;
+            std::thread::sleep(Duration::from_secs_f64(n as f64 / f64::from(RATE)));
+        }
+        (left, right)
+    }
+
     /// Plays from `from` for `frames` frames, wrapping at the end of the loop
     /// the way the engine does (a block never crosses it), and returns the
     /// whole output.
     pub fn play_looping(&mut self, from: u64, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        self.looping_at_speed(from, frames, None)
+    }
+
+    /// Like [`play_looping`](Self::play_looping), but each block takes as long
+    /// as the audio callback would have: a worker that renders ahead is not
+    /// outrun by a test that runs ten times faster than the sound, however
+    /// slowly the machine schedules its threads.
+    pub fn play_looping_realtime(&mut self, from: u64, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        self.looping_at_speed(from, frames, Some(48_000.0))
+    }
+
+    fn looping_at_speed(
+        &mut self,
+        from: u64,
+        frames: usize,
+        rate: Option<f64>,
+    ) -> (Vec<f32>, Vec<f32>) {
         let (start, end) = self.looping.expect("set `looping` first");
         let (mut left, mut right) = (Vec::new(), Vec::new());
         let mut at = from;
@@ -261,7 +343,10 @@ impl Rig {
             if at == end {
                 at = start;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(match rate {
+                Some(rate) => Duration::from_secs_f64(n as f64 / rate),
+                None => Duration::from_millis(1),
+            });
         }
         (left, right)
     }
@@ -278,8 +363,11 @@ impl Rig {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        // Give the stream's worker a moment to fill its queue.
-        std::thread::sleep(Duration::from_millis(100));
+        // Give the stream's worker a moment to fill its queue. A blocking
+        // node waits for it itself.
+        if !self.blocking {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         self.run(position, BLOCK, false);
     }
 }

@@ -1,0 +1,357 @@
+[
+    Template((
+        name: "Poly Synth",
+        slug: "poly-synth",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Poly Synth"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:pitch\n2:gate\n3:velocity\n4:fade\n5:cutoff\n6:resonance\n7:amount\n8:detune\n9:attack\n10:release"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.util.mix",
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+                position: (x: 1100.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.util.math",
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.osc.saw",
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.pan",
+                params: {"pan": -0.3},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.util.math",
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+                position: (x: 440.0, y: 156.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.osc.saw",
+                position: (x: 660.0, y: 156.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.3},
+                position: (x: 880.0, y: 156.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
+                position: (x: 1100.0, y: 260.0),
+                parent: Some(1),
+            ),
+            11: (
+                type: "noodle.util.math",
+                params: {"b": 0.35},
+                config: {"expr": "a * b + c"},
+                position: (x: 1320.0, y: 260.0),
+                parent: Some(1),
+            ),
+            12: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 700.0, "resonance": 0.2},
+                position: (x: 1540.0, y: 0.0),
+                parent: Some(1),
+            ),
+            13: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.002, "decay": 0.28, "release": 0.15, "sustain": 0.0},
+                position: (x: 1100.0, y: 520.0),
+                parent: Some(1),
+            ),
+            14: (
+                type: "noodle.util.vca",
+                position: (x: 1760.0, y: 0.0),
+                parent: Some(1),
+            ),
+            15: (
+                type: "noodle.util.vca",
+                position: (x: 1980.0, y: 0.0),
+                parent: Some(1),
+            ),
+            16: (
+                type: "noodle.util.vca",
+                position: (x: 2200.0, y: 0.0),
+                parent: Some(1),
+            ),
+            17: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:active"},
+                position: (x: 2450.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 3, port: "in1"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 3, port: "in2"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 4, port: "a"),
+            ),
+            (
+                from: (node: 2, port: "p8"),
+                to: (node: 4, port: "b"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "frequency"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 7, port: "a"),
+            ),
+            (
+                from: (node: 2, port: "p8"),
+                to: (node: 7, port: "b"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 8, port: "frequency"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 9, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 10, port: "gate"),
+            ),
+            (
+                from: (node: 10, port: "out"),
+                to: (node: 11, port: "a"),
+            ),
+            (
+                from: (node: 2, port: "p7"),
+                to: (node: 11, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 11, port: "c"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 12, port: "cutoff"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 12, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 12, port: "resonance"),
+            ),
+            (
+                from: (node: 2, port: "p9"),
+                to: (node: 13, port: "attack"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 13, port: "gate"),
+            ),
+            (
+                from: (node: 2, port: "p10"),
+                to: (node: 13, port: "release"),
+            ),
+            (
+                from: (node: 12, port: "low"),
+                to: (node: 14, port: "in"),
+            ),
+            (
+                from: (node: 13, port: "out"),
+                to: (node: 14, port: "level"),
+            ),
+            (
+                from: (node: 14, port: "out"),
+                to: (node: 15, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 15, port: "level"),
+            ),
+            (
+                from: (node: 15, port: "out"),
+                to: (node: 16, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 16, port: "level"),
+            ),
+            (
+                from: (node: 16, port: "out"),
+                to: (node: 17, port: "p1"),
+            ),
+            (
+                from: (node: 13, port: "active"),
+                to: (node: 17, port: "p2"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Pluck",
+        slug: "poly-synth-pluck",
+        topology: "da5b34bf35fd64b7",
+        nodes: [
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+            ),
+            (
+                params: {"attack": 0.002, "decay": 0.28, "release": 0.15, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.3},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 700.0, "resonance": 0.2},
+            ),
+            (),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
+            ),
+            (
+                params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
+            ),
+            (
+                params: {"b": 0.35},
+                config: {"expr": "a * b + c"},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Short Pluck",
+        slug: "poly-synth-short-pluck",
+        topology: "da5b34bf35fd64b7",
+        nodes: [
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+            ),
+            (
+                params: {"attack": 0.002, "decay": 0.14, "release": 0.1, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.3},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 1400.0, "resonance": 0.2},
+            ),
+            (),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
+            ),
+            (
+                params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
+            ),
+            (
+                params: {"b": 0.4},
+                config: {"expr": "a * b + c"},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Soft Keys",
+        slug: "poly-synth-soft-keys",
+        topology: "da5b34bf35fd64b7",
+        nodes: [
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * 1 / 1200)"},
+            ),
+            (
+                params: {"attack": 0.002, "decay": 0.6, "release": 0.3, "sustain": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.3},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 900.0, "resonance": 0.2},
+            ),
+            (),
+            (
+                params: {"b": 7.0},
+                config: {"expr": "a * 1 * pow(2, b * -1 / 1200)"},
+            ),
+            (
+                params: {"attack": 0.002, "decay": 0.15, "release": 0.1, "sustain": 0.0},
+            ),
+            (
+                params: {"b": 0.2},
+                config: {"expr": "a * b + c"},
+            ),
+        ],
+    )),
+]

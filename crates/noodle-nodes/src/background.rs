@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use noodle_core::{CacheKey, Project};
 use noodle_engine::{
-    Diagnostic, Job, Progress, Registry, Settings, StreamError, TempoTable,
-    render_project_streaming,
+    Diagnostic, Job, Profile, Progress, Registry, RenderError, Settings, StreamError, TempoTable,
+    profile_project, render_project_streaming,
 };
 use noodle_io::{CacheInfo, CacheStore};
 
@@ -70,6 +70,7 @@ pub fn render_streaming<E>(
 ) -> Result<RenderReport, StreamError<E>> {
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
+    library.samples.set_dir(request.base.join("samples"));
     if let Some(extend) = &request.extend_registry {
         extend(&mut registry);
     }
@@ -94,6 +95,43 @@ pub fn render_streaming<E>(
         underruns: library.clips.underruns(),
         errors: library.clips.errors(),
     })
+}
+
+/// Profiles `request`: renders it as fast as it will go, with `workers`
+/// helper threads, and reports where the time went (see
+/// [`noodle_engine::profile_project`]). Clips play from disk as in a render.
+pub fn profile(
+    request: &RenderRequest,
+    workers: usize,
+    always: bool,
+) -> Result<(Profile, RenderReport), RenderError> {
+    let mut registry = Registry::with_builtins();
+    let library = register_library_blocking(&mut registry);
+    library.samples.set_dir(request.base.join("samples"));
+    if let Some(extend) = &request.extend_registry {
+        extend(&mut registry);
+    }
+    let settings = request.settings;
+    let rate = settings.sample_rate.round() as u32;
+    let table = TempoTable::new(request.project.tempo_map(), settings.sample_rate);
+    let problems = library
+        .clips
+        .update(&request.project, &table, rate, &request.base);
+    let profile = profile_project(
+        &request.project,
+        &registry,
+        settings,
+        request.frames,
+        workers,
+        always,
+    )?;
+    let report = RenderReport {
+        diagnostics: profile.diagnostics.clone(),
+        problems,
+        underruns: library.clips.underruns(),
+        errors: library.clips.errors(),
+    };
+    Ok((profile, report))
 }
 
 /// Starts [`render_streaming`] on a background thread.

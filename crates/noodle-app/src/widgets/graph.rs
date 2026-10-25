@@ -21,7 +21,9 @@ use egui::{
     Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 use noodle_core::{Command, NodeId};
-use noodle_nodes::{ADSR_ID, AdsrShape, LADDER_ID, LFO_ID, SVF_ID, lfo_wave};
+use noodle_nodes::{AdsrShape, lfo_wave};
+
+use super::mixing_graph;
 
 use crate::session::Edit;
 use crate::theme::{self, editor as colors};
@@ -56,25 +58,32 @@ pub enum Kind {
     Svf,
     Ladder,
     Lfo,
+    Dynamics,
+    Eq,
 }
 
 impl Kind {
-    pub fn of(type_id: &str) -> Option<Self> {
-        match type_id {
-            ADSR_ID => Some(Self::Adsr),
-            SVF_ID => Some(Self::Svf),
-            LADDER_ID => Some(Self::Ladder),
-            LFO_ID => Some(Self::Lfo),
-            _ => None,
-        }
-    }
-
     /// What the graph is called, for screen readers and tests.
     pub fn label(self) -> &'static str {
         match self {
             Self::Adsr => "Envelope graph",
-            Self::Svf | Self::Ladder => "Frequency response graph",
+            Self::Svf | Self::Ladder | Self::Eq => "Frequency response graph",
+            Self::Dynamics => "Dynamics graph",
             Self::Lfo => "Wave graph",
+        }
+    }
+}
+
+impl From<noodle_engine::GraphKind> for Kind {
+    fn from(kind: noodle_engine::GraphKind) -> Self {
+        use noodle_engine::GraphKind;
+        match kind {
+            GraphKind::Adsr => Self::Adsr,
+            GraphKind::Svf => Self::Svf,
+            GraphKind::Ladder => Self::Ladder,
+            GraphKind::Lfo => Self::Lfo,
+            GraphKind::Dynamics => Self::Dynamics,
+            GraphKind::Eq => Self::Eq,
         }
     }
 }
@@ -83,15 +92,32 @@ impl Kind {
 pub type Values<'a> = &'a dyn Fn(&str) -> f32;
 
 /// A point in a plot: both from 0 to 1, with y up.
-type P = (f32, f32);
+pub(super) type P = (f32, f32);
 
 /// How the ADSR's time axis is laid out, in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct AdsrLayout {
+pub(super) struct AdsrLayout {
     /// The time the plot's full width stands for.
-    span: f32,
+    pub(super) span: f32,
     /// How long the held level is drawn between the decay and the release.
-    hold: f32,
+    pub(super) hold: f32,
+    /// How many dB of gain reduction the Dynamics step response covers
+    /// (unused by the ADSR).
+    pub(super) depth: f32,
+}
+
+impl AdsrLayout {
+    /// Whether this layout, drawn before, still suits `fit`, the layout the
+    /// values ask for now: what the values need fits (the fit has room to
+    /// spare, so a little growth is still inside the plot) and nothing has
+    /// shrunk to under a quarter of the axis. Keeping it stops the plot
+    /// rescaling as values are edited.
+    pub(super) fn keeps(&self, fit: AdsrLayout) -> bool {
+        let holds = |have: f32, want: f32, grow: f32| have * grow >= want && want >= have / 4.0;
+        holds(self.span, fit.span, 1.3)
+            && holds(self.hold, fit.hold, 2.0)
+            && holds(self.depth, fit.depth, 1.3)
+    }
 }
 
 /// Fits the whole envelope, with a little sustain and some room to grow.
@@ -101,6 +127,37 @@ fn adsr_layout(values: Values<'_>) -> AdsrLayout {
     AdsrLayout {
         span: (a + d + hold + r) * 1.2,
         hold,
+        depth: 0.0,
+    }
+}
+
+/// The time axis for the graph of `kind`.
+fn layout_for(kind: Kind, values: Values<'_>) -> AdsrLayout {
+    match kind {
+        Kind::Dynamics => mixing_graph::dynamics_layout(values),
+        _ => adsr_layout(values),
+    }
+}
+
+/// The values the graphs read that are not parameters: `bands`, the EQ's band
+/// count (config), and `@level` and `@reduction`, what a Dynamics node is
+/// doing now (NaN when it hasn't reported). `live` reads a telemetry channel
+/// of the node.
+pub fn special_value(
+    key: &str,
+    node: &noodle_core::Node,
+    live: &dyn Fn(&str) -> Option<f32>,
+) -> Option<f32> {
+    match key {
+        "bands" => Some(
+            node.config
+                .get("bands")
+                .and_then(noodle_core::Value::as_int)
+                .unwrap_or(4) as f32,
+        ),
+        "@level" => Some(live("level").unwrap_or(f32::NAN)),
+        "@reduction" => Some(live("reduction").unwrap_or(0.0)),
+        _ => None,
     }
 }
 
@@ -120,7 +177,7 @@ fn lfo_y(offset: f32, depth: f32, wave: f32) -> f32 {
 }
 
 /// "100 Hz", "2.5 kHz".
-fn hz_text(hz: f32) -> String {
+pub(super) fn hz_text(hz: f32) -> String {
     if hz >= 1_000.0 {
         format!("{} kHz", (hz / 10.0).round() / 100.0)
     } else {
@@ -129,7 +186,7 @@ fn hz_text(hz: f32) -> String {
 }
 
 /// "0", "250 ms", "1.5 s".
-fn seconds_text(seconds: f32) -> String {
+pub(super) fn seconds_text(seconds: f32) -> String {
     if seconds == 0.0 {
         "0".to_owned()
     } else if seconds < 1.0 {
@@ -140,11 +197,11 @@ fn seconds_text(seconds: f32) -> String {
 }
 
 /// How far along a log axis `hz` is.
-fn hz_to_x(hz: f32) -> f32 {
+pub(super) fn hz_to_x(hz: f32) -> f32 {
     ((hz / HZ_RANGE.0).ln() / (HZ_RANGE.1 / HZ_RANGE.0).ln()).clamp(0.0, 1.0)
 }
 
-fn x_to_hz(x: f32) -> f32 {
+pub(super) fn x_to_hz(x: f32) -> f32 {
     HZ_RANGE.0 * (HZ_RANGE.1 / HZ_RANGE.0).powf(x.clamp(0.0, 1.0))
 }
 
@@ -195,13 +252,13 @@ fn resonance_for(kind: Kind, cutoff: f32, db: f32) -> f32 {
 
 /// A point on a graph that sets parameters when dragged.
 #[derive(Clone, Debug, PartialEq)]
-struct Handle {
-    at: P,
+pub(super) struct Handle {
+    pub(super) at: P,
     /// The parameters it sets: the first moves with x, the second with y. It
     /// moves along whichever of them are free to change.
-    keys: &'static [&'static str],
+    pub(super) keys: &'static [&'static str],
     /// What to call it.
-    name: &'static str,
+    pub(super) name: &'static str,
 }
 
 fn handles(kind: Kind, values: Values<'_>, layout: AdsrLayout) -> Vec<Handle> {
@@ -242,6 +299,8 @@ fn handles(kind: Kind, values: Values<'_>, layout: AdsrLayout) -> Vec<Handle> {
             }]
         }
         Kind::Lfo => Vec::new(),
+        Kind::Dynamics => mixing_graph::dynamics_handles(values, layout),
+        Kind::Eq => mixing_graph::eq_handles(values),
     }
 }
 
@@ -284,6 +343,14 @@ fn dragged(
             let resonance = resonance_for(kind, cutoff, y_to_db(at.1.clamp(0.0, 1.0)));
             vec![("cutoff", cutoff), clamped("resonance", resonance)]
         }
+        (Kind::Dynamics, _) => mixing_graph::dynamics_dragged(which, at, layout, values)
+            .into_iter()
+            .map(|(key, value)| clamped(key, value))
+            .collect(),
+        (Kind::Eq, _) => mixing_graph::eq_dragged(which, at, values)
+            .into_iter()
+            .map(|(key, value)| clamped(key, value))
+            .collect(),
         _ => Vec::new(),
     };
     out.into_iter()
@@ -295,12 +362,12 @@ fn dragged(
 pub fn paint(painter: &Painter, area: Rect, kind: Kind, zoom: f32, values: Values<'_>) {
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
     let plot = area.shrink(3.0 * zoom);
-    let layout = adsr_layout(values);
+    let layout = layout_for(kind, values);
     plot_contents(painter, plot, kind, values, layout, zoom.max(0.5), false);
 }
 
 /// Where a point of the plot is, in `rect`.
-fn to_screen(rect: Rect, (x, y): P) -> Pos2 {
+pub(super) fn to_screen(rect: Rect, (x, y): P) -> Pos2 {
     pos2(
         rect.left() + x * rect.width(),
         rect.bottom() - y * rect.height(),
@@ -469,6 +536,13 @@ fn plot_contents(
                 );
             }
         }
+        Kind::Dynamics => {
+            mixing_graph::paint_dynamics(&painter, rect, values, layout, scale, full);
+            return;
+        }
+        Kind::Eq => {
+            mixing_graph::paint_eq(&painter, rect, values, scale, full);
+        }
         Kind::Lfo => {
             // Two cycles, from the wave's phase.
             const CYCLES: f32 = 2.0;
@@ -592,11 +666,19 @@ impl<'a> GraphEditor<'a> {
             )
         };
         let mut edits = Vec::new();
-        let mut layout = adsr_layout(self.values);
+        let mut layout = layout_for(self.kind, self.values);
         let held = ui.data(|d| d.get_temp::<Option<Drag>>(drag_id)).flatten();
+        let shown_id = id.with("layout");
+        if self.kind == Kind::Dynamics
+            && let Some(shown) = ui.data(|d| d.get_temp::<AdsrLayout>(shown_id))
+            && shown.keeps(layout)
+        {
+            layout = shown;
+        }
         if let Some(drag) = held {
             layout = drag.layout;
         }
+        ui.data_mut(|d| d.insert_temp(shown_id, layout));
         let points = handles(self.kind, self.values, layout);
         let free = |h: &Handle| h.keys.iter().any(|key| (self.editable)(key));
         let nearest = |at: Pos2| {
@@ -852,15 +934,6 @@ mod tests {
         let low = noodle_nodes::svf_response(1_000.0, 0.8, 1_000.0, SAMPLE_RATE)[0];
         assert!((svf.at.1 - gain_to_y(low)).abs() < 1e-6);
         assert!((svf.at.0 - hz_to_x(1_000.0)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn only_these_node_types_have_graphs() {
-        assert_eq!(Kind::of("noodle.mod.adsr"), Some(Kind::Adsr));
-        assert_eq!(Kind::of("noodle.filter.svf"), Some(Kind::Svf));
-        assert_eq!(Kind::of("noodle.filter.ladder"), Some(Kind::Ladder));
-        assert_eq!(Kind::of("noodle.mod.lfo"), Some(Kind::Lfo));
-        assert_eq!(Kind::of("noodle.util.gain"), None);
     }
 
     #[test]

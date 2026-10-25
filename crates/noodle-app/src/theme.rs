@@ -18,6 +18,8 @@ pub const SELECTED: Color32 = Color32::from_rgb(60, 90, 168);
 /// Mute, solo and record.
 pub const MUTE: Color32 = Color32::from_rgb(255, 122, 107);
 pub const RECORD: Color32 = Color32::from_rgb(255, 90, 79);
+/// The audio engine running on something other than what was chosen.
+pub const WARNING: Color32 = Color32::from_rgb(240, 160, 64);
 /// Corner radius for panels, buttons and nodes.
 pub const RADIUS: u8 = 8;
 /// Corner radius of a node.
@@ -33,12 +35,17 @@ pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
 pub const PROPERTIES_WIDTH: f32 = 260.0;
 
 pub fn apply(ctx: &egui::Context) {
-    ctx.set_visuals(visuals());
-    ctx.global_style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 5.0);
-        style.spacing.button_padding = egui::vec2(8.0, 3.0);
-        style.spacing.interact_size.y = 22.0;
-    });
+    // The app is dark whatever the system is: without this a system in light
+    // mode leaves the light theme's own style on every widget that reads it.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.set_visuals_of(theme, visuals());
+        ctx.style_mut_of(theme, |style| {
+            style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+            style.spacing.button_padding = egui::vec2(8.0, 3.0);
+            style.spacing.interact_size.y = 22.0;
+        });
+    }
 }
 
 pub fn visuals() -> Visuals {
@@ -94,6 +101,8 @@ pub mod editor {
     /// A selected node's outline: the accent.
     pub const SELECTED: Color32 = Color32::from_rgb(200, 241, 105);
     /// The active node's outline: the one the properties panel shows.
+    /// The outline of the node under the pointer.
+    pub const HOVERED: Color32 = Color32::from_rgb(120, 140, 180);
     pub const ACTIVE: Color32 = Color32::from_rgb(255, 255, 255);
     pub const PROBLEM: Color32 = Color32::from_rgb(255, 90, 79);
     /// A node using a fair share of the audio thread's time.
@@ -104,9 +113,13 @@ pub mod editor {
     /// Wires to and from selected nodes.
     pub const WIRE_SELECTED: Color32 = Color32::from_rgb(200, 241, 105);
     pub const EVENT_WIRE: Color32 = Color32::from_rgb(240, 160, 64);
+    pub const SPECTRAL_WIRE: Color32 = Color32::from_rgb(176, 124, 255);
     pub const AUDIO_SOCKET: Color32 = Color32::from_rgb(92, 200, 230);
     pub const PARAM_SOCKET: Color32 = Color32::from_rgb(138, 138, 147);
     pub const EVENT_SOCKET: Color32 = Color32::from_rgb(240, 160, 64);
+    pub const SPECTRAL_SOCKET: Color32 = Color32::from_rgb(176, 124, 255);
+    pub const SAMPLE_WIRE: Color32 = Color32::from_rgb(240, 170, 80);
+    pub const SAMPLE_SOCKET: Color32 = Color32::from_rgb(240, 170, 80);
     /// Frames are barely tinted; the outline carries them.
     pub const FRAME: Color32 = Color32::from_rgba_premultiplied(6, 9, 16, 20);
     /// The border around a frame.
@@ -182,5 +195,24 @@ pub mod timeline {
         }
         let hue = (index as f32 * 0.17 + 0.52).fract();
         egui::ecolor::Hsva::new(hue, 0.5, 0.85, 1.0).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_app_is_dark_whatever_the_system_theme_is() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        assert_eq!(
+            ctx.options(|o| o.theme_preference),
+            egui::ThemePreference::Dark
+        );
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            ctx.set_theme(theme);
+            assert_eq!(ctx.global_style().visuals.panel_fill, PANEL, "{theme:?}");
+        }
     }
 }

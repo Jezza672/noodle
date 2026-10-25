@@ -119,6 +119,13 @@ impl MidiTake {
     /// ended, or `None` if no note was played.
     pub fn finish(mut self, finish: &Finish<'_>) -> Option<(Tick, MidiClip)> {
         self.poll(finish.anchor);
+        self.clip_so_far(finish)
+    }
+
+    /// The clip the take would be if it ended as `finish` says, without
+    /// ending it: what is on screen while recording. Notes still held end
+    /// at the stop. Call [`poll`](Self::poll) first.
+    pub fn clip_so_far(&self, finish: &Finish<'_>) -> Option<(Tick, MidiClip)> {
         let Finish {
             stop_micros,
             output_latency_micros,

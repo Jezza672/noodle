@@ -86,6 +86,19 @@ impl PluginBrowser {
                 session.rescan_plugins(everything);
             }
         });
+        let mut sandboxed = session.sandbox_plugins();
+        if ui
+            .checkbox(&mut sandboxed, "Run plugins in separate processes")
+            .on_hover_text(
+                "A plugin that crashes or hangs then plays silence and is started \
+                 again, instead of taking the app with it. Costs a little CPU for each \
+                 plugin. Editors open as before.",
+            )
+            .changed()
+        {
+            session.set_sandbox_plugins(sandboxed);
+            crate::prefs::remember_sandbox(sandboxed);
+        }
         if session.plugin_scanning() {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -108,8 +121,7 @@ impl PluginBrowser {
                 for plugin in &found {
                     ui.horizontal(|ui| {
                         if ui.button("Add").clicked() {
-                            chosen =
-                                Some((plugin.node_id(), noodle_plugins::initial_params(plugin)));
+                            chosen = Some(plugin.node_id());
                         }
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&plugin.name).strong());
@@ -133,17 +145,14 @@ impl PluginBrowser {
                 }
             });
         drop(found);
-        if let Some((type_id, initial)) = chosen {
+        if let Some(type_id) = chosen {
             let id = session.new_node_id();
             let offset = 30.0 * (self.added % 8) as f32;
             self.added += 1;
-            let mut node = Node::new(type_id).at(60.0 + offset, 60.0 + offset);
+            let mut node = Node::new(type_id.clone()).at(60.0 + offset, 60.0 + offset);
             // A synth with hundreds of parameters starts with none on the node.
-            if let Some(initial) = initial {
-                node.config.set(
-                    noodle_plugins::PARAMS_KEY.to_owned(),
-                    noodle_core::Value::Text(initial),
-                );
+            if let Some(node_type) = session.registry().get(&type_id) {
+                node.config = node_type.initial_config();
             }
             edits.push(Edit::Apply(Command::AddNode { id, node }));
         }
