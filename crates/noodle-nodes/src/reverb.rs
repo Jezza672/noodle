@@ -29,6 +29,7 @@ pub struct Reverb;
 pub const REVERB_ID: &str = "noodle.effect.reverb";
 
 #[derive(Ports)]
+#[ports(bounded = 30200)]
 struct ReverbPorts {
     #[input("in", "In")]
     input: (),
@@ -345,6 +346,7 @@ impl Node for ReverbNode {
         }
         self.damp = [0.0; 8];
         self.quiet = 0;
+        self.phase = 0.0;
     }
 }
 

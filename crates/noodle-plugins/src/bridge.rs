@@ -533,11 +533,21 @@ impl<F: Format + Send + 'static> Node for Bridge<F> {
         }
     }
 
+    /// Back to a new instance's timeline state. The plugin's own reset
+    /// clears its processing state; the steady clock, which the plugin sees
+    /// as continuous time, starts again at 0. Each slot's `last` is not
+    /// timeline state: it mirrors the value the plugin holds (its own reset
+    /// leaves parameters alone), so the next block sends a port's value
+    /// exactly where it differs from that.
     fn reset(&mut self) {
         self.format.reset();
         self.notes.clear();
+        self.cursors.fill(0);
+        self.events = 0;
+        self.steady = 0;
         self.asleep = false;
         self.zero_frames = 0;
+        self.block_silent.fill(0);
     }
 }
 

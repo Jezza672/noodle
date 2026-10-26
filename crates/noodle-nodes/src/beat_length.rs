@@ -24,6 +24,7 @@ pub struct BeatLength;
 pub const BEAT_LENGTH_ID: &str = "noodle.mod.beat_length";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct BeatLengthPorts {
     #[param("bpm", "BPM", ParamInfo::new(10.0, 999.0, 120.0))]
     bpm: (),

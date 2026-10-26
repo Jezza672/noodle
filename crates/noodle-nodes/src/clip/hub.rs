@@ -115,6 +115,16 @@ impl Shared {
         }
     }
 
+    /// Live MIDI is being played through the track: it is monitored, or a
+    /// key of the piano roll's keyboard is down.
+    pub fn is_live(&self) -> bool {
+        self.monitoring.load(Ordering::Relaxed)
+            || self
+                .audition
+                .iter()
+                .any(|word| word.load(Ordering::Relaxed) != 0)
+    }
+
     pub fn set_audition(&self, key: u8, on: bool) {
         let key = key.min(127);
         let bit = 1u64 << (key % 64);

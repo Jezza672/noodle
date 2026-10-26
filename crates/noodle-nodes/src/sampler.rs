@@ -840,8 +840,13 @@ impl Node for SamplerNode {
         self.report();
     }
 
+    /// Back to a new instance's timeline state: no voices, and the steal
+    /// clock at 0. The stretched copies, the tune and the worker link are
+    /// not timeline state. They follow the warp and the tempo, and the next
+    /// `sync` lets go of a copy no voice is crossing from any more.
     fn reset(&mut self) {
         self.voices = [Voice::default(); VOICES];
+        self.clock = 0;
     }
 }
 
@@ -1284,5 +1289,28 @@ mod tests {
         h.run(256).unwrap();
         // No panic, and all sixteen newest are mixed in.
         assert!(left(&h)[255] > 0.0);
+    }
+
+    #[test]
+    fn a_reset_sampler_plays_like_a_new_one() {
+        let (store, config) = ramp(10_000);
+        let sampler = Sampler::new(&store, &Telemetry::new());
+        let notes = [on(10, 1, 60, 0.8), on(20, 2, 67, 0.6)];
+        let play = |h: &mut Harness| {
+            let mut heard = Vec::new();
+            for block in 0..4 {
+                let sent: &[Event] = if block == 0 { &notes } else { &[] };
+                h.send_events(SamplerPorts::NOTES, sent);
+                h.run(256).unwrap();
+                heard.extend(left(h));
+            }
+            heard
+        };
+        let mut used = Harness::new(&sampler, &config, &[], RATE, 256).unwrap();
+        used.send_events(SamplerPorts::NOTES, &[on(0, 9, 48, 1.0)]);
+        used.run(256).unwrap();
+        used.seek(48_000);
+        let mut fresh = Harness::starting_at(&sampler, &config, &[], RATE, 256, 48_000).unwrap();
+        assert_eq!(play(&mut used), play(&mut fresh));
     }
 }

@@ -48,7 +48,7 @@ impl NodeType for Scope {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime().input("in", "In"))
+        Ok(Layout::realtime().input("in", "In").memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

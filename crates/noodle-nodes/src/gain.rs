@@ -23,6 +23,7 @@ impl Gain {
 pub const GAIN_ID: &str = "noodle.util.gain";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct GainPorts {
     #[input("in", "In")]
     input: (),

@@ -26,9 +26,10 @@ It compiles the project as the live engine does, with groups flattened and
 automation lanes turned into nodes, and walks the schedule upstream first:
 
 ```
-key(node) = hash(node id, type_id, type_version, config, sample_rate, range,
-                 tempo map, each input: constant | key(source output), shapes,
-                 NodeType::cache_inputs(…))
+key(node) = hash(node id, type_id, type_version, config, sample_rate,
+                 max_frames, tempo map, each input: constant | key(source
+                 output), shapes, NodeType::cache_inputs(…),
+                 and for an offline node: the render length)
 key(output) = hash(key(node), output index)
 ```
 
@@ -45,11 +46,40 @@ key(output) = hash(key(node), output index)
   (`noodle-engine/src/cache.rs`), so a build whose sound changed never replays
   renders from the shared per-user cache. Bump the constant with any
   regenerated golden render.
-- The render length is in every key, so lengthening the project (a clip
-  dragged further right) renders every frozen target again, even those it
-  doesn't feed. The length reaches the last clip, automation point or tempo
-  change, plus a 4 s tail, and at least 30 s. Past it a frozen node is
-  silent, so a tail longer than that, or a drone that should play on, is cut.
+- **The render length is only in the keys of offline nodes** (and so of
+  whatever follows one). An offline node reads its whole input range, so a
+  longer render is a different one. A real-time node's output up to a frame
+  doesn't depend on how long the render goes on, so a lengthened project
+  doesn't change the key of a frozen real-time target. The store still holds
+  one length per key, and `Freezer::plan` calls an entry `Ready` only when its
+  length is the one wanted, so a lengthened project still renders such a
+  target again, over the same key (growing entries are the playback cache's
+  job, see the ROADMAP). The length reaches the last clip, automation point
+  or tempo change, plus a 4 s tail, and at least 30 s. Past it a frozen node
+  is silent.
+- **`max_frames`** (the largest block) is in every key: it is part of what
+  the nodes were built with. Block-size-dependent behaviour (control-rate
+  sampling of a parameter at the start of a block, say) would otherwise
+  serve a render made at another size.
+- **What the track input adds.** For an audio clip: its file's content hash,
+  window, gain, fades, gain points and crossfade, the `extent` of a section
+  dragged out past its window, and, when the clip is warped, the warp's mode,
+  tempo, markers and `loop_region`, plus whether the warp preview is on
+  (while it is, warped clips play as Repitch). For a MIDI clip: its length
+  and notes, and `loop_on`, `loop_start` and `loop_len`.
+- **Plugin latency** is not keyed separately. It is read from an instance,
+  which analysis must not build, and it is a function of what is keyed already:
+  the plugin file's size and time, its saved state (in the config), the sample
+  rate and `max_frames`.
+- **Live branches.** `Layout::deterministic` is per node *type*, so it cannot
+  say that one track is being monitored right now without turning off the
+  cache of every track. `CacheEnv::live` carries that session state into the
+  analysis instead: a function from node to "the session is feeding this node
+  live" (`ClipFeeds::is_live`: monitoring is on, or a piano-roll key is held).
+  Such a node gets `Uncacheable::Live`, and everything downstream follows it
+  as it does a live input. Tracks that aren't played keep their cache. Only
+  `analyze_known`, the playback path, passes it; a render or export runs from
+  the project alone.
 - Clip files are hashed whole, but never on the UI thread. The UI keys the
   project with `Freezer::analyze_known`, which only looks at a file's size and
   modification time (`FileHasher::peek`) and lists the files it has no hash
@@ -86,6 +116,37 @@ key(output) = hash(key(node), output index)
 - Renders are stored on disk by key. An edit produces a new key, so stale
   data can never be served, and undoing an edit brings the old render back
   straight away. Bump a node type's `version` whenever its DSP changes.
+
+**Memory.** `Layout::memory` says how long a node remembers its input:
+`Memory::None` (sources, gain, mix, maths, the track input), `Bounded(ms)`
+(filters, delay, reverb, EQ, dynamics; the longest decay to -60 dB the type can
+make over its parameter range) or `Unbounded` (oscillators, LFOs, noise,
+voices, the sampler, scripts, plugins, anything that doesn't say, which is the
+safe default). `analyze` composes it into `NodeAnalysis::memory` along the
+longest path: a chain sums, parallel branches take the longest, `Unbounded`
+absorbs, and an offline node or a node on a feedback loop is `Unbounded`. A node
+type sets it with `Layout::memoryless()` / `bounded(ms)`, or
+`#[ports(memoryless)]` / `#[ports(bounded = ms)]` in the derive. Nothing uses
+the tiers yet; they are what the playback cache picks its pre-roll by.
+
+**Reset equals fresh.** The playback cache renders a pass from a fresh state at
+its start (ADR 0010), so `Node::reset` must put a node back into the state a new
+instance has, and a seek on a running engine must sound like an engine started
+there. The state a node keeps is of two kinds. *Timeline state* is what a new
+instance has at the start of a pass: filter memory, phases, random streams,
+voices, a track input's sounding notes and declick gain, and a parameter's ramp
+in progress (`ValueInput::settle`, which `Plan::reset_nodes` calls, ends it at
+the value the parameter holds now). *Resources* are not reset, because a new
+instance has the same ones to hand: a track input's streams and source windows,
+a sampler's stretched copies and worker link, a plugin's last-sent parameter
+values (they mirror what the plugin holds, and its own reset leaves parameters
+alone). Two tests keep this honest:
+`noodle-nodes/tests/reset_matches_fresh.rs` runs every registered node type
+(nodes with spectral or sample inputs, and the sampler, are skipped and have
+tests of their own) for 1.5 s with notes and noise, resets it, and compares
+what it plays with a new instance built at the same position;
+`noodle-nodes/tests/seek_matches_fresh.rs` does the same for every example
+project through the whole engine, a seek against an engine told to start there.
 
 **Targets.** What gets rendered is a *target*: an offline node, or a node or
 group the project marks frozen (`Project::frozen`, set with

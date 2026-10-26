@@ -22,6 +22,7 @@ impl GroupStage {
 }
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct StagePorts {
     #[input("in", "In")]
     input: (),

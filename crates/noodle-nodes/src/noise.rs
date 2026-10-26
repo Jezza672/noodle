@@ -26,17 +26,27 @@ impl NodeType for WhiteNoise {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(WhiteNoiseNode(Rng::new(setup.seed))))
+        Ok(Instance::realtime(WhiteNoiseNode {
+            rng: Rng::new(setup.seed),
+            seed: setup.seed,
+        }))
     }
 }
 
-struct WhiteNoiseNode(Rng);
+struct WhiteNoiseNode {
+    rng: Rng,
+    seed: u64,
+}
 
 impl Node for WhiteNoiseNode {
     fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         for sample in io.outputs[OUT].lane_mut(0, 0) {
-            *sample = self.0.next();
+            *sample = self.rng.next();
         }
+    }
+
+    fn reset(&mut self) {
+        self.rng = Rng::new(self.seed);
     }
 }
 

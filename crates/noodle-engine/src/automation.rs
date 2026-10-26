@@ -225,7 +225,7 @@ impl NodeType for Automation {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         points(config)?;
-        Ok(Layout::realtime().output("out", "Out"))
+        Ok(Layout::realtime().output("out", "Out").memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

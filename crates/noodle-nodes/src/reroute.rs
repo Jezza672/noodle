@@ -25,7 +25,10 @@ impl NodeType for Reroute {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime().input("in", "In").output("out", "Out"))
+        Ok(Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

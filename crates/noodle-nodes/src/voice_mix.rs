@@ -44,7 +44,10 @@ impl NodeType for VoiceMix {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime().input("in", "In").output("out", "Out"))
+        Ok(Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn output_shapes(

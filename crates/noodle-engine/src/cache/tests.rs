@@ -7,7 +7,7 @@ use noodle_core::{
 
 use super::*;
 use crate::{
-    Context, Instance, Io, Layout, NodeError, NodeInfo, NodeType, ParamInfo, Replacement,
+    Context, Instance, Io, Layout, Memory, NodeError, NodeInfo, NodeType, ParamInfo, Replacement,
     Replacements, Setup, TapSpec,
 };
 
@@ -83,6 +83,44 @@ fn registry() -> Registry {
             .output("out", "Out"),
     );
     add(
+        "dry",
+        1,
+        Layout::realtime().output("out", "Out").memoryless(),
+    );
+    add(
+        "wire",
+        1,
+        Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .memoryless(),
+    );
+    add(
+        "short",
+        1,
+        Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .bounded(100),
+    );
+    add(
+        "long",
+        1,
+        Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .bounded(250),
+    );
+    add(
+        "join",
+        1,
+        Layout::realtime()
+            .input("a", "A")
+            .input("b", "B")
+            .output("out", "Out")
+            .memoryless(),
+    );
+    add(
         "delayish",
         1,
         Layout::realtime().input("in", "In").output("out", "Out"),
@@ -93,6 +131,9 @@ fn registry() -> Registry {
 struct Rig {
     project: Project,
     history: History,
+    max_frames: usize,
+    /// Nodes the session is feeding live.
+    live: Vec<NodeId>,
 }
 
 impl Rig {
@@ -100,6 +141,8 @@ impl Rig {
         Self {
             project: Project::new(),
             history: History::new(),
+            max_frames: 128,
+            live: Vec::new(),
         }
     }
 
@@ -132,6 +175,8 @@ impl Rig {
                 project: &self.project,
                 sample_rate: 48_000.0,
                 frames,
+                max_frames: self.max_frames,
+                live: &|node| self.live.contains(&node),
                 file_key: &no_files,
             },
         )
@@ -390,4 +435,127 @@ fn an_offline_node_with_a_modulated_parameter_is_keyed_by_what_modulates_it() {
     let other = rig.add(4, "source");
     rig.wire(other, offline, "amount");
     assert_ne!(modulated, rig.key(offline).unwrap());
+}
+
+fn memory(rig: &Rig, node: NodeId) -> Memory {
+    rig.analysis(1000).nodes[&node].memory
+}
+
+#[test]
+fn memory_adds_along_a_chain_and_takes_the_longest_of_parallel_branches() {
+    let mut rig = Rig::new();
+    let source = rig.add(1, "dry");
+    let a = rig.add(2, "short");
+    let b = rig.add(3, "long");
+    let c = rig.add(4, "short");
+    let join = rig.add(5, "join");
+    let after = rig.add(6, "wire");
+    // dry -> short -> long -> short is a chain of 100 + 250 + 100 ms.
+    rig.wire(source, a, "in");
+    rig.wire(a, b, "in");
+    rig.wire(b, c, "in");
+    assert_eq!(memory(&rig, source), Memory::None);
+    assert_eq!(memory(&rig, a), Memory::Bounded(100));
+    assert_eq!(memory(&rig, b), Memory::Bounded(350));
+    assert_eq!(memory(&rig, c), Memory::Bounded(450));
+    // Parallel branches meet at a join: the longer one, 450 against 100.
+    let fast = rig.add(7, "short");
+    rig.wire(source, fast, "in");
+    rig.wire(c, join, "a");
+    rig.wire(fast, join, "b");
+    assert_eq!(memory(&rig, join), Memory::Bounded(450));
+    // A node with no memory adds none.
+    rig.wire(join, after, "in");
+    assert_eq!(memory(&rig, after), Memory::Bounded(450));
+}
+
+#[test]
+fn unbounded_memory_carries_downstream_and_so_does_a_loop() {
+    let mut rig = Rig::new();
+    let dry = rig.add(1, "dry");
+    let forever = rig.add(2, "thru");
+    let after = rig.add(3, "short");
+    let beside = rig.add(4, "short");
+    let join = rig.add(5, "join");
+    rig.wire(dry, forever, "in");
+    rig.wire(forever, after, "in");
+    rig.wire(dry, beside, "in");
+    rig.wire(after, join, "a");
+    rig.wire(beside, join, "b");
+    // `thru` doesn't say, so it is unbounded; the sum and the join keep it.
+    assert_eq!(memory(&rig, forever), Memory::Unbounded);
+    assert_eq!(memory(&rig, after), Memory::Unbounded);
+    assert_eq!(memory(&rig, beside), Memory::Bounded(100));
+    assert_eq!(memory(&rig, join), Memory::Unbounded);
+
+    // A feedback loop is unbounded even through nodes with no memory.
+    let mut rig = Rig::new();
+    let delay = rig.add(1, "delayish");
+    let wire = rig.add(2, "wire");
+    rig.wire(delay, wire, "in");
+    rig.wire(wire, delay, "in");
+    assert_eq!(memory(&rig, delay), Memory::Unbounded);
+    assert_eq!(memory(&rig, wire), Memory::Unbounded);
+}
+
+#[test]
+fn an_offline_node_has_unbounded_memory() {
+    let mut rig = Rig::new();
+    let dry = rig.add(1, "dry");
+    let offline = rig.add(2, "offline");
+    rig.wire(dry, offline, "in");
+    assert_eq!(memory(&rig, offline), Memory::Unbounded);
+}
+
+#[test]
+fn memory_composes_by_the_rules() {
+    use Memory::{Bounded, None, Unbounded};
+    assert_eq!(None.then(None), None);
+    assert_eq!(None.then(Bounded(5)), Bounded(5));
+    assert_eq!(Bounded(5).then(Bounded(7)), Bounded(12));
+    assert_eq!(Bounded(u32::MAX).then(Bounded(1)), Bounded(u32::MAX));
+    assert_eq!(Bounded(5).then(Unbounded), Unbounded);
+    assert_eq!(Unbounded.then(None), Unbounded);
+    assert_eq!(Bounded(5).alongside(Bounded(7)), Bounded(7));
+    assert_eq!(None.alongside(Bounded(1)), Bounded(1));
+    assert_eq!(Bounded(u32::MAX).alongside(Unbounded), Unbounded);
+}
+
+#[test]
+fn the_render_length_is_only_in_the_keys_of_what_reads_the_whole_range() {
+    let (rig, source, thru, offline) = chain();
+    let key = |frames: u64, node: NodeId| rig.analysis(frames).output_key(node, 0).unwrap();
+    // Real-time nodes only read the past: a longer render is a longer
+    // version of the same one.
+    assert_eq!(key(1000, source), key(2000, source));
+    assert_eq!(key(1000, thru), key(2000, thru));
+    // The offline node reads its input whole, so its render depends on the
+    // length.
+    assert_ne!(key(1000, offline), key(2000, offline));
+}
+
+#[test]
+fn the_block_size_is_in_the_key() {
+    let (mut rig, source, _, _) = chain();
+    let before = rig.key(source).unwrap();
+    rig.max_frames = 256;
+    assert_ne!(rig.key(source).unwrap(), before);
+}
+
+#[test]
+fn a_node_fed_live_is_not_cached_but_its_neighbours_are() {
+    let mut rig = Rig::new();
+    let track = rig.add(1, "source");
+    let other = rig.add(2, "source");
+    let after = rig.add(3, "thru");
+    rig.wire(track, after, "in");
+    let before = rig.key(other).unwrap();
+    assert!(rig.key(track).is_ok());
+    rig.live.push(track);
+    assert_eq!(rig.key(track), Err(Uncacheable::Live));
+    assert!(matches!(rig.key(after), Err(Uncacheable::Upstream(n, _)) if n == track));
+    // Another node of the same type is not touched.
+    assert_eq!(rig.key(other).unwrap(), before);
+    rig.live.clear();
+    assert!(rig.key(track).is_ok());
 }

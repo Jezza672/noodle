@@ -88,6 +88,8 @@ pub struct Look<'a> {
     pub start: bool,
     /// Adds the plugin node types to a render's registry.
     pub extend_registry: Option<noodle_plugins::ExtendRegistry>,
+    /// Which nodes the session is feeding live right now.
+    pub live: &'a dyn Fn(NodeId) -> bool,
 }
 
 impl Freezing {
@@ -203,6 +205,7 @@ impl Freezing {
             look.settings,
             look.frames,
             look.base,
+            look.live,
         );
         let mut plan = freezer.plan(&analysis, look.settings, look.frames, false);
         if !unknown.is_empty() {

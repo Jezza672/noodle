@@ -13,6 +13,7 @@ pub struct Vca;
 pub const VCA_ID: &str = "noodle.util.vca";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct VcaPorts {
     #[input("in", "In")]
     input: (),

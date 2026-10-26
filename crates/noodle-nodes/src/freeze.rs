@@ -100,6 +100,8 @@ impl Freezer {
                 project,
                 sample_rate: settings.sample_rate,
                 frames: frames as u64,
+                max_frames: settings.max_frames,
+                live: &|_| false,
                 file_key: &file_key,
             },
         )
@@ -111,6 +113,9 @@ impl Freezer {
     /// part. Until [`hash_files`](Self::hash_files) has run on them, the
     /// analysis says nothing reliable about anything that plays those files:
     /// don't render from it.
+    ///
+    /// `live` says which nodes the session is feeding live right now (see
+    /// [`ClipFeeds::is_live`]); they, and what follows them, are not cached.
     pub fn analyze_known(
         &self,
         project: &Project,
@@ -118,6 +123,7 @@ impl Freezer {
         settings: Settings,
         frames: usize,
         base: &Path,
+        live: &dyn Fn(NodeId) -> bool,
     ) -> (Analysis, Vec<PathBuf>) {
         let unknown = RefCell::new(Vec::new());
         let file_key = |source: &str| {
@@ -141,6 +147,8 @@ impl Freezer {
                 project,
                 sample_rate: settings.sample_rate,
                 frames: frames as u64,
+                max_frames: settings.max_frames,
+                live,
                 file_key: &file_key,
             },
         );

@@ -155,7 +155,9 @@ impl NodeType for ParametricEq {
                         .offset(),
                 );
         }
-        Ok(layout.output("out", "Out"))
+        // Each band rings for about two seconds at its slowest (Q 18 at 20
+        // Hz, to -60 dB); in series they add up at most.
+        Ok(layout.output("out", "Out").bounded(2_500 * bands as u32))
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
