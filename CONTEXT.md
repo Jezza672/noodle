@@ -240,3 +240,39 @@ A signal made of FFT frames instead of samples: every 512 samples, one frame of 
 **Frame (spectral)**:
 One set of bins of a Spectrum, stamped with the offset in the block where its window ends. A spectral node pushes one frame out for each frame in.
 
+## Playback cache
+
+**Pass**:
+One run of the Transport from a start position until it stops or the playhead moves.
+_Avoid_: Take (that is a recording), transport play
+
+**Replay**:
+A Pass from a start position whose audio the cache already holds.
+
+**Pass start**:
+The timeline position a Pass begins at. The cache prefers common starts: 0, the loop start, and later section markers.
+_Avoid_: Origin, anchor
+
+**Position-pure**:
+A node whose output depends only on the timeline position and the project, not on the path taken to reach it.
+_Avoid_: Deterministic (that only means identical inputs give identical output)
+
+**Bounded memory**:
+A node whose state at a position depends only on a bounded stretch of audio before it, so it can be warmed up from a fixed lookback.
+
+**Unbounded memory**:
+A node whose state at a position depends on the whole history since it started.
+
+**Cache cluster**:
+A set of nodes between cuts in the graph, cached and reused as a unit.
+_Avoid_: Subgraph, region
+
+**Cache target**:
+A cluster or node output the cache stores and plays in place of the nodes that made it.
+
+**Cache entry**:
+The audio of one Cache target for one Pass start, or for the range of starts it is valid for.
+
+**Hot start**:
+A Pass start the cache keeps entries for in preference to others.
+
