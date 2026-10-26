@@ -45,8 +45,8 @@ pub use builtin::{
     parse_routing,
 };
 pub use cache::{
-    Analysis, CacheEnv, InputOrigin, NodeAnalysis, Target, TargetKind, Uncacheable, analyze,
-    output_key,
+    Analysis, CacheEnv, InputOrigin, NodeAnalysis, Pass, Target, TargetKind, Uncacheable, analyze,
+    output_key, pass_key,
 };
 pub use channels::{ChannelLayout, MAX_LAYOUT_CHANNELS, Speaker};
 pub use compile::{

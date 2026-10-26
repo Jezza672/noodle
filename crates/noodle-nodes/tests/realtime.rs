@@ -1107,7 +1107,7 @@ fn a_cached_player_never_allocates_through_seeks_and_loops() {
     };
     freeze(&freezer, &request, &noodle_engine::Progress::new()).unwrap();
     let analysis = freezer.analyze(&s.project, &s.registry, SETTINGS, FRAMES, &dir);
-    let plan = freezer.plan(&analysis, SETTINGS, FRAMES, false);
+    let plan = freezer.plan(&analysis, SETTINGS, FRAMES, false, None);
     assert!(!plan.replacements.is_empty());
     let diagnostics =
         s.controller

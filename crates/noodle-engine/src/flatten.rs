@@ -256,6 +256,28 @@ pub(crate) fn group_outputs(
     sources
 }
 
+/// Like [`group_outputs`], but for the signal *before* each output's own
+/// stage: the gain, mute and solo of the group's outputs are left out of it.
+/// The playback cache stores this, so moving a fader or soloing a track
+/// doesn't invalidate the track's render. Stages of groups nested inside
+/// still count; they are part of the group's sound.
+pub(crate) fn group_sources(
+    graph: &Graph,
+    keep: &BTreeSet<NodeId>,
+    group: NodeId,
+) -> Vec<Endpoint> {
+    let stages = stages(graph, keep);
+    let mut sources = Vec::new();
+    for port in graph.group_ports(group).outputs {
+        if let Some(endpoint) = resolve(graph, &stages, &Endpoint::new(port.node, port.key()))
+            && !sources.contains(&endpoint)
+        {
+            sources.push(endpoint);
+        }
+    }
+    sources
+}
+
 /// The node output in the flat graph that feeds a group's first output (its
 /// stage's, if it has one), which is what monitoring the group listens to.
 pub(crate) fn group_first_output(

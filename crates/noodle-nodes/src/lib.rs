@@ -105,7 +105,7 @@ pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_expo
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
-    spawn_freeze,
+    freeze_passes, spawn_freeze, spawn_freeze_passes,
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};

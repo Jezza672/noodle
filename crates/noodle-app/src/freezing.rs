@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use noodle_core::{NodeId, Project};
-use noodle_engine::{Cancelled, Job, JobPanicked, Mode, Registry, Settings, TargetKind};
+use noodle_engine::{Cancelled, Job, JobPanicked, Mode, Pass, Registry, Settings, TargetKind};
 use noodle_nodes::{
-    FreezeError, FreezePlan, FreezeReport, Freezer, RenderRequest, TargetState, spawn_freeze,
+    FreezeError, FreezePlan, FreezeReport, Freezer, RenderRequest, TargetState, spawn_freeze_passes,
 };
 
 /// How long after the last edit that doesn't recompile (a parameter, say) the
@@ -49,6 +49,8 @@ struct Running {
     job: Job<Result<FreezeReport, FreezeError>>,
     /// The project it renders.
     project: Project,
+    /// The pass starts it renders the automatic targets for.
+    passes: Vec<Pass>,
 }
 
 /// What [`Freezing::poll`] saw.
@@ -90,6 +92,12 @@ pub struct Look<'a> {
     pub extend_registry: Option<noodle_plugins::ExtendRegistry>,
     /// Which nodes the session is feeding live right now.
     pub live: &'a dyn Fn(NodeId) -> bool,
+    /// The pass whose entries stand in for the groups the playback cache
+    /// picked by itself, if any do now (ADR 0010).
+    pub pass: Option<Pass>,
+    /// The pass starts worth having entries for, most wanted first: the one
+    /// playing, then the hot starts. Empty turns the automatic targets off.
+    pub passes: Vec<Pass>,
 }
 
 impl Freezing {
@@ -190,7 +198,7 @@ impl Freezing {
         if look.start {
             self.dirty_since = None;
         }
-        if !Self::in_use(look.project, look.registry) {
+        if !Self::in_use(look.project, look.registry) && look.passes.is_empty() {
             self.running = None;
             self.hashing = None;
             self.badges.clear();
@@ -207,7 +215,9 @@ impl Freezing {
             look.base,
             look.live,
         );
-        let mut plan = freezer.plan(&analysis, look.settings, look.frames, false);
+        // Entries are looked up for the pass once the keys can be trusted.
+        let pass = unknown.is_empty().then_some(look.pass).flatten();
+        let mut plan = freezer.plan(&analysis, look.settings, look.frames, false, pass.as_ref());
         if !unknown.is_empty() {
             // Files are being read for their keys. Until that's done nothing
             // that plays them can be keyed, so no render starts (it would be
@@ -220,6 +230,7 @@ impl Freezing {
             self.badges = plan
                 .states
                 .iter()
+                .filter(|(kind, _)| !matches!(kind, TargetKind::Auto(_)))
                 .map(|(kind, state)| {
                     let state = match state {
                         TargetState::Ready => BadgeState::Ready,
@@ -234,17 +245,32 @@ impl Freezing {
                 .collect();
             return Ok(Some(plan));
         }
-        let missing = plan
-            .states
+        // The automatic entries missing for the passes worth having. The
+        // others are about the target itself: a pass doesn't change them.
+        let missing_passes: Vec<Pass> = look
+            .passes
             .iter()
-            .any(|(_, state)| *state == TargetState::Missing);
+            .filter(|pass| {
+                freezer
+                    .plan(&analysis, look.settings, look.frames, false, Some(pass))
+                    .states
+                    .iter()
+                    .any(|(kind, state)| {
+                        matches!(kind, TargetKind::Auto(_)) && *state == TargetState::Missing
+                    })
+            })
+            .copied()
+            .collect();
+        let missing = !missing_passes.is_empty()
+            || plan.states.iter().any(|(kind, state)| {
+                !matches!(kind, TargetKind::Auto(_)) && *state == TargetState::Missing
+            });
 
-        // A render of an older project is stale.
-        if self
-            .running
-            .as_ref()
-            .is_some_and(|r| r.project != *look.project)
-        {
+        // A render of an older project is stale, and so is one that won't
+        // make the entries now wanted.
+        if self.running.as_ref().is_some_and(|r| {
+            r.project != *look.project || !missing_passes.iter().all(|p| r.passes.contains(p))
+        }) {
             self.running = None;
         }
         if self
@@ -263,8 +289,9 @@ impl Freezing {
                 extend_registry: look.extend_registry.clone(),
             };
             self.running = Some(Running {
-                job: spawn_freeze(freezer, request),
+                job: spawn_freeze_passes(freezer, request, missing_passes.clone()),
                 project: look.project.clone(),
+                passes: missing_passes,
             });
         }
 
@@ -273,6 +300,7 @@ impl Freezing {
         self.badges = plan
             .states
             .iter()
+            .filter(|(kind, _)| !matches!(kind, TargetKind::Auto(_)))
             .map(|(kind, state)| {
                 let state = match state {
                     TargetState::Ready => BadgeState::Ready,

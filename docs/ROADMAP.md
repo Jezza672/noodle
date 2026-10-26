@@ -32,8 +32,7 @@ need a person and hardware, plus a few deliberately deferred items.
 **Batches.**
 
 1. **The invariant and the keys.** Built: see [features/playback-cache.md](features/playback-cache.md).
-2. **Automatic group targets.** Select top-level cacheable groups as targets, before the boundary stage. Key by subtree, start, tier, sample rate and `max_frames`; grow the entries; render on Stop or ahead of the playhead and swap in with `Setup.position`. Prioritise 0 and the loop start.
-   *Done when:* Stop-Stop-Play on an unchanged project does no DSP inside the cached clusters; a fader move does not invalidate them; changing a node inside one track re-renders only that track.
+2. **Automatic group targets.** Built: see [features/playback-cache.md](features/playback-cache.md).
 3. **Tiers and cross-start reuse.** Pure entries valid for any start; bounded pre-roll from `S−n` with validity ranges; unbounded per-start entries; the tiered loop rule.
    *Done when:* a seek to a new start reuses the pure and bounded clusters and re-renders only the unbounded ones; a loop's reverb tail crosses the wrap while oscillator phase and voice state reset.
 4. **Recursive partition.** Cut selection with group, join and fan-out cuts, the cost threshold, sink-first rendering and a sticky partition. Expensive-node and chain cuts, and section alignment, after the measured cost model.
