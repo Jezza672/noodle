@@ -1,0 +1,24 @@
+# How CI runs the tests (see .github/workflows/ci.yml). `cargo test` still
+# works, and is still how a single test is run. Nextest runs each test in its
+# own process, which is faster but means an in-process lock no longer
+# coordinates anything between tests: the overrides below say the same thing
+# to the scheduler that the locks say to the test harness.
+
+[profile.default]
+# A hung render should fail the job rather than hold it open for hours.
+slow-timeout = { period = "180s", terminate-after = 2 }
+
+# songs.rs warps a clip through a streaming thread, and a starved reader shows
+# up as underruns; its LOAD RwLock keeps other renders out of the process, so
+# under nextest it does nothing. Taking every slot is the equivalent: these
+# wait until nothing else runs.
+[[profile.default.overrides]]
+filter = 'test(=every_excerpt_goes_through_the_harness) + test(=stems_are_scored_one_part_at_a_time)'
+threads-required = "num-test-threads"
+
+# profile.rs measures how long nodes spin against the clock; another test's
+# helper threads would take the cores the spinning node needs, which is what
+# its TURN mutex is for. This is the same arrangement, across processes.
+[[profile.default.overrides]]
+filter = 'package(noodle-nodes) & binary(=profile)'
+threads-required = "num-test-threads"

@@ -44,6 +44,10 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
 ```
 
 - **Toolchain:** stable, from `rust-toolchain.toml`.
+- **CI runs the tests with [cargo-nextest](https://nexte.st)**
+  (`.config/nextest.toml`), which runs each test in its own process. A test
+  that used an in-process lock to take turns needs an entry there instead.
+  `cargo test --workspace` is still the way to run a single test locally.
 - **Debug builds are optimised** (`opt-level = 1`, and 3 for dependencies),
   because unoptimised DSP is too slow to listen to.
 - **Golden renders:** every `examples/*.ron` must render, within a small
