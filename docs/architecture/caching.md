@@ -227,14 +227,24 @@ stream opens; pausing and playing again carries on the same pass.
 - **Loops.** A pass that starts before the loop's end wraps there
   (`Pass::looping`), and the tier decides what the wrap does, per cluster:
   - *Pure*: the entry from 0, played with the loop; nothing to carry.
-  - *Bounded*: one **steady lap** of the loop, keyed by the loop. It is rendered
-    by the engine itself looping (`render_taps(.., looping, ..)`), from the
-    loop's start for `ceil(n / lap)` warm-up laps plus the lap that is kept, so
-    a reverb or delay tail from the end of the loop is at the start of the lap,
-    as in a live loop. The player loops inside it, and it serves every start
-    inside the loop. The first lap of a pass therefore has the steady-state tail
-    at its start, which a live first lap would not; that is the one place the
-    cache is not the pass-start truth.
+  - *Bounded*: one entry per lap until the loop is in a steady state, then
+    one steady lap (`Analysis::requirements`). Lap 1 is an ordinary entry from
+    before the start, because the tail of the loop's end has not been played yet.
+    If the cluster remembers `n` and the loop is shorter than that, each of
+    laps 2 to `w = ceil(n / lap)` carries a different tail, so each has an entry
+    (`LoopKind::Lap`): the engine loops from the first entry's origin and the
+    lap is kept. Lap `w + 1` and every lap after is the **steady lap**
+    (`LoopKind::Steady`): the engine loops from the loop's start through `w`
+    warm-up laps and keeps the next, so it is independent of where the pass
+    began and serves every start inside the loop. The loop is rendered by the
+    engine itself (`render_taps(.., looping, ..)`), state carried across the
+    wrap. The player (`Lapped`, in `cached.rs`) counts wraps and moves to the
+    next lap's entry at each, reading the next one a block ahead so it is
+    primed. A plan built after the first wrap restarts at the first entry for
+    one lap. Laps 2 to `w` start from the pass's origin, not from the loop
+    start, so a pass beginning mid-loop shares them only with passes from the
+    same origin. The cost of `w` lap entries is `w` renders of up to `w` laps
+    each; `w` is capped at 64.
   - *Unbounded*: one lap rendered fresh from the loop's start, with its last 4 ms
     faded out (`LoopKind::Faded`), so oscillator phase and voices reset at the
     wrap without a click. Only a pass starting at the loop's start has it; from

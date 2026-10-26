@@ -209,6 +209,7 @@ impl Analysis {
         let linear = |(origin, origin_frame): (Tick, u64)| EntrySpec {
             origin,
             origin_frame,
+            start: origin_frame,
             frames: (pass.frame.saturating_sub(origin_frame) as usize) + pass.frames,
             looping: None,
         };
@@ -217,6 +218,7 @@ impl Analysis {
             EntrySpec {
                 origin,
                 origin_frame,
+                start: origin_frame,
                 frames: tempo.sample_at_tick(to).saturating_sub(origin_frame) as usize,
                 looping: Some((from, to, kind)),
             }
@@ -252,6 +254,65 @@ impl Analysis {
             }
             (Memory::Unbounded, None) => vec![linear(at(pass.tick))],
         }
+    }
+
+    /// Everything that has to be in the cache to serve `pass`, in the order
+    /// it plays: each item is the candidates for one entry, best first. A
+    /// plain pass has one. A bounded cluster in a loop has one per lap until
+    /// the loop is in a steady state, then the steady lap, which plays on:
+    ///
+    /// - lap 1 is an ordinary entry from before the start, because the tail of
+    ///   the loop's end has not been played yet;
+    /// - laps 2 to `w` are rendered by the engine looping from that entry's
+    ///   origin, because each carries a different amount of what the laps
+    ///   before it left (the tail is longer than a lap);
+    /// - from lap `w + 1` the past that matters is all in whole laps, and the
+    ///   steady lap of [`entries`](Self::entries) serves every one.
+    ///
+    /// `w` is the cluster's memory in laps, rounded up. Empty if the pass
+    /// can't be cached.
+    pub fn requirements(&self, target: &Target, pass: &Pass) -> Vec<Vec<EntrySpec>> {
+        let steady = self.entries(target, pass);
+        let (
+            Memory::Bounded(_),
+            Some((from, to)),
+            Some(&EntrySpec {
+                looping: Some((_, _, LoopKind::Steady { warm }), ..),
+                ..
+            }),
+        ) = (self.memory(target), pass.looping, steady.first())
+        else {
+            return if steady.is_empty() {
+                Vec::new()
+            } else {
+                vec![steady]
+            };
+        };
+        let firsts = self.entries(
+            target,
+            &Pass {
+                looping: None,
+                ..*pass
+            },
+        );
+        let origin = firsts[0];
+        let len = steady[0].frames;
+        let lead = (self
+            .tempo
+            .sample_at_tick(to)
+            .saturating_sub(origin.origin_frame)) as usize;
+        let mut required = vec![firsts];
+        for index in 2..=warm {
+            required.push(vec![EntrySpec {
+                origin: origin.origin,
+                origin_frame: origin.origin_frame,
+                start: steady[0].start,
+                frames: len,
+                looping: Some((from, to, LoopKind::Lap { index, lead })),
+            }]);
+        }
+        required.push(steady);
+        required
     }
 
     /// Why a target can't be rendered, if it can't.
@@ -321,6 +382,10 @@ pub enum LoopKind {
     /// is where the cluster is when it resets at the wrap. The last `fade`
     /// frames fade out, so the reset doesn't click.
     Faded { fade: usize },
+    /// Lap `index` (from 2) of a pass whose first lap came from an ordinary
+    /// entry: the engine runs from the entry's origin through the end of the
+    /// loop (`lead` frames), then around the loop, and the lap is kept.
+    Lap { index: usize, lead: usize },
 }
 
 /// A cached entry: the audio of a cluster, rendered from a fresh state at
@@ -330,6 +395,9 @@ pub struct EntrySpec {
     /// Where the render starts from a fresh state; the entry's first frame.
     pub origin: Tick,
     pub origin_frame: u64,
+    /// The timeline frame the entry's first frame belongs to: the origin's,
+    /// or the loop's start for a lap of a loop.
+    pub start: u64,
     /// How many frames from the origin the entry must hold. A loop's entry
     /// is exactly one lap.
     pub frames: usize,
@@ -350,6 +418,12 @@ impl EntrySpec {
                 .u64(match kind {
                     LoopKind::Steady { .. } => 0,
                     LoopKind::Faded { .. } => 1,
+                    LoopKind::Lap { index, .. } => 2 + index as u64,
+                })
+                .u64(match kind {
+                    // A lap depends on where the pass began.
+                    LoopKind::Lap { .. } => self.origin.0 as u64,
+                    _ => 0,
                 })
                 .finish(),
         }
@@ -369,7 +443,9 @@ impl EntrySpec {
             frame: self.origin_frame,
             frames: self.frames,
             looping: match self.looping {
-                Some((from, to, LoopKind::Steady { .. })) => Some((from, to)),
+                Some((from, to, LoopKind::Steady { .. } | LoopKind::Lap { .. })) => {
+                    Some((from, to))
+                }
                 _ => None,
             },
         }

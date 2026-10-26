@@ -230,14 +230,13 @@ impl Freezer {
             let auto = matches!(target.kind, TargetKind::Auto(_));
             // An automatic target is cached per pass; the others cover the
             // timeline from 0.
-            let specs = match (auto, pass) {
-                (true, Some(pass)) => analysis.entries(target, pass),
-                (true, None) => continue,
-                (false, _) => Vec::new(),
-            };
+            if auto && pass.is_none() {
+                continue;
+            }
             let replace = |plan: &mut FreezePlan,
                            key: Option<CacheKey>,
                            start_frame: u64,
+                           laps: Vec<(CacheKey, u64)>,
                            node: NodeId,
                            output: usize| {
                 let info = &analysis.nodes[&node];
@@ -248,6 +247,15 @@ impl Freezer {
                     }
                     None => CachedPlayer::silent(self.store.clone(), shape),
                 };
+                if !laps.is_empty() {
+                    player = player.then_laps(
+                        laps.into_iter()
+                            .map(|(key, start)| {
+                                CachedPlayer::new(self.store.clone(), key, shape).starting_at(start)
+                            })
+                            .collect(),
+                    );
+                }
                 if blocking {
                     player = player.blocking();
                 }
@@ -263,7 +271,7 @@ impl Freezer {
                         problem: Problem::NotCacheable(why.to_string()),
                     });
                     for &(node, output) in &target.outputs {
-                        replace(&mut plan, None, 0, node, output);
+                        replace(&mut plan, None, 0, Vec::new(), node, output);
                     }
                 }
                 plan.states.push((target.kind, TargetState::Blocked(why)));
@@ -271,20 +279,30 @@ impl Freezer {
             }
             if auto {
                 // Live for this pass: no entry can serve it.
-                if specs.is_empty() {
+                let required = analysis.requirements(target, pass.expect("auto has a pass"));
+                if required.is_empty() {
                     continue;
                 }
-                match specs
+                // The best candidate of each that is in the cache. More than
+                // one is a loop's laps, played in turn.
+                let ready: Option<Vec<EntrySpec>> = required
                     .iter()
-                    .find(|spec| self.entry_ready(analysis, target, spec, settings))
-                {
-                    Some(spec) => {
+                    .map(|specs| {
+                        specs
+                            .iter()
+                            .find(|spec| self.entry_ready(analysis, target, spec, settings))
+                            .copied()
+                    })
+                    .collect();
+                match ready {
+                    Some(ready) => {
                         for &(node, output) in &target.outputs {
-                            let key = analysis
+                            let base = analysis
                                 .output_key(node, output)
-                                .map(|key| spec.key(&key))
                                 .expect("a target that isn't blocked has keys");
-                            replace(&mut plan, Some(key), spec.origin_frame, node, output);
+                            let mut specs = ready.iter().map(|spec| (spec.key(&base), spec.start));
+                            let (first, start) = specs.next().expect("one entry at least");
+                            replace(&mut plan, Some(first), start, specs.collect(), node, output);
                         }
                         plan.states.push((target.kind, TargetState::Ready));
                     }
@@ -310,13 +328,13 @@ impl Freezer {
             });
             if ready {
                 for &(node, output, key) in &keys {
-                    replace(&mut plan, Some(key), 0, node, output);
+                    replace(&mut plan, Some(key), 0, Vec::new(), node, output);
                 }
                 plan.states.push((target.kind, TargetState::Ready));
             } else {
                 if offline {
                     for &(node, output, _) in &keys {
-                        replace(&mut plan, None, 0, node, output);
+                        replace(&mut plan, None, 0, Vec::new(), node, output);
                     }
                 }
                 plan.states.push((target.kind, TargetState::Missing));
@@ -494,18 +512,28 @@ fn freeze_in(
                     match plan.state(target.kind) {
                         Some(TargetState::Ready) => report.cached.push(target.kind),
                         Some(TargetState::Missing) => {
-                            let Some(spec) = analysis.entries(target, pass).first().copied() else {
-                                continue;
-                            };
-                            let same = |(t, other): &&mut (&Target, Option<EntrySpec>)| {
-                                t.kind == target.kind
-                                    && other.is_some_and(|o| {
-                                        (o.origin, o.looping) == (spec.origin, spec.looping)
-                                    })
-                            };
-                            match todo.iter_mut().find(same) {
-                                Some((_, Some(have))) => have.frames = have.frames.max(spec.frames),
-                                _ => todo.push((target, Some(spec))),
+                            // What the pass lacks: the best candidate of each
+                            // entry it needs that is not there.
+                            for specs in analysis.requirements(target, pass) {
+                                if specs
+                                    .iter()
+                                    .any(|s| freezer.entry_ready(&analysis, target, s, settings))
+                                {
+                                    continue;
+                                }
+                                let spec = specs[0];
+                                let same = |(t, other): &&mut (&Target, Option<EntrySpec>)| {
+                                    t.kind == target.kind
+                                        && other.is_some_and(|o| {
+                                            (o.origin, o.looping) == (spec.origin, spec.looping)
+                                        })
+                                };
+                                match todo.iter_mut().find(same) {
+                                    Some((_, Some(have))) => {
+                                        have.frames = have.frames.max(spec.frames);
+                                    }
+                                    _ => todo.push((target, Some(spec))),
+                                }
                             }
                         }
                         _ => {}
@@ -663,12 +691,19 @@ fn render_frozen(
     } else {
         grown(needed, settings.sample_rate)
     };
-    let (looping, warm, fade) = match spec.and_then(|spec| spec.looping) {
-        Some((from, to, LoopKind::Steady { warm })) => (Some((from, to)), warm, 0),
-        Some((_, _, LoopKind::Faded { fade })) => (None, 0, fade),
-        None => (None, 0, 0),
+    // The engine's loop, the frames it runs and the frames dropped from the
+    // front of them, and the fade at the end of the lap.
+    let (looping, total, skip, fade) = match spec.and_then(|spec| spec.looping) {
+        Some((from, to, LoopKind::Steady { warm })) => {
+            (Some((from, to)), kept * (warm + 1), warm * kept, 0)
+        }
+        Some((_, _, LoopKind::Faded { fade })) => (None, kept, 0, fade),
+        Some((from, to, LoopKind::Lap { index, lead })) => {
+            let total = lead + (index - 1) * kept;
+            (Some((from, to)), total, total - kept, 0)
+        }
+        None => (None, kept, 0, 0),
     };
-    let skip = warm * kept;
     let mut entries = Vec::new();
     let mut taps = Vec::new();
     for &(node, output) in &target.outputs {
@@ -719,7 +754,7 @@ fn render_frozen(
         settings,
         start,
         looping,
-        kept * (warm + 1),
+        total,
         progress,
         replacements,
         taps,

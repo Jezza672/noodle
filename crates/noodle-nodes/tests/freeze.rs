@@ -1160,6 +1160,7 @@ fn a_loops_bounded_tail_crosses_the_wrap_and_an_unbounded_cluster_resets() {
     };
     assert_eq!(analysis.entries(target, &inside), specs);
     rig.freeze_passes(&[pass]);
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
     assert_eq!(rig.plan_for(&inside).state(auto), Some(&TargetState::Ready));
 
     let live = play_loop(&rig, None, region, 5 * lap_frames);
@@ -1169,9 +1170,14 @@ fn a_loops_bounded_tail_crosses_the_wrap_and_an_unbounded_cluster_resets() {
     // would be silent there.
     let second = laps(&live, 1);
     assert!(second[..lap_frames].iter().any(|&s| s.abs() > 0.01));
-    for lap in 1..4 {
-        // The first lap's samples were dropped with the fade, so lap 1 is
-        // the second.
+    // The first lap has not played the loop's end yet: it is silent for the
+    // delay, as a live first lap is, and not the steady lap.
+    assert!(
+        laps(&live, 0)[..lap_frames / 2 * 2]
+            .iter()
+            .all(|s| s.abs() < 1e-6)
+    );
+    for lap in 0..5 {
         assert_close(
             &laps(&cached, lap),
             &laps(&live, lap),
@@ -1223,4 +1229,53 @@ fn a_loops_bounded_tail_crosses_the_wrap_and_an_unbounded_cluster_resets() {
             .zip(&one)
             .any(|(a, b)| (a - b).abs() > 0.01)
     );
+}
+
+#[test]
+fn a_tail_longer_than_the_loop_gets_an_entry_for_each_lap_until_it_is_steady() {
+    // A 0.1 s delay in a 0.04 s loop: the clip's first laps reach the output
+    // two and a half laps late, so the first laps all differ.
+    let lap_ticks = SECOND / 25;
+    let lap_frames = RATE as usize / 25;
+    let region = (Tick(0), Tick(lap_ticks));
+    let mut rig = setup("loop-long-tail");
+    let group = clip_group(&mut rig, Some((noodle_nodes::DELAY_ID, 0.1)));
+    let auto = TargetKind::Auto(group);
+    let pass = Pass {
+        frames: lap_frames,
+        ..pass_at(&rig, 0).looping(region.0, region.1)
+    };
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    let required = analysis.requirements(target, &pass);
+    // The cluster remembers 2 s: about 50 laps, then the steady lap.
+    assert!(required.len() >= 50, "lap 1, the laps up to steady, steady");
+    let keys: std::collections::HashSet<_> = required
+        .iter()
+        .map(|specs| specs[0].key(&noodle_core::KeyBuilder::new("t").finish()))
+        .collect();
+    assert_eq!(keys.len(), required.len(), "an entry each");
+
+    let report = rig.freeze_passes(&[pass]);
+    assert_eq!(report.rendered.len(), required.len(), "a render each");
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
+    assert!(rig.freeze_passes(&[pass]).rendered.is_empty(), "all stored");
+
+    let laps = 60;
+    let live = play_loop(&rig, None, region, laps * lap_frames);
+    let cached = play_loop(&rig, Some(&pass), region, laps * lap_frames);
+    let lap =
+        |samples: &[f32], i: usize| samples[i * lap_frames * 2..(i + 1) * lap_frames * 2].to_vec();
+    // The tone only fills the first part of each lap's input, so the laps
+    // differ as the tail builds, and the live loop and the cache agree on all.
+    assert!(
+        lap(&live, 1)
+            .iter()
+            .zip(lap(&live, 3))
+            .any(|(a, b)| (a - b).abs() > 0.01),
+        "the early laps differ"
+    );
+    for i in 0..laps {
+        assert_close(&lap(&cached, i), &lap(&live, i), &format!("lap {i}"));
+    }
 }

@@ -92,11 +92,14 @@ No sound change; the golden renders are untouched.
   Pure clusters are served in any loop pass. The session no longer decides
   eligibility per pass: every pass before the loop's end is looked up, and each
   cluster is served or left live by its tier.
-- **Known limit.** The first lap of a looped pass has the steady-state tail of
-  the loop's end at its start, for bounded clusters.
+- **Lap by lap.** A bounded cluster in a loop is played from one entry per lap
+  until steady: lap 1 from an ordinary entry (no tail from the loop's end that
+  the pass has not played), laps 2 to `ceil(n / lap)` from entries rendered by
+  the engine looping (a tail longer than the loop differs in each), then the
+  steady lap. `CachedPlayer::then_laps` and `Lapped` count the wraps.
 - **Tests.** `freeze.rs`: a pure cluster is one entry for every start, a bounded
   cluster carries the clip from before a seek and serves a range of starts on
-  the bar grid, an unbounded one only its own start, and the loop test (a 0.1 s
-  delay carries its tail across the wrap, equal to a live loop from the second
-  lap; an oscillator resets and fades at the wrap); a session test for a loop.
-  Each was broken on purpose and caught (pure origin, warm-up laps, fade, grid).
+  the bar grid, an unbounded one only its own start, and the loop tests (a 0.1 s
+  delay carries its tail across the wrap, every lap equal to a live loop, also
+  when the tail is longer than the loop and each lap has its own entry; an oscillator resets and fades at the wrap); a session test for a loop.
+  Each was broken on purpose and caught (pure origin, warm-up laps, fade, grid, wrap counting, the transient laps, the lap key); `realtime.rs` runs a lapped player with no allocation.
