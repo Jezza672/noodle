@@ -127,8 +127,8 @@ safe default). `analyze` composes it into `NodeAnalysis::memory` along the
 longest path: a chain sums, parallel branches take the longest, `Unbounded`
 absorbs, and an offline node or a node on a feedback loop is `Unbounded`. A node
 type sets it with `Layout::memoryless()` / `bounded(ms)`, or
-`#[ports(memoryless)]` / `#[ports(bounded = ms)]` in the derive. Nothing uses
-the tiers yet; they are what the playback cache will pick its pre-roll by.
+`#[ports(memoryless)]` / `#[ports(bounded = ms)]` in the derive. The playback
+cache picks its entries by it (below).
 
 **Reset equals fresh.** The playback cache renders a pass from a fresh state at
 its start (ADR 0010), so `Node::reset` must put a node back into the state a new
@@ -195,10 +195,22 @@ stream opens; pausing and playing again carries on the same pass.
   track are applied to the cached signal, so a fader move or a solo changes no
   key and renders nothing, while a node inside the track changes only that
   track's key.
-- **Keys.** `pass_key(output_key, start tick)`; the rendered length is not in
-  it. In v1 every entry is keyed by its start, which is the unbounded rule
-  (valid only for that start). The tiers come with the next batch: position-pure
-  and bounded clusters will serve more starts.
+- **Tiers and keys.** An entry is the cluster rendered from a fresh state at
+  its *origin*, keyed `pass_key(output_key, origin)`; the rendered length is not
+  in it. The tier of the cluster (`Analysis::memory`: the longest of its
+  outputs') decides which origins serve a pass from S (`Analysis::entries`, best
+  first; the first is the one rendered when none exists):
+  - *Position-pure* (`Memory::None`): origin 0 serves every start. Passes for
+    0, the loop start and a seek share one entry, rendered once for the longest.
+  - *Bounded(n)*: an origin at or before S−n serves S, because what the cluster
+    remembers of the time before has died away. Origins are on a grid of one bar
+    (3840 ticks), so the starts in a stretch share an entry; the entry from 0
+    serves too. Warming is from a fresh state, so the pre-roll contains only
+    audio that played.
+  - *Unbounded*: origin S only.
+  A cluster with no entry for the pass stays live while the others play from
+  the cache. The entries upstream of a render stand in for it as for any freeze
+  (`EntrySpec::pass`).
 - **Playing.** `Freezer::plan(.., Some(pass))` gives the replacements for the
   entries that are ready; `CachedPlayer::starting_at(frame)` plays an entry
   from the pass's first frame (silent before it). A pass without entries plays
@@ -212,10 +224,23 @@ stream opens; pausing and playing again carries on the same pass.
   first, earlier entries standing in). A project with no groups, or no open
   stream, or `Session::set_auto_cache(false)`, does none of it. Export doesn't
   use the entries.
-- **Loops.** A pass that will wrap before it ends is live, unless it starts at
-  the loop's start: then the entry is the loop, and the player wraps inside it,
-  so every cluster restarts at the wrap. Bounded clusters should carry their
-  tails across the wrap; that is the tiered loop rule, in the next batch.
+- **Loops.** A pass that starts before the loop's end wraps there
+  (`Pass::looping`), and the tier decides what the wrap does, per cluster:
+  - *Pure*: the entry from 0, played with the loop; nothing to carry.
+  - *Bounded*: one **steady lap** of the loop, keyed by the loop. It is rendered
+    by the engine itself looping (`render_taps(.., looping, ..)`), from the
+    loop's start for `ceil(n / lap)` warm-up laps plus the lap that is kept, so
+    a reverb or delay tail from the end of the loop is at the start of the lap,
+    as in a live loop. The player loops inside it, and it serves every start
+    inside the loop. The first lap of a pass therefore has the steady-state tail
+    at its start, which a live first lap would not; that is the one place the
+    cache is not the pass-start truth.
+  - *Unbounded*: one lap rendered fresh from the loop's start, with its last 4 ms
+    faded out (`LoopKind::Faded`), so oscillator phase and voices reset at the
+    wrap without a click. Only a pass starting at the loop's start has it; from
+    elsewhere in the loop the cluster plays live.
+  - A pass that starts before the loop's start gets only the pure clusters from
+    the cache.
 
 **Rendering the cache.** `freeze` / `spawn_freeze` (`noodle-nodes`) renders
 every `Missing` target, upstream first, on a background thread. A target is

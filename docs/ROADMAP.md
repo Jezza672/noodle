@@ -33,8 +33,7 @@ need a person and hardware, plus a few deliberately deferred items.
 
 1. **The invariant and the keys.** Built: see [features/playback-cache.md](features/playback-cache.md).
 2. **Automatic group targets.** Built: see [features/playback-cache.md](features/playback-cache.md).
-3. **Tiers and cross-start reuse.** Pure entries valid for any start; bounded pre-roll from `S−n` with validity ranges; unbounded per-start entries; the tiered loop rule.
-   *Done when:* a seek to a new start reuses the pure and bounded clusters and re-renders only the unbounded ones; a loop's reverb tail crosses the wrap while oscillator phase and voice state reset.
+3. **Tiers and cross-start reuse.** Built: see [features/playback-cache.md](features/playback-cache.md).
 4. **Recursive partition.** Cut selection with group, join and fan-out cuts, the cost threshold, sink-first rendering and a sticky partition. Expensive-node and chain cuts, and section alignment, after the measured cost model.
    *Done when:* a drum rack or shared send is cached once and read twice; a cheap chain is not cached; moving or renaming a node does not invalidate the partition.
 5. **Visibility and docs.** Settings toggle, size and eviction readout, a "from cache" indicator and an underrun counter. Add the playback section to `docs/architecture/caching.md` and a feature record when it lands.

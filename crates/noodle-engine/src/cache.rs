@@ -20,10 +20,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use noodle_core::{CacheKey, Endpoint, KeyBuilder, NodeId, Project, Tick};
+use noodle_core::{CacheKey, Endpoint, KeyBuilder, NodeId, Project, TICKS_PER_QUARTER, Tick};
 
 use crate::compile::{Options, compile_with};
-use crate::{BufferId, EventBufferId, InputSource, Memory, Mode, Phase, Registry, Shape};
+use crate::{
+    BufferId, EventBufferId, InputSource, Memory, Mode, Phase, Registry, Shape, TempoTable,
+};
 
 /// What a key can depend on besides the graph.
 pub struct CacheEnv<'a> {
@@ -146,6 +148,10 @@ pub struct Analysis {
     pub nodes: BTreeMap<NodeId, NodeAnalysis>,
     /// What to render, upstream first.
     pub targets: Vec<Target>,
+    /// The tempo map the keys were made against, and the rate, to place an
+    /// entry's origin (see [`Analysis::entries`]).
+    tempo: TempoTable,
+    sample_rate: f32,
 }
 
 impl Analysis {
@@ -166,6 +172,86 @@ impl Analysis {
     ) -> Result<CacheKey, Uncacheable> {
         self.output_key(node, output)
             .map(|key| pass_key(&key, start))
+    }
+
+    /// How long a target remembers its input: the longest of its outputs'.
+    pub fn memory(&self, target: &Target) -> Memory {
+        target
+            .outputs
+            .iter()
+            .filter_map(|(node, _)| self.nodes.get(node))
+            .map(|info| info.memory)
+            .max()
+            .unwrap_or(Memory::Unbounded)
+    }
+
+    /// The entries that can serve `pass` for an automatic target, best first
+    /// (the first is the one to render when none exists). Empty means the
+    /// target can't be cached for this pass, and stays live.
+    ///
+    /// The tier of the cluster decides (ADR 0010):
+    ///
+    /// - *Position-pure* (`Memory::None`): one entry from 0 serves every
+    ///   start, in a loop too.
+    /// - *Bounded*: an entry rendered from a fresh state at or before `S−n`
+    ///   serves S, because what it remembers of the time before has died away
+    ///   by then. Origins are on a bar grid, and the one from 0 serves as
+    ///   well, so a seek within a stretch reuses the entry. In a loop it is
+    ///   a steady lap that includes the tail of the loop's end, and serves
+    ///   every start inside the loop.
+    /// - *Unbounded*: only an entry from a fresh state at S itself. In a loop
+    ///   that is the lap from the loop's start, reset at the wrap; a pass
+    ///   starting elsewhere in the loop leaves the cluster live.
+    pub fn entries(&self, target: &Target, pass: &Pass) -> Vec<EntrySpec> {
+        let tempo = &self.tempo;
+        let rate = f64::from(self.sample_rate);
+        let at = |tick: Tick| (tick, tempo.sample_at_tick(tick));
+        let linear = |(origin, origin_frame): (Tick, u64)| EntrySpec {
+            origin,
+            origin_frame,
+            frames: (pass.frame.saturating_sub(origin_frame) as usize) + pass.frames,
+            looping: None,
+        };
+        let lap = |from: Tick, to: Tick, kind: LoopKind| {
+            let (origin, origin_frame) = at(from);
+            EntrySpec {
+                origin,
+                origin_frame,
+                frames: tempo.sample_at_tick(to).saturating_sub(origin_frame) as usize,
+                looping: Some((from, to, kind)),
+            }
+        };
+        match (self.memory(target), pass.looping) {
+            (Memory::None, _) => vec![linear((Tick(0), 0))],
+            (Memory::Bounded(ms), Some((from, to))) => {
+                if pass.tick < from {
+                    return Vec::new();
+                }
+                let lap_frames = (tempo.sample_at_tick(to) - tempo.sample_at_tick(from)).max(1);
+                let remembered = (f64::from(ms) * rate / 1000.0).ceil() as u64;
+                let warm = (remembered.div_ceil(lap_frames) as usize).min(MAX_WARM_LAPS);
+                vec![lap(from, to, LoopKind::Steady { warm })]
+            }
+            (Memory::Bounded(ms), None) => {
+                let remembered = (f64::from(ms) * rate / 1000.0).ceil() as u64;
+                let before = pass.frame.saturating_sub(remembered);
+                let tick = (tempo.tick_at(before).floor() as i64).max(0);
+                let grid = Tick(tick.div_euclid(GRID_TICKS) * GRID_TICKS);
+                let mut specs = vec![linear(at(grid))];
+                if grid != Tick(0) {
+                    specs.push(linear((Tick(0), 0)));
+                }
+                specs
+            }
+            (Memory::Unbounded, Some((from, to))) => {
+                if pass.tick != from {
+                    return Vec::new();
+                }
+                let fade = (WRAP_FADE * self.sample_rate) as usize;
+                vec![lap(from, to, LoopKind::Faded { fade })]
+            }
+            (Memory::Unbounded, None) => vec![linear(at(pass.tick))],
+        }
     }
 
     /// Why a target can't be rendered, if it can't.
@@ -195,20 +281,108 @@ pub struct Pass {
     pub tick: Tick,
     /// The same place in samples, as of the tempo map the keys hold.
     pub frame: u64,
-    /// How many frames from the start an entry must hold to serve the pass.
+    /// How many frames from the start the pass plays before it ends or
+    /// reaches the end of the loop, which is where it wraps.
     pub frames: usize,
+    /// The transport's loop, if the pass will wrap at its end: the start is
+    /// before the loop's end. See [`Analysis::entries`] for the loop rule.
+    pub looping: Option<(Tick, Tick)>,
 }
 
 impl Pass {
-    /// A pass from `tick` that needs `frames` frames.
+    /// A pass from `tick` that needs `frames` frames and doesn't loop.
     pub fn new(tick: Tick, table: &crate::TempoTable, frames: usize) -> Self {
         Self {
             tick,
             frame: table.sample_at_tick(tick),
             frames,
+            looping: None,
+        }
+    }
+
+    /// The same pass, wrapping at the end of the loop from `from` to `to`.
+    #[must_use]
+    pub fn looping(self, from: Tick, to: Tick) -> Self {
+        Self {
+            looping: (self.tick < to).then_some((from, to)),
+            ..self
         }
     }
 }
+
+/// How an entry for a loop is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopKind {
+    /// For a cluster that remembers for a bounded time: the engine runs the
+    /// loop `warm` laps before the one that is kept, so the tail of the end
+    /// is in the start of it, as it is in a live loop.
+    Steady { warm: usize },
+    /// For a cluster that never forgets: one lap from a fresh state, which
+    /// is where the cluster is when it resets at the wrap. The last `fade`
+    /// frames fade out, so the reset doesn't click.
+    Faded { fade: usize },
+}
+
+/// A cached entry: the audio of a cluster, rendered from a fresh state at
+/// `origin`. What the tiers decide (ADR 0010) is which origins serve a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntrySpec {
+    /// Where the render starts from a fresh state; the entry's first frame.
+    pub origin: Tick,
+    pub origin_frame: u64,
+    /// How many frames from the origin the entry must hold. A loop's entry
+    /// is exactly one lap.
+    pub frames: usize,
+    /// Set for an entry made for a loop, which is not the same audio as a
+    /// plain entry from the same origin.
+    pub looping: Option<(Tick, Tick, LoopKind)>,
+}
+
+impl EntrySpec {
+    /// The key one output of the cluster is stored under.
+    pub fn key(&self, output_key: &CacheKey) -> CacheKey {
+        match self.looping {
+            None => pass_key(output_key, self.origin),
+            Some((from, to, kind)) => KeyBuilder::new("loop")
+                .key(output_key)
+                .u64(from.0 as u64)
+                .u64(to.0 as u64)
+                .u64(match kind {
+                    LoopKind::Steady { .. } => 0,
+                    LoopKind::Faded { .. } => 1,
+                })
+                .finish(),
+        }
+    }
+
+    /// Whether the entry is exactly `frames` long, rather than allowed to
+    /// grow (a loop's lap is the loop).
+    pub fn exact(&self) -> bool {
+        self.looping.is_some()
+    }
+
+    /// The pass a render of this entry stands in for, to find the entries
+    /// of the clusters upstream of it.
+    pub fn pass(&self) -> Pass {
+        Pass {
+            tick: self.origin,
+            frame: self.origin_frame,
+            frames: self.frames,
+            looping: match self.looping {
+                Some((from, to, LoopKind::Steady { .. })) => Some((from, to)),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// Bounded entries start on a grid of this many ticks (a bar of 4/4), so the
+/// starts in one stretch share an entry.
+const GRID_TICKS: i64 = 4 * TICKS_PER_QUARTER;
+/// The most laps a loop render is warmed for.
+const MAX_WARM_LAPS: usize = 64;
+/// How long a reset at a loop's wrap takes to fade, in seconds.
+const WRAP_FADE: f32 = 0.004;
 
 /// The key a cluster's output is stored under for a pass from `start`. The
 /// length of the pass is not in it: a render that is prefix-stable only grows.
@@ -237,7 +411,11 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
     };
     let (schedule, _) = compile_with(project.graph(), &lanes, registry, &options);
 
-    let mut analysis = Analysis::default();
+    let mut analysis = Analysis {
+        tempo: TempoTable::new(project.tempo_map(), env.sample_rate),
+        sample_rate: env.sample_rate,
+        ..Analysis::default()
+    };
     let mut signal_writers: HashMap<BufferId, (NodeId, usize)> = HashMap::new();
     let mut event_writers: HashMap<EventBufferId, (NodeId, usize)> = HashMap::new();
     let mut spectral_writers: HashMap<crate::SpectralBufferId, (NodeId, usize)> = HashMap::new();

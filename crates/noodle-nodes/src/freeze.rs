@@ -21,10 +21,10 @@ use std::sync::{Arc, Mutex};
 
 use noodle_core::{CacheKey, Endpoint, NodeId, Project, Tick};
 use noodle_engine::{
-    Analysis, CacheEnv, Cancelled, Diagnostic, InputKind, InputOrigin, Job, OfflineError,
-    OfflineInput, Pass, Problem, Progress, Registry, Replacements, Settings, StreamError, Tap,
-    Target, TargetKind, TempoTable, Uncacheable, analyze, apply_offset, render_offline_node,
-    render_taps,
+    Analysis, CacheEnv, Cancelled, Diagnostic, EntrySpec, InputKind, InputOrigin, Job, LoopKind,
+    OfflineError, OfflineInput, Pass, Problem, Progress, Registry, Replacements, Settings,
+    StreamError, Tap, Target, TargetKind, TempoTable, Uncacheable, analyze, apply_offset,
+    render_offline_node, render_taps,
 };
 use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Peek};
 
@@ -184,13 +184,34 @@ impl Freezer {
             && info.frames >= frames as u64
     }
 
+    /// Whether the cache holds `spec`'s entry for every output of an
+    /// automatic target, long enough.
+    pub fn entry_ready(
+        &self,
+        analysis: &Analysis,
+        target: &Target,
+        spec: &EntrySpec,
+        settings: Settings,
+    ) -> bool {
+        target.outputs.iter().all(|&(node, output)| {
+            let Ok(key) = analysis.output_key(node, output) else {
+                return false;
+            };
+            let lanes = analysis.nodes[&node].output_shapes[output].lanes();
+            self.store
+                .get(&spec.key(&key))
+                .is_some_and(|hit| Self::serves(hit.info(), settings, spec.frames, lanes))
+        })
+    }
+
     /// Which targets are in the cache, and what plays in place of them.
     /// `blocking` makes the players read in the calling thread, for renders.
     ///
     /// `pass` is the pass that is playing or about to: the automatic targets
     /// (the playback cache's own picks, see [`TargetKind::Auto`]) are looked
-    /// up for its start, and without one they are not part of the plan. The
-    /// other targets render from the start of the timeline and ignore it.
+    /// up for its start by their tier (see [`Analysis::entries`]), and
+    /// without one they are not part of the plan. The other targets render
+    /// from the start of the timeline and ignore it.
     pub fn plan(
         &self,
         analysis: &Analysis,
@@ -207,30 +228,34 @@ impl Freezer {
         for target in &analysis.targets {
             let offline = matches!(target.kind, TargetKind::Offline(_));
             let auto = matches!(target.kind, TargetKind::Auto(_));
-            // The entry covers the pass from its start; the others cover the
+            // An automatic target is cached per pass; the others cover the
             // timeline from 0.
-            let (start_frame, wanted_frames) = match (auto, pass) {
-                (true, Some(pass)) => (pass.frame, pass.frames),
+            let specs = match (auto, pass) {
+                (true, Some(pass)) => analysis.entries(target, pass),
                 (true, None) => continue,
-                (false, _) => (0, frames),
+                (false, _) => Vec::new(),
             };
-            let replace =
-                |plan: &mut FreezePlan, key: Option<CacheKey>, node: NodeId, output: usize| {
-                    let info = &analysis.nodes[&node];
-                    let shape = info.output_shapes[output];
-                    let mut player = match key {
-                        Some(key) => CachedPlayer::new(self.store.clone(), key, shape)
-                            .starting_at(start_frame),
-                        None => CachedPlayer::silent(self.store.clone(), shape),
-                    };
-                    if blocking {
-                        player = player.blocking();
+            let replace = |plan: &mut FreezePlan,
+                           key: Option<CacheKey>,
+                           start_frame: u64,
+                           node: NodeId,
+                           output: usize| {
+                let info = &analysis.nodes[&node];
+                let shape = info.output_shapes[output];
+                let mut player = match key {
+                    Some(key) => {
+                        CachedPlayer::new(self.store.clone(), key, shape).starting_at(start_frame)
                     }
-                    plan.replacements.insert(
-                        (node, info.output_ports[output].clone()),
-                        player.replacement(),
-                    );
+                    None => CachedPlayer::silent(self.store.clone(), shape),
                 };
+                if blocking {
+                    player = player.blocking();
+                }
+                plan.replacements.insert(
+                    (node, info.output_ports[output].clone()),
+                    player.replacement(),
+                );
+            };
             if let Some(why) = analysis.blocked(target) {
                 if offline {
                     plan.diagnostics.push(Diagnostic {
@@ -238,23 +263,42 @@ impl Freezer {
                         problem: Problem::NotCacheable(why.to_string()),
                     });
                     for &(node, output) in &target.outputs {
-                        replace(&mut plan, None, node, output);
+                        replace(&mut plan, None, 0, node, output);
                     }
                 }
                 plan.states.push((target.kind, TargetState::Blocked(why)));
+                continue;
+            }
+            if auto {
+                // Live for this pass: no entry can serve it.
+                if specs.is_empty() {
+                    continue;
+                }
+                match specs
+                    .iter()
+                    .find(|spec| self.entry_ready(analysis, target, spec, settings))
+                {
+                    Some(spec) => {
+                        for &(node, output) in &target.outputs {
+                            let key = analysis
+                                .output_key(node, output)
+                                .map(|key| spec.key(&key))
+                                .expect("a target that isn't blocked has keys");
+                            replace(&mut plan, Some(key), spec.origin_frame, node, output);
+                        }
+                        plan.states.push((target.kind, TargetState::Ready));
+                    }
+                    None => plan.states.push((target.kind, TargetState::Missing)),
+                }
                 continue;
             }
             let keys: Vec<(NodeId, usize, CacheKey)> = target
                 .outputs
                 .iter()
                 .map(|&(node, output)| {
-                    let key = match (target.kind, pass) {
-                        (TargetKind::Auto(_), Some(pass)) => {
-                            analysis.pass_key(node, output, pass.tick)
-                        }
-                        _ => analysis.output_key(node, output),
-                    }
-                    .expect("a target that isn't blocked has keys");
+                    let key = analysis
+                        .output_key(node, output)
+                        .expect("a target that isn't blocked has keys");
                     (node, output, key)
                 })
                 .collect();
@@ -262,17 +306,17 @@ impl Freezer {
                 let lanes = analysis.nodes[&node].output_shapes[output].lanes();
                 self.store
                     .get(&key)
-                    .is_some_and(|hit| Self::serves(hit.info(), settings, wanted_frames, lanes))
+                    .is_some_and(|hit| Self::serves(hit.info(), settings, frames, lanes))
             });
             if ready {
                 for &(node, output, key) in &keys {
-                    replace(&mut plan, Some(key), node, output);
+                    replace(&mut plan, Some(key), 0, node, output);
                 }
                 plan.states.push((target.kind, TargetState::Ready));
             } else {
                 if offline {
                     for &(node, output, _) in &keys {
-                        replace(&mut plan, None, node, output);
+                        replace(&mut plan, None, 0, node, output);
                     }
                 }
                 plan.states.push((target.kind, TargetState::Missing));
@@ -434,8 +478,10 @@ fn freeze_in(
 
     let analysis = freezer.analyze(&request.project, &registry, settings, frames, &request.base);
     let mut report = FreezeReport::default();
-    // Upstream first. An automatic target is looked at once per pass.
-    let mut todo: Vec<(&Target, Option<&Pass>)> = Vec::new();
+    // Upstream first. An automatic target is looked at once per pass, and
+    // passes that one entry serves (a position-pure cluster's, say) are
+    // rendered once, for the longest.
+    let mut todo: Vec<(&Target, Option<EntrySpec>)> = Vec::new();
     {
         let plan = freezer.plan(&analysis, settings, frames, true, None);
         let per_pass: Vec<FreezePlan> = passes
@@ -447,7 +493,21 @@ fn freeze_in(
                 for (pass, plan) in passes.iter().zip(&per_pass) {
                     match plan.state(target.kind) {
                         Some(TargetState::Ready) => report.cached.push(target.kind),
-                        Some(TargetState::Missing) => todo.push((target, Some(pass))),
+                        Some(TargetState::Missing) => {
+                            let Some(spec) = analysis.entries(target, pass).first().copied() else {
+                                continue;
+                            };
+                            let same = |(t, other): &&mut (&Target, Option<EntrySpec>)| {
+                                t.kind == target.kind
+                                    && other.is_some_and(|o| {
+                                        (o.origin, o.looping) == (spec.origin, spec.looping)
+                                    })
+                            };
+                            match todo.iter_mut().find(same) {
+                                Some((_, Some(have))) => have.frames = have.frames.max(spec.frames),
+                                _ => todo.push((target, Some(spec))),
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -465,11 +525,16 @@ fn freeze_in(
     let count = todo.len().max(1) as f32;
     progress.set_window(outer.0, outer.1);
     progress.report(0.0)?;
-    for (i, (target, pass)) in todo.into_iter().enumerate() {
+    for (i, (target, spec)) in todo.into_iter().enumerate() {
         let window = (outer.0 + outer.1 * i as f32 / count, outer.1 / count);
         progress.set_window(window.0, window.1);
+        if spec.is_some_and(|spec| freezer.entry_ready(&analysis, target, &spec, settings)) {
+            continue;
+        }
         // Rebuilt for each target: the one before it is in the cache now.
-        let plan = freezer.plan(&analysis, settings, frames, true, pass);
+        // An entry's render stands in the place of the pass it starts.
+        let pass = spec.map(|spec| spec.pass());
+        let plan = freezer.plan(&analysis, settings, frames, true, pass.as_ref());
         match target.kind {
             TargetKind::Frozen(_) | TargetKind::Auto(_) => render_frozen(
                 freezer,
@@ -479,7 +544,7 @@ fn freeze_in(
                 &analysis,
                 &plan.replacements,
                 target,
-                pass,
+                spec.as_ref(),
                 progress,
             )?,
             TargetKind::Offline(node) => render_offline(
@@ -583,29 +648,42 @@ fn render_frozen(
     analysis: &Analysis,
     replacements: &Replacements,
     target: &Target,
-    pass: Option<&Pass>,
+    spec: Option<&EntrySpec>,
     progress: &Progress,
 ) -> Result<(), FreezeError> {
     let settings = request.settings;
-    // From the pass start with a fresh state, or from the timeline's.
-    let (start, needed) = match pass {
-        Some(pass) => (pass.tick, pass.frames),
-        None => (Tick(0), request.frames),
+    // From a fresh state at the entry's origin, or from the timeline's.
+    let (start, needed, exact) = match spec {
+        Some(spec) => (spec.origin, spec.frames, spec.exact()),
+        None => (Tick(0), request.frames, false),
     };
-    let frames = grown(needed, settings.sample_rate);
+    // How many frames the entry keeps, and what the render does around them.
+    let kept = if exact {
+        needed
+    } else {
+        grown(needed, settings.sample_rate)
+    };
+    let (looping, warm, fade) = match spec.and_then(|spec| spec.looping) {
+        Some((from, to, LoopKind::Steady { warm })) => (Some((from, to)), warm, 0),
+        Some((_, _, LoopKind::Faded { fade })) => (None, 0, fade),
+        None => (None, 0, 0),
+    };
+    let skip = warm * kept;
     let mut entries = Vec::new();
     let mut taps = Vec::new();
     for &(node, output) in &target.outputs {
         let info = &analysis.nodes[&node];
-        let key = match pass {
-            Some(pass) => analysis.pass_key(node, output, pass.tick),
-            None => analysis.output_key(node, output),
-        }
-        .expect("a target to render has keys");
+        let key = analysis
+            .output_key(node, output)
+            .map(|key| spec.map_or(key, |spec| spec.key(&key)))
+            .expect("a target to render has keys");
         let lanes = info.output_shapes[output].lanes();
         let entry = Entry::open(freezer, &key, lanes, settings)?;
         let sink_entry = Arc::clone(&entry);
         let mut interleaved = Vec::new();
+        // Frames the tap has seen, to drop the warm-up laps and to place the
+        // fade.
+        let mut seen = 0;
         taps.push(Tap {
             endpoint: Endpoint::new(node, info.output_ports[output].clone()),
             sink: Box::new(move |signal| {
@@ -618,7 +696,19 @@ fn render_frozen(
                         interleaved[i * lanes + lane] = *sample;
                     }
                 }
-                sink_entry.write(&interleaved);
+                let dropped = skip.saturating_sub(seen).min(frames);
+                for i in dropped..frames {
+                    // The lap ends in a reset: its last frames fade out.
+                    let left = kept.saturating_sub(seen + i - skip);
+                    if left < fade {
+                        let gain = left as f32 / fade as f32;
+                        interleaved[i * lanes..(i + 1) * lanes]
+                            .iter_mut()
+                            .for_each(|sample| *sample *= gain);
+                    }
+                }
+                seen += frames;
+                sink_entry.write(&interleaved[dropped * lanes..]);
             }),
         });
         entries.push(entry);
@@ -628,7 +718,8 @@ fn render_frozen(
         registry,
         settings,
         start,
-        frames,
+        looping,
+        kept * (warm + 1),
         progress,
         replacements,
         taps,
@@ -638,7 +729,7 @@ fn render_frozen(
     }
     // A tap that never ran would store a short entry, which the app would
     // then render again forever.
-    if entries.iter().any(|entry| entry.frames() != frames) {
+    if entries.iter().any(|entry| entry.frames() != kept) {
         return Err(FreezeError::Render(match diagnostics.first() {
             Some(d) => format!(
                 "node {} produced no audio: {}",
@@ -721,6 +812,7 @@ fn render_offline(
             registry,
             settings,
             Tick(0),
+            None,
             frames,
             progress,
             replacements,
