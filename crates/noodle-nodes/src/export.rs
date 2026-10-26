@@ -150,7 +150,7 @@ pub fn export(
                 render.frames,
                 &render.base,
             );
-            let plan = freezer.plan(&analysis, settings, render.frames, true);
+            let plan = freezer.plan(&analysis, settings, render.frames, true, None);
             (plan.replacements, plan.diagnostics)
         }
         None => (noodle_engine::Replacements::new(), Vec::new()),

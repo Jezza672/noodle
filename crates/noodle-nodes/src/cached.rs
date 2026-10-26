@@ -51,6 +51,9 @@ pub struct CachedPlayer {
     key: Option<CacheKey>,
     shape: Shape,
     blocking: bool,
+    /// The timeline frame the entry's first frame belongs to: 0 for a render
+    /// of the whole project, the start of the pass for a pass's entry.
+    start: u64,
 }
 
 impl CachedPlayer {
@@ -63,6 +66,7 @@ impl CachedPlayer {
             key: Some(key),
             shape,
             blocking: false,
+            start: 0,
         }
     }
 
@@ -74,7 +78,16 @@ impl CachedPlayer {
             key: None,
             shape,
             blocking: false,
+            start: 0,
         }
+    }
+
+    /// Plays an entry rendered from a pass that began at timeline frame
+    /// `start`: its first frame is the sound at `start`, and before that the
+    /// player is silent.
+    #[must_use]
+    pub fn starting_at(self, start: u64) -> Self {
+        Self { start, ..self }
     }
 
     /// Reads on the calling thread instead of through a worker, for offline
@@ -92,7 +105,11 @@ impl CachedPlayer {
     pub fn replacement(self) -> Replacement {
         let name = self.key.map_or_else(|| "silent".into(), |key| key.to_hex());
         Replacement {
-            config: Config::new().with("render", Value::Text(name)),
+            // The start is part of the name: two passes' entries are two keys,
+            // but the same entry played from another frame is another player.
+            config: Config::new()
+                .with("render", Value::Text(name))
+                .with("start", Value::Text(self.start.to_string())),
             node_type: Arc::new(self),
         }
     }
@@ -133,9 +150,10 @@ impl NodeType for CachedPlayer {
                 audio,
                 scratch: Vec::new(),
                 lanes,
+                start: self.start,
             })
         } else {
-            Player::Streaming(Streaming::start(audio, lanes, setup.position))
+            Player::Streaming(Streaming::start(audio, lanes, setup.position, self.start))
         }))
     }
 }
@@ -177,6 +195,7 @@ struct Blocking {
     audio: CachedAudio,
     scratch: Vec<f32>,
     lanes: usize,
+    start: u64,
 }
 
 impl Blocking {
@@ -188,14 +207,17 @@ impl Blocking {
         if !ctx.transport.playing {
             return;
         }
-        self.scratch.resize(frames * self.lanes, 0.0);
+        let position = ctx.transport.position;
+        // Before the pass began there is nothing to play.
+        let lead = (self.start.saturating_sub(position) as usize).min(frames);
+        self.scratch.resize((frames - lead) * self.lanes, 0.0);
         let read = self
             .audio
-            .read_frames(ctx.transport.position, &mut self.scratch)
+            .read_frames(position.saturating_sub(self.start), &mut self.scratch)
             .unwrap_or(0);
         for lane in 0..shape.lanes() {
             let samples = out.lane_mut(lane / shape.channels, lane % shape.channels);
-            for (i, sample) in samples.iter_mut().take(read).enumerate() {
+            for (i, sample) in samples[lead..].iter_mut().take(read).enumerate() {
                 *sample = self.scratch[i * self.lanes + lane];
             }
         }
@@ -248,14 +270,17 @@ struct Streaming {
     /// A reset happened: the stream restarts at the playhead on the next
     /// block, since this side doesn't know where the playhead went.
     restart: bool,
+    /// The timeline frame the entry begins at; chunks are counted from it.
+    start: u64,
 }
 
 impl Streaming {
     /// Starts the worker at the chunk holding `position`, and has the next
     /// few chunks read before returning (this runs off the audio thread), so
     /// playback that is already under way doesn't open with a silent block.
-    fn start(audio: CachedAudio, lanes: usize, position: u64) -> Self {
-        let first = position / CHUNK as u64;
+    /// The entry begins at timeline frame `begin`.
+    fn start(audio: CachedAudio, lanes: usize, position: u64, begin: u64) -> Self {
+        let first = position.saturating_sub(begin) / CHUNK as u64;
         let (mut spent_tx, spent_rx) = RingBuffer::new(CHUNKS + 1);
         let (full_tx, full_rx) = RingBuffer::new(CHUNKS + 1);
         // One more than the worker can have in flight, for the chunk the
@@ -298,6 +323,7 @@ impl Streaming {
             current: None,
             loop_range: (0, 0),
             restart: false,
+            start: begin,
         }
     }
 
@@ -316,7 +342,13 @@ impl Streaming {
         let shape = out.shape();
         out.fill(0.0);
         let transport = &ctx.transport;
-        let range = transport.loop_range.unwrap_or((0, 0));
+        // The loop in the entry's own frames.
+        let range = transport.loop_range.map_or((0, 0), |(start, end)| {
+            (
+                start.saturating_sub(self.start),
+                end.saturating_sub(self.start),
+            )
+        });
         if range != self.loop_range {
             self.loop_range = range;
             self.shared.loop_start.store(range.0, Ordering::Relaxed);
@@ -324,7 +356,7 @@ impl Streaming {
         }
         if self.restart {
             self.restart = false;
-            self.seek(transport.position / CHUNK as u64);
+            self.seek(transport.position.saturating_sub(self.start) / CHUNK as u64);
         }
         if !transport.playing {
             return;
@@ -332,6 +364,12 @@ impl Streaming {
         let mut done = 0;
         while done < ctx.frames {
             let position = transport.position + done as u64;
+            if position < self.start {
+                // Before the pass began: silence, up to its first frame.
+                done += (ctx.frames - done).min((self.start - position) as usize);
+                continue;
+            }
+            let position = position - self.start;
             let index = position / CHUNK as u64;
             let offset = (position % CHUNK as u64) as usize;
             if !self.ensure(index) {
@@ -577,5 +615,36 @@ mod tests {
         let value = heard.expect("the stream never restarted");
         assert!(value >= 80_001.0, "{value}");
         assert_eq!((value - 1.0) % 64.0, 0.0, "{value}");
+    }
+
+    #[test]
+    fn a_pass_entry_plays_from_its_start_and_is_silent_before() {
+        let (_dir, store, key) = ramp();
+        // The entry is the sound from frame 1000 on: its first frame is 1.
+        for blocking in [true, false] {
+            let player = CachedPlayer::new(store.clone(), key, Shape::MONO).starting_at(1000);
+            let player = if blocking { player.blocking() } else { player };
+            // A block that straddles the start, then one wholly after it.
+            let mut h = Harness::starting_at(&player, &Config::new(), &[], RATE, 64, 968).unwrap();
+            h.run(64).unwrap();
+            let out = h.output(0).lane(0, 0).to_vec();
+            assert!(out[..32].iter().all(|&x| x == 0.0), "{blocking}");
+            let expected: Vec<f32> = (0..32).map(|i| (i + 1) as f32).collect();
+            assert_eq!(out[32..], expected[..], "{blocking}");
+            h.run(64).unwrap();
+            let out = h.output(0).lane(0, 0).to_vec();
+            let expected: Vec<f32> = (32..96).map(|i| (i + 1) as f32).collect();
+            assert_eq!(out, expected, "{blocking}");
+        }
+    }
+
+    #[test]
+    fn a_pass_entry_starting_past_the_playhead_waits_for_it() {
+        let (_dir, store, key) = ramp();
+        let player = CachedPlayer::new(store, key, Shape::MONO).starting_at(50_000);
+        // Built at the playhead, long before the entry's start.
+        let mut h = Harness::new(&player, &Config::new(), &[], RATE, 64).unwrap();
+        h.run(64).unwrap();
+        assert!(h.output(0).lane(0, 0).iter().all(|&x| x == 0.0));
     }
 }

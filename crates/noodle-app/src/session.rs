@@ -21,8 +21,8 @@ pub use library::LibraryEdit;
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
 use noodle_engine::{
-    Controller, Diagnostic, Registry, Settings, Telemetry, TempoTable, compile_replacing,
-    compile_with_lanes,
+    Controller, Diagnostic, Pass, Registry, Settings, TargetKind, Telemetry, TempoTable,
+    compile_replacing, compile_with_lanes,
 };
 use noodle_io::{
     AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, RecordError, Recorder, Stream,
@@ -260,8 +260,21 @@ pub struct Session {
     file_stamps: HashMap<PathBuf, Option<noodle_io::FileStamp>>,
     /// Clips the track inputs couldn't schedule, as of the last feed.
     clip_problems: Vec<ClipProblem>,
-    /// The renders behind frozen nodes and offline nodes.
+    /// The renders behind frozen nodes and offline nodes, and the playback
+    /// cache's own.
     freezing: Freezing,
+    /// Whether the playback cache picks groups to cache by itself. On by
+    /// default.
+    auto_cache: bool,
+    /// Where the current pass started: the last seek, or where the playhead
+    /// was when the stream opened. Pausing and playing again carries on the
+    /// same pass; only a jump begins a new one (ADR 0010).
+    pass_start: Tick,
+    /// The pass start whose cached entries the playing plan was built from,
+    /// if it was built from any.
+    serving: Option<Tick>,
+    /// The loop as of the last look, to notice it changing.
+    seen_loop: Option<(Tick, Tick)>,
     /// Where the playhead is while no stream is open, so it can be set and
     /// read when stopped, and playing starts from it.
     parked: Tick,
@@ -510,6 +523,10 @@ impl Session {
             stems: stems::Stems::new(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
+            auto_cache: true,
+            pass_start: Tick(0),
+            serving: None,
+            seen_loop: None,
             parked: Tick(0),
             loop_open: false,
             path: None,
@@ -1334,6 +1351,7 @@ impl Session {
         self.plugin_editors.clear();
         self.message = None;
         self.parked = Tick(0);
+        self.pass_start = Tick(0);
         self.recompile();
         // A new project starts from its beginning, running or not as the
         // last one's was.
@@ -1464,6 +1482,7 @@ impl Session {
                     if self.parked != Tick(0) {
                         audio.controller.transport().seek(self.parked);
                     }
+                    self.pass_start = self.parked;
                 }
             }
             Err(error) => self.message = Some(play_error(&error)),
@@ -1562,9 +1581,26 @@ impl Session {
         self.stop_recording();
         let tick = Tick(tick.0.max(0));
         self.parked = tick;
+        self.pass_start = tick;
         if let Some(audio) = &self.audio {
             audio.controller.transport().seek(tick);
         }
+        self.begin_pass(tick);
+    }
+
+    /// A pass begins at `tick` (ADR 0010). If the plan that is playing serves
+    /// another start from the cache it can't go on: it is recompiled at once,
+    /// for the new start's entries or live. Otherwise the cache is looked at
+    /// once the seeking pauses, so a drag of the playhead doesn't compile at
+    /// every step.
+    fn begin_pass(&mut self, tick: Tick) {
+        if !self.auto_possible() || self.serving == Some(tick) {
+            return;
+        }
+        if self.serving.is_some() {
+            self.recompile_with(false);
+        }
+        self.freezing.touch();
     }
 
     /// Closes the stream, keeping the playhead where it was.
@@ -1674,10 +1710,17 @@ impl Session {
             audio.controller.set_tempo_map(self.project.tempo_map());
         }
         // The loop is project state, so undo and loading change it too.
-        audio
-            .controller
-            .transport()
-            .set_loop(self.project.transport_loop().active());
+        let looping = self.project.transport_loop().active();
+        audio.controller.transport().set_loop(looping);
+        // A loop decides which passes the cache can serve.
+        if looping != self.seen_loop {
+            self.seen_loop = looping;
+            if self.serving.is_some() {
+                self.recompile_with(false);
+            }
+            self.freezing.touch();
+            return;
+        }
         let health = audio.playback.health();
         let now = Glitches {
             underruns: health.underruns(),
@@ -2181,9 +2224,59 @@ impl Session {
             .max((FREEZE_MINIMUM * rate) as usize)
     }
 
+    /// Whether the playback cache could be used now: it is on, a stream is
+    /// open and the project has a group to cache.
+    fn auto_possible(&self) -> bool {
+        self.auto_cache
+            && self.audio.is_some()
+            && self
+                .project
+                .graph()
+                .nodes()
+                .any(|(_, node)| node.type_id == noodle_core::group::GROUP && node.parent.is_none())
+    }
+
+    /// The pass the cache is looked up for, and the passes worth having
+    /// entries for: the one playing, then the hot starts, 0 and the loop's
+    /// start. `end` is the render length in frames.
+    ///
+    /// A pass whose loop would wrap before it ends is live unless it starts
+    /// at the loop's start: the loop rule for clusters that remember (a
+    /// reverb's tail across the wrap) comes with the tiers. From the loop's
+    /// start the entry is the loop, which restarts every cluster at the wrap.
+    fn cache_passes(&self, rate: f32, end: usize) -> (Option<Pass>, Vec<Pass>) {
+        if !self.auto_possible() {
+            return (None, Vec::new());
+        }
+        let table = TempoTable::new(self.project.tempo_map(), rate);
+        let looping = self.project.transport_loop().active();
+        let eligible = |start: Tick| match looping {
+            Some((from, to)) => start == from || start >= to,
+            None => true,
+        };
+        let pass = |start: Tick| {
+            let from = table.sample_at_tick(start) as usize;
+            let frames = match looping {
+                Some((l, to)) if l == start => {
+                    (table.sample_at_tick(to) as usize).saturating_sub(from)
+                }
+                _ => end.saturating_sub(from),
+            };
+            Pass::new(start, &table, frames.max(rate as usize))
+        };
+        let current = eligible(self.pass_start).then(|| pass(self.pass_start));
+        let mut wanted: Vec<Pass> = current.into_iter().collect();
+        for start in std::iter::once(Tick(0)).chain(looping.map(|(from, _)| from)) {
+            if eligible(start) && !wanted.iter().any(|p| p.tick == start) {
+                wanted.push(pass(start));
+            }
+        }
+        (current, wanted)
+    }
+
     /// Looks at the cache of renders for the project and starts the ones it
     /// lacks. Returns what plays in place of the cached nodes, if anything is
-    /// frozen or offline.
+    /// frozen or offline, or the playback cache has entries for the pass.
     fn refresh_freezing(&mut self, start: bool) -> Option<noodle_nodes::FreezePlan> {
         // Frozen audio is keyed by the rate it was rendered at, so use the
         // stream's, or a common one before a stream is open.
@@ -2195,11 +2288,9 @@ impl Session {
         let base = self.base().to_owned();
         let clips = self.clips.clone();
         // Only measured when something needs it: it looks at every audio file.
-        let frames = if Freezing::in_use(&self.project, &self.registry) {
-            self.freeze_frames(rate)
-        } else {
-            0
-        };
+        let needed = Freezing::in_use(&self.project, &self.registry) || self.auto_possible();
+        let frames = if needed { self.freeze_frames(rate) } else { 0 };
+        let (pass, passes) = self.cache_passes(rate, frames);
         let look = Look {
             project: &self.project,
             registry: &self.registry,
@@ -2209,13 +2300,45 @@ impl Session {
             start,
             extend_registry: self.extend_registry(),
             live: &|node| clips.is_live(node),
+            pass,
+            passes,
         };
-        match self.freezing.refresh(&look) {
+        let plan = match self.freezing.refresh(&look) {
             Ok(plan) => plan,
             Err(message) => {
                 self.message = Some(message);
                 None
             }
+        };
+        self.serving = plan
+            .as_ref()
+            .zip(pass)
+            .filter(|(plan, _)| {
+                plan.states.iter().any(|(kind, state)| {
+                    matches!(kind, TargetKind::Auto(_))
+                        && *state == noodle_nodes::TargetState::Ready
+                })
+            })
+            .map(|(_, pass)| pass.tick);
+        plan
+    }
+
+    /// The start of the pass whose cached entries are playing in place of
+    /// the groups the playback cache picked, if any are. The "from cache"
+    /// indicator that shows it comes with the batch on visibility.
+    #[cfg(test)]
+    pub fn cached_pass(&self) -> Option<Tick> {
+        self.serving
+    }
+
+    /// Turns the playback cache's own picks on or off. The explicit freeze
+    /// is not affected. The settings toggle that calls it comes with the
+    /// batch on visibility.
+    #[cfg(test)]
+    pub fn set_auto_cache(&mut self, on: bool) {
+        if self.auto_cache != on {
+            self.auto_cache = on;
+            self.recompile();
         }
     }
 
@@ -2798,6 +2921,102 @@ mod tests {
         })]);
         assert!(session.freeze_badges().is_empty());
         assert!(!session.freeze_pending());
+    }
+
+    /// The entries in the cache folder.
+    fn cached_entries(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|files| {
+                files
+                    .flatten()
+                    .filter(|file| file.path().extension().is_none_or(|e| e != "partial"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn stop_stop_play_plays_the_groups_from_the_cache_and_an_edit_renders_only_what_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().to_owned());
+        let (group, osc) = grouped_sine(&mut session);
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+
+        // The first pass is computed; the cache fills in behind it.
+        until(&mut session, "the group is cached", |s| {
+            s.cached_pass() == Some(Tick(0))
+        });
+        assert_eq!(cached_entries(dir.path()), 1);
+        // Group entries are not frozen nodes: nothing is badged.
+        assert!(session.freeze_badges().is_empty());
+
+        // Play, stop, stop (which rewinds), play: the same pass again, with
+        // nothing to render and the cache still playing.
+        session.play();
+        std::thread::sleep(Duration::from_millis(100));
+        session.stop();
+        session.stop();
+        assert_eq!(session.cached_pass(), Some(Tick(0)));
+        let tap = session.virtual_capture().expect("the virtual output");
+        tap.start();
+        session.play();
+        std::thread::sleep(Duration::from_millis(400));
+        let heard = tap.take();
+        let peak = heard.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+        assert!(peak > 0.01, "peak {peak}");
+        assert_eq!(session.cached_pass(), Some(Tick(0)));
+        assert!(!session.freeze_pending());
+        assert_eq!(cached_entries(dir.path()), 1);
+
+        // A fader move is after the cut: the entry stands.
+        let port = session.project().graph().group_ports(group).outputs[0].clone();
+        session.edit([Edit::Apply(Command::SetParam {
+            node: port.node,
+            key: port.control_key(noodle_core::group::GAIN),
+            value: Some(-12.0),
+        })]);
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(10));
+            session.maintain();
+        }
+        assert_eq!(session.cached_pass(), Some(Tick(0)));
+        assert_eq!(cached_entries(dir.path()), 1);
+
+        // A seek is a new pass: no entry for it yet, so it plays live, and
+        // the cache catches up for the new start.
+        session.seek(Tick(1000));
+        assert_eq!(session.cached_pass(), None);
+        until(&mut session, "the new start is cached", |s| {
+            s.cached_pass() == Some(Tick(1000))
+        });
+        assert_eq!(cached_entries(dir.path()), 2);
+
+        // Back at 0 the entry is there already.
+        session.seek(Tick(0));
+        until(&mut session, "the first start is served again", |s| {
+            s.cached_pass() == Some(Tick(0))
+        });
+        assert_eq!(cached_entries(dir.path()), 2);
+
+        // A node inside the group makes both entries stale. Only the pass
+        // playing (a hot start) is rendered again; the other start is
+        // rendered if it is played.
+        session.edit([Edit::Apply(Command::SetParam {
+            node: osc,
+            key: "frequency".into(),
+            value: Some(220.0),
+        })]);
+        until(&mut session, "the edit is cached", |s| {
+            s.cached_pass() == Some(Tick(0)) && !s.freeze_pending()
+        });
+        assert_eq!(cached_entries(dir.path()), 3);
+
+        // Turned off, everything plays live.
+        session.set_auto_cache(false);
+        assert_eq!(session.cached_pass(), None);
     }
 
     #[test]

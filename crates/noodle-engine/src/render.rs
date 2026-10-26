@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use noodle_core::{Endpoint, Graph, Project};
+use noodle_core::{Endpoint, Graph, Project, Tick};
 
 use crate::{
     Cancelled, Controller, Diagnostic, Instance, Layout, NodeError, NodeInfo, NodeType, Progress,
@@ -191,17 +191,19 @@ pub struct Tap {
     pub sink: TapSink,
 }
 
-/// Renders the project from the start for `frames` frames, delivering the
+/// Renders the project for `frames` frames from `start`, delivering the
 /// signal at each tap to its sink instead of mixing it to an output. Only the
 /// nodes that feed a tap run, so nothing plays and nothing with side effects
 /// is touched. Outputs in `replacements` play from their sources, which is
 /// how a render builds on caches that already exist.
 ///
 /// Progress and cancellation work as in [`render_project_streaming`].
+#[allow(clippy::too_many_arguments)]
 pub fn render_taps<E>(
     project: &Project,
     registry: &Registry,
     settings: Settings,
+    start: Tick,
     frames: usize,
     progress: &Progress,
     replacements: &Replacements,
@@ -233,6 +235,11 @@ pub fn render_taps<E>(
         .unzip();
     let diagnostics = controller.update_project_tapping(project, registry, replacements, &specs);
     drop(sinks);
+    // Every node starts fresh at `start`: what a pass that began with a seek
+    // there plays (ADR 0010).
+    if start.0 > 0 {
+        processor.start_at(start);
+    }
     // The taps sound this many frames late (plugin delay compensation), so
     // they drop that many from the front and the render runs that much longer.
     let latency = controller.output_latency();

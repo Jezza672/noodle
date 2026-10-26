@@ -19,11 +19,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use noodle_core::{CacheKey, Endpoint, NodeId, Project};
+use noodle_core::{CacheKey, Endpoint, NodeId, Project, Tick};
 use noodle_engine::{
     Analysis, CacheEnv, Cancelled, Diagnostic, InputKind, InputOrigin, Job, OfflineError,
-    OfflineInput, Problem, Progress, Registry, Replacements, Settings, StreamError, Tap, Target,
-    TargetKind, TempoTable, Uncacheable, analyze, apply_offset, render_offline_node, render_taps,
+    OfflineInput, Pass, Problem, Progress, Registry, Replacements, Settings, StreamError, Tap,
+    Target, TargetKind, TempoTable, Uncacheable, analyze, apply_offset, render_offline_node,
+    render_taps,
 };
 use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Peek};
 
@@ -173,22 +174,30 @@ impl Freezer {
         Job::spawn(move |progress| freezer.hash_files(&files, progress))
     }
 
-    fn wanted(settings: Settings, frames: usize, lanes: usize) -> CacheInfo {
-        CacheInfo {
-            channels: lanes,
-            sample_rate: settings.sample_rate.round() as u32,
-            frames: frames as u64,
-        }
+    /// Whether an entry serves a need of `frames` frames of `lanes` lanes. A
+    /// longer entry does: every key but an offline node's leaves the length
+    /// out, because a real-time node's output up to a frame doesn't depend on
+    /// how long the render went on, and an offline node's holds it.
+    fn serves(info: CacheInfo, settings: Settings, frames: usize, lanes: usize) -> bool {
+        info.channels == lanes
+            && info.sample_rate == settings.sample_rate.round() as u32
+            && info.frames >= frames as u64
     }
 
     /// Which targets are in the cache, and what plays in place of them.
     /// `blocking` makes the players read in the calling thread, for renders.
+    ///
+    /// `pass` is the pass that is playing or about to: the automatic targets
+    /// (the playback cache's own picks, see [`TargetKind::Auto`]) are looked
+    /// up for its start, and without one they are not part of the plan. The
+    /// other targets render from the start of the timeline and ignore it.
     pub fn plan(
         &self,
         analysis: &Analysis,
         settings: Settings,
         frames: usize,
         blocking: bool,
+        pass: Option<&Pass>,
     ) -> FreezePlan {
         let mut plan = FreezePlan {
             replacements: Replacements::new(),
@@ -197,12 +206,21 @@ impl Freezer {
         };
         for target in &analysis.targets {
             let offline = matches!(target.kind, TargetKind::Offline(_));
+            let auto = matches!(target.kind, TargetKind::Auto(_));
+            // The entry covers the pass from its start; the others cover the
+            // timeline from 0.
+            let (start_frame, wanted_frames) = match (auto, pass) {
+                (true, Some(pass)) => (pass.frame, pass.frames),
+                (true, None) => continue,
+                (false, _) => (0, frames),
+            };
             let replace =
                 |plan: &mut FreezePlan, key: Option<CacheKey>, node: NodeId, output: usize| {
                     let info = &analysis.nodes[&node];
                     let shape = info.output_shapes[output];
                     let mut player = match key {
-                        Some(key) => CachedPlayer::new(self.store.clone(), key, shape),
+                        Some(key) => CachedPlayer::new(self.store.clone(), key, shape)
+                            .starting_at(start_frame),
                         None => CachedPlayer::silent(self.store.clone(), shape),
                     };
                     if blocking {
@@ -230,9 +248,13 @@ impl Freezer {
                 .outputs
                 .iter()
                 .map(|&(node, output)| {
-                    let key = analysis
-                        .output_key(node, output)
-                        .expect("a target that isn't blocked has keys");
+                    let key = match (target.kind, pass) {
+                        (TargetKind::Auto(_), Some(pass)) => {
+                            analysis.pass_key(node, output, pass.tick)
+                        }
+                        _ => analysis.output_key(node, output),
+                    }
+                    .expect("a target that isn't blocked has keys");
                     (node, output, key)
                 })
                 .collect();
@@ -240,7 +262,7 @@ impl Freezer {
                 let lanes = analysis.nodes[&node].output_shapes[output].lanes();
                 self.store
                     .get(&key)
-                    .is_some_and(|hit| hit.info() == Self::wanted(settings, frames, lanes))
+                    .is_some_and(|hit| Self::serves(hit.info(), settings, wanted_frames, lanes))
             });
             if ready {
                 for &(node, output, key) in &keys {
@@ -343,7 +365,17 @@ pub fn spawn_freeze(
     freezer: Freezer,
     request: RenderRequest,
 ) -> Job<Result<FreezeReport, FreezeError>> {
-    Job::spawn(move |progress| freeze(&freezer, &request, progress))
+    spawn_freeze_passes(freezer, request, Vec::new())
+}
+
+/// [`spawn_freeze`] that also renders the automatic targets for each of
+/// `passes`, in order.
+pub fn spawn_freeze_passes(
+    freezer: Freezer,
+    request: RenderRequest,
+    passes: Vec<Pass>,
+) -> Job<Result<FreezeReport, FreezeError>> {
+    Job::spawn(move |progress| freeze_passes(&freezer, &request, &passes, progress))
 }
 
 /// [`spawn_freeze`] on the calling thread.
@@ -352,14 +384,37 @@ pub fn freeze(
     request: &RenderRequest,
     progress: &Progress,
 ) -> Result<FreezeReport, FreezeError> {
-    freeze_within(freezer, request, progress, (0.0, 1.0))
+    freeze_passes(freezer, request, &[], progress)
 }
 
-/// [`freeze`] reporting only into the part of `progress` from `outer.0` to
-/// `outer.0 + outer.1`, for a job that does more afterwards (an export).
+/// [`freeze_passes`] with no passes, reporting only into the part of
+/// `progress` from `outer.0` to `outer.0 + outer.1`, for a job that does more
+/// afterwards (an export).
 pub(crate) fn freeze_within(
     freezer: &Freezer,
     request: &RenderRequest,
+    progress: &Progress,
+    outer: (f32, f32),
+) -> Result<FreezeReport, FreezeError> {
+    freeze_in(freezer, request, &[], progress, outer)
+}
+
+/// [`freeze`] that also renders the automatic targets (the playback cache's
+/// own picks) for each pass in `passes`. An entry is the audio of a cluster
+/// for one pass start, rendered from a fresh state there.
+pub fn freeze_passes(
+    freezer: &Freezer,
+    request: &RenderRequest,
+    passes: &[Pass],
+    progress: &Progress,
+) -> Result<FreezeReport, FreezeError> {
+    freeze_in(freezer, request, passes, progress, (0.0, 1.0))
+}
+
+fn freeze_in(
+    freezer: &Freezer,
+    request: &RenderRequest,
+    passes: &[Pass],
     progress: &Progress,
     outer: (f32, f32),
 ) -> Result<FreezeReport, FreezeError> {
@@ -379,29 +434,44 @@ pub(crate) fn freeze_within(
 
     let analysis = freezer.analyze(&request.project, &registry, settings, frames, &request.base);
     let mut report = FreezeReport::default();
-    let mut todo: Vec<&Target> = Vec::new();
+    // Upstream first. An automatic target is looked at once per pass.
+    let mut todo: Vec<(&Target, Option<&Pass>)> = Vec::new();
     {
-        let plan = freezer.plan(&analysis, settings, frames, true);
+        let plan = freezer.plan(&analysis, settings, frames, true, None);
+        let per_pass: Vec<FreezePlan> = passes
+            .iter()
+            .map(|pass| freezer.plan(&analysis, settings, frames, true, Some(pass)))
+            .collect();
         for target in &analysis.targets {
+            if let TargetKind::Auto(_) = target.kind {
+                for (pass, plan) in passes.iter().zip(&per_pass) {
+                    match plan.state(target.kind) {
+                        Some(TargetState::Ready) => report.cached.push(target.kind),
+                        Some(TargetState::Missing) => todo.push((target, Some(pass))),
+                        _ => {}
+                    }
+                }
+                continue;
+            }
             match plan.state(target.kind) {
                 Some(TargetState::Ready) => report.cached.push(target.kind),
                 Some(TargetState::Blocked(why)) => {
                     report.blocked.push((target.kind, why.clone()));
                 }
-                _ => todo.push(target),
+                _ => todo.push((target, None)),
             }
         }
     }
     let count = todo.len().max(1) as f32;
     progress.set_window(outer.0, outer.1);
     progress.report(0.0)?;
-    for (i, target) in todo.into_iter().enumerate() {
+    for (i, (target, pass)) in todo.into_iter().enumerate() {
         let window = (outer.0 + outer.1 * i as f32 / count, outer.1 / count);
         progress.set_window(window.0, window.1);
         // Rebuilt for each target: the one before it is in the cache now.
-        let plan = freezer.plan(&analysis, settings, frames, true);
+        let plan = freezer.plan(&analysis, settings, frames, true, pass);
         match target.kind {
-            TargetKind::Frozen(_) => render_frozen(
+            TargetKind::Frozen(_) | TargetKind::Auto(_) => render_frozen(
                 freezer,
                 request,
                 &registry,
@@ -409,6 +479,7 @@ pub(crate) fn freeze_within(
                 &analysis,
                 &plan.replacements,
                 target,
+                pass,
                 progress,
             )?,
             TargetKind::Offline(node) => render_offline(
@@ -429,6 +500,18 @@ pub(crate) fn freeze_within(
     progress.set_window(outer.0, outer.1);
     progress.report(1.0)?;
     Ok(report)
+}
+
+/// How much longer than needed an entry is rendered, in seconds. A render's
+/// length is rounded up to a multiple of it, so a project that grows a little
+/// is still served by the entry it has. An entry grows when the need passes
+/// its end: it is rendered again, longer, under the same key.
+const GROW_SECONDS: f32 = 15.0;
+
+/// `frames` rounded up to the next step of growth.
+fn grown(frames: usize, sample_rate: f32) -> usize {
+    let step = ((GROW_SECONDS * sample_rate) as usize).max(1);
+    frames.div_ceil(step) * step
 }
 
 type Library = crate::Library;
@@ -500,16 +583,25 @@ fn render_frozen(
     analysis: &Analysis,
     replacements: &Replacements,
     target: &Target,
+    pass: Option<&Pass>,
     progress: &Progress,
 ) -> Result<(), FreezeError> {
     let settings = request.settings;
+    // From the pass start with a fresh state, or from the timeline's.
+    let (start, needed) = match pass {
+        Some(pass) => (pass.tick, pass.frames),
+        None => (Tick(0), request.frames),
+    };
+    let frames = grown(needed, settings.sample_rate);
     let mut entries = Vec::new();
     let mut taps = Vec::new();
     for &(node, output) in &target.outputs {
         let info = &analysis.nodes[&node];
-        let key = analysis
-            .output_key(node, output)
-            .expect("a target to render has keys");
+        let key = match pass {
+            Some(pass) => analysis.pass_key(node, output, pass.tick),
+            None => analysis.output_key(node, output),
+        }
+        .expect("a target to render has keys");
         let lanes = info.output_shapes[output].lanes();
         let entry = Entry::open(freezer, &key, lanes, settings)?;
         let sink_entry = Arc::clone(&entry);
@@ -535,7 +627,8 @@ fn render_frozen(
         &request.project,
         registry,
         settings,
-        request.frames,
+        start,
+        frames,
         progress,
         replacements,
         taps,
@@ -545,7 +638,7 @@ fn render_frozen(
     }
     // A tap that never ran would store a short entry, which the app would
     // then render again forever.
-    if entries.iter().any(|entry| entry.frames() != request.frames) {
+    if entries.iter().any(|entry| entry.frames() != frames) {
         return Err(FreezeError::Render(match diagnostics.first() {
             Some(d) => format!(
                 "node {} produced no audio: {}",
@@ -627,6 +720,7 @@ fn render_offline(
             &request.project,
             registry,
             settings,
+            Tick(0),
             frames,
             progress,
             replacements,

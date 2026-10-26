@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use noodle_core::{CacheKey, Endpoint, KeyBuilder, NodeId, Project};
+use noodle_core::{CacheKey, Endpoint, KeyBuilder, NodeId, Project, Tick};
 
 use crate::compile::{Options, compile_with};
 use crate::{BufferId, EventBufferId, InputSource, Memory, Mode, Phase, Registry, Shape};
@@ -126,12 +126,15 @@ pub enum TargetKind {
     Offline(NodeId),
     /// A node or group marked frozen.
     Frozen(NodeId),
+    /// A top-level group the playback cache picked by itself: cut before its
+    /// outputs' gain, mute and solo, and cached per pass start (ADR 0010).
+    Auto(NodeId),
 }
 
 impl TargetKind {
     pub fn node(self) -> NodeId {
         match self {
-            Self::Offline(node) | Self::Frozen(node) => node,
+            Self::Offline(node) | Self::Frozen(node) | Self::Auto(node) => node,
         }
     }
 }
@@ -152,6 +155,19 @@ impl Analysis {
         analysis.key.clone().map(|key| output_key(&key, output))
     }
 
+    /// The key one output of a target is stored under for a pass from
+    /// `start`: the output's key and the start. Explicit freezes and offline
+    /// nodes render from 0 for the whole project and use [`output_key`](Self::output_key).
+    pub fn pass_key(
+        &self,
+        node: NodeId,
+        output: usize,
+        start: Tick,
+    ) -> Result<CacheKey, Uncacheable> {
+        self.output_key(node, output)
+            .map(|key| pass_key(&key, start))
+    }
+
     /// Why a target can't be rendered, if it can't.
     pub fn blocked(&self, target: &Target) -> Option<Uncacheable> {
         if target.outputs.is_empty() {
@@ -168,6 +184,39 @@ impl Analysis {
     pub fn target(&self, kind: TargetKind) -> Option<&Target> {
         self.targets.iter().find(|t| t.kind == kind)
     }
+}
+
+/// Where a pass begins, and how much of it an entry has to cover. A pass is
+/// one run of the transport from a start (ADR 0010); its entries are rendered
+/// from a fresh state there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pass {
+    /// The start, which is what an entry is keyed by.
+    pub tick: Tick,
+    /// The same place in samples, as of the tempo map the keys hold.
+    pub frame: u64,
+    /// How many frames from the start an entry must hold to serve the pass.
+    pub frames: usize,
+}
+
+impl Pass {
+    /// A pass from `tick` that needs `frames` frames.
+    pub fn new(tick: Tick, table: &crate::TempoTable, frames: usize) -> Self {
+        Self {
+            tick,
+            frame: table.sample_at_tick(tick),
+            frames,
+        }
+    }
+}
+
+/// The key a cluster's output is stored under for a pass from `start`. The
+/// length of the pass is not in it: a render that is prefix-stable only grows.
+pub fn pass_key(output_key: &CacheKey, start: Tick) -> CacheKey {
+    KeyBuilder::new("pass")
+        .key(output_key)
+        .u64(start.0 as u64)
+        .finish()
 }
 
 /// The key one output of a node is stored under.
@@ -396,8 +445,21 @@ fn node_key(
     Ok(b.finish())
 }
 
-/// What to render, upstream first: each offline node's outputs, and the
-/// outputs a frozen node or group exposes.
+/// The outputs of the flattened graph that `endpoints` name, as node and
+/// output position.
+fn outputs_of(analysis: &Analysis, endpoints: &[Endpoint]) -> Vec<(NodeId, usize)> {
+    endpoints
+        .iter()
+        .filter_map(|e| {
+            let node = analysis.nodes.get(&e.node)?;
+            let port = node.output_ports.iter().position(|p| *p == e.port)?;
+            Some((e.node, port))
+        })
+        .collect()
+}
+
+/// What to render, upstream first: each offline node's outputs, the outputs
+/// a frozen node or group exposes, and the groups the playback cache picks.
 fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
     let mut targets = Vec::new();
     for (&id, node) in &analysis.nodes {
@@ -428,18 +490,32 @@ fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
                 .map(|port| Endpoint::new(frozen, port.clone()))
                 .collect()
         };
-        let outputs = endpoints
-            .iter()
-            .filter_map(|e| {
-                let node = analysis.nodes.get(&e.node)?;
-                let port = node.output_ports.iter().position(|p| *p == e.port)?;
-                Some((e.node, port))
-            })
-            .collect();
+        let outputs = outputs_of(analysis, &endpoints);
         targets.push(Target {
             kind: TargetKind::Frozen(frozen),
             outputs,
         });
+    }
+    // The playback cache's own picks: every top-level group that isn't
+    // frozen and can be cached whole, cut before its outputs' stages. A
+    // group that can't (a live input, a loop) is left to play live, and
+    // doesn't hold the others back.
+    for (id, node) in project.graph().nodes() {
+        if node.type_id != noodle_core::group::GROUP
+            || node.parent.is_some()
+            || project.frozen().contains(&id)
+        {
+            continue;
+        }
+        let endpoints = crate::flatten::group_sources(project.graph(), &keep, id);
+        let outputs = outputs_of(analysis, &endpoints);
+        let target = Target {
+            kind: TargetKind::Auto(id),
+            outputs,
+        };
+        if analysis.blocked(&target).is_none() {
+            targets.push(target);
+        }
     }
     // Upstream first: by the latest node a target reads from the schedule.
     let position: BTreeMap<NodeId, usize> = analysis

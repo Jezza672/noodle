@@ -249,10 +249,19 @@ fn worker(shared: &Shared, index: usize) {
                 drop(payload);
                 Next::Done
             });
-            let mut tasks = shared.tasks.lock().expect("pool lock");
-            let at = tasks.iter().position(|e| e.id == id).expect("running");
             let keep = next != Next::Done && !slot.cancelled.load(Ordering::SeqCst);
-            if keep {
+            if !keep {
+                // Drop the task while its entry still says it is running, so
+                // `Handle::close` can't see the entry gone before this has.
+                drop(task);
+                let mut tasks = shared.tasks.lock().expect("pool lock");
+                let at = tasks.iter().position(|e| e.id == id).expect("running");
+                let entry = tasks.remove(at);
+                drop(tasks);
+                drop(entry);
+            } else {
+                let mut tasks = shared.tasks.lock().expect("pool lock");
+                let at = tasks.iter().position(|e| e.id == id).expect("running");
                 let entry = &mut tasks[at];
                 entry.running = false;
                 entry.task = Some(task);
@@ -261,12 +270,6 @@ fn worker(shared: &Shared, index: usize) {
                     Next::After(d) => entry.due = Some(Instant::now() + d),
                     _ => entry.due = None,
                 }
-                drop(tasks);
-            } else {
-                let entry = tasks.remove(at);
-                drop(tasks);
-                drop(entry);
-                drop(task);
             }
             shared.finished.notify_all();
         }
@@ -277,22 +280,22 @@ fn worker(shared: &Shared, index: usize) {
 
 type Claimed = (u64, Arc<Slot>, Box<dyn Task>);
 
-/// Takes a task that is ready to run, and removes any that were dropped.
+/// Takes a task that is ready to run, and drops any that were cancelled.
 /// `next_due` collects the soonest time a sleeping task wants to run.
 fn claim(shared: &Shared, next_due: &mut Option<Instant>) -> Option<Claimed> {
-    let mut removed = Vec::new();
+    let mut cancelled = Vec::new();
     let mut tasks = shared.tasks.lock().expect("pool lock");
     let now = Instant::now();
     let mut claimed = None;
-    let mut at = 0;
-    while at < tasks.len() {
-        let entry = &mut tasks[at];
+    for entry in tasks.iter_mut() {
         if entry.running {
-            at += 1;
             continue;
         }
         if entry.slot.cancelled.load(Ordering::SeqCst) {
-            removed.push(tasks.remove(at));
+            // Dropped below, outside the lock, with the entry marked running
+            // until then: `Handle::close` waits for it.
+            entry.running = true;
+            cancelled.push((entry.id, entry.task.take().expect("not running")));
             continue;
         }
         let due = entry.due.is_some_and(|d| d <= now);
@@ -304,11 +307,16 @@ fn claim(shared: &Shared, next_due: &mut Option<Instant>) -> Option<Claimed> {
         } else if let Some(d) = entry.due {
             *next_due = Some(next_due.map_or(d, |n| n.min(d)));
         }
-        at += 1;
     }
     drop(tasks);
-    if !removed.is_empty() {
-        drop(removed);
+    if !cancelled.is_empty() {
+        let ids: Vec<u64> = cancelled.iter().map(|(id, _)| *id).collect();
+        drop(cancelled);
+        shared
+            .tasks
+            .lock()
+            .expect("pool lock")
+            .retain(|e| !ids.contains(&e.id));
         shared.finished.notify_all();
     }
     claimed
@@ -372,6 +380,45 @@ mod tests {
         let handle = io().spawn(Flag(dropped.clone()));
         handle.close();
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_task_closed_while_the_pool_is_busy_is_dropped_before_close_returns() {
+        // A worker that finds a cancelled task drops it itself; `close` must
+        // wait for that rather than see the entry gone and return.
+        struct SlowDrop(Arc<AtomicBool>);
+        impl Task for SlowDrop {
+            fn run(&mut self) -> Next {
+                Next::Idle
+            }
+        }
+        impl Drop for SlowDrop {
+            fn drop(&mut self) {
+                thread::sleep(Duration::from_millis(2));
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let busy = Arc::new(AtomicBool::new(true));
+        let count = Arc::new(AtomicUsize::new(0));
+        let ringer = io().spawn(Count(count.clone(), Next::Idle));
+        let bell = ringer.bell();
+        let keep_ringing = {
+            let busy = busy.clone();
+            thread::spawn(move || {
+                while busy.load(Ordering::SeqCst) {
+                    bell.ring();
+                    thread::yield_now();
+                }
+            })
+        };
+        for _ in 0..200 {
+            let dropped = Arc::new(AtomicBool::new(false));
+            let handle = io().spawn(SlowDrop(dropped.clone()));
+            handle.close();
+            assert!(dropped.load(Ordering::SeqCst));
+        }
+        busy.store(false, Ordering::SeqCst);
+        keep_ringing.join().unwrap();
     }
 
     #[test]

@@ -50,13 +50,14 @@ key(output) = hash(key(node), output index)
   whatever follows one). An offline node reads its whole input range, so a
   longer render is a different one. A real-time node's output up to a frame
   doesn't depend on how long the render goes on, so a lengthened project
-  doesn't change the key of a frozen real-time target. The store still holds
-  one length per key, and `Freezer::plan` calls an entry `Ready` only when its
-  length is the one wanted, so a lengthened project still renders such a
-  target again, over the same key (growing entries are the playback cache's
-  job, see the ROADMAP). The length reaches the last clip, automation point
-  or tempo change, plus a 4 s tail, and at least 30 s. Past it a frozen node
-  is silent.
+  doesn't change the key of a frozen real-time target. An entry is **ready**
+  when it is *at least* as long as needed (`Freezer::plan`), and entries
+  **grow**: a render's length is rounded up to a multiple of 15 s, so a project
+  that grows a little is still served by the entry it has, and one that grows
+  past its end is rendered again, longer, under the same key. (Growing is a
+  longer render from a fresh state, not a resumed one: DSP state is not
+  saved.) The length reaches the last clip, automation point or tempo change,
+  plus a 4 s tail, and at least 30 s. Past it a frozen node is silent.
 - **`max_frames`** (the largest block) is in every key: it is part of what
   the nodes were built with. Block-size-dependent behaviour (control-rate
   sampling of a parameter at the start of a block, say) would otherwise
@@ -127,7 +128,7 @@ longest path: a chain sums, parallel branches take the longest, `Unbounded`
 absorbs, and an offline node or a node on a feedback loop is `Unbounded`. A node
 type sets it with `Layout::memoryless()` / `bounded(ms)`, or
 `#[ports(memoryless)]` / `#[ports(bounded = ms)]` in the derive. Nothing uses
-the tiers yet; they are what the playback cache picks its pre-roll by.
+the tiers yet; they are what the playback cache will pick its pre-roll by.
 
 **Reset equals fresh.** The playback cache renders a pass from a fresh state at
 its start (ADR 0010), so `Node::reset` must put a node back into the state a new
@@ -177,6 +178,44 @@ transport's position as of the compile, and the player starts its worker at
 the chunk holding it and reads the next few chunks before the plan is sent
 (instantiation is off the audio thread), so the first block after the swap
 plays instead of waiting for the worker.
+
+**The playback cache.** On top of the freeze machinery, the app caches by
+itself (ADR 0010, ROADMAP "Playback cache"). A **pass** is one run of the
+transport from a start S; an entry is the audio of one cluster for one S,
+rendered from a fresh state there (`render_taps` starts the engine with
+`Processor::start_at`, which is a seek that needs no fade). The session
+(`Session::pass_start`) begins a pass at each seek, and at the playhead when the
+stream opens; pausing and playing again carries on the same pass.
+
+- **Targets.** `TargetKind::Auto(group)` is every top-level group that is not
+  frozen and can be cached whole; one that can't (a live input, a loop, a
+  monitored track) is left live and doesn't hold the others back. A group
+  inside a group is part of the outer cluster. The cut is *before the group's
+  output stages* (`flatten::group_sources`): the gain, mute and solo of a
+  track are applied to the cached signal, so a fader move or a solo changes no
+  key and renders nothing, while a node inside the track changes only that
+  track's key.
+- **Keys.** `pass_key(output_key, start tick)`; the rendered length is not in
+  it. In v1 every entry is keyed by its start, which is the unbounded rule
+  (valid only for that start). The tiers come with the next batch: position-pure
+  and bounded clusters will serve more starts.
+- **Playing.** `Freezer::plan(.., Some(pass))` gives the replacements for the
+  entries that are ready; `CachedPlayer::starting_at(frame)` plays an entry
+  from the pass's first frame (silent before it). A pass without entries plays
+  live, and the render swaps in when it finishes, as for a freeze. A seek while
+  entries for another start are playing recompiles at once; otherwise the cache
+  is looked at when the seeking pauses (the same 250 ms debounce an edit uses),
+  so dragging the playhead doesn't compile per step.
+- **Rendering.** While a stream is open, `Freezing` renders the entries that
+  are missing for the pass that is playing and the hot starts, 0 and the loop's
+  start, in that order (`freeze_passes`; one job, a target at a time, upstream
+  first, earlier entries standing in). A project with no groups, or no open
+  stream, or `Session::set_auto_cache(false)`, does none of it. Export doesn't
+  use the entries.
+- **Loops.** A pass that will wrap before it ends is live, unless it starts at
+  the loop's start: then the entry is the loop, and the player wraps inside it,
+  so every cluster restarts at the wrap. Bounded clusters should carry their
+  tails across the wrap; that is the tiered loop rule, in the next batch.
 
 **Rendering the cache.** `freeze` / `spawn_freeze` (`noodle-nodes`) renders
 every `Missing` target, upstream first, on a background thread. A target is

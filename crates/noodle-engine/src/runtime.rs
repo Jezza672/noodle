@@ -609,6 +609,18 @@ impl Processor {
         self.control.publish(self.position);
     }
 
+    /// Puts the playhead at `tick` with every node fresh, at once, as if the
+    /// engine had been told to start there. For offline renders, which have
+    /// no output to fade: a live seek waits for the output to go quiet, and
+    /// the blocks it takes to get there play at the old position. Call it
+    /// after the project is sent and before the first block.
+    pub fn start_at(&mut self, tick: noodle_core::Tick) {
+        self.install_new_plans();
+        self.position = self.table.sample_at_tick(tick);
+        self.reset_nodes();
+        self.control.publish(self.position);
+    }
+
     /// The loop's start and end in samples, if it's on and not empty.
     fn loop_samples(&self) -> Option<(u64, u64)> {
         let (start, end) = self.control.loop_range()?;

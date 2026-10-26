@@ -10,13 +10,13 @@ use noodle_core::{
     Tick,
 };
 use noodle_engine::{
-    Analysis, Controller, OUTPUT_ID, Processor, Progress, Registry, Settings, TargetKind,
+    Analysis, Controller, OUTPUT_ID, Pass, Processor, Progress, Registry, Settings, TargetKind,
     TempoTable, engine,
 };
 use noodle_io::{CacheStore, write_wav};
 use noodle_nodes::{
-    FreezeError, Freezer, RenderRequest, TRACK_INPUT_ID, TargetState, freeze, register_library,
-    register_library_blocking,
+    FreezeError, Freezer, RenderRequest, TRACK_INPUT_ID, TargetState, freeze, freeze_passes,
+    register_library, register_library_blocking,
 };
 
 const RATE: u32 = 48_000;
@@ -142,7 +142,9 @@ impl Rig {
         let analysis = self
             .freezer
             .analyze(&self.project, &registry, SETTINGS, FRAMES, &self.base);
-        let plan = self.freezer.plan(&analysis, SETTINGS, FRAMES, blocking);
+        let plan = self
+            .freezer
+            .plan(&analysis, SETTINGS, FRAMES, blocking, None);
         let (mut controller, mut processor) = engine(SETTINGS).unwrap();
         controller.update_project_replacing(&self.project, &registry, &plan.replacements);
         if !blocking {
@@ -216,7 +218,9 @@ fn an_offline_node_plays_its_cached_render() {
     assert!(original.iter().any(|&s| s.abs() > 0.01));
 
     // Until it is rendered an offline node plays silence.
-    let before = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    let before = rig
+        .freezer
+        .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(
         before.state(offline_kind(reverse)),
         Some(&TargetState::Missing)
@@ -261,7 +265,9 @@ fn an_offline_node_renders_again_when_something_upstream_changes() {
         id: clip_id,
         clip: quieter,
     });
-    let plan = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    let plan = rig
+        .freezer
+        .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(
         plan.state(offline_kind(reverse)),
         Some(&TargetState::Missing)
@@ -305,7 +311,7 @@ fn live_input_cant_be_cached() {
     rig.wire((input, "out"), (reverse, "in"));
     rig.wire((reverse, "out"), (out, "in"));
     let analysis = rig.analyze();
-    let plan = rig.freezer.plan(&analysis, SETTINGS, FRAMES, true);
+    let plan = rig.freezer.plan(&analysis, SETTINGS, FRAMES, true, None);
     let Some(TargetState::Blocked(why)) = plan.state(offline_kind(reverse)) else {
         panic!("expected the offline node to be blocked");
     };
@@ -334,7 +340,9 @@ fn a_missing_file_is_not_cached() {
     let mut rig = setup("missing");
     let (_, reverse, _) = rig.clip_chain(Some(REVERSE));
     std::fs::remove_file(rig.base.join("tone.wav")).unwrap();
-    let plan = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    let plan = rig
+        .freezer
+        .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert!(matches!(
         plan.state(offline_kind(reverse.unwrap())),
         Some(TargetState::Blocked(_))
@@ -399,14 +407,16 @@ fn a_frozen_group_plays_from_the_cache_and_stops_running_live() {
     });
     let frozen = TargetKind::Frozen(group);
     let analysis = rig.analyze();
-    let plan = rig.freezer.plan(&analysis, SETTINGS, FRAMES, true);
+    let plan = rig.freezer.plan(&analysis, SETTINGS, FRAMES, true, None);
     assert_eq!(plan.state(frozen), Some(&TargetState::Missing));
     // Not rendered yet: it plays live, so nothing is replaced.
     assert!(plan.replacements.is_empty());
     assert_close(&rig.play(true, None), &live, "frozen but not rendered");
 
     assert_eq!(rig.freeze().rendered, [frozen]);
-    let plan = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    let plan = rig
+        .freezer
+        .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(plan.state(frozen), Some(&TargetState::Ready));
     assert_close(&rig.play(true, None), &live, "frozen");
     assert_close(
@@ -442,7 +452,9 @@ fn a_frozen_group_plays_from_the_cache_and_stops_running_live() {
         key: "frequency".into(),
         value: Some(440.0),
     });
-    let plan = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    let plan = rig
+        .freezer
+        .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(plan.state(frozen), Some(&TargetState::Missing));
     assert!(plan.replacements.is_empty());
     let retuned = rig.live();
@@ -499,7 +511,9 @@ fn an_offline_node_after_a_spectral_chain_renders_again_when_the_chain_changes()
         key: "threshold".into(),
         value: Some(-20.0),
     });
-    let plan = rig.freezer.plan(&rig.analyze(), SETTINGS, FRAMES, true);
+    let plan = rig
+        .freezer
+        .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(
         plan.state(offline_kind(reverse)),
         Some(&TargetState::Missing)
@@ -653,4 +667,303 @@ fn the_warp_preview_is_in_the_key_of_a_warped_clip() {
     };
     let (normal, preview) = warped(&mut setup("preview-key"));
     assert_ne!(normal, preview);
+}
+
+// The playback cache's automatic targets: top-level groups, cut before their
+// outputs' stages, and keyed by the start of the pass (ADR 0010).
+
+/// Blocks of output skipped after a seek, which fades out and back in.
+const FADE_SKIP: usize = 2 * 512 * 2;
+
+/// A second group like [`synth_group`]'s, at other node IDs.
+fn second_group(rig: &mut Rig) -> (NodeId, NodeId) {
+    let osc = rig.add(11, "noodle.osc.saw");
+    let gain = rig.add(12, noodle_nodes::GAIN_ID);
+    let out = rig.add(13, OUTPUT_ID);
+    rig.wire((osc, "out"), (gain, "in"));
+    rig.wire((gain, "out"), (out, "in"));
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let (group, command) = noodle_core::group::group_nodes(&project, &[osc, gain], || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    (group, osc)
+}
+
+fn pass_at(rig: &Rig, tick: i64) -> Pass {
+    let table = TempoTable::new(rig.project.tempo_map(), SETTINGS.sample_rate);
+    Pass::new(Tick(tick), &table, FRAMES)
+}
+
+impl Rig {
+    fn freeze_passes(&self, passes: &[Pass]) -> noodle_nodes::FreezeReport {
+        freeze_passes(&self.freezer, &self.request(), passes, &Progress::new()).unwrap()
+    }
+
+    fn plan_for(&self, pass: &Pass) -> noodle_nodes::FreezePlan {
+        self.freezer
+            .plan(&self.analyze(), SETTINGS, FRAMES, true, Some(pass))
+    }
+
+    /// The project played from `pass`'s start after a seek, with the cache
+    /// standing in for the automatic targets or not at all. The first blocks,
+    /// where the seek fades, are dropped.
+    fn play_pass(&self, pass: &Pass, cached: bool) -> Vec<f32> {
+        self.play_seek(pass, cached.then_some(pass))
+    }
+
+    /// [`play_pass`](Self::play_pass) that seeks to `seek`'s start but takes
+    /// the cache entries of `entries`' (none: live).
+    fn play_seek(&self, seek: &Pass, entries: Option<&Pass>) -> Vec<f32> {
+        let mut registry = Registry::with_builtins();
+        let library = register_library_blocking(&mut registry);
+        let table = TempoTable::new(self.project.tempo_map(), SETTINGS.sample_rate);
+        library
+            .clips
+            .update(&self.project, &table, RATE, &self.base);
+        let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+        if let Some(entries) = entries {
+            let plan = self.plan_for(entries);
+            controller.update_project_replacing(&self.project, &registry, &plan.replacements);
+        } else {
+            controller.update_project(&self.project, &registry);
+        }
+        controller.transport().seek(seek.tick);
+        run(&mut controller, &mut processor, None)[FADE_SKIP..].to_vec()
+    }
+
+    fn set_group_gain(&mut self, group: NodeId, db: f32) {
+        let port = self.project.graph().group_ports(group).outputs[0].clone();
+        self.apply(Command::SetParam {
+            node: port.node,
+            key: port.control_key(noodle_core::group::GAIN),
+            value: Some(db),
+        });
+    }
+}
+
+/// About half a second at 120 bpm, not a whole number of cycles of the tones.
+const SEEK_TICK: i64 = 1000;
+
+#[test]
+fn a_group_is_cached_per_pass_start_and_plays_what_a_seek_there_plays() {
+    let mut rig = setup("auto");
+    let (group, osc, _) = synth_group(&mut rig);
+    let auto = TargetKind::Auto(group);
+    let analysis = rig.analyze();
+    assert!(analysis.target(auto).is_some());
+    // Without a pass, the automatic targets are not part of the plan.
+    let plan = rig.freezer.plan(&analysis, SETTINGS, FRAMES, true, None);
+    assert_eq!(plan.state(auto), None);
+
+    let (start, later) = (pass_at(&rig, 0), pass_at(&rig, SEEK_TICK));
+    assert_eq!(
+        rig.plan_for(&later).state(auto),
+        Some(&TargetState::Missing)
+    );
+    assert!(rig.plan_for(&later).replacements.is_empty());
+
+    // One entry per start: rendering the later one leaves the first missing.
+    assert_eq!(rig.freeze_passes(&[later]).rendered, [auto]);
+    assert_eq!(rig.plan_for(&later).state(auto), Some(&TargetState::Ready));
+    assert_eq!(
+        rig.plan_for(&start).state(auto),
+        Some(&TargetState::Missing)
+    );
+    assert_eq!(rig.freeze_passes(&[later]).cached, [auto]);
+    assert_eq!(rig.freeze_passes(&[start, later]).rendered, [auto]);
+
+    for pass in [&start, &later] {
+        let live = rig.play_pass(pass, false);
+        assert!(live.iter().any(|&s| s.abs() > 0.01));
+        assert_close(&rig.play_pass(pass, true), &live, "a cached pass");
+    }
+    // A pass is not served by another start's entry: the sine's phase starts
+    // at its start, and the entry for 0 is in the wrong place at the later one.
+    let wrong = rig.play_seek(&later, Some(&start));
+    let right = rig.play_pass(&later, false);
+    assert!(wrong.iter().zip(&right).any(|(a, b)| (a - b).abs() > 0.01));
+
+    // The nodes that made the sound no longer run.
+    let mut registry = Registry::with_builtins();
+    let _ = register_library_blocking(&mut registry);
+    let lanes: Vec<_> = rig.project.lanes().collect();
+    let (schedule, _) = noodle_engine::compile_replacing(
+        rig.project.graph(),
+        &lanes,
+        &registry,
+        &rig.plan_for(&later).replacements,
+    );
+    assert!(schedule.nodes.iter().all(|n| n.id != osc));
+    assert!(
+        schedule
+            .nodes
+            .iter()
+            .any(|n| n.node_type.info().id == noodle_nodes::CACHED_ID)
+    );
+}
+
+#[test]
+fn a_fader_move_leaves_a_groups_entry_alone_and_an_edit_inside_replaces_it() {
+    let mut rig = setup("fader");
+    let (group, osc, _) = synth_group(&mut rig);
+    let auto = TargetKind::Auto(group);
+    let pass = pass_at(&rig, 0);
+    rig.freeze_passes(&[pass]);
+    let key = |rig: &Rig| {
+        let target = rig.analyze().target(auto).unwrap().clone();
+        let (node, output) = target.outputs[0];
+        rig.analyze().pass_key(node, output, pass.tick).unwrap()
+    };
+    let before = key(&rig);
+
+    // Gain and mute are applied after the cut: the entry stands, and the
+    // sound has the fader's effect.
+    rig.set_group_gain(group, -12.0);
+    assert_eq!(key(&rig), before);
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
+    assert!(rig.freeze_passes(&[pass]).rendered.is_empty());
+    let live = rig.play_pass(&pass, false);
+    assert_close(&rig.play_pass(&pass, true), &live, "after the fader moved");
+    let port = rig.project.graph().group_ports(group).outputs[0].clone();
+    rig.apply(Command::SetParam {
+        node: port.node,
+        key: port.control_key(noodle_core::group::MUTE),
+        value: Some(1.0),
+    });
+    assert_eq!(key(&rig), before);
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
+
+    // A node inside is not.
+    rig.apply(Command::SetParam {
+        node: osc,
+        key: "frequency".into(),
+        value: Some(440.0),
+    });
+    assert_ne!(key(&rig), before);
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Missing));
+    assert_eq!(rig.freeze_passes(&[pass]).rendered, [auto]);
+}
+
+#[test]
+fn changing_a_node_inside_one_group_renders_only_that_group_again() {
+    let mut rig = setup("two-groups");
+    let (first, _, _) = synth_group(&mut rig);
+    let (second, saw) = second_group(&mut rig);
+    let pass = pass_at(&rig, 0);
+    let both = rig.freeze_passes(&[pass]);
+    assert_eq!(
+        both.rendered,
+        [TargetKind::Auto(first), TargetKind::Auto(second)]
+    );
+    assert_eq!(rig.freeze_passes(&[pass]).rendered, []);
+
+    rig.apply(Command::SetParam {
+        node: saw,
+        key: "frequency".into(),
+        value: Some(220.0),
+    });
+    let again = rig.freeze_passes(&[pass]);
+    assert_eq!(again.rendered, [TargetKind::Auto(second)]);
+    assert_eq!(again.cached, [TargetKind::Auto(first)]);
+    let live = rig.play_pass(&pass, false);
+    assert_close(&rig.play_pass(&pass, true), &live, "two cached groups");
+}
+
+#[test]
+fn a_group_that_cant_be_cached_is_left_live_and_the_others_still_are() {
+    let mut rig = setup("auto-live");
+    let input = rig.add(31, noodle_engine::INPUT_ID);
+    let gain = rig.add(32, noodle_nodes::GAIN_ID);
+    let out = rig.add(33, OUTPUT_ID);
+    rig.wire((input, "out"), (gain, "in"));
+    rig.wire((gain, "out"), (out, "in"));
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let (live_group, command) = noodle_core::group::group_nodes(&project, &[input, gain], || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    let (synth, _, _) = synth_group(&mut rig);
+    let analysis = rig.analyze();
+    assert!(analysis.target(TargetKind::Auto(live_group)).is_none());
+    assert!(analysis.target(TargetKind::Auto(synth)).is_some());
+}
+
+#[test]
+fn only_top_level_groups_that_arent_frozen_are_targets() {
+    let mut rig = setup("auto-which");
+    let (group, osc, _) = synth_group(&mut rig);
+    // A group inside a group is part of the outer one's cluster.
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let (inner, command) = noodle_core::group::group_nodes(&project, &[osc], || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    let analysis = rig.analyze();
+    assert!(analysis.target(TargetKind::Auto(group)).is_some());
+    assert!(analysis.target(TargetKind::Auto(inner)).is_none());
+
+    // A group the user froze is theirs.
+    rig.apply(Command::SetFrozen {
+        node: group,
+        frozen: true,
+    });
+    let analysis = rig.analyze();
+    assert!(analysis.target(TargetKind::Auto(group)).is_none());
+    assert!(analysis.target(TargetKind::Frozen(group)).is_some());
+}
+
+#[test]
+fn an_entry_grows_with_the_project_instead_of_rendering_again() {
+    let mut rig = setup("grow");
+    let (group, _, _) = synth_group(&mut rig);
+    let auto = TargetKind::Auto(group);
+    let frozen_node = rig.add(21, noodle_nodes::GAIN_ID);
+    rig.apply(Command::SetFrozen {
+        node: frozen_node,
+        frozen: true,
+    });
+    let pass = pass_at(&rig, 0);
+    rig.freeze_passes(&[pass]);
+
+    // A project a little longer is served by the same entries: a real-time
+    // node's output up to a frame doesn't depend on how long the render goes.
+    let longer = FRAMES + 20_000;
+    let analysis = rig.analyze();
+    let mut longer_pass = pass;
+    longer_pass.frames = longer;
+    let plan = rig
+        .freezer
+        .plan(&analysis, SETTINGS, longer, true, Some(&longer_pass));
+    assert_eq!(plan.state(auto), Some(&TargetState::Ready));
+    assert_eq!(
+        plan.state(TargetKind::Frozen(frozen_node)),
+        Some(&TargetState::Ready)
+    );
+
+    // Past the end of the entry it must grow: rendered again, under the same
+    // key, and then ready.
+    let way_longer = 40 * RATE as usize;
+    longer_pass.frames = way_longer;
+    let plan = rig
+        .freezer
+        .plan(&analysis, SETTINGS, way_longer, true, Some(&longer_pass));
+    assert_eq!(plan.state(auto), Some(&TargetState::Missing));
+    let mut request = rig.request();
+    request.frames = way_longer;
+    let report = freeze_passes(&rig.freezer, &request, &[longer_pass], &Progress::new()).unwrap();
+    assert!(report.rendered.contains(&auto));
+    let plan = rig
+        .freezer
+        .plan(&analysis, SETTINGS, way_longer, true, Some(&longer_pass));
+    assert_eq!(plan.state(auto), Some(&TargetState::Ready));
 }
