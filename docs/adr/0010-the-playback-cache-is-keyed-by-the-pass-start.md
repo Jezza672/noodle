@@ -1,0 +1,9 @@
+# The playback cache is keyed by the pass start
+
+A cached playback is a **Pass**: the Transport runs from a start S until it stops or the playhead moves. Its audio is rendered from a fresh graph at S, and the entry is keyed by S. This is deliberately not the from-0 truth the freeze cache uses. From 0 would let a reverb tail from a section played earlier leak into a section that was never played; a pass must contain only sound it triggered itself. The cost is that a seek to an uncached start renders the unbounded part of the graph from that start, so the cache keeps entries for common starts in preference to others: 0, the loop start, and section markers once they exist.
+
+Each node declares how far back its state reaches. A **position-pure** node depends only on the playhead, so one entry serves every start. A **bounded** node depends on a bounded stretch of input before S, so it is warmed from S−n and one entry serves a range of starts. An **unbounded** node resets at S, so its entry is valid only for that start. This is what lets the bounded layer be reused across seeks without leaking history: a pre-roll contains only audio that actually played, never a tail from before the first trigger.
+
+Consequences: pause→play is not cached, because it does not reset; a loop is tiered, with bounded clusters warming across the wrap so reverb and delay tails carry over, and unbounded clusters resetting at the wrap; the rendered length is not in the key for prefix-stable nodes, so an entry grows as the pass plays; a pass that starts at an uncached point re-renders the unbounded clusters from there.
+
+Rejected: from-0 canonical, which is simpler and gives every seek an entry for free, but cannot honour the rule that a section must not inherit a tail from a part of the song that was not played.
