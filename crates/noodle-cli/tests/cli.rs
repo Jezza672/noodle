@@ -8,6 +8,17 @@ fn noodle(args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+/// `noodle` says how far a render has got on stderr whenever it takes longer
+/// than one of its 20 ms polls, which a short render on a busy machine can.
+/// That line is not a complaint.
+fn without_progress(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter(|line| !line.starts_with("rendering: "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn renders_a_project_to_wav() {
     let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/sine.ron");
@@ -20,7 +31,8 @@ fn renders_a_project_to_wav() {
         "0.1",
     ]);
     assert!(result.status.success(), "{result:?}");
-    assert!(result.stderr.is_empty(), "{result:?}");
+    let stderr = without_progress(&result.stderr);
+    assert!(stderr.is_empty(), "{result:?}");
 
     let audio = noodle_io::read_wav(&output).unwrap();
     assert_eq!((audio.channels, audio.sample_rate), (2, 48_000));
