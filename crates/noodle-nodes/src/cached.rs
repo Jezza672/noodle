@@ -104,7 +104,7 @@ impl NodeType for CachedPlayer {
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
-        Ok(Layout::realtime().output("out", "Out"))
+        Ok(Layout::realtime().output("out", "Out").memoryless())
     }
 
     fn output_shapes(
@@ -160,6 +160,14 @@ impl Node for Player {
         match self {
             Self::Streaming(player) => player.process(ctx, io),
             Self::Blocking(player) => player.process(ctx, io),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::Streaming(player) => player.reset(),
+            // Reads the file at the playhead every block; nothing to clear.
+            Self::Blocking(_) => {}
         }
     }
 }
@@ -237,6 +245,9 @@ struct Streaming {
     expected: u64,
     current: Option<Chunk>,
     loop_range: (u64, u64),
+    /// A reset happened: the stream restarts at the playhead on the next
+    /// block, since this side doesn't know where the playhead went.
+    restart: bool,
 }
 
 impl Streaming {
@@ -286,7 +297,18 @@ impl Streaming {
             expected: first,
             current: None,
             loop_range: (0, 0),
+            restart: false,
         }
+    }
+
+    /// Drops what the stream holds; the next block re-primes it at the
+    /// transport's position, as a player built there would be.
+    fn reset(&mut self) {
+        if let Some(chunk) = self.current.take() {
+            let _ = self.spent.push(chunk);
+            self.returned = true;
+        }
+        self.restart = true;
     }
 
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
@@ -299,6 +321,10 @@ impl Streaming {
             self.loop_range = range;
             self.shared.loop_start.store(range.0, Ordering::Relaxed);
             self.shared.loop_end.store(range.1, Ordering::Relaxed);
+        }
+        if self.restart {
+            self.restart = false;
+            self.seek(transport.position / CHUNK as u64);
         }
         if !transport.playing {
             return;
@@ -526,5 +552,30 @@ mod tests {
                 assert_eq!(x, (40_000 + i + 1) as f32, "at {i}");
             }
         }
+    }
+
+    #[test]
+    fn a_reset_player_restarts_its_stream_at_the_playhead() {
+        let (_dir, store, key) = ramp();
+        let player = CachedPlayer::new(store, key, Shape::MONO);
+        let mut h = Harness::new(&player, &Config::new(), &[], RATE, 64).unwrap();
+        h.run(64).unwrap();
+        // A jump far from the chunks the worker has made.
+        h.seek(80_000);
+        let mut heard = None;
+        for _ in 0..200 {
+            h.run(64).unwrap();
+            let out = h.output(0).lane(0, 0).to_vec();
+            if out[0] != 0.0 {
+                heard = Some(out[0]);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The first block of audio is the render at the playhead, not the
+        // stream from before the jump.
+        let value = heard.expect("the stream never restarted");
+        assert!(value >= 80_001.0, "{value}");
+        assert_eq!((value - 1.0) % 64.0, 0.0, "{value}");
     }
 }

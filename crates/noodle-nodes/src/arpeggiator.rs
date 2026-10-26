@@ -82,19 +82,10 @@ impl NodeType for Arpeggiator {
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(ArpNode {
-            sample_rate: setup.sample_rate,
-            held: [Held::default(); MAX_HELD],
-            held_count: 0,
-            sounding: [Sounding::default(); SOUNDING],
-            next_id: 0,
-            step: 0,
-            counter: 0,
-            expected: None,
-            free_tick: 0.0,
-            now: 0,
-            random: setup.seed | 1,
-        }))
+        Ok(Instance::realtime(ArpNode::new(
+            setup.sample_rate,
+            setup.seed,
+        )))
     }
 }
 
@@ -136,9 +127,28 @@ struct ArpNode {
     /// Samples since the start, to date note-offs that fall in later blocks.
     now: u64,
     random: u64,
+    /// What `random` starts from, so a reset can restore it.
+    seed: u64,
 }
 
 impl ArpNode {
+    fn new(sample_rate: f32, seed: u64) -> Self {
+        Self {
+            sample_rate,
+            held: [Held::default(); MAX_HELD],
+            held_count: 0,
+            sounding: [Sounding::default(); SOUNDING],
+            next_id: 0,
+            step: 0,
+            counter: 0,
+            expected: None,
+            free_tick: 0.0,
+            now: 0,
+            random: seed | 1,
+            seed,
+        }
+    }
+
     fn press(&mut self, id: NoteId, key: u8, velocity: f32, hold: bool) {
         // With hold, the first key after all were let go starts afresh.
         if hold && !self.any_down() {
@@ -401,10 +411,7 @@ impl Node for ArpNode {
     }
 
     fn reset(&mut self) {
-        self.held_count = 0;
-        self.sounding = [Sounding::default(); SOUNDING];
-        self.expected = None;
-        self.counter = 0;
+        *self = Self::new(self.sample_rate, self.seed);
     }
 }
 

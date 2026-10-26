@@ -95,6 +95,15 @@ impl Rig {
         (track, mid, out)
     }
 
+    /// Makes the clip's warp loop over `region`.
+    fn warp_loop(&mut self, clip: noodle_core::ClipId, region: noodle_core::LoopRegion) {
+        let command = self
+            .project
+            .warp_edit(clip, |warp| warp.loop_region = Some(region))
+            .unwrap();
+        self.apply(command);
+    }
+
     fn request(&self) -> RenderRequest {
         RenderRequest {
             project: self.project.clone(),
@@ -496,4 +505,152 @@ fn an_offline_node_after_a_spectral_chain_renders_again_when_the_chain_changes()
         Some(&TargetState::Missing)
     );
     assert_eq!(rig.freeze().rendered, [offline_kind(reverse)]);
+}
+
+/// The key of the Reverse node after a track playing `tone.wav`, once
+/// `change` has edited the track's clip (or the project around it).
+fn key_after(change: impl FnOnce(&mut Rig, noodle_core::ClipId)) -> noodle_core::CacheKey {
+    let mut rig = setup("clip-key");
+    let (_, reverse, _) = rig.clip_chain(Some(REVERSE));
+    let id = rig.project.clips().next().unwrap().0;
+    change(&mut rig, id);
+    rig.analyze().output_key(reverse.unwrap(), 0).unwrap()
+}
+
+fn edit_audio(rig: &mut Rig, id: noodle_core::ClipId, change: impl FnOnce(&mut AudioClip)) {
+    let mut clip = rig.project.clip(id).unwrap().clone();
+    let ClipContent::Audio(audio) = &mut clip.content else {
+        panic!("an audio clip");
+    };
+    change(audio);
+    rig.apply(Command::SetClip { id, clip });
+}
+
+#[test]
+fn what_a_looping_or_extended_audio_clip_plays_is_in_the_key() {
+    let plain = key_after(|_, _| {});
+    // A section dragged out past its window plays longer.
+    let extent = key_after(|rig, id| {
+        edit_audio(rig, id, |audio| audio.extent = Some(Tick(1920)));
+    });
+    assert_ne!(extent, plain);
+    let longer = key_after(|rig, id| {
+        edit_audio(rig, id, |audio| audio.extent = Some(Tick(3840)));
+    });
+    assert_ne!(longer, extent);
+
+    // The part of a warped clip that repeats.
+    let looped = |start: f64, end: f64| {
+        key_after(move |rig, id| {
+            rig.warp_loop(id, noodle_core::LoopRegion { start, end });
+        })
+    };
+    assert_ne!(looped(0.0, 2.0), plain);
+    assert_ne!(looped(0.0, 2.0), looped(0.0, 4.0));
+    assert_ne!(looped(0.0, 2.0), looped(1.0, 2.0));
+}
+
+#[test]
+fn a_midi_clips_loop_is_in_the_key() {
+    let key = |change: fn(&mut noodle_core::MidiClip)| {
+        let mut rig = setup("midi-loop");
+        let (track, reverse, _) = rig.clip_chain(Some(REVERSE));
+        let id = rig.project.new_clip_id();
+        let mut clip = Clip::midi(track, Tick(0), Tick(3840));
+        let ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        midi.notes
+            .push(noodle_core::MidiNote::new(Tick(0), Tick(120), 60));
+        change(midi);
+        rig.apply(Command::AddClip { id, clip });
+        rig.analyze().output_key(reverse.unwrap(), 0).unwrap()
+    };
+    let straight = key(|_| {});
+    let looped = key(|midi| {
+        midi.loop_on = true;
+        midi.loop_start = Tick(0);
+        midi.loop_len = Tick(960);
+    });
+    assert_ne!(looped, straight);
+    let shorter = key(|midi| {
+        midi.loop_on = true;
+        midi.loop_start = Tick(0);
+        midi.loop_len = Tick(480);
+    });
+    assert_ne!(shorter, looped);
+    let later = key(|midi| {
+        midi.loop_on = true;
+        midi.loop_start = Tick(240);
+        midi.loop_len = Tick(960);
+    });
+    assert_ne!(later, looped);
+}
+
+#[test]
+fn a_track_fed_live_is_not_cached_and_the_others_still_are() {
+    let mut rig = setup("live-track");
+    let (track, reverse, _) = rig.clip_chain(Some(REVERSE));
+    let reverse = reverse.unwrap();
+    let mut registry = Registry::with_builtins();
+    let library = register_library_blocking(&mut registry);
+    let analyze = |live: &dyn Fn(NodeId) -> bool| {
+        rig.freezer
+            .analyze_known(&rig.project, &registry, SETTINGS, FRAMES, &rig.base, live)
+            .0
+    };
+    // Hashes the file, as the app does before it renders.
+    rig.freezer
+        .hash_files(&[rig.base.join("tone.wav")], &Progress::new())
+        .unwrap();
+    let live = |node| library.clips.is_live(node);
+    assert!(analyze(&live).output_key(reverse, 0).is_ok());
+
+    library.clips.set_monitoring(track, true);
+    let analysis = analyze(&live);
+    assert!(matches!(
+        analysis.output_key(track, 0),
+        Err(noodle_engine::Uncacheable::Live)
+    ));
+    assert!(analysis.output_key(reverse, 0).is_err(), "what follows it");
+    library.clips.set_monitoring(track, false);
+    assert!(analyze(&live).output_key(reverse, 0).is_ok());
+
+    // A key of the piano roll's keyboard held down is live too.
+    library.clips.audition(track, 60, true);
+    assert!(analyze(&live).output_key(reverse, 0).is_err());
+    library.clips.audition(track, 60, false);
+    assert!(analyze(&live).output_key(reverse, 0).is_ok());
+}
+
+#[test]
+fn the_warp_preview_is_in_the_key_of_a_warped_clip() {
+    let warped = |rig: &mut Rig| {
+        let mut registry = Registry::with_builtins();
+        let library = register_library_blocking(&mut registry);
+        rig.freezer
+            .hash_files(&[rig.base.join("tone.wav")], &Progress::new())
+            .unwrap();
+        let (_, reverse, _) = rig.clip_chain(Some(REVERSE));
+        let id = rig.project.clips().next().unwrap().0;
+        let command = rig
+            .project
+            .warp_edit(id, |warp| {
+                warp.mode = noodle_core::WarpMode::Grain;
+                warp.tempo = noodle_core::TempoCurve::constant(90.0);
+                warp.tempo_conversion = true;
+            })
+            .unwrap();
+        rig.apply(command);
+        let key = |preview: bool| {
+            library.clips.set_preview(preview);
+            rig.freezer
+                .analyze(&rig.project, &registry, SETTINGS, FRAMES, &rig.base)
+                .output_key(reverse.unwrap(), 0)
+                .unwrap()
+        };
+        (key(false), key(true))
+    };
+    let (normal, preview) = warped(&mut setup("preview-key"));
+    assert_ne!(normal, preview);
 }

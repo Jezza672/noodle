@@ -108,6 +108,31 @@ impl LaneKernel for OffsetKernel {
     }
 }
 
+/// Like [`Offset`], with a ramp of a whole second.
+struct SlowOffset;
+
+impl NodeType for SlowOffset {
+    fn info(&self) -> &NodeInfo {
+        static INFO: NodeInfo = info("slow_offset");
+        &INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(Layout::realtime()
+            .input("in", "In")
+            .param(
+                "offset",
+                "Offset",
+                ParamInfo::new(-10.0, 10.0, 0.0).smoothing(1000.0),
+            )
+            .output("out", "Out"))
+    }
+
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(PerLane::new(OffsetKernel, setup)))
+    }
+}
+
 /// Counts how many of its instances have been dropped.
 struct Droppable(Arc<AtomicUsize>);
 
@@ -422,6 +447,7 @@ fn registry(dropped: &Arc<AtomicUsize>) -> Registry {
     let mut registry = Registry::with_builtins();
     registry.register(Counter);
     registry.register(Offset);
+    registry.register(SlowOffset);
     registry.register(Droppable(Arc::clone(dropped)));
     registry.register(Failing);
     registry.register(Flaky(AtomicUsize::new(0)));
@@ -1128,6 +1154,25 @@ fn seeking_fades_out_jumps_and_fades_back_in_with_nodes_reset() {
     assert_eq!(transport.position(), 250 + 20 - FADE as u64);
     // The probe was reset at the jump: it counts the frames since.
     assert_eq!(out[19], (20 - FADE - 1) as f32);
+}
+
+#[test]
+fn a_seek_ends_a_parameter_ramp_at_its_target() {
+    let mut rig = Rig::new(SETTINGS);
+    let slow = rig.add("slow_offset");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(slow, output, "in");
+    assert!(rig.update().is_empty());
+    rig.render(8);
+    // The ramp takes a second (1000 samples), so it is well under way at the
+    // jump.
+    rig.controller.set_param(slow, "offset", 10.0);
+    let before = rig.render(40);
+    assert!(before[39] > 0.0 && before[39] < 1.0, "ramping: {before:?}");
+    rig.controller.transport().seek(ticks(480));
+    let after = rig.render(40);
+    // A new engine would start at the parameter's value, not part way.
+    assert_eq!(after[39], 10.0);
 }
 
 #[test]

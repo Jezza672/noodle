@@ -149,7 +149,10 @@ impl NodeType for TrackInput {
             .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
             .output("audio", "Audio")
             .output("mute", "Mute")
-            .event_output("midi", "MIDI"))
+            .event_output("midi", "MIDI")
+            // A function of the playhead and the clips; a note that began
+            // before a start is not played (ADR 0010).
+            .memoryless())
     }
 
     fn output_shapes(
@@ -200,6 +203,10 @@ impl NodeType for TrackInput {
                     if let Some(x) = audio.crossfade.filter(|x| !x.is_empty()) {
                         key.str("crossfade").i64(x.before.0).i64(x.after.0);
                     }
+                    // How long a looping section lasts past its window.
+                    if let Some(extent) = audio.extent {
+                        key.str("extent").i64(extent.0);
+                    }
                     // Only a warp that changes the sound is keyed, so the
                     // keys of clips that aren't warped stay as they were.
                     if let Some(warp) = audio
@@ -211,6 +218,11 @@ impl NodeType for TrackInput {
                         // were other modes still match.
                         if warp.mode.keeps_pitch() {
                             key.str("mode").str(&format!("{:?}", warp.mode));
+                        }
+                        // While a warp is being dragged every warped clip
+                        // plays as cheap Repitch, which sounds different.
+                        if self.feeds.preview() {
+                            key.str("preview");
                         }
                         key.str("warp")
                             .bool(warp.tempo_conversion)
@@ -226,12 +238,19 @@ impl NodeType for TrackInput {
                         for marker in markers.iter() {
                             key.f64(marker.seconds).f64(marker.beat);
                         }
+                        // The part that repeats when the clip loops.
+                        if let Some(region) = warp.loop_region {
+                            key.str("loop").f64(region.start).f64(region.end);
+                        }
                     }
                 }
                 noodle_core::ClipContent::Midi(midi) => {
                     key.str("midi")
                         .i64(midi.length.0)
                         .u64(midi.notes.len() as u64);
+                    if midi.loop_on {
+                        key.str("loop").i64(midi.loop_start.0).i64(midi.loop_len.0);
+                    }
                     for note in &midi.notes {
                         key.i64(note.start.0)
                             .i64(note.length.0)
@@ -1443,10 +1462,17 @@ impl Node for TrackInputNode {
         out.lane_mut(0, 1).copy_from_slice(&self.right[..n]);
     }
 
+    /// Back to a new instance's timeline state: no note sounding, none
+    /// played, the declick gain at silence and the waiting schedule taken
+    /// on. Nodes downstream are reset by the same jump, so a note that was
+    /// sounding needs no note-off. The streams, lanes and windows are not
+    /// timeline state: they hold source audio, and the next block finds the
+    /// one it needs (or seeks) from the playhead, as a new node would.
     fn reset(&mut self) {
-        // Whatever sounds is ended by the next block, which finds that it
-        // doesn't continue from the last.
+        self.sounding.clear();
         self.played_to = None;
+        self.recheck = false;
+        self.abandoned.clear();
         // The engine has faded out and is about to jump: start from silence at
         // the new place, with whatever schedule is waiting.
         self.level = 0.0;

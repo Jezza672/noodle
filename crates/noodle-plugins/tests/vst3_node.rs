@@ -375,6 +375,8 @@ fn the_cache_key_covers_the_plugin_bundle() {
             project: &project,
             sample_rate: RATE,
             frames: 1000,
+            max_frames: 128,
+            live: &|_| false,
             file_key: &|_| None,
         };
         let mut key = noodle_core::KeyBuilder::new("plugin-test");

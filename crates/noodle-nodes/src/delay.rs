@@ -38,6 +38,7 @@ const INAUDIBLE: f32 = 1e-6;
 pub const MAX_TIME: f32 = 2.0;
 
 #[derive(Ports)]
+#[ports(bounded = 2000)]
 struct DelayPorts {
     #[input("in", "In")]
     input: (),

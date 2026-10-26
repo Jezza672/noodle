@@ -18,6 +18,7 @@ pub struct Pan;
 pub const PAN_ID: &str = "noodle.util.pan";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct PanPorts {
     #[input("in", "In")]
     input: (),

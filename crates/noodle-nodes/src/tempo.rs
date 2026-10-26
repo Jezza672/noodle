@@ -33,6 +33,7 @@ pub const TEMPO_ID: &str = "noodle.mod.tempo";
 const TICKS_PER_QUARTER: f64 = 960.0;
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct TempoPorts {
     #[param(
         "division",

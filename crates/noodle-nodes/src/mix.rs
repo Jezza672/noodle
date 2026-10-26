@@ -79,7 +79,7 @@ impl NodeType for Mix {
                 ParamInfo::choice(["Off", "On"]),
             )
         });
-        Ok(layout.output("out", "Out"))
+        Ok(layout.output("out", "Out").memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

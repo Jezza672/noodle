@@ -21,6 +21,7 @@ pub struct Lag;
 pub const LAG_ID: &str = "noodle.mod.lag";
 
 #[derive(Ports)]
+#[ports(bounded = 70000)]
 struct LagPorts {
     #[input("in", "In")]
     input: (),

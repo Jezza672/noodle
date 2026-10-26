@@ -117,7 +117,7 @@ impl NodeType for Output {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         parse_routing(&OUTPUT_ROUTING.get_text(config)).map_err(NodeError::config)?;
-        Ok(Layout::realtime().input("in", "In"))
+        Ok(Layout::realtime().input("in", "In").memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

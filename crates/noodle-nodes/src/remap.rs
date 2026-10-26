@@ -25,6 +25,7 @@ pub const REMAP_CURVE_KEY: &str = "curve";
 const CURVE: ConfigInfo = ConfigInfo::text(REMAP_CURVE_KEY, "Curve");
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct RemapPorts {
     #[input("in", "In")]
     input: (),

@@ -62,6 +62,7 @@ const LOOKAHEAD: ConfigInfo = ConfigInfo::int("lookahead", "Lookahead (ms)", 0);
 static CONFIG: [ConfigInfo; 1] = [LOOKAHEAD];
 
 #[derive(Ports)]
+#[ports(bounded = 35000)]
 struct DynamicsPorts {
     #[input("in", "In")]
     input: (),

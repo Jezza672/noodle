@@ -29,6 +29,7 @@ pub const DISTORTION_ID: &str = "noodle.effect.distortion";
 pub const SHAPES: [&str; 4] = ["Soft", "Hard", "Fold", "Asymmetric"];
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct DistortionPorts {
     #[input("in", "In")]
     input: (),

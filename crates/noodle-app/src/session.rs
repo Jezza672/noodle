@@ -2193,6 +2193,7 @@ impl Session {
             .map_or(FREEZE_SETTINGS, |audio| audio.controller.settings());
         let rate = settings.sample_rate;
         let base = self.base().to_owned();
+        let clips = self.clips.clone();
         // Only measured when something needs it: it looks at every audio file.
         let frames = if Freezing::in_use(&self.project, &self.registry) {
             self.freeze_frames(rate)
@@ -2207,6 +2208,7 @@ impl Session {
             frames,
             start,
             extend_registry: self.extend_registry(),
+            live: &|node| clips.is_live(node),
         };
         match self.freezing.refresh(&look) {
             Ok(plan) => plan,

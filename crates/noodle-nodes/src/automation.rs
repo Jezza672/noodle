@@ -28,6 +28,7 @@ pub const AUTOMATION_NODE_ID: &str = "noodle.mod.automation";
 pub const AUTOMATION_VALUE: &str = "value";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct AutomationPorts {
     #[param("value", "Value", ParamInfo::new(0.0, 1.0, 0.0))]
     value: (),

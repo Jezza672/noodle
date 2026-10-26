@@ -50,6 +50,7 @@ pub struct SurroundPan;
 pub const SURROUND_PAN_ID: &str = "noodle.util.surround_pan";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct PanPorts {
     #[input("in", "In")]
     input: (),
@@ -275,7 +276,10 @@ impl NodeType for ConvertLayout {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         config_layout(config, CONVERT_DEFAULT)?;
-        Ok(Layout::realtime().input("in", "In").output("out", "Out"))
+        Ok(Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn output_shapes(
@@ -378,11 +382,11 @@ impl NodeType for SplitChannels {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         let channels = channel_count(config, "Split Channels")?;
-        Ok(
-            (1..=channels).fold(Layout::realtime().input("in", "In"), |layout, i| {
+        Ok((1..=channels)
+            .fold(Layout::realtime().input("in", "In"), |layout, i| {
                 layout.output(format!("ch{i}"), format!("Ch {i}"))
-            }),
-        )
+            })
+            .memoryless())
     }
 
     fn output_shapes(
@@ -454,7 +458,8 @@ impl NodeType for MergeChannels {
             .fold(Layout::realtime(), |layout, i| {
                 layout.input(format!("in{i}"), format!("In {i}"))
             })
-            .output("out", "Out"))
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn output_shapes(

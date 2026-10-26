@@ -108,6 +108,7 @@ impl Node for KeyNode {
 
     fn reset(&mut self) {
         self.held = None;
+        self.next_id = 0;
     }
 }
 
@@ -266,7 +267,7 @@ impl Node for MonoNode {
     }
 
     fn reset(&mut self) {
-        self.len = 0;
+        *self = Self::default();
     }
 }
 

@@ -25,6 +25,7 @@ pub const SAMPLE_INPUT_ID: &str = "noodle.instrument.sample";
 static CONFIG: [ConfigInfo; 1] = [ConfigInfo::text(crate::SAMPLE_KEY, "Sample")];
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct SampleInputPorts {
     #[sample_output("sample", "Sample")]
     sample: (),

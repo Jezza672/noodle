@@ -29,6 +29,7 @@ pub struct Math;
 pub const MATH_ID: &str = "noodle.util.math";
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct MathPorts {
     #[param("a", "A", ParamInfo::new(-1_000_000.0, 1_000_000.0, 0.0))]
     a: (),

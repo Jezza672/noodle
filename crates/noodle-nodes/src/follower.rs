@@ -23,6 +23,7 @@ pub struct EnvelopeFollower;
 pub const FOLLOWER_ID: &str = "noodle.mod.follower";
 
 #[derive(Ports)]
+#[ports(bounded = 35000)]
 struct FollowerPorts {
     #[input("in", "In")]
     input: (),

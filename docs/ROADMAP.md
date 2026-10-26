@@ -31,8 +31,7 @@ need a person and hardware, plus a few deliberately deferred items.
 
 **Batches.**
 
-1. **The invariant and the keys.** Make `reset()` equal a fresh instance for every node (White Noise RNG, Reverb wobble, Arpeggiator RNG, Sampler, plugins' continuous time, `CachedPlayer`, `ValueInput` ramps). Add `Layout::memory()` and the three tiers, composed along the longest path. Close the key gaps (`max_frames`, `AudioClip.extent`, MIDI loop fields, `ClipWarp.loop_region`, monitoring, preview, plugin latency) and mark `TrackInput` nondeterministic under monitoring. Add a test that seeks to S on a running plan and compares the audio with a fresh engine started at S, plus mutation checks that it fails when a node lies about its state.
-   *Done when:* every node's reset render matches a fresh instance's, the key changes when any of the above changes, and the golden renders are unchanged.
+1. **The invariant and the keys.** Built: see [features/playback-cache.md](features/playback-cache.md).
 2. **Automatic group targets.** Select top-level cacheable groups as targets, before the boundary stage. Key by subtree, start, tier, sample rate and `max_frames`; grow the entries; render on Stop or ahead of the playhead and swap in with `Setup.position`. Prioritise 0 and the loop start.
    *Done when:* Stop-Stop-Play on an unchanged project does no DSP inside the cached clusters; a fader move does not invalidate them; changing a node inside one track re-renders only that track.
 3. **Tiers and cross-start reuse.** Pure entries valid for any start; bounded pre-roll from `S−n` with validity ranges; unbounded per-start entries; the tiered loop rule.

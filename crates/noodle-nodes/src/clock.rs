@@ -37,6 +37,7 @@ pub const DIVISION_TICKS: [f64; 17] = [
 ];
 
 #[derive(Ports)]
+#[ports(memoryless)]
 struct ClockPorts {
     #[param(
         "rate",

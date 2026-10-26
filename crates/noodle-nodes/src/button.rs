@@ -33,7 +33,8 @@ impl NodeType for Button {
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(Layout::realtime()
             .param(BUTTON_STATE, "State", ParamInfo::choice(["Off", "On"]))
-            .output("out", "Out"))
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {

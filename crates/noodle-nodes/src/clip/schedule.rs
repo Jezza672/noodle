@@ -791,6 +791,17 @@ impl ClipFeeds {
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether the session is feeding the track input `node` live right now:
+    /// it is monitored, or a key of the piano roll's keyboard is held. What
+    /// it plays then is not a function of the timeline, so the cache leaves
+    /// it, and everything downstream of it, alone. (This is a state of the
+    /// session, not of the node type, so only a track that is being played
+    /// loses its cache.)
+    pub fn is_live(&self, node: NodeId) -> bool {
+        let hubs = self.inner.hubs.lock().expect("feeds lock");
+        hubs.get(&node).is_some_and(|shared| shared.is_live())
+    }
+
     /// While on, warped clips play as Repitch whatever their mode: cheap
     /// enough to follow a warp marker that is being dragged, where the
     /// stretch would have to start over with every change. Turn it off when

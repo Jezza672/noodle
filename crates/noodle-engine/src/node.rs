@@ -235,6 +235,51 @@ pub struct Layout {
     /// False if identical inputs can give different output, e.g. unseeded
     /// randomness. Nondeterministic nodes are never cached.
     pub deterministic: bool,
+    /// How long the node remembers its input. Unbounded unless the type says
+    /// otherwise, which is the safe answer.
+    pub memory: Memory,
+}
+
+/// How far back a node's output depends on its input and its own history,
+/// from a fresh start. It decides how a cached render of the node can be
+/// reused (ADR 0010): a node with no memory is a function of the playhead,
+/// so one render serves every start; a bounded one is warmed from that far
+/// before a start and then serves a range of starts; an unbounded one has
+/// to start fresh at the start it serves.
+///
+/// The compiler composes it along the longest path (see
+/// [`then`](Self::then) and [`alongside`](Self::alongside)); a node on a
+/// feedback loop is unbounded. A type that is unsure says `Unbounded`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Memory {
+    /// The output at a moment depends on the inputs at that moment only
+    /// (sources, gain, mix, maths).
+    None,
+    /// The influence of the past dies away within this many milliseconds
+    /// (filters, delays, reverb, chorus). It must hold for the type's whole
+    /// parameter range, so it is the longest decay the type can make.
+    Bounded(u32),
+    /// The past matters for ever: a phase, a random stream, a voice, a
+    /// sample position, a plugin.
+    #[default]
+    Unbounded,
+}
+
+impl Memory {
+    /// The memory of two nodes in a chain: bounded memories add up, and
+    /// anything unbounded keeps the whole chain unbounded.
+    pub fn then(self, next: Memory) -> Memory {
+        match (self, next) {
+            (Memory::Unbounded, _) | (_, Memory::Unbounded) => Memory::Unbounded,
+            (Memory::None, other) | (other, Memory::None) => other,
+            (Memory::Bounded(a), Memory::Bounded(b)) => Memory::Bounded(a.saturating_add(b)),
+        }
+    }
+
+    /// The memory where parallel branches meet: the longest.
+    pub fn alongside(self, other: Memory) -> Memory {
+        self.max(other)
+    }
 }
 
 /// Port keys are saved in project files to identify connections, so they must
@@ -352,6 +397,7 @@ impl Layout {
             sample_outputs: Vec::new(),
             mode,
             deterministic: true,
+            memory: Memory::Unbounded,
         }
     }
 
@@ -463,6 +509,21 @@ impl Layout {
             deterministic: false,
             ..self
         }
+    }
+
+    /// Says how long the node remembers (see [`Memory`]).
+    pub fn memory(self, memory: Memory) -> Self {
+        Self { memory, ..self }
+    }
+
+    /// The output at a moment depends on the inputs at that moment only.
+    pub fn memoryless(self) -> Self {
+        self.memory(Memory::None)
+    }
+
+    /// The past is forgotten within `ms` milliseconds.
+    pub fn bounded(self, ms: u32) -> Self {
+        self.memory(Memory::Bounded(ms))
     }
 }
 

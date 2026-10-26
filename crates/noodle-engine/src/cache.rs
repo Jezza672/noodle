@@ -23,14 +23,25 @@ use std::fmt;
 use noodle_core::{CacheKey, Endpoint, KeyBuilder, NodeId, Project};
 
 use crate::compile::{Options, compile_with};
-use crate::{BufferId, EventBufferId, InputSource, Mode, Phase, Registry, Shape};
+use crate::{BufferId, EventBufferId, InputSource, Memory, Mode, Phase, Registry, Shape};
 
 /// What a key can depend on besides the graph.
 pub struct CacheEnv<'a> {
     pub project: &'a Project,
     pub sample_rate: f32,
     /// How many frames the render covers, from the start of the timeline.
+    /// Only the keys of range-dependent (offline) nodes and what follows them
+    /// hold it: a real-time node's output up to a frame doesn't depend on how
+    /// long the render goes on, so its key doesn't either.
     pub frames: u64,
+    /// The most frames any block has, which the nodes were built with.
+    pub max_frames: usize,
+    /// Whether the session is feeding a node live right now (a monitored or
+    /// auditioned track input). Such a node and everything downstream of it
+    /// can't be cached while it lasts. This is a property of the session, not
+    /// of the node type, so it can't be a `Layout::deterministic`: that would
+    /// turn off every track's cache for good.
+    pub live: &'a dyn Fn(NodeId) -> bool,
     /// The content hash of a clip's audio file, given its path as the clip
     /// has it. `None` if the file can't be read.
     pub file_key: &'a dyn Fn(&str) -> Option<CacheKey>,
@@ -44,6 +55,8 @@ pub enum Uncacheable {
     NotDeterministic(String),
     /// The node is on a feedback loop, whose output depends on itself.
     Loop,
+    /// The session is feeding the node live (monitoring, an auditioned key).
+    Live,
     /// The node type couldn't key it, with its reason.
     Because(String),
     /// Something upstream can't be cached.
@@ -59,6 +72,7 @@ impl fmt::Display for Uncacheable {
                 write!(f, "{name} isn't the same every time it plays")
             }
             Self::Loop => f.write_str("it is on a feedback loop"),
+            Self::Live => f.write_str("it is being played live"),
             Self::Because(why) => f.write_str(why),
             Self::Upstream(node, why) => write!(f, "node {node} feeds it, and {why}"),
             Self::Broken => f.write_str("it doesn't compile"),
@@ -84,6 +98,11 @@ pub enum InputOrigin {
 pub struct NodeAnalysis {
     pub type_id: String,
     pub offline: bool,
+    /// How long the output remembers its input, from a fresh start: the
+    /// node's own memory chained after the longest of what feeds it (a chain
+    /// sums, parallel branches take the longest, a feedback loop is
+    /// unbounded). See [`Memory`].
+    pub memory: Memory,
     pub key: Result<CacheKey, Uncacheable>,
     /// One per signal input, in layout order. An offline node reads these.
     pub inputs: Vec<InputOrigin>,
@@ -173,6 +192,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
     let mut signal_writers: HashMap<BufferId, (NodeId, usize)> = HashMap::new();
     let mut event_writers: HashMap<EventBufferId, (NodeId, usize)> = HashMap::new();
     let mut spectral_writers: HashMap<crate::SpectralBufferId, (NodeId, usize)> = HashMap::new();
+    let mut memories: HashMap<NodeId, Memory> = HashMap::new();
     for node in &schedule.nodes {
         let (id, layout) = (node.id, &node.layout);
         let info = node.node_type.info();
@@ -194,6 +214,41 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
             })
             .collect();
 
+        // Spectral wires are keyed like event wires, after them.
+        let events: Vec<_> = node
+            .event_inputs
+            .iter()
+            .map(|e| e.and_then(|e| event_writers.get(&e).copied()))
+            .chain(
+                node.spectral_inputs
+                    .iter()
+                    .map(|s| s.and_then(|s| spectral_writers.get(&s).copied())),
+            )
+            .collect();
+
+        // The memory of what feeds the node: the longest of its sources'.
+        let fed_by = inputs
+            .iter()
+            .filter_map(|origin| match origin {
+                InputOrigin::Wire(n, _) | InputOrigin::Modulated(n, _, _) => Some(*n),
+                InputOrigin::Value(_) => None,
+            })
+            .chain(events.iter().flatten().map(|&(n, _)| n))
+            .filter_map(|n| memories.get(&n).copied())
+            .fold(Memory::None, Memory::alongside);
+        // The output half of a split node is on a feedback loop.
+        let memory = if node.phase == Phase::Output {
+            Memory::Unbounded
+        } else if layout.mode == Mode::Offline {
+            // Reads its whole input at once, so it depends on all of it.
+            Memory::Unbounded
+        } else {
+            fed_by.then(layout.memory)
+        };
+        if node.phase != Phase::Input {
+            memories.insert(id, memory);
+        }
+
         // The input half of a split node doesn't get its own entry; the
         // node as a whole is on a loop, so it has no key.
         let key = if node.phase == Phase::Input {
@@ -202,22 +257,13 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
             Some(Err(Uncacheable::Loop))
         } else if !layout.deterministic {
             Some(Err(Uncacheable::NotDeterministic(info.name.to_string())))
+        } else if (env.live)(id) {
+            Some(Err(Uncacheable::Live))
         } else {
             let upstream = |origin: &InputOrigin| match origin {
                 InputOrigin::Wire(n, p) | InputOrigin::Modulated(n, p, _) => Some((*n, *p)),
                 InputOrigin::Value(_) => None,
             };
-            // Spectral wires are keyed like event wires, after them.
-            let events: Vec<_> = node
-                .event_inputs
-                .iter()
-                .map(|e| e.and_then(|e| event_writers.get(&e).copied()))
-                .chain(
-                    node.spectral_inputs
-                        .iter()
-                        .map(|s| s.and_then(|s| spectral_writers.get(&s).copied())),
-                )
-                .collect();
             Some(node_key(
                 &analysis,
                 env,
@@ -233,6 +279,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
                 NodeAnalysis {
                     type_id: info.id.to_string(),
                     offline,
+                    memory,
                     key,
                     inputs,
                     output_ports: layout.outputs.iter().map(|p| p.key.to_string()).collect(),
@@ -289,8 +336,13 @@ fn node_key(
         .u64(u64::from(info.version))
         .config(&node.config)
         .f32(env.sample_rate)
-        .u64(env.frames)
+        .u64(env.max_frames as u64)
         .tempo_map(env.project.tempo_map());
+    // A render that is the whole range at once depends on its length; a
+    // real-time node's output at a frame doesn't (it only reads the past).
+    if node.layout.mode == crate::Mode::Offline {
+        b.u64(env.frames);
+    }
     let upstream = |b: &mut KeyBuilder, (n, p): (NodeId, usize)| {
         analysis
             .output_key(n, p)

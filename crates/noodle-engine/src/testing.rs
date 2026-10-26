@@ -200,6 +200,11 @@ impl Harness {
         })
     }
 
+    /// Whether input `port` was listed as connected.
+    pub fn is_connected(&self, port: usize) -> bool {
+        self.inputs[port].value.is_none()
+    }
+
     /// Sets an unconnected input's value. Panics if the input is connected.
     pub fn set(&mut self, port: usize, value: f32) {
         let input = &mut self.inputs[port];
@@ -294,6 +299,16 @@ impl Harness {
         self.position += frames as u64;
         self.frames = frames;
         Ok(())
+    }
+
+    /// Moves the playhead to `position` and resets the node, as a seek does
+    /// in the engine.
+    pub fn seek(&mut self, position: u64) {
+        self.position = position;
+        match &mut self.instance {
+            Instance::Realtime(node) => node.reset(),
+            Instance::Offline(_) => {}
+        }
     }
 
     /// The events an event output wrote in the last run.

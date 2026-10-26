@@ -929,6 +929,9 @@ impl Plan {
                 delay.line.clear();
             }
         }
+        for value in &mut self.values {
+            value.settle();
+        }
     }
 
     /// Works out which nodes have to run this block: those that are always
@@ -1782,6 +1785,25 @@ impl ValueInput {
         }
     }
 
+    /// Ends any ramp at once, on the value the cell holds now: what a new
+    /// input built at this moment would start from. A seek does this, so
+    /// the playhead's new place never hears a ramp that began before the
+    /// jump.
+    fn settle(&mut self) {
+        let value = self.cell.get();
+        let value = if value.is_finite() {
+            value
+        } else {
+            self.target
+        };
+        self.current = value;
+        self.target = value;
+        self.step = 0.0;
+        self.remaining = 0;
+        // The next `prepare` fills the buffer with it.
+        self.settled = false;
+    }
+
     /// Picks up where the same input in the previous plan left off, so a ramp
     /// in progress carries on smoothly.
     fn continue_from(&mut self, old: &ValueInput) {
@@ -2090,5 +2112,38 @@ impl DelayLine {
             std::slice::from_raw_parts_mut(silent.add(self.dest.offset / max_frames.max(1)), lanes)
         }
         .fill(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settling_a_value_input_ends_its_ramp_at_the_target() {
+        let cell = Arc::new(ParamCell::new(0.0));
+        let mut input = ValueInput::new(Arc::clone(&cell), 8, 100);
+        cell.set(1.0);
+        input.prepare(8);
+        assert!(input.constant().is_none(), "the ramp is under way");
+
+        input.settle();
+        input.prepare(8);
+        // What an input built at this moment holds.
+        let mut fresh = ValueInput::new(cell, 8, 100);
+        fresh.prepare(8);
+        assert_eq!(input.constant(), Some(1.0));
+        assert_eq!(input.constant(), fresh.constant());
+        assert_eq!(input.samples(8), fresh.samples(8));
+    }
+
+    #[test]
+    fn settling_ignores_a_non_finite_value() {
+        let cell = Arc::new(ParamCell::new(0.5));
+        let mut input = ValueInput::new(Arc::clone(&cell), 4, 0);
+        cell.set(f32::NAN);
+        input.settle();
+        input.prepare(4);
+        assert_eq!(input.constant(), Some(0.5));
     }
 }

@@ -10,6 +10,7 @@ use noodle_engine::{
 pub struct Svf;
 
 #[derive(Ports)]
+#[ports(bounded = 6000)]
 struct SvfPorts {
     #[input("in", "In")]
     input: (),
