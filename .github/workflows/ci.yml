@@ -50,8 +50,16 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Tests run one binary at a time under `cargo test`; nextest schedules
+      # tests from different binaries together. .config/nextest.toml holds the
+      # exceptions that must still run alone.
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
       - name: Test
-        run: cargo test --workspace
+        run: cargo nextest run --workspace --no-fail-fast
+      # nextest does not run doctests.
+      - name: Doctests
+        run: cargo test --workspace --doc
       - name: Real plugins' editors
         if: runner.os == 'Linux'
         env:

@@ -42,6 +42,11 @@ pub fn node_type(catalog: &Catalog) -> &PluginNodeType {
 
 /// The VST3 test plugin (`examples/test_vst3.rs`) as a bundle, made once in
 /// the target folder in the layout each system uses.
+///
+/// Nextest gives every test its own process, so `Once` only stops this process
+/// repeating the work: others may be making the bundle at the same moment.
+/// Each file therefore appears whole (a private name, then a rename), and the
+/// plist goes before the library, so a bundle that has its library scans.
 pub fn vst3_path() -> PathBuf {
     use std::sync::Once;
     static MADE: Once = Once::new();
@@ -68,21 +73,42 @@ pub fn vst3_path() -> PathBuf {
         };
         let dir = bundle.join("Contents").join(folder);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(&library, dir.join(name)).unwrap();
         if cfg!(target_os = "macos") {
-            std::fs::write(
-                bundle.join("Contents/Info.plist"),
-                r#"<?xml version="1.0" encoding="UTF-8"?>
+            put(&bundle.join("Contents/Info.plist"), |path| {
+                std::fs::write(
+                    path,
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>NoodleTest</string>
 <key>CFBundleIdentifier</key><string>org.noodle.test</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
 </dict></plist>"#,
-            )
-            .unwrap();
+                )
+                .unwrap();
+            });
         }
+        put(&dir.join(name), |path| {
+            std::fs::copy(&library, path).unwrap();
+        });
     });
     bundle
+}
+
+/// Makes `path` appear whole: writes it under a private name, then renames it
+/// into place. Another process may be making the same file, so one that is
+/// already there is kept — either is the same bytes, and Windows cannot
+/// replace a library another process has loaded.
+fn put(path: &std::path::Path, write: impl FnOnce(&std::path::Path)) {
+    if path.exists() {
+        return;
+    }
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let partial = path.with_file_name(format!(".{name}.{}.partial", std::process::id()));
+    write(&partial);
+    if std::fs::rename(&partial, path).is_err() {
+        let _ = std::fs::remove_file(&partial);
+        assert!(path.exists(), "{} was not made", path.display());
+    }
 }
 
 pub fn vst3_catalog() -> Catalog {
