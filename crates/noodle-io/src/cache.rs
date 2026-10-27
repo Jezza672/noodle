@@ -28,6 +28,14 @@ const EXTENSION: &str = "nrc";
 const STALE_PARTIAL: Duration = Duration::from_secs(60 * 60);
 static PARTIALS: AtomicU64 = AtomicU64::new(0);
 
+/// What a [`CacheStore`] holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheUsage {
+    /// Finished entries.
+    pub entries: usize,
+    pub bytes: u64,
+}
+
 /// What a cached render holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CacheInfo {
@@ -188,6 +196,16 @@ impl CacheStore {
             .filter(|f| !f.partial)
             .map(|f| f.bytes)
             .sum())
+    }
+
+    /// How much the store holds: finished entries and their bytes.
+    pub fn usage(&self) -> io::Result<CacheUsage> {
+        let files = self.files()?;
+        let finished = files.iter().filter(|f| !f.partial);
+        Ok(CacheUsage {
+            entries: finished.clone().count(),
+            bytes: finished.map(|f| f.bytes).sum(),
+        })
     }
 
     /// Deletes the least recently used entries until the store holds at

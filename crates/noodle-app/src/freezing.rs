@@ -75,6 +75,20 @@ pub struct Freezing {
     /// project changes.
     failed: Option<(Project, String)>,
     dirty_since: Option<Instant>,
+    /// Bytes the cache has dropped, oldest first, to stay within its limit
+    /// since the app started.
+    evicted: u64,
+}
+
+/// What the cache of renders holds, for the readout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheReadout {
+    pub entries: usize,
+    pub bytes: u64,
+    /// The size the cache is kept under.
+    pub limit: u64,
+    /// Bytes dropped to stay under it since the app started.
+    pub evicted: u64,
 }
 
 /// What [`Freezing::refresh`] needs to know.
@@ -110,6 +124,33 @@ impl Freezing {
             badges: BTreeMap::new(),
             failed: None,
             dirty_since: None,
+            evicted: 0,
+        }
+    }
+
+    /// The size, entries and evictions of the cache, opening it if it wasn't
+    /// yet. It reads the folder, so ask now and then, not every frame.
+    pub fn readout(&mut self) -> Result<CacheReadout, String> {
+        let evicted = self.evicted;
+        let usage = self
+            .freezer()?
+            .store()
+            .usage()
+            .map_err(|e| format!("Can't read the render cache: {e}"))?;
+        Ok(CacheReadout {
+            entries: usage.entries,
+            bytes: usage.bytes,
+            limit: CACHE_LIMIT,
+            evicted,
+        })
+    }
+
+    /// Drops the least recently used entries above the limit, so the cache
+    /// doesn't only shrink when the app starts.
+    fn trim(&mut self) {
+        if let Some(freezer) = &self.freezer {
+            // Best effort, as at start-up.
+            self.evicted += freezer.store().evict_to(CACHE_LIMIT).unwrap_or(0);
         }
     }
 
@@ -185,7 +226,7 @@ impl Freezing {
             let store = noodle_io::CacheStore::open(&dir)
                 .map_err(|e| format!("Can't use the render cache at {}: {e}", dir.display()))?;
             // Best effort: a cache that can't be trimmed still works.
-            let _ = store.evict_to(CACHE_LIMIT);
+            self.evicted += store.evict_to(CACHE_LIMIT).unwrap_or(0);
             self.freezer = Some(Freezer::new(store));
         }
         Ok(self.freezer.as_ref().expect("just made"))
@@ -343,7 +384,11 @@ impl Freezing {
         };
         let project = self.running.take().expect("just polled").project;
         match done {
-            Ok(Ok(_)) | Ok(Err(FreezeError::Cancelled)) => Polled::Finished,
+            Ok(Ok(_)) => {
+                self.trim();
+                Polled::Finished
+            }
+            Ok(Err(FreezeError::Cancelled)) => Polled::Finished,
             Ok(Err(error)) => {
                 let why = error.to_string();
                 self.failed = Some((project, why.clone()));

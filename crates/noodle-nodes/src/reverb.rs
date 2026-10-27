@@ -62,7 +62,7 @@ pub const MAX_PREDELAY: f32 = 0.2;
 
 static INFO: NodeInfo = NodeInfo {
     id: REVERB_ID,
-    version: 1,
+    version: 2,
     name: "Reverb",
     category: "Effects",
 };
@@ -266,10 +266,13 @@ impl Node for ReverbNode {
             }
 
             let room = size[i].clamp(0.5, 1.5);
+            // Per sample, so the sound doesn't depend on how it is cut into
+            // blocks (the playback cache renders in blocks of its own).
+            let phase = self.phase + WOBBLE_RATE * i as f32 / self.sample_rate;
             let damp = damping[i].clamp(0.0, 1.0) * 0.9;
             let mut y = [0.0f32; 8];
             for (n, ring) in self.lines.iter().enumerate() {
-                let wobble = WOBBLE * scale * (TAU * (self.phase + n as f32 / 8.0)).sin();
+                let wobble = WOBBLE * scale * (TAU * (phase + n as f32 / 8.0)).sin();
                 let delay = (LINES[n] * scale * room + wobble).clamp(2.0, tail_samples - 4.0);
                 let gain = gains[n];
                 let raw = ring.read(delay - 1.0);
@@ -378,6 +381,37 @@ mod tests {
             ));
         }
         out
+    }
+
+    #[test]
+    fn the_sound_does_not_depend_on_the_block_size() {
+        let play = |block: usize| {
+            let mut h =
+                Harness::new(&Reverb, &Config::new(), &[(IN, Shape::MONO)], RATE, block).unwrap();
+            h.set(ReverbPorts::MIX, 1.0);
+            let (mut l, mut r) = (Vec::new(), Vec::new());
+            for start in (0..9_600).step_by(block) {
+                for (i, x) in h.input(IN, block).lane_mut(0, 0).iter_mut().enumerate() {
+                    *x = ((start + i) as f32 * 0.03).sin();
+                }
+                h.run(block).unwrap();
+                l.extend_from_slice(h.output(OUT).lane(0, 0));
+                r.extend_from_slice(h.output(OUT).lane(0, 1));
+            }
+            (l, r)
+        };
+        let (whole, cut) = (play(4_800), play(96));
+        // Equal but for rounding in the phase; cutting the wobble by block
+        // used to differ by about 1e-2.
+        for (a, b) in [(&whole.0, &cut.0), (&whole.1, &cut.1)] {
+            let worst = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0, f32::max);
+            assert!(worst < 1e-4, "differs by {worst}");
+        }
+        assert!(rms(&whole.0) > 0.01, "the reverb sounds");
     }
 
     fn rms(x: &[f32]) -> f32 {

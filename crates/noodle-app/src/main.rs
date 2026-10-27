@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod cache_panel;
 mod carry;
 mod clip_editor;
 mod clip_panel;
@@ -78,6 +79,7 @@ fn main() -> ExitCode {
         session.set_audio_config(prefs.audio);
         session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
+        session.set_auto_cache(prefs.auto_cache);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.

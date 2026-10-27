@@ -6,6 +6,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::{Command, NodeId};
 use noodle_engine::OUTPUT_ID;
 
+use crate::cache_panel::CachePanel;
 use crate::clip_editor::{self, ClipEditor};
 use crate::clip_panel::{self, ClipPanel};
 use crate::devices::DevicePicker;
@@ -14,7 +15,7 @@ use crate::export_dialog::ExportDialog;
 use crate::outputs::OutputsView;
 use crate::piano_roll::{self, PianoRoll};
 use crate::plugin_browser::PluginBrowser;
-use crate::session::{Edit, Saved, Session};
+use crate::session::{CacheStatus, Edit, Saved, Session};
 use crate::timeline::{self, TimelineState};
 use crate::{metronome, mixer, pill_buttons, properties, theme};
 
@@ -103,6 +104,7 @@ pub struct App {
     /// Whether the outputs view is showing.
     outputs_open: bool,
     plugin_browser: PluginBrowser,
+    cache_panel: CachePanel,
     outputs: OutputsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
@@ -159,6 +161,7 @@ enum Action {
     ToggleScope,
     ToggleOutputs,
     TogglePlugins,
+    ToggleCache,
     ToggleCpu,
     ImportAudio,
     ExportAudio,
@@ -233,6 +236,7 @@ impl App {
             scope_view: None,
             outputs_open: false,
             plugin_browser: PluginBrowser::default(),
+            cache_panel: CachePanel::default(),
             outputs: OutputsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
         }
@@ -597,6 +601,7 @@ impl App {
         self.confirm_dialog(ui.ctx(), &mut actions);
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
+        self.cache_panel.show(ui.ctx(), &mut self.session);
         self.export.show(ui.ctx(), &mut self.session);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
@@ -848,6 +853,13 @@ impl App {
                 actions.push(Action::TogglePlugins);
             }
             if ui
+                .selectable_label(self.cache_panel.is_open(), "Playback cache")
+                .on_hover_text("Switch the playback cache, and see what it holds")
+                .clicked()
+            {
+                actions.push(Action::ToggleCache);
+            }
+            if ui
                 .selectable_label(self.editor.show_cpu(), "CPU meters")
                 .on_hover_text("Show how much of the audio thread's time each node takes")
                 .clicked()
@@ -899,6 +911,7 @@ impl App {
             actions.push(Action::TogglePlayback);
         }
         self.engine_button(ui, actions);
+        self.cache_indicator(ui, actions);
         let recording = self.session.is_recording();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
             theme::RECORD
@@ -1089,6 +1102,31 @@ impl App {
             .clicked()
         {
             actions.push(Action::ToggleEngine);
+        }
+    }
+
+    /// Whether the sound is computed live or played from the playback cache.
+    /// Shown while the engine runs and the cache is on, and has something to
+    /// cache; a click opens the cache panel.
+    fn cache_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let status = self.session.cache_status();
+        let (label, colour) = match status {
+            CacheStatus::Off | CacheStatus::Idle => return,
+            CacheStatus::Live => ("Live", theme::timeline::TEXT_WEAK),
+            CacheStatus::Rendering(_) => ("Caching…", theme::timeline::TEXT_WEAK),
+            CacheStatus::Cached => ("From cache", theme::ACCENT),
+        };
+        let mut tip = crate::cache_panel::status_line(status).0;
+        if let Some(n) = self.session.underruns().filter(|&n| n > 0) {
+            let times = if n == 1 { "underrun" } else { "underruns" };
+            tip.push_str(&format!(". {n} {times} since playback started"));
+        }
+        if ui
+            .add(egui::Button::new(egui::RichText::new(label).color(colour)))
+            .on_hover_text(tip)
+            .clicked()
+        {
+            actions.push(Action::ToggleCache);
         }
     }
 
@@ -1400,6 +1438,7 @@ impl App {
             }
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
+            Action::ToggleCache => self.cache_panel.toggle(),
             Action::SetTempo { centi_bpm, drag } => {
                 let project = self.session.project();
                 if let Some(map) = crate::tempo::with_tempo_at(
@@ -2177,6 +2216,31 @@ mod tests {
         assert!(!harness.state().session().sandbox_plugins());
         assert!(!crate::prefs::load(&prefs).unwrap().sandbox_plugins);
         assert!(!noodle_plugins::sandbox_enabled());
+    }
+
+    #[test]
+    fn the_playback_cache_is_switched_from_its_panel_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = dir.path().join("prefs.ron");
+        crate::prefs::init(prefs.clone());
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Playback cache").click();
+        harness.run();
+        harness.get_by_label_contains("0 entries, 0 B of 4.0 GB");
+        harness.get_by_label_contains("The audio engine is off");
+        assert!(harness.state().session().auto_cache());
+        harness.get_by_label("Cache playback automatically").click();
+        harness.run();
+        assert!(!harness.state().session().auto_cache());
+        assert!(!crate::prefs::load(&prefs).unwrap().auto_cache);
+        harness.get_by_label_contains("Off: everything plays live");
+        harness.get_by_label("Cache playback automatically").click();
+        harness.run();
+        assert!(harness.state().session().auto_cache());
+        assert!(crate::prefs::load(&prefs).unwrap().auto_cache);
     }
 
     #[test]
