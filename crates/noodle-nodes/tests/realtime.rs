@@ -1097,7 +1097,7 @@ fn a_cached_player_never_allocates_through_seeks_and_loops() {
 
     let dir = std::env::temp_dir().join(format!("noodle-cached-rt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let freezer = Freezer::new(noodle_io::CacheStore::open(&dir).unwrap());
+    let freezer = Freezer::new(noodle_io::CacheStore::open(&dir).unwrap()).with_min_cost(0);
     let request = RenderRequest {
         project: s.project.clone(),
         base: dir.clone(),
@@ -1183,7 +1183,7 @@ fn a_looped_pass_played_lap_by_lap_never_allocates() {
 
     let dir = std::env::temp_dir().join(format!("noodle-lapped-rt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let freezer = Freezer::new(noodle_io::CacheStore::open(&dir).unwrap());
+    let freezer = Freezer::new(noodle_io::CacheStore::open(&dir).unwrap()).with_min_cost(0);
     let lap = SETTINGS.sample_rate as usize / 2;
     let table = TempoTable::new(s.project.tempo_map(), SETTINGS.sample_rate);
     let pass = Pass::new(Tick(0), &table, lap).looping(Tick(0), Tick(960));
