@@ -29,7 +29,7 @@ pub struct Reverb;
 pub const REVERB_ID: &str = "noodle.effect.reverb";
 
 #[derive(Ports)]
-#[ports(bounded = 30200)]
+#[ports(bounded = 30200, cost = 120)]
 struct ReverbPorts {
     #[input("in", "In")]
     input: (),

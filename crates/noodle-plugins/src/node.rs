@@ -113,7 +113,7 @@ fn param_info(min: f64, max: f64, default: f64, stepped: bool) -> ParamInfo {
 }
 
 fn layout_of(descriptor: &Descriptor, exposed: &[&ParamDesc]) -> Layout {
-    let mut layout = Layout::realtime();
+    let mut layout = Layout::realtime().cost(200);
     for (index, port) in descriptor.audio_inputs.iter().enumerate() {
         layout = layout.input(input_key(index), port.name.clone());
     }

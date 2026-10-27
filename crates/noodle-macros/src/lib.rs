@@ -31,7 +31,8 @@ use syn::{Attribute, DeriveInput, Expr, Ident, LitStr, Token, parse_macro_input}
 ///   an offline layout, and `#[ports(nondeterministic)]` marks it so).
 ///   `#[ports(memoryless)]` and `#[ports(bounded = MS)]` say how long the
 ///   node remembers its input (see `noodle_engine::Memory`); without one it
-///   is unbounded.
+///   is unbounded. `#[ports(cost = N)]` says what a second of the node costs
+///   to render against a gain stage's 1 (the playback cache's cost threshold).
 /// - An index constant per field, named after it in upper case (`Ports::GAIN`).
 ///   Audio and parameter inputs share one index space, in field order, as do
 ///   `output`, `event_input`, `event_output`, `spectral_input`,
@@ -153,6 +154,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut mode = quote!(realtime());
     let mut nondeterministic = false;
     let mut memory = None;
+    let mut cost = None;
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("ports")) {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("offline") {
@@ -166,9 +168,12 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             } else if meta.path.is_ident("bounded") {
                 let ms: syn::LitInt = meta.value()?.parse()?;
                 memory = Some(quote!(.bounded(#ms)));
+            } else if meta.path.is_ident("cost") {
+                let units: syn::LitInt = meta.value()?.parse()?;
+                cost = Some(quote!(.cost(#units)));
             } else {
                 return Err(meta.error(
-                    "expected `offline`, `nondeterministic`, `memoryless`, `unbounded` or `bounded = ms`",
+                    "expected `offline`, `nondeterministic`, `memoryless`, `unbounded`, `bounded = ms` or `cost = n`",
                 ));
             }
             Ok(())
@@ -246,6 +251,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let fields = ports.iter().map(|p| &p.name);
     let nondeterministic = nondeterministic.then(|| quote!(.nondeterministic()));
     let memory = memory.unwrap_or_default();
+    let cost = cost.unwrap_or_default();
     let [
         inputs,
         outputs,
@@ -287,6 +293,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     #(#calls)*
                     #nondeterministic
                     #memory
+                    #cost
             }
         }
     })

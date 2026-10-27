@@ -21,8 +21,8 @@ pub use library::LibraryEdit;
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
 use noodle_engine::{
-    Controller, Diagnostic, Pass, Registry, Settings, TargetKind, Telemetry, TempoTable,
-    compile_replacing, compile_with_lanes,
+    Controller, Diagnostic, Pass, Registry, Settings, Telemetry, TempoTable, compile_replacing,
+    compile_with_lanes,
 };
 use noodle_io::{
     AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, RecordError, Recorder, Stream,
@@ -2312,8 +2312,7 @@ impl Session {
             .zip(pass)
             .filter(|(plan, _)| {
                 plan.states.iter().any(|(kind, state)| {
-                    matches!(kind, TargetKind::Auto(_))
-                        && *state == noodle_nodes::TargetState::Ready
+                    kind.is_auto() && *state == noodle_nodes::TargetState::Ready
                 })
             })
             .map(|(_, pass)| pass.tick);
@@ -2762,8 +2761,11 @@ mod tests {
     }
 
     /// A sine into an output, with the sine in a group.
+    /// A sine through a chorus in a group, to the output. The chorus makes
+    /// the group worth caching (see `DEFAULT_MIN_COST`).
     fn grouped_sine(session: &mut Session) -> (NodeId, NodeId) {
         let osc = session.new_node_id();
+        let chorus = session.new_node_id();
         let out = session.new_node_id();
         session.edit([
             Edit::Apply(Command::AddNode {
@@ -2771,20 +2773,29 @@ mod tests {
                 node: Node::new("noodle.osc.sine"),
             }),
             Edit::Apply(Command::AddNode {
+                id: chorus,
+                node: Node::new(noodle_nodes::CHORUS_ID),
+            }),
+            Edit::Apply(Command::AddNode {
                 id: out,
                 node: Node::new(OUTPUT_ID),
             }),
             Edit::Apply(Command::Connect(Connection {
                 from: Endpoint::new(osc, "out"),
+                to: Endpoint::new(chorus, "in"),
+            })),
+            Edit::Apply(Command::Connect(Connection {
+                from: Endpoint::new(chorus, "out"),
                 to: Endpoint::new(out, "in"),
             })),
         ]);
         let mut next = session.new_node_id().0;
-        let (group, command) = noodle_core::group::group_nodes(session.project(), &[osc], || {
-            next += 1;
-            NodeId(next)
-        })
-        .unwrap();
+        let (group, command) =
+            noodle_core::group::group_nodes(session.project(), &[osc, chorus], || {
+                next += 1;
+                NodeId(next)
+            })
+            .unwrap();
         session.edit([Edit::Apply(command)]);
         (group, osc)
     }

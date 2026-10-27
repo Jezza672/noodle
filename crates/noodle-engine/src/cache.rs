@@ -17,7 +17,7 @@
 //! or that follows such a node has no key. Automation lanes are nodes in the
 //! compiled graph, so the points driving a node are part of its key.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use noodle_core::{CacheKey, Endpoint, KeyBuilder, NodeId, Project, TICKS_PER_QUARTER, Tick};
@@ -47,7 +47,16 @@ pub struct CacheEnv<'a> {
     /// The content hash of a clip's audio file, given its path as the clip
     /// has it. `None` if the file can't be read.
     pub file_key: &'a dyn Fn(&str) -> Option<CacheKey>,
+    /// The cost below which the playback cache doesn't keep a cluster (see
+    /// [`Layout::cost`](crate::Layout::cost) and `partition`). 0 caches every cluster there is.
+    pub min_cost: u32,
 }
+
+/// The cost a cluster has to reach to be worth caching, in the units of
+/// [`Layout::cost`](crate::Layout::cost): about a reverb, or a chain of thirty
+/// gain stages. Storage is per audio-second whatever the cluster is, so a
+/// cluster that is cheap to render is cheaper to render than to read.
+pub const DEFAULT_MIN_COST: u32 = 32;
 
 /// Why an output can't be cached.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +114,8 @@ pub struct NodeAnalysis {
     /// sums, parallel branches take the longest, a feedback loop is
     /// unbounded). See [`Memory`].
     pub memory: Memory,
+    /// What rendering a second of the node costs ([`Layout::cost`](crate::Layout::cost)).
+    pub cost: u32,
     pub key: Result<CacheKey, Uncacheable>,
     /// One per signal input, in layout order. An offline node reads these.
     pub inputs: Vec<InputOrigin>,
@@ -131,13 +142,23 @@ pub enum TargetKind {
     /// A top-level group the playback cache picked by itself: cut before its
     /// outputs' gain, mute and solo, and cached per pass start (ADR 0010).
     Auto(NodeId),
+    /// A cut the playback cache made inside the graph, at the outputs of a
+    /// node: a join's branch, or a source several nodes read (see
+    /// `partition`). Cached per pass start like [`Auto`](Self::Auto).
+    Cut(NodeId),
 }
 
 impl TargetKind {
     pub fn node(self) -> NodeId {
         match self {
-            Self::Offline(node) | Self::Frozen(node) | Self::Auto(node) => node,
+            Self::Offline(node) | Self::Frozen(node) | Self::Auto(node) | Self::Cut(node) => node,
         }
+    }
+
+    /// Whether the playback cache picked it by itself, and so caches it per
+    /// pass start rather than over the whole timeline.
+    pub fn is_auto(self) -> bool {
+        matches!(self, Self::Auto(_) | Self::Cut(_))
     }
 }
 
@@ -583,6 +604,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
                     type_id: info.id.to_string(),
                     offline,
                     memory,
+                    cost: layout.cost,
                     key,
                     inputs,
                     output_ports: layout.outputs.iter().map(|p| p.key.to_string()).collect(),
@@ -603,7 +625,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
         }
     }
 
-    analysis.targets = targets(project, &analysis);
+    analysis.targets = targets(project, &analysis, env.min_cost);
     analysis
 }
 
@@ -714,7 +736,7 @@ fn outputs_of(analysis: &Analysis, endpoints: &[Endpoint]) -> Vec<(NodeId, usize
 
 /// What to render, upstream first: each offline node's outputs, the outputs
 /// a frozen node or group exposes, and the groups the playback cache picks.
-fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
+fn targets(project: &Project, analysis: &Analysis, min_cost: u32) -> Vec<Target> {
     let mut targets = Vec::new();
     for (&id, node) in &analysis.nodes {
         if node.offline {
@@ -751,26 +773,33 @@ fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
         });
     }
     // The playback cache's own picks: every top-level group that isn't
-    // frozen and can be cached whole, cut before its outputs' stages. A
-    // group that can't (a live input, a loop) is left to play live, and
-    // doesn't hold the others back.
-    for (id, node) in project.graph().nodes() {
-        if node.type_id != noodle_core::group::GROUP
-            || node.parent.is_some()
-            || project.frozen().contains(&id)
-        {
-            continue;
-        }
-        let endpoints = crate::flatten::group_sources(project.graph(), &keep, id);
-        let outputs = outputs_of(analysis, &endpoints);
-        let target = Target {
+    // frozen and can be cached whole, cut before its outputs' stages, and
+    // the cuts inside and between them. What can't be cached (a live input,
+    // a loop) is left to play live, and doesn't hold the others back.
+    let groups: Vec<Target> = project
+        .graph()
+        .nodes()
+        .filter(|(id, node)| {
+            node.type_id == noodle_core::group::GROUP
+                && node.parent.is_none()
+                && !project.frozen().contains(id)
+        })
+        .map(|(id, _)| Target {
             kind: TargetKind::Auto(id),
-            outputs,
-        };
-        if analysis.blocked(&target).is_none() {
-            targets.push(target);
-        }
-    }
+            outputs: outputs_of(
+                analysis,
+                &crate::flatten::group_sources(project.graph(), &keep, id),
+            ),
+        })
+        .filter(|target| analysis.blocked(target).is_none())
+        .collect();
+    let taken: BTreeSet<NodeId> = targets
+        .iter()
+        .flat_map(|t| t.outputs.iter().map(|&(n, _)| n))
+        .collect();
+    targets.extend(partition::picks(
+        project, analysis, groups, &taken, min_cost,
+    ));
     // Upstream first: by the latest node a target reads from the schedule.
     let position: BTreeMap<NodeId, usize> = analysis
         .order
@@ -789,6 +818,8 @@ fn targets(project: &Project, analysis: &Analysis) -> Vec<Target> {
     });
     targets
 }
+
+mod partition;
 
 #[cfg(test)]
 mod tests;

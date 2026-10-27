@@ -195,6 +195,25 @@ stream opens; pausing and playing again carries on the same pass.
   track are applied to the cached signal, so a fader move or a solo changes no
   key and renders nothing, while a node inside the track changes only that
   track's key.
+- **The partition** (`cache/partition.rs`). Groups are a prior, not a mandate.
+  The candidates are the top-level groups, each *branch* that feeds a node
+  with more than one audio source (a join), and each output that more than
+  one node reads (a fan-out): `TargetKind::Cut(node)` is a cut at a node's
+  outputs, cached per pass start like a group. They are taken upstream first,
+  and a candidate is kept when what it would render that no cut before it
+  already stores is worth the bytes: the sum of `Layout::cost` over its
+  upstream cone, stopping at stored nodes, reaches `DEFAULT_MIN_COST` (32,
+  against a gain stage's 1; `Freezer::with_min_cost`). So a chain of cheap
+  nodes is not cached, a group that is mostly cheap is dropped and what is
+  worth caching inside it is cut on its own, and a drum rack or a send that
+  two nodes read is one entry read twice (the replacement is at the output
+  buffer). Costs are declared by the node types (`#[ports(cost = n)]`; a
+  reverb, chorus, phaser, sampler, script, plugin, clip player and voice node
+  are heavy, everything else 1): a prior until a measured model replaces it.
+  A group's stage, which takes its gain, mute and solo, is not a join. The
+  partition is a function of the wiring and the nodes' types, configs and ids,
+  so moving a node, reordering its ports or adding a frame changes no cut and
+  no key. Event wires are not followed when costing a cone.
 - **Tiers and keys.** An entry is the cluster rendered from a fresh state at
   its *origin*, keyed `pass_key(output_key, origin)`; the rendered length is not
   in it. The tier of the cluster (`Analysis::memory`: the longest of its
@@ -220,8 +239,13 @@ stream opens; pausing and playing again carries on the same pass.
   so dragging the playhead doesn't compile per step.
 - **Rendering.** While a stream is open, `Freezing` renders the entries that
   are missing for the pass that is playing and the hot starts, 0 and the loop's
-  start, in that order (`freeze_passes`; one job, a target at a time, upstream
-  first, earlier entries standing in). A project with no groups, or no open
+  start, in that order (`freeze_passes`; one job). Explicit freezes and offline
+  nodes first, upstream first; then the automatic targets *sink first*, so
+  what playback needs lands first. A render that several targets want (the
+  same origin and loop, which is the case when a group and a cut inside it
+  are both unbounded) writes all their entries in one run, and the cuts are
+  skipped when their turn comes; ones with another tier are rendered in their
+  own run, reading what is stored. A project with no groups, or no open
   stream, or `Session::set_auto_cache(false)`, does none of it. Export doesn't
   use the entries.
 - **Loops.** A pass that starts before the loop's end wraps there

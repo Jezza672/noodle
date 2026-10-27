@@ -121,6 +121,23 @@ fn registry() -> Registry {
             .memoryless(),
     );
     add(
+        "heavy_source",
+        1,
+        Layout::realtime()
+            .output("out", "Out")
+            .memoryless()
+            .cost(50),
+    );
+    add(
+        "heavy",
+        1,
+        Layout::realtime()
+            .input("in", "In")
+            .output("out", "Out")
+            .memoryless()
+            .cost(50),
+    );
+    add(
         "delayish",
         1,
         Layout::realtime().input("in", "In").output("out", "Out"),
@@ -134,6 +151,7 @@ struct Rig {
     max_frames: usize,
     /// Nodes the session is feeding live.
     live: Vec<NodeId>,
+    min_cost: u32,
 }
 
 impl Rig {
@@ -143,6 +161,7 @@ impl Rig {
             history: History::new(),
             max_frames: 128,
             live: Vec::new(),
+            min_cost: 0,
         }
     }
 
@@ -178,6 +197,7 @@ impl Rig {
                 max_frames: self.max_frames,
                 live: &|node| self.live.contains(&node),
                 file_key: &no_files,
+                min_cost: self.min_cost,
             },
         )
     }
@@ -558,4 +578,145 @@ fn a_node_fed_live_is_not_cached_but_its_neighbours_are() {
     assert_eq!(rig.key(other).unwrap(), before);
     rig.live.clear();
     assert!(rig.key(track).is_ok());
+}
+
+/// Cuts the playback cache made, by node.
+fn cuts(rig: &Rig) -> Vec<NodeId> {
+    rig.analysis(1000)
+        .targets
+        .iter()
+        .filter_map(|t| match t.kind {
+            TargetKind::Cut(node) => Some(node),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_source_that_two_nodes_read_is_one_cut_read_twice() {
+    let mut rig = Rig::new();
+    rig.min_cost = 40;
+    let send = rig.add(1, "heavy_source");
+    let a = rig.add(2, "wire");
+    let b = rig.add(3, "wire");
+    let join = rig.add(4, "join");
+    rig.wire(send, a, "in");
+    rig.wire(send, b, "in");
+    rig.wire(a, join, "a");
+    rig.wire(b, join, "b");
+    // Both branches are cheap once the send is stored, so the one cut is the
+    // send: rendered once, and the replacement at its output feeds both.
+    assert_eq!(cuts(&rig), [send]);
+    let analysis = rig.analysis(1000);
+    let cut = analysis.target(TargetKind::Cut(send)).unwrap();
+    assert_eq!(cut.outputs, [(send, 0)]);
+}
+
+#[test]
+fn a_cheap_chain_is_not_cached() {
+    let mut rig = Rig::new();
+    rig.min_cost = 40;
+    let source = rig.add(1, "dry");
+    let mut last = source;
+    for id in 2..30 {
+        let next = rig.add(id, "wire");
+        rig.wire(last, next, "in");
+        last = next;
+    }
+    // A fan-out and a join of cheap chains: still nothing worth the bytes.
+    let other = rig.add(40, "wire");
+    let join = rig.add(41, "join");
+    rig.wire(source, other, "in");
+    rig.wire(last, join, "a");
+    rig.wire(other, join, "b");
+    assert_eq!(rig.analysis(1000).targets, []);
+    // The same graph is cut everywhere when anything is worth caching.
+    rig.min_cost = 0;
+    assert!(!cuts(&rig).is_empty());
+}
+
+#[test]
+fn each_expensive_branch_of_a_join_is_a_cut_and_the_join_is_not() {
+    let mut rig = Rig::new();
+    rig.min_cost = 40;
+    let a = rig.add(1, "heavy_source");
+    let b = rig.add(2, "heavy_source");
+    let join = rig.add(4, "join");
+    let after = rig.add(5, "wire");
+    rig.wire(a, join, "a");
+    rig.wire(b, join, "b");
+    rig.wire(join, after, "in");
+    assert_eq!(cuts(&rig), [a, b]);
+    // A cheap branch beside an expensive one is read live.
+    let mut other = Rig::new();
+    other.min_cost = 40;
+    let (a, cheap_branch) = (other.add(1, "heavy_source"), other.add(2, "dry"));
+    let join = other.add(3, "join");
+    other.wire(a, join, "a");
+    other.wire(cheap_branch, join, "b");
+    assert_eq!(cuts(&other), [a]);
+}
+
+#[test]
+fn a_cut_does_not_pay_for_what_a_cut_before_it_stores() {
+    let mut rig = Rig::new();
+    rig.min_cost = 80;
+    // Two heavy nodes in a chain cost 100 together; the second, behind a
+    // stored first, costs 50 and is not a cut of its own.
+    let first = rig.add(1, "heavy_source");
+    let second = rig.add(2, "heavy");
+    let a = rig.add(3, "wire");
+    let b = rig.add(4, "wire");
+    let join = rig.add(5, "join");
+    rig.wire(first, second, "in");
+    rig.wire(second, a, "in");
+    rig.wire(second, b, "in");
+    rig.wire(a, join, "a");
+    rig.wire(b, join, "b");
+    assert_eq!(cuts(&rig), [second]);
+    // With the first read by two, it is a cut; the branch behind it that
+    // still costs 51 is the second cut, and the second heavy node is not
+    // its own.
+    let mut rig = Rig::new();
+    rig.min_cost = 50;
+    let first = rig.add(1, "heavy_source");
+    let second = rig.add(2, "heavy");
+    let a = rig.add(3, "wire");
+    let b = rig.add(4, "wire");
+    let join = rig.add(5, "join");
+    rig.wire(first, second, "in");
+    rig.wire(first, a, "in");
+    rig.wire(second, b, "in");
+    rig.wire(a, join, "a");
+    rig.wire(b, join, "b");
+    assert_eq!(cuts(&rig), [first, b]);
+}
+
+#[test]
+fn moving_a_node_changes_neither_the_partition_nor_a_key() {
+    let mut rig = Rig::new();
+    rig.min_cost = 40;
+    let send = rig.add(1, "heavy_source");
+    let a = rig.add(2, "wire");
+    let b = rig.add(3, "wire");
+    rig.wire(send, a, "in");
+    rig.wire(send, b, "in");
+    let before = rig.analysis(1000);
+    for node in [send, a, b] {
+        rig.apply(Command::MoveNode {
+            node,
+            position: noodle_core::Position { x: 300.0, y: 40.0 },
+        });
+    }
+    rig.apply(Command::SetPortOrder {
+        node: a,
+        order: vec!["out".into(), "in".into()],
+    });
+    let after = rig.analysis(1000);
+    assert_eq!(before.targets, after.targets);
+    assert_eq!(
+        before.output_key(send, 0).unwrap(),
+        after.output_key(send, 0).unwrap()
+    );
+    assert_eq!(cuts(&rig), [send]);
 }

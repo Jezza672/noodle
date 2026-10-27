@@ -132,6 +132,7 @@ static CONFIG: [ConfigInfo; 3] = [
 ];
 
 #[derive(Ports)]
+#[ports(cost = 60)]
 struct SamplerPorts {
     #[event_input("in", "Notes")]
     notes: (),

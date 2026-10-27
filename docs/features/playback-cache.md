@@ -103,3 +103,34 @@ No sound change; the golden renders are untouched.
   delay carries its tail across the wrap, every lap equal to a live loop, also
   when the tail is longer than the loop and each lap has its own entry; an oscillator resets and fades at the wrap); a session test for a loop.
   Each was broken on purpose and caught (pure origin, warm-up laps, fade, grid, wrap counting, the transient laps, the lap key); `realtime.rs` runs a lapped player with no allocation.
+
+## Batch 4: the recursive partition (#268)
+
+No sound change; the golden renders are untouched.
+
+- **Cuts.** `TargetKind::Cut(node)`, picked in `cache/partition.rs`: each branch
+  that feeds a join and each output that two nodes read, besides the top-level
+  groups. A candidate is kept when its cost, the sum of `Layout::cost` over what
+  it would render that no earlier cut stores, reaches `DEFAULT_MIN_COST`. A cheap
+  chain is not cached, a cheap group is dropped and the worthwhile clusters in it
+  are cut on their own, and a send or a rack that two nodes read is one entry
+  read twice. A group's stage is not a join.
+- **Costs.** `Layout::cost` (`#[ports(cost = n)]`, default 1): reverb 120,
+  plugins 200, sampler, script 60, chorus, phaser 40, voices 30, clip player 24,
+  ladder 12. A prior, to be replaced by measurement.
+- **Sink-first rendering.** Explicit freezes and offline nodes render first;
+  the automatic targets then render from the sink back, and a render that
+  several targets want (the same origin and loop) writes all their entries in one
+  run (`FreezeReport::renders`).
+- **Sticky.** The partition depends on wiring, types, configs and ids only, so
+  moving a node or reordering its ports changes no cut and no key. A measured
+  cost model, expensive-node and chain cuts, and section alignment are left.
+- **Tests.** `cache/tests.rs` (shared source, cheap chain, join branches, cost
+  that leaves out stored cuts, move leaves the partition alone) and `freeze.rs`
+  (a shared send is one entry and one player; a cheap chain and a cheap group;
+  a group's render writes the cut inside it, then an edit after the cut renders
+  only the group). Each was broken on purpose and caught (batching, order,
+  threshold, stored cuts, fan-out, join).
+- **Found on the way.** The reverb's wobble phase advances per block, so its
+  output depends on block alignment and a cached reverb differs from live by
+  about 0.5%. The tests use a chorus; see #273.

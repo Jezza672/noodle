@@ -21,9 +21,9 @@ use std::sync::{Arc, Mutex};
 
 use noodle_core::{CacheKey, Endpoint, NodeId, Project, Tick};
 use noodle_engine::{
-    Analysis, CacheEnv, Cancelled, Diagnostic, EntrySpec, InputKind, InputOrigin, Job, LoopKind,
-    OfflineError, OfflineInput, Pass, Problem, Progress, Registry, Replacements, Settings,
-    StreamError, Tap, Target, TargetKind, TempoTable, Uncacheable, analyze, apply_offset,
+    Analysis, CacheEnv, Cancelled, DEFAULT_MIN_COST, Diagnostic, EntrySpec, InputKind, InputOrigin,
+    Job, LoopKind, OfflineError, OfflineInput, Pass, Problem, Progress, Registry, Replacements,
+    Settings, StreamError, Tap, Target, TargetKind, TempoTable, Uncacheable, analyze, apply_offset,
     render_offline_node, render_taps,
 };
 use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Peek};
@@ -69,6 +69,7 @@ impl FreezePlan {
 pub struct Freezer {
     store: CacheStore,
     hasher: Arc<FileHasher>,
+    min_cost: u32,
 }
 
 impl Freezer {
@@ -76,7 +77,15 @@ impl Freezer {
         Self {
             store,
             hasher: Arc::new(FileHasher::new()),
+            min_cost: DEFAULT_MIN_COST,
         }
+    }
+
+    /// The cost below which the playback cache leaves a cluster live (see
+    /// [`DEFAULT_MIN_COST`]). 0 caches every cluster there is.
+    pub fn with_min_cost(mut self, min_cost: u32) -> Self {
+        self.min_cost = min_cost;
+        self
     }
 
     pub fn store(&self) -> &CacheStore {
@@ -104,6 +113,7 @@ impl Freezer {
                 max_frames: settings.max_frames,
                 live: &|_| false,
                 file_key: &file_key,
+                min_cost: self.min_cost,
             },
         )
     }
@@ -151,6 +161,7 @@ impl Freezer {
                 max_frames: settings.max_frames,
                 live,
                 file_key: &file_key,
+                min_cost: self.min_cost,
             },
         );
         (analysis, unknown.into_inner())
@@ -227,7 +238,7 @@ impl Freezer {
         };
         for target in &analysis.targets {
             let offline = matches!(target.kind, TargetKind::Offline(_));
-            let auto = matches!(target.kind, TargetKind::Auto(_));
+            let auto = target.kind.is_auto();
             // An automatic target is cached per pass; the others cover the
             // timeline from 0.
             if auto && pass.is_none() {
@@ -349,6 +360,9 @@ impl Freezer {
 pub struct FreezeReport {
     /// Targets rendered and stored.
     pub rendered: Vec<TargetKind>,
+    /// How many times the engine ran to make them: a render writes the entries
+    /// of every target that wants the same one (see [`freeze_passes`]).
+    pub renders: usize,
     /// Targets that were in the cache already.
     pub cached: Vec<TargetKind>,
     /// Targets that can't be cached, and why.
@@ -507,7 +521,7 @@ fn freeze_in(
             .map(|pass| freezer.plan(&analysis, settings, frames, true, Some(pass)))
             .collect();
         for target in &analysis.targets {
-            if let TargetKind::Auto(_) = target.kind {
+            if target.kind.is_auto() {
                 for (pass, plan) in passes.iter().zip(&per_pass) {
                     match plan.state(target.kind) {
                         Some(TargetState::Ready) => report.cached.push(target.kind),
@@ -550,45 +564,84 @@ fn freeze_in(
             }
         }
     }
+    // The explicit freezes and offline nodes first, upstream first: what a
+    // pass reads may stand on them. Then the automatic ones from the sink
+    // back, so what playback needs is in the cache first. A render that also
+    // makes the entries of the clusters inside it (they want the same entry)
+    // writes them on the way, and those are skipped when their turn comes.
+    let (mut todo, autos): (Vec<_>, Vec<_>) =
+        todo.into_iter().partition(|(_, spec)| spec.is_none());
+    todo.extend(autos.into_iter().rev());
     let count = todo.len().max(1) as f32;
     progress.set_window(outer.0, outer.1);
     progress.report(0.0)?;
-    for (i, (target, spec)) in todo.into_iter().enumerate() {
+    let mut done = vec![false; todo.len()];
+    for i in 0..todo.len() {
+        let (target, spec) = todo[i];
         let window = (outer.0 + outer.1 * i as f32 / count, outer.1 / count);
         progress.set_window(window.0, window.1);
-        if spec.is_some_and(|spec| freezer.entry_ready(&analysis, target, &spec, settings)) {
+        if done[i]
+            || spec.is_some_and(|spec| freezer.entry_ready(&analysis, target, &spec, settings))
+        {
             continue;
         }
-        // Rebuilt for each target: the one before it is in the cache now.
+        // Rebuilt for each render: the one before it is in the cache now.
         // An entry's render stands in the place of the pass it starts.
         let pass = spec.map(|spec| spec.pass());
         let plan = freezer.plan(&analysis, settings, frames, true, pass.as_ref());
         match target.kind {
-            TargetKind::Frozen(_) | TargetKind::Auto(_) => render_frozen(
-                freezer,
-                request,
-                &registry,
-                &library,
-                &analysis,
-                &plan.replacements,
-                target,
-                spec.as_ref(),
-                progress,
-            )?,
-            TargetKind::Offline(node) => render_offline(
-                freezer,
-                request,
-                &registry,
-                &library,
-                &analysis,
-                &plan.replacements,
-                node,
-                target,
-                progress,
-                window,
-            )?,
+            TargetKind::Frozen(_) | TargetKind::Auto(_) | TargetKind::Cut(_) => {
+                let mut spec = spec;
+                let mut batch = vec![target];
+                if let Some(first) = spec.as_mut() {
+                    for j in i + 1..todo.len() {
+                        let (other, Some(want)) = todo[j] else {
+                            continue;
+                        };
+                        let same = (want.origin, want.looping) == (first.origin, first.looping);
+                        let fits = !first.exact() || want.frames == first.frames;
+                        if !done[j]
+                            && same
+                            && fits
+                            && !freezer.entry_ready(&analysis, other, &want, settings)
+                        {
+                            first.frames = first.frames.max(want.frames);
+                            batch.push(other);
+                            done[j] = true;
+                        }
+                    }
+                }
+                render_frozen(
+                    freezer,
+                    request,
+                    &registry,
+                    &library,
+                    &analysis,
+                    &plan.replacements,
+                    &batch,
+                    spec.as_ref(),
+                    progress,
+                )?;
+                report.rendered.extend(batch.iter().map(|t| t.kind));
+                report.renders += 1;
+            }
+            TargetKind::Offline(node) => {
+                render_offline(
+                    freezer,
+                    request,
+                    &registry,
+                    &library,
+                    &analysis,
+                    &plan.replacements,
+                    node,
+                    target,
+                    progress,
+                    window,
+                )?;
+                report.rendered.push(target.kind);
+                report.renders += 1;
+            }
         }
-        report.rendered.push(target.kind);
     }
     progress.set_window(outer.0, outer.1);
     progress.report(1.0)?;
@@ -675,7 +728,7 @@ fn render_frozen(
     library: &Library,
     analysis: &Analysis,
     replacements: &Replacements,
-    target: &Target,
+    targets: &[&Target],
     spec: Option<&EntrySpec>,
     progress: &Progress,
 ) -> Result<(), FreezeError> {
@@ -706,7 +759,7 @@ fn render_frozen(
     };
     let mut entries = Vec::new();
     let mut taps = Vec::new();
-    for &(node, output) in &target.outputs {
+    for &(node, output) in targets.iter().flat_map(|t| &t.outputs) {
         let info = &analysis.nodes[&node];
         let key = analysis
             .output_key(node, output)
@@ -760,7 +813,7 @@ fn render_frozen(
         taps,
     )?;
     if !library.clips.errors().is_empty() || library.clips.underruns() > 0 {
-        return Err(FreezeError::Incomplete(target.kind));
+        return Err(FreezeError::Incomplete(targets[0].kind));
     }
     // A tap that never ran would store a short entry, which the app would
     // then render again forever.
@@ -768,10 +821,10 @@ fn render_frozen(
         return Err(FreezeError::Render(match diagnostics.first() {
             Some(d) => format!(
                 "node {} produced no audio: {}",
-                target.kind.node(),
+                targets[0].kind.node(),
                 d.problem
             ),
-            None => format!("node {} produced no audio", target.kind.node()),
+            None => format!("node {} produced no audio", targets[0].kind.node()),
         }));
     }
     for entry in entries {

@@ -170,7 +170,7 @@ impl NodeType for Script {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         let program = Self::program(config)?;
-        let mut layout = Layout::realtime();
+        let mut layout = Layout::realtime().cost(60);
         for input in &program.inputs {
             let name = title(&input.key);
             layout = match &input.param {

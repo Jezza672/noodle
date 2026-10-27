@@ -34,8 +34,7 @@ need a person and hardware, plus a few deliberately deferred items.
 1. **The invariant and the keys.** Built: see [features/playback-cache.md](features/playback-cache.md).
 2. **Automatic group targets.** Built: see [features/playback-cache.md](features/playback-cache.md).
 3. **Tiers and cross-start reuse.** Built: see [features/playback-cache.md](features/playback-cache.md).
-4. **Recursive partition.** Cut selection with group, join and fan-out cuts, the cost threshold, sink-first rendering and a sticky partition. Expensive-node and chain cuts, and section alignment, after the measured cost model.
-   *Done when:* a drum rack or shared send is cached once and read twice; a cheap chain is not cached; moving or renaming a node does not invalidate the partition.
+4. **Recursive partition.** Built: see [features/playback-cache.md](features/playback-cache.md). Expensive-node and chain cuts, a measured cost model and section alignment are left, after the first real projects are measured.
 5. **Visibility and docs.** Settings toggle, size and eviction readout, a "from cache" indicator and an underrun counter. Add the playback section to `docs/architecture/caching.md` and a feature record when it lands.
    *Done when:* the user can see what is cached, turn it off, and tell when playback is live.
 

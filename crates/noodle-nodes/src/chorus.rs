@@ -34,6 +34,7 @@ const MAX_SECONDS: f32 = 0.06;
 const INAUDIBLE: f32 = 1e-6;
 
 #[derive(Ports)]
+#[ports(cost = 40)]
 struct ChorusPorts {
     #[input("in", "In")]
     input: (),

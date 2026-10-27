@@ -21,6 +21,7 @@ use noodle_engine::{
 pub struct Ladder;
 
 #[derive(Ports)]
+#[ports(cost = 12)]
 struct LadderPorts {
     #[input("in", "In")]
     input: (),
