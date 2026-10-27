@@ -1159,6 +1159,73 @@ fn a_cached_player_never_allocates_through_seeks_and_loops() {
 }
 
 #[test]
+fn a_looped_pass_played_lap_by_lap_never_allocates() {
+    use noodle_core::{Tick, group::group_nodes};
+    use noodle_engine::{Pass, TempoTable};
+    use noodle_nodes::{DELAY_ID, Freezer, RenderRequest, freeze_passes};
+
+    // A clock into a delay in a group: position-pure into bounded, so the
+    // group is cached lap by lap in a loop.
+    let mut s = Session::new();
+    let clock = s.add(Node::new(noodle_nodes::CLOCK_ID));
+    let delay = s.add(Node::new(DELAY_ID));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(clock, "out", delay, "in");
+    s.wire(delay, "out", output, "in");
+    let project = s.project.clone();
+    let mut next = project.next_node_id().0;
+    let (group, command) = group_nodes(&project, &[clock, delay], || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    s.edit(command);
+
+    let dir = std::env::temp_dir().join(format!("noodle-lapped-rt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let freezer = Freezer::new(noodle_io::CacheStore::open(&dir).unwrap());
+    let lap = SETTINGS.sample_rate as usize / 2;
+    let table = TempoTable::new(s.project.tempo_map(), SETTINGS.sample_rate);
+    let pass = Pass::new(Tick(0), &table, lap).looping(Tick(0), Tick(960));
+    let request = RenderRequest {
+        project: s.project.clone(),
+        base: dir.clone(),
+        settings: SETTINGS,
+        frames: lap,
+        extend_registry: None,
+    };
+    freeze_passes(&freezer, &request, &[pass], &noodle_engine::Progress::new()).unwrap();
+    let analysis = freezer.analyze(&s.project, &s.registry, SETTINGS, lap, &dir);
+    assert!(analysis.targets.iter().any(|t| t.kind.node() == group));
+    let plan = freezer.plan(&analysis, SETTINGS, lap, false, Some(&pass));
+    assert!(!plan.replacements.is_empty(), "the pass is cached");
+    let diagnostics =
+        s.controller
+            .update_project_replacing(&s.project, &s.registry, &plan.replacements);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let transport = s.controller.transport();
+    transport.set_loop(Some((Tick(0), Tick(960))));
+    transport.seek(Tick(0));
+    s.controller.maintain();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    let violations = realtime(|| {
+        // Six laps: past the transient ones into the steady lap.
+        for i in 0..(6 * lap / 1000) {
+            s.processor.process(&mut out);
+            heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            if i % 8 == 7 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    });
+    assert_eq!(violations, 0, "allocated while the laps played");
+    assert!(heard, "the laps never sounded");
+}
+
+#[test]
 fn live_monitoring_never_allocates_while_notes_come_and_go() {
     let mut registry = Registry::with_builtins();
     let library = noodle_nodes::register_library(&mut registry);

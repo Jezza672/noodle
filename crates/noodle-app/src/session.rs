@@ -2240,38 +2240,35 @@ impl Session {
     /// entries for: the one playing, then the hot starts, 0 and the loop's
     /// start. `end` is the render length in frames.
     ///
-    /// A pass whose loop would wrap before it ends is live unless it starts
-    /// at the loop's start: the loop rule for clusters that remember (a
-    /// reverb's tail across the wrap) comes with the tiers. From the loop's
-    /// start the entry is the loop, which restarts every cluster at the wrap.
+    /// A pass that starts before the loop's end wraps there. Which clusters
+    /// the cache serves in it is decided per cluster by its tier (see
+    /// `Analysis::entries`): position-pure ones always, bounded ones from the
+    /// loop's start on, with their tail carried across the wrap, and
+    /// unbounded ones from the loop's start only, reset at the wrap.
     fn cache_passes(&self, rate: f32, end: usize) -> (Option<Pass>, Vec<Pass>) {
         if !self.auto_possible() {
             return (None, Vec::new());
         }
         let table = TempoTable::new(self.project.tempo_map(), rate);
         let looping = self.project.transport_loop().active();
-        let eligible = |start: Tick| match looping {
-            Some((from, to)) => start == from || start >= to,
-            None => true,
-        };
         let pass = |start: Tick| {
             let from = table.sample_at_tick(start) as usize;
-            let frames = match looping {
-                Some((l, to)) if l == start => {
-                    (table.sample_at_tick(to) as usize).saturating_sub(from)
+            match looping {
+                Some((l, to)) if start < to => {
+                    let frames = (table.sample_at_tick(to) as usize).saturating_sub(from);
+                    Pass::new(start, &table, frames.max(1)).looping(l, to)
                 }
-                _ => end.saturating_sub(from),
-            };
-            Pass::new(start, &table, frames.max(rate as usize))
+                _ => Pass::new(start, &table, end.saturating_sub(from).max(rate as usize)),
+            }
         };
-        let current = eligible(self.pass_start).then(|| pass(self.pass_start));
-        let mut wanted: Vec<Pass> = current.into_iter().collect();
+        let current = pass(self.pass_start);
+        let mut wanted = vec![current];
         for start in std::iter::once(Tick(0)).chain(looping.map(|(from, _)| from)) {
-            if eligible(start) && !wanted.iter().any(|p| p.tick == start) {
+            if !wanted.iter().any(|p| p.tick == start) {
                 wanted.push(pass(start));
             }
         }
-        (current, wanted)
+        (Some(current), wanted)
     }
 
     /// Looks at the cache of renders for the project and starts the ones it
@@ -3017,6 +3014,41 @@ mod tests {
         // Turned off, everything plays live.
         session.set_auto_cache(false);
         assert_eq!(session.cached_pass(), None);
+    }
+
+    #[test]
+    fn a_loop_is_cached_from_its_start_and_an_unbounded_group_stays_live_elsewhere_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().to_owned());
+        grouped_sine(&mut session);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(3840),
+        });
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+
+        // The lap from the loop's start is the entry, reset at the wrap.
+        until(&mut session, "the loop is cached", |s| {
+            s.cached_pass() == Some(Tick(0))
+        });
+        // The sine never forgets, so from the middle of the loop there is no
+        // entry for it: it plays live, and nothing is rendered for the start.
+        session.seek(Tick(1000));
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(10));
+            session.maintain();
+        }
+        assert_eq!(session.cached_pass(), None);
+        assert!(!session.freeze_pending());
+        // Back at the loop's start, the lap is there already.
+        session.seek(Tick(0));
+        until(&mut session, "the lap is served again", |s| {
+            s.cached_pass() == Some(Tick(0))
+        });
     }
 
     #[test]

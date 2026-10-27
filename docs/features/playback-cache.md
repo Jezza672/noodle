@@ -58,7 +58,7 @@ No sound change; the golden renders are untouched.
   rendered in the background and swapped in with `Setup.position`. A seek while
   another start's entries play recompiles at once; otherwise the cache is looked
   at after the debounce. A loop is served only from its start (the tiered loop
-  rule is the next batch). `Session::set_auto_cache` turns it off; the settings
+  rule is batch 3). `Session::set_auto_cache` turns it off; the settings
   toggle and the indicator come with the visibility batch.
 - **Tests.** `freeze.rs` (per-start entries match a seek there, and a wrong
   start's entry does not; fader and mute leave the key alone; one group
@@ -72,3 +72,34 @@ No sound change; the golden renders are untouched.
   task after releasing it, so `Handle::close` could see the entry gone and
   return before the drop. The entry now stays (marked running) until the task is
   dropped. A regression test keeps the pool busy while closing.
+
+## Batch 3: tiers and reuse across starts (#268)
+
+No sound change; the golden renders are untouched.
+
+- **Tier-chosen entries.** `Analysis::memory(target)` is the longest memory of
+  the cluster's outputs; `Analysis::entries(target, pass)` lists the entries
+  that can serve a pass, best first (`EntrySpec`: origin, frames, loop).
+  Position-pure clusters use one entry from 0 for every start; bounded clusters
+  an entry from a bar-grid origin at or before `S − n` (or from 0); unbounded
+  clusters an entry from S. `Freezer::plan` takes the first ready one;
+  `freeze_passes` renders the missing ones, merging passes that want the same
+  entry into one render for the longest.
+- **The tiered loop rule.** `Pass::looping`; `render_taps` takes a loop and the
+  engine wraps with state carried. Bounded clusters get a steady lap (warm-up
+  laps rendered and dropped), so a tail crosses the wrap; unbounded clusters get
+  a lap from the loop's start with the last 4 ms faded out, reset at the wrap.
+  Pure clusters are served in any loop pass. The session no longer decides
+  eligibility per pass: every pass before the loop's end is looked up, and each
+  cluster is served or left live by its tier.
+- **Lap by lap.** A bounded cluster in a loop is played from one entry per lap
+  until steady: lap 1 from an ordinary entry (no tail from the loop's end that
+  the pass has not played), laps 2 to `ceil(n / lap)` from entries rendered by
+  the engine looping (a tail longer than the loop differs in each), then the
+  steady lap. `CachedPlayer::then_laps` and `Lapped` count the wraps.
+- **Tests.** `freeze.rs`: a pure cluster is one entry for every start, a bounded
+  cluster carries the clip from before a seek and serves a range of starts on
+  the bar grid, an unbounded one only its own start, and the loop tests (a 0.1 s
+  delay carries its tail across the wrap, every lap equal to a live loop, also
+  when the tail is longer than the loop and each lap has its own entry; an oscillator resets and fades at the wrap); a session test for a loop.
+  Each was broken on purpose and caught (pure origin, warm-up laps, fade, grid, wrap counting, the transient laps, the lap key); `realtime.rs` runs a lapped player with no allocation.

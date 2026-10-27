@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use noodle_core::{CacheKey, Config, Value};
 use noodle_engine::{
     Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, Replacement, Setup, Shape,
+    SignalBuffer, SignalOut,
 };
 use noodle_io::pool::{self, Bell, Handle, Next, Task};
 use noodle_io::{CacheStore, CachedAudio};
@@ -54,6 +55,10 @@ pub struct CachedPlayer {
     /// The timeline frame the entry's first frame belongs to: 0 for a render
     /// of the whole project, the start of the pass for a pass's entry.
     start: u64,
+    /// For a loop: the players of the laps after the first, in order; the
+    /// last plays on. This player's entry plays the first lap, from the
+    /// pass's start. Each wrap of the loop moves to the next.
+    laps: Vec<CachedPlayer>,
 }
 
 impl CachedPlayer {
@@ -67,6 +72,7 @@ impl CachedPlayer {
             shape,
             blocking: false,
             start: 0,
+            laps: Vec::new(),
         }
     }
 
@@ -79,6 +85,7 @@ impl CachedPlayer {
             shape,
             blocking: false,
             start: 0,
+            laps: Vec::new(),
         }
     }
 
@@ -90,12 +97,20 @@ impl CachedPlayer {
         Self { start, ..self }
     }
 
+    /// Plays `laps` after this player's entry, one for each wrap of the
+    /// transport's loop, the last for every wrap after.
+    #[must_use]
+    pub fn then_laps(self, laps: Vec<CachedPlayer>) -> Self {
+        Self { laps, ..self }
+    }
+
     /// Reads on the calling thread instead of through a worker, for offline
     /// renders.
     #[must_use]
     pub fn blocking(self) -> Self {
         Self {
             blocking: true,
+            laps: self.laps.into_iter().map(CachedPlayer::blocking).collect(),
             ..self
         }
     }
@@ -104,12 +119,22 @@ impl CachedPlayer {
     /// the entry, so a plan built for a different render replaces the node.
     pub fn replacement(self) -> Replacement {
         let name = self.key.map_or_else(|| "silent".into(), |key| key.to_hex());
+        let laps = self
+            .laps
+            .iter()
+            .map(|lap| {
+                let key = lap.key.map_or_else(|| "silent".into(), |key| key.to_hex());
+                format!("{key}@{}", lap.start)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         Replacement {
             // The start is part of the name: two passes' entries are two keys,
             // but the same entry played from another frame is another player.
             config: Config::new()
                 .with("render", Value::Text(name))
-                .with("start", Value::Text(self.start.to_string())),
+                .with("start", Value::Text(self.start.to_string()))
+                .with("laps", Value::Text(laps)),
             node_type: Arc::new(self),
         }
     }
@@ -137,6 +162,29 @@ impl NodeType for CachedPlayer {
         let Some(key) = self.key else {
             return Ok(Instance::realtime(Silent));
         };
+        let first = self.player(key, setup)?;
+        if self.laps.is_empty() {
+            return Ok(Instance::realtime(first));
+        }
+        let mut players = vec![first];
+        for lap in &self.laps {
+            let key = lap
+                .key
+                .ok_or_else(|| NodeError::config("a lap of the loop is missing"))?;
+            players.push(lap.player(key, setup)?);
+        }
+        Ok(Instance::realtime(Lapped {
+            players,
+            scratch: SignalBuffer::new(self.shape, setup.max_frames),
+            wraps: 0,
+            next: None,
+        }))
+    }
+}
+
+impl CachedPlayer {
+    /// The player of the entry under `key`.
+    fn player(&self, key: CacheKey, setup: &Setup<'_>) -> Result<Player, NodeError> {
         let audio = self
             .store
             .get(&key)
@@ -145,7 +193,7 @@ impl NodeType for CachedPlayer {
         if audio.info().channels != lanes {
             return Err(NodeError::config("the cached render has the wrong shape"));
         }
-        Ok(Instance::realtime(if self.blocking {
+        Ok(if self.blocking {
             Player::Blocking(Blocking {
                 audio,
                 scratch: Vec::new(),
@@ -154,7 +202,51 @@ impl NodeType for CachedPlayer {
             })
         } else {
             Player::Streaming(Streaming::start(audio, lanes, setup.position, self.start))
-        }))
+        })
+    }
+}
+
+/// Plays a loop lap by lap: the first lap from the entry rendered from the
+/// pass's start, then, at each wrap, the entry of the next lap, the last one
+/// for every lap after. A tail that outlasts the loop is different in each lap
+/// until the loop is in a steady state, and the first lap has not played the
+/// tail of the loop's end yet. The lap after the one heard is read as well, so
+/// it is primed at the wrap. A plan built after the first wrap does not know
+/// the wraps that happened and starts again from the first entry.
+struct Lapped {
+    players: Vec<Player>,
+    /// Room for the player that is not heard.
+    scratch: SignalBuffer,
+    /// How many times the loop has wrapped since the pass began.
+    wraps: usize,
+    /// Where the playhead should be at the next block, to see a jump back.
+    next: Option<u64>,
+}
+
+impl Node for Lapped {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let transport = &ctx.transport;
+        if transport.playing {
+            if self.next.is_some_and(|next| transport.position < next) {
+                self.wraps += 1;
+            }
+            self.next = Some(transport.position + ctx.frames as u64);
+        }
+        let last = self.players.len() - 1;
+        let heard = self.wraps.min(last);
+        let ahead = (self.wraps + 1).min(last);
+        self.players[heard].process_into(ctx, &mut io.outputs[0]);
+        if ahead != heard {
+            self.players[ahead].process_into(ctx, &mut self.scratch.as_out(ctx.frames));
+        }
+    }
+
+    fn reset(&mut self) {
+        for player in &mut self.players {
+            player.reset();
+        }
+        self.wraps = 0;
+        self.next = None;
     }
 }
 
@@ -173,12 +265,18 @@ enum Player {
     Blocking(Blocking),
 }
 
+impl Player {
+    fn process_into(&mut self, ctx: &Context, out: &mut SignalOut<'_>) {
+        match self {
+            Self::Streaming(player) => player.process(ctx, out),
+            Self::Blocking(player) => player.process(ctx, out),
+        }
+    }
+}
+
 impl Node for Player {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
-        match self {
-            Self::Streaming(player) => player.process(ctx, io),
-            Self::Blocking(player) => player.process(ctx, io),
-        }
+        self.process_into(ctx, &mut io.outputs[0]);
     }
 
     fn reset(&mut self) {
@@ -199,8 +297,7 @@ struct Blocking {
 }
 
 impl Blocking {
-    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
-        let out = &mut io.outputs[0];
+    fn process(&mut self, ctx: &Context, out: &mut SignalOut<'_>) {
         let shape = out.shape();
         let frames = ctx.frames;
         out.fill(0.0);
@@ -337,8 +434,7 @@ impl Streaming {
         self.restart = true;
     }
 
-    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
-        let out = &mut io.outputs[0];
+    fn process(&mut self, ctx: &Context, out: &mut SignalOut<'_>) {
         let shape = out.shape();
         out.fill(0.0);
         let transport = &ctx.transport;

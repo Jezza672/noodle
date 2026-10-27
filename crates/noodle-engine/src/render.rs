@@ -191,7 +191,8 @@ pub struct Tap {
     pub sink: TapSink,
 }
 
-/// Renders the project for `frames` frames from `start`, delivering the
+/// Renders the project for `frames` frames from `start`, wrapping at the end
+/// of `looping` if it is set, delivering the
 /// signal at each tap to its sink instead of mixing it to an output. Only the
 /// nodes that feed a tap run, so nothing plays and nothing with side effects
 /// is touched. Outputs in `replacements` play from their sources, which is
@@ -204,6 +205,7 @@ pub fn render_taps<E>(
     registry: &Registry,
     settings: Settings,
     start: Tick,
+    looping: Option<(Tick, Tick)>,
     frames: usize,
     progress: &Progress,
     replacements: &Replacements,
@@ -235,6 +237,9 @@ pub fn render_taps<E>(
         .unzip();
     let diagnostics = controller.update_project_tapping(project, registry, replacements, &specs);
     drop(sinks);
+    // The playhead wraps at the loop's end with the nodes' state carried, as
+    // a live loop does.
+    controller.transport().set_loop(looping);
     // Every node starts fresh at `start`: what a pass that began with a seek
     // there plays (ADR 0010).
     if start.0 > 0 {

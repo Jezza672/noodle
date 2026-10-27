@@ -967,3 +967,315 @@ fn an_entry_grows_with_the_project_instead_of_rendering_again() {
         .plan(&analysis, SETTINGS, way_longer, true, Some(&longer_pass));
     assert_eq!(plan.state(auto), Some(&TargetState::Ready));
 }
+
+// The tiers (ADR 0010): which entries serve which starts, and the loop rule.
+
+/// A group of the track playing `tone.wav` into `middle` (if any), with
+/// `time` set on it, and an output after it.
+fn clip_group(rig: &mut Rig, middle: Option<(&str, f32)>) -> NodeId {
+    let track = rig.add(1, TRACK_INPUT_ID);
+    let out = rig.add(3, OUTPUT_ID);
+    let id = rig.project.new_clip_id();
+    let clip = Clip::audio(track, Tick(0), "tone.wav", FRAMES as u64);
+    rig.apply(Command::AddClip { id, clip });
+    let mut inside = vec![track];
+    let mut last = track;
+    let mut port = "audio";
+    if let Some((kind, time)) = middle {
+        let node = rig.add(2, kind);
+        rig.apply(Command::SetParam {
+            node,
+            key: "time".into(),
+            value: Some(time),
+        });
+        rig.wire((last, port), (node, "in"));
+        inside.push(node);
+        (last, port) = (node, "out");
+    }
+    rig.wire((last, port), (out, "in"));
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    group
+}
+
+fn table(rig: &Rig) -> TempoTable {
+    TempoTable::new(rig.project.tempo_map(), SETTINGS.sample_rate)
+}
+
+/// Ticks in a second at the default 120 bpm.
+const SECOND: i64 = 1920;
+
+#[test]
+fn a_position_pure_cluster_is_one_entry_for_every_start() {
+    let mut rig = setup("pure");
+    let group = clip_group(&mut rig, None);
+    let auto = TargetKind::Auto(group);
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    assert_eq!(analysis.memory(target), noodle_engine::Memory::None);
+
+    let (start, later) = (pass_at(&rig, 0), pass_at(&rig, 300));
+    // Both starts want the entry from 0, and it is rendered once.
+    let report = rig.freeze_passes(&[start, later]);
+    assert_eq!(report.rendered, [auto]);
+    for pass in [&start, &later, &pass_at(&rig, 123)] {
+        assert_eq!(rig.plan_for(pass).state(auto), Some(&TargetState::Ready));
+    }
+    let live = rig.play_pass(&later, false);
+    assert!(live.iter().any(|&s| s.abs() > 0.01));
+    assert_close(&rig.play_pass(&later, true), &live, "a seek into the entry");
+}
+
+#[test]
+fn a_bounded_cluster_is_warmed_from_before_the_start_and_serves_a_range() {
+    let mut rig = setup("bounded");
+    let delay = (noodle_nodes::DELAY_ID, 0.1);
+    let group = clip_group(&mut rig, Some(delay));
+    let auto = TargetKind::Auto(group);
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    assert_eq!(
+        analysis.memory(target),
+        noodle_engine::Memory::Bounded(2000)
+    );
+
+    // Near the start, the entry from 0 serves everything: a delayed clip is
+    // what a seek into a continuous play sounds like.
+    let (first, second) = (pass_at(&rig, 300), pass_at(&rig, 500));
+    assert_eq!(rig.freeze_passes(&[first]).rendered, [auto]);
+    assert_eq!(rig.plan_for(&second).state(auto), Some(&TargetState::Ready));
+    let cached = rig.play_pass(&second, true);
+    let fresh = rig.play_pass(&second, false);
+    // The delay is 0.1 s: a pass that began fresh at the seek is silent for
+    // the first part, while the entry carries the clip from before the seek.
+    let early = 3_000 * 2;
+    assert!(fresh[..early].iter().all(|s| s.abs() < 1e-6));
+    assert!(cached[..early].iter().any(|s| s.abs() > 0.01));
+    let late = 6_000 * 2;
+    assert_close(&cached[late..], &fresh[late..], "after the delay");
+
+    // Far from 0 (past what the entry from 0 holds), the entry starts on a bar before the start less what the
+    // cluster remembers (2 s), and serves the starts in the same stretch.
+    let far = |ticks: i64| pass_at(&rig, 20 * SECOND + ticks);
+    let spec = analysis.entries(target, &far(100))[0];
+    assert_eq!(
+        spec.origin,
+        Tick(9 * 3840),
+        "38500 ticks less 2 s, on the 3840-tick bar grid"
+    );
+    assert!(spec.origin_frame + 2 * RATE as u64 <= far(100).frame);
+    assert_eq!(rig.freeze_passes(&[far(100)]).rendered, [auto]);
+    assert_eq!(
+        rig.plan_for(&far(500)).state(auto),
+        Some(&TargetState::Ready)
+    );
+    assert_eq!(
+        rig.plan_for(&far(2 * SECOND)).state(auto),
+        Some(&TargetState::Missing),
+        "a start the entry has not warmed for"
+    );
+}
+
+#[test]
+fn an_unbounded_cluster_is_served_only_at_its_own_start() {
+    let mut rig = setup("unbounded");
+    let (group, _, _) = synth_group(&mut rig);
+    let analysis = rig.analyze();
+    let target = analysis.target(TargetKind::Auto(group)).unwrap();
+    assert_eq!(analysis.memory(target), noodle_engine::Memory::Unbounded);
+    for ticks in [0, 300, 5 * SECOND] {
+        let pass = pass_at(&rig, ticks);
+        let specs = analysis.entries(target, &pass);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].origin, pass.tick);
+    }
+}
+
+/// `frames` of the project played in a loop from `from` to `to`, from its
+/// start, with the cache standing in for `entries`' automatic targets.
+fn play_loop(
+    rig: &Rig,
+    entries: Option<&Pass>,
+    (from, to): (Tick, Tick),
+    frames: usize,
+) -> Vec<f32> {
+    let mut registry = Registry::with_builtins();
+    let library = register_library_blocking(&mut registry);
+    library
+        .clips
+        .update(&rig.project, &table(rig), RATE, &rig.base);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    match entries {
+        Some(pass) => {
+            let plan = rig.plan_for(pass);
+            controller.update_project_replacing(&rig.project, &registry, &plan.replacements);
+        }
+        None => {
+            controller.update_project(&rig.project, &registry);
+        }
+    }
+    controller.transport().set_loop(Some((from, to)));
+    let mut out = vec![0.0; frames * 2];
+    for block in out.chunks_mut(512 * 2) {
+        processor.process(block);
+        controller.maintain();
+    }
+    out
+}
+
+#[test]
+fn a_loops_bounded_tail_crosses_the_wrap_and_an_unbounded_cluster_resets() {
+    // 0.2 s: the lap, with a 0.1 s delay inside it.
+    let lap_ticks = SECOND / 5;
+    let lap_frames = RATE as usize / 5;
+    let region = (Tick(0), Tick(lap_ticks));
+    let laps = |samples: &[f32], lap: usize| {
+        let start = (lap * lap_frames) * 2;
+        samples[start..start + lap_frames * 2].to_vec()
+    };
+
+    let mut rig = setup("loop-bounded");
+    let group = clip_group(&mut rig, Some((noodle_nodes::DELAY_ID, 0.1)));
+    let auto = TargetKind::Auto(group);
+    let pass = pass_at(&rig, 0).looping(region.0, region.1);
+    let pass = Pass {
+        frames: lap_frames,
+        ..pass
+    };
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    let specs = analysis.entries(target, &pass);
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].frames, lap_frames, "the entry is one lap");
+    // A pass starting inside the loop is served by the same steady lap.
+    let inside = Pass {
+        frames: lap_frames / 2,
+        ..pass_at(&rig, lap_ticks / 2).looping(region.0, region.1)
+    };
+    assert_eq!(analysis.entries(target, &inside), specs);
+    rig.freeze_passes(&[pass]);
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
+    assert_eq!(rig.plan_for(&inside).state(auto), Some(&TargetState::Ready));
+
+    let live = play_loop(&rig, None, region, 5 * lap_frames);
+    let cached = play_loop(&rig, Some(&pass), region, 5 * lap_frames);
+    // The delay hands the end of the clip's first lap to the start of the
+    // second, in the live loop and in the cache. A cluster reset at the wrap
+    // would be silent there.
+    let second = laps(&live, 1);
+    assert!(second[..lap_frames].iter().any(|&s| s.abs() > 0.01));
+    // The first lap has not played the loop's end yet: it is silent for the
+    // delay, as a live first lap is, and not the steady lap.
+    assert!(
+        laps(&live, 0)[..lap_frames / 2 * 2]
+            .iter()
+            .all(|s| s.abs() < 1e-6)
+    );
+    for lap in 0..5 {
+        assert_close(
+            &laps(&cached, lap),
+            &laps(&live, lap),
+            &format!("lap {lap} carries the tail"),
+        );
+    }
+
+    // An unbounded cluster resets at the wrap: every lap is the first, and
+    // the last milliseconds fade out.
+    let mut rig = setup("loop-unbounded");
+    let (group, _, _) = synth_group(&mut rig);
+    let auto = TargetKind::Auto(group);
+    let pass = Pass {
+        frames: lap_frames,
+        ..pass_at(&rig, 0).looping(region.0, region.1)
+    };
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    assert!(
+        analysis
+            .entries(
+                target,
+                &Pass {
+                    frames: lap_frames / 2,
+                    ..pass_at(&rig, lap_ticks / 2).looping(region.0, region.1)
+                }
+            )
+            .is_empty(),
+        "from the middle of a loop it stays live"
+    );
+    rig.freeze_passes(&[pass]);
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
+    let cached = play_loop(&rig, Some(&pass), region, 5 * lap_frames);
+    let one = laps(&cached, 1);
+    assert!(one.iter().any(|&s| s.abs() > 0.01));
+    for lap in 2..4 {
+        assert_close(&laps(&cached, lap), &one, "every lap starts fresh");
+    }
+    let end = &one[one.len() - 4..];
+    assert!(
+        end.iter().all(|s| s.abs() < 0.01),
+        "faded out at the wrap: {end:?}"
+    );
+    // The sine runs on across the wrap in a live loop.
+    let live = play_loop(&rig, None, region, 5 * lap_frames);
+    assert!(
+        laps(&live, 2)
+            .iter()
+            .zip(&one)
+            .any(|(a, b)| (a - b).abs() > 0.01)
+    );
+}
+
+#[test]
+fn a_tail_longer_than_the_loop_gets_an_entry_for_each_lap_until_it_is_steady() {
+    // A 0.1 s delay in a 0.04 s loop: the clip's first laps reach the output
+    // two and a half laps late, so the first laps all differ.
+    let lap_ticks = SECOND / 25;
+    let lap_frames = RATE as usize / 25;
+    let region = (Tick(0), Tick(lap_ticks));
+    let mut rig = setup("loop-long-tail");
+    let group = clip_group(&mut rig, Some((noodle_nodes::DELAY_ID, 0.1)));
+    let auto = TargetKind::Auto(group);
+    let pass = Pass {
+        frames: lap_frames,
+        ..pass_at(&rig, 0).looping(region.0, region.1)
+    };
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    let required = analysis.requirements(target, &pass);
+    // The cluster remembers 2 s: about 50 laps, then the steady lap.
+    assert!(required.len() >= 50, "lap 1, the laps up to steady, steady");
+    let keys: std::collections::HashSet<_> = required
+        .iter()
+        .map(|specs| specs[0].key(&noodle_core::KeyBuilder::new("t").finish()))
+        .collect();
+    assert_eq!(keys.len(), required.len(), "an entry each");
+
+    let report = rig.freeze_passes(&[pass]);
+    assert_eq!(report.rendered.len(), required.len(), "a render each");
+    assert_eq!(rig.plan_for(&pass).state(auto), Some(&TargetState::Ready));
+    assert!(rig.freeze_passes(&[pass]).rendered.is_empty(), "all stored");
+
+    let laps = 60;
+    let live = play_loop(&rig, None, region, laps * lap_frames);
+    let cached = play_loop(&rig, Some(&pass), region, laps * lap_frames);
+    let lap =
+        |samples: &[f32], i: usize| samples[i * lap_frames * 2..(i + 1) * lap_frames * 2].to_vec();
+    // The tone only fills the first part of each lap's input, so the laps
+    // differ as the tail builds, and the live loop and the cache agree on all.
+    assert!(
+        lap(&live, 1)
+            .iter()
+            .zip(lap(&live, 3))
+            .any(|(a, b)| (a - b).abs() > 0.01),
+        "the early laps differ"
+    );
+    for i in 0..laps {
+        assert_close(&lap(&cached, i), &lap(&live, i), &format!("lap {i}"));
+    }
+}
