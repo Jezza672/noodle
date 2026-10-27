@@ -402,7 +402,7 @@ mod tests {
         };
         let (whole, cut) = (play(4_800), play(96));
         // Equal but for rounding in the phase; cutting the wobble by block
-        // used to differ by about 5e-3.
+        // used to differ by about 1e-2.
         for (a, b) in [(&whole.0, &cut.0), (&whole.1, &cut.1)] {
             let worst = a
                 .iter()
