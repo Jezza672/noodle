@@ -134,3 +134,32 @@ No sound change; the golden renders are untouched.
 - **Found on the way.** The reverb's wobble phase advances per block, so its
   output depends on block alignment and a cached reverb differs from live by
   about 0.5%. The tests use a chorus; see #273.
+
+## Batch 5: visibility and docs (#268, #273)
+
+One sound change, the reverb (#273); no example uses a reverb, so the golden
+renders are untouched. `DSP_GENERATION` is 7 and the reverb's `version` 2, so
+renders of the old sound are not replayed.
+
+- **Setting.** `Prefs::auto_cache`, on by default and saved with the other
+  preferences; the View menu's *Playback cache* panel has the checkbox, and
+  turning it off plays everything live at once. Explicit freezes are not
+  affected.
+- **Indicator.** A toolbar button beside Audio: *From cache*, *Caching…* or
+  *Live* (`Session::cache_status`), hidden when the cache is off or has nothing
+  to cache. Clicking it opens the panel.
+- **Readout.** The panel shows entries and bytes against the 4 GB limit, the
+  bytes dropped to stay under it, and the underruns since the stream opened
+  (`Session::underruns`, kept from the health check). The cache is also trimmed
+  after each render finishes, not only at start-up (`Freezing::trim`).
+  `CacheStore::usage` counts finished entries.
+- **#273.** The reverb advances its wobble phase per sample, so its output no
+  longer depends on how the audio is cut into blocks and a cached reverb matches
+  a live one. `the_sound_does_not_depend_on_the_block_size` renders 9 600 frames
+  in blocks of 4 800 and of 96 (it differed by 0.012 before).
+- **Tests.** Prefs default and round trip, the panel's toggle reaching the
+  session and the file, the status through the stop-stop-play session test
+  (Live or Caching, then From cache, then Off), the readout counting one entry
+  after the first render and no underruns on the virtual output.
+- **Left, from the roadmap.** Expensive-node and chain cuts, a measured cost
+  model and section alignment, after real projects are measured.

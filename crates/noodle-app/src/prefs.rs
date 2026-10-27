@@ -21,7 +21,7 @@ use crate::session::write_atomically;
 
 /// Everything saved. Missing fields take their defaults, so the file stays
 /// readable as fields are added.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     pub audio: AudioConfig,
@@ -30,6 +30,20 @@ pub struct Prefs {
     pub sandbox_plugins: bool,
     /// The device node monitoring plays on; empty is the main output.
     pub monitor_device: String,
+    /// Whether the playback cache picks what to cache by itself. On unless
+    /// turned off.
+    pub auto_cache: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            audio: AudioConfig::default(),
+            sandbox_plugins: false,
+            monitor_device: String::new(),
+            auto_cache: true,
+        }
+    }
 }
 
 thread_local! {
@@ -94,6 +108,20 @@ pub fn remember_sandbox(on: bool) {
             return;
         };
         prefs.sandbox_plugins = on;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves whether the playback cache is on, with the other preferences, if
+/// [`init`] has been called.
+pub fn remember_auto_cache(on: bool) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.auto_cache = on;
         if let Err(error) = save(path, prefs) {
             eprintln!("noodle: couldn't save preferences: {error}");
         }
@@ -172,6 +200,7 @@ mod tests {
             },
             sandbox_plugins: false,
             monitor_device: String::new(),
+            auto_cache: false,
         }
     }
 
@@ -223,7 +252,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"")"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
@@ -232,6 +261,21 @@ mod tests {
         assert_eq!(prefs.audio.threads, 0);
         assert_eq!(prefs.audio.buffer_size, Some(256));
         assert!(!prefs.sandbox_plugins);
+    }
+
+    #[test]
+    fn the_playback_cache_is_on_unless_turned_off_and_the_choice_is_saved() {
+        assert!(Prefs::default().auto_cache);
+        // A file from before the setting has the cache on.
+        let old: Prefs = ron::from_str(r#"(sandbox_plugins:true)"#).unwrap();
+        assert!(old.auto_cache);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        remember_auto_cache(false);
+        assert!(!load(&path).unwrap().auto_cache);
+        remember_auto_cache(true);
+        assert!(load(&path).unwrap().auto_cache);
     }
 
     #[test]
@@ -271,7 +315,13 @@ mod tests {
         fs::write(&path, "not ron").unwrap();
         assert_eq!(init(path.clone()), Prefs::default());
         remember_audio(&chosen().audio);
-        assert_eq!(load(&path).unwrap(), chosen());
+        assert_eq!(
+            load(&path).unwrap(),
+            Prefs {
+                audio: chosen().audio,
+                ..Prefs::default()
+            }
+        );
         let aside = dir.path().join("prefs.ron.bad");
         assert_eq!(fs::read_to_string(aside).unwrap(), "not ron");
     }

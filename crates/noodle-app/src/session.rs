@@ -449,6 +449,23 @@ struct Audio {
     /// system default, or the virtual output. Lasts as long as the stream,
     /// for the toolbar to show.
     fallback: Option<String>,
+    /// Output underruns since the stream opened, as of the last health check.
+    underruns: u64,
+}
+
+/// Whether playback is coming from the cache, for the toolbar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CacheStatus {
+    /// Turned off in the settings.
+    Off,
+    /// Nothing to cache yet: no engine running, or no group in the project.
+    Idle,
+    /// Computing the sound as it plays, with nothing from the cache yet.
+    Live,
+    /// Rendering entries for the cache, from 0 to 1.
+    Rendering(f32),
+    /// Playing groups from the cache, with no DSP in them.
+    Cached,
 }
 
 /// Running totals of audible trouble since playback started.
@@ -1470,6 +1487,7 @@ impl Session {
                     devices,
                     monitor: Monitor::default(),
                     fallback: fell_back,
+                    underruns: 0,
                 });
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
@@ -1726,6 +1744,7 @@ impl Session {
             underruns: health.underruns(),
             input: health.input_glitches(),
         };
+        audio.underruns = now.underruns;
         // Which error the backend sent decides what happens next, and
         // backends differ, so say what arrived.
         let errors: Vec<_> = health.errors().collect();
@@ -2320,17 +2339,44 @@ impl Session {
     }
 
     /// The start of the pass whose cached entries are playing in place of
-    /// the groups the playback cache picked, if any are. The "from cache"
-    /// indicator that shows it comes with the batch on visibility.
+    /// the groups the playback cache picked, if any are.
     #[cfg(test)]
     pub fn cached_pass(&self) -> Option<Tick> {
         self.serving
     }
 
+    /// Whether the playback cache picks groups to cache by itself.
+    pub fn auto_cache(&self) -> bool {
+        self.auto_cache
+    }
+
+    /// Where the sound is coming from, for the indicator in the toolbar.
+    pub fn cache_status(&self) -> CacheStatus {
+        if !self.auto_cache {
+            CacheStatus::Off
+        } else if !self.auto_possible() {
+            CacheStatus::Idle
+        } else if self.serving.is_some() {
+            CacheStatus::Cached
+        } else if let Some(fraction) = self.freezing.progress() {
+            CacheStatus::Rendering(fraction)
+        } else {
+            CacheStatus::Live
+        }
+    }
+
+    /// What the cache of renders holds. Reads the folder.
+    pub fn cache_readout(&mut self) -> Result<crate::freezing::CacheReadout, String> {
+        self.freezing.readout()
+    }
+
+    /// Times the output ran dry since playback started, if a stream is open.
+    pub fn underruns(&self) -> Option<u64> {
+        Some(self.audio.as_ref()?.underruns)
+    }
+
     /// Turns the playback cache's own picks on or off. The explicit freeze
-    /// is not affected. The settings toggle that calls it comes with the
-    /// batch on visibility.
-    #[cfg(test)]
+    /// is not affected.
     pub fn set_auto_cache(&mut self, on: bool) {
         if self.auto_cache != on {
             self.auto_cache = on;
@@ -2954,10 +3000,22 @@ mod tests {
         assert!(session.engine_running(), "{:?}", session.message());
 
         // The first pass is computed; the cache fills in behind it.
+        assert!(matches!(
+            session.cache_status(),
+            CacheStatus::Live | CacheStatus::Rendering(_)
+        ));
         until(&mut session, "the group is cached", |s| {
             s.cached_pass() == Some(Tick(0))
         });
+        assert_eq!(session.cache_status(), CacheStatus::Cached);
         assert_eq!(cached_entries(dir.path()), 1);
+        // The readout counts what is on disk, and the output has not run dry
+        // on a virtual device.
+        let readout = session.cache_readout().unwrap();
+        assert_eq!(readout.entries, 1);
+        assert!(readout.bytes > 0, "{readout:?}");
+        assert_eq!(readout.evicted, 0);
+        assert_eq!(session.underruns(), Some(0));
         // Group entries are not frozen nodes: nothing is badged.
         assert!(session.freeze_badges().is_empty());
 
@@ -3025,6 +3083,8 @@ mod tests {
         // Turned off, everything plays live.
         session.set_auto_cache(false);
         assert_eq!(session.cached_pass(), None);
+        assert_eq!(session.cache_status(), CacheStatus::Off);
+        assert!(!session.auto_cache());
     }
 
     #[test]

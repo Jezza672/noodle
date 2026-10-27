@@ -35,8 +35,7 @@ need a person and hardware, plus a few deliberately deferred items.
 2. **Automatic group targets.** Built: see [features/playback-cache.md](features/playback-cache.md).
 3. **Tiers and cross-start reuse.** Built: see [features/playback-cache.md](features/playback-cache.md).
 4. **Recursive partition.** Built: see [features/playback-cache.md](features/playback-cache.md). Expensive-node and chain cuts, a measured cost model and section alignment are left, after the first real projects are measured.
-5. **Visibility and docs.** Settings toggle, size and eviction readout, a "from cache" indicator and an underrun counter. Add the playback section to `docs/architecture/caching.md` and a feature record when it lands.
-   *Done when:* the user can see what is cached, turn it off, and tell when playback is live.
+5. **Visibility and docs.** Built: see [features/playback-cache.md](features/playback-cache.md).
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
 

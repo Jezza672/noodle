@@ -19,7 +19,7 @@ mod stream;
 mod ump;
 mod wav;
 
-pub use cache::{CacheInfo, CacheStore, CacheWriter, CachedAudio};
+pub use cache::{CacheInfo, CacheStore, CacheUsage, CacheWriter, CachedAudio};
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
 pub use devices::{
     AudioConfig, AudioError, COMMON_SAMPLE_RATES, Capabilities, Chosen, DeviceInfo, DeviceList,

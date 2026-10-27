@@ -275,6 +275,22 @@ stream opens; pausing and playing again carries on the same pass.
     elsewhere in the loop the cluster plays live.
   - A pass that starts before the loop's start gets only the pure clusters from
     the cache.
+- **Seeing and switching it** (`noodle-app/src/cache_panel.rs`). The setting
+  is `Prefs::auto_cache` (on unless turned off), applied with
+  `Session::set_auto_cache` and switched in the View menu's *Playback cache*
+  panel. The toolbar has an indicator beside the Audio button, shown while the
+  engine runs and the cache is on and has a group to cache
+  (`Session::cache_status`): **From cache** (some group is being played from an
+  entry, so it does no DSP), **Caching…** (live while entries render) or **Live**
+  (nothing served yet, or the pass has no entries). Its tooltip adds
+  the underruns. The panel also shows the cache folder's size against its
+  limit and its entry count (`CacheStore::usage`, read when the panel opens, on
+  Refresh and every 2 s), the bytes dropped to stay under the limit since the
+  app started, and the underruns since the stream opened. The limit (4 GB) is
+  enforced at start-up and again after each render finishes, least recently used
+  first. An
+  underrun counted while the indicator says *From cache* means the disk read
+  fell behind, not the DSP.
 
 **Rendering the cache.** `freeze` / `spawn_freeze` (`noodle-nodes`) renders
 every `Missing` target, upstream first, on a background thread. A target is
