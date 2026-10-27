@@ -378,6 +378,7 @@ fn the_cache_key_covers_the_plugin_bundle() {
             max_frames: 128,
             live: &|_| false,
             file_key: &|_| None,
+            min_cost: 0,
         };
         let mut key = noodle_core::KeyBuilder::new("plugin-test");
         vst3_node_type(&catalog)

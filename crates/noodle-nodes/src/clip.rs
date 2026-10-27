@@ -152,7 +152,9 @@ impl NodeType for TrackInput {
             .event_output("midi", "MIDI")
             // A function of the playhead and the clips; a note that began
             // before a start is not played (ADR 0010).
-            .memoryless())
+            .memoryless()
+            // Decoding, resampling and warping a clip.
+            .cost(24))
     }
 
     fn output_shapes(

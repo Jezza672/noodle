@@ -32,6 +32,7 @@ pub const STAGES: [usize; 5] = [2, 4, 6, 8, 12];
 const MAX_STAGES: usize = 12;
 
 #[derive(Ports)]
+#[ports(cost = 40)]
 struct PhaserPorts {
     #[input("in", "In")]
     input: (),

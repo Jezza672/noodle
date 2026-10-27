@@ -230,7 +230,7 @@ impl Freezing {
             self.badges = plan
                 .states
                 .iter()
-                .filter(|(kind, _)| !matches!(kind, TargetKind::Auto(_)))
+                .filter(|(kind, _)| !kind.is_auto())
                 .map(|(kind, state)| {
                     let state = match state {
                         TargetState::Ready => BadgeState::Ready,
@@ -255,16 +255,15 @@ impl Freezing {
                     .plan(&analysis, look.settings, look.frames, false, Some(pass))
                     .states
                     .iter()
-                    .any(|(kind, state)| {
-                        matches!(kind, TargetKind::Auto(_)) && *state == TargetState::Missing
-                    })
+                    .any(|(kind, state)| kind.is_auto() && *state == TargetState::Missing)
             })
             .copied()
             .collect();
         let missing = !missing_passes.is_empty()
-            || plan.states.iter().any(|(kind, state)| {
-                !matches!(kind, TargetKind::Auto(_)) && *state == TargetState::Missing
-            });
+            || plan
+                .states
+                .iter()
+                .any(|(kind, state)| !kind.is_auto() && *state == TargetState::Missing);
 
         // A render of an older project is stale, and so is one that won't
         // make the entries now wanted.
@@ -300,7 +299,7 @@ impl Freezing {
         self.badges = plan
             .states
             .iter()
-            .filter(|(kind, _)| !matches!(kind, TargetKind::Auto(_)))
+            .filter(|(kind, _)| !kind.is_auto())
             .map(|(kind, state)| {
                 let state = match state {
                     TargetState::Ready => BadgeState::Ready,

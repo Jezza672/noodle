@@ -238,6 +238,9 @@ pub struct Layout {
     /// How long the node remembers its input. Unbounded unless the type says
     /// otherwise, which is the safe answer.
     pub memory: Memory,
+    /// What a second of the node's audio costs to render, against a gain
+    /// stage's 1 (see [`Layout::cost`]).
+    pub cost: u32,
 }
 
 /// How far back a node's output depends on its input and its own history,
@@ -398,6 +401,7 @@ impl Layout {
             mode,
             deterministic: true,
             memory: Memory::Unbounded,
+            cost: 1,
         }
     }
 
@@ -514,6 +518,14 @@ impl Layout {
     /// Says how long the node remembers (see [`Memory`]).
     pub fn memory(self, memory: Memory) -> Self {
         Self { memory, ..self }
+    }
+
+    /// What rendering a second of the node costs, relative to a gain stage
+    /// (1, which is what a node says unless it is heavier). The playback
+    /// cache only caches a cluster whose cost is worth the bytes (ADR 0010),
+    /// so this is a prior to be replaced by measurement, not a promise.
+    pub fn cost(self, cost: u32) -> Self {
+        Self { cost, ..self }
     }
 
     /// The output at a moment depends on the inputs at that moment only.

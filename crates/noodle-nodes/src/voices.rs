@@ -52,6 +52,7 @@ pub struct Voices;
 pub const VOICES_ID: &str = "noodle.poly.voices";
 
 #[derive(Ports)]
+#[ports(cost = 30)]
 struct VoicesPorts {
     #[event_input("in", "Notes")]
     notes: (),

@@ -52,7 +52,7 @@ fn setup(name: &str) -> Rig {
         project: Project::new(),
         history: History::new(),
         base: root,
-        freezer: Freezer::new(store),
+        freezer: Freezer::new(store).with_min_cost(0),
     }
 }
 
@@ -857,7 +857,8 @@ fn changing_a_node_inside_one_group_renders_only_that_group_again() {
     let both = rig.freeze_passes(&[pass]);
     assert_eq!(
         both.rendered,
-        [TargetKind::Auto(first), TargetKind::Auto(second)]
+        // From the sink back.
+        [TargetKind::Auto(second), TargetKind::Auto(first)]
     );
     assert_eq!(rig.freeze_passes(&[pass]).rendered, []);
 
@@ -1278,4 +1279,195 @@ fn a_tail_longer_than_the_loop_gets_an_entry_for_each_lap_until_it_is_steady() {
     for i in 0..laps {
         assert_close(&lap(&cached, i), &lap(&live, i), &format!("lap {i}"));
     }
+}
+
+/// A saw into a chorus that two gains read, mixed to the output: the shared
+/// send. Returns the send and the gains.
+fn shared_send(rig: &mut Rig) -> (NodeId, NodeId, NodeId, NodeId) {
+    let saw = rig.add(21, "noodle.osc.saw");
+    let send = rig.add(22, noodle_nodes::CHORUS_ID);
+    let (a, b) = (
+        rig.add(23, noodle_nodes::GAIN_ID),
+        rig.add(24, noodle_nodes::GAIN_ID),
+    );
+    let mix = rig.add(25, "noodle.util.mix");
+    let out = rig.add(26, OUTPUT_ID);
+    rig.wire((saw, "out"), (send, "in"));
+    rig.wire((send, "out"), (a, "in"));
+    rig.wire((send, "out"), (b, "in"));
+    rig.wire((a, "out"), (mix, "in1"));
+    rig.wire((b, "out"), (mix, "in2"));
+    rig.wire((mix, "out"), (out, "in"));
+    (send, a, b, saw)
+}
+
+fn with_default_cost(rig: &mut Rig) {
+    rig.freezer = rig
+        .freezer
+        .clone()
+        .with_min_cost(noodle_engine::DEFAULT_MIN_COST);
+}
+
+fn cut_kinds(analysis: &Analysis) -> Vec<TargetKind> {
+    analysis
+        .targets
+        .iter()
+        .map(|t| t.kind)
+        .filter(|k| k.is_auto())
+        .collect()
+}
+
+#[test]
+fn a_shared_send_is_cached_once_and_read_by_both_branches() {
+    let mut rig = setup("send");
+    with_default_cost(&mut rig);
+    let (send, a, _, saw) = shared_send(&mut rig);
+    let cut = TargetKind::Cut(send);
+    // The chorus is the one cut: the saw is cheap, and so is each branch
+    // once the send is stored.
+    assert_eq!(cut_kinds(&rig.analyze()), [cut]);
+
+    let pass = pass_at(&rig, 0);
+    let report = rig.freeze_passes(&[pass]);
+    assert_eq!((report.rendered, report.renders), (vec![cut], 1));
+    assert_eq!(rig.plan_for(&pass).state(cut), Some(&TargetState::Ready));
+    let live = rig.play_pass(&pass, false);
+    assert!(live.iter().any(|&s| s.abs() > 0.01));
+    assert_close(&rig.play_pass(&pass, true), &live, "both branches read it");
+
+    // One player stands in for the send, and both gains read it.
+    let mut registry = Registry::with_builtins();
+    let _ = register_library_blocking(&mut registry);
+    let lanes: Vec<_> = rig.project.lanes().collect();
+    let (schedule, _) = noodle_engine::compile_replacing(
+        rig.project.graph(),
+        &lanes,
+        &registry,
+        &rig.plan_for(&pass).replacements,
+    );
+    let players = |schedule: &noodle_engine::Schedule| {
+        schedule
+            .nodes
+            .iter()
+            .filter(|n| n.node_type.info().id == noodle_nodes::CACHED_ID)
+            .count()
+    };
+    assert_eq!(players(&schedule), 1);
+    assert!(schedule.nodes.iter().all(|n| n.id != send && n.id != saw));
+    assert!(schedule.nodes.iter().any(|n| n.id == a));
+
+    // Editing a branch renders nothing: the shared chorus is untouched.
+    rig.apply(Command::SetParam {
+        node: a,
+        key: "gain".into(),
+        value: Some(0.25),
+    });
+    assert!(rig.freeze_passes(&[pass]).rendered.is_empty());
+    let live = rig.play_pass(&pass, false);
+    assert_close(&rig.play_pass(&pass, true), &live, "after a branch edit");
+    // Editing the send renders it again.
+    rig.apply(Command::SetParam {
+        node: send,
+        key: "depth".into(),
+        value: Some(6.0),
+    });
+    assert_eq!(rig.freeze_passes(&[pass]).rendered, [cut]);
+}
+
+#[test]
+fn a_cheap_chain_is_not_cached_and_a_cheap_group_is_looked_inside() {
+    let mut rig = setup("cheap");
+    with_default_cost(&mut rig);
+    let osc = rig.add(1, "noodle.osc.sine");
+    let mut last = osc;
+    for id in 2..22 {
+        let gain = rig.add(id, noodle_nodes::GAIN_ID);
+        rig.wire((last, "out"), (gain, "in"));
+        last = gain;
+    }
+    let out = rig.add(30, OUTPUT_ID);
+    rig.wire((last, "out"), (out, "in"));
+    assert_eq!(cut_kinds(&rig.analyze()), []);
+    // Grouped, the chain is a prior and no more: still nothing.
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let inside: Vec<NodeId> = (1..22).map(NodeId).collect();
+    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    assert!(rig.analyze().target(TargetKind::Auto(group)).is_none());
+    assert_eq!(cut_kinds(&rig.analyze()), []);
+    assert!(rig.freeze_passes(&[pass_at(&rig, 0)]).rendered.is_empty());
+
+    // A group that is mostly cheap but holds a shared send: the group is
+    // dropped and the send inside it is cut.
+    let mut rig = setup("cheap-group");
+    with_default_cost(&mut rig);
+    let (send, _, _, _) = shared_send(&mut rig);
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let inside: Vec<NodeId> = (21..26).map(NodeId).collect();
+    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    let analysis = rig.analyze();
+    assert!(analysis.target(TargetKind::Auto(group)).is_none());
+    assert_eq!(cut_kinds(&analysis), [TargetKind::Cut(send)]);
+}
+
+#[test]
+fn a_render_writes_the_entries_of_the_cuts_inside_it() {
+    let mut rig = setup("sink-first");
+    with_default_cost(&mut rig);
+    let (send, _, _, _) = shared_send(&mut rig);
+    // The mix, the gains and a second chorus after them, in a group.
+    let after = rig.add(27, noodle_nodes::CHORUS_ID);
+    rig.wire((NodeId(25), "out"), (after, "in"));
+    rig.apply(Command::Disconnect {
+        input: Endpoint::new(NodeId(26), "in"),
+    });
+    rig.wire((after, "out"), (NodeId(26), "in"));
+    let project = rig.project.clone();
+    let mut next = project.next_node_id().0;
+    let inside: Vec<NodeId> = [21, 22, 23, 24, 25, 27].map(NodeId).to_vec();
+    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
+        next += 1;
+        NodeId(next - 1)
+    })
+    .unwrap();
+    rig.apply(command);
+    let (sink, cut) = (TargetKind::Auto(group), TargetKind::Cut(send));
+    assert_eq!(cut_kinds(&rig.analyze()), [cut, sink]);
+
+    // Both are unbounded and want the entry from the start: the group is
+    // rendered first, and the same run writes the cut inside it.
+    let pass = pass_at(&rig, 0);
+    let report = rig.freeze_passes(&[pass]);
+    assert_eq!((report.rendered, report.renders), (vec![sink, cut], 1));
+    for kind in [sink, cut] {
+        assert_eq!(rig.plan_for(&pass).state(kind), Some(&TargetState::Ready));
+    }
+    let live = rig.play_pass(&pass, false);
+    assert_close(&rig.play_pass(&pass, true), &live, "sink and cut stored");
+
+    // An edit after the cut renders the group, reading the cut.
+    rig.apply(Command::SetParam {
+        node: after,
+        key: "depth".into(),
+        value: Some(7.0),
+    });
+    let again = rig.freeze_passes(&[pass]);
+    assert_eq!((again.rendered, again.cached), (vec![sink], vec![cut]));
+    let live = rig.play_pass(&pass, false);
+    assert_close(
+        &rig.play_pass(&pass, true),
+        &live,
+        "group over a stored cut",
+    );
 }
