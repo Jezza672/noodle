@@ -1,6 +1,6 @@
-//! Audio Unit editors, embedded in a fake window: Apple's delay has no view
-//! of its own, so this opens Apple's generic parameter view in it. macOS
-//! only. Windows are process-wide, so this is a binary of its own.
+//! Audio Unit editors, embedded in a fake window: Apple's delay brings a Cocoa
+//! view of its own (the generic-view fallback has no test unit that needs
+//! it). macOS only. Windows are process-wide, so this is a binary of its own.
 
 #![cfg(target_os = "macos")]
 
@@ -85,7 +85,7 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 #[test]
-fn a_unit_without_a_view_of_its_own_gets_the_generic_one() {
+fn a_unit_opens_its_editor_in_the_window_and_gives_it_back() {
     let shared = Arc::new(Mutex::new(Log::default()));
     let for_factory = Arc::clone(&shared);
     assert!(set_window_factory(move |_| {

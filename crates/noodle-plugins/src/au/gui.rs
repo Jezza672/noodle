@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2::rc::{Allocated, Retained};
-use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{msg_send, msg_send_id};
+use objc2::runtime::{AnyClass, AnyObject, Sel};
+use objc2::{msg_send, msg_send_id, sel};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_audio_toolbox::AudioUnit;
 use objc2_foundation::{NSPoint, NSSize, NSString};
@@ -195,21 +195,33 @@ fn custom_view(unit: AudioUnit) -> Option<Retained<NSView>> {
         let alloc: Allocated<AnyObject> = msg_send_id![class?, alloc];
         let factory: Option<Retained<AnyObject>> = msg_send_id![alloc, init];
         let factory = factory?;
-        msg_send_id![
-            &factory,
-            uiViewForAudioUnit: unit.cast::<c_void>(),
-            withSize: NSSize::new(0.0, 0.0)
-        ]
+        // Sent by hand: the runtime would check `AudioUnit`'s encoding
+        // against the factory's own spelling of the type, and refuse it.
+        let send: unsafe extern "C" fn(*mut AnyObject, Sel, AudioUnit, NSSize) -> *mut AnyObject =
+            std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C" fn());
+        let view = send(
+            Retained::as_ptr(&factory).cast_mut(),
+            sel!(uiViewForAudioUnit:withSize:),
+            unit,
+            NSSize::new(0.0, 0.0),
+        );
+        // Handed over autoreleased.
+        Retained::retain(view.cast::<NSView>())
     }
 }
 
 /// Apple's parameter view, for a unit with none of its own.
 fn generic_view(unit: AudioUnit) -> Option<Retained<NSView>> {
     let class = AnyClass::get("AUGenericView")?;
-    // SAFETY: plain Objective-C calls on the main thread.
+    // SAFETY: plain Objective-C calls on the main thread. The init message
+    // is sent by hand because the class doesn't say what type `AudioUnit` is
+    // (the runtime's check of the argument's encoding would refuse any).
     unsafe {
-        let alloc: Allocated<NSView> = msg_send_id![class, alloc];
-        msg_send_id![alloc, initWithAudioUnit: unit.cast::<c_void>()]
+        let object: *mut AnyObject = msg_send![class, alloc];
+        let send: unsafe extern "C" fn(*mut AnyObject, Sel, AudioUnit) -> *mut AnyObject =
+            std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C" fn());
+        let view = send(object, sel!(initWithAudioUnit:), unit);
+        Retained::from_raw(view.cast::<NSView>())
     }
 }
 
