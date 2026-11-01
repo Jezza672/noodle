@@ -29,8 +29,8 @@ pub use catalog::{
 };
 pub use descriptor::*;
 pub use editor::{
-    Captured, EditorKey, capture, capture_key, close_editor, editor_instance_running,
-    editor_is_open, editor_key_is_open, is_running, open_editor,
+    Captured, EditorKey, capture, capture_key, capture_params_key, close_editor,
+    editor_instance_running, editor_is_open, editor_key_is_open, is_running, open_editor,
 };
 /// The virtual files of the installed Audio Units (none off macOS): scan
 /// them like any plugin file. See [`discover`], which includes them.

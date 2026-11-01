@@ -175,3 +175,29 @@ fn an_editor_is_followed_by_its_instance_even_when_the_node_is_built_again() {
     drop(live);
     assert!(!noodle_plugins::editor_instance_running(key));
 }
+
+#[test]
+fn parameter_edits_are_reported_as_they_change_without_the_state() {
+    let catalog = catalog();
+    let node_type = node_type(&catalog);
+    let node = NodeId(9_300);
+    let _instance = build(node_type, node, &Config::new());
+    let key = open_editor(node).unwrap();
+    let descriptor = node_type.descriptor();
+
+    let mut seen = std::collections::BTreeMap::new();
+    // The first reading is only a baseline.
+    let first = noodle_plugins::capture_params_key(key).unwrap();
+    assert!(first.state.is_empty(), "parameters alone, no state");
+    let mut reported = first.changed_params(node, descriptor, &Config::new(), &mut seen);
+    until("the user turns Gain down", || {
+        let now = noodle_plugins::capture_params_key(key).unwrap();
+        reported.extend(now.changed_params(node, descriptor, &Config::new(), &mut seen));
+        !reported.is_empty()
+    });
+    assert!(reported.iter().all(|c| matches!(
+        c,
+        Command::SetParam { key, value: Some(v), .. } if key == "p1" && *v == 0.25
+    )));
+    close_editor(node);
+}
