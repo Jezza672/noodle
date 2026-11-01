@@ -37,7 +37,7 @@ compile for macOS only.
 - **CLAP hosting through clack:**
   - Scanning in a child process (done).
   - Plugin nodes (done).
-  - Parameters as ports (done).
+  - Parameters as ports (done), chosen by search or by **Learn**: press it, move a control in the open editor, and that parameter gets a port. It compares parameter values captured every 250 ms (`learned_param`, `Session::poll_param_learn`), so it is the same for CLAP, VST3 and AU, which needs the AU editor window to be open.
   - Editor windows (done: embedded in host windows on macOS and Windows, floating on Linux).
   - Plugin state saved in the project, captured from the editor (done).
 - Plugin browser (done).

@@ -854,7 +854,24 @@ fn param_picker(
     .id_salt(("param-picker", id))
     .default_open(false)
     .show(ui, |ui| {
-        ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search parameters"));
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search parameters"));
+            let learning = session.param_learning(id);
+            let label = if learning { "Listening…" } else { "Learn" };
+            if ui
+                .selectable_label(learning, label)
+                .on_hover_text(
+                    "Press, then move a control in the plugin's editor (it opens if needed): \
+                     that parameter gets a port on the node.",
+                )
+                .clicked()
+            {
+                edits.push(Edit::ParamLearn {
+                    node: id,
+                    on: !learning,
+                });
+            }
+        });
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         let matches: Vec<&noodle_plugins::ParamDesc> = descriptor
             .params

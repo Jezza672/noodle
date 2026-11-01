@@ -183,6 +183,38 @@ pub fn capture(node: NodeId) -> Result<Captured, HostError> {
     capture_key(EditorKey(find(node)?.key()))
 }
 
+/// Which parameter the user moved between two captures: the one whose value
+/// changed most, as a fraction of its range, or `None` if none did. Used by
+/// "learn", which watches the open editor for a control being moved. Stepped
+/// parameters count a change of one step as a full move.
+pub fn learned_param(
+    descriptor: &Descriptor,
+    before: &[(u32, f64)],
+    after: &[(u32, f64)],
+) -> Option<u32> {
+    let mut best: Option<(u32, f64)> = None;
+    for (id, now) in after {
+        let Some((_, was)) = before.iter().find(|(b, _)| b == id) else {
+            continue;
+        };
+        if !now.is_finite() || !was.is_finite() {
+            continue;
+        }
+        let range = descriptor
+            .params
+            .iter()
+            .find(|p| p.id == *id)
+            .map(|p| p.max - p.min)
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(1.0);
+        let moved = (now - was).abs() / range;
+        if moved > 1e-6 && best.is_none_or(|(_, m)| moved > m) {
+            best = Some((*id, moved));
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
 impl Captured {
     /// The state as the text the node stores.
     pub fn state_text(&self) -> String {
@@ -218,5 +250,48 @@ impl Captured {
             });
         }
         Command::Batch(commands)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor::{ParamDesc, PluginFormat};
+
+    fn descriptor() -> Descriptor {
+        let param = |id, max| ParamDesc {
+            id,
+            name: format!("p{id}"),
+            module: String::new(),
+            min: 0.0,
+            max,
+            default: 0.0,
+            stepped: false,
+        };
+        Descriptor {
+            format: PluginFormat::Clap,
+            id: "t".into(),
+            name: "T".into(),
+            vendor: String::new(),
+            instrument: false,
+            audio_inputs: Vec::new(),
+            audio_outputs: Vec::new(),
+            note_inputs: 0,
+            note_outputs: 0,
+            params: vec![param(1, 1.0), param(2, 100.0), param(3, 1.0)],
+        }
+    }
+
+    #[test]
+    fn learning_picks_the_parameter_that_moved_most_of_its_range() {
+        let d = descriptor();
+        let before = [(1, 0.5), (2, 50.0), (3, 0.0)];
+        assert_eq!(learned_param(&d, &before, &before), None);
+        // 2 moved by 10 units but only a tenth of its range; 1 moved a fifth.
+        let after = [(1, 0.7), (2, 60.0), (3, 0.0)];
+        assert_eq!(learned_param(&d, &before, &after), Some(1));
+        // Unknown ids and non-finite values are ignored.
+        let after = [(9, 1.0), (3, f64::NAN)];
+        assert_eq!(learned_param(&d, &before, &after), None);
     }
 }
