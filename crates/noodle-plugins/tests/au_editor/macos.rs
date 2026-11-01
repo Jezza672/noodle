@@ -84,7 +84,6 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 pub fn run() {
-    assert!(noodle_plugins::adopt_current_thread(|| {}));
     // SAFETY: the main thread, as `main` runs on it.
     let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
     objc2_app_kit::NSApplication::sharedApplication(mtm);
@@ -105,6 +104,9 @@ fn a_unit_opens_its_editor_in_the_window_and_gives_it_back() {
             size: (0, 0),
         }))
     }));
+
+    // After the factory: adopting installs the native one unless one is set.
+    assert!(noodle_plugins::adopt_current_thread(|| {}));
 
     let file = scan_file(
         &scanner(),
