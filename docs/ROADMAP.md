@@ -97,22 +97,22 @@ person and hardware, and a few deliberately deferred items.
 
 **Done when.** You loop four bars, record five vocal passes in one go, swipe the best phrase from each into one comp that plays without clicks at the joins, undo a swipe, and export it identical to playback. An app test records on the virtual output and checks the takes and the comp's samples.
 
-## Stem export and render to clip
+## Multitrack export and render to clip
 
-**The problem.** Export writes one mixdown, stereo or a surround layout, to WAV or FLAC (`noodle-nodes/src/export.rs`). Sharing a song with a mix engineer, a label or a collaborator means stems: one file per track or bus. Inside a project, freeze plays a group from the cache but never becomes a clip, so you cannot render a synth or a plugin chain to audio and then cut, reverse or warp it. There is no lossy format for demos and no loudness readout.
+**The problem.** Export writes one mixdown, stereo or a surround layout, to WAV or FLAC (`noodle-nodes/src/export.rs`). Sharing a song with a mix engineer, a label or a collaborator means one file per track or bus. Inside a project, freeze plays a group from the cache but never becomes a clip, so you cannot render a synth or a plugin chain to audio and then cut, reverse or warp it. There is no lossy format for demos and no loudness readout.
 
 **What you get.** File > Export offers Mixdown, Tracks or Groups (pick which, plus the mixdown), written in one pass with matching lengths and names. Right-click a track, group or time selection and Render to clip: a new audio track with the rendered clip, and the source muted if you choose. The export dialog reports integrated loudness and true peak, can normalise to a target, and dithers when writing 16 or 24 bits.
 
-**Scope.** In: stems from one render through `render_taps` (`noodle-engine/src/render.rs`), cut before or after each group's output stage as chosen; Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; BS.1770 loudness moved from `noodle-eval/src/level.rs` to where export can use it; TPDF dither in `noodle_io::ExportWriter`; MP3 through LAME (LGPL, GPL-compatible) if a maintained crate builds on all three platforms in CI. Out: OMF, AAF and DAWproject interchange; a render queue. "Render to clip" is a new term (CONTEXT.md keeps "bounce" for Freeze); add it to CONTEXT.md with the first batch that builds it.
+**Scope.** In: track files from one render through `render_taps` (`noodle-engine/src/render.rs`), cut before or after each group's output stage as chosen; Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; BS.1770 loudness moved from `noodle-eval/src/level.rs` to where export can use it; TPDF dither in `noodle_io::ExportWriter`; MP3 through LAME (LGPL, GPL-compatible) if a maintained crate builds on all three platforms in CI. Out: OMF, AAF and DAWproject interchange; a render queue. "Render to clip" and "track export" are new terms (CONTEXT.md avoids "bounce", and "stem" already means an AI-separated part); add them to CONTEXT.md with the first batch that builds them.
 
 **Batches.**
 
-1. **Stems.** Tap selection in the dialog, one pass, one file per tap, a test that the stems sum to the mixdown.
+1. **Track export.** Tap selection in the dialog, one pass, one file per tap, a test that the track files sum to the mixdown.
 2. **Render to clip.** Track, group and time range, offline and frozen nodes included, one undo step.
 3. **Loudness and dither.** Readout, normalise and dither in the dialog.
 4. **MP3.** Only if the encoder holds up on CI.
 
-**Done when.** You export a project's tracks and its mixdown in one go, and the stems summed match the mixdown within the golden tolerance. You render a plugin synth track to a clip and warp it. The dialog's loudness agrees with `noodle-eval` on the example songs.
+**Done when.** You export a project's tracks and its mixdown in one go, and the track files summed match the mixdown within the golden tolerance. You render a plugin synth track to a clip and warp it. The dialog's loudness agrees with `noodle-eval` on the example songs.
 
 ## Controller mapping and MIDI output
 
@@ -184,8 +184,8 @@ person and hardware, and a few deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Piano roll and recording:** quantise and keeping the raw take for
-  re-quantising. (Several MIDI ports, overdub and count-in moved to the items
+- **Piano roll and recording:** keeping the raw take so a recorded MIDI
+  clip can be re-quantised after the fact (quantise on record is built). (Several MIDI ports, overdub and count-in moved to the items
   above.) The 128-frame engine block is fixed;
   it could follow the device period.
 - **Virtual output:** remember the live-monitoring toggle between launches and
