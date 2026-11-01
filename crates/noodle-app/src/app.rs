@@ -1,6 +1,6 @@
 //! The window: menus, the toolbar, the panels, and keyboard shortcuts.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::{Command, NodeId};
@@ -108,6 +108,12 @@ pub struct App {
     outputs: OutputsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
+    /// Writes the unsaved project out now and then. `None` in tests and when
+    /// there is no data directory.
+    autosave: Option<crate::autosave::Autosave>,
+    /// An autosave a crashed run left, waiting for the user to recover or
+    /// discard it. Nothing is autosaved meanwhile, so it isn't overwritten.
+    recovery: Option<crate::autosave::Recovery>,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -239,7 +245,15 @@ impl App {
             cache_panel: CachePanel::default(),
             outputs: OutputsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
+            autosave: None,
+            recovery: None,
         }
+    }
+
+    /// Turns autosave on, and offers whatever a crashed run left in it.
+    pub fn set_autosave(&mut self, autosave: crate::autosave::Autosave) {
+        self.recovery = autosave.pending();
+        self.autosave = Some(autosave);
     }
 
     #[cfg(test)]
@@ -599,6 +613,8 @@ impl App {
         }
 
         self.confirm_dialog(ui.ctx(), &mut actions);
+        self.recovery_dialog(ui.ctx());
+        self.autosave_tick(ui.ctx());
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
         self.cache_panel.show(ui.ctx(), &mut self.session);
@@ -1278,6 +1294,75 @@ impl App {
         });
     }
 
+    /// Offers the autosave a crashed run left.
+    fn recovery_dialog(&mut self, ctx: &egui::Context) {
+        let Some(recovery) = self.recovery.clone() else {
+            return;
+        };
+        let mut recover = false;
+        let mut discard = false;
+        egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
+            ui.label("Noodle didn't close properly last time.");
+            let when = recovery
+                .age()
+                .map(|a| format!(", saved {a}"))
+                .unwrap_or_default();
+            ui.label(format!(
+                "Recover the unsaved work on {}{when}?",
+                recovery.name()
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                recover = ui.button("Recover").clicked();
+                discard = ui.button("Discard").clicked();
+            });
+        });
+        if recover {
+            // The copy stays on disk if it won't load, in case it can be
+            // looked at by hand.
+            if self
+                .session
+                .recover(&recovery.text, recovery.origin.clone())
+            {
+                self.editor = EditorState::default();
+                self.finish_recovery();
+            } else {
+                self.recovery = None;
+            }
+        } else if discard {
+            self.finish_recovery();
+        }
+    }
+
+    fn finish_recovery(&mut self) {
+        self.recovery = None;
+        if let Some(autosave) = &mut self.autosave {
+            autosave.remove();
+        }
+    }
+
+    /// Writes the autosave when it is due, and removes it once the project is
+    /// saved.
+    fn autosave_tick(&mut self, ctx: &egui::Context) {
+        let Some(autosave) = &mut self.autosave else {
+            return;
+        };
+        if self.recovery.is_some() {
+            return;
+        }
+        let session = &self.session;
+        autosave.tick(
+            std::time::Instant::now(),
+            session.is_dirty(),
+            session.history_position(),
+            || (session.project_ron(), session.path().map(Path::to_owned)),
+        );
+        if session.is_dirty() {
+            // Wake up for the next write even if nothing else moves.
+            ctx.request_repaint_after(crate::autosave::INTERVAL);
+        }
+    }
+
     /// Asks what to do with unsaved changes before an action that would
     /// lose them.
     fn confirm_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -1557,6 +1642,15 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        // A clean exit leaves nothing to recover. A crash never gets here.
+        if self.recovery.is_none()
+            && let Some(autosave) = &mut self.autosave
+        {
+            autosave.remove();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The plugins' timers, and what other threads asked of them, when
         // this thread hosts them (macOS, Windows).
@@ -2449,6 +2543,75 @@ mod tests {
             1
         );
         harness.get_by_label("Don't Save");
+    }
+
+    /// A crashed run's autosave of a project with one node.
+    fn crash_leftover(dir: &Path) -> crate::autosave::Autosave {
+        let mut crashed = empty();
+        crashed.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        let mut writer = crate::autosave::Autosave::new(dir.to_owned());
+        let at = writer_due(&writer);
+        writer.tick(at, true, 1, || (crashed.session.project_ron(), None));
+        crate::autosave::Autosave::new(dir.to_owned())
+    }
+
+    fn writer_due(a: &crate::autosave::Autosave) -> std::time::Instant {
+        a.next_due()
+    }
+
+    #[test]
+    fn a_crashed_runs_autosave_can_be_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = empty();
+        app.set_autosave(crash_leftover(dir.path()));
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Discard");
+        harness.get_by_label("Recover").click();
+        harness.run();
+        let session = harness.state().session();
+        assert_eq!(session.project().graph().nodes().count(), 1);
+        assert!(session.is_dirty(), "recovered work still needs saving");
+        assert!(harness.query_by_label("Recover").is_none());
+        assert!(
+            crate::autosave::Autosave::new(dir.path().to_owned())
+                .pending()
+                .is_none(),
+            "the copy is gone once recovered"
+        );
+    }
+
+    #[test]
+    fn discarding_the_autosave_leaves_the_project_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = empty();
+        app.set_autosave(crash_leftover(dir.path()));
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Discard").click();
+        harness.run();
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            0
+        );
+        assert!(
+            crate::autosave::Autosave::new(dir.path().to_owned())
+                .pending()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn no_autosave_means_no_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = empty();
+        app.set_autosave(crate::autosave::Autosave::new(dir.path().to_owned()));
+        let mut harness = harness(app);
+        harness.run();
+        assert!(harness.query_by_label("Recover").is_none());
     }
 
     #[test]
