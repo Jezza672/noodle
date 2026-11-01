@@ -1,16 +1,14 @@
-//! Audio Unit editors, embedded in a fake window: Apple's delay brings a Cocoa
-//! view of its own (the generic-view fallback has no test unit that needs
-//! it). macOS only. Windows are process-wide, so this is a binary of its own.
-
-#![cfg(target_os = "macos")]
-
-mod common;
+//! Audio Unit editors, embedded in a fake window. Apple's delay brings a Cocoa
+//! view of its own (the generic-view fallback has no test unit that needs it).
+//! AppKit views need the main thread, so this test has no harness: `main`
+//! adopts the main thread as the plugin thread, as the app does, and pumps it
+//! while it waits. Windows are process-wide, so it is a binary of its own.
 
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use common::scanner;
+use crate::common::scanner;
 use noodle_core::NodeId;
 use noodle_engine::{Config, NodeType, Setup};
 use noodle_plugins::{
@@ -80,11 +78,20 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done() {
         assert!(Instant::now() < deadline, "timed out: {what}");
+        noodle_plugins::pump();
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-#[test]
+pub fn run() {
+    assert!(noodle_plugins::adopt_current_thread(|| {}));
+    // SAFETY: the main thread, as `main` runs on it.
+    let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
+    objc2_app_kit::NSApplication::sharedApplication(mtm);
+    a_unit_opens_its_editor_in_the_window_and_gives_it_back();
+    println!("a_unit_opens_its_editor_in_the_window_and_gives_it_back ... ok");
+}
+
 fn a_unit_opens_its_editor_in_the_window_and_gives_it_back() {
     let shared = Arc::new(Mutex::new(Log::default()));
     let for_factory = Arc::clone(&shared);

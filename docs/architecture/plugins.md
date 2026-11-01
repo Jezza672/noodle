@@ -258,7 +258,7 @@ built).
   editor in the host process.
 - **Not yet:** `AUViewController` editors and AUv3 units that need
   asynchronous instantiation (both need the `AUAudioUnit` object), and AUs
-  outside the system registry. `tests/au_editor.rs` (macOS) opens the generic
+  outside the system registry. `tests/au_editor/` (macOS) opens the generic
   view in a fake window. `tests/au_realtime.rs` (macOS) counts allocations on the
   Rust side of the AU node (the delay with a wired parameter, the synth with
   notes, a seek); what Apple's units do inside their render calls is their

@@ -22,6 +22,12 @@ name = "test_vst3"
 path = "examples/test_vst3.rs"
 crate-type = ["cdylib"]
 
+# AppKit views need the main thread, which libtest doesn't give a test.
+[[test]]
+name = "au_editor"
+path = "tests/au_editor/main.rs"
+harness = false
+
 [dependencies]
 noodle-core.workspace = true
 noodle-engine.workspace = true
