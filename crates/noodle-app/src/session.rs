@@ -1026,27 +1026,31 @@ impl Session {
             return;
         };
         let descriptor = plugin.descriptor().clone();
-        let Some(id) = noodle_plugins::learned_param(&descriptor, &baseline, &captured.params)
-        else {
+        let Some(config) = self.project.graph().node(node).map(|n| n.config.clone()) else {
+            self.param_learn = None;
+            return;
+        };
+        let mut chosen: Vec<u32> = noodle_plugins::exposed_params(&descriptor, &config)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        // A parameter already on the node can move by itself (a wire, an
+        // automation lane), so only the others count.
+        let others: Vec<(u32, f64)> = captured
+            .params
+            .iter()
+            .filter(|(id, _)| !chosen.contains(id))
+            .copied()
+            .collect();
+        let Some(id) = noodle_plugins::learned_param(&descriptor, &baseline, &others) else {
             return;
         };
         self.param_learn = None;
-        let Some(config) = self.project.graph().node(node).map(|n| n.config.clone()) else {
-            return;
-        };
         let name = descriptor
             .params
             .iter()
             .find(|p| p.id == id)
             .map_or_else(|| format!("parameter {id}"), |p| p.name.clone());
-        let mut chosen: Vec<u32> = noodle_plugins::exposed_params(&descriptor, &config)
-            .iter()
-            .map(|p| p.id)
-            .collect();
-        if chosen.contains(&id) {
-            self.message = Some(format!("{name} is already on the node"));
-            return;
-        }
         chosen.push(id);
         let config = config.with(
             noodle_plugins::PARAMS_KEY,
