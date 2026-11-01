@@ -1318,26 +1318,27 @@ impl App {
             });
         });
         if recover {
-            // The copy stays on disk if it won't load, in case it can be
-            // looked at by hand.
-            if self
+            let loaded = self
                 .session
-                .recover(&recovery.text, recovery.origin.clone())
-            {
+                .recover(&recovery.text, recovery.origin.clone());
+            if loaded {
                 self.editor = EditorState::default();
-                self.finish_recovery();
-            } else {
-                self.recovery = None;
             }
+            // A copy that won't load is kept aside, to look at by hand.
+            self.finish_recovery(&recovery, !loaded);
         } else if discard {
-            self.finish_recovery();
+            self.finish_recovery(&recovery, false);
         }
     }
 
-    fn finish_recovery(&mut self) {
+    fn finish_recovery(&mut self, recovery: &crate::autosave::Recovery, keep: bool) {
         self.recovery = None;
         if let Some(autosave) = &mut self.autosave {
-            autosave.remove();
+            if keep {
+                autosave.set_aside(recovery);
+            } else {
+                autosave.remove(recovery);
+            }
         }
     }
 
@@ -1644,10 +1645,9 @@ impl App {
 impl eframe::App for App {
     fn on_exit(&mut self) {
         // A clean exit leaves nothing to recover. A crash never gets here.
-        if self.recovery.is_none()
-            && let Some(autosave) = &mut self.autosave
-        {
-            autosave.remove();
+        // Only this run's files go; an unanswered recovery stays for next time.
+        if let Some(autosave) = &mut self.autosave {
+            autosave.remove_own();
         }
     }
 
@@ -2552,14 +2552,10 @@ mod tests {
             id: noodle_core::NodeId(1),
             node: Node::new("noodle.osc.sine"),
         })]);
-        let mut writer = crate::autosave::Autosave::new(dir.to_owned());
-        let at = writer_due(&writer);
+        let mut writer = crate::autosave::Autosave::for_run(dir.to_owned(), 1);
+        let at = writer.next_due();
         writer.tick(at, true, 1, || (crashed.session.project_ron(), None));
         crate::autosave::Autosave::new(dir.to_owned())
-    }
-
-    fn writer_due(a: &crate::autosave::Autosave) -> std::time::Instant {
-        a.next_due()
     }
 
     #[test]
