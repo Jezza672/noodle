@@ -34,6 +34,11 @@ plugin that says it is done is not called and its outputs are flagged silent,
 and a plugin nothing listens to no longer runs. The AU path was checked to
 compile for macOS only.
 
+AU editors: an Audio Unit node opens its own Cocoa view, or Apple's generic
+parameter view if it has none, in an embedded window, and keeps edits like CLAP
+and VST3 do (`au/gui.rs`; see `architecture/plugins.md`). Written without a Mac,
+checked by type-checking for macOS and by `tests/au_editor.rs` on CI.
+
 - **CLAP hosting through clack:**
   - Scanning in a child process (done).
   - Plugin nodes (done).

@@ -334,8 +334,7 @@ impl PluginNodeType {
 }
 
 impl PluginNodeType {
-    /// Loads an Audio Unit into this process. (Without an editor: the unit's
-    /// parameters have ports, and a node's saved state is what it holds.)
+    /// Loads an Audio Unit into this process.
     #[cfg(target_os = "macos")]
     fn instantiate_au(
         &self,
@@ -345,10 +344,16 @@ impl PluginNodeType {
     ) -> Result<Instance, NodeError> {
         let loaded = au::load(&self.descriptor, state, setup.sample_rate, setup.max_frames)
             .map_err(|error| NodeError::config(error.to_string()))?;
+        // The editor opens by the node, like a CLAP plugin's.
+        let flags = Arc::new(Flags::default());
+        let params = exposed.iter().map(|p| p.id).collect();
+        let key = au::gui::register(loaded.unit.raw(), params, &flags);
+        editor::register(setup.node, key, flags);
         Ok(Instance::realtime(au::au_node(
             loaded,
             &self.descriptor,
             exposed,
+            key,
             setup.max_frames,
         )))
     }

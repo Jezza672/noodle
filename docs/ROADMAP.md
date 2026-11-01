@@ -60,8 +60,13 @@ need a person and hardware, plus a few deliberately deferred items.
   in separate processes" on. CI does not cover the sandbox embedding; focus from
   a background host may need `AllowSetForegroundWindow` (Windows) and
   `yieldActivation` (macOS 14+).
-- **AU leftovers** (needs a real Mac or a unit that exercises them): editors,
-  MIDI output from AU instruments, AUv3 async instantiation.
+- **AU editors** (`au/gui.rs`): open a third-party AU that ships its own
+  Cocoa view (not just Apple's generic one), edit in it, close the window and
+  see the edit kept and undoable; the same with "Run plugins in separate
+  processes" on; resizing, and focus when the app is in the background.
+- **AU leftovers** (needs a real Mac or a unit that exercises them): MIDI
+  output from AU instruments, AUv3 async instantiation with `AUViewController`
+  editors.
 - **`noodle profile --threads`** showing real-time workers on Mac and Windows;
   the macOS audio workgroup join is not done.
 - **Recording with a real microphone**, to check the latency compensation, and
