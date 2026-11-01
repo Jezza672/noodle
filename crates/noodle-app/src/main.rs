@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod autosave;
 mod cache_panel;
 mod carry;
 mod clip_editor;
@@ -100,7 +101,11 @@ fn main() -> ExitCode {
             noodle_engine::wake::set_waker(Some(std::sync::Arc::new(move || {
                 ctx.request_repaint()
             })));
-            Ok(Box::new(App::new(session)))
+            let mut app = App::new(session);
+            if let Some(dir) = autosave::default_dir() {
+                app.set_autosave(autosave::Autosave::new(dir));
+            }
+            Ok(Box::new(app))
         }),
     );
     match result {

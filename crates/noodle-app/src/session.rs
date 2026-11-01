@@ -1255,6 +1255,42 @@ impl Session {
         self.history.position() != self.saved_position
     }
 
+    /// Where in the edit history the project is, for telling whether it has
+    /// changed since a copy was taken.
+    pub fn history_position(&self) -> u64 {
+        self.history.position()
+    }
+
+    /// The project file, if it has one.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The project as a file would hold it.
+    pub fn project_ron(&self) -> String {
+        self.project.to_ron()
+    }
+
+    /// Replaces the project with an autosaved copy of `origin` (`None` for an
+    /// untitled one). It counts as unsaved, so closing asks first. Returns
+    /// whether it loaded; if not, the reason is in [`Self::message`].
+    pub fn recover(&mut self, text: &str, origin: Option<PathBuf>) -> bool {
+        match Project::from_ron(text) {
+            Ok(project) => {
+                self.replace(project, origin);
+                // No history position equals this one, so the project is
+                // dirty until it is saved.
+                self.saved_position = u64::MAX;
+                self.message = Some("Recovered unsaved work. Save to keep it.".into());
+                true
+            }
+            Err(error) => {
+                self.message = Some(format!("Couldn't recover the autosave: {error}"));
+                false
+            }
+        }
+    }
+
     /// Problems found compiling the project, for the views to show where they
     /// happened.
     pub fn diagnostics(&self) -> &[Diagnostic] {
