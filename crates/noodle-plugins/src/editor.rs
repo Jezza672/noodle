@@ -22,7 +22,7 @@ use noodle_engine::Config;
 use crate::STATE_KEY;
 use crate::descriptor::{Descriptor, exposed_params, param_key};
 use crate::host::{Flags, HostError};
-use crate::{sandbox, thread, vst3};
+use crate::{au, sandbox, thread, vst3};
 
 struct Running {
     node: NodeId,
@@ -100,6 +100,8 @@ pub fn open_editor(node: NodeId) -> Result<EditorKey, HostError> {
             .open_editor()?;
     } else if vst3::gui::is_key(key) {
         vst3::gui::open(key)?;
+    } else if au::is_gui_key(key) {
+        au::gui_open(key)?;
     } else {
         thread::open_editor(key)?;
     }
@@ -140,6 +142,8 @@ pub fn capture_key(key: EditorKey) -> Result<Captured, HostError> {
             .capture()
     } else if vst3::gui::is_key(key.0) {
         vst3::gui::capture(key.0)
+    } else if au::is_gui_key(key.0) {
+        au::gui_capture(key.0)
     } else {
         thread::capture(key.0)
     }
@@ -155,6 +159,8 @@ pub fn close_editor(node: NodeId) {
             }
         } else if vst3::gui::is_key(key) {
             vst3::gui::close(key);
+        } else if au::is_gui_key(key) {
+            au::gui_close(key);
         } else {
             thread::close_editor(key);
         }

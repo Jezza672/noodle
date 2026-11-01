@@ -5,6 +5,7 @@
 //! render.
 
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 
 use objc2_audio_toolbox::{
@@ -19,6 +20,7 @@ use crate::bridge::{Bridge, Buffers, Format, ParamSlot, Position, Status};
 use crate::descriptor::{Descriptor, ParamDesc};
 use crate::node::param_range;
 
+use super::gui;
 use super::midi_message;
 use super::plugin::{BufferList, Loaded, Unit};
 
@@ -122,7 +124,8 @@ pub(crate) fn load(
 }
 
 pub(crate) struct AuFormat {
-    unit: Unit,
+    /// Taken out in `drop`, to be released on the plugin thread.
+    unit: ManuallyDrop<Unit>,
     out_lists: Vec<BufferList>,
     /// The parameter behind each of the bridge's parameter slots.
     param_ids: Vec<AudioUnitParameterID>,
@@ -130,8 +133,10 @@ pub(crate) struct AuFormat {
     steady: f64,
     latency: u32,
     takes_notes: bool,
-    /// The unit's callbacks hold this pointer. Last, so it drops after the unit.
-    pull: PullBox,
+    /// The unit's editor (see `gui.rs`), which borrows the unit.
+    gui_key: u64,
+    /// The unit's callbacks hold this pointer, so it goes after the unit.
+    pull: ManuallyDrop<PullBox>,
 }
 
 // SAFETY: the raw pointer is a box this node owns; the unit is `Send`.
@@ -142,6 +147,7 @@ pub(crate) fn au_node(
     loaded: Loaded<PullBox>,
     descriptor: &Descriptor,
     exposed: &[&ParamDesc],
+    gui_key: u64,
     max_frames: usize,
 ) -> Bridge<AuFormat> {
     let channels = |ports: &[crate::descriptor::AudioPort]| -> Vec<u32> {
@@ -170,13 +176,14 @@ pub(crate) fn au_node(
         .collect();
     let id = loaded.unit.id;
     let format = AuFormat {
-        unit: loaded.unit,
+        unit: ManuallyDrop::new(loaded.unit),
         out_lists,
         param_ids,
         steady: 0.0,
         latency: loaded.latency,
         takes_notes: id.takes_notes(),
-        pull: loaded.extra,
+        gui_key,
+        pull: ManuallyDrop::new(loaded.extra),
     };
     Bridge::new(
         format,
@@ -322,6 +329,27 @@ impl Format for AuFormat {
 
     fn reset(&mut self) {
         self.unit.reset();
+    }
+}
+
+impl Drop for AuFormat {
+    fn drop(&mut self) {
+        // The unit is released on the plugin thread, like it was made, and
+        // its editor (which borrows it) goes first.
+        crate::editor::unregister(self.gui_key);
+        let key = self.gui_key;
+        // SAFETY: taken once, here; the fields aren't used again.
+        let (unit, pull) = unsafe {
+            (
+                ManuallyDrop::take(&mut self.unit),
+                ManuallyDrop::take(&mut self.pull),
+            )
+        };
+        crate::thread::run_job_detached(move || {
+            gui::unregister(key);
+            drop(unit);
+            drop(pull);
+        });
     }
 }
 
