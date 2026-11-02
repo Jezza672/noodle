@@ -2923,6 +2923,20 @@ impl Session {
                 let (takes, active) = loop_takes(take.frames, offset, window, cycle);
                 (takes.len() > 1).then_some((takes, active, window))
             });
+        // Folders linked across tracks are compared by take number, so MIDI
+        // has as many takes as the audio, whichever rule counted the slivers.
+        if let (Some((_, passes)), Some((takes, _, _))) = (&mut midi_passes, &folder) {
+            passes.truncate(takes.len());
+            while passes.len() < takes.len() {
+                let mut empty = passes
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| MidiClip::new(Tick(1)));
+                empty.notes.clear();
+                empty.controls.clear();
+                passes.push(empty);
+            }
+        }
         // The take's clip tempo is the timeline's where it was recorded. The
         // sections on every armed track show the same clip, so they share one
         // warp. Its seconds count from the start of the file, which is

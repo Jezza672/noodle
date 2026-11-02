@@ -85,7 +85,8 @@ pub struct Output {
     pub audition: Option<Option<(ClipId, usize)>>,
 }
 
-/// The stretches of the comp as ticks: from, to, and the take.
+/// The stretches of the comp as ticks: the span's index in the comp, from,
+/// to, and the take.
 pub fn spans(
     project: &Project,
     map: &noodle_core::TempoMap,
@@ -93,8 +94,8 @@ pub fn spans(
     rate: u32,
     warp: Option<&ClipWarp>,
     end: Tick,
-) -> Vec<(Tick, Tick, usize)> {
-    let starts: Vec<(Tick, usize)> = match &clip.content {
+) -> Vec<(usize, Tick, Tick, usize)> {
+    let starts: Vec<(usize, Tick, usize)> = match &clip.content {
         noodle_core::ClipContent::Audio(audio) => audio
             .takes
             .as_ref()
@@ -109,7 +110,7 @@ pub fn spans(
                         } else {
                             clips::tick_of_frame(map, clip, span.at, rate, warp)?
                         };
-                        Some((tick, span.take))
+                        Some((i, tick, span.take))
                     })
                     .collect()
             })
@@ -122,7 +123,8 @@ pub fn spans(
                     .folder
                     .comp
                     .iter()
-                    .map(|span| (Tick(clip.start.0 + span.at as i64), span.take))
+                    .enumerate()
+                    .map(|(i, span)| (i, Tick(clip.start.0 + span.at as i64), span.take))
                     .collect()
             })
             .unwrap_or_default(),
@@ -131,9 +133,9 @@ pub fn spans(
     starts
         .iter()
         .enumerate()
-        .map(|(i, &(from, take))| {
-            let to = starts.get(i + 1).map_or(end, |next| next.0);
-            (from.max(clip.start), to.min(end), take)
+        .map(|(n, &(index, from, take))| {
+            let to = starts.get(n + 1).map_or(end, |next| next.1);
+            (index, from.max(clip.start), to.min(end), take)
         })
         .collect()
 }
@@ -221,7 +223,7 @@ pub fn show(
                 _ => {}
             }
             // Where the comp plays this take.
-            for &(from, to, take) in &comp_spans {
+            for &(_, from, to, take) in &comp_spans {
                 if take != k {
                     continue;
                 }
@@ -310,7 +312,7 @@ pub fn show(
         // The joins of an audio comp: a handle on the clip to drag the
         // crossfade wider or narrower.
         if let Some(folder) = audio.and_then(|a| a.takes.as_ref()) {
-            for (i, &(from, _, _)) in comp_spans.iter().enumerate().skip(1) {
+            for &(i, from, _, _) in comp_spans.iter().filter(|s| s.0 > 0) {
                 let Some(span) = folder.comp.get(i) else {
                     break;
                 };
