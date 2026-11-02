@@ -62,10 +62,7 @@ fn project_of(audio: AudioClip) -> Project {
         }),
     ];
     if let Some(id) = audio.warp {
-        commands.push(Command::AddWarp {
-            id,
-            warp: warp(),
-        });
+        commands.push(Command::AddWarp { id, warp: warp() });
     }
     commands.push(Command::AddClip {
         id,
@@ -177,6 +174,7 @@ fn a_comp_of_one_take_is_that_take_and_a_trimmed_folder_keeps_every_take() {
     audio.offset = 12_000;
     audio.length = 12_000;
     let out = render(&project_of(audio), 12_000);
+    #[allow(clippy::needless_range_loop)]
     for f in START..11_000 {
         let want = ramp((12_000 + f) as f64) * LEVELS[1];
         assert!((out[f] - want).abs() < 1e-3, "frame {f}");
@@ -227,7 +225,12 @@ fn spans_that_the_file_cannot_supply_are_silent_and_the_rest_plays() {
     // A third take past the end of the file: the comp's last span plays
     // nothing, and the others are unharmed.
     let mut audio = audio_with(&[(0, 0), (12_000, 1)]);
-    audio.takes.as_mut().unwrap().takes.push(Take { delta: 9 * N });
+    audio
+        .takes
+        .as_mut()
+        .unwrap()
+        .takes
+        .push(Take { delta: 9 * N });
     audio.takes.as_mut().unwrap().swipe(18_000, N, 3);
     let out = render(&project_of(audio), N as usize);
     assert!((out[5_000] - ramp(5_000.0)).abs() < 1e-3);

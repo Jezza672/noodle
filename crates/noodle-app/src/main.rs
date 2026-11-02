@@ -81,6 +81,8 @@ fn main() -> ExitCode {
         session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
         session.set_auto_cache(prefs.auto_cache);
+        session.set_count_in_bars(prefs.count_in_bars);
+        session.set_pre_roll_bars(prefs.pre_roll_bars);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.

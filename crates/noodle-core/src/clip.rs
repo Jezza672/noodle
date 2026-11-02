@@ -804,7 +804,9 @@ mod tests {
 
     fn folder(takes: usize) -> TakeFolder {
         TakeFolder::new(
-            (0..takes as u64).map(|k| Take { delta: k * 1000 }).collect(),
+            (0..takes as u64)
+                .map(|k| Take { delta: k * 1000 })
+                .collect(),
             0,
         )
     }

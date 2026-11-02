@@ -33,6 +33,10 @@ pub struct Prefs {
     /// Whether the playback cache picks what to cache by itself. On unless
     /// turned off.
     pub auto_cache: bool,
+    /// Bars of metronome before a recording starts (0, 1 or 2).
+    pub count_in_bars: u8,
+    /// Bars of the project played before a punch-in.
+    pub pre_roll_bars: u8,
 }
 
 impl Default for Prefs {
@@ -42,6 +46,8 @@ impl Default for Prefs {
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: true,
+            count_in_bars: 0,
+            pre_roll_bars: 0,
         }
     }
 }
@@ -128,6 +134,21 @@ pub fn remember_auto_cache(on: bool) {
     });
 }
 
+/// Saves the count-in and pre-roll, with the other preferences, if [`init`]
+/// has been called.
+pub fn remember_recording(count_in_bars: u8, pre_roll_bars: u8) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.count_in_bars = count_in_bars;
+        prefs.pre_roll_bars = pre_roll_bars;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// Saves the device the node monitor plays on, with the other preferences, if
 /// [`init`] has been called.
 pub fn remember_monitor_device(device: &str) {
@@ -198,6 +219,8 @@ mod tests {
                 midi_input: Some("Keystation 49".into()),
                 threads: 2,
             },
+            count_in_bars: 0,
+            pre_roll_bars: 0,
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: false,
@@ -252,7 +275,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
@@ -276,6 +299,16 @@ mod tests {
         assert!(!load(&path).unwrap().auto_cache);
         remember_auto_cache(true);
         assert!(load(&path).unwrap().auto_cache);
+    }
+
+    #[test]
+    fn the_count_in_and_pre_roll_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        remember_recording(2, 3);
+        let saved = load(&path).unwrap();
+        assert_eq!((saved.count_in_bars, saved.pre_roll_bars), (2, 3));
     }
 
     #[test]

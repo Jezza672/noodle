@@ -19,15 +19,15 @@ mod warp;
 pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};
 pub use cache_key::{CacheKey, KeyBuilder};
 pub use clip::{
-    AudioClip, BUTT_SECONDS, Clip, ClipContent, ClipGroup, ClipGroupId, ClipId, CompSpan, Crossfade,
-    DEFAULT_COMP_FADE_SECONDS, GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint, MIN_LOOP_LEN, MidiClip, MidiNote, Take,
-    TakeFolder, gain_points_from_text, gain_points_to_text,
+    AudioClip, BUTT_SECONDS, Clip, ClipContent, ClipGroup, ClipGroupId, ClipId, CompSpan,
+    Crossfade, DEFAULT_COMP_FADE_SECONDS, GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint,
+    MIN_LOOP_LEN, MidiClip, MidiNote, Take, TakeFolder, gain_points_from_text, gain_points_to_text,
 };
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
-pub use project::{LoadError, Project, TransportLoop};
+pub use project::{LoadError, Project, PunchRange, TransportLoop};
 pub use timeline::{
     MusicalPosition, SignatureChange, TICKS_PER_QUARTER, TempoChange, TempoMap, TempoMapError,
     Tick, TimeSignature,

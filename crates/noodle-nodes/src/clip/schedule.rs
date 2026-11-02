@@ -1059,8 +1059,8 @@ impl ClipFeeds {
                     at(clip.start.0 + x.after.0) - first_start,
                 ));
             }
-            let default_fade = (f64::from(rate) * noodle_core::DEFAULT_COMP_FADE_SECONDS / 2.0)
-                .round() as u64;
+            let default_fade =
+                (f64::from(rate) * noodle_core::DEFAULT_COMP_FADE_SECONDS / 2.0).round() as u64;
             for (k, piece) in pieces.into_iter().enumerate() {
                 if let Some(join) = piece.join {
                     let place = first_start + piece.from;

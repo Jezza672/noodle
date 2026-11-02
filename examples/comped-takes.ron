@@ -1,6 +1,6 @@
 // A take folder: three takes of the same stretch of music, recorded one after
 // another into one file (`comped-takes.wav`: a 220 Hz, a 330 Hz and a 440 Hz
-// tone, 6000 frames each). The clip's window is the first take's 6000 frames;
+// tone, 12000 frames each). The clip's window is the first take's 12000 frames;
 // take `k` plays `delta` frames later in the file. The comp plays take 0, then
 // take 1, then take 2, a third of the window each, and each join crossfades
 // over 10 ms (the default) with audio from both sides of the join.
@@ -22,16 +22,16 @@
             content: Audio((
                 source: "comped-takes.wav",
                 offset: 0,
-                length: 6000,
+                length: 12000,
                 gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
                 takes: Some((
-                    takes: [(delta: 0), (delta: 6000), (delta: 12000)],
+                    takes: [(delta: 0), (delta: 12000), (delta: 24000)],
                     comp: [
                         (at: 0, take: 0),
-                        (at: 2000, take: 1),
-                        (at: 4000, take: 2),
+                        (at: 4000, take: 1),
+                        (at: 8000, take: 2),
                     ],
                 )),
             )),

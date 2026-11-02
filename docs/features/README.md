@@ -27,3 +27,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [autosave.md](autosave.md) | Autosave and crash recovery |
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension |
+| [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |

@@ -11,6 +11,7 @@
 pub(crate) mod add_track;
 mod automation;
 pub(crate) mod clips;
+mod comp;
 mod crossfade;
 pub(crate) mod grid;
 pub(crate) mod header;
@@ -847,6 +848,17 @@ pub fn show(
                                 ui.close();
                                 edits.push(Edit::Apply(toggle_mute(id, clip)));
                             }
+                            if audio.takes.is_some()
+                                && ui
+                                    .button("Flatten takes")
+                                    .on_hover_text(
+                                        "Cut the comp at its joins into plain clips and drop the takes it doesn't play",
+                                    )
+                                    .clicked()
+                            {
+                                ui.close();
+                                edits.extend(comp::flatten(project, map, id, rate).map(Edit::Apply));
+                            }
                             if ui
                                 .button("Split to stems")
                                 .on_hover_text(
@@ -1495,6 +1507,52 @@ pub fn show(
             }
         }
     }
+    // The punch range is a second band, along the bottom of the ruler: the
+    // part of the timeline a recording keeps. Its edges can be dragged.
+    {
+        let punch = session.project().punch();
+        let strip = Rect::from_x_y_ranges(ruler.x_range(), ruler.bottom() - 6.0..=ruler.bottom());
+        let (x0, x1) = (axis.x(punch.start), axis.x(punch.end));
+        let band = Rect::from_x_y_ranges(
+            x0.max(ruler.left())..=x1.min(ruler.right()),
+            strip.y_range(),
+        );
+        if band.width() > 0.0 {
+            ui.painter_at(ruler).rect_filled(
+                band,
+                0.0,
+                crate::theme::RECORD.gamma_multiply(if punch.on { 0.8 } else { 0.25 }),
+            );
+        }
+        for (is_start, x) in [(true, x0), (false, x1)] {
+            if x < ruler.left() - 4.0 || x > ruler.right() + 4.0 {
+                continue;
+            }
+            let handle = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, strip.y_range());
+            let id = ui.id().with(("punch_edge", is_start));
+            let response = ui
+                .interact(handle, id, Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                .on_hover_text(if is_start { "Punch in" } else { "Punch out" });
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let tick = axis.snap(axis.tick(pos.x).max(Tick::ZERO));
+                let mut moved = punch;
+                if is_start {
+                    moved.start = tick.min(Tick((punch.end.0 - 1).max(0)));
+                } else {
+                    moved.end = tick.max(Tick(punch.start.0 + 1));
+                }
+                if moved != punch {
+                    edits.push(Edit::Drag(Command::SetPunch(moved)));
+                }
+            }
+            if response.drag_stopped() {
+                edits.push(Edit::EndDrag);
+            }
+        }
+    }
     if scrub.secondary_clicked() {
         state.ruler_menu_bar = scrub
             .interact_pointer_pos()
@@ -1544,6 +1602,47 @@ pub fn show(
                 ..region
             });
         }
+        ui.separator();
+        let punch = session.project().punch();
+        ui.menu_button("Punch", |ui| {
+            if ui
+                .button(if punch.on { "Punch off" } else { "Punch on" })
+                .clicked()
+            {
+                ui.close();
+                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+                    on: !punch.on,
+                    ..punch
+                })));
+            }
+            if ui.button("Set punch in here").clicked() {
+                ui.close();
+                let end = if punch.end > here {
+                    punch.end
+                } else {
+                    bar_tick(map, bar + 2)
+                };
+                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+                    start: here,
+                    end,
+                    ..punch
+                })));
+            }
+            if ui.button("Set punch out here").clicked() {
+                ui.close();
+                let start = if punch.start < here {
+                    punch.start
+                } else {
+                    Tick::ZERO
+                };
+                let end = if here > start { here } else { bar_tick(map, 2) };
+                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+                    start,
+                    end,
+                    ..punch
+                })));
+            }
+        });
         ui.separator();
         if ui
             .button(format!("Add tempo change at bar {}", bar + 1))

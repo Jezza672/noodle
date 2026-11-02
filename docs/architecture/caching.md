@@ -64,7 +64,8 @@ key(output) = hash(key(node), output index)
   serve a render made at another size.
 - **What the track input adds.** For an audio clip: its file's content hash,
   window, gain, fades, gain points and crossfade, the `extent` of a section
-  dragged out past its window, and, when the clip is warped, the warp's mode,
+  dragged out past its window, a take folder's takes and comp (each take's
+  delta, each span's start, take and join), and, when the clip is warped, the warp's mode,
   tempo, markers and `loop_region`, plus whether the warp preview is on
   (while it is, warped clips play as Repitch). For a MIDI clip: its length
   and notes, and `loop_on`, `loop_start` and `loop_len`.

@@ -140,6 +140,9 @@ enum Action {
     ToggleKeyboard,
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
+    /// Bars of count-in and of pre-roll before a recording.
+    SetCountIn(u8),
+    SetPreRoll(u8),
     /// Turns the audio engine on or off.
     ToggleEngine,
     /// Stops listening to monitored nodes (Escape).
@@ -930,7 +933,7 @@ impl App {
         }
         self.engine_button(ui, actions);
         self.cache_indicator(ui, actions);
-        let recording = self.session.is_recording();
+        let recording = self.session.is_recording() || self.session.is_counting_in();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
             theme::RECORD
         } else {
@@ -947,6 +950,7 @@ impl App {
             actions.push(Action::ToggleRecord);
         }
         self.quantise_menu(ui, actions);
+        self.lead_in_menus(ui, actions);
         self.monitor_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
@@ -1030,6 +1034,55 @@ impl App {
             })
             .response
             .on_hover_text("Snap the notes of recorded MIDI to this grid");
+    }
+
+    /// The count-in (bars of metronome before a take) and the pre-roll (bars of
+    /// the project before a punch-in).
+    fn lead_in_menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let menu = |ui: &mut egui::Ui,
+                    id: &str,
+                    label: &str,
+                    current: u8,
+                    choices: &[u8],
+                    tip: &str,
+                    actions: &mut Vec<Action>,
+                    action: fn(u8) -> Action| {
+            crate::widgets::Dropdown::from_id_salt(id)
+                .width(48.0)
+                .selected_text(format!("{label} {current}"))
+                .show_ui(ui, |ui| {
+                    for &bars in choices {
+                        if ui
+                            .selectable_label(bars == current, format!("{bars} bars"))
+                            .clicked()
+                        {
+                            actions.push(action(bars));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(tip);
+        };
+        menu(
+            ui,
+            "count_in",
+            "In",
+            self.session.count_in_bars(),
+            &[0, 1, 2],
+            "Bars of metronome before recording starts",
+            actions,
+            Action::SetCountIn,
+        );
+        menu(
+            ui,
+            "pre_roll",
+            "Pre",
+            self.session.pre_roll_bars(),
+            &[0, 1, 2, 4],
+            "Bars of the project played before a punch-in",
+            actions,
+            Action::SetPreRoll,
+        );
     }
 
     /// Where the monitor buttons on nodes play: the main output or any other
@@ -1478,6 +1531,20 @@ impl App {
             }
             Action::Rewind => self.session.rewind(),
             Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
+            Action::SetCountIn(bars) => {
+                self.session.set_count_in_bars(bars);
+                crate::prefs::remember_recording(
+                    self.session.count_in_bars(),
+                    self.session.pre_roll_bars(),
+                );
+            }
+            Action::SetPreRoll(bars) => {
+                self.session.set_pre_roll_bars(bars);
+                crate::prefs::remember_recording(
+                    self.session.count_in_bars(),
+                    self.session.pre_roll_bars(),
+                );
+            }
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);
@@ -1486,6 +1553,8 @@ impl App {
             Action::ToggleRecord => {
                 if self.session.is_recording() {
                     self.session.stop_recording();
+                } else if self.session.is_counting_in() {
+                    self.session.cancel_count_in();
                 } else {
                     self.session.record();
                 }

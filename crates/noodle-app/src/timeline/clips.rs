@@ -357,6 +357,32 @@ pub fn set_fade_out(
     })
 }
 
+/// The tick at which `frame` of the clip's file plays, for an audio clip
+/// showing the file from its offset. `None` if the warp is missing, or the
+/// frame is before the clip's offset.
+pub fn tick_of_frame(
+    map: &TempoMap,
+    clip: &Clip,
+    frame: u64,
+    rate: u32,
+    warp: Option<&ClipWarp>,
+) -> Option<Tick> {
+    let audio = clip.as_audio()?;
+    let into = frame.checked_sub(audio.offset)?;
+    match layout(map, audio, warp, rate)? {
+        Layout::Warped(section) => Some(section.tick_of(
+            clip.start,
+            audio.offset as f64 / f64::from(rate),
+            frame as f64 / f64::from(rate),
+        )),
+        Layout::Frames => {
+            let rate = f64::from(rate);
+            let at = map.sample_at(clip.start, rate) + into;
+            Some(Tick(map.tick_at_sample(at, rate).round() as i64))
+        }
+    }
+}
+
 /// The clip cut in two at `at`: the part before it and the part from it on,
 /// each a clip of its own that plays what was there, sample for sample.
 /// `None` if `at` isn't inside the clip. A fade out stays with the second
