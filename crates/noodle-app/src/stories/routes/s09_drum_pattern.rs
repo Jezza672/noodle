@@ -154,7 +154,7 @@ fn bar(h: &mut Handle, start: i64) {
 fn steps(h: &mut Handle, _size: usize) {
     h.step("make a clip");
     h.probe().settle();
-    let lane = Pos2::new(500.0, 100.0);
+    let lane = Pos2::new(190.0, 100.0);
     h.right_click(lane);
     let new = h.find("New MIDI clip");
     h.click(new, Modifiers::NONE);
@@ -188,6 +188,10 @@ fn steps(h: &mut Handle, _size: usize) {
 static LEVEL: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
 
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let heard = *LEVEL.lock().unwrap();
+    if heard < 0.05 {
+        return Err(format!("the pattern is silent (peak {heard})"));
+    }
     let id = clip_of(p.project());
     let notes = p.roll_notes(id);
     let count = |key: u8| notes.iter().filter(|n| n.2 == key).count();
@@ -227,7 +231,7 @@ fn extend(h: &mut Handle, _size: usize) {
         Pos2::new(rect.right() - 2.0 + rect.width(), rect.center().y),
     ]);
     h.step("program bars 3 and 4");
-    // Variation in bar 4: a second snare on the last sixteenth.
+    // Variation in bar 4: a second snare on the last eighth of bar 4.
     for bar_start in [2 * BAR, 3 * BAR] {
         bar(h, bar_start);
     }

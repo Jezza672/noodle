@@ -4,7 +4,9 @@
 //! Dynamics node with its detector on the sidechain input ducks the bass.
 //! There are no pre-fader sends in the mixer, so the parallel compressed bus
 //! and the late change of switching a send from pre- to post-fader are not
-//! routed (#332). Plugin delay compensation is not exercised.
+//! routed (#332). Plugin delay compensation is not exercised. The done check
+//! reads the wiring and that the mix is audible; it does not measure the
+//! bass ducking itself (the sources are steady sines).
 
 use std::path::Path;
 
@@ -170,9 +172,12 @@ fn ducks_from_bus(p: &mut Probe, _size: usize) -> Result<(), String> {
         .graph()
         .source(&Endpoint::new(dynamics, "sidechain"))
         .ok_or("the sidechain has no source")?;
-    let kick = sources(project).0;
-    if source.node == kick {
-        return Err("the sidechain still comes from the kick".into());
+    let drum_bus = of(project, spare::MIXER)
+        .into_iter()
+        .find(|&m| feeds(project, sources(project).0, &Endpoint::new(m, "in1")))
+        .ok_or("the drum bus is gone")?;
+    if source.node != drum_bus {
+        return Err("the sidechain does not come from the drum bus".into());
     }
     Ok(())
 }
