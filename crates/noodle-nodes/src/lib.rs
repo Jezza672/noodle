@@ -67,7 +67,10 @@ pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
     ARPEGGIATOR_ID, Arpeggiator, RATE_NAMES as ARP_RATE_NAMES, RATE_TICKS as ARP_RATE_TICKS,
 };
-pub use automation::{AUTOMATION_NODE_ID, AUTOMATION_VALUE, Automation};
+pub use automation::{
+    AUTOMATION_LABEL, AUTOMATION_MAX, AUTOMATION_MIN, AUTOMATION_NODE_ID, AUTOMATION_TAPER,
+    AUTOMATION_VALUE, Automation,
+};
 pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
     render_streaming, spawn_render, spawn_render_to_cache,
