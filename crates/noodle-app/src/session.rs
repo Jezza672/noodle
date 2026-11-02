@@ -12,6 +12,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub mod automate;
 mod export;
 mod library;
 mod stems;
@@ -46,6 +47,19 @@ pub enum Saved {
     Failed,
     /// The project has no file yet, so the caller should ask for one.
     NoFile,
+}
+
+/// How often an open plugin editor is looked at for edited parameters.
+const PLUGIN_LIVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// An open plugin editor, as the session last saw it.
+#[derive(Default)]
+struct LiveEditor {
+    polled: Option<Instant>,
+    /// Each parameter's plugin ID and the value last read.
+    seen: std::collections::BTreeMap<u32, f64>,
+    /// A gesture's undo step is open.
+    dragging: bool,
 }
 
 /// How often "learn" looks at the plugin's parameters.
@@ -89,6 +103,9 @@ pub enum Edit {
     /// Replaces the contents of a group with its library template's current
     /// version. One undo step.
     UpdateFromTemplate(NodeId),
+    /// The Automate shortcut on a parameter: an Automation node, its lane
+    /// and the wire into the parameter, as one undo step (see [`automate`]).
+    Automate(noodle_core::Endpoint),
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
@@ -255,6 +272,8 @@ pub struct Session {
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
     plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
+    /// What each open plugin editor last showed, to turn changes into edits.
+    plugin_live: std::collections::BTreeMap<NodeId, LiveEditor>,
     /// Why a plugin's editor last failed to open, until it opens.
     plugin_editor_errors: std::collections::BTreeMap<NodeId, String>,
     /// A plugin node waiting for the user to move one of its parameters.
@@ -548,6 +567,7 @@ impl Session {
             plugin_scan,
             plugin_files,
             plugin_editors: Default::default(),
+            plugin_live: Default::default(),
             plugin_editor_errors: Default::default(),
             param_learn: None,
             sandbox_plugins: false,
@@ -1021,7 +1041,7 @@ impl Session {
         }
         learn.checked = Instant::now();
         let baseline = learn.baseline.clone();
-        let Ok(captured) = noodle_plugins::capture_key(key) else {
+        let Ok(captured) = noodle_plugins::capture_params_key(key) else {
             return;
         };
         let Some(plugin) = self.plugin_of(node) else {
@@ -1083,6 +1103,7 @@ impl Session {
     /// stays on the list until that worked, or its plugin instance is gone
     /// (the graph was built again, which loses what the editor changed).
     fn poll_plugin_editors(&mut self) {
+        self.sync_open_plugin_editors();
         let closed: Vec<(NodeId, noodle_plugins::EditorKey)> = self
             .plugin_editors
             .iter()
@@ -1090,6 +1111,8 @@ impl Session {
             .filter(|(_, key)| !noodle_plugins::editor_key_is_open(*key))
             .collect();
         for (node, key) in closed {
+            self.end_live_gesture(node);
+            self.plugin_live.remove(&node);
             if !noodle_plugins::editor_instance_running(key) {
                 self.plugin_editors.remove(&node);
                 continue;
@@ -1127,6 +1150,67 @@ impl Session {
                     self.message = Some(format!("Couldn't keep the plugin's state: {error}"));
                 }
             }
+        }
+    }
+
+    /// While a plugin's editor is open, turns each change of a parameter
+    /// value into a `SetParam` (no rebuild; the state waits for the window to
+    /// close). Changes arriving one poll after another are one gesture and
+    /// one undo step; a poll with no change ends it. Reads parameters only,
+    /// at most every [`PLUGIN_LIVE_INTERVAL`].
+    fn sync_open_plugin_editors(&mut self) {
+        let now = Instant::now();
+        let open: Vec<(NodeId, noodle_plugins::EditorKey)> = self
+            .plugin_editors
+            .iter()
+            .map(|(n, k)| (*n, *k))
+            .filter(|(_, key)| noodle_plugins::editor_key_is_open(*key))
+            .collect();
+        for (node, key) in open {
+            let live = self.plugin_live.entry(node).or_default();
+            if live
+                .polled
+                .is_some_and(|at| now.duration_since(at) < PLUGIN_LIVE_INTERVAL)
+            {
+                continue;
+            }
+            live.polled = Some(now);
+            let Some(plugin) = self.plugin_of(node) else {
+                continue;
+            };
+            let descriptor = plugin.descriptor().clone();
+            let Ok(captured) = noodle_plugins::capture_params_key(key) else {
+                continue;
+            };
+            let config = self
+                .project
+                .graph()
+                .node(node)
+                .map(|n| n.config.clone())
+                .unwrap_or_default();
+            let stored = self.project.graph().node(node).map(|n| n.params.clone());
+            let live = self.plugin_live.entry(node).or_default();
+            let commands =
+                captured.changed_params(node, &descriptor, &config, &mut live.seen, |id| {
+                    stored
+                        .as_ref()
+                        .and_then(|p| p.get(&noodle_plugins::param_key(id)).copied())
+                });
+            if commands.is_empty() {
+                self.end_live_gesture(node);
+            } else {
+                self.plugin_live.entry(node).or_default().dragging = true;
+                self.edit(commands.into_iter().map(Edit::Drag));
+            }
+        }
+    }
+
+    /// Closes the undo step of an editor gesture still going.
+    fn end_live_gesture(&mut self, node: NodeId) {
+        if let Some(live) = self.plugin_live.get_mut(&node)
+            && std::mem::take(&mut live.dragging)
+        {
+            self.edit([Edit::EndDrag]);
         }
     }
 
@@ -1377,6 +1461,18 @@ impl Session {
                     self.split_to_stems(clip);
                     continue;
                 }
+                Edit::Automate(target) => {
+                    self.history.end_group();
+                    let node = self.new_node_id();
+                    let lane = self.project.next_lane_id();
+                    match automate::command(&self.project, &self.registry, &target, node, lane) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't automate: {error}"));
+                            continue;
+                        }
+                    }
+                }
                 Edit::UpdateFromTemplate(group) => {
                     self.history.end_group();
                     match self.update_from_template(group) {
@@ -1537,6 +1633,7 @@ impl Session {
         self.saved_position = self.history.position();
         self.path = path;
         self.plugin_editors.clear();
+        self.plugin_live.clear();
         self.param_learn = None;
         self.message = None;
         self.parked = Tick(0);

@@ -206,8 +206,15 @@ parameter, so the ports agree with the plugin (the ports win on the first
 block). The app opens editors from the properties panel or a double-click on the node (`Edit::PluginEditor`; a failure to open stays beside the button)
 and captures when the window closes (`Session::poll_plugin_editors`), as one
 undo step. That is a config change, so the node recompiles and its plugin is
-reloaded from the stored state. State changed while an editor is open is
-stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
+reloaded from the stored state. While the window is open the app also reads
+the parameters alone (`capture_params_key`, no state saved; every 50 ms,
+`Session::sync_open_plugin_editors`) and turns each changed value into a
+`SetParam` via `Captured::changed_params`, so the ports, properties panel and
+saved project follow the editor without rebuilding the node. Changes in
+consecutive polls are one gesture (`Edit::Drag`), one undo step; a poll with no
+change ends it (`Edit::EndDrag`). The gesture is inferred from values settling,
+not from the plugin's begin/end events. Other state is stored only when the
+window closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and only the state not held in parameters is lost. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
 
 ## AU hosting
 

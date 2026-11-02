@@ -121,6 +121,8 @@ enum Command {
     },
     Capture {
         key: u64,
+        /// Whether to save the plugin's state too (parameters alone are cheap).
+        with_state: bool,
         reply: Sender<Result<Captured, HostError>>,
     },
     /// Loads a plugin without activating it, only to see the state it saves.
@@ -378,9 +380,13 @@ pub(crate) fn close(key: u64, processor: StoppedPluginAudioProcessor<Host>) {
     let _ = send(Command::Close { key, processor });
 }
 
-pub(crate) fn capture(key: u64) -> Result<Captured, HostError> {
+pub(crate) fn capture(key: u64, with_state: bool) -> Result<Captured, HostError> {
     let (reply, receiver) = mpsc::channel();
-    send(Command::Capture { key, reply })?;
+    send(Command::Capture {
+        key,
+        with_state,
+        reply,
+    })?;
     wait(&receiver, COMMAND_TIMEOUT)
 }
 
@@ -568,9 +574,13 @@ fn handle(command: Command, live: &mut HashMap<u64, Live>, next_key: &mut u64) {
                 l.instance.deactivate(processor);
             }
         }
-        Command::Capture { key, reply } => {
+        Command::Capture {
+            key,
+            with_state,
+            reply,
+        } => {
             let result = match live.get_mut(&key) {
-                Some(l) => capture_live(l),
+                Some(l) => capture_live(l, with_state),
                 None => Err(HostError("the plugin is no longer running".into())),
             };
             let _ = reply.send(result);
@@ -660,8 +670,12 @@ fn load(
 
 /// The state the plugin saves now, and every parameter's value now, so edits
 /// made in its editor can be kept in the project.
-fn capture_live(live: &mut Live) -> Result<Captured, HostError> {
-    let state = save_state_of(&mut live.instance)?;
+fn capture_live(live: &mut Live, with_state: bool) -> Result<Captured, HostError> {
+    let state = if with_state {
+        save_state_of(&mut live.instance)?
+    } else {
+        Vec::new()
+    };
     let mut handle = live.instance.plugin_handle();
     let mut params = Vec::new();
     if let Some(ext) = handle.get_extension::<PluginParams>() {
