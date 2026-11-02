@@ -1,12 +1,16 @@
-//! S19: a drum bus, and a bass ducked by the kick.
+//! S19: a drum bus, a parallel compressed bus, and a bass ducked by the kick.
 //!
-//! Partial. The route is done in the node editor: a Mix node is the bus, and a
-//! Dynamics node with its detector on the sidechain input ducks the bass.
-//! There are no pre-fader sends in the mixer, so the parallel compressed bus
-//! and the late change of switching a send from pre- to post-fader are not
-//! routed (#332). Plugin delay compensation is not exercised. The done check
-//! reads the wiring and that the mix is audible; it does not measure the
-//! bass ducking itself (the sources are steady sines).
+//! Done in the node editor. A Mix node is the drum bus, and its input gains
+//! are the drum faders. A send is a second wire out of a source: the kick and
+//! the snare also feed a second Mix node, the parallel bus, straight from
+//! their outputs, so the send is taken before the drum faders (pre-fader). A
+//! hard Dynamics node compresses it and it joins the master. Switching the
+//! send to post-fader means feeding the compressor from the drum bus's
+//! output instead and deleting the parallel Mix: nothing in the mixer says
+//! so (#332). A Dynamics node with its detector on the sidechain input ducks
+//! the bass. Plugin delay compensation is not exercised. The done check reads
+//! the wiring and that the mix is audible; it does not measure the bass
+//! ducking itself (the sources are steady sines).
 
 use std::path::Path;
 
@@ -16,7 +20,7 @@ use noodle_nodes::DYNAMICS_ID;
 
 use super::super::handle::{Handle, Probe, peak};
 use super::super::{LateChange, Route, Tag};
-use super::{add_node, finished, virtual_session};
+use super::{add_node, finished, reveal, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
@@ -61,12 +65,20 @@ pub fn route() -> Route {
         size: None,
         steps,
         done,
-        late: &[LateChange {
-            name: "duck from the whole drum bus, not only the kick",
-            steps: duck_from_bus,
-            done: ducks_from_bus,
-            keep: &[],
-        }],
+        late: &[
+            LateChange {
+                name: "duck from the whole drum bus, not only the kick",
+                steps: duck_from_bus,
+                done: ducks_from_bus,
+                keep: &[],
+            },
+            LateChange {
+                name: "switch the send from pre-fader to post-fader",
+                steps: post_fader,
+                done: is_post_fader,
+                keep: &[],
+            },
+        ],
     }
 }
 
@@ -86,6 +98,11 @@ fn feeds(p: &Project, from: NodeId, to: &Endpoint) -> bool {
 fn wire(h: &mut Handle, from: (NodeId, &str), to: (NodeId, &str)) {
     let a = h.socket(from.0, true, from.1);
     let b = h.socket(to.0, false, to.1);
+    let (a, b) = if reveal(h, &[a, b]) == egui::Vec2::ZERO {
+        (a, b)
+    } else {
+        (h.socket(from.0, true, from.1), h.socket(to.0, false, to.1))
+    };
     h.drag_playing(&[a, b]);
 }
 
@@ -113,12 +130,33 @@ fn steps(h: &mut Handle, _size: usize) {
     let side = h.find("Sidechain");
     h.click(side, Modifiers::NONE);
     wire(h, (dynamics, "out"), (master, "in2"));
+    h.step("add a parallel bus");
+    let parallel = add_node(h, Pos2::new(760.0, 300.0), "util.mix");
+    h.step("send the kick and the snare to it, before their faders");
+    wire(h, (kick, "out"), (parallel, "in1"));
+    wire(h, (snare, "out"), (parallel, "in2"));
+    h.step("compress it hard");
+    let squash = add_node(h, Pos2::new(760.0, 430.0), "dynamics");
+    wire(h, (parallel, "out"), (squash, "in"));
+    set(h, squash, "ratio", "20");
+    set(h, squash, "threshold", "-30");
+    h.step("blend it into the master");
+    wire(h, (squash, "out"), (master, "in3"));
     h.step("listen");
     let at = Pos2::new(640.0, 700.0);
     h.press_playing(at, Modifiers::NONE, Key::Space);
     let heard = h.probe().hear(std::time::Duration::from_millis(800));
     *LEVEL.lock().unwrap() = peak(&heard);
     h.press_playing(at, Modifiers::NONE, Key::Space);
+}
+
+/// Clicks a parameter's field on `node` and types `value` into it.
+fn set(h: &mut Handle, node: NodeId, key: &str, value: &str) {
+    let at = h.port_row(node, false, key);
+    h.click(at, Modifiers::NONE);
+    h.press(at, Modifiers::COMMAND, Key::A);
+    h.type_text(at, value);
+    h.press(at, Modifiers::NONE, Key::Enter);
 }
 
 /// The loudest sample heard while the mix played.
@@ -148,11 +186,69 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if detect.copied().unwrap_or(0.0) < 0.5 {
         return Err("the Dynamics node detects from its input, not the sidechain".into());
     }
+    let (squash, parallel) = parallel_bus(project)?;
+    if parallel == bus {
+        return Err("the compressor is fed by the drum bus, not a parallel bus".into());
+    }
+    for (source, input) in [(kick, "in1"), (snare, "in2")] {
+        if !feeds(project, source, &Endpoint::new(parallel, input)) {
+            return Err(format!(
+                "the parallel bus's {input} does not come straight from its drum"
+            ));
+        }
+    }
+    let ratio = param(project, squash, "ratio");
+    if ratio < 10.0 {
+        return Err(format!(
+            "the parallel bus is not compressed hard (ratio {ratio})"
+        ));
+    }
+    reaches_master(project, squash)?;
     let heard = *LEVEL.lock().unwrap();
     if heard < 0.05 {
         return Err(format!("the mix is silent (peak {heard})"));
     }
     Ok(())
+}
+
+fn param(p: &Project, node: NodeId, key: &str) -> f32 {
+    p.graph()
+        .node(node)
+        .and_then(|n| n.params.get(key))
+        .copied()
+        .unwrap_or(f32::NAN)
+}
+
+/// The compressor of the parallel bus (the Dynamics node that detects from
+/// its own input) and what feeds it.
+fn parallel_bus(p: &Project) -> Result<(NodeId, NodeId), String> {
+    let squash = of(p, DYNAMICS_ID)
+        .into_iter()
+        .find(|&d| {
+            p.graph()
+                .node(d)
+                .and_then(|n| n.params.get("detect"))
+                .is_none_or(|&v| v < 0.5)
+        })
+        .ok_or("there is no compressor on a parallel bus")?;
+    let source = p
+        .graph()
+        .source(&Endpoint::new(squash, "in"))
+        .ok_or("nothing feeds the parallel compressor")?;
+    Ok((squash, source.node))
+}
+
+fn reaches_master(p: &Project, node: NodeId) -> Result<(), String> {
+    let master = of(p, spare::MIXER)[0];
+    let into_master = p
+        .graph()
+        .connections()
+        .any(|c| c.from.node == node && c.to.node == master);
+    if into_master {
+        Ok(())
+    } else {
+        Err("the parallel bus does not reach the master".into())
+    }
 }
 
 fn duck_from_bus(h: &mut Handle, _size: usize) {
@@ -180,4 +276,49 @@ fn ducks_from_bus(p: &mut Probe, _size: usize) -> Result<(), String> {
         return Err("the sidechain does not come from the drum bus".into());
     }
     Ok(())
+}
+
+fn post_fader(h: &mut Handle, _size: usize) {
+    let (squash, parallel, bus) = {
+        let probe = h.probe();
+        let project = probe.project();
+        let (squash, parallel) = parallel_bus(project).expect("the parallel bus");
+        (squash, parallel, drum_bus(project).expect("the drum bus"))
+    };
+    h.step("feed the compressor from after the drum faders");
+    wire(h, (bus, "out"), (squash, "in"));
+    h.step("delete the old parallel Mix");
+    let at = h.socket(parallel, true, "out") + egui::Vec2::new(-40.0, 0.0);
+    // The canvas keeps repainting while it eases the view, so these don't
+    // wait for it to settle.
+    h.drag_playing(&[at]);
+    h.press_playing(at, Modifiers::NONE, Key::Delete);
+}
+
+fn drum_bus(p: &Project) -> Result<NodeId, String> {
+    let kick = sources(p).0;
+    of(p, spare::MIXER)
+        .into_iter()
+        .find(|&m| {
+            feeds(p, kick, &Endpoint::new(m, "in1"))
+                && p.graph()
+                    .connections()
+                    .any(|c| c.from.node == m && c.to.node == of(p, spare::MIXER)[0])
+        })
+        .ok_or_else(|| "the drum bus is gone".into())
+}
+
+fn is_post_fader(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let project = p.project();
+    let (squash, source) = parallel_bus(project)?;
+    if source != drum_bus(project)? {
+        return Err("the compressor is not fed from after the drum faders".into());
+    }
+    let mixers = of(project, spare::MIXER).len();
+    if mixers != 2 {
+        return Err(format!(
+            "{mixers} Mix nodes; the old parallel Mix is still there"
+        ));
+    }
+    reaches_master(project, squash)
 }

@@ -249,7 +249,12 @@ mod tests {
     fn every_route_reaches_its_goal() {
         let mut scores = Vec::new();
         let mut failures = Vec::new();
+        // `NOODLE_ROUTE=S19` runs only that story's routes, for working on one.
+        let only = std::env::var("NOODLE_ROUTE").ok();
         for route in routes::all() {
+            if only.as_deref().is_some_and(|s| s != route.story) {
+                continue;
+            }
             let out = run(&route, None);
             if let Some(why) = out.failure {
                 failures.push(format!(

@@ -9,8 +9,17 @@
 //!   wheel scroll is P and one K; a file drop is P and two B.
 //! - A key chord is one K, however many modifiers it holds. Typed text is one
 //!   K per character.
+//! - Code (a Script node's program) is typed like text, one K per
+//!   character, but it also takes an M for every statement, since each one
+//!   has to be worked out, not just typed. Writing code also needs the user
+//!   to know the script language, which no time captures, so the statements
+//!   are counted on their own (`code_statements`) and the scorecard shows
+//!   them in a Code column.
+//! - A move of a control on a MIDI control surface is a point (P): reaching
+//!   for the knob or fader. It has no button events.
 //! - Homing (H) is added whenever the hand changes between the pointer
-//!   (click, drag, wheel, drop) and the keyboard (chord, text).
+//!   (click, drag, wheel, drop), the keyboard (chord, text) and the control
+//!   surface.
 //! - A mental operator (M) goes before each text entry, each view switch (an
 //!   action that starts in a different view than the last one ended in), and
 //!   each top-level step the route marks.
@@ -40,6 +49,9 @@ pub struct Counts {
     pub wheels: usize,
     pub drops: usize,
     pub texts: usize,
+    pub controls: usize,
+    /// Programs typed into Script nodes.
+    pub code: usize,
 }
 
 /// How many of each KLM operator the route needs.
@@ -65,12 +77,24 @@ pub struct Effort {
     pub operators: Operators,
     pub klm_seconds: f64,
     pub wait_seconds: f64,
+    /// Statements in the code the user had to write.
+    pub code_statements: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Hand {
     Pointer,
     Keyboard,
+    Surface,
+}
+
+/// How many statements a program has: the pieces between line ends, `;`
+/// and braces that hold anything. A declaration counts as one.
+pub fn statements(code: &str) -> usize {
+    code.split(['\n', ';', '{', '}'])
+        .map(|s| s.split("//").next().unwrap_or("").trim())
+        .filter(|s| !s.is_empty())
+        .count()
 }
 
 pub fn score(log: &[Action]) -> Effort {
@@ -118,6 +142,17 @@ pub fn score(log: &[Action]) -> Effort {
                 e.counts.texts += 1;
                 e.operators.m += 1;
                 (Hand::Keyboard, (text.chars().count(), 0, 0))
+            }
+            ActionKind::Code(code) => {
+                let statements = statements(code);
+                e.counts.code += 1;
+                e.code_statements += statements;
+                e.operators.m += statements;
+                (Hand::Keyboard, (code.chars().count(), 0, 0))
+            }
+            ActionKind::Control => {
+                e.counts.controls += 1;
+                (Hand::Surface, (0, 1, 0))
             }
         };
         e.actions += 1;
@@ -302,5 +337,29 @@ mod tests {
             }
         );
         assert_eq!(e.counts.wheels + e.counts.drops + e.counts.double_clicks, 3);
+    }
+
+    #[test]
+    fn code_costs_a_thought_per_statement_on_top_of_its_typing() {
+        let code = "events in n; events out o\nif n_on { note_on(o, n_key, 1) } // pass";
+        assert_eq!(statements(code), 4);
+        let typed = score(&[act(ActionKind::Text(code.into()), "a")]);
+        let written = score(&[act(ActionKind::Code(code.into()), "a")]);
+        assert_eq!(written.operators.k, typed.operators.k);
+        assert_eq!(written.operators.m, 4);
+        assert_eq!(typed.operators.m, 1);
+        assert_eq!(written.code_statements, 4);
+        assert_eq!(written.counts.code, 1);
+        assert!(written.klm_seconds > typed.klm_seconds + 2.0 * M);
+    }
+
+    #[test]
+    fn a_control_surface_move_is_a_reach_with_its_own_hand() {
+        let e = score(&[
+            act(ActionKind::Click(PointerButton::Primary), "a"),
+            act(ActionKind::Control, ""),
+        ]);
+        assert_eq!(e.counts.controls, 1);
+        assert_eq!((e.operators.p, e.operators.h), (2, 1));
     }
 }

@@ -2969,6 +2969,25 @@ pub(crate) fn socket_on_screen(
     Some(state.view.on(state.canvas).to_screen(socket))
 }
 
+/// Where a port's row is on screen: for a parameter, its slider.
+#[cfg(test)]
+pub(crate) fn port_row_on_screen(
+    state: &EditorState,
+    session: &Session,
+    node: NodeId,
+    output: bool,
+    key: &str,
+) -> Option<egui::Rect> {
+    let side = if output { Side::Output } else { Side::Input };
+    let scene = state.peek_scene(session.project(), session.registry());
+    let row = scene.node(node)?.port(side, key)?.row;
+    let to = state.view.on(state.canvas);
+    Some(egui::Rect::from_min_max(
+        to.to_screen(row.min),
+        to.to_screen(row.max),
+    ))
+}
+
 /// Where an Automation node's arm button is on screen.
 #[cfg(test)]
 pub(crate) fn arm_button_on_screen(

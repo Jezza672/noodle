@@ -42,6 +42,12 @@ pub enum ActionKind {
     },
     /// Text typed into the focused field.
     Text(String),
+    /// A knob, fader or button moved on a MIDI control surface.
+    Control,
+    /// A program written into a Script node: typed like text, but it needs
+    /// the user to know the script language and to think through each
+    /// statement.
+    Code(String),
     /// Not an action: the route says a new top-level step starts here.
     Step(String),
     /// Not an action: the user waited on the app for this many seconds.
@@ -144,6 +150,12 @@ pub fn recreate_marker<S>(h: &Harness<'_, S>, name: &str) {
     );
 }
 
+/// Says the user moved a control on a MIDI control surface. The caller
+/// sends the MIDI itself.
+pub fn control_marker<S>(h: &Harness<'_, S>) {
+    push(h, ActionKind::Control, Modifiers::NONE, None, None);
+}
+
 /// Says the user waited `secs` seconds on the app.
 pub fn waited<S>(h: &Harness<'_, S>, secs: f64) {
     push(h, ActionKind::Wait(secs), Modifiers::NONE, None, None);
@@ -203,7 +215,10 @@ fn push<S>(
     }
     let start = start.unwrap_or(Pos2::ZERO);
     let end = end.unwrap_or(start);
-    let pointing = !matches!(kind, ActionKind::Step(_) | ActionKind::Wait(_));
+    let pointing = !matches!(
+        kind,
+        ActionKind::Step(_) | ActionKind::Wait(_) | ActionKind::Control
+    );
     let action = Action {
         kind,
         modifiers,
@@ -291,6 +306,15 @@ pub fn drag_playing<S>(h: &mut Harness<'_, S>, path: &[Pos2]) {
         path.last().copied(),
     );
     gesture(h, PointerButton::Primary, Modifiers::NONE, path);
+    h.run_steps(3);
+}
+
+/// A right click that settles in a fixed three frames, for an app that keeps
+/// repainting.
+pub fn right_click_playing<S>(h: &mut Harness<'_, S>, at: Pos2) {
+    let kind = ActionKind::Click(PointerButton::Secondary);
+    push(h, kind, Modifiers::NONE, Some(at), Some(at));
+    gesture(h, PointerButton::Secondary, Modifiers::NONE, &[at]);
     h.run_steps(3);
 }
 
@@ -424,6 +448,34 @@ pub fn type_text<S>(h: &mut Harness<'_, S>, at: Pos2, text: &str) {
     );
     h.event(Event::Text(text.into()));
     h.run();
+}
+
+/// Types the program `code` into the focused field (a Script node's text),
+/// logged as code rather than text so the scorecard can tell them apart.
+pub fn type_code<S>(h: &mut Harness<'_, S>, at: Pos2, code: &str) {
+    push(
+        h,
+        ActionKind::Code(code.into()),
+        Modifiers::NONE,
+        Some(at),
+        None,
+    );
+    h.event(Event::Text(code.into()));
+    h.run_steps(3);
+}
+
+/// [`type_text`] for when the app keeps repainting: it steps a fixed three
+/// frames rather than waiting for the UI to settle.
+pub fn type_text_playing<S>(h: &mut Harness<'_, S>, at: Pos2, text: &str) {
+    push(
+        h,
+        ActionKind::Text(text.into()),
+        Modifiers::NONE,
+        Some(at),
+        None,
+    );
+    h.event(Event::Text(text.into()));
+    h.run_steps(3);
 }
 
 /// Audio settings that play on the virtual output: the engine runs in real

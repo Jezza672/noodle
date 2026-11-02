@@ -2093,6 +2093,32 @@ mod tests {
     }
 
     #[test]
+    fn a_one_line_choke_script_passes_notes_and_cuts_the_open_hat() {
+        // The script the S09 usability route types: notes pass through, and
+        // a closed hat (42) ends the open hat (46).
+        let text = "events in notes; events out played; if notes_on { if notes_key == 42 { note_off(played, 46) }; note_on(played, notes_key, notes_velocity) }; if notes_off { note_off(played, notes_key) }";
+        let mut h = Harness::new(&Script, &config(text), &[], 48_000.0, 8).unwrap();
+        h.send_events(
+            0,
+            &[
+                note_on(1, 1, 46, 0.5),
+                note_on(4, 2, 42, 0.75),
+                note_off(6, 2),
+            ],
+        );
+        h.run(8).unwrap();
+        assert_eq!(
+            h.events(0),
+            vec![
+                note_on(1, 46, 46, 0.5),
+                note_off(4, 46),
+                note_on(4, 42, 42, 0.75),
+                note_off(6, 42),
+            ]
+        );
+    }
+
+    #[test]
     fn events_that_do_not_fit_arrive_in_the_next_block() {
         let text = "events in ev\nevents out o\noutput x\nif ev_on { note_on(o, ev_key, 1) }";
         let mut h = Harness::new(&Script, &config(text), &[], 48_000.0, 4).unwrap();
