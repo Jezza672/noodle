@@ -96,7 +96,8 @@ impl RoundTrip {
 /// A runaway guard: no route has this many undo steps.
 const LIMIT: usize = 10_000;
 
-/// Undoes to the start, then redoes to the end, comparing the state (as
+/// Undoes to the start, then redoes as many steps (a route that itself undid
+/// leaves later steps on the redo stack, which are not its end), comparing the state (as
 /// `snapshot` shows it) with `start` and `end`. `undo` and `redo` return
 /// whether they did anything.
 pub fn round_trip(
@@ -112,7 +113,7 @@ pub fn round_trip(
     }
     let restores_start = snapshot() == start;
     let mut redo_steps = 0;
-    while redo_steps < LIMIT && redo() {
+    while redo_steps < undo_steps && redo() {
         redo_steps += 1;
     }
     RoundTrip {
