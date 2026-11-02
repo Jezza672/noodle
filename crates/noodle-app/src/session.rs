@@ -23,7 +23,8 @@ pub use library::LibraryEdit;
 
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{
-    Clip, ClipId, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick,
+    Clip, ClipId, Command, EditError, FrameId, History, MidiClip, NodeId, Project,
+    TICKS_PER_QUARTER, Tick,
 };
 use noodle_engine::{
     Controller, Diagnostic, Pass, Registry, Settings, Telemetry, TempoTable, compile_replacing,
@@ -365,6 +366,13 @@ pub struct Session {
     armed_midi: BTreeSet<NodeId>,
     /// The take being recorded, if there is one.
     recording: Option<Recording>,
+    /// A recording waiting out its count-in.
+    counting_in: Option<CountIn>,
+    /// Bars of metronome before a recording starts (0 to 2), and bars of the
+    /// project played before a punch-in. App preferences, not saved with the
+    /// project.
+    count_in_bars: u8,
+    pre_roll_bars: u8,
     /// How the MIDI of the next take is snapped. Not saved with the project.
     record_quantise: crate::midi_take::Quantise,
     /// Which Automation nodes are armed, and the Pass being recorded.
@@ -424,14 +432,33 @@ pub struct TakePreview {
     pub midi: Option<(Tick, MidiClip)>,
 }
 
+/// A recording that starts when its count-in is over.
+struct CountIn {
+    due: Instant,
+    /// Where the take begins and where it ends (the punch-out), as
+    /// [`Recording::keep`].
+    from: Tick,
+    out: Option<Tick>,
+}
+
 /// A take being recorded.
 struct Recording {
     /// The tracks that get an audio clip of it, and those that get a MIDI
     /// clip.
     audio_tracks: Vec<NodeId>,
     midi_tracks: Vec<NodeId>,
-    /// Where the take starts on the timeline.
+    /// Where the file starts on the timeline: the playhead when the input
+    /// began to be recorded, which is before `keep.0` after a pre-roll.
     start: Tick,
+    /// The part of the timeline the take keeps: from the first tick (the
+    /// punch-in, or where the playhead was) to the second (the punch-out),
+    /// if there is one. The file also holds the pre-roll before it.
+    keep: (Tick, Option<Tick>),
+    /// The loop being recorded in, when every cycle is a take.
+    cycle: Option<(Tick, Tick)>,
+    /// Whether the MIDI take has been restarted at `keep.0`, so the notes
+    /// played in the pre-roll are not in it.
+    midi_started: bool,
     /// The audio file, relative to the project file, when an input is being
     /// recorded.
     relative: Option<String>,
@@ -441,16 +468,58 @@ struct Recording {
     quantise: crate::midi_take::Quantise,
 }
 
-/// The clip for a take of `frames` frames that began when the transport was
-/// at `start`, with its first `latency` frames cut off (they were the sound
-/// that was already on its way when the take began). Keeps at least a frame.
-fn recorded_clip(track: NodeId, start: Tick, relative: &str, frames: u64, latency: u64) -> Clip {
-    let skip = latency.min(frames.saturating_sub(1));
-    let mut clip = Clip::audio(track, start, relative, frames - skip);
+/// The clip for a take whose file has `frames` frames, showing the file from
+/// frame `offset` (the frames before it were the sound already on its way
+/// when the take began, or the pre-roll) for `length` frames, starting at
+/// `at`. Keeps at least a frame.
+fn recorded_clip(
+    track: NodeId,
+    at: Tick,
+    relative: &str,
+    frames: u64,
+    offset: u64,
+    length: u64,
+) -> Clip {
+    let skip = offset.min(frames.saturating_sub(1));
+    let mut clip = Clip::audio(track, at, relative, length.min(frames - skip).max(1));
     if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
         audio.offset = skip;
     }
     clip
+}
+
+/// The takes a loop recording made. The file holds one pass through the loop
+/// after another, `cycle` frames apart; the first pass shows its `window` from
+/// frame `offset`. Each pass with at least a quarter of the window in the file
+/// is a take (a sliver at the end, from stopping just after a wrap, is not).
+/// Returns the takes and the one a new comp plays: the last complete one.
+fn loop_takes(
+    frames: u64,
+    offset: u64,
+    window: u64,
+    cycle: u64,
+) -> (Vec<noodle_core::Take>, usize) {
+    let mut takes = Vec::new();
+    let mut complete = None;
+    if cycle == 0 {
+        return (takes, 0);
+    }
+    for k in 0u64.. {
+        let first = offset.saturating_add(k.saturating_mul(cycle));
+        if first >= frames {
+            break;
+        }
+        let content = (frames - first).min(window);
+        if k > 0 && content * 4 < window {
+            break;
+        }
+        takes.push(noodle_core::Take { delta: k * cycle });
+        if content >= window {
+            complete = Some(takes.len() - 1);
+        }
+    }
+    let last = takes.len().saturating_sub(1);
+    (takes, complete.unwrap_or(last))
 }
 
 /// Something that can record the input to a file.
@@ -632,6 +701,9 @@ impl Session {
             armed_audio: BTreeSet::new(),
             armed_midi: BTreeSet::new(),
             recording: None,
+            counting_in: None,
+            count_in_bars: 0,
+            pre_roll_bars: 0,
             record_quantise: crate::midi_take::Quantise::default(),
             automation: record_automation::Recorder::default(),
             automation_mode: record_automation::AutomationMode::default(),
@@ -1888,6 +1960,7 @@ impl Session {
         // ends the take.
         if !running {
             self.stop_recording();
+            self.cancel_count_in();
             self.finish_automation_pass();
         }
         if let Some(audio) = &self.audio {
@@ -1935,6 +2008,7 @@ impl Session {
         // The clip would start where the take began, no longer where the
         // audio is on the timeline.
         self.stop_recording();
+        self.cancel_count_in();
         let tick = Tick(tick.0.max(0));
         self.parked = tick;
         self.pass_start = tick;
@@ -2146,8 +2220,12 @@ impl Session {
         };
         let frame = now + FRAME;
         if self.recording.is_some() {
-            // The bus holds only so many messages.
+            // The bus holds only so many messages, and a punch-out is
+            // watched for.
             at(frame);
+        }
+        if let Some(count) = &self.counting_in {
+            at(count.due);
         }
         if let Some(audio) = &self.audio {
             if audio.controller.has_pending() || audio.controller.transport().is_playing() {
@@ -2181,6 +2259,16 @@ impl Session {
         if let Some(recording) = &mut self.recording {
             recording.midi.poll(self.midi.clock().anchor());
         }
+        if self
+            .counting_in
+            .as_ref()
+            .is_some_and(|count| Instant::now() >= count.due)
+            && let Some(CountIn { from, out, .. }) = self.counting_in.take()
+        {
+            self.set_count_in_click(false);
+            self.start_take(from, out);
+        }
+        self.watch_punch();
         match self.freezing.poll() {
             Polled::Nothing => {
                 if self.freezing.due() {
@@ -2360,10 +2448,77 @@ impl Session {
     /// from the playhead, on every armed track. Starts playing if it isn't.
     /// The take becomes a clip on each armed track when it ends; see
     /// [`Session::stop_recording`].
+    ///
+    /// With the punch range on, the take is the part of the timeline inside
+    /// it: recording runs from the punch-in to the punch-out, and a pre-roll
+    /// plays the project from some bars before the punch-in. With the loop
+    /// on and the playhead in it, every cycle of the loop is a take in one
+    /// take folder. A count-in of the metronome comes first when one is set.
     pub fn record(&mut self) {
-        if self.recording.is_some() {
+        if self.recording.is_some() || self.counting_in.is_some() {
             return;
         }
+        if self.armed_tracks().is_none() {
+            return;
+        }
+        let pressed = self.playhead();
+        let punch = self.project.punch().active();
+        if let Some((_, end)) = punch
+            && pressed >= end
+        {
+            self.message = Some("The playhead is past the punch range".into());
+            return;
+        }
+        let from = punch.map_or(pressed, |(start, _)| start.max(pressed));
+        let out = punch.map(|(_, end)| end);
+        // The pre-roll starts the project playing some bars before the
+        // punch-in, unless the playhead is already earlier.
+        let begin = match punch {
+            Some((start, _)) if pressed <= start && self.pre_roll_bars > 0 => {
+                let back = i64::from(self.pre_roll_bars) * self.bar_ticks(start);
+                pressed.min(Tick((start.0 - back).max(0)))
+            }
+            _ => pressed,
+        };
+        if begin != pressed {
+            self.seek(begin);
+        }
+        let mut notice = None;
+        if self.count_in_bars > 0 {
+            if matches!(
+                crate::metronome::binding(&self.project),
+                crate::metronome::Binding::Missing
+            ) {
+                notice = Some("Add the metronome (transport bar) to hear the count-in");
+            } else {
+                self.open_stream(false);
+                if self.audio.is_some() {
+                    self.set_transport_running(false);
+                    self.set_count_in_click(true);
+                    let map = self.project.tempo_map();
+                    let quarters = (i64::from(self.count_in_bars) * self.bar_ticks(begin)) as f64
+                        / TICKS_PER_QUARTER as f64;
+                    let seconds = quarters * 60.0 / map.bpm_at(begin);
+                    self.counting_in = Some(CountIn {
+                        due: Instant::now() + Duration::from_secs_f64(seconds),
+                        from,
+                        out,
+                    });
+                    self.message = Some("Counting in".into());
+                    return;
+                }
+            }
+        }
+        self.start_take(from, out);
+        if let Some(notice) = notice {
+            self.message = Some(notice.into());
+        }
+    }
+
+    /// The tracks armed for audio and for MIDI that are still in the project,
+    /// and where takes are stored; `None` (with the reason in the message)
+    /// when nothing can be recorded.
+    fn armed_tracks(&mut self) -> Option<(Vec<NodeId>, Vec<NodeId>, PathBuf)> {
         let exist = |set: &BTreeSet<NodeId>| -> Vec<NodeId> {
             set.iter()
                 .copied()
@@ -2374,10 +2529,71 @@ impl Session {
         let midi_tracks = exist(&self.armed_midi);
         if audio_tracks.is_empty() && midi_tracks.is_empty() {
             self.message = Some("Arm a track to record on (RA or RM on its header)".into());
-            return;
+            return None;
         }
         let Some(project_path) = self.path.clone() else {
             self.message = Some("Save the project first: takes are stored next to it".into());
+            return None;
+        };
+        Some((audio_tracks, midi_tracks, project_path))
+    }
+
+    /// How many ticks a bar lasts where `tick` is.
+    fn bar_ticks(&self, tick: Tick) -> i64 {
+        let map = self.project.tempo_map();
+        let bar = map.position(tick).bar;
+        map.signatures()
+            .iter()
+            .rev()
+            .find(|change| change.bar <= bar)
+            .map_or(4 * TICKS_PER_QUARTER, |change| {
+                change.signature.ticks_per_bar()
+            })
+    }
+
+    /// Turns the engine's count-in click on or off (see
+    /// [`Transport::count_in`](noodle_engine::Transport::count_in)).
+    fn set_count_in_click(&self, on: bool) {
+        if let Some(audio) = &self.audio {
+            audio.controller.transport().set_count_in(on);
+        }
+    }
+
+    /// Whether a recording is waiting out its count-in.
+    pub fn is_counting_in(&self) -> bool {
+        self.counting_in.is_some()
+    }
+
+    /// Gives up on a recording that is counting in.
+    pub(crate) fn cancel_count_in(&mut self) {
+        if self.counting_in.take().is_some() {
+            self.set_count_in_click(false);
+            self.message = Some("Count-in stopped".into());
+        }
+    }
+
+    /// Bars of metronome before a recording starts: 0, 1 or 2.
+    pub fn count_in_bars(&self) -> u8 {
+        self.count_in_bars
+    }
+
+    pub fn set_count_in_bars(&mut self, bars: u8) {
+        self.count_in_bars = bars.min(2);
+    }
+
+    /// Bars of the project played before the punch-in.
+    pub fn pre_roll_bars(&self) -> u8 {
+        self.pre_roll_bars
+    }
+
+    pub fn set_pre_roll_bars(&mut self, bars: u8) {
+        self.pre_roll_bars = bars.min(8);
+    }
+
+    /// Begins the take: `from` is where it starts keeping what is recorded,
+    /// `out` where it stops (the punch-out).
+    fn start_take(&mut self, from: Tick, out: Option<Tick>) {
+        let Some((audio_tracks, midi_tracks, project_path)) = self.armed_tracks() else {
             return;
         };
         #[cfg(test)]
@@ -2433,10 +2649,21 @@ impl Session {
                 .tempo_map()
                 .sample_at(start, f64::from(FREEZE_SETTINGS.sample_rate)),
         };
+        // With the loop on and the take starting inside it, each cycle is a
+        // take (unless a punch range holds the take to its own span).
+        let cycle = self
+            .project
+            .transport_loop()
+            .active()
+            .filter(|&(a, b)| out.is_none() && relative.is_some() && from >= a && from < b);
+        let keep_from = from.max(start);
         self.recording = Some(Recording {
             audio_tracks,
             midi_tracks,
             start,
+            keep: (keep_from, out),
+            cycle,
+            midi_started: keep_from <= start,
             relative,
             midi: crate::midi_take::MidiTake::start(
                 &self.midi,
@@ -2495,8 +2722,8 @@ impl Session {
         Some(TakePreview {
             audio_tracks: recording.audio_tracks.clone(),
             midi_tracks: recording.midi_tracks.clone(),
-            start: recording.start,
-            end: self.playhead().max(recording.start),
+            start: recording.keep.0,
+            end: self.playhead().max(recording.keep.0),
             audio: recording.relative.is_some(),
             midi,
         })
@@ -2514,6 +2741,36 @@ impl Session {
             .and_then(|audio| TakeSink::live_peaks(&audio.playback, columns))
             .map(|(_, peaks)| peaks)
             .unwrap_or_default()
+    }
+
+    /// During a take: starts the MIDI take once the playhead reaches the
+    /// punch-in, and ends the take at the punch-out.
+    fn watch_punch(&mut self) {
+        let Some(recording) = &self.recording else {
+            return;
+        };
+        let head = self.playhead();
+        let (restart, out) = (
+            !recording.midi_started && head >= recording.keep.0,
+            recording.keep.1.is_some_and(|out| head >= out),
+        );
+        if restart {
+            let sample = match &self.audio {
+                Some(audio) => audio.controller.transport().position(),
+                None => self
+                    .project
+                    .tempo_map()
+                    .sample_at(head, f64::from(FREEZE_SETTINGS.sample_rate)),
+            };
+            if let Some(recording) = &mut self.recording {
+                recording.midi =
+                    crate::midi_take::MidiTake::start(&self.midi, noodle_io::now_micros(), sample);
+                recording.midi_started = true;
+            }
+        }
+        if out {
+            self.stop_recording();
+        }
     }
 
     /// Ends the take and adds it to the project: an audio clip, if an input
@@ -2586,28 +2843,60 @@ impl Session {
         let mut commands = Vec::new();
         // What was played arrived after the round trip through the output and
         // back in through the input, so the file starts that much late: skip
-        // it and the take lines up with the project the player heard.
+        // it and the take lines up with the project the player heard. The
+        // pre-roll before the punch-in is skipped too.
         let round_trip = ((latency + self.input_latency()).as_secs_f64() * rate) as u64;
+        let table = TempoTable::new(self.project.tempo_map(), rate as f32);
+        let at = |tick: Tick| table.sample_at_tick(tick);
+        let (keep_from, keep_out) = recording.keep;
+        let offset = round_trip + at(keep_from).saturating_sub(at(recording.start));
+        if let Some(done) = take.as_ref().filter(|done| done.frames <= offset) {
+            // Stopped before the take began, in the pre-roll.
+            let _ = std::fs::remove_file(&done.path);
+            take = None;
+            if notes.is_empty() {
+                notices.push("Nothing was recorded".into());
+                self.message = Some(notices.join("; "));
+                return;
+            }
+        }
+        // Where the file has the part of the timeline the take keeps.
+        let length = keep_out.map_or(u64::MAX, |out| at(out).saturating_sub(at(keep_from)));
+        let folder = take
+            .as_ref()
+            .zip(recording.cycle)
+            .and_then(|(take, (a, b))| {
+                let cycle = at(b).saturating_sub(at(a));
+                let window = at(b).saturating_sub(at(keep_from));
+                let (takes, active) = loop_takes(take.frames, offset, window, cycle);
+                (takes.len() > 1).then_some((takes, active, window))
+            });
         // The take's clip tempo is the timeline's where it was recorded. The
         // sections on every armed track show the same clip, so they share one
         // warp. Its seconds count from the start of the file, which is
-        // `round_trip` frames before the sections begin.
+        // `offset` frames before the sections begin.
         let warp = take.as_ref().filter(|_| rate > 0.0).map(|take| {
-            let skip = round_trip.min(take.frames.saturating_sub(1)) as f64 / rate;
+            let skip = offset.min(take.frames.saturating_sub(1)) as f64 / rate;
             let seconds = take.frames as f64 / rate;
-            let warp = noodle_core::ClipWarp::recorded(
-                self.project.tempo_map(),
-                recording.start,
-                skip,
-                seconds,
-            );
+            let warp =
+                noodle_core::ClipWarp::recorded(self.project.tempo_map(), keep_from, skip, seconds);
             (self.project.next_warp_id(), warp)
         });
         let mut taken: Vec<ClipId> = Vec::new();
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
-                let mut clip =
-                    recorded_clip(track, recording.start, relative, take.frames, round_trip);
+                let mut clip = match &folder {
+                    Some((_, _, window)) => {
+                        recorded_clip(track, keep_from, relative, take.frames, offset, *window)
+                    }
+                    None => recorded_clip(track, keep_from, relative, take.frames, offset, length),
+                };
+                if let (Some((_, active, _)), noodle_core::ClipContent::Audio(audio)) =
+                    (&folder, &mut clip.content)
+                {
+                    let takes = folder.as_ref().map(|f| f.0.clone()).unwrap_or_default();
+                    audio.takes = Some(noodle_core::TakeFolder::new(takes, *active));
+                }
                 if let (Some((id, warp)), noodle_core::ClipContent::Audio(audio)) =
                     (&warp, &mut clip.content)
                 {
@@ -2648,9 +2937,12 @@ impl Session {
         }
         self.edit([Edit::Apply(Command::Batch(commands))]);
         if let (Some(relative), Some(take)) = (&recording.relative, &take) {
+            let count = folder
+                .as_ref()
+                .map_or(String::new(), |f| format!(" as {} takes", f.0.len()));
             notices.push(match take.dropped {
-                0 => format!("Recorded {relative}"),
-                lost => format!("Recorded {relative}, but {lost} frames of input were lost"),
+                0 => format!("Recorded {relative}{count}"),
+                lost => format!("Recorded {relative}{count}, but {lost} frames of input were lost"),
             });
         }
         for (_, midi) in &notes {
@@ -5269,6 +5561,195 @@ mod tests {
         );
     }
 
+    /// Feeds `frames` of mono input to the recorder in chunks the writer can
+    /// keep up with.
+    fn feed(tap: &mut noodle_io::RecordTap, frames: usize, value: impl Fn(usize) -> f32) {
+        for chunk in (0..frames).step_by(4_800) {
+            let samples: Vec<f32> = (chunk..(chunk + 4_800).min(frames)).map(&value).collect();
+            tap.push(&samples);
+            std::thread::sleep(std::time::Duration::from_millis(12));
+        }
+    }
+
+    #[test]
+    fn loop_recording_makes_a_take_of_every_cycle_in_one_folder() {
+        const CYCLE: usize = 24_000;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        // One beat (half a second at 120 bpm) is the loop.
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        // Three whole cycles and half of a fourth, each at its own level.
+        let level = |i: usize| (i / CYCLE + 1) as f32 * 0.1 + (i % CYCLE) as f32 * 1e-7;
+        feed(&mut tap, 3 * CYCLE + CYCLE / 2, level);
+        session.stop_recording();
+
+        let clips: Vec<_> = session.project().clips().collect();
+        assert_eq!(clips.len(), 2, "{:?}", session.message());
+        for (_, clip) in &clips {
+            let audio = clip.as_audio().unwrap();
+            assert_eq!((audio.offset, audio.length), (0, CYCLE as u64));
+            let folder = audio.takes.as_ref().expect("a take folder");
+            let deltas: Vec<u64> = folder.takes.iter().map(|t| t.delta).collect();
+            assert_eq!(deltas, [0, 24_000, 48_000, 72_000]);
+            // A new comp plays the last complete take.
+            assert_eq!(folder.comp.len(), 1);
+            assert_eq!(folder.comp[0].take, 2);
+        }
+        // Each take is its cycle's samples, in the one file.
+        let file = noodle_io::read_wav(&dir.path().join("song recordings/take-001.wav")).unwrap();
+        assert_eq!(file.samples.len(), 3 * CYCLE + CYCLE / 2);
+        let folder = clips[0].1.as_audio().unwrap().takes.as_ref().unwrap();
+        for (k, take) in folder.takes.iter().enumerate() {
+            let at = take.delta as usize + 100;
+            assert!(
+                (file.samples[at] - ((k + 1) as f32 * 0.1 + 100.0 * 1e-7)).abs() < 1e-6,
+                "take {k}"
+            );
+        }
+        // Both tracks' folders are one link, and one undo takes them away.
+        let ids: Vec<_> = clips.iter().map(|(id, _)| *id).collect();
+        assert_eq!(session.project().linked_with(ids[0]), ids);
+        assert!(session.message().unwrap().contains("4 takes"));
+        session.undo();
+        assert_eq!(session.project().clips().count(), 0);
+    }
+
+    #[test]
+    fn stopping_a_loop_recording_in_the_first_cycle_makes_a_plain_clip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        feed(&mut tap, 10_000, |_| 0.2);
+        session.stop_recording();
+        let clip = session
+            .project()
+            .clips()
+            .next()
+            .unwrap()
+            .1
+            .as_audio()
+            .unwrap()
+            .clone();
+        assert!(clip.takes.is_none());
+        assert_eq!(clip.length, 10_000);
+    }
+
+    #[test]
+    fn a_punch_keeps_only_its_range_and_a_pre_roll_starts_the_project_earlier() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        // Punch in at bar 2 for one beat, with a bar of pre-roll.
+        session.edit([Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+            on: true,
+            start: Tick(3840),
+            end: Tick(3840 + 960),
+        }))]);
+        session.set_pre_roll_bars(1);
+        session.advance_playhead(Tick(3840));
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        assert_eq!(session.playhead(), Tick(0), "the pre-roll goes back a bar");
+        // The bar of pre-roll, the beat in the range, and a beat past it.
+        feed(&mut tap, 96_000 + 24_000 + 24_000, |i| i as f32 * 1e-6);
+        // Still before the punch-out: the take goes on.
+        session.advance_playhead(Tick(3840 + 480));
+        session.maintain();
+        assert!(session.is_recording());
+        session.advance_playhead(Tick(3840 + 960));
+        session.maintain();
+        assert!(!session.is_recording(), "the punch-out ends the take");
+
+        let (_, clip) = session.project().clips().next().unwrap();
+        assert_eq!(clip.start, Tick(3840));
+        let audio = clip.as_audio().unwrap();
+        assert_eq!((audio.offset, audio.length), (96_000, 24_000));
+        let file = noodle_io::read_wav(&dir.path().join("song recordings/take-001.wav")).unwrap();
+        assert!((file.samples[audio.offset as usize] - 0.096).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recording_past_the_punch_range_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.edit([Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+            on: true,
+            start: Tick(960),
+            end: Tick(1920),
+        }))]);
+        session.advance_playhead(Tick(2000));
+        session.record();
+        assert!(!session.is_recording());
+        assert!(session.message().unwrap().contains("past the punch range"));
+    }
+
+    #[test]
+    fn stopping_in_the_pre_roll_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.edit([Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+            on: true,
+            start: Tick(3840),
+            end: Tick(4800),
+        }))]);
+        session.set_pre_roll_bars(1);
+        session.advance_playhead(Tick(3840));
+        session.record();
+        feed(&mut tap, 4_800, |_| 0.3);
+        session.stop_recording();
+        assert_eq!(session.project().clips().count(), 0);
+        assert!(!dir.path().join("song recordings/take-001.wav").exists());
+    }
+
+    #[test]
+    fn a_count_in_waits_before_the_take_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.set_audio_config(crate::testkit::virtual_audio());
+        session.arm(tracks[0], true);
+        session.set_count_in_bars(1);
+        // Without a metronome in the project there is nothing to count with:
+        // the take starts at once, and says why.
+        session.record();
+        assert!(session.is_recording());
+        assert!(session.message().unwrap().contains("metronome"));
+        session.stop_recording();
+
+        let ids = std::array::from_fn(|_| session.new_node_id());
+        let press = crate::metronome::press(session.project(), || ids).unwrap();
+        session.edit([Edit::Apply(press)]);
+        session.record();
+        assert!(session.is_counting_in());
+        assert!(!session.is_recording());
+        // Pressing record's button again gives up on it.
+        session.cancel_count_in();
+        assert!(!session.is_counting_in());
+        session.record();
+        assert!(session.is_counting_in());
+        // When the bar is over, the take starts.
+        session.counting_in.as_mut().unwrap().due = Instant::now();
+        session.maintain();
+        assert!(!session.is_counting_in());
+        assert!(session.is_recording());
+        session.stop_recording();
+    }
+
     #[test]
     fn recording_needs_an_armed_track_and_a_saved_project() {
         let dir = tempfile::tempdir().unwrap();
@@ -5860,20 +6341,26 @@ mod recorded_clip_tests {
 
     #[test]
     fn a_take_skips_the_round_trip_latency() {
-        let clip = recorded_clip(NodeId(1), Tick(960), "t.wav", 48_000, 1_200);
+        let clip = recorded_clip(NodeId(1), Tick(960), "t.wav", 48_000, 1_200, u64::MAX);
         assert_eq!(clip.start, Tick(960));
         assert_eq!(audio(&clip), (1_200, 46_800));
     }
 
     #[test]
+    fn a_punch_out_cuts_the_take_short() {
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 1_000, 20_000);
+        assert_eq!(audio(&clip), (1_000, 20_000));
+    }
+
+    #[test]
     fn no_latency_leaves_the_take_whole() {
-        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 0);
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 0, u64::MAX);
         assert_eq!(audio(&clip), (0, 48_000));
     }
 
     #[test]
     fn a_take_shorter_than_the_latency_keeps_a_frame() {
-        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 100, 5_000);
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 100, 5_000, u64::MAX);
         assert_eq!(audio(&clip), (99, 1));
     }
 }

@@ -20,6 +20,7 @@ pub struct Project {
     next_frame_id: u64,
     tempo_map: TempoMap,
     transport_loop: TransportLoop,
+    punch: PunchRange,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
     /// The links between clips (see [`ClipGroup`]).
@@ -50,6 +51,7 @@ impl Default for Project {
             next_frame_id: 1,
             tempo_map: TempoMap::default(),
             transport_loop: TransportLoop::default(),
+            punch: PunchRange::default(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
             clip_groups: BTreeMap::new(),
@@ -78,6 +80,7 @@ impl PartialEq for Project {
             && self.frames == other.frames
             && self.tempo_map == other.tempo_map
             && self.transport_loop == other.transport_loop
+            && self.punch == other.punch
             && self.clips == other.clips
             && self.live_groups() == other.live_groups()
             && self.used_warps() == other.used_warps()
@@ -98,6 +101,8 @@ struct ProjectFile {
     tempo_map: TempoMap,
     #[serde(default, skip_serializing_if = "is_default_loop")]
     transport_loop: TransportLoop,
+    #[serde(default, skip_serializing_if = "is_default_punch")]
+    punch: PunchRange,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clips: BTreeMap<ClipId, Clip>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -117,6 +122,10 @@ pub(crate) type Dependents = (Vec<(ClipId, Clip)>, Vec<(LaneId, AutomationLane)>
 
 fn is_default_tempo_map(map: &TempoMap) -> bool {
     *map == TempoMap::default()
+}
+
+fn is_default_punch(range: &PunchRange) -> bool {
+    *range == PunchRange::default()
 }
 
 fn is_default_loop(region: &TransportLoop) -> bool {
@@ -147,6 +156,33 @@ impl TransportLoop {
     /// The span the engine loops, when it is on.
     pub fn active(self) -> Option<(Tick, Tick)> {
         self.on.then_some((self.start, self.end))
+    }
+}
+
+/// The punch range: where recording starts and stops while it is `on`,
+/// separate from the loop. It is saved with the project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PunchRange {
+    pub on: bool,
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl Default for PunchRange {
+    /// Off, over bars 5 to 8 of 4/4.
+    fn default() -> Self {
+        Self {
+            on: false,
+            start: Tick(16 * crate::TICKS_PER_QUARTER),
+            end: Tick(32 * crate::TICKS_PER_QUARTER),
+        }
+    }
+}
+
+impl PunchRange {
+    /// The span recording is held to, when the range is on and not empty.
+    pub fn active(self) -> Option<(Tick, Tick)> {
+        (self.on && self.start < self.end).then_some((self.start, self.end))
     }
 }
 
@@ -271,6 +307,15 @@ impl Project {
 
     pub(crate) fn replace_track_order(&mut self, order: Vec<NodeId>) -> Vec<NodeId> {
         std::mem::replace(&mut self.track_order, order)
+    }
+
+    /// The punch range (see [`PunchRange`]).
+    pub fn punch(&self) -> PunchRange {
+        self.punch
+    }
+
+    pub(crate) fn replace_punch(&mut self, range: PunchRange) -> PunchRange {
+        std::mem::replace(&mut self.punch, range)
     }
 
     pub(crate) fn replace_loop(&mut self, region: TransportLoop) -> TransportLoop {
@@ -866,6 +911,7 @@ impl Project {
             frames: self.frames.clone(),
             tempo_map: self.tempo_map.clone(),
             transport_loop: self.transport_loop,
+            punch: self.punch,
             clips: self.clips.clone(),
             clip_groups: self
                 .live_groups()
@@ -923,6 +969,7 @@ impl Project {
             next_frame_id,
             tempo_map: file.tempo_map,
             transport_loop: file.transport_loop,
+            punch: file.punch,
             clips,
             next_clip_id,
             clip_groups: file.clip_groups,
@@ -1216,6 +1263,24 @@ mod tests {
         assert_eq!(Project::from_ron(&text).unwrap().transport_loop(), region);
         history.undo(&mut project).unwrap();
         assert_eq!(project.transport_loop(), TransportLoop::default());
+    }
+
+    #[test]
+    fn the_punch_range_is_saved_with_the_project_and_undoes() {
+        let (mut project, mut history, _, _, _) = with_timeline();
+        assert!(!project.to_ron().contains("punch"));
+        assert_eq!(project.punch().active(), None);
+        let range = PunchRange {
+            on: true,
+            start: Tick(960),
+            end: Tick(7680),
+        };
+        apply(&mut project, &mut history, Command::SetPunch(range));
+        let text = project.to_ron();
+        assert_eq!(Project::from_ron(&text).unwrap().punch(), range);
+        assert_eq!(project.punch().active(), Some((Tick(960), Tick(7680))));
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.punch(), PunchRange::default());
     }
 
     #[test]

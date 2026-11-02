@@ -6,7 +6,10 @@ is recorded in [features/](features/README.md); the design as it stands is in
 its record to a file in `features/` and delete it from this page.
 
 All milestones M0 to M11 are built in code. What is left is the feature
-items below that make Noodle usable in place of another DAW, checks that need a person and hardware, and a few
+items below that make Noodle usable in place of another DAW (Takes and comping
+has batches 1 and 2 built, see
+[features/takes-and-punch.md](features/takes-and-punch.md)), checks that need a
+person and hardware, and a few
 deliberately deferred items.
 
 ## Playback cache
@@ -60,9 +63,9 @@ deliberately deferred items.
 
 **Batches.**
 
-1. **Take folders in the model.** Data, comp scheduling, cache keys, flatten, golden render of a comped example.
-2. **Loop recording and punch.** A take per cycle, punch range, count-in and pre-roll.
-3. **Comping in the arrangement.** Take lanes, swipe, audition, one undo step per swipe, linked folders comped together.
+1. **Take folders in the model.** Built; see [features/takes-and-punch.md](features/takes-and-punch.md).
+2. **Loop recording and punch.** Built, same file.
+3. **Comping in the arrangement.** Take lanes, swipe, audition, one undo step per swipe, linked folders comped together. (`TakeFolder::swipe` and flatten exist; the gesture and the lanes do not.)
 4. **MIDI takes.** Takes or Merge for MIDI.
 
 **Done when.** You loop four bars, record five vocal passes in one go, swipe the best phrase from each into one comp that plays without clicks at the joins, undo a swipe, and export it identical to playback. A comp across linked drum mics stays aligned. An app test records on the virtual output and checks the takes and the comp's samples.

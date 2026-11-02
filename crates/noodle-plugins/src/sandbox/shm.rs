@@ -125,6 +125,7 @@ impl BlockParams {
                 denominator: self.denominator as u8,
             },
             signature_start: self.signature_start,
+            count_in: false,
         }
     }
 }

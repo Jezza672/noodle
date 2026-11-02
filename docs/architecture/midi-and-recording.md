@@ -244,6 +244,19 @@ The clip starts at the playhead but skips that many frames of the file
 (`recorded_clip`), so the take lines up with the project as heard. MIDI takes
 subtract the output side only.
 
+**Loop recording, punch, pre-roll and count-in.** `Session::record` decides
+where the take begins and ends, and `start_take` starts the recorder. With the
+punch range on (`Project::punch`, saved) the take *keeps* only the range
+(`Recording::keep`): the recorder starts with the transport, which pre-roll
+starts some bars before the punch-in, and `stop_recording` cuts the clip to
+the punch-in (`offset`) and punch-out (`length`); `watch_punch` ends the take
+at the punch-out and starts the MIDI take at the punch-in. A count-in
+(`Session::counting_in`) comes first: the transport stays stopped while the
+Metronome node clicks on its own frame counter (`Transport::count_in`), then
+the take starts. With the loop on and the take starting inside it, the file
+holds one pass after another and `loop_takes` makes each a take of one take
+folder (see data-model.md, "Take folders").
+
 **The take in progress** is drawn on the arrangement as it grows: a red clip
 from the take's start to the playhead on each armed track, with the notes
 played so far (`MidiTake::clip_so_far`) and, for audio, a waveform from peaks

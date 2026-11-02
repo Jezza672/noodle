@@ -212,6 +212,21 @@ impl NodeType for TrackInput {
                     if let Some(extent) = audio.extent {
                         key.str("extent").i64(extent.0);
                     }
+                    // The takes behind a take folder and which one plays
+                    // where.
+                    if let Some(folder) = &audio.takes {
+                        key.str("takes").u64(folder.takes.len() as u64);
+                        for take in &folder.takes {
+                            key.u64(take.delta);
+                        }
+                        key.u64(folder.comp.len() as u64);
+                        for span in &folder.comp {
+                            key.u64(span.at).u64(span.take as u64);
+                            if let Some(x) = span.crossfade {
+                                key.str("join").i64(x.before.0).i64(x.after.0);
+                            }
+                        }
+                    }
                     // Only a warp that changes the sound is keyed, so the
                     // keys of clips that aren't warped stay as they were.
                     if let Some(warp) = audio
