@@ -10,6 +10,7 @@ mod hash;
 mod input;
 mod loudness;
 mod midi;
+mod midi_out;
 mod onsets;
 mod output;
 mod peaks;
@@ -36,6 +37,9 @@ pub use midi::{
     ALL_INPUTS, AudioClock, Heard, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage,
     MidiReceiver, MidiTap, TimedMessage, TimedPacket, connect_midi, is_all_inputs, midi_inputs,
     now_micros, parse_message, same_port,
+};
+pub use midi_out::{
+    MidiOutHub, MidiOutSender, MidiSink, OpenSink, OutMessage, midi_outputs, open_midi_output,
 };
 pub use onsets::{
     ANALYSIS_SECONDS, Analysis, CLEAR_PROMINENCE, CLEAR_TEMPO, PROMINENT_ONSETS, TempoEstimate,

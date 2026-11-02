@@ -29,4 +29,5 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [track-export.md](track-export.md) | Track export, loudness and dither |
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
 | [midi-learn.md](midi-learn.md) | Several MIDI inputs, Learn MIDI, MIDI Control encoder and pickup modes |
+| [midi-out.md](midi-out.md) | MIDI Out node, sender thread, output latency, clock and start/stop out |
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |

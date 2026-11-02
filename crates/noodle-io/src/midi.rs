@@ -47,6 +47,11 @@ pub struct AudioClock {
     /// One more than the start of the span of arrival times that the block
     /// about to run plays, or 0 before any callback.
     window: AtomicU64,
+    /// One more than when the block about to run is heard on the clock of
+    /// [`now_micros`] (before the output latency), or 0 before any callback.
+    block: AtomicU64,
+    /// How long after the callback its samples are heard, in microseconds.
+    latency: AtomicU64,
     /// A seqlock round: odd while the anchor below is being written.
     sequence: AtomicU64,
     anchor_micros: AtomicU64,
@@ -59,6 +64,27 @@ impl AudioClock {
     pub fn set_window(&self, micros: u64) {
         self.window
             .store(micros.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// Says that the block about to run begins at `micros`, which is the
+    /// time of the device callback plus the blocks of it already run.
+    pub fn set_block(&self, micros: u64) {
+        self.block
+            .store(micros.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// How long after a callback the samples it fills are heard, as far as
+    /// the driver knows.
+    pub fn set_output_latency(&self, micros: u64) {
+        self.latency.store(micros, Ordering::Relaxed);
+    }
+
+    /// When the first frame of the block being run is heard, in
+    /// microseconds on the clock of [`now_micros`], or `None` if no device is
+    /// driving the engine (an offline render, say).
+    pub fn heard_at(&self) -> Option<u64> {
+        let block = self.block.load(Ordering::Relaxed).checked_sub(1)?;
+        Some(block.saturating_add(self.latency.load(Ordering::Relaxed)))
     }
 
     /// The start of the span the block being run plays, if a device is

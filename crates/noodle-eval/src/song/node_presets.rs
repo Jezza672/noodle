@@ -777,6 +777,12 @@ fn table() -> Vec<Row> {
             "Channel 10 (Drums)",
             &[("channel", 10.0)],
         ),
+        row("noodle.event.midi_out", "Notes Only", &[]),
+        row(
+            "noodle.event.midi_out",
+            "With Clock",
+            &[("clock", 1.0), ("start_stop", 1.0)],
+        ),
         // Instrument.
         row(
             "noodle.instrument.sampler",
