@@ -108,6 +108,21 @@ released on its own messages only (`all_notes_off_from`).
   (it needs a MIDI 2.0 device to talk to), and MIDI clips with 32-bit values
   (a note's velocity is already an `f32`).
 
+## MIDI output
+
+`MIDI Out` (`noodle-nodes/src/midi_out.rs`) pushes `OutMessage`s, each with the
+time it should leave, into a preallocated ring that belongs to the node
+(`MidiOutSender`, `noodle-io/src/midi_out.rs`). One sender thread drains all
+the rings into a queue ordered by time, sleeps until the next is due and sends
+it with `midir` (`MidiSink`). The time is the block's start as the device
+callback publishes it (`AudioClock::set_block`) plus the driver's output
+latency (`set_output_latency`) plus the frame's offset in the block plus the
+node's `Offset`: when the audio it goes with is heard. Nothing is sent when no
+callback has published a block (offline renders). Clock is placed on the
+timeline's tick grid (24 to a quarter note), so it follows tempo changes and
+sends once per tick whatever the block size. See
+[../features/midi-out.md](../features/midi-out.md).
+
 ## MIDI clips
 
 A MIDI clip (`ClipContent::Midi`) is a length, a list of notes and a list of

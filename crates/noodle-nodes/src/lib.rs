@@ -32,6 +32,7 @@ mod math;
 mod meter;
 mod metronome;
 mod midi_in;
+mod midi_out;
 mod mix;
 mod noise;
 mod normalize;
@@ -122,6 +123,7 @@ pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
+pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
@@ -187,6 +189,8 @@ pub struct Library {
     /// Where MIDI In nodes get their messages from; connect a port to it
     /// with [`noodle_io::connect_midi`].
     pub midi: noodle_io::MidiBus,
+    /// Where MIDI Out nodes send their messages to.
+    pub midi_out: noodle_io::MidiOutHub,
     /// Where Sampler nodes get their samples, by hash. Give it a folder
     /// ([`SampleStore::set_dir`]) to read them from disk.
     pub samples: SampleStore,
@@ -277,6 +281,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
     registry.register(MidiControl::new(&midi));
+    let midi_out = noodle_io::MidiOutHub::new(std::sync::Arc::clone(midi.clock()));
+    registry.register(MidiOut::new(&midi_out));
     let samples = SampleStore::new();
     registry.register(if clips.is_blocking() {
         Sampler::blocking(&samples, &telemetry)
@@ -287,6 +293,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         telemetry,
         clips,
         midi,
+        midi_out,
         samples,
     }
 }

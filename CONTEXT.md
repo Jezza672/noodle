@@ -122,6 +122,9 @@ Anything that produces live MIDI: a hardware port or the computer keyboard.
 **MIDI learn**:
 A shortcut on a parameter that adds a MIDI Control node set to the next controller moved and wires it into the parameter, as one undo step.
 
+**MIDI Out**:
+A node that sends an events wire to a named MIDI output port, timed to when the audio it goes with is heard, with MIDI clock and start/stop as toggles on the node.
+
 **Controller point**:
 One value of a controller, pitch bend, channel pressure or program change stored in a MIDI clip, at a tick, on a channel. A point can ramp to the next one. Played out of the track input's `midi` output with the notes; a seek or loop wrap sends each controller's last value, and the clip's end releases them.
 _Avoid_: Automation point (that belongs to an automation lane)

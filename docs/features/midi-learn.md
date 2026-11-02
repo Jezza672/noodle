@@ -1,6 +1,6 @@
 # MIDI learn and several MIDI inputs
 
-"MIDI learn and MIDI output", batches 1 and 2 (issue #293). MIDI output and clock out are still open in [../ROADMAP.md](../ROADMAP.md). The design is in [../architecture/midi-and-recording.md](../architecture/midi-and-recording.md).
+"MIDI learn and MIDI output", batches 1 and 2 (issue #293). MIDI output and clock out are in [midi-out.md](midi-out.md). The design is in [../architecture/midi-and-recording.md](../architecture/midi-and-recording.md).
 
 - **Several inputs.** `AudioConfig::midi_inputs` replaces the single `midi_input`. The audio settings dialog lists every port with a checkbox (a chosen port that is unplugged stays listed as "not found"). The session opens a connection per chosen port, adds and removes ports one at a time, and `watch_midi` looks at each about once a second: an unplugged port is let go (releasing only its own held notes) and reopened when it returns.
 - **Ports on the bus.** Messages carry their source port; `MidiBus::subscribe_port` hears one port (or all). `MIDI In` and `MIDI Control` have a `port` config, empty or `*` meaning every open port. The computer keyboard, which has no port, reaches the "all" listeners.
