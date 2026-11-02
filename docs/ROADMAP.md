@@ -5,10 +5,9 @@ is recorded in [features/](features/README.md); the design as it stands is in
 [ARCHITECTURE.md](ARCHITECTURE.md). When a piece of work here is finished, move
 its record to a file in `features/` and delete it from this page.
 
-All milestones M0 to M11 are built in code. What is left is four feature items
-that make Noodle usable in place of another DAW (in order: MIDI
-controllers in clips, Track export, MIDI learn and output; Takes and comping is
-built, see [features/takes-and-punch.md](features/takes-and-punch.md)), checks that need a person and hardware, and a few
+All milestones M0 to M11 are built in code. What is left is the feature
+items below that make Noodle usable in place of another DAW, checks that need a
+person and hardware, and a few
 deliberately deferred items.
 
 ## Playback cache
@@ -42,44 +41,7 @@ deliberately deferred items.
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
 
-## Render to clip
 
-Track export, loudness and dither are delivered: see [features/track-export.md](features/track-export.md).
-
-**The problem.** Freeze plays a group from the cache but never becomes a clip, so you can't render a synth or plugin chain to audio and then cut or warp it.
-
-**What you get.** Render to clip on a track, group or time range makes a new audio track with the rendered clip and mutes the original.
-
-**Settled decisions.**
-
-- Render to clip makes a new audio track holding the clip; the original is muted and kept.
-- Rendering a range continues past its end until the effects fall silent, capped at 10 s.
-- The term is "render to clip" (CONTEXT.md avoids "bounce", and "stem" is AI separation).
-
-**Scope.** In: Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; it can take the group's tap the way track export does (`render_taps`, `noodle-engine/src/render.rs`). Out: MP3, OMF, AAF and DAWproject interchange, a render queue.
-
-**Batch.** Track, group and time range, tails, offline and frozen nodes included, one undo step.
-
-**Done when.** You render a plugin synth track to a clip and warp it.
-
-## MIDI learn and MIDI output
-
-**The problem.** There is no MIDI output at all: external synths can't be sequenced and there is no clock out. (Several MIDI inputs, Learn MIDI, encoder and pickup modes are built: `features/midi-learn.md`.)
-
-**What you get.** A `MIDI Out` node sends an events wire to hardware, in time, with clock if you want it.
-
-**Settled decisions.**
-
-- `MIDI Out` takes an events wire and sends it to a named port, ahead by the output latency. Clock out is a toggle on the node, not a hidden setting.
-
-**Scope.** In: `MIDI Out`, whose `process` pushes timestamped messages into a preallocated ring that a sender thread hands to `midir` (extend `tests/realtime.rs`); clock and start/stop out. Out: Mackie Control and HUI, motor fader and LED feedback, OSC, MIDI clock in and Ableton Link.
-
-**Batches.**
-
-1. **MIDI Out.** The node, the sender thread, latency offset, a loopback test on a virtual port where the platform has one.
-2. **Clock out.**
-
-**Done when.** With two controllers plugged in, you learn a knob onto a synth group's cutoff and an encoder onto an armed Automation node, see both as nodes in the graph, record the encoder into the lane, and sequence an external synth from a MIDI clip in time with the project.
 
 ## Owed: needs a person on real hardware
 

@@ -1,0 +1,13 @@
+# MIDI Out and clock out
+
+"MIDI learn and MIDI output", batch 3 and 4 (issue #294). The design is in [../architecture/midi-and-recording.md](../architecture/midi-and-recording.md).
+
+- **`MIDI Out` node.** An `in` events wire, sent as MIDI 1.0 to the output port named by its `port` config (empty sends nowhere; a port that is unplugged is retried about once a second). Notes, controllers, pitch bend and other raw MIDI go out; per-note expression has no MIDI 1.0 form and is dropped. A note-off finds its channel and key from the note-on, and stopping the transport, a seek, the node stopping or its removal end the notes it started.
+- **In time, ahead by the output latency.** A message leaves when the audio it goes with is heard: the device callback publishes when each block begins and the driver's output latency (`AudioClock::set_block`, `set_output_latency`, `heard_at`), so an external synth sounds with the project. The `Offset` parameter (-0.2 to 0.2 s) moves it for a device with a latency of its own. With no device driving the engine (an offline render) nothing is sent.
+- **Clock and start/stop are parameters on the node**, `Clock` and `Start/Stop` (Off/On, both off by default, so modulatable). Clock is 24 to a quarter note while the transport plays, placed on the timeline's tick grid, so it follows tempo changes. Start/Stop sends Start when the transport starts at the beginning, Song Position Pointer and Continue when it starts anywhere else, and Stop when it stops.
+- **The sender.** Each node owns a preallocated ring (4096 messages) its `process` pushes timestamped messages into. One thread (`noodle-midi-out`, started with the first node, gone with the last) drains every ring into a time-ordered queue, sleeps until the next is due and hands it to `midir`. `Library::midi_out` is the hub; `noodle_io::midi_outputs` lists the ports.
+- Presets: Notes Only, With Clock.
+
+Not built (out of scope in the issue): Mackie Control and HUI, motor fader and LED feedback, OSC, MIDI clock in, Ableton Link. The node's `port` is typed as text; there is no port picker yet.
+
+Tests: the ordering and not-early delivery of the sender, the length of each message, and `AudioClock::heard_at` in `noodle-io/src/midi_out.rs`; a loopback through a virtual port (Unix with MIDI; skipped where there is none, as in a container); in `noodle-nodes/src/midi_out.rs`, the frame and latency offset of each message, the note-off lookup, raw MIDI, clock at 96 messages in two seconds at 120 bpm for three block sizes with 20.8 ms gaps, tempo following, Start, Continue with song position, Stop and the toggles off; and `tests/realtime.rs` for no allocation through notes, clock, start/stop and seeks.

@@ -2008,6 +2008,72 @@ fn a_midi_control_on_a_port_never_allocates_with_relative_encoders_and_pickup() 
 }
 
 #[test]
+fn midi_out_never_allocates_through_notes_clock_start_stop_and_seeks() {
+    use noodle_core::Value;
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (input, out_node) = (project.new_node_id(), project.new_node_id());
+    // No such port, so the sender thread drops what it takes; the audio
+    // thread must not mind either way.
+    for (id, node) in [
+        (input, Node::new(noodle_nodes::MIDI_IN_ID)),
+        (
+            out_node,
+            Node::new(noodle_nodes::MIDI_OUT_ID)
+                .with_config(Config::new().with(
+                    noodle_nodes::MIDI_OUT_PORT_KEY,
+                    Value::Text("No such port".into()),
+                ))
+                .with_param("clock", 1.0)
+                .with_param("start_stop", 1.0)
+                .with_param("offset", 0.01),
+        ),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    Command::Connect(Connection {
+        from: Endpoint::new(input, "out"),
+        to: Endpoint::new(out_node, "in"),
+    })
+    .apply(&mut project)
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    for round in 0..64u32 {
+        let key = 40 + (round % 24) as u8;
+        library.midi.send([0x90, key, 100]);
+        library.midi.send([0xB0, 1, (round * 8) as u8 & 127]);
+        if round % 3 == 2 {
+            library.midi.send([0x80, key - 1, 0]);
+        }
+        // Stops, starts and jumps all send their own messages.
+        if round % 8 == 4 {
+            transport.stop();
+        } else {
+            transport.play();
+        }
+        if round % 5 == 0 {
+            transport.seek(noodle_core::Tick(480 * i64::from(round)));
+        }
+        controller.maintain();
+        // The device's callback says when the blocks play.
+        library.midi.clock().set_block(noodle_io::now_micros());
+        library.midi.clock().set_output_latency(5_000);
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}
+
+#[test]
 fn a_script_with_loops_arrays_and_events_never_allocates() {
     let mut registry = Registry::with_builtins();
     let library = noodle_nodes::register_library(&mut registry);

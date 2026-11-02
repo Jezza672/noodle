@@ -17,6 +17,7 @@ mod export;
 pub mod learn_midi;
 mod library;
 pub mod record_automation;
+mod render_clip;
 mod stems;
 pub use export::{ExportChoice, ExportSummary};
 pub use library::LibraryEdit;
@@ -126,6 +127,13 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
+    /// the loop's span if `in_loop`, else the whole timeline. Not an edit
+    /// itself: the track arrives as one undo step when the render is done.
+    RenderToClip {
+        group: NodeId,
+        in_loop: bool,
+    },
     /// A choice from the monitor button's right-click menu: monitor `node`
     /// in `mode` (alone, or added to the others), or stop. Not an undo step.
     MonitorAs {
@@ -195,6 +203,9 @@ impl Nodes {
             clips,
             midi,
             samples,
+            // The MIDI Out nodes hold the hub; the clock it shares with
+            // `midi` is how the device tells them when blocks are heard.
+            midi_out: _,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
@@ -395,6 +406,8 @@ pub struct Session {
     message: Option<String>,
     /// The export under way, if there is one.
     exporting: Option<export::Run>,
+    /// The render to clip under way, if there is one.
+    rendering: Option<render_clip::Run>,
     /// How the last export went, for the dialog.
     export_summary: Option<ExportSummary>,
     /// Split to stems: the separator and the split under way, if any.
@@ -682,6 +695,7 @@ impl Session {
             midi_watch: MidiWatch::default(),
             file_stamps: HashMap::new(),
             exporting: None,
+            rendering: None,
             export_summary: None,
             stems: stems::Stems::new(),
             clip_problems: Vec::new(),
@@ -1593,6 +1607,17 @@ impl Session {
                     self.split_to_stems(clip);
                     continue;
                 }
+                Edit::RenderToClip { group, in_loop } => {
+                    let region = self.project.transport_loop();
+                    if !in_loop {
+                        self.render_to_clip(group, None);
+                    } else if region.on {
+                        self.render_to_clip(group, Some((region.start, region.end)));
+                    } else {
+                        self.message = Some("Turn the loop on to render its span".into());
+                    }
+                    continue;
+                }
                 Edit::LearnMidi(target) => {
                     self.learn_midi(target);
                     continue;
@@ -2288,6 +2313,7 @@ impl Session {
         self.watch_midi(Instant::now());
         self.watch_files();
         self.poll_export();
+        self.poll_render();
         self.poll_split();
         self.poll_plugin_scan();
         self.poll_plugin_editors();

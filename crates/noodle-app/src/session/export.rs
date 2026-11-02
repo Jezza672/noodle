@@ -79,7 +79,7 @@ impl Session {
         self.timeline_end(rate) as f64 / f64::from(rate)
     }
 
-    fn export_rate(&self) -> f32 {
+    pub(super) fn export_rate(&self) -> f32 {
         self.audio
             .as_ref()
             .map_or(FREEZE_SETTINGS.sample_rate, |audio| {

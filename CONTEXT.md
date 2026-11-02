@@ -100,7 +100,7 @@ Writing one audio file per chosen track or group, taken after its gain and mute 
 _Avoid_: Stems (that is AI separation), bounce
 
 **Render to clip**:
-Rendering a track, group or time range to a new audio clip on a new track, muting the original.
+Rendering a track or group, or a stretch of it, to a new audio clip on a new track in the project's renders folder, muting the original and keeping it. It runs on past the range's end until the effects fall silent, to at most 10 s.
 _Avoid_: Bounce, freeze (that keeps no clip)
 
 **Offline node**:
@@ -121,6 +121,9 @@ Anything that produces live MIDI: a hardware port or the computer keyboard.
 
 **MIDI learn**:
 A shortcut on a parameter that adds a MIDI Control node set to the next controller moved and wires it into the parameter, as one undo step.
+
+**MIDI Out**:
+A node that sends an events wire to a named MIDI output port, timed to when the audio it goes with is heard, with MIDI clock and start/stop as toggles on the node.
 
 **Controller point**:
 One value of a controller, pitch bend, channel pressure or program change stored in a MIDI clip, at a tick, on a channel. A point can ramp to the next one. Played out of the track input's `midi` output with the notes; a seek or loop wrap sends each controller's last value, and the clip's end releases them.

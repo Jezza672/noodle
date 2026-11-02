@@ -1331,6 +1331,23 @@
         ),
     )),
     NodePreset((
+        name: "Notes Only",
+        slug: "midi-out-notes-only",
+        node_type: "noodle.event.midi_out",
+        values: (),
+    )),
+    NodePreset((
+        name: "With Clock",
+        slug: "midi-out-with-clock",
+        node_type: "noodle.event.midi_out",
+        values: (
+            params: {
+                "clock": 1.0,
+                "start_stop": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "One-shot",
         slug: "sampler-one-shot",
         node_type: "noodle.instrument.sampler",

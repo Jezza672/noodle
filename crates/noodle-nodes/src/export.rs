@@ -117,6 +117,8 @@ pub enum ExportJobError {
     File(ExportError),
     /// The engine wouldn't start or the project is too long to render.
     Render(String),
+    /// A render to a clip came out silent, so there is no clip to make.
+    Silent(String),
 }
 
 impl std::fmt::Display for ExportJobError {
@@ -129,6 +131,7 @@ impl std::fmt::Display for ExportJobError {
             Self::Freeze(error) => write!(f, "{error}"),
             Self::File(error) => write!(f, "the file couldn't be written: {error}"),
             Self::Render(why) => f.write_str(why),
+            Self::Silent(name) => write!(f, "{name} is silent, so there is nothing to render"),
         }
     }
 }
@@ -369,7 +372,11 @@ pub fn export(
 /// Interleaves a tapped signal into `channels` channels, the way an Output
 /// node puts it on the main bus: a mono signal feeds the first two channels,
 /// otherwise channel n feeds channel n, and voices are summed.
-fn interleave(signal: &noodle_engine::SignalIn<'_>, channels: usize, out: &mut Vec<f32>) {
+pub(crate) fn interleave(
+    signal: &noodle_engine::SignalIn<'_>,
+    channels: usize,
+    out: &mut Vec<f32>,
+) {
     let frames = signal.frames();
     let shape = signal.shape();
     out.clear();
