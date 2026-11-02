@@ -163,9 +163,12 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
         .graph()
         .source(&Endpoint::new(auto, AUTOMATION_RECORD))
         .and_then(|s| p.project().graph().node(s.node))
-        .is_some_and(|n| n.type_id == MIDI_CONTROL_ID);
+        .is_some_and(|n| {
+            n.type_id == MIDI_CONTROL_ID
+                && n.params.get("control").copied() == Some(f32::from(KNOB))
+        });
     if !knob {
-        return Err("no knob is learned onto the Automation node".into());
+        return Err("the knob that was turned is not learned onto the Automation node".into());
     }
     // The route relies on Touch being the default mode; the transport bar's
     // dropdown is not reachable by label, so the mode is checked here.
@@ -319,6 +322,14 @@ fn chorus_trimmed(p: &mut Probe, _size: usize) -> Result<(), String> {
         .is_some_and(|s| s.node == gain);
     if !fed {
         return Err("the trim does not follow the fader".into());
+    }
+    let out = node_of(project, noodle_engine::OUTPUT_ID);
+    let heard = project
+        .graph()
+        .source(&Endpoint::new(out, "in"))
+        .is_some_and(|s| s.node == trim);
+    if !heard {
+        return Err("the trim does not feed the output".into());
     }
     let auto = trim_automation(project).ok_or("there is no trim automation")?;
     let drives = project

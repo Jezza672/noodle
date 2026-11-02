@@ -289,6 +289,9 @@ fn choked(p: &Project) -> Result<(), String> {
         Some(noodle_core::Value::Text(text)) => text.clone(),
         _ => String::new(),
     };
+    if let Err(error) = noodle_nodes::check_script(&text) {
+        return Err(format!("the script does not compile: {error}"));
+    }
     if !text.contains("note_off(played, 46)") {
         return Err(format!("the script does not choke the open hat: {text:?}"));
     }

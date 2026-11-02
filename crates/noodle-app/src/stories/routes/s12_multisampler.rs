@@ -244,6 +244,9 @@ fn done(p: &mut Probe, size: usize) -> Result<(), String> {
             .filter(|&s| graph.node(s).is_some_and(|n| n.type_id == SAMPLER_ID))
             .ok_or(format!("Note Split output {n} plays no Sampler"))?;
         let sampler_node = graph.node(sampler).ok_or("the Sampler is gone")?;
+        if !sampler_node.config.get(noodle_nodes::SAMPLE_KEY).is_some() {
+            return Err(format!("the Sampler for {nearest} has no recording"));
+        }
         let root = param(sampler_node, "root", f32::NAN);
         if (root - f32::from(nearest)).abs() > 0.5 {
             return Err(format!(
