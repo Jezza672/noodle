@@ -627,3 +627,241 @@ fn notes_snap_to_the_beat_lines_of_the_time_signature() {
     // In 6/8 a beat is 480 ticks, and the nearest line to 500 is at 480.
     assert_eq!(note_added_at(&mut h, 500), 480);
 }
+
+// The controller and expression lanes.
+
+use noodle_core::{ControlKind, ControlPoint, ExpressionKind};
+
+const PEDAL: ControlKind = ControlKind::Controller(64);
+
+fn controls_of(h: &H) -> Vec<ControlPoint> {
+    midi_of(h).controls
+}
+
+/// The screen position of `value` at `tick` in the lane of `kind`.
+fn in_lane(h: &mut H, kind: ControlKind, tick: i64, value: f32) -> Pos2 {
+    let g = geometry(h);
+    let (_, rect) = g
+        .lanes
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .expect("lane shown");
+    Pos2::new(g.x(tick), lanes::value_y(*rect, lanes::range(kind), value))
+}
+
+/// A roll with the pedal lane added with "+".
+fn rig_with_pedal(notes: &[MidiNote]) -> H {
+    let mut h = rig(notes);
+    h.state_mut().roll.lanes.add(PEDAL);
+    h.run();
+    h
+}
+
+fn use_tool(h: &mut H, tool: lanes::Tool) {
+    h.state_mut().roll.lanes.tool = tool;
+    h.run();
+}
+
+#[test]
+fn a_lane_added_with_plus_has_no_points_and_the_clips_controllers_get_lanes() {
+    let mut h = rig(&[]);
+    assert!(geometry(&h).lanes.is_empty());
+    h.state_mut().roll.lanes.add(PEDAL);
+    h.run();
+    assert_eq!(geometry(&h).lanes.len(), 1);
+    assert!(controls_of(&h).is_empty());
+    // A clip that already has a mod wheel shows it without asking.
+    let mut h = rig(&[]);
+    let (id, mut clip) = {
+        let rig = h.state();
+        (
+            rig.clip,
+            rig.session.project().clip(rig.clip).unwrap().clone(),
+        )
+    };
+    let ClipContent::Midi(m) = &mut clip.content else {
+        unreachable!()
+    };
+    m.controls = vec![ControlPoint::new(
+        Tick(0),
+        0,
+        ControlKind::Controller(1),
+        0.5,
+    )];
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetClip { id, clip })]);
+    h.run();
+    assert_eq!(geometry(&h).lanes[0].0, ControlKind::Controller(1));
+}
+
+#[test]
+fn drawing_in_the_pedal_lane_sets_points_and_undoes_in_one_step() {
+    let mut h = rig_with_pedal(&[]);
+    let (a, b) = (
+        in_lane(&mut h, PEDAL, 480, 1.0),
+        in_lane(&mut h, PEDAL, 1440, 1.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, a, b);
+    let points = controls_of(&h);
+    assert!(points.len() >= 3, "{points:?}");
+    assert!(points.iter().all(|p| p.kind == PEDAL && !p.ramp));
+    assert!(points.iter().all(|p| (p.value - 1.0).abs() < 0.05));
+    assert_eq!(points.first().unwrap().tick.0, 480);
+    // Drawing back over it with the pedal up replaces those points.
+    let (a, b) = (
+        in_lane(&mut h, PEDAL, 480, 0.0),
+        in_lane(&mut h, PEDAL, 1440, 0.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, a, b);
+    assert!(controls_of(&h).iter().all(|p| p.value < 0.05));
+    h.state_mut().session.undo();
+    assert!(controls_of(&h).iter().all(|p| p.value > 0.95));
+    h.state_mut().session.undo();
+    assert!(controls_of(&h).is_empty(), "one undo per gesture");
+}
+
+#[test]
+fn a_line_is_stored_as_two_points() {
+    let mut h = rig_with_pedal(&[]);
+    use_tool(&mut h, lanes::Tool::Line);
+    let (a, b) = (
+        in_lane(&mut h, PEDAL, 480, 0.0),
+        in_lane(&mut h, PEDAL, 1920, 1.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, a, b);
+    let points = controls_of(&h);
+    assert_eq!(points.len(), 2, "{points:?}");
+    assert_eq!((points[0].tick.0, points[0].ramp), (480, true));
+    assert_eq!((points[1].tick.0, points[1].ramp), (1920, false));
+    assert!(points[0].value < 0.05 && points[1].value > 0.95);
+    h.state_mut().session.undo();
+    assert!(controls_of(&h).is_empty());
+}
+
+#[test]
+fn selected_points_move_delete_and_copy() {
+    let mut h = rig_with_pedal(&[]);
+    use_tool(&mut h, lanes::Tool::Line);
+    let (a, b) = (
+        in_lane(&mut h, PEDAL, 480, 0.0),
+        in_lane(&mut h, PEDAL, 1920, 1.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, a, b);
+    use_tool(&mut h, lanes::Tool::Select);
+    // A box round both points.
+    let (from, to) = (
+        in_lane(&mut h, PEDAL, 240, 1.0) - egui::vec2(0.0, 2.0),
+        in_lane(&mut h, PEDAL, 2160, 0.0) + egui::vec2(0.0, 2.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, from, to);
+    assert_eq!(h.state().roll.lanes.picked.len(), 2);
+    // Drag one point of the pair to the right by a beat: both move.
+    let (from, to) = (
+        in_lane(&mut h, PEDAL, 480, 0.0),
+        in_lane(&mut h, PEDAL, 1440, 0.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, from, to);
+    let ticks: Vec<i64> = controls_of(&h).iter().map(|p| p.tick.0).collect();
+    assert_eq!(ticks, [1440, 2880]);
+    h.state_mut().session.undo();
+    let ticks: Vec<i64> = controls_of(&h).iter().map(|p| p.tick.0).collect();
+    assert_eq!(ticks, [480, 1920], "one undo for the move");
+    // Pick both again (undo dropped the moved ids), then copy and paste at
+    // the start of the clip (no playhead): lands at 0.
+    let (from, to) = (
+        in_lane(&mut h, PEDAL, 240, 1.0) - egui::vec2(0.0, 2.0),
+        in_lane(&mut h, PEDAL, 2160, 0.0) + egui::vec2(0.0, 2.0),
+    );
+    drag_between(&mut h, Modifiers::NONE, from, to);
+    h.state_mut().roll.request(ClipAction::Copy);
+    h.run();
+    h.state_mut().roll.request(ClipAction::Paste);
+    h.run();
+    let ticks: Vec<i64> = controls_of(&h).iter().map(|p| p.tick.0).collect();
+    assert_eq!(ticks, [0, 480, 1440, 1920]);
+    // Delete removes what is picked (the pasted pair).
+    h.state_mut().roll.lanes.hover = true;
+    h.key_press(Key::Delete);
+    h.run();
+    h.state_mut().session.undo();
+    assert_eq!(controls_of(&h).len(), 4, "undo brings the pair back");
+}
+
+#[test]
+fn the_expression_lane_edits_the_selected_notes() {
+    let mut h = rig(&[note(480, 960, 60), note(2400, 480, 64)]);
+    {
+        let roll = &mut h.state_mut().roll;
+        roll.lanes.expressions = true;
+        roll.lanes.expression = ExpressionKind::Pressure;
+        roll.selected = BTreeSet::from([0]);
+    }
+    h.run();
+    let g = geometry(&h);
+    let rect = g.expression.expect("expression lane shown");
+    let range = (0.0, 1.0);
+    let at = |tick: i64, v: f32| Pos2::new(g.x(tick), lanes::value_y(rect, range, v));
+    // Draw across the first note, and out past its end.
+    drag_between(&mut h, Modifiers::NONE, at(480, 0.8), at(1920, 0.8));
+    let notes = stored_notes(&h);
+    let first = &notes[0].expressions;
+    assert!(!first.is_empty());
+    assert!(first.iter().all(|e| e.kind == ExpressionKind::Pressure));
+    assert!(
+        first.iter().all(|e| e.tick.0 >= 0 && e.tick.0 < 960),
+        "{first:?}"
+    );
+    assert!(first.iter().all(|e| (e.value - 0.8).abs() < 0.05));
+    assert!(
+        notes[1].expressions.is_empty(),
+        "the unselected note is left"
+    );
+    // A line over the note is two points, the first ramping.
+    h.state_mut().roll.lanes.tool = lanes::Tool::Line;
+    h.run();
+    drag_between(&mut h, Modifiers::NONE, at(480, 0.0), at(1380, 1.0));
+    let first = &stored_notes(&h)[0].expressions;
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert!(first[0].ramp && !first[1].ramp);
+    h.state_mut().session.undo();
+    let first = stored_notes(&h)[0].expressions.len();
+    assert!(first > 2, "undo returns to the drawn points");
+    h.state_mut().session.undo();
+    assert!(stored_notes(&h)[0].expressions.is_empty());
+}
+
+#[test]
+fn lane_arithmetic() {
+    let p = |t, v, ramp| ControlPoint {
+        ramp,
+        ..ControlPoint::new(Tick(t), 0, PEDAL, v)
+    };
+    let all = [p(0, 0.0, false), p(480, 1.0, false), p(960, 0.0, false)];
+    // Drawing across 400..1000 replaces the points there and keeps others.
+    let out = lanes::drawn(&all, 0, PEDAL, &[(500, 0.5)]);
+    assert_eq!(
+        out.iter().map(|x| x.tick.0).collect::<Vec<_>>(),
+        [0, 480, 500, 960]
+    );
+    let out = lanes::drawn(&all, 0, PEDAL, &[(400, 0.5), (1000, 0.5)]);
+    assert_eq!(
+        out.iter().map(|x| x.tick.0).collect::<Vec<_>>(),
+        [0, 400, 1000]
+    );
+    // Moving stops at the clip's end and replaces what it lands on.
+    let picked = BTreeSet::from([lanes::id(&all[1])]);
+    let (out, ids) = lanes::moved(&all, &picked, 10_000, PEDAL, 0.0, 3840);
+    assert_eq!(out.last().unwrap().tick.0, 3839);
+    assert_eq!(ids, BTreeSet::from([(0, PEDAL, 3839)]));
+    let (out, _) = lanes::moved(&all, &picked, 480, PEDAL, 0.0, 3840);
+    assert_eq!(out.len(), 2, "landing on the point at 960 replaces it");
+    // Pasting past the end drops the points that don't fit.
+    let held = lanes::copied(
+        &all,
+        &BTreeSet::from([lanes::id(&all[0]), lanes::id(&all[2])]),
+    );
+    assert_eq!(held[1].tick.0, 960);
+    assert!(lanes::pasted(&all, &held, 4000, 3840).is_none());
+    assert_eq!(lanes::pasted(&all, &held, 3000, 3840).unwrap().0.len(), 4);
+}

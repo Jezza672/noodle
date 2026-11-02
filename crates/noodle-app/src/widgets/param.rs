@@ -79,6 +79,47 @@ impl Automate {
     }
 }
 
+/// Whether the right-click menu offers Learn MIDI, and if it's turned off,
+/// why.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LearnMidi {
+    /// No entry: the caller can't learn this field.
+    #[default]
+    Hidden,
+    Offered,
+    /// This parameter is waiting for a control; choosing the entry again
+    /// stops.
+    Listening,
+    /// Greyed, with this as its tooltip.
+    Refused(&'static str),
+}
+
+impl LearnMidi {
+    /// The menu entry. Returns whether it was clicked.
+    fn entry(self, ui: &mut Ui) -> bool {
+        match self {
+            LearnMidi::Hidden => false,
+            LearnMidi::Offered | LearnMidi::Listening => {
+                let label = if self == LearnMidi::Listening {
+                    "Stop learning MIDI"
+                } else {
+                    "Learn MIDI"
+                };
+                let clicked = ui.button(label).clicked();
+                if clicked {
+                    ui.close();
+                }
+                clicked
+            }
+            LearnMidi::Refused(why) => {
+                ui.add_enabled(false, egui::Button::new("Learn MIDI"))
+                    .on_disabled_hover_text(why);
+                false
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ParamOutput {
     pub response: Response,
@@ -86,6 +127,8 @@ pub struct ParamOutput {
     pub gesture: Gesture,
     /// Automate was chosen from the menu.
     pub automate: bool,
+    /// Learn MIDI was chosen from the menu.
+    pub learn: bool,
 }
 
 impl ParamOutput {
@@ -100,6 +143,9 @@ impl ParamOutput {
         let mut edits = Vec::new();
         if self.automate {
             edits.push(Edit::Automate(noodle_core::Endpoint::new(node, key)));
+        }
+        if self.learn {
+            edits.push(Edit::LearnMidi(noodle_core::Endpoint::new(node, key)));
         }
         if let Some(edit) = self.edit {
             let command = Command::SetParam {
@@ -148,6 +194,7 @@ pub struct ParamField<'a> {
     zoom: f32,
     live: Option<Live>,
     automate: Automate,
+    learn: LearnMidi,
     /// Whether the wire replaces the value (the fill follows the live value)
     /// rather than offsetting it (the fill stays at the base).
     replaced: bool,
@@ -168,8 +215,15 @@ impl<'a> ParamField<'a> {
             zoom: 1.0,
             live: None,
             automate: Automate::Hidden,
+            learn: LearnMidi::Hidden,
             replaced: false,
         }
+    }
+
+    /// Adds the Learn MIDI entry to the right-click menu.
+    pub fn learn_midi(mut self, learn: LearnMidi) -> Self {
+        self.learn = learn;
+        self
     }
 
     /// Adds the Automate entry to the right-click menu.
@@ -349,12 +403,14 @@ impl<'a> ParamField<'a> {
             edit = Some(ParamEdit::Reset);
         }
         let mut automate = false;
+        let mut learn = false;
         response.context_menu(|ui| {
             if ui.button("Reset to default").clicked() {
                 edit = Some(ParamEdit::Reset);
                 ui.close();
             }
             automate |= self.automate.entry(ui);
+            learn |= self.learn.entry(ui);
         });
 
         let enabled = ui.is_enabled();
@@ -379,6 +435,7 @@ impl<'a> ParamField<'a> {
             edit,
             gesture,
             automate,
+            learn,
         }
     }
 
@@ -424,6 +481,7 @@ impl<'a> ParamField<'a> {
             edit,
             gesture: Gesture::Idle,
             automate: false,
+            learn: false,
         }
     }
 
@@ -594,6 +652,7 @@ impl<'a> ParamField<'a> {
             || (ui.rect_contains_pointer(rect) && ui.memory(|m| m.focused()).is_none());
         resets |= targeted && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
         let mut automate = false;
+        let mut learn = false;
         for button in &responses {
             button.context_menu(|ui| {
                 if ui.button("Reset to default").clicked() {
@@ -601,6 +660,7 @@ impl<'a> ParamField<'a> {
                     ui.close();
                 }
                 automate |= self.automate.entry(ui);
+                learn |= self.learn.entry(ui);
             });
         }
         if resets {
@@ -615,6 +675,7 @@ impl<'a> ParamField<'a> {
             edit,
             gesture: Gesture::Idle,
             automate,
+            learn,
         }
     }
 

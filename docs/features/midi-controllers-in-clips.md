@@ -1,6 +1,6 @@
 # MIDI controllers and expressions in clips
 
-Batches 1 and 2 of the roadmap item (issue #286). Before this a MIDI clip held
+Batches 1 and 2 (issue #286) and batches 3 and 4, the piano roll lanes (issue #287), of the roadmap item. Before this a MIDI clip held
 notes and nothing else, so a recorded piano part came back without its pedal.
 The design as it stands is in
 [../architecture/midi-and-recording.md](../architecture/midi-and-recording.md)
@@ -41,7 +41,21 @@ The design as it stands is in
   pedal and wheel, then renders it through the example's synth and hears the
   pedal hold the note (and not without the controllers).
 
-## Still open
+## Piano roll lanes (#287)
 
-Batches 3 and 4 of the roadmap item: controller lanes and the expression lane
-in the piano roll.
+- **Controller lanes** (`noodle-app/src/piano_roll/lanes.rs`) under the
+  velocity lane: one for each controller, bend or pressure the clip uses, plus
+  any added with "+" in the toolbar (common controllers, or any CC number; a
+  lane with no points has a × to remove it). Program changes have no lane.
+- **Tools:** Draw sets values along the drag (7-bit steps for controllers,
+  snapped to the grid, replacing the points it crosses), Line stores a ramp as
+  two points, Select picks points by click or box to move (ticks and value),
+  Delete, and copy, cut, paste and duplicate (`application/x.noodle.controls`).
+  Delete and the clipboard mean points when the pointer is over the lanes or
+  no notes are selected.
+- **Expression lane**, shown by the toolbar's Expression box with a kind
+  chooser: draws and lines on the selected notes only, stored from each note's
+  start and cut to the note.
+- Every gesture is one `SetClip` undo step.
+- Tests: `piano_roll/tests.rs` (pedal draw, line, select/move/copy/delete,
+  expression, arithmetic; the line test is mutation-checked).

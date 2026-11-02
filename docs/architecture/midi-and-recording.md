@@ -1,9 +1,37 @@
 # MIDI input, MIDI clips and recording
 
-A MIDI port is chosen in the audio settings dialog (`AudioConfig::midi_input`,
-a port name, saved with the other device preferences). The choice belongs to
-the app, not the project, like the audio device, and changing it doesn't
-restart the audio.
+MIDI ports are chosen in the audio settings dialog (`AudioConfig::midi_inputs`,
+a list of port names with a checkbox each, saved with the other device
+preferences). The choice belongs to the app, not the project, like the audio
+device, and changing it doesn't restart the audio. The session opens one
+`MidiConnection` per chosen port and watches each for unplugging and
+returning. A port is opened or closed alone; the notes a port held are
+released on its own messages only (`all_notes_off_from`).
+
+- **Ports on the bus.** A connection sends what it hears with its name
+  (`MidiBus::send_from`). A subscriber names the port it wants
+  (`subscribe_port`, matched with `same_port`, so ALSA's changing numbers
+  don't matter); empty or `*` (`ALL_INPUTS`) hears every port, and what has no
+  port (the computer keyboard) goes to those only. `MIDI In` and `MIDI
+  Control` name their port in a `port` config, as an Output node names its
+  device. `MidiBus::tap` is the listener MIDI learn uses: every message with
+  its port, read on the UI thread.
+- **`MIDI Control`.** Its `port` config is empty by default, which reads the
+  `in` events wire only, as before; a port name or `*` makes it listen to the
+  bus as well (it then runs every block and is nondeterministic for caching).
+  Parameters: `encoder` (absolute, or relative as two's complement,
+  sign-magnitude or binary offset on a 7-bit controller: a turn moves the held
+  value by 1/128 of the travel per step), `pickup` (jump follows the knob at
+  once; pick up ignores it until it reaches the held value or crosses it),
+  `start` (the value until the knob first moves it; pickup compares against
+  it), and `min`, `max` and `taper` as on the Automation node.
+- **Learn MIDI** is `session/learn_midi.rs`: `Edit::LearnMidi(parameter)`
+  taps the bus and the next controller, pitch bend or channel pressure
+  becomes one `Command::Batch` (a `MIDI Control` in the parameter's group,
+  its `port`, `control`, range and `start` copied once from the target as
+  Automate does, and the wire). On an Automation node the wire goes to
+  `record`. It is refused on a wired parameter; Escape or choosing it again
+  stops listening.
 
 - **From the port to the graph.** `noodle-io/src/midi.rs` opens the port with
   `midir`. The driver calls back on its own thread, which keeps only whole
@@ -160,7 +188,9 @@ before the start, keys and velocities in range).
   it (in time and pitch, a whole selection together), dragging its right end
   resizes it, Delete removes, the arrow keys transpose and nudge, Cmd+C/X/V/D
   copy, cut, paste (at the playhead) and duplicate the selected notes, and a bar in
-  the velocity lane sets velocity. Notes snap to the app-wide snap step (the
+  the velocity lane sets velocity. Under it are a lane for each controller the
+  clip uses ("+" adds one) and, if switched on, an expression lane for the
+  selected notes (`piano_roll/lanes.rs`: Draw, Line, Select). Notes snap to the app-wide snap step (the
   *Snap* menu in the menu bar: a beat down to 1/16 of a beat, or off; one
   setting for the arrangement, the piano roll and the clip editor, `snap.rs`),
   Alt turns snapping off. In the piano roll, snapping is on the absolute grid

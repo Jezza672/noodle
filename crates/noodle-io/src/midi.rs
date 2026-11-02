@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -138,13 +139,41 @@ pub fn parse_message(bytes: &[u8]) -> Option<MidiMessage> {
 #[derive(Clone, Default)]
 pub struct MidiBus {
     subscribers: Arc<Mutex<Vec<Subscriber>>>,
+    taps: Arc<Mutex<Vec<mpsc::Sender<Heard>>>>,
     clock: Arc<AudioClock>,
+}
+
+/// A message a [`MidiTap`] heard and the port it came from, `None` for what
+/// was not sent from a port (the computer keyboard).
+pub type Heard = (Option<String>, MidiMessage);
+
+/// The port name that stands for every open port, in a node's port setting.
+pub const ALL_INPUTS: &str = "*";
+
+/// Whether a node's port setting means every port: empty or [`ALL_INPUTS`].
+pub fn is_all_inputs(port: &str) -> bool {
+    port.is_empty() || port == ALL_INPUTS
 }
 
 struct Subscriber {
     producer: Producer<TimedPacket>,
     /// Only note-ons and note-offs are wanted.
     notes_only: bool,
+    /// Only messages from this port are wanted; `None` wants them all,
+    /// including the ones that come from no port.
+    port: Option<String>,
+}
+
+/// A listener for MIDI learn: it hears every message with the port it came
+/// from. Taken from [`MidiBus::tap`] and read on the UI thread; dropping it
+/// stops listening.
+pub struct MidiTap(mpsc::Receiver<Heard>);
+
+impl MidiTap {
+    /// The oldest message not yet taken.
+    pub fn next(&self) -> Option<Heard> {
+        self.0.try_recv().ok()
+    }
 }
 
 impl MidiBus {
@@ -156,16 +185,23 @@ impl MidiBus {
     /// A new receiver of every message sent from now on. Dropping it
     /// unsubscribes.
     pub fn subscribe(&self) -> MidiReceiver {
-        self.subscribe_with(false)
+        self.subscribe_with(false, None)
+    }
+
+    /// The same for the messages of one port, as a node's port setting
+    /// names it (see [`is_all_inputs`]: empty or `*` hears every port).
+    pub fn subscribe_port(&self, port: &str) -> MidiReceiver {
+        let port = (!is_all_inputs(port)).then(|| port.to_string());
+        self.subscribe_with(false, port)
     }
 
     /// The same for receivers that want only notes, so a stream of
     /// controllers can't crowd them out of the queue.
     pub fn subscribe_notes(&self) -> MidiReceiver {
-        self.subscribe_with(true)
+        self.subscribe_with(true, None)
     }
 
-    fn subscribe_with(&self, notes_only: bool) -> MidiReceiver {
+    fn subscribe_with(&self, notes_only: bool, port: Option<String>) -> MidiReceiver {
         let (producer, consumer) = RingBuffer::new(QUEUE);
         self.subscribers
             .lock()
@@ -173,8 +209,16 @@ impl MidiBus {
             .push(Subscriber {
                 producer,
                 notes_only,
+                port,
             });
         MidiReceiver(consumer)
+    }
+
+    /// A listener for MIDI learn, hearing every message sent from now on.
+    pub fn tap(&self) -> MidiTap {
+        let (sender, receiver) = mpsc::channel();
+        self.taps.lock().expect("taps lock").push(sender);
+        MidiTap(receiver)
     }
 
     /// When the audio thread's blocks run. The device callback fills it in.
@@ -198,14 +242,38 @@ impl MidiBus {
 
     /// Hands a packet (MIDI 1.0 or 2.0) to every receiver.
     pub fn send_packet(&self, packet: Packet) {
-        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        deliver(&mut subscribers, packet, now_micros());
+        self.deliver_from(None, packet, None);
     }
 
     /// The same for a packet that arrived at `micros`.
     pub fn send_packet_at(&self, packet: Packet, micros: u64) {
+        self.deliver_from(None, packet, Some(micros));
+    }
+
+    /// A message that arrived on the port called `port`, which only the
+    /// receivers of that port (and of every port) get.
+    pub fn send_from(&self, port: &str, message: MidiMessage) {
+        self.deliver_from(Some(port), Packet::midi1(0, message), None);
+    }
+
+    /// The same for a packet.
+    pub fn send_packet_from(&self, port: &str, packet: Packet) {
+        self.deliver_from(Some(port), packet, None);
+    }
+
+    fn deliver_from(&self, port: Option<&str>, packet: Packet, micros: Option<u64>) {
         let mut subscribers = self.subscribers.lock().expect("subscribers lock");
-        deliver(&mut subscribers, packet, micros);
+        deliver(
+            &mut subscribers,
+            port,
+            packet,
+            micros.unwrap_or_else(now_micros),
+        );
+        drop(subscribers);
+        if let Some(message) = packet.to_midi1() {
+            let mut taps = self.taps.lock().expect("taps lock");
+            taps.retain(|tap| tap.send((port.map(str::to_string), message)).is_ok());
+        }
     }
 
     /// Releases every note on every channel (controller 123), for when the
@@ -213,6 +281,14 @@ impl MidiBus {
     pub fn all_notes_off(&self) {
         for channel in 0..16 {
             self.send([0xB0 | channel, 123, 0]);
+        }
+    }
+
+    /// The same for the notes one port held, which the receivers of other
+    /// ports don't see.
+    pub fn all_notes_off_from(&self, port: &str) {
+        for channel in 0..16 {
+            self.send_from(port, [0xB0 | channel, 123, 0]);
         }
     }
 
@@ -224,11 +300,16 @@ impl MidiBus {
     }
 }
 
-fn deliver(subscribers: &mut Vec<Subscriber>, packet: Packet, micros: u64) {
+fn deliver(subscribers: &mut Vec<Subscriber>, from: Option<&str>, packet: Packet, micros: u64) {
     let note = packet.is_note();
     subscribers.retain(|s| !s.producer.is_abandoned());
     for subscriber in subscribers.iter_mut() {
-        if note || !subscriber.notes_only {
+        let heard = match (&subscriber.port, from) {
+            (None, _) => true,
+            (Some(wanted), Some(from)) => same_port(from, wanted),
+            (Some(_), None) => false,
+        };
+        if heard && (note || !subscriber.notes_only) {
             let _ = subscriber.producer.push((micros, packet));
         }
     }
@@ -354,13 +435,14 @@ pub fn connect_midi(name: &str, bus: &MidiBus) -> Result<MidiConnection, MidiErr
     // The port's own name, which is what a later look at the list matches.
     let actual = input.port_name(&port).unwrap_or_else(|_| name.to_string());
     let bus = bus.clone();
+    let port_name = actual.clone();
     let connection = input
         .connect(
             &port,
             "noodle",
             move |_, bytes, _| {
                 if let Some(message) = parse_message(bytes) {
-                    bus.send(message);
+                    bus.send_from(&port_name, message);
                 }
             },
             (),
@@ -407,6 +489,32 @@ mod tests {
         assert!(!same_port("Keys MIDI 1 24:0", "Pads MIDI 1 24:0"));
         assert!(!same_port("Keys 1", "Keys 2"));
         assert!(!same_port("Keys 24:0", "Pads 24:0"));
+    }
+
+    #[test]
+    fn a_port_receiver_hears_only_its_port_and_a_tap_hears_all_with_the_port() {
+        let bus = MidiBus::new();
+        let mut all = bus.subscribe_port("*");
+        let mut keys = bus.subscribe_port("Keys MIDI 1 24:0");
+        let mut pads = bus.subscribe_port("Pads");
+        let tap = bus.tap();
+        bus.send_from("Keys MIDI 1 28:0", [0xB0, 74, 10]);
+        bus.send_from("Pads", [0xB0, 1, 20]);
+        bus.send([0xB0, 2, 30]);
+        assert_eq!(all.pop(), Some([0xB0, 74, 10]));
+        assert_eq!(all.pop(), Some([0xB0, 1, 20]));
+        assert_eq!(all.pop(), Some([0xB0, 2, 30]));
+        assert_eq!(keys.pop(), Some([0xB0, 74, 10]));
+        assert_eq!(keys.pop(), None);
+        assert_eq!(pads.pop(), Some([0xB0, 1, 20]));
+        assert_eq!(pads.pop(), None);
+        assert_eq!(
+            tap.next(),
+            Some((Some("Keys MIDI 1 28:0".to_string()), [0xB0, 74, 10]))
+        );
+        assert_eq!(tap.next(), Some((Some("Pads".to_string()), [0xB0, 1, 20])));
+        assert_eq!(tap.next(), Some((None, [0xB0, 2, 30])));
+        assert_eq!(tap.next(), None);
     }
 
     #[test]
