@@ -120,6 +120,7 @@ Each file below is one part of the design and the rules that part follows.
 | [performance.md](architecture/performance.md) | Delay compensation, CPU meters, parallel processing, profiling |
 | [ui.md](architecture/ui.md) | `noodle-app`: editor, widgets, mixer, views |
 | [testing.md](architecture/testing.md) | Test strategy |
+| [usability.md](architecture/usability.md) | Usability scorecard: routes, action log, metrics (stories in [usability/stories.md](usability/stories.md)) |
 
 ## Open questions
 
