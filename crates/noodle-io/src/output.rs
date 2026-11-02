@@ -231,6 +231,7 @@ impl DeviceWriter {
             if let Some((clock, _)) = &self.midi_clock {
                 let into = (done as f64 * 1e6 / rate) as u64;
                 clock.set_window(called.saturating_sub(period) + into);
+                clock.set_block(called + into);
             }
             done += frames;
             let scratch = &mut self.scratch[..frames * engine_channels];
@@ -559,6 +560,9 @@ impl Fill for DeviceWriter {
         self.fade
             .latency_micros
             .store(latency.as_micros() as u64, Ordering::Relaxed);
+        if let Some((clock, _)) = &self.midi_clock {
+            clock.set_output_latency(latency.as_micros() as u64);
+        }
     }
 
     fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {

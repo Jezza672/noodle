@@ -195,6 +195,9 @@ impl Nodes {
             clips,
             midi,
             samples,
+            // The MIDI Out nodes hold the hub; the clock it shares with
+            // `midi` is how the device tells them when blocks are heard.
+            midi_out: _,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
