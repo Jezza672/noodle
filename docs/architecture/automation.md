@@ -74,3 +74,4 @@ into a parameter port.** It is not a clip and not a node the user wires.
   -1 to 1 (exponential, through straight, to S-curve). `Curve::shape` shapes
   the segment for both `AutomationLane::value_at` and the lane source, so the UI
   and the sound agree.
+- **Recording.** An armed Automation node writes its lane while the transport plays: moves of its `value` and the signal on its `record` input are buffered by the session's `Recorder` and committed as one `Command::Batch` when the Pass ends. See [features/automate.md](../features/automate.md).

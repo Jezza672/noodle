@@ -40,6 +40,10 @@ struct AutomationPorts {
     max: (),
     #[param("taper", "Taper", ParamInfo::choice(["Linear", "Log"]))]
     taper: (),
+    /// Wire a signal here and, while the node is armed, it is written into
+    /// the lane (0 to 1, like `value`). The node itself ignores it.
+    #[param("record", "Record", ParamInfo::new(0.0, 1.0, 0.0))]
+    record: (),
     #[control_output("out", "Out")]
     out: (),
 }
@@ -51,6 +55,8 @@ pub const RANGE_LIMIT: f32 = 1.0e6;
 pub const AUTOMATION_MIN: &str = "min";
 pub const AUTOMATION_MAX: &str = "max";
 pub const AUTOMATION_TAPER: &str = "taper";
+/// The input an armed node records a wired signal from.
+pub const AUTOMATION_RECORD: &str = "record";
 /// The config key of the node's name, shown on its lane, copied from the
 /// parameter the Automate shortcut was used on. Empty or missing means none.
 pub const AUTOMATION_LABEL: &str = "label";

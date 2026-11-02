@@ -27,4 +27,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [autosave.md](autosave.md) | Autosave and crash recovery |
 | [midi-controllers-in-clips.md](midi-controllers-in-clips.md) | MIDI controllers and expressions in clips: data, playback, recording |
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
-| [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension |
+| [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |
