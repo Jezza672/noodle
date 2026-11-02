@@ -332,6 +332,12 @@ impl TimelineState {
         self.clip_rects.get(&id).copied()
     }
 
+    /// Where take `k` of the take folder `id` was drawn last frame.
+    #[cfg(test)]
+    pub fn take_lane(&self, id: ClipId, k: usize) -> Option<Rect> {
+        self.take_lane_rects.get(&(id, k)).copied()
+    }
+
     /// Where a crossfade's handle or edge was drawn last frame.
     #[cfg(test)]
     fn crossfade_widget(&self, later: ClipId, grab: crossfade::Grab) -> Option<Rect> {

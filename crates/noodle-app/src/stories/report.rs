@@ -346,7 +346,7 @@ mod tests {
         assert!(s12.contains("2.5 act / 3.0 s"), "{s12}");
         assert!(s12.contains("2 recreate (4 act), 2 undo"), "{s12}");
         assert!(s12.contains("LOST automation"), "{s12}");
-        let s01 = lines.iter().find(|l| l.contains("| S01 ")).unwrap();
+        let s01 = lines.iter().find(|l| l.contains("| S02 ")).unwrap();
         assert!(s01.contains("| blocked | - | - | - |"), "{s01}");
         assert!(lines.last().unwrap().contains("S00 (framework check)"));
     }
