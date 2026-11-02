@@ -5,9 +5,10 @@ is recorded in [features/](features/README.md); the design as it stands is in
 [ARCHITECTURE.md](ARCHITECTURE.md). When a piece of work here is finished, move
 its record to a file in `features/` and delete it from this page.
 
-All milestones M0 to M11 are built in code. What is left is six feature items
-that make Noodle usable in place of another DAW (in order: Automate, MIDI
-controllers in clips, Linked clips, Takes and comping, Track export, MIDI
+All milestones M0 to M11 are built in code. What is left is five feature items
+that make Noodle usable in place of another DAW (in order: Automate (batch 1 built,
+see [features/automate.md](features/automate.md)), MIDI
+controllers in clips, Takes and comping, Track export, MIDI
 learn and output), checks that need a person and hardware, and a few
 deliberately deferred items.
 
@@ -62,7 +63,7 @@ deliberately deferred items.
 
 **Batches.**
 
-1. **Automate.** The shortcut, `min`, `max` and taper on the Automation node, naming, and tension curves with multi-point selection.
+1. **Automate.** Built: see [features/automate.md](features/automate.md).
 2. **Recording.** Arm, modes, the lane header slider, thinning, one undo step per Pass.
 3. **The `record` input.** Recording a wired signal, with a test that prints an LFO into a lane.
 
@@ -83,29 +84,6 @@ Batches 1 and 2 (the data, playback, chase and release, and recording) are built
 
 **Done when.** You record a piano part with sustain pedal and mod wheel; it plays back the same, including after a seek into the middle of a held pedal; and you edit the pedal in its lane.
 
-## Linked clips across tracks
-
-**The problem.** Clips on different tracks can't be tied together. A multi-mic drum recording, or the stems and source from Split to stems, must be moved, cut and warped one clip at a time, and they drift out of phase the moment one is missed. Split to stems gives each stem its own copy of the source's warp on purpose, because sharing a `WarpId` was the only way to link them.
-
-**What you get.** Select clips on several tracks and Link them: moving, trimming, splitting, looping, warping or deleting one does the same to all. Linked clips have one warp. Selecting one or more of them shows all their warp markers together in the warp editor, and moving a marker or making one concrete applies it to every linked clip.
-
-**Settled decisions.**
-
-- A link is a clip group in the project: an object listing its member clips. An edit to one member is one `Command` applied to all.
-- Shared: move, trim, split, loop, warp, quantise, delete. Per clip: gain and fades.
-- **One warp.** The members share one warp (a common `WarpId` under the hood). Each clip's candidate markers are drawn in its own colour, separately even when they fall a few milliseconds apart (kick mic and overheads), and you choose which to make concrete. How the shared warp is kept in step is the implementer's choice.
-- A link may hold MIDI and audio clips; warping affects the audio ones.
-- Recording several armed tracks in one take links the new clips. Link and Unlink work on a clip selection.
-- Split to stems links every stem, the residual and the muted source, on the source's warp.
-
-**Batches.**
-
-1. **Clip groups.** The model, Link and Unlink, shared edits, takes on several tracks linked.
-2. **Shared warp.** One warp across members, markers from every selected clip in the warp editor, concrete and moved markers applied to all.
-3. **Split to stems links.** The stems, residual and source become one link.
-
-**Done when.** You record drums on four mics, slide the take a beat later and warp it to the grid from the kick and snare mics' markers, and all four stay sample-aligned. Split to stems on a loop gives stems that move and re-warp with the source.
-
 ## Takes, loop recording and comping
 
 **The problem.** Record makes one clip per armed track per take, and a seek or a loop wrap ends the take. There is no punch range, no loop recording that keeps every cycle, and no way to build one performance from the best phrases of several. This replaces the overdub and count-in parts of the deferred "Piano roll and recording" item.
@@ -122,7 +100,7 @@ Batches 1 and 2 (the data, playback, chase and release, and recording) are built
 - Comp joins get a 10 ms crossfade by default, draggable per join, using the existing clip crossfade (`AudioClip::crossfade`).
 - **Comping across tracks** uses Linked clips: a swipe on one linked take folder applies the same spans to all of them.
 
-**Scope.** In: the take folder model and its scheduling (`schedule.rs`), loop recording in `noodle-io/src/record.rs` and the session, punch, count-in and pre-roll, MIDI takes and merge (`midi_take.rs`), take lanes and the swipe gesture (`timeline/take.rs`, `timeline/clips.rs`), flatten. Every comp edit is one `Command`. Needs Linked clips for cross-track comping.
+**Scope.** In: the take folder model and its scheduling (`schedule.rs`), loop recording in `noodle-io/src/record.rs` and the session, punch, count-in and pre-roll, MIDI takes and merge (`midi_take.rs`), take lanes and the swipe gesture (`timeline/take.rs`, `timeline/clips.rs`), flatten. Every comp edit is one `Command`. Cross-track comping builds on Linked clips ([features/linked-clips.md](features/linked-clips.md)).
 
 **Batches.**
 

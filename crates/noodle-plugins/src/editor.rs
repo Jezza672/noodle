@@ -136,16 +136,26 @@ pub fn editor_key_is_open(key: EditorKey) -> bool {
 
 /// Reads that instance.
 pub fn capture_key(key: EditorKey) -> Result<Captured, HostError> {
+    capture_key_with(key, true)
+}
+
+/// Reads only that instance's parameter values (`state` is empty): cheap
+/// enough to poll while its editor is open.
+pub fn capture_params_key(key: EditorKey) -> Result<Captured, HostError> {
+    capture_key_with(key, false)
+}
+
+fn capture_key_with(key: EditorKey, with_state: bool) -> Result<Captured, HostError> {
     if sandbox::is_remote_key(key.0) {
         sandbox::remote(key.0)
             .ok_or_else(|| HostError("that plugin isn't running".into()))?
-            .capture()
+            .capture(with_state)
     } else if vst3::gui::is_key(key.0) {
-        vst3::gui::capture(key.0)
+        vst3::gui::capture(key.0, with_state)
     } else if au::is_gui_key(key.0) {
-        au::gui_capture(key.0)
+        au::gui_capture(key.0, with_state)
     } else {
-        thread::capture(key.0)
+        thread::capture(key.0, with_state)
     }
 }
 
@@ -186,7 +196,11 @@ pub struct Captured {
 
 /// Reads the node's running plugin.
 pub fn capture(node: NodeId) -> Result<Captured, HostError> {
-    capture_key(EditorKey(find(node)?.key()))
+    capture_with(node, true)
+}
+
+pub(crate) fn capture_with(node: NodeId, with_state: bool) -> Result<Captured, HostError> {
+    capture_key_with(EditorKey(find(node)?.key()), with_state)
 }
 
 /// Which parameter the user moved between two captures: the one whose value
@@ -237,26 +251,67 @@ impl Captured {
             value: Some(Value::Text(self.state_text())),
         }];
         for (id, value) in &self.params {
-            let Some(param) = exposed.iter().find(|p| p.id == *id) else {
-                continue;
-            };
-            let (min, max) =
-                if param.min.is_finite() && param.max.is_finite() && param.max > param.min {
-                    (param.min, param.max)
-                } else {
-                    (0.0, 1.0)
-                };
-            if !value.is_finite() {
-                continue;
+            if let Some(command) = set_param_command(node, &exposed, *id, *value) {
+                commands.push(command);
             }
-            commands.push(Command::SetParam {
-                node,
-                key: param_key(*id),
-                value: Some(value.clamp(min, max) as f32),
-            });
         }
         Command::Batch(commands)
     }
+
+    /// One `SetParam` per exposed parameter whose value differs from `seen`
+    /// since `seen` (a parameter's first reading is only a baseline) and from
+    /// what the node `stored` holds; `seen` is updated to match. This is how edits made in an open editor reach the
+    /// project without storing the state.
+    pub fn changed_params(
+        &self,
+        node: NodeId,
+        descriptor: &Descriptor,
+        config: &Config,
+        seen: &mut std::collections::BTreeMap<u32, f64>,
+        stored: impl Fn(u32) -> Option<f32>,
+    ) -> Vec<Command> {
+        let exposed = exposed_params(descriptor, config);
+        let mut out = Vec::new();
+        for (id, value) in &self.params {
+            let previous = seen.insert(*id, *value);
+            // The first reading is the baseline, not an edit.
+            if previous.is_some_and(|p| p != *value)
+                && let Some(command) = set_param_command(node, &exposed, *id, *value)
+                // A value the project already holds is not an edit: after an
+                // undo the plugin follows the port, and recording that would
+                // clear the redo stack.
+                && !matches!(
+                    &command,
+                    Command::SetParam { value: Some(v), .. }
+                        if stored(*id).is_some_and(|s| (s - v).abs() < 1e-6)
+                )
+            {
+                out.push(command);
+            }
+        }
+        out
+    }
+}
+
+/// The `SetParam` that stores plugin parameter `id`'s `value` in the node
+/// (clamped into the parameter's range), if the node exposes it.
+fn set_param_command(
+    node: NodeId,
+    exposed: &[&crate::descriptor::ParamDesc],
+    id: u32,
+    value: f64,
+) -> Option<Command> {
+    let param = exposed.iter().find(|p| p.id == id)?;
+    let (min, max) = if param.min.is_finite() && param.max.is_finite() && param.max > param.min {
+        (param.min, param.max)
+    } else {
+        (0.0, 1.0)
+    };
+    value.is_finite().then(|| Command::SetParam {
+        node,
+        key: param_key(id),
+        value: Some(value.clamp(min, max) as f32),
+    })
 }
 
 #[cfg(test)]

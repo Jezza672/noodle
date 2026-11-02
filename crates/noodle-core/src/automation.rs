@@ -21,14 +21,65 @@ impl fmt::Display for LaneId {
 }
 
 /// How the value gets from one point to the next.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Curve {
-    /// A straight line.
+    /// A straight line. The same as `Tension(0.0)`.
     #[default]
     Linear,
+    /// A bent line, by a tension from -1 to 1: negative bends it into an
+    /// exponential (slow start, fast end, down to -1), zero is straight, and
+    /// positive leans it into an S-curve (up to 1). The segment still starts
+    /// and ends exactly on its points and never doubles back.
+    Tension(f32),
     /// Stays at the point's value until the next point, then jumps.
     Hold,
 }
+
+impl Curve {
+    /// How far along the value is, from 0 to 1, when the segment is `along`
+    /// (0 to 1) of the way through its time. `Hold` stays at 0 until the end.
+    pub fn shape(self, along: f64) -> f64 {
+        let x = along.clamp(0.0, 1.0);
+        match self {
+            Curve::Hold => 0.0,
+            Curve::Linear => x,
+            Curve::Tension(t) => {
+                let t = f64::from(t.clamp(-1.0, 1.0));
+                if t == 0.0 {
+                    x
+                } else if t < 0.0 {
+                    // Exponential: steeper the nearer to -1.
+                    let k = -t * EXPONENTIAL_STEEPNESS;
+                    (k * x).exp_m1() / k.exp_m1()
+                } else {
+                    // A blend from the line to a smoothstep.
+                    x + t * (x * x * (3.0 - 2.0 * x) - x)
+                }
+            }
+        }
+    }
+
+    /// The tension, with `Linear` as zero, or `None` for `Hold`.
+    pub fn tension(self) -> Option<f32> {
+        match self {
+            Curve::Linear => Some(0.0),
+            Curve::Tension(t) => Some(t),
+            Curve::Hold => None,
+        }
+    }
+
+    /// A curve of this tension: `Linear` at zero.
+    pub fn with_tension(tension: f32) -> Self {
+        if tension == 0.0 {
+            Curve::Linear
+        } else {
+            Curve::Tension(tension.clamp(-1.0, 1.0))
+        }
+    }
+}
+
+/// The exponent at tension -1: how much faster the end is than the start.
+const EXPONENTIAL_STEEPNESS: f64 = 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AutomationPoint {
@@ -65,9 +116,9 @@ impl AutomationLane {
         };
         Some(match before.curve {
             Curve::Hold => before.value,
-            Curve::Linear => {
+            curve => {
                 let span = (next.tick.0 - before.tick.0) as f64;
-                let along = (tick - before.tick.0 as f64) / span;
+                let along = curve.shape((tick - before.tick.0 as f64) / span);
                 before.value + (next.value - before.value) * along as f32
             }
         })
@@ -142,6 +193,57 @@ mod tests {
         assert_eq!(lane.value_at(99.9), Some(1.0));
         assert_eq!(lane.value_at(100.0), Some(2.0));
         assert_eq!(lane.value_at(150.0), Some(3.0));
+    }
+
+    #[test]
+    fn tension_curves_start_and_end_on_their_points() {
+        for t in [-1.0, -0.5, 0.0, 0.3, 1.0] {
+            let curve = Curve::with_tension(t);
+            assert_eq!(curve.shape(0.0), 0.0, "tension {t}");
+            assert_eq!(curve.shape(1.0), 1.0, "tension {t}");
+        }
+    }
+
+    #[test]
+    fn tension_curves_never_double_back() {
+        for t in [-1.0, -0.7, -0.1, 0.1, 0.6, 1.0] {
+            let curve = Curve::Tension(t);
+            let mut last = 0.0;
+            for i in 1..=1000 {
+                let y = curve.shape(f64::from(i) / 1000.0);
+                assert!(y >= last, "tension {t} fell at step {i}");
+                last = y;
+            }
+        }
+    }
+
+    #[test]
+    fn zero_tension_is_the_straight_line() {
+        assert_eq!(Curve::with_tension(0.0), Curve::Linear);
+        for i in 0..=10 {
+            let x = f64::from(i) / 10.0;
+            assert_eq!(Curve::Tension(0.0).shape(x), x);
+            assert_eq!(Curve::Linear.shape(x), x);
+        }
+    }
+
+    #[test]
+    fn negative_tension_starts_slow_and_positive_leans_into_an_s() {
+        assert!(Curve::Tension(-0.8).shape(0.5) < 0.5);
+        assert!(Curve::Tension(0.8).shape(0.25) < 0.25);
+        assert!(Curve::Tension(0.8).shape(0.75) > 0.75);
+        assert_eq!(Curve::Tension(1.0).shape(0.5), 0.5);
+    }
+
+    #[test]
+    fn a_lane_follows_its_segments_tension() {
+        let lane = lane(vec![
+            point(0, 0.0, Curve::Tension(-1.0)),
+            point(100, 10.0, Curve::Linear),
+        ]);
+        let mid = lane.value_at(50.0).unwrap();
+        assert!(mid < 1.0, "an exponential segment is still low at half");
+        assert_eq!(lane.value_at(100.0), Some(10.0));
     }
 
     #[test]

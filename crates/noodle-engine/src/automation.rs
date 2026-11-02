@@ -180,8 +180,9 @@ fn encode(points: &[AutomationPoint]) -> String {
     let mut text = String::new();
     for point in points {
         let curve = match point.curve {
-            Curve::Linear => 'l',
-            Curve::Hold => 'h',
+            Curve::Linear => "l".to_owned(),
+            Curve::Hold => "h".to_owned(),
+            Curve::Tension(t) => format!("t{t}"),
         };
         let _ = write!(text, "{} {} {curve};", point.tick.0, point.value);
     }
@@ -197,7 +198,7 @@ fn decode(text: &str) -> Option<Vec<AutomationPoint>> {
             let curve = match fields.next()? {
                 "l" => Curve::Linear,
                 "h" => Curve::Hold,
-                _ => return None,
+                other => Curve::Tension(other.strip_prefix('t')?.parse().ok()?),
             };
             Some(AutomationPoint { tick, value, curve })
         })
@@ -274,9 +275,9 @@ impl LaneSource {
         };
         let along = tick - before.tick.0 as f64;
         match before.curve {
-            Curve::Linear => {
+            curve @ (Curve::Linear | Curve::Tension(_)) => {
                 let span = (next.tick.0 - before.tick.0) as f64;
-                before.value + (next.value - before.value) * (along / span) as f32
+                before.value + (next.value - before.value) * curve.shape(along / span) as f32
             }
             Curve::Hold => {
                 let from = i.checked_sub(1).map(|j| &points[j]);
@@ -319,6 +320,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_lane_source_bends_a_segment_by_its_tension() {
+        let point = |tick, value, curve| AutomationPoint {
+            tick: Tick(tick),
+            value,
+            curve,
+        };
+        let source = LaneSource {
+            points: vec![
+                point(0, 0.0, Curve::Tension(-1.0)),
+                point(100, 1.0, Curve::Linear),
+                point(200, 0.0, Curve::Linear),
+            ],
+            smoothing_ms: 0.0,
+        };
+        assert_eq!(source.value_at(0.0, 0.0), 0.0);
+        assert_eq!(source.value_at(100.0, 0.0), 1.0);
+        assert!(source.value_at(50.0, 0.0) < 0.1, "exponential: low at half");
+        assert_eq!(
+            source.value_at(150.0, 0.0),
+            0.5,
+            "a linear segment is straight"
+        );
+    }
+
+    #[test]
     fn points_survive_the_trip_through_config_text() {
         let points: Vec<_> = [0.1f32, -0.0, 1e-30, 123456.79, f32::MIN_POSITIVE]
             .iter()
@@ -326,10 +352,10 @@ mod tests {
             .map(|(i, &value)| AutomationPoint {
                 tick: Tick(i as i64 * 7919),
                 value,
-                curve: if i % 2 == 0 {
-                    Curve::Linear
-                } else {
-                    Curve::Hold
+                curve: match i % 3 {
+                    0 => Curve::Linear,
+                    1 => Curve::Hold,
+                    _ => Curve::Tension(-0.37),
                 },
             })
             .collect();
