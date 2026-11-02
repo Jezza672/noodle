@@ -693,7 +693,7 @@ mod tests {
             .filter(|p| p.kind == kind)
             .map(|p| (p.tick.0, p.value))
             .collect();
-        points.sort_by(|a, b| a.0.cmp(&b.0));
+        points.sort_by_key(|p| p.0);
         points
     }
 

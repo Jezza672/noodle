@@ -208,10 +208,7 @@ pub fn controls_from(points: &[ControlPoint], delta: i64) -> Vec<ControlPoint> {
         };
         if delta > 0 && !lane().any(|p| p.tick.0 == delta) {
             let value = value_along(lane().map(|p| (p.tick, p.value, p.ramp)), Tick(delta));
-            let ramp = lane()
-                .filter(|p| p.tick.0 < delta)
-                .last()
-                .is_some_and(|p| p.ramp)
+            let ramp = lane().rfind(|p| p.tick.0 < delta).is_some_and(|p| p.ramp)
                 && lane().any(|p| p.tick.0 > delta);
             if let Some(value) = value {
                 out.push(ControlPoint {
@@ -287,8 +284,7 @@ impl MidiNote {
                     .map(|e| (e.tick, e.value, e.ramp))
             };
             let ramps = of()
-                .filter(|p| p.0.0 <= delta)
-                .last()
+                .rfind(|p| p.0.0 <= delta)
                 .is_some_and(|p| p.2 && of().any(|q| q.0.0 > delta));
             if let Some(value) = value_along(of(), Tick(delta)) {
                 out.push(NoteExpression {
