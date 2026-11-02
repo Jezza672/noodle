@@ -143,6 +143,7 @@ enum Action {
     /// Bars of count-in and of pre-roll before a recording.
     SetCountIn(u8),
     SetPreRoll(u8),
+    SetAutomationMode(crate::session::record_automation::AutomationMode),
     /// Turns the audio engine on or off.
     ToggleEngine,
     /// Stops listening to monitored nodes (Escape).
@@ -951,6 +952,7 @@ impl App {
         }
         self.quantise_menu(ui, actions);
         self.lead_in_menus(ui, actions);
+        self.automation_mode_menu(ui, actions);
         self.monitor_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
@@ -1083,6 +1085,30 @@ impl App {
             actions,
             Action::SetPreRoll,
         );
+    }
+
+    /// How armed Automation nodes write: Read, Touch or Latch.
+    fn automation_mode_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use crate::session::record_automation::AutomationMode;
+        let current = self.session.automation_mode();
+        crate::widgets::Dropdown::from_id_salt("automation_mode")
+            .width(64.0)
+            .selected_text(format!("Auto {}", current.label()))
+            .show_ui(ui, |ui| {
+                for choice in AutomationMode::ALL {
+                    if ui
+                        .selectable_label(choice == current, choice.label())
+                        .on_hover_text(choice.tooltip())
+                        .clicked()
+                    {
+                        actions.push(Action::SetAutomationMode(choice));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "How armed Automation nodes record: Read plays back, Touch writes while you move, Latch holds the last move",
+            );
     }
 
     /// Where the monitor buttons on nodes play: the main output or any other
@@ -1545,6 +1571,10 @@ impl App {
                     self.session.pre_roll_bars(),
                 );
             }
+            Action::SetAutomationMode(mode) => {
+                self.session.set_automation_mode(mode);
+                crate::prefs::remember_automation_mode(mode);
+            }
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);
@@ -1644,7 +1674,7 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
-            Action::ExportAudio => self.export.open(&self.session),
+            Action::ExportAudio => self.export.open(&mut self.session),
             Action::StartExport => {
                 if let Some(choice) = self.export.take_choice() {
                     self.start_export(choice);
@@ -1735,22 +1765,35 @@ impl eframe::App for App {
 impl App {
     /// Asks where to write the export and starts it.
     fn start_export(&mut self, choice: crate::session::ExportChoice) {
-        let name = format!("{}.{}", self.session.name(), choice.format.extension());
-        let mut dialog = rfd::FileDialog::new().set_file_name(name);
-        if let Some(dir) = self.session.directory() {
-            dialog = dialog.set_directory(dir);
-        }
-        let Some(path) = dialog
-            .add_filter(choice.format.label(), &[choice.format.extension()])
-            .save_file()
-        else {
-            self.export.declined();
-            return;
-        };
-        // Some platforms' dialogs don't add the extension.
-        let path = if path.extension().is_none() {
-            path.with_extension(choice.format.extension())
+        // One file is a file to save; several go in a folder.
+        let path = if choice.groups.is_empty() {
+            let name = format!("{}.{}", self.session.name(), choice.format.extension());
+            let mut dialog = rfd::FileDialog::new().set_file_name(name);
+            if let Some(dir) = self.session.directory() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(path) = dialog
+                .add_filter(choice.format.label(), &[choice.format.extension()])
+                .save_file()
+            else {
+                self.export.declined();
+                return;
+            };
+            // Some platforms' dialogs don't add the extension.
+            if path.extension().is_none() {
+                path.with_extension(choice.format.extension())
+            } else {
+                path
+            }
         } else {
+            let mut dialog = rfd::FileDialog::new().set_title("Folder for the exported files");
+            if let Some(dir) = self.session.directory() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(path) = dialog.pick_folder() else {
+                self.export.declined();
+                return;
+            };
             path
         };
         match self.session.start_export(path, choice) {
@@ -2355,6 +2398,23 @@ mod tests {
         harness.get_by_label("To");
         // An empty project's range runs from 0 to 0: nothing to write.
         harness.get_by_label("The range ends before it starts");
+    }
+
+    #[test]
+    fn the_export_dialog_offers_the_mixdown_and_loudness_and_wants_something_chosen() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Export Audio…").click();
+        harness.run();
+        harness.get_by_label("Mixdown");
+        harness.get_by_label_contains("Normalise mixdown to");
+        harness.get_by_label_contains("dithered");
+        // With the mixdown unticked and no track, there is nothing to write.
+        harness.get_by_label("Mixdown").click();
+        harness.run();
+        harness.get_by_label("Choose the mixdown or a track to export");
     }
 
     #[test]

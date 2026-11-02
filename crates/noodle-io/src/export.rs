@@ -128,6 +128,7 @@ pub struct ExportWriter {
     partial: PathBuf,
     path: PathBuf,
     channels: usize,
+    dither: Dither,
 }
 
 enum Inner {
@@ -162,10 +163,41 @@ struct FlacState {
     out: BufWriter<File>,
 }
 
-fn scale(sample: f32, bits: usize) -> i32 {
+/// Triangular-PDF dither: two uniform values subtracted, so the noise is
+/// up to one step either way and the rounding error no longer follows the
+/// signal. The generator is seeded the same for every file, so exporting the
+/// same audio twice writes the same bytes.
+struct Dither(u64);
+
+impl Dither {
+    fn new() -> Self {
+        Self(0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// A value in `[0, 1)` (xorshift64*).
+    fn uniform(&mut self) -> f32 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        let bits = self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
+        bits as f32 / (1u32 << 24) as f32
+    }
+
+    /// One step of dither, in `(-1, 1)`.
+    fn next(&mut self) -> f32 {
+        self.uniform() - self.uniform()
+    }
+}
+
+/// Rounds a sample to `bits` bits, with TPDF dither added first. Digital
+/// silence stays silent, so a track file is exactly empty where its track is.
+fn scale(sample: f32, bits: usize, dither: &mut Dither) -> i32 {
     let max = ((1i64 << (bits - 1)) - 1) as f32;
     let sample = if sample.is_finite() { sample } else { 0.0 };
-    (sample.clamp(-1.0, 1.0) * max).round() as i32
+    let noise = if sample == 0.0 { 0.0 } else { dither.next() };
+    (sample.clamp(-1.0, 1.0) * max + noise)
+        .round()
+        .clamp(-max, max) as i32
 }
 
 impl ExportWriter {
@@ -241,24 +273,30 @@ impl ExportWriter {
             partial,
             path: path.to_owned(),
             channels,
+            dither: Dither::new(),
         })
     }
 
-    /// Appends interleaved samples.
+    /// Appends interleaved samples. The 16 and 24-bit formats round them
+    /// with TPDF dither; 32-bit float keeps them as they are.
     pub fn write(&mut self, samples: &[f32]) -> Result<(), ExportError> {
         match self.inner.as_mut().expect("writer used after finish") {
             Inner::Wav { writer, format } => {
                 for &sample in samples {
                     match *format {
                         ExportFormat::WavFloat => writer.write_sample(sample)?,
-                        other => writer.write_sample(scale(sample, other.bits()))?,
+                        other => {
+                            writer.write_sample(scale(sample, other.bits(), &mut self.dither))?
+                        }
                     }
                 }
             }
             Inner::Flac(state) => {
                 state.real_frames += (samples.len() / state.channels) as u64;
                 for &sample in samples {
-                    state.pending.push(scale(sample, state.bits));
+                    state
+                        .pending
+                        .push(scale(sample, state.bits, &mut self.dither));
                     if state.pending.len() == state.block * state.channels {
                         state.encode_block()?;
                     }
@@ -422,14 +460,68 @@ mod tests {
     }
 
     #[test]
+    fn sixteen_and_twenty_four_bits_are_tpdf_dithered_and_float_is_not() {
+        // A level a third of the way between two 16-bit steps. Rounded
+        // plainly every sample is the same step; dithered, the steps either
+        // side share it out so the mean lands on the true level, with
+        // triangular spread up to one step each way.
+        let step = 1.0 / 32767.0;
+        let level = (1000.0 + 1.0 / 3.0) * step;
+        let samples = vec![level; 30_000];
+        for format in [ExportFormat::Wav16, ExportFormat::Flac16] {
+            let audio = export(format, &samples, 1);
+            let codes: Vec<i32> = audio
+                .samples
+                .iter()
+                .map(|s| (s * 32767.0).round() as i32)
+                .collect();
+            let distinct: std::collections::BTreeSet<i32> = codes.iter().copied().collect();
+            assert!(distinct.len() >= 3, "{format:?}: {distinct:?}");
+            assert!(
+                codes.iter().all(|&c| (999..=1002).contains(&c)),
+                "{format:?}"
+            );
+            let mean = codes.iter().map(|&c| f64::from(c)).sum::<f64>() / codes.len() as f64;
+            assert!(
+                (mean - (1000.0 + 1.0 / 3.0)).abs() < 0.02,
+                "{format:?}: {mean}"
+            );
+            // Triangular, not uniform: the middle step is the commonest.
+            let at = |c: i32| codes.iter().filter(|&&x| x == c).count();
+            assert!(at(1000) > at(999) && at(1000) > at(1002), "{format:?}");
+        }
+        // 24 bits are dithered too, at their own, finer step.
+        let audio = export(ExportFormat::Wav24, &samples, 1);
+        let distinct: std::collections::BTreeSet<i64> = audio
+            .samples
+            .iter()
+            .map(|s| (f64::from(*s) * 8_388_607.0).round() as i64)
+            .collect();
+        assert!(distinct.len() >= 2, "{distinct:?}");
+        // Float is written as it is, and digital silence stays silent.
+        assert!(export(ExportFormat::WavFloat, &samples, 1).samples == samples);
+        let silent = export(ExportFormat::Wav16, &vec![0.0; 5_000], 1);
+        assert!(silent.samples.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn the_same_audio_exports_to_the_same_bytes() {
+        let samples = tone(5_000, 2);
+        let a = export(ExportFormat::Wav16, &samples, 2).samples;
+        let b = export(ExportFormat::Wav16, &samples, 2).samples;
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn every_format_reads_back_what_was_written() {
         let samples = tone(10_000, 2);
         for (format, tolerance) in [
             (ExportFormat::WavFloat, 0.0),
-            (ExportFormat::Wav24, 2e-7),
-            (ExportFormat::Wav16, 5e-5),
-            (ExportFormat::Flac24, 2e-7),
-            (ExportFormat::Flac16, 5e-5),
+            // Up to one step of dither and half a step of rounding.
+            (ExportFormat::Wav24, 3e-7),
+            (ExportFormat::Wav16, 7e-5),
+            (ExportFormat::Flac24, 3e-7),
+            (ExportFormat::Flac16, 7e-5),
         ] {
             let audio = export(format, &samples, 2);
             assert_eq!(audio.channels, 2, "{format:?}");

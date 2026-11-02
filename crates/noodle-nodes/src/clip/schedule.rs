@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use noodle_core::{
-    ClipContent, ClipId, MIN_LOOP_SECONDS, NodeId, Project, TICKS_PER_QUARTER, Tick, WarpAxis,
-    WarpMode,
+    ClipContent, ClipId, ControlKind, ExpressionKind, MIN_LOOP_SECONDS, NodeId, Project,
+    TICKS_PER_QUARTER, Tick, WarpAxis, WarpMode,
 };
-use noodle_engine::TempoTable;
+use noodle_engine::{ChannelControl, EventKind, Expression, NoteId, TempoTable};
 use noodle_io::{AudioFiles, Decoder, FileInfo, FileStamp, clip_frames};
 
 use super::hub::Shared;
@@ -659,9 +659,219 @@ pub struct ScheduledNote {
 /// the one below that.
 pub const CLIP_NOTE_MASK: u32 = 0x1FFF_FFFF;
 
-/// A track's MIDI notes, sorted by start (then ID). Notes of overlapping
-/// clips all play.
-pub type Notes = Vec<ScheduledNote>;
+/// One controller, program or note-expression event of a MIDI clip, placed
+/// on the timeline in samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScheduledControl {
+    pub time: u64,
+    pub kind: EventKind,
+    /// Which controller of which channel it sets, for catching up after a
+    /// jump; `None` for a note's expression, which only plays while the note
+    /// sounds.
+    pub lane: Option<(u8, u16)>,
+    /// Set at the end of a clip to let go of what it set (pedal up, bend
+    /// centred). A catch-up skips the controllers whose latest event is one.
+    pub release: bool,
+}
+
+/// A track's MIDI: the notes sorted by start (then ID), and the controllers
+/// and expressions sorted by time. Those of overlapping clips all play.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notes {
+    pub notes: Vec<ScheduledNote>,
+    pub controls: Vec<ScheduledControl>,
+}
+
+impl Notes {
+    pub fn is_empty(&self) -> bool {
+        self.notes.is_empty() && self.controls.is_empty()
+    }
+}
+
+/// How often a ramp between two points is played: about every 5 ms.
+const RAMP_SECONDS: f64 = 0.005;
+
+fn unit_to_u32(value: f32) -> u32 {
+    (f64::from(value.clamp(0.0, 1.0)) * 4_294_967_296.0).min(f64::from(u32::MAX)) as u32
+}
+
+fn bend_to_u32(value: f32) -> u32 {
+    ((f64::from(value.clamp(-1.0, 1.0)) + 1.0) * 2_147_483_648.0).min(f64::from(u32::MAX)) as u32
+}
+
+/// The controller `kind` set to `value` on `channel`, as the engine plays it.
+fn control_event(channel: u8, kind: ControlKind, value: f32) -> (EventKind, (u8, u16)) {
+    let (code, event) = match kind {
+        ControlKind::Controller(n) => (
+            u16::from(n & 127),
+            EventKind::Channel {
+                channel,
+                control: ChannelControl::Controller(n & 127),
+                value: unit_to_u32(value),
+            },
+        ),
+        ControlKind::PitchBend => (
+            128,
+            EventKind::Channel {
+                channel,
+                control: ChannelControl::PitchBend,
+                value: bend_to_u32(value),
+            },
+        ),
+        ControlKind::ChannelPressure => (
+            129,
+            EventKind::Channel {
+                channel,
+                control: ChannelControl::Pressure,
+                value: unit_to_u32(value),
+            },
+        ),
+        ControlKind::ProgramChange => (
+            130,
+            EventKind::Midi([
+                0xC0 | channel,
+                (value.clamp(0.0, 1.0) * 127.0).round() as u8,
+                0,
+            ]),
+        ),
+    };
+    (event, (channel, code))
+}
+
+fn expression_kind(kind: ExpressionKind) -> Expression {
+    match kind {
+        ExpressionKind::Pitch => Expression::Pitch,
+        ExpressionKind::Pressure => Expression::Pressure,
+        ExpressionKind::Timbre => Expression::Timbre,
+        ExpressionKind::Volume => Expression::Volume,
+        ExpressionKind::Pan => Expression::Pan,
+    }
+}
+
+/// The samples at which a ramp from `from` to `to` (both sample times) puts
+/// out a value, and the share of the way (0 to 1) it has gone there: after
+/// `from`, every [`RAMP_SECONDS`], and before `to`.
+fn ramp_steps(from: u64, to: u64, rate: u32) -> impl Iterator<Item = (u64, f32)> {
+    let step = ((f64::from(rate) * RAMP_SECONDS) as u64).max(1);
+    (1..)
+        .map(move |k| from + k * step)
+        .take_while(move |&t| t < to)
+        .map(move |t| (t, (t - from) as f32 / (to - from) as f32))
+}
+
+/// The id a note sounds under.
+fn note_id(id: ClipId, note: &noodle_core::MidiNote) -> u32 {
+    // A note is known by its clip, place and key, so removing or moving
+    // other notes leaves it alone. Two notes can only share an identity
+    // by being the same note twice.
+    let mut hasher = DefaultHasher::new();
+    (id, note.start, note.key).hash(&mut hasher);
+    hasher.finish() as u32 & CLIP_NOTE_MASK
+}
+
+/// Turns the controllers and note expressions of a MIDI clip into scheduled
+/// events: ramps become events at a fixed rate, and what the clip set is
+/// released where it ends.
+fn schedule_controls(
+    table: &TempoTable,
+    rate: u32,
+    id: ClipId,
+    clip: &noodle_core::Clip,
+    midi: &noodle_core::MidiClip,
+    out: &mut Notes,
+) {
+    let at = |ticks: i64| table.sample_at_tick(noodle_core::Tick(clip.start.0 + ticks));
+    let clip_end = at(midi.length.0);
+    let mut groups: std::collections::BTreeMap<(u8, ControlKind), Vec<noodle_core::ControlPoint>> =
+        Default::default();
+    for point in midi.played_controls() {
+        groups
+            .entry((point.channel, point.kind))
+            .or_default()
+            .push(point);
+    }
+    for ((channel, kind), points) in &groups {
+        for (i, point) in points.iter().enumerate() {
+            let time = at(point.tick.0);
+            let (event, lane) = control_event(*channel, *kind, point.value);
+            out.controls.push(ScheduledControl {
+                time,
+                kind: event,
+                lane: Some(lane),
+                release: false,
+            });
+            if let (true, Some(next)) = (point.ramp, points.get(i + 1)) {
+                let to = at(next.tick.0).min(clip_end);
+                for (t, share) in ramp_steps(time, to, rate) {
+                    let value = point.value + (next.value - point.value) * share;
+                    out.controls.push(ScheduledControl {
+                        time: t,
+                        kind: control_event(*channel, *kind, value).0,
+                        lane: Some(lane),
+                        release: false,
+                    });
+                }
+            }
+        }
+        if let Some(rest) = kind.rest() {
+            let (event, lane) = control_event(*channel, *kind, rest);
+            out.controls.push(ScheduledControl {
+                time: clip_end,
+                kind: event,
+                lane: Some(lane),
+                release: true,
+            });
+        }
+    }
+    for note in &midi.played() {
+        if note.expressions.is_empty() {
+            continue;
+        }
+        let start = at(note.start.0);
+        if start >= clip_end {
+            continue;
+        }
+        let end = at(note.end().0).min(clip_end).max(start + 1);
+        let note_id = NoteId(note_id(id, note));
+        let expressions = note.expressions_until(note.length.0);
+        let mut kinds: Vec<ExpressionKind> = expressions.iter().map(|e| e.kind).collect();
+        kinds.sort();
+        kinds.dedup();
+        for kind in kinds {
+            let mut points: Vec<&noodle_core::NoteExpression> =
+                expressions.iter().filter(|e| e.kind == kind).collect();
+            points.sort_by_key(|e| e.tick);
+            let event = |value: f32| EventKind::Expression {
+                note: note_id,
+                expression: expression_kind(kind),
+                value,
+            };
+            for (i, point) in points.iter().enumerate() {
+                let time = at(note.start.0 + point.tick.0).max(start);
+                if time >= end {
+                    continue;
+                }
+                out.controls.push(ScheduledControl {
+                    time,
+                    kind: event(point.value),
+                    lane: None,
+                    release: false,
+                });
+                if let (true, Some(next)) = (point.ramp, points.get(i + 1)) {
+                    let to = at(note.start.0 + next.tick.0).min(end);
+                    for (t, share) in ramp_steps(time, to, rate) {
+                        out.controls.push(ScheduledControl {
+                            time: t,
+                            kind: event(point.value + (next.value - point.value) * share),
+                            lane: None,
+                            release: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Turns the notes of a MIDI clip into scheduled notes.
 fn schedule_notes(
@@ -679,13 +889,8 @@ fn schedule_notes(
             continue;
         }
         let end = at(note.end().0).min(clip_end).max(start + 1);
-        // A note is known by its clip, place and key, so removing or moving
-        // other notes leaves it alone. Two notes can only share an identity
-        // by being the same note twice.
-        let mut hasher = DefaultHasher::new();
-        (id, note.start, note.key).hash(&mut hasher);
-        out.push(ScheduledNote {
-            id: hasher.finish() as u32 & CLIP_NOTE_MASK,
+        out.notes.push(ScheduledNote {
+            id: note_id(id, note),
             start,
             end,
             key: note.key,
@@ -1008,13 +1213,9 @@ impl ClipFeeds {
             let audio = match &clip.content {
                 ClipContent::Audio(audio) => audio,
                 ClipContent::Midi(midi) => {
-                    schedule_notes(
-                        table,
-                        id,
-                        clip,
-                        midi,
-                        notes_by_node.entry(clip.node).or_default(),
-                    );
+                    let out = notes_by_node.entry(clip.node).or_default();
+                    schedule_notes(table, id, clip, midi, out);
+                    schedule_controls(table, rate, id, clip, midi, out);
                     continue;
                 }
             };
@@ -1177,7 +1378,9 @@ impl ClipFeeds {
                 schedule.sort_by_key(|c| (c.start, c.id));
             }
             let mut notes = notes_by_node.remove(node).unwrap_or_default();
-            notes.sort_by_key(|n| (n.start, n.id));
+            notes.notes.sort_by_key(|n| (n.start, n.id));
+            // A release comes before what another clip sets at the same time.
+            notes.controls.sort_by_key(|c| (c.time, !c.release));
             shared.set(schedule, notes);
         }
         // Forget nodes that are gone: nothing holds their entry but this map

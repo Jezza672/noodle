@@ -1006,7 +1006,14 @@ fn params(
                 max: live.max,
             })
         });
-        let shown_value = reading.map_or(value, |reading| reading.value);
+        let mut shown_value = reading.map_or(value, |reading| reading.value);
+        // An Automation node's value shows its lane, and the value being
+        // written while it records.
+        if key == noodle_nodes::AUTOMATION_VALUE
+            && let Some(lane_value) = session.automation_value(id)
+        {
+            shown_value = lane_value;
+        }
         let lane = session
             .project()
             .lane_for(&Endpoint::new(id, key))

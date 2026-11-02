@@ -68,8 +68,8 @@ pub use arpeggiator::{
     ARPEGGIATOR_ID, Arpeggiator, RATE_NAMES as ARP_RATE_NAMES, RATE_TICKS as ARP_RATE_TICKS,
 };
 pub use automation::{
-    AUTOMATION_LABEL, AUTOMATION_MAX, AUTOMATION_MIN, AUTOMATION_NODE_ID, AUTOMATION_TAPER,
-    AUTOMATION_VALUE, Automation,
+    AUTOMATION_LABEL, AUTOMATION_MAX, AUTOMATION_MIN, AUTOMATION_NODE_ID, AUTOMATION_RECORD,
+    AUTOMATION_TAPER, AUTOMATION_VALUE, Automation,
 };
 pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
@@ -104,7 +104,7 @@ pub use eq::{
     EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
     default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
 };
-pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_export};
+pub use export::{ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,

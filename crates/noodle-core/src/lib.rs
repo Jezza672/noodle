@@ -20,8 +20,10 @@ pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};
 pub use cache_key::{CacheKey, KeyBuilder};
 pub use clip::{
     AudioClip, BUTT_SECONDS, Clip, ClipContent, ClipGroup, ClipGroupId, ClipId, CompSpan,
-    Crossfade, DEFAULT_COMP_FADE_SECONDS, GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint,
-    MIN_LOOP_LEN, MidiClip, MidiNote, Take, TakeFolder, gain_points_from_text, gain_points_to_text,
+    ControlKind, ControlPoint, Crossfade, DEFAULT_COMP_FADE_SECONDS, ExpressionKind,
+    GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint, MIN_LOOP_LEN, MidiClip, MidiNote,
+    NoteExpression, Take, TakeFolder, control_value_at, controls_from, gain_points_from_text,
+    gain_points_to_text,
 };
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};

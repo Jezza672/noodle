@@ -33,13 +33,18 @@ fn ramp(frame: f64) -> f32 {
 
 /// A file of three takes back to back, each the same ramp at its own level.
 fn folder() -> PathBuf {
-    let dir = std::env::temp_dir().join("noodle-take-folders");
-    std::fs::create_dir_all(&dir).unwrap();
-    let samples: Vec<f32> = (0..3 * N)
-        .flat_map(|i| [ramp((i % N) as f64) * LEVELS[(i / N) as usize], 0.0])
-        .collect();
-    write_wav(&dir.join("takes.wav"), &samples, 2, RATE).unwrap();
-    dir
+    // Written once: the tests run in parallel and all read the file.
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("noodle-take-folders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples: Vec<f32> = (0..3 * N)
+            .flat_map(|i| [ramp((i % N) as f64) * LEVELS[(i / N) as usize], 0.0])
+            .collect();
+        write_wav(&dir.join("takes.wav"), &samples, 2, RATE).unwrap();
+        dir
+    })
+    .clone()
 }
 
 /// One track straight to the output, playing `audio` from the start.
