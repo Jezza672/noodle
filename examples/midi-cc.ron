@@ -6,8 +6,8 @@
 // sustain. Two MIDI Control nodes read the clip's mod wheel (controller 1) and
 // pedal (controller 64) as signals: the wheel, scaled by a Math node, sets the
 // cutoff, and the pedal holds the gate open, in the group, after the note ends.
-// The clip holds one short note, the pedal down for all of it and up a little
-// after the note ends, and the wheel opening a ramp from closed to open.
+// The clip holds two short notes, each with the pedal down before it and up well
+// after it ends, and the wheel opening in a ramp from closed to open.
 (
     format: 1,
     graph: (
@@ -58,10 +58,13 @@
                 length: 3840,
                 notes: [
                     (start: 0, length: 40, key: 57, velocity: 0.9),
+                    (start: 240, length: 40, key: 60, velocity: 0.9),
                 ],
                 controls: [
                     (tick: 0, channel: 0, kind: Controller(64), value: 1.0),
                     (tick: 160, channel: 0, kind: Controller(64), value: 0.0),
+                    (tick: 230, channel: 0, kind: Controller(64), value: 1.0),
+                    (tick: 400, channel: 0, kind: Controller(64), value: 0.0),
                     (tick: 0, channel: 0, kind: Controller(1), value: 0.0, ramp: true),
                     (tick: 200, channel: 0, kind: Controller(1), value: 1.0),
                 ],
