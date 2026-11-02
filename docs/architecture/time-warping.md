@@ -8,7 +8,9 @@ the `WarpMode` (Repitch, Grain or Beats) and the switches `tempo_conversion` and
 `use_markers`. It lives in the project's `warps` map and an audio section
 (the code's `Clip`) names it by `WarpId` in `AudioClip::warp`; sections that
 show one clip share an ID, `Project::warp_edit` forks it when a section is
-edited on its own, `AddWarp`/`SetWarp`/`RemoveWarp` are commands, and a warp
+edited on its own (clips linked in a `ClipGroup` count as one section: they
+share the warp, edit it in place and fork it together; see
+[../features/linked-clips.md](../features/linked-clips.md)), `AddWarp`/`SetWarp`/`RemoveWarp` are commands, and a warp
 nothing uses is left out of the saved file. The format is 3; older files load
 (`warp` and `warps` default to none). A file that uses Grain or Beats can't be
 read by a build from before those modes existed (it doesn't know the name).

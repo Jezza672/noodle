@@ -94,7 +94,23 @@ fn rig(warped: bool) -> H {
                 let loaded = rig
                     .timeline
                     .source(ui.ctx(), directory.as_deref(), "hits.wav");
-                let out = show(ui, &mut rig.editor, &rig.session, loaded.as_ref(), None);
+                let linked = {
+                    let project = rig.session.project();
+                    let timeline = &mut rig.timeline;
+                    linked_lanes(project, rig.clip, |member| {
+                        let name = &project.clip(member)?.as_audio()?.source;
+                        timeline.source(ui.ctx(), directory.as_deref(), name)
+                    })
+                };
+                let linked = linked.as_ref().map(|(own, lanes)| (*own, lanes.as_slice()));
+                let out = show(
+                    ui,
+                    &mut rig.editor,
+                    &rig.session,
+                    loaded.as_ref(),
+                    linked,
+                    None,
+                );
                 rig.session.edit(out.edits);
                 // What the editor left of the wheel, for the tests.
                 rig.left_scroll = ui.input(|i| i.smooth_scroll_delta);
@@ -694,6 +710,88 @@ fn double_clicking_a_transients_handle_pins_it_where_it_plays() {
     assert_eq!(h.state().editor.selected().len(), 1);
 }
 
+/// The rig's clip linked to a second one on another track, from a file with
+/// the same hits 20 ms later (a mic further from the kit).
+fn linked_rig() -> H {
+    let mut h = rig(true);
+    let late: Vec<f32> = std::iter::repeat_n(0.0, 960)
+        .chain(clicks())
+        .take(4 * RATE as usize)
+        .collect();
+    let rig = h.state_mut();
+    write_wav(&rig._dir.path().join("hits2.wav"), &late, 1, RATE).unwrap();
+    let warp = rig.session.project().warp_of(rig.clip).unwrap().0;
+    let mut other = Clip::audio(NodeId(2), Tick(0), "hits2.wav", 4 * u64::from(RATE));
+    if let noodle_core::ClipContent::Audio(a) = &mut other.content {
+        a.warp = Some(warp);
+    }
+    let id = rig.session.project().next_clip_id();
+    rig.session.edit([
+        Edit::Apply(Command::AddNode {
+            id: NodeId(2),
+            node: Node::new(TRACK_INPUT),
+        }),
+        Edit::Apply(Command::AddClip { id, clip: other }),
+    ]);
+    let link = rig.session.project().link_command(&[rig.clip, id]);
+    rig.session.edit(link.map(Edit::Apply));
+    // The second file's transients arrive from a background worker.
+    for _ in 0..100 {
+        h.run();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    h
+}
+
+#[test]
+fn a_link_offers_every_clips_transients_each_on_its_own_row() {
+    let mut h = linked_rig();
+    let g = geometry(&h);
+    assert!(g.handles.height() > HANDLES + 1.0, "{:?}", g.handles);
+    // The second clip's hit at 0.52 s is 4 or so points from the first's at
+    // 0.5 s, and still a handle of its own, on the lower row.
+    let w = warp(&h);
+    let x = g.x(w.beat_at(0.52));
+    let lower = g.handles.bottom() - 3.0;
+    double_click(&mut h, Pos2::new(x, lower));
+    let after = warp(&h);
+    let pinned = after
+        .markers
+        .iter()
+        .find(|m| (m.seconds - 0.52).abs() < 0.005)
+        .unwrap_or_else(|| panic!("no marker on the second clip's hit: {:?}", after.markers));
+    assert!((pinned.beat - w.beat_at(0.52)).abs() < 0.02);
+    // The warp is the link's: both clips use it, so both play the pin.
+    let rig = h.state();
+    let project = rig.session.project();
+    let ids: Vec<_> = project.clips().map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 2);
+    let (a, b) = (
+        project.warp_of(ids[0]).unwrap().0,
+        project.warp_of(ids[1]).unwrap().0,
+    );
+    assert_eq!(a, b);
+    assert!(project.warp(a).unwrap().markers.len() == 1);
+}
+
+#[test]
+fn each_row_offers_only_its_own_clips_hits() {
+    let mut h = linked_rig();
+    let g = geometry(&h);
+    let w = warp(&h);
+    // Straight under the open clip's hit at 0.5 s, but on the lower row: the
+    // other clip's hit at 0.52 s is the one within reach there.
+    let x = g.x(w.beat_at(0.5));
+    double_click(&mut h, Pos2::new(x, g.handles.bottom() - 3.0));
+    let after = warp(&h);
+    assert_eq!(after.markers.len(), 1);
+    assert!(
+        (after.markers[0].seconds - 0.52).abs() < 0.005,
+        "{:?}",
+        after.markers
+    );
+}
+
 #[test]
 fn detect_finds_the_tempo_and_where_the_beat_falls() {
     let mut h = rig(true);
@@ -1157,7 +1255,14 @@ fn sample_rig() -> S {
         .build_ui_state(
             |ui, rig: &mut SampleRig| {
                 let loaded = crate::sample_view::loaded(ui.ctx(), &rig.session, rig.node);
-                let out = show(ui, &mut rig.editor, &rig.session, loaded.as_ref(), None);
+                let out = show(
+                    ui,
+                    &mut rig.editor,
+                    &rig.session,
+                    loaded.as_ref(),
+                    None,
+                    None,
+                );
                 rig.session.edit(out.edits);
             },
             SampleRig {
