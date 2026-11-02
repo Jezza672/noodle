@@ -192,6 +192,12 @@ fn play(route: &Route, n: usize, with_late: bool) -> Played {
         )
     };
     h.run_steps(3);
+    // Late changes start from the end state, so they cannot be scored from
+    // a wrong one.
+    let with_late = with_late && round_trip.ok();
+    if !round_trip.ok() {
+        failure.get_or_insert(format!("the undo round trip fails: {round_trip:?}"));
+    }
 
     let mut late = Vec::new();
     let mut seen = log.len();
