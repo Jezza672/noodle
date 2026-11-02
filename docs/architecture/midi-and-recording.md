@@ -241,8 +241,7 @@ Metronome node clicks on its own frame counter (`Transport::count_in`), then
 the take starts. With the loop on and the take starting inside it, the file
 holds one pass after another and `loop_takes` makes each a take of one take
 folder (see data-model.md, "Take folders"). MIDI follows the loop too: with
-the Takes setting (an app preference, `MidiRecord`, the "MIDI" dropdown next to
-Q) `MidiTake::passes` splits the messages by the pass they were played in (from
+the Takes setting (an app preference, `MidiRecord`, the Q dropdown's "Loop recording MIDI" choice) `MidiTake::passes` splits the messages by the pass they were played in (from
 the time since the take began, less the output latency) into one take each,
 every one running to the loop's end, and the clip is a MIDI take folder; with
 Merge every pass lands in one clip as before. A pass with under a quarter of

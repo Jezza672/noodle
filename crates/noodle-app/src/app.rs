@@ -1046,17 +1046,18 @@ impl App {
                         actions.push(Action::SetRecordQuantise(choice));
                     }
                 }
-            })
-            .response
-            .on_hover_text("Snap the notes of recorded MIDI to this grid");
-        let mode = self.session.record_midi();
-        crate::widgets::Dropdown::from_id_salt("record_midi")
-            .width(64.0)
-            .selected_text(format!("MIDI {}", mode.label()))
-            .show_ui(ui, |ui| {
+                ui.separator();
+                ui.label("Loop recording MIDI");
+                let mode = self.session.record_midi();
                 for choice in crate::midi_take::MidiRecord::ALL {
                     if ui
                         .selectable_label(choice == mode, choice.label())
+                        .on_hover_text(match choice {
+                            crate::midi_take::MidiRecord::Takes => {
+                                "A take of every cycle, in a take folder to comp from"
+                            }
+                            crate::midi_take::MidiRecord::Merge => "Every cycle in one clip",
+                        })
                         .clicked()
                     {
                         actions.push(Action::SetRecordMidi(choice));
@@ -1064,9 +1065,7 @@ impl App {
                 }
             })
             .response
-            .on_hover_text(
-                "Loop recording MIDI: Takes makes a take of every cycle to comp from; Merge puts every cycle in one clip",
-            );
+            .on_hover_text("Snap the notes of recorded MIDI to this grid");
     }
 
     /// The count-in (bars of metronome before a take) and the pre-roll (bars of
