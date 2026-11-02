@@ -778,6 +778,42 @@ impl Project {
         Ok(())
     }
 
+    /// A copy of the project in which the take folder `id`, and the take
+    /// folders linked to it, play only their take `take`: for auditioning one
+    /// take against the rest of the song. The project itself, and what is
+    /// saved or exported, is untouched. Folders with no such take are left
+    /// as they are.
+    pub fn auditioning(&self, id: ClipId, take: usize) -> Project {
+        let mut copy = self.clone();
+        for member in self.linked_with(id) {
+            let Some(clip) = copy.clips.get_mut(&member) else {
+                continue;
+            };
+            match &mut clip.content {
+                crate::ClipContent::Audio(audio) => {
+                    if let Some(folder) = audio.takes.as_mut()
+                        && take < folder.takes.len()
+                    {
+                        *folder = crate::TakeFolder {
+                            takes: folder.takes.clone(),
+                            comp: crate::TakeFolder::new(folder.takes.clone(), take).comp,
+                        };
+                    }
+                }
+                crate::ClipContent::Midi(midi) => {
+                    if let Some(takes) = midi.takes.as_mut()
+                        && take < takes.content.len()
+                    {
+                        takes.folder.comp =
+                            crate::TakeFolder::new(takes.folder.takes.clone(), take).comp;
+                        midi.play_comp();
+                    }
+                }
+            }
+        }
+        copy
+    }
+
     pub(crate) fn insert_clip(&mut self, id: ClipId, mut clip: Clip) -> Result<(), EditError> {
         clip.assign_note_ids();
         if self.clips.contains_key(&id) {

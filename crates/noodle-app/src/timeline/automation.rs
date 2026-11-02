@@ -174,6 +174,8 @@ pub struct Rows {
     tops: Vec<f32>,
     /// Each track's own lane height.
     heights: Vec<f32>,
+    /// The height of the take lanes shown under each track's own lane.
+    takes: Vec<f32>,
     lanes: Vec<Vec<LaneId>>,
     /// Lanes on Automation nodes that no track claims, after the last track.
     free: Vec<LaneId>,
@@ -182,15 +184,20 @@ pub struct Rows {
 }
 
 impl Rows {
-    /// `heights` is each track's own lane height, parallel to `tracks`.
-    pub fn new(project: &Project, tracks: &[NodeId], heights: &[f32]) -> Self {
+    /// `heights` is each track's own lane height, parallel to `tracks`, and
+    /// `takes` how many take lanes each shows under it.
+    pub fn new(project: &Project, tracks: &[NodeId], heights: &[f32], takes: &[usize]) -> Self {
+        let takes: Vec<f32> = takes
+            .iter()
+            .map(|&n| n as f32 * super::takes::LANE)
+            .collect();
         let mut tops = Vec::with_capacity(tracks.len());
         let mut lanes = Vec::with_capacity(tracks.len());
         let mut at = 0.0;
-        for (&track, &height) in tracks.iter().zip(heights) {
+        for (index, (&track, &height)) in tracks.iter().zip(heights).enumerate() {
             let own = lanes_for(project, track);
             tops.push(at);
-            at += height + own.len() as f32 * HEIGHT;
+            at += height + takes[index] + own.len() as f32 * HEIGHT;
             lanes.push(own);
         }
         let claimed: std::collections::BTreeSet<LaneId> = lanes.iter().flatten().copied().collect();
@@ -206,6 +213,7 @@ impl Rows {
         Self {
             tops,
             heights: heights.to_vec(),
+            takes,
             lanes,
             free,
             free_top,
@@ -247,7 +255,7 @@ impl Rows {
 
     /// The height of track `index`'s block, automation included.
     pub fn height(&self, index: usize) -> f32 {
-        self.heights[index] + self.lanes[index].len() as f32 * HEIGHT
+        self.heights[index] + self.takes[index] + self.lanes[index].len() as f32 * HEIGHT
     }
 
     /// The height of track `index`'s own lane, without its automation.
@@ -267,7 +275,7 @@ impl Rows {
 
     /// Where the row for the `k`th automation lane of track `index` begins.
     pub fn lane_top(&self, index: usize, k: usize) -> f32 {
-        self.tops[index] + self.heights[index] + k as f32 * HEIGHT
+        self.tops[index] + self.heights[index] + self.takes[index] + k as f32 * HEIGHT
     }
 
     /// The track whose block contains `y`, in points below the top of the

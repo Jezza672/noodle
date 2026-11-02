@@ -11,7 +11,7 @@
 pub(crate) mod add_track;
 mod automation;
 pub(crate) mod clips;
-mod comp;
+pub(crate) mod comp;
 mod crossfade;
 pub(crate) mod grid;
 pub(crate) mod header;
@@ -19,6 +19,7 @@ pub mod import;
 mod midi_preview;
 mod sources;
 mod take;
+mod takes;
 mod tempo_lane;
 mod warped;
 mod warped_waves;
@@ -104,6 +105,7 @@ pub struct TimelineState {
     warped_waves: warped_waves::WarpedWaves,
     automation: automation::State,
     crossfade: crossfade::State,
+    takes: takes::State,
     /// The bar a right-click on the ruler opened its menu at.
     ruler_menu_bar: Option<u32>,
     /// Whether the tempo lane is shown under the ruler.
@@ -113,6 +115,10 @@ pub struct TimelineState {
     clip_rects: HashMap<ClipId, Rect>,
     #[cfg(test)]
     take_rects: HashMap<NodeId, Rect>,
+    #[cfg(test)]
+    take_lane_rects: HashMap<(ClipId, usize), Rect>,
+    #[cfg(test)]
+    join_rects: HashMap<(ClipId, usize), Rect>,
     #[cfg(test)]
     fade_handles: HashMap<(ClipId, bool), Rect>,
     /// The text drawn on the lanes last frame; painted text isn't in the
@@ -146,6 +152,7 @@ impl Default for TimelineState {
             warped_waves: warped_waves::WarpedWaves::default(),
             automation: automation::State::default(),
             crossfade: crossfade::State::default(),
+            takes: takes::State::default(),
             show_tempo: false,
             ruler_menu_bar: None,
             tempo: tempo_lane::State::default(),
@@ -153,6 +160,10 @@ impl Default for TimelineState {
             clip_rects: HashMap::new(),
             #[cfg(test)]
             take_rects: HashMap::new(),
+            #[cfg(test)]
+            take_lane_rects: HashMap::new(),
+            #[cfg(test)]
+            join_rects: HashMap::new(),
             #[cfg(test)]
             fade_handles: HashMap::new(),
             #[cfg(test)]
@@ -472,6 +483,9 @@ pub struct Output {
     pub open_midi: Option<ClipId>,
     /// An audio clip they double-clicked, to open in the clip editor.
     pub open_audio: Option<ClipId>,
+    /// They clicked a take to audition (or the same one to stop): the take
+    /// folder and take.
+    pub audition: Option<Option<(ClipId, usize)>>,
 }
 
 /// Where imported audio goes when it isn't dropped on a lane.
@@ -493,7 +507,9 @@ pub fn show(
     state.retain_existing(project);
     let tracks = state.tracks(project);
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
-    let rows = automation::Rows::new(project, &tracks, &heights);
+    state.takes.retain(project);
+    let take_lanes = state.takes.lanes(project, &tracks);
+    let rows = automation::Rows::new(project, &tracks, &heights, &take_lanes);
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -538,6 +554,7 @@ pub fn show(
     let mut edits = Vec::new();
     let mut open_midi = None;
     let mut open_audio = None;
+    let mut audition = None;
     let mut notice: Option<String> = None;
     let mut arm = Vec::new();
     let mut jump = None;
@@ -545,6 +562,8 @@ pub fn show(
     {
         state.clip_rects.clear();
         state.take_rects.clear();
+        state.take_lane_rects.clear();
+        state.join_rects.clear();
         state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
@@ -848,6 +867,21 @@ pub fn show(
                                 ui.close();
                                 edits.push(Edit::Apply(toggle_mute(id, clip)));
                             }
+                            if audio.takes.is_some() {
+                                let open = state.takes.shown.contains(&id);
+                                if ui
+                                    .button(if open { "Hide takes" } else { "Show takes" })
+                                    .on_hover_text("Show the takes under the track to comp them: drag across a take to play that part of it, click one to audition it")
+                                    .clicked()
+                                {
+                                    ui.close();
+                                    if open {
+                                        state.takes.shown.remove(&id);
+                                    } else {
+                                        state.takes.shown.insert(id);
+                                    }
+                                }
+                            }
                             if audio.takes.is_some()
                                 && ui
                                     .button("Flatten takes")
@@ -868,6 +902,31 @@ pub fn show(
                             {
                                 ui.close();
                                 edits.push(Edit::SplitToStems(id));
+                            }
+                            ui.separator();
+                        }
+                        if let Some(midi) = clip.as_midi()
+                            && midi.takes.is_some()
+                        {
+                            let open = state.takes.shown.contains(&id);
+                            if ui
+                                .button(if open { "Hide takes" } else { "Show takes" })
+                                .clicked()
+                            {
+                                ui.close();
+                                if open {
+                                    state.takes.shown.remove(&id);
+                                } else {
+                                    state.takes.shown.insert(id);
+                                }
+                            }
+                            if ui
+                                .button("Flatten takes")
+                                .on_hover_text("Keep what the comp plays as a plain clip and drop the takes")
+                                .clicked()
+                            {
+                                ui.close();
+                                edits.extend(comp::flatten_midi(project, id).map(Edit::Apply));
                             }
                             ui.separator();
                         }
@@ -1073,6 +1132,33 @@ pub fn show(
                         };
                         edits.extend(fade_handles(handles, id, clip));
                     }
+                }
+            }
+
+            // The take lanes of the open take folders, track by track.
+            for (index, &track) in tracks.iter().enumerate() {
+                if take_lanes[index] == 0 {
+                    continue;
+                }
+                let lane_height = rows.lane_height(index);
+                let top = lane_top(index);
+                if top > content.bottom() || top + rows.height(index) < content.top() {
+                    continue;
+                }
+                let shown = takes::View {
+                    project,
+                    axis,
+                    content,
+                    directory: directory.as_deref(),
+                    colour: colors::track_colour(index),
+                    lane_top: top,
+                    lane_height,
+                    audition: session.take_audition(),
+                };
+                let lanes = takes::show(ui, state, &shown, track);
+                edits.extend(lanes.edits);
+                if lanes.audition.is_some() {
+                    audition = lanes.audition;
                 }
             }
 
@@ -1829,6 +1915,7 @@ pub fn show(
         arm,
         open_midi,
         open_audio,
+        audition,
     }
 }
 

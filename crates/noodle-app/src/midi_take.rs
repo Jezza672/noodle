@@ -69,6 +69,27 @@ impl Quantise {
     }
 }
 
+/// What a loop recording of MIDI makes of its passes through the loop: a take
+/// each, in a take folder to comp from, or one clip with every pass merged
+/// (overdub). An app preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MidiRecord {
+    #[default]
+    Takes,
+    Merge,
+}
+
+impl MidiRecord {
+    pub const ALL: [Self; 2] = [Self::Takes, Self::Merge];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Takes => "Takes",
+            Self::Merge => "Merge",
+        }
+    }
+}
+
 /// A take of MIDI being recorded.
 pub struct MidiTake {
     receiver: MidiReceiver,
@@ -80,6 +101,36 @@ pub struct MidiTake {
     /// Each message with the arrival time and the anchor current when it
     /// was collected.
     messages: Vec<(u64, MidiMessage, Anchor)>,
+}
+
+/// The passes through a loop that a loop recording makes.
+#[derive(Clone, Copy, Debug)]
+pub struct Cycles {
+    /// Samples from the take's start to the loop's end.
+    pub first: f64,
+    /// Samples in one pass of the loop.
+    pub cycle: f64,
+    /// The loop's start and end.
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl Cycles {
+    /// The pass that `samples` (counted from the take's start, as heard)
+    /// fall in.
+    fn index(&self, samples: f64) -> usize {
+        if samples < self.first || self.cycle <= 0.0 {
+            0
+        } else {
+            1 + ((samples - self.first) / self.cycle) as usize
+        }
+    }
+}
+
+/// One pass through the loop, to be built from the take.
+struct Pass<'a> {
+    cycles: &'a Cycles,
+    index: usize,
 }
 
 /// A `(micros, transport sample)` pair from the audio thread.
@@ -120,6 +171,7 @@ impl MidiTake {
 
     /// Ends the take. The clip starts where the take did and runs to where it
     /// ended, or `None` if no note was played.
+    #[cfg(test)]
     pub fn finish(mut self, finish: &Finish<'_>) -> Option<(Tick, MidiClip)> {
         self.poll(finish.anchor);
         self.clip_so_far(finish)
@@ -129,6 +181,55 @@ impl MidiTake {
     /// ending it: what is on screen while recording. Notes still held end
     /// at the stop. Call [`poll`](Self::poll) first.
     pub fn clip_so_far(&self, finish: &Finish<'_>) -> Option<(Tick, MidiClip)> {
+        self.build(finish, None)
+    }
+
+    /// The take as one take per pass through the loop `cycles` describes,
+    /// ended as `finish` says: the tick the first starts at and the
+    /// passes' clips, which all run to the loop's end and are windows onto
+    /// the same stretch of music. A pass in which nothing was played is an
+    /// empty clip. `None` if no pass has anything in it. Call
+    /// [`poll`](Self::poll) first (or use this to end the take).
+    pub fn passes(&self, finish: &Finish<'_>, cycles: &Cycles) -> Option<(Tick, Vec<MidiClip>)> {
+        let heard = (finish.stop_micros.saturating_sub(self.start_micros)) as f64
+            * finish.sample_rate
+            / 1e6
+            - finish.output_latency_micros as f64 * finish.sample_rate / 1e6;
+        let mut count = cycles.index(heard) + 1;
+        // A sliver at the end, from stopping just after a wrap, is not a take.
+        if count > 1 {
+            let into = heard - cycles.first - (count - 2) as f64 * cycles.cycle;
+            if into * 4.0 < cycles.first {
+                count -= 1;
+            }
+        }
+        let mut start = None;
+        let mut passes = Vec::new();
+        for index in 0..count {
+            let clip = self.build(finish, Some(Pass { cycles, index }));
+            let (at, clip) = match clip {
+                Some((at, clip)) => (Some(at), clip),
+                None => (None, MidiClip::new(Tick(1))),
+            };
+            start = start.or(at);
+            passes.push(clip);
+        }
+        let start = start?;
+        // Every pass runs to the loop's end.
+        let length = Tick((cycles.end.0 - start.0).max(1));
+        for clip in &mut passes {
+            clip.length = length;
+        }
+        if passes
+            .iter()
+            .all(|p| p.notes.is_empty() && p.controls.is_empty())
+        {
+            return None;
+        }
+        Some((start, passes))
+    }
+
+    fn build(&self, finish: &Finish<'_>, pass: Option<Pass<'_>>) -> Option<(Tick, MidiClip)> {
         let Finish {
             stop_micros,
             output_latency_micros,
@@ -157,7 +258,31 @@ impl MidiTake {
                 sample_rate,
             )
             .round() as i64;
-        let stop = tick_at(stop_micros, stop_anchor);
+        let stop = match &pass {
+            Some(pass) => pass.cycles.end.0,
+            None => tick_at(stop_micros, stop_anchor),
+        };
+        let heard = |micros: u64| {
+            micros.saturating_sub(self.start_micros) as f64 * sample_rate / 1e6 - latency_samples
+        };
+        // In a pass through a loop, a tick stays inside the loop.
+        let tick_at = |micros: u64, anchor: Anchor| -> i64 {
+            match &pass {
+                // Past the first pass the loop has wrapped: a tick counts
+                // from the loop's start by the time since the last wrap.
+                Some(pass) if pass.index > 0 => {
+                    let into = heard(micros)
+                        - pass.cycles.first
+                        - (pass.index - 1) as f64 * pass.cycles.cycle;
+                    let from = tempo_map.sample_at(pass.cycles.start, sample_rate) as f64;
+                    tempo_map
+                        .tick_at_sample((from + into).max(0.0).round() as u64, sample_rate)
+                        .round() as i64
+                }
+                Some(pass) => tick_at(micros, anchor).min(pass.cycles.end.0),
+                None => tick_at(micros, anchor),
+            }
+        };
 
         // A note as played: its starts and ends unquantised. The expressions
         // are counted from its start, so they move with it.
@@ -175,6 +300,11 @@ impl MidiTake {
         for &(at, [status, a, b], anchor) in &self.messages {
             if at > stop_micros {
                 break;
+            }
+            if let Some(pass) = &pass
+                && pass.cycles.index(heard(at)) != pass.index
+            {
+                continue;
             }
             let channel = status & 0x0F;
             let tick = tick_at(at, anchor);
@@ -276,8 +406,10 @@ impl MidiTake {
             kept.push(note);
         }
 
+        // A later pass has nothing from before the take began.
         let midi_notes: Vec<MidiNote> = kept
             .into_iter()
+            .filter(|n| pass.is_none() || n.start >= clip_start)
             .map(|n| {
                 let from = (n.start - clip_start).max(0);
                 let length = (n.end - n.start).max(1);
@@ -298,6 +430,7 @@ impl MidiTake {
         // Controllers stay where they were played, quantised or not.
         let control_points: Vec<ControlPoint> = controls
             .into_iter()
+            .filter(|p| pass.is_none() || p.tick.0 >= clip_start)
             .map(|p| ControlPoint {
                 tick: Tick((p.tick.0 - clip_start).max(0)),
                 ..p
@@ -365,6 +498,77 @@ mod tests {
             assert_eq!(start, Tick(0));
             clip
         })
+    }
+
+    /// Takes of a loop one second (two beats, 1920 ticks) long, recorded from
+    /// the start, with messages at the given milliseconds, stopped at `stop_ms`.
+    fn passes(messages: &[(u64, MidiMessage)], stop_ms: u64) -> Option<(Tick, Vec<MidiClip>)> {
+        let bus = MidiBus::new();
+        let start = 1_000_000;
+        let take = MidiTake::start(&bus, start, 0);
+        for &(ms, message) in messages {
+            bus.send_at(message, start + ms * 1000);
+        }
+        let map = map();
+        let mut take = take;
+        let finish = Finish {
+            stop_micros: start + stop_ms * 1000,
+            output_latency_micros: 0,
+            sample_rate: RATE,
+            tempo_map: &map,
+            quantise: Quantise::Off,
+            anchor: None,
+        };
+        take.poll(None);
+        take.passes(
+            &finish,
+            &Cycles {
+                first: RATE,
+                cycle: RATE,
+                start: Tick(0),
+                end: Tick(1_920),
+            },
+        )
+    }
+
+    #[test]
+    fn each_pass_through_the_loop_is_a_take_with_its_own_notes() {
+        // Three passes of a second: the third is half played.
+        let (start, takes) = passes(
+            &[
+                (250, [ON, 60, 100]),
+                (400, [OFF, 60, 0]),
+                (1_250, [ON, 62, 100]),
+                (1_400, [OFF, 62, 0]),
+                (2_250, [ON, 64, 100]),
+                (2_400, [OFF, 64, 0]),
+            ],
+            2_500,
+        )
+        .unwrap();
+        assert_eq!(start, Tick(0));
+        assert_eq!(takes.len(), 3);
+        let keys = |clip: &MidiClip| {
+            clip.notes
+                .iter()
+                .map(|n| (n.key, n.start))
+                .collect::<Vec<_>>()
+        };
+        // A quarter second in is 480 ticks, in every pass.
+        assert_eq!(keys(&takes[0]), [(60, Tick(480))]);
+        assert_eq!(keys(&takes[1]), [(62, Tick(480))]);
+        assert_eq!(keys(&takes[2]), [(64, Tick(480))]);
+        // Every take runs to the loop's end.
+        assert!(takes.iter().all(|t| t.length == Tick(1_920)));
+    }
+
+    #[test]
+    fn a_sliver_of_a_pass_at_the_end_is_not_a_take_and_a_silent_pass_is_empty() {
+        let (_, takes) = passes(&[(250, [ON, 60, 100]), (400, [OFF, 60, 0])], 2_050).unwrap();
+        // Two whole passes (the second silent) and 50 ms of a third.
+        assert_eq!(takes.len(), 2);
+        assert!(takes[1].notes.is_empty());
+        assert!(passes(&[], 2_500).is_none());
     }
 
     const ON: u8 = 0x90;

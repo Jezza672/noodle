@@ -1,9 +1,7 @@
 # Take folders, loop recording, punch, count-in and pre-roll
 
-Planned in the roadmap (settled in #281), built in #289 as one PR: batches 1 and 2
-of "Takes, loop recording and comping". Comping in the arrangement (take lanes,
-swipe, audition) and MIDI takes are still to do and stay in
-[ROADMAP.md](../ROADMAP.md).
+Planned in the roadmap (settled in #281), built in #289 (batches 1 and 2) and
+#290 (comping in the arrangement, across linked tracks, and MIDI takes).
 
 **What landed.**
 
@@ -67,8 +65,36 @@ passes with the right samples, a plain clip when stopped early, punch with
 pre-roll keeping only the range, nothing recorded when stopped in the
 pre-roll, punch refused past its range, the count-in waiting and cancelling).
 
-**Not done.** Take lanes, the swipe gesture, auditioning, and comping linked
-folders together in the arrangement (batch 3, though `swipe` and flatten are
-in place); MIDI takes and the Takes or Merge setting (batch 4); starting a
-loop recording from outside the loop; a loop recording that starts partway
-through the loop does not keep the earlier part of the later takes.
+**Comping (#290).**
+
+- **Take lanes** (`timeline/takes.rs`). "Show takes" in a take folder's menu
+  opens one lane per take under its track. Each lane shows that take's waveform
+  (or notes) and tints where the comp plays it. Drag across a take to swipe that
+  stretch into the comp (snapped to the grid, Alt for free): one undo step.
+- **Across tracks.** A swipe applies to the folder and every folder linked to it,
+  by time rather than by file frame, so a comp across drum mics stays aligned
+  even if their windows differ (`comp::swipe`).
+- **Audition.** Click a take's lane to play that take alone, in place of the
+  comp, on the folder and its links (`Session::set_take_audition`); click again to
+  go back. It is a copy of the project fed to the engine, so the project, its
+  undo history and exports are untouched.
+- **Joins.** While the lanes are open each audio join has a handle on the clip;
+  dragging it widens or narrows the crossfade (symmetric), on every linked
+  folder, as one undo step (`comp::set_join`).
+- **MIDI takes.** A loop recording of MIDI makes a take per pass when the
+  Takes or Merge setting (in the Q dropdown, an app preference) says Takes,
+  and one merged clip when it says Merge. A MIDI take folder is a `MidiClip`
+  with `MidiTakes` (see data-model.md) and uses the same lanes, swipe and
+  audition. Editing the notes of a MIDI take folder by hand turns it into a plain
+  clip; "Flatten takes" does so on purpose.
+
+**Tests.** `timeline/comp.rs` (a swipe comps linked folders the same way and
+renders the swiped take, in one undo step; linked folders with different windows;
+join crossfade on every link; MIDI swipe, hand edit drops takes, flatten),
+`midi_take.rs` (passes become takes; a sliver is dropped; a silent pass is
+empty), the take lanes' gestures in `timeline/tests.rs`, and `session.rs` (a
+loop recording comped by swipes plays and exports the comp's samples).
+
+**Not done.** Starting a loop recording from outside the loop; a loop recording
+that starts partway through the loop does not keep the earlier part of the later
+takes; take lanes draw a warped folder's waveform unwarped.

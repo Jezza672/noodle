@@ -37,6 +37,8 @@ pub struct Prefs {
     pub count_in_bars: u8,
     /// Bars of the project played before a punch-in.
     pub pre_roll_bars: u8,
+    /// Whether the cycles of a loop recording of MIDI are takes or merge.
+    pub midi_record: crate::midi_take::MidiRecord,
     /// How armed Automation nodes write: Read, Touch or Latch.
     pub automation_mode: crate::session::record_automation::AutomationMode,
 }
@@ -50,6 +52,7 @@ impl Default for Prefs {
             auto_cache: true,
             count_in_bars: 0,
             pre_roll_bars: 0,
+            midi_record: Default::default(),
             automation_mode: Default::default(),
         }
     }
@@ -152,6 +155,20 @@ pub fn remember_recording(count_in_bars: u8, pre_roll_bars: u8) {
     });
 }
 
+/// Saves the Takes or Merge setting for MIDI loop recordings, with the other
+/// preferences, if [`init`] has been called.
+pub fn remember_midi_record(mode: crate::midi_take::MidiRecord) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.midi_record = mode;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// Saves the automation mode, with the other preferences, if [`init`] has
 /// been called.
 pub fn remember_automation_mode(mode: crate::session::record_automation::AutomationMode) {
@@ -241,6 +258,7 @@ mod tests {
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: false,
+            midi_record: crate::midi_take::MidiRecord::Takes,
             automation_mode: crate::session::record_automation::AutomationMode::Latch,
         }
     }
@@ -293,7 +311,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,automation_mode:Latch)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;

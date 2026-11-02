@@ -6,9 +6,7 @@ is recorded in [features/](features/README.md); the design as it stands is in
 its record to a file in `features/` and delete it from this page.
 
 All milestones M0 to M11 are built in code. What is left is the feature
-items below that make Noodle usable in place of another DAW (Takes and comping
-has batches 1 and 2 built, see
-[features/takes-and-punch.md](features/takes-and-punch.md)), checks that need a
+items below that make Noodle usable in place of another DAW, checks that need a
 person and hardware, and a few
 deliberately deferred items.
 
@@ -43,34 +41,7 @@ deliberately deferred items.
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
 
-## Takes, loop recording and comping
 
-**The problem.** Record makes one clip per armed track per take, and a seek or a loop wrap ends the take. There is no punch range, no loop recording that keeps every cycle, and no way to build one performance from the best phrases of several. This replaces the overdub and count-in parts of the deferred "Piano roll and recording" item.
-
-**What you get.** Record with the loop on and every cycle becomes a take, stacked in a take folder on the track. Drag across a take to make that phrase the one that plays. Punch in and out at a range, with a count-in and pre-roll. For MIDI, choose whether cycles become takes or merge into one clip.
-
-**Settled decisions.**
-
-- A take folder is one clip holding its takes and a comp: a list of spans, each naming a take. Moving, splitting or copying it carries every take. Flattening gives a plain clip and drops the unused takes from it; the files stay on disk.
-- One audio file per recording; each take is a window into it.
-- MIDI cycles become takes or merge into one clip, set by one Takes or Merge record setting, an app preference. MIDI takes use the same take folders and swipe comping.
-- The takes in a folder share one warp.
-- The punch range is separate from the loop range: its own bar on the ruler, switched on and off. Count-in is 0, 1 or 2 bars of metronome (an app preference); pre-roll plays from a set number of bars before the punch-in point.
-- Comp joins get a 10 ms crossfade by default, draggable per join, using the existing clip crossfade (`AudioClip::crossfade`).
-- **Comping across tracks** uses Linked clips: a swipe on one linked take folder applies the same spans to all of them.
-
-**Scope.** In: the take folder model and its scheduling (`schedule.rs`), loop recording in `noodle-io/src/record.rs` and the session, punch, count-in and pre-roll, MIDI takes and merge (`midi_take.rs`), take lanes and the swipe gesture (`timeline/take.rs`, `timeline/clips.rs`), flatten. Every comp edit is one `Command`. Cross-track comping builds on Linked clips ([features/linked-clips.md](features/linked-clips.md)).
-
-**Batches.**
-
-1. **Take folders in the model.** Built; see [features/takes-and-punch.md](features/takes-and-punch.md).
-2. **Loop recording and punch.** Built, same file.
-3. **Comping in the arrangement.** Take lanes, swipe, audition, one undo step per swipe, linked folders comped together. (`TakeFolder::swipe` and flatten exist; the gesture and the lanes do not.)
-4. **MIDI takes.** Takes or Merge for MIDI.
-
-**Done when.** You loop four bars, record five vocal passes in one go, swipe the best phrase from each into one comp that plays without clicks at the joins, undo a swipe, and export it identical to playback. A comp across linked drum mics stays aligned. An app test records on the virtual output and checks the takes and the comp's samples.
-
-**Done when.** You render a plugin synth track to a clip and warp it.
 
 ## Owed: needs a person on real hardware
 

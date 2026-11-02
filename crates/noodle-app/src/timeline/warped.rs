@@ -208,6 +208,11 @@ impl<'a> Section<'a> {
         Some(passes)
     }
 
+    /// The frame of the file that plays at `tick`.
+    pub fn frame_at(&self, start: Tick, audio: &AudioClip, tick: Tick) -> i64 {
+        self.frames(self.source_at(start, self.origin(audio), tick))
+    }
+
     fn frames(&self, seconds: f64) -> i64 {
         (seconds * self.rate).round() as i64
     }
