@@ -390,8 +390,9 @@ impl Session {
     /// under the track of `clip`, and mutes `clip`: one undo step.
     ///
     /// Each new clip is the source's section again (its place, window, gain
-    /// and fades) over the part's file, with a warp of its own copied from the
-    /// source's, never the source's warp itself, which would link them.
+    /// and fades) over the part's file, on the source's own warp. The source
+    /// and every part are one clip group (joining the source's, if it is
+    /// linked already), so they move, cut and re-warp together.
     fn stems_command(&self, id: ClipId, output: &SplitOutput) -> Result<Command, String> {
         let project = &self.project;
         let source = project
@@ -411,8 +412,8 @@ impl Session {
             .node(source.node)
             .and_then(|n| n.parent)
             .unwrap_or(source.node);
-        let warp = audio.warp.and_then(|w| project.warp(w)).cloned();
-        let (mut next_clip, mut next_warp) = (project.next_clip_id(), project.next_warp_id());
+        let mut next_clip = project.next_clip_id();
+        let mut linked = vec![id];
 
         // Tracks are added one after another to a copy, so that each finds the
         // mixer input the one before took.
@@ -446,15 +447,6 @@ impl Session {
             let mut part = audio.clone();
             part.source = format!("{STEMS_DIR}/{}", file.file);
             part.muted = false;
-            part.warp = warp.as_ref().map(|warp| {
-                let warp_id = next_warp;
-                next_warp.0 += 1;
-                commands.push(Command::AddWarp {
-                    id: warp_id,
-                    warp: warp.clone(),
-                });
-                warp_id
-            });
             commands.push(Command::AddClip {
                 id: next_clip,
                 clip: Clip {
@@ -463,8 +455,23 @@ impl Session {
                     content: ClipContent::Audio(part),
                 },
             });
+            linked.push(next_clip);
             next_clip.0 += 1;
         }
+
+        // The source's own link, if it has one, takes the parts in; else the
+        // source and the parts make a new one.
+        let (group_id, mut members) = match project.group_of(id) {
+            Some((group, members)) => (group, members),
+            None => (project.next_clip_group_id(), Vec::new()),
+        };
+        members.extend(linked);
+        commands.push(Command::SetClipGroup {
+            id: group_id,
+            group: Some(noodle_core::ClipGroup {
+                members: members.into_iter().collect(),
+            }),
+        });
 
         let mut muted = source.clone();
         if let ClipContent::Audio(audio) = &mut muted.content {
@@ -617,7 +624,6 @@ mod tests {
         assert!(source.muted, "the source stays, muted");
         let parts: Vec<_> = project.clips().filter(|(other, _)| *other != id).collect();
         assert_eq!(parts.len(), 5);
-        let mut warps = vec![source_warp];
         for (n, label) in ["drums", "bass", "vocals", "other", "residual"]
             .into_iter()
             .enumerate()
@@ -634,9 +640,7 @@ mod tests {
             );
             assert_eq!(audio.gain, 0.5);
             assert!(!audio.muted);
-            let warp = audio.warp.expect("copied the warp");
-            assert_eq!(project.warp(warp), project.warp(source_warp));
-            warps.push(warp);
+            assert_eq!(audio.warp, Some(source_warp), "the source's own warp");
             assert!(dir.path().join(format!("stems/song-{label}.wav")).is_file());
             // Each is on a track of its own.
             assert_eq!(
@@ -648,9 +652,10 @@ mod tests {
                 "{n}"
             );
         }
-        warps.sort();
-        warps.dedup();
-        assert_eq!(warps.len(), 6, "every clip has its own warp");
+        // The source and the five parts are one link.
+        let (_, members) = project.group_of(id).expect("the source is linked");
+        assert_eq!(members.len(), 6);
+        assert_eq!(project.clip_groups().count(), 1);
         let distinct: BTreeSet<_> = parts.iter().map(|(_, c)| c.node).collect();
         assert_eq!(distinct.len(), 5);
 
@@ -660,6 +665,20 @@ mod tests {
             "{:?}",
             session.clip_problems()
         );
+
+        // Re-warping the source re-warps the stems.
+        let tweak = session
+            .project()
+            .warp_edit(id, |warp| warp.mode = noodle_core::WarpMode::Repitch)
+            .unwrap();
+        session.edit([Edit::Apply(tweak)]);
+        let project = session.project();
+        for (member, _) in project.clips() {
+            let (warp, shared) = project.warp_of(member).unwrap();
+            assert_eq!(warp, source_warp, "{member}");
+            assert_eq!(shared.mode, noodle_core::WarpMode::Repitch);
+        }
+        session.undo();
 
         // One undo takes all of it back, and one redo restores it.
         session.undo();
