@@ -140,6 +140,7 @@ enum Action {
     ToggleKeyboard,
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
+    SetAutomationMode(crate::session::record_automation::AutomationMode),
     /// Turns the audio engine on or off.
     ToggleEngine,
     /// Stops listening to monitored nodes (Escape).
@@ -947,6 +948,7 @@ impl App {
             actions.push(Action::ToggleRecord);
         }
         self.quantise_menu(ui, actions);
+        self.automation_mode_menu(ui, actions);
         self.monitor_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
@@ -1030,6 +1032,30 @@ impl App {
             })
             .response
             .on_hover_text("Snap the notes of recorded MIDI to this grid");
+    }
+
+    /// How armed Automation nodes write: Read, Touch or Latch.
+    fn automation_mode_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use crate::session::record_automation::AutomationMode;
+        let current = self.session.automation_mode();
+        crate::widgets::Dropdown::from_id_salt("automation_mode")
+            .width(64.0)
+            .selected_text(format!("Auto {}", current.label()))
+            .show_ui(ui, |ui| {
+                for choice in AutomationMode::ALL {
+                    if ui
+                        .selectable_label(choice == current, choice.label())
+                        .on_hover_text(choice.tooltip())
+                        .clicked()
+                    {
+                        actions.push(Action::SetAutomationMode(choice));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "How armed Automation nodes record: Read plays back, Touch writes while you move, Latch holds the last move",
+            );
     }
 
     /// Where the monitor buttons on nodes play: the main output or any other
@@ -1478,6 +1504,10 @@ impl App {
             }
             Action::Rewind => self.session.rewind(),
             Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
+            Action::SetAutomationMode(mode) => {
+                self.session.set_automation_mode(mode);
+                crate::prefs::remember_automation_mode(mode);
+            }
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);

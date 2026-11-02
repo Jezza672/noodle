@@ -2453,8 +2453,13 @@ fn draw_headers(
         // lanes with it.
         let source =
             automation::is_automation_node(project, lane.target.node).then_some(lane.target.node);
+        let arm = source.map(|node| automation::Arm {
+            node,
+            armed: session.automation_armed(node),
+            value: session.automation_value(node).unwrap_or(0.0),
+        });
         edits.extend(
-            automation::header(ui, row, id, &label, refused)
+            automation::header(ui, row, id, &label, refused, arm)
                 .into_iter()
                 .map(|edit| match (edit, source) {
                     (Edit::Apply(Command::RemoveLane { .. }), Some(node)) => {
