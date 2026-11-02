@@ -259,8 +259,8 @@ impl Captured {
     }
 
     /// One `SetParam` per exposed parameter whose value differs from `seen`
-    /// since `seen` (a parameter's first reading is only a baseline); `seen`
-    /// is updated to match. This is how edits made in an open editor reach the
+    /// since `seen` (a parameter's first reading is only a baseline) and from
+    /// what the node `stored` holds; `seen` is updated to match. This is how edits made in an open editor reach the
     /// project without storing the state.
     pub fn changed_params(
         &self,
@@ -268,6 +268,7 @@ impl Captured {
         descriptor: &Descriptor,
         config: &Config,
         seen: &mut std::collections::BTreeMap<u32, f64>,
+        stored: impl Fn(u32) -> Option<f32>,
     ) -> Vec<Command> {
         let exposed = exposed_params(descriptor, config);
         let mut out = Vec::new();
@@ -276,6 +277,14 @@ impl Captured {
             // The first reading is the baseline, not an edit.
             if previous.is_some_and(|p| p != *value)
                 && let Some(command) = set_param_command(node, &exposed, *id, *value)
+                // A value the project already holds is not an edit: after an
+                // undo the plugin follows the port, and recording that would
+                // clear the redo stack.
+                && !matches!(
+                    &command,
+                    Command::SetParam { value: Some(v), .. }
+                        if stored(*id).is_some_and(|s| (s - v).abs() < 1e-6)
+                )
             {
                 out.push(command);
             }

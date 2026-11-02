@@ -1181,8 +1181,14 @@ impl Session {
                 .node(node)
                 .map(|n| n.config.clone())
                 .unwrap_or_default();
+            let stored = self.project.graph().node(node).map(|n| n.params.clone());
             let live = self.plugin_live.entry(node).or_default();
-            let commands = captured.changed_params(node, &descriptor, &config, &mut live.seen);
+            let commands =
+                captured.changed_params(node, &descriptor, &config, &mut live.seen, |id| {
+                    stored
+                        .as_ref()
+                        .and_then(|p| p.get(&noodle_plugins::param_key(id)).copied())
+                });
             if commands.is_empty() {
                 self.end_live_gesture(node);
             } else {

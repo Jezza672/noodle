@@ -189,15 +189,42 @@ fn parameter_edits_are_reported_as_they_change_without_the_state() {
     // The first reading is only a baseline.
     let first = noodle_plugins::capture_params_key(key).unwrap();
     assert!(first.state.is_empty(), "parameters alone, no state");
-    let mut reported = first.changed_params(node, descriptor, &Config::new(), &mut seen);
+    let mut reported = first.changed_params(node, descriptor, &Config::new(), &mut seen, |_| None);
     until("the user turns Gain down", || {
         let now = noodle_plugins::capture_params_key(key).unwrap();
-        reported.extend(now.changed_params(node, descriptor, &Config::new(), &mut seen));
+        reported.extend(now.changed_params(node, descriptor, &Config::new(), &mut seen, |_| None));
         !reported.is_empty()
     });
     assert!(reported.iter().all(|c| matches!(
         c,
         Command::SetParam { key, value: Some(v), .. } if key == "p1" && *v == 0.25
     )));
+    close_editor(node);
+}
+
+#[test]
+fn a_value_the_project_already_holds_is_not_reported_as_an_edit() {
+    let catalog = catalog();
+    let node_type = node_type(&catalog);
+    let node = NodeId(9_301);
+    let _instance = build(node_type, node, &Config::new());
+    let descriptor = node_type.descriptor();
+    let mut seen = std::collections::BTreeMap::new();
+    let mut captured = noodle_plugins::capture_params_key(open_editor(node).unwrap()).unwrap();
+    captured.changed_params(node, descriptor, &Config::new(), &mut seen, |_| None);
+    // Something (an undo, say) moves Gain to a value the node already stores.
+    for (_, v) in &mut captured.params {
+        *v = 0.5;
+    }
+    let held = captured.changed_params(node, descriptor, &Config::new(), &mut seen, |_| Some(0.5));
+    assert!(held.is_empty());
+    seen.clear();
+    captured.changed_params(node, descriptor, &Config::new(), &mut seen, |_| None);
+    for (_, v) in &mut captured.params {
+        *v = 0.75;
+    }
+    let edited =
+        captured.changed_params(node, descriptor, &Config::new(), &mut seen, |_| Some(0.5));
+    assert!(!edited.is_empty());
     close_editor(node);
 }
