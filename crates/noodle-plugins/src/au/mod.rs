@@ -73,11 +73,17 @@ pub(crate) fn gui_close(key: u64) {
     let _ = key;
 }
 
-pub(crate) fn gui_capture(key: u64) -> Result<crate::editor::Captured, crate::host::HostError> {
+pub(crate) fn gui_capture(
+    key: u64,
+    with_state: bool,
+) -> Result<crate::editor::Captured, crate::host::HostError> {
     #[cfg(target_os = "macos")]
-    return gui::capture(key);
+    return gui::capture(key, with_state);
     #[cfg(not(target_os = "macos"))]
-    return Err(unsupported_for(key));
+    return {
+        let _ = with_state;
+        Err(unsupported_for(key))
+    };
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -145,11 +145,15 @@ pub(crate) fn close(key: u64) {
 }
 
 /// Reads the unit's state and parameter values.
-pub(crate) fn capture(key: u64) -> Result<Captured, HostError> {
+pub(crate) fn capture(key: u64, with_state: bool) -> Result<Captured, HostError> {
     thread::run_job(COMMAND_TIMEOUT, move || {
         with_gui(key, |gui| {
             Ok(Captured {
-                state: save_state_of(gui.unit)?,
+                state: if with_state {
+                    save_state_of(gui.unit)?
+                } else {
+                    Vec::new()
+                },
                 params: gui
                     .params
                     .iter()

@@ -613,3 +613,111 @@ fn cutting_a_point_removes_it() {
     assert_eq!(ticks(&h, id), vec![960]);
     assert_eq!(h.state().timeline.automation().selected(), None);
 }
+
+fn shift_click(h: &mut H, pos: Pos2) {
+    testkit::click(h, pos, Modifiers::SHIFT);
+}
+
+#[test]
+fn ctrl_dragging_a_segment_sets_its_tension_as_one_undo_step() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (node, id) = free_lane(&h);
+    h.state_mut().session.edit([Edit::Apply(Command::SetLane {
+        id,
+        lane: AutomationLane::new(
+            Endpoint::new(node, "value"),
+            vec![
+                point(0, 0.0, Curve::Linear),
+                point(2, 1.0, Curve::Linear),
+                point(4, 0.0, Curve::Hold),
+            ],
+        ),
+    })]);
+    h.run();
+    let before = lane(&h, id).unwrap();
+    let from = spot(&h, id, 1.0, 0.5);
+    testkit::drag(
+        &mut h,
+        Modifiers::COMMAND,
+        &[from, from + Vec2::new(0.0, 30.0)],
+    );
+    let after = lane(&h, id).unwrap();
+    let tension = after.points[0].curve.tension().unwrap();
+    assert!((tension - 0.5).abs() < 0.1, "dragged 30px of 60: {tension}");
+    // Only that segment: the hold stays a hold, and the points haven't moved.
+    assert_eq!(after.points[1].curve, Curve::Linear);
+    assert_eq!(after.points[2].curve, Curve::Hold);
+    assert_eq!(
+        after
+            .points
+            .iter()
+            .map(|p| (p.tick, p.value))
+            .collect::<Vec<_>>(),
+        before
+            .points
+            .iter()
+            .map(|p| (p.tick, p.value))
+            .collect::<Vec<_>>()
+    );
+    h.state_mut().session.undo();
+    h.run();
+    assert_eq!(lane(&h, id).unwrap(), before);
+}
+
+#[test]
+fn bending_one_of_several_picked_segments_bends_them_all() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (node, id) = free_lane(&h);
+    h.state_mut().session.edit([Edit::Apply(Command::SetLane {
+        id,
+        lane: AutomationLane::new(
+            Endpoint::new(node, "value"),
+            vec![
+                point(0, 0.0, Curve::Linear),
+                point(2, 1.0, Curve::Linear),
+                point(4, 0.0, Curve::Linear),
+                point(6, 1.0, Curve::Linear),
+            ],
+        ),
+    })]);
+    h.run();
+    let first = point_at(&h, id, 0);
+    click(&mut h, first);
+    let second = point_at(&h, id, 1);
+    shift_click(&mut h, second);
+    let from = spot(&h, id, 1.0, 0.5);
+    testkit::drag(
+        &mut h,
+        Modifiers::COMMAND,
+        &[from, from + Vec2::new(0.0, -30.0)],
+    );
+    let points = lane(&h, id).unwrap().points;
+    let t0 = points[0].curve.tension().unwrap();
+    let t1 = points[1].curve.tension().unwrap();
+    assert!(t0 < -0.3 && t0 == t1, "both bend alike: {t0} {t1}");
+    assert_eq!(points[2].curve, Curve::Linear, "the unpicked one is left");
+}
+
+#[test]
+fn an_automate_made_node_names_its_lane_after_the_parameter() {
+    let (mut h, _) = rig();
+    h.get_by_label("+ Auto").click();
+    h.run();
+    let (node, id) = free_lane(&h);
+    let named = noodle_core::Config::new().with(
+        noodle_nodes::AUTOMATION_LABEL,
+        noodle_core::Value::Text("Lead › Cutoff".into()),
+    );
+    h.state_mut().session.edit([Edit::Apply(Command::SetConfig {
+        node,
+        key: noodle_nodes::AUTOMATION_LABEL.into(),
+        value: named.get(noodle_nodes::AUTOMATION_LABEL).cloned(),
+    })]);
+    let project = h.state().session.project();
+    let lane = project.lane(id).unwrap();
+    assert_eq!(super::automation::label(project, lane), "Lead › Cutoff");
+}

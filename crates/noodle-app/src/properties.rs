@@ -13,6 +13,7 @@ use noodle_engine::{InputKind, Location, NodeType, NodeView, ParamReading};
 
 use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
+use crate::widgets::param::Automate;
 use crate::widgets::{
     ConfigField, CurveEditor, EnvelopeEditor, GraphEditor, GraphKind, Live, ParamField,
 };
@@ -1016,9 +1017,16 @@ fn params(
                 edits.push(edit);
             }
             ui.add_enabled_ui(source.is_none(), |ui| {
+                let target = Endpoint::new(id, key);
                 let out = ParamField::new(&input.name, info, shown_value)
                     .id_salt((id, key))
                     .width(ui.available_width())
+                    .automate(
+                        match crate::session::automate::refusal(session.project(), &target) {
+                            None => Automate::Offered,
+                            Some(why) => Automate::Refused(why),
+                        },
+                    )
                     .show(ui);
                 if let Some(source) = &source {
                     out.response

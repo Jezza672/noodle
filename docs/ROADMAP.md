@@ -6,7 +6,8 @@ is recorded in [features/](features/README.md); the design as it stands is in
 its record to a file in `features/` and delete it from this page.
 
 All milestones M0 to M11 are built in code. What is left is five feature items
-that make Noodle usable in place of another DAW (in order: Automate, MIDI
+that make Noodle usable in place of another DAW (in order: Automate (batch 1 built,
+see [features/automate.md](features/automate.md)), MIDI
 controllers in clips, Takes and comping, Track export, MIDI
 learn and output), checks that need a person and hardware, and a few
 deliberately deferred items.
@@ -62,7 +63,7 @@ deliberately deferred items.
 
 **Batches.**
 
-1. **Automate.** The shortcut, `min`, `max` and taper on the Automation node, naming, and tension curves with multi-point selection.
+1. **Automate.** Built: see [features/automate.md](features/automate.md).
 2. **Recording.** Arm, modes, the lane header slider, thinning, one undo step per Pass.
 3. **The `record` input.** Recording a wired signal, with a test that prints an LFO into a lane.
 
