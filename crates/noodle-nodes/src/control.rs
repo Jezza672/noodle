@@ -400,6 +400,11 @@ impl Node for ControlNode {
     }
 
     fn reset(&mut self) {
+        // A live control holds what the knob last said, and the knob stays
+        // where it is across a seek or a loop wrap.
+        if self.live.is_some() {
+            return;
+        }
         // In place: this runs on the audio thread.
         self.msb.fill([0; 32]);
         self.lsb.fill([0; 32]);
@@ -695,5 +700,22 @@ mod tests {
         });
         assert!((blocks[0] - 64.0 / 127.0).abs() < 1e-6);
         assert_eq!(blocks[1], 0.0);
+    }
+
+    #[test]
+    fn a_live_control_keeps_its_value_across_a_reset_and_a_wired_one_does_not() {
+        let bus = MidiBus::new();
+        let mut h = live(&bus, "Keys");
+        unglided(&mut h, 74.0, 0.0);
+        bus.send_from("Keys", [0xB0, 74, 127]);
+        h.run(16).unwrap();
+        h.seek(0);
+        h.run(16).unwrap();
+        assert_eq!(h.output(ControlPorts::OUT).lane(0, 0)[15], 1.0);
+        let mut h = harness();
+        unglided(&mut h, 74.0, 0.0);
+        run(&mut h, &[at(0, EventKind::Midi([0xB0, 74, 127]))]);
+        h.seek(0);
+        assert_eq!(run(&mut h, &[])[15], 0.0);
     }
 }
