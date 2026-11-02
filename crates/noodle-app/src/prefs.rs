@@ -33,6 +33,8 @@ pub struct Prefs {
     /// Whether the playback cache picks what to cache by itself. On unless
     /// turned off.
     pub auto_cache: bool,
+    /// How armed Automation nodes write: Read, Touch or Latch.
+    pub automation_mode: crate::session::record_automation::AutomationMode,
 }
 
 impl Default for Prefs {
@@ -42,6 +44,7 @@ impl Default for Prefs {
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: true,
+            automation_mode: Default::default(),
         }
     }
 }
@@ -128,6 +131,20 @@ pub fn remember_auto_cache(on: bool) {
     });
 }
 
+/// Saves the automation mode, with the other preferences, if [`init`] has
+/// been called.
+pub fn remember_automation_mode(mode: crate::session::record_automation::AutomationMode) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.automation_mode = mode;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// Saves the device the node monitor plays on, with the other preferences, if
 /// [`init`] has been called.
 pub fn remember_monitor_device(device: &str) {
@@ -201,6 +218,7 @@ mod tests {
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: false,
+            automation_mode: crate::session::record_automation::AutomationMode::Latch,
         }
     }
 
@@ -252,7 +270,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,automation_mode:Latch)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
@@ -261,6 +279,17 @@ mod tests {
         assert_eq!(prefs.audio.threads, 0);
         assert_eq!(prefs.audio.buffer_size, Some(256));
         assert!(!prefs.sandbox_plugins);
+    }
+
+    #[test]
+    fn the_automation_mode_is_saved_and_defaults_to_touch() {
+        use crate::session::record_automation::AutomationMode;
+        assert_eq!(Prefs::default().automation_mode, AutomationMode::Touch);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        remember_automation_mode(AutomationMode::Read);
+        assert_eq!(load(&path).unwrap().automation_mode, AutomationMode::Read);
     }
 
     #[test]

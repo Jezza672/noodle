@@ -5,9 +5,8 @@ is recorded in [features/](features/README.md); the design as it stands is in
 [ARCHITECTURE.md](ARCHITECTURE.md). When a piece of work here is finished, move
 its record to a file in `features/` and delete it from this page.
 
-All milestones M0 to M11 are built in code. What is left is six feature items
-that make Noodle usable in place of another DAW (in order: Automate (batch 1 built,
-see [features/automate.md](features/automate.md)), MIDI
+All milestones M0 to M11 are built in code. What is left is five feature items
+that make Noodle usable in place of another DAW (in order: MIDI
 controllers in clips, Linked clips, Takes and comping, Track export, MIDI
 learn and output), checks that need a person and hardware, and a few
 deliberately deferred items.
@@ -42,32 +41,6 @@ deliberately deferred items.
 5. **Visibility and docs.** Built: see [features/playback-cache.md](features/playback-cache.md).
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
-
-## Automate and automation recording
-
-**The problem.** Automating a synth's cutoff or a plugin knob means adding an Automation node by hand, wiring its `out` into the parameter, and drawing its lane a point at a time with linear or hold segments (`noodle_core::automation::Curve`). The node's `value` is 0 to 1 and a wire carries it unchanged, so a cutoff can't be driven in Hz without a Remap. Nothing records a move: riding the node's value while the transport plays changes the sound and leaves the lane as it was.
-
-**What you get.** Right-click any parameter and choose Automate: an Automation node appears next to it, ranged and named after the parameter, with a lane holding the parameter's current value, so nothing you hear changes. Arm the node and ride it while the song plays, and the move is written into its lane. Lanes gain curved segments.
-
-**Settled decisions.**
-
-- **Automate is a graph shortcut, nothing more.** It adds an Automation node in the same group as the parameter, a lane on the node's `value` (one point holding the parameter's current value), and a wire from `out` to the parameter, as one undo step. Nothing compiles differently and nothing links the parameter to the lane except that wire: the parameter is an ordinary wired parameter, greyed like any other. It is offered at any depth (a primitive inside a synth group too) and disabled, with a tooltip, on a parameter that already has a wire.
-- **The node copies, it doesn't link.** The Automation node gains `min`, `max` and a linear or log taper, and the shortcut copies them once from the target's range. It labels the node once after the target ("Lead › Cutoff"); you can rename it. The lane draws under the track whose group holds the node, as free automation lanes do now.
-- **Recording only goes through the Automation node.** You move its `value` in the graph, in the properties panel, or with a new value slider on the lane's header. A new `record` input writes its incoming signal into the lane while armed, so a `MIDI Control` knob records into the lane and an LFO can be printed into it.
-- **Arming is per node** (a button on the node and on the lane header), session state that is not saved, like track arm. There is no global arm. An armed node records whenever the transport plays, not only under Record.
-- **One automation mode for everything:** Read, Touch or Latch (no Write), in the transport bar, saved as an app preference. In Touch and Latch nothing is written until you move the node.
-- **One undo step per Pass**, however many nodes it wrote.
-- Recording is on the UI thread: the session buffers moves and commits them as one `Command::Batch` when the Pass ends, as a take does. The audio thread gains nothing.
-
-**Scope.** In: the Automate menu entry, the node's range and taper, the lane header slider, the `record` input, arming, modes, thinning recorded points to a tolerance, and a tension per segment (exponential through linear to S-curve) evaluated by the lane source (`noodle-engine/src/automation.rs`). Out: recording from plugin editors (a plugin parameter that is automated is wired, so you move its Automation node instead); automation clips; per-clip automation. A plugin editor's edits reaching the project only when its window closes (`Captured::commands`) is a separate bug, fixed on its own.
-
-**Batches.**
-
-1. **Automate.** Built: see [features/automate.md](features/automate.md).
-2. **Recording.** Arm, modes, the lane header slider, thinning, one undo step per Pass.
-3. **The `record` input.** Recording a wired signal, with a test that prints an LFO into a lane.
-
-**Done when.** You Automate a filter cutoff inside a synth group, arm its node, ride the lane header slider while looping, stop, hear the move play back, and undo it in one step. An app test records a drag through `testkit` and checks the lane and the rendered level.
 
 ## MIDI controllers and expressions in clips
 

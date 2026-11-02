@@ -1,6 +1,6 @@
 # Automate a parameter
 
-Batch 1 of "Automate and automation recording" (issue #284). Batches 2 (recording) and 3 (the `record` input) are still in [../ROADMAP.md](../ROADMAP.md).
+"Automate and automation recording": the shortcut and ranges (issue #284), then recording (issue #285), both below.
 
 - **The shortcut.** Right-click a parameter, choose **Automate** (`Edit::Automate`, built by `noodle-app/src/session/automate.rs`). One `Command::Batch`, so one undo step: an Automation node in the parameter's own group (so it works at any depth, a primitive inside a synth group too), placed to its left; a lane on the node's `value` with one point at tick 0; and a wire from `out` to the parameter. Nothing compiles differently: the parameter is an ordinary wired parameter. The entry is greyed, with a tooltip, on a parameter that already has a wire or a lane. It is offered in the graph and in the properties panel (`Automate` in `widgets/param.rs`).
 - **The node copies, it doesn't link.** The Automation node has `min`, `max` and `taper` (Linear or Log) parameters, since they change no ports. `out` is `value` (0 to 1) mapped onto `min`..`max`; a log taper needs a positive range and otherwise falls back to linear. The defaults (0 to 1, linear) pass `value` through, so existing Automation nodes sound the same. Automate copies the range and taper once from the target, and the lane's point holds the target's current value as a position on that range, so nothing you hear changes.
@@ -10,3 +10,16 @@ Batch 1 of "Automate and automation recording" (issue #284). Batches 2 (recordin
 - **Lane editor.** Segments draw bent. Ctrl-drag (Cmd on macOS) a segment up or down to bend it; Shift-click picks several points, and bending one of their segments bends all of them alike, as one undo step. Hold segments stay holds.
 
 Tests: curve properties in `noodle-core` (endpoints exact, monotone, linear at zero tension); node mapping in `noodle-nodes/src/automation.rs`; the app test `session::automate::tests` automates a filter cutoff inside a group and checks the node, label, lane, wire, unchanged render and single undo; `timeline/automation_tests.rs` covers bending and multi-select.
+
+## Recording automation (#285)
+
+`noodle-app/src/session/record_automation.rs` holds the `Recorder` (plain data fed with ticks, so it is tested without a clock); the session feeds it.
+
+- **Arming** is per Automation node: a red dot in the node's header (where the monitor button sits on audio nodes) and on the lane header. `Edit::ArmAutomation`; session state, not saved, not an undo step. There is no global arm. An armed node records whenever the transport plays, not only under Record.
+- **Modes** (`AutomationMode`): Read (nothing written, armed or not), Touch (writes while the node is moved or its `record` signal changes, goes back to the lane when let go) and Latch (writes from the first move to the end of the Pass, holding the last value). One mode for every node, a dropdown in the transport bar, saved in the app preferences (`automation_mode`). Nothing is written until the node is moved.
+- **What records.** A `SetParam` of an armed node's `value` (from a drag or a typed value in the graph, the properties panel, or the slider on the lane header, which shows while armed) is taken by `Session::edit` while the transport plays: it is buffered and not applied. An Automation node's `value` field stays on the node when it has a lane: greyed and showing the lane when unarmed, live when armed.
+- **The `record` input** is an ordinary parameter port on the Automation node, so wiring it makes the engine report its value like any wired parameter. While armed, `maintain` reads that value each frame and writes it as a move whenever it changes (Touch lets go after it has been still for half a beat). A `MIDI Control` knob records into the lane; an LFO is printed into it.
+- **The Pass** runs from play to stop. Each frame the session feeds the playhead; a held value keeps being written while a stretch is open; a loop wrap or seek closes the stretch and, in Latch or while still held, opens another, so later cycles overwrite earlier ones. At the stop, `finish` splices each stretch into its lane (replacing the old points inside it), thins the recorded points to a tolerance of 0.004 of the lane's range, and makes one `Command::Batch` (a `SetLane` per node, an `AddLane` for an armed node with none). So **a Pass is one undo step**, however many nodes wrote. The audio thread gains nothing.
+- **Limit.** The lane drives `value` while it plays, so a move is written but not heard until the Pass ends and the lane plays it back.
+
+Tests: the recorder's modes, thinning, wrap and `record` handling in `record_automation.rs`; `session_tests` there ride a filter cutoff on the virtual output (one undo step, brighter render) and print an LFO into a lane through `record`.

@@ -79,8 +79,11 @@ _Avoid_: Envelope (that is a synthesis node), automation track
 **Automate**:
 A shortcut on a parameter that adds an Automation node beside it, a lane on the node's value, and a wire from the node into the parameter, as one undo step. Nothing links the parameter and the lane except that wire. The node gets a range and taper copied from the parameter.
 
+**Arm**:
+Per Automation node, session state: an armed node writes its lane whenever the transport plays and its `value` is moved or its `record` input changes, and everything written in one play-to-stop is one undo step. Not saved.
+
 **Automation mode**:
-Read, Touch or Latch: one app-wide setting for how an armed Automation node writes its lane while the transport plays. (Planned.)
+Read, Touch or Latch: one app-wide setting for how an armed Automation node writes its lane while the transport plays.
 
 **Mixer**:
 A view over a Mix node that shows one strip per input. It is not a separate structure.
@@ -93,11 +96,11 @@ Rendering a subgraph to audio once so that playback reads the result instead of 
 _Avoid_: Bounce, commit
 
 **Track export**:
-Writing one audio file per chosen track or group, taken after its gain and mute and before the master group, alongside the mixdown. (Planned.)
+Writing one audio file per chosen track or group, taken after its gain and mute and before the master group, alongside the mixdown.
 _Avoid_: Stems (that is AI separation), bounce
 
 **Render to clip**:
-Rendering a track, group or time range to a new audio clip on a new track, muting the original. (Planned.)
+Rendering a track, group or time range to a new audio clip on a new track, muting the original.
 _Avoid_: Bounce, freeze (that keeps no clip)
 
 **Offline node**:
@@ -117,7 +120,7 @@ A MIDI source that plays notes from the typing keyboard, switched on by a toolba
 Anything that produces live MIDI: a hardware port or the computer keyboard.
 
 **MIDI learn**:
-A shortcut on a parameter that adds a MIDI Control node set to the next controller moved and wires it into the parameter, as one undo step. (Planned.)
+A shortcut on a parameter that adds a MIDI Control node set to the next controller moved and wires it into the parameter, as one undo step.
 
 **Armed track**:
 A track that Record writes a take to.
@@ -126,14 +129,14 @@ A track that Record writes a take to.
 What one press of Record captures. It becomes a new clip and section on each armed track, undone as one step.
 
 **Take folder**:
-A clip holding several takes of the same span and a comp that says which take plays where. (Planned.)
+A clip holding several takes of the same span and a comp that says which take plays where.
 
 **Comp**:
 The list of spans in a take folder, each naming the take it plays. Made by swiping across takes.
 _Avoid_: Composite clip
 
 **Punch range**:
-A time range, separate from the loop, outside which Record writes nothing. (Planned.)
+A time range, separate from the loop, outside which Record writes nothing.
 
 **Quantise (recording)**:
 Snapping the starts of a take's notes to a grid when the take is committed. Monitoring while recording is never quantised.
@@ -210,7 +213,7 @@ An action on an audio clip that makes one new clip for each stem, and one for th
 A switch on a section that silences it without removing it, so it can be brought back. (New with Split to stems.)
 
 **Linked clips**:
-Clips on different tracks grouped so that moving, trimming, splitting, looping, warping or deleting one does the same to all. They share one warp. Gain and fades stay per clip. (Planned.)
+Clips on different tracks grouped so that moving, trimming, splitting, looping, warping or deleting one does the same to all. They share one warp. Gain and fades stay per clip.
 _Avoid_: Edit group
 
 **Stem warp**:

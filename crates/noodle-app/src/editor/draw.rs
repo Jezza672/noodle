@@ -212,9 +212,21 @@ fn boxed(
 
     let text = z >= MIN_TEXT_ZOOM;
     let monitor = super::monitor_button(f.project, node);
+    let arm = super::arm_button(f.project, node);
     // The button sits at the right end of the header, ahead of what is
     // drawn there.
-    let button_room = if monitor.is_some() { 20.0 } else { 0.0 };
+    let button_room = if monitor.is_some() || arm.is_some() {
+        20.0
+    } else {
+        0.0
+    };
+    if let Some(button) = arm {
+        arm_button(
+            painter,
+            f.t.rect_to_screen(button),
+            state.armed.contains(&node.id),
+        );
+    }
     if let Some(button) = monitor {
         monitor_button(painter, f.t.rect_to_screen(button), monitored);
     }
@@ -395,6 +407,15 @@ fn boxed(
             &curve,
         );
     }
+}
+
+/// A record dot, red while its Automation node is armed.
+fn arm_button(painter: &Painter, rect: Rect, on: bool) {
+    let color = if on { theme::RECORD } else { colors::TEXT_WEAK };
+    if on {
+        painter.rect_filled(rect.expand(1.0), rect.width() / 4.0, colors::NODE_OUTLINE);
+    }
+    painter.circle_filled(rect.center(), rect.width() * 0.32, color);
 }
 
 /// A pair of headphones, lit while its node is monitored.
