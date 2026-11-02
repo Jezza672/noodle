@@ -29,6 +29,16 @@ pub struct Handle<'h> {
     kinds: BTreeMap<NodeId, String>,
     /// Which kinds of node the actions added and removed, in order.
     changes: Vec<Change>,
+    /// The step the route is in, by the name it gave.
+    step: String,
+    /// Set when the route runs with the transport playing.
+    live: Option<Live>,
+}
+
+/// The transport while a route runs on top of it.
+struct Live {
+    /// The step each unasked stop happened in.
+    stops: Vec<String>,
 }
 
 impl<'h> Handle<'h> {
@@ -38,6 +48,44 @@ impl<'h> Handle<'h> {
             h,
             kinds,
             changes: Vec::new(),
+            step: String::new(),
+            live: None,
+        }
+    }
+
+    /// Runs the route with the transport playing, which the caller has
+    /// started. The route's own Space presses are skipped, since the user
+    /// would not press play twice. A step that stops the transport is
+    /// recorded, and the transport is started again so the later steps are
+    /// also tried live.
+    pub(super) fn live(mut self) -> Self {
+        self.live = Some(Live { stops: Vec::new() });
+        self
+    }
+
+    /// Whether the press is the route's own play or stop, which a live run
+    /// leaves out.
+    fn skipped(&self, modifiers: Modifiers, key: Key) -> bool {
+        self.live.is_some() && key == Key::Space && !modifiers.any()
+    }
+
+    /// The step each unasked stop happened in.
+    pub(super) fn stops(&self) -> Vec<String> {
+        self.live.as_ref().map_or(Vec::new(), |l| l.stops.clone())
+    }
+
+    /// The name of the step the route is in.
+    pub(super) fn step_name(&self) -> &str {
+        &self.step
+    }
+
+    fn check_transport(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        if !self.h.state().session().transport_running() {
+            live.stops.push(self.step.clone());
+            self.h.state_mut().session_mut().play();
         }
     }
 
@@ -49,6 +97,11 @@ impl<'h> Handle<'h> {
     /// Notes which nodes the last action added or removed. An undo or redo
     /// is not counted: it is not the user throwing work away.
     fn watch(&mut self, quiet: bool) {
+        self.watch_nodes(quiet);
+        self.check_transport();
+    }
+
+    fn watch_nodes(&mut self, quiet: bool) {
         let now = node_kinds(self.h);
         if !quiet {
             for (id, kind) in &self.kinds {
@@ -103,6 +156,9 @@ impl<'h> Handle<'h> {
 
     /// A key chord with the pointer over `at`.
     pub fn press(&mut self, at: Pos2, modifiers: Modifiers, key: Key) {
+        if self.skipped(modifiers, key) {
+            return;
+        }
         testkit::press(self.h, at, modifiers, key);
         self.watch(is_undo(modifiers, key));
     }
@@ -110,6 +166,9 @@ impl<'h> Handle<'h> {
     /// [`Handle::press`] for when the transport runs: the app repaints
     /// continuously then, so the UI cannot be waited on to settle.
     pub fn press_playing(&mut self, at: Pos2, modifiers: Modifiers, key: Key) {
+        if self.skipped(modifiers, key) {
+            return;
+        }
         testkit::press_playing(self.h, at, modifiers, key);
         self.watch(is_undo(modifiers, key));
     }
@@ -132,7 +191,15 @@ impl<'h> Handle<'h> {
     /// Marks the start of a new top-level step of the route. The effort
     /// scorer puts a mental operator before each.
     pub fn step(&mut self, name: &str) {
+        self.step = name.into();
         testkit::step_marker(self.h, name);
+    }
+
+    /// Says that the result of the actions from here to the next step cannot
+    /// be seen without opening another view (the warp markers, the recorded
+    /// automation points, the sidechain amount).
+    pub fn unseen(&mut self, name: &str) {
+        testkit::unseen_marker(self.h, name);
     }
 
     /// Says that the actions from here to the next step only recreate
@@ -344,7 +411,9 @@ impl Probe<'_> {
             std::thread::sleep(time / frames);
             self.h.run_steps(3);
         }
-        tap.take()
+        let heard = tap.take();
+        testkit::heard(self.h, peak(&heard));
+        heard
     }
 }
 

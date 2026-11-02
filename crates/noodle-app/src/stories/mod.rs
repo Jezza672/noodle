@@ -15,14 +15,19 @@
 //! PR.**
 
 mod effort;
+mod feedback;
 mod handle;
 mod registry;
 mod repetition;
 mod report;
 mod rework;
+mod robustness;
 mod routes;
+mod surface;
+mod vocabulary;
 
 use std::cell::RefCell;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use egui::Vec2;
@@ -30,9 +35,12 @@ use egui_kittest::Harness;
 use noodle_core::Project;
 
 use crate::app::App;
+use crate::session::{Nodes, Saved, Session};
 use crate::testkit;
+use feedback::{Feedback, LiveEdit};
 use handle::{AppHarness, Handle, Probe};
 use report::{LateScore, RouteScore};
+use robustness::{Reopen, Robustness};
 
 /// How a newcomer or an expert does the thing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +146,9 @@ pub fn run(route: &Route, size: Option<usize>) -> Outcome {
             rework: played.rework,
             round_trip: played.round_trip,
             late: played.late,
+            surfaces: played.surfaces,
+            feedback: played.feedback,
+            robustness: played.robustness,
         },
         failure: played.failure,
     }
@@ -148,7 +159,96 @@ struct Played {
     rework: rework::Rework,
     round_trip: rework::RoundTrip,
     late: Vec<LateScore>,
+    surfaces: surface::Surfaces,
+    feedback: Feedback,
+    robustness: Robustness,
     failure: Option<String>,
+}
+
+/// The message of a caught panic.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic".into())
+}
+
+/// Runs `route` again with the transport playing, as a user editing while
+/// listening would. The route's own Space presses are left out, and the
+/// transport is stopped before the done check, which looks at the result.
+fn live_edit(route: &Route, n: usize) -> LiveEdit {
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    crate::prefs::init(dir.path().join("prefs.ron"));
+    let mut h = window((route.fixture)(dir.path()));
+    h.state_mut().session_mut().play();
+    h.run_steps(3);
+    // While the transport runs the UI never stops repainting.
+    let _playing = testkit::playing_mode();
+    let mut handle = Handle::new(&mut h).live();
+    let ran = catch_unwind(AssertUnwindSafe(|| (route.steps)(&mut handle, n)));
+    let stops = handle.stops();
+    let step = handle.step_name().to_string();
+    drop(handle);
+    let mut live = LiveEdit {
+        stops,
+        failed: None,
+    };
+    if let Err(payload) = ran {
+        let step = if step.is_empty() {
+            "the first step"
+        } else {
+            &step
+        };
+        live.failed = Some(format!("in {step}: {}", panic_message(payload)));
+        return live;
+    }
+    h.state_mut().session_mut().set_transport_running(false);
+    h.run_steps(3);
+    let checked = catch_unwind(AssertUnwindSafe(|| {
+        (route.done)(&mut Probe::new(&mut h), n)
+    }));
+    match checked {
+        Ok(Ok(())) => {}
+        Ok(Err(why)) => live.failed = Some(format!("at the end: {why}")),
+        Err(payload) => live.failed = Some(format!("at the end: {}", panic_message(payload))),
+    }
+    live
+}
+
+/// Saves the project, opens the file again, and checks that it reads back
+/// the same and that the route's done check still passes on it.
+fn reopen(h: &mut AppHarness, route: &Route, n: usize) -> Reopen {
+    let session = h.state_mut().session_mut();
+    let saved = session.project_ron();
+    let playing = session.transport_running();
+    if !matches!(session.save(), Saved::Yes) {
+        return Reopen::CannotSave;
+    }
+    let Some(path) = session.path().map(Path::to_owned) else {
+        return Reopen::CannotSave;
+    };
+    let mut again = match Session::open(Nodes::all(), &path) {
+        Ok(session) => session,
+        Err(error) => return Reopen::Differs(format!("(it does not open: {error})")),
+    };
+    again.set_audio_config(testkit::virtual_audio());
+    if let Some(difference) = robustness::first_difference(&saved, &again.project_ron()) {
+        return Reopen::Differs(difference);
+    }
+    // A done check that listens needs the transport as it was left.
+    if playing {
+        again.play();
+    }
+    let mut h = window(App::new(again));
+    let checked = catch_unwind(AssertUnwindSafe(|| {
+        (route.done)(&mut Probe::new(&mut h), n)
+    }));
+    match checked {
+        Ok(Ok(())) => Reopen::Same,
+        Ok(Err(why)) => Reopen::DoneFails(why),
+        Err(payload) => Reopen::DoneFails(panic_message(payload)),
+    }
 }
 
 fn play(route: &Route, n: usize, with_late: bool) -> Played {
@@ -165,6 +265,15 @@ fn play(route: &Route, n: usize, with_late: bool) -> Played {
     let mut failure = (route.done)(&mut Probe::new(&mut h), n).err();
     let base = effort::score(&log);
     let rework = rework::score(&log, &changes);
+    let surfaces = surface::score(&log);
+    // The done check may listen too, so read the log again.
+    let after = rec.log();
+    let mut feedback = Feedback {
+        hearing: feedback::time_to_hear(&after),
+        unseen: feedback::unseen(&after),
+        steps: base.steps,
+        live: LiveEdit::default(),
+    };
 
     // Undo everything and redo it, before the late changes start from the
     // end state.
@@ -199,8 +308,14 @@ fn play(route: &Route, n: usize, with_late: bool) -> Played {
         failure.get_or_insert(format!("the undo round trip fails: {round_trip:?}"));
     }
 
+    // Save and reopen the end state, before the late changes move it.
+    let reopened = reopen(&mut h, route, n);
+    if !reopened.ok() {
+        failure.get_or_insert(format!("save and reopen: {}", reopened.summary()));
+    }
+
     let mut late = Vec::new();
-    let mut seen = log.len();
+    let mut seen = after.len();
     for change in route.late.iter().filter(|_| with_late) {
         let before: Vec<String> = change
             .keep
@@ -231,11 +346,24 @@ fn play(route: &Route, n: usize, with_late: bool) -> Played {
             effort: mine,
         });
     }
+    let robustness = Robustness {
+        underruns: h.state().session().underruns(),
+        reopen: reopened,
+    };
+    // The live run is a pass of its own, so only the main one pays for it.
+    if with_late {
+        // Reported, not asserted: a step that cannot be done while the
+        // transport plays is a finding about the app, not a broken route.
+        feedback.live = live_edit(route, n);
+    }
     Played {
         effort: base,
         rework,
         round_trip,
         late,
+        surfaces,
+        feedback,
+        robustness,
         failure,
     }
 }
@@ -262,7 +390,12 @@ mod tests {
             scores.push(out.score);
         }
         if let Some(dir) = std::env::var_os("NOODLE_SCORECARD_DIR") {
-            report::write(Path::new(&dir), &scores).expect("the scorecard is written");
+            let words = vocabulary::check(
+                &Nodes::all().registry,
+                &noodle_core::library::Library::in_memory(),
+                vocabulary::TERMS,
+            );
+            report::write(Path::new(&dir), &scores, &words).expect("the scorecard is written");
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
@@ -472,6 +605,101 @@ mod tests {
         assert!(late.passed);
         // Two actions-worth of work against the route's.
         assert!(late.cost.unwrap() < 1.5);
+    }
+
+    // --- feedback, surfaces and robustness ---
+
+    #[test]
+    fn a_route_that_listens_reports_what_it_took_to_hear() {
+        let smoke = routes::all()
+            .into_iter()
+            .find(|r| r.story == "S00")
+            .expect("the framework route");
+        let out = run(&smoke, None);
+        assert_eq!(out.failure, None);
+        let feedback::Hearing::At { actions, .. } = out.score.feedback.hearing else {
+            panic!("{:?}", out.score.feedback.hearing);
+        };
+        // Everything it did before it listened.
+        assert_eq!(actions, out.score.effort.actions);
+    }
+
+    #[test]
+    fn a_route_that_never_listens_says_so() {
+        let out = run(&route(by_hand, all_by_hand, Some(1), &[]), None);
+        assert_eq!(out.score.feedback.hearing, feedback::Hearing::NotListened);
+    }
+
+    fn tags_a_step(h: &mut Handle, _n: usize) {
+        h.step("make it");
+        add_node(h, Pos2::new(300.0, 300.0), "sine");
+        h.step("look at it");
+        h.unseen("the result is in another view");
+    }
+
+    #[test]
+    fn steps_tagged_unseen_are_listed_and_the_search_is_shift_a_then_typing() {
+        let out = run(&route(tags_a_step, one_sine, None, &[]), None);
+        assert_eq!(out.failure, None);
+        assert_eq!(out.score.feedback.unseen, ["the result is in another view"]);
+        assert_eq!(out.score.feedback.steps, 2);
+        let s = &out.score.surfaces;
+        // Shift+A is hidden; the typing and Enter are the search.
+        assert_eq!((s.total, s.hidden_count()), (3, 1));
+        assert_eq!(s.count(surface::Surface::Search), 2);
+    }
+
+    /// Clicks the stop button, when there is one to click (the transport
+    /// plays only in a live run).
+    fn stops_the_transport(h: &mut Handle, _n: usize) {
+        h.step("stop it");
+        if h.probe().transport_running() {
+            let stop = h.find("⏹");
+            h.click(stop, Modifiers::NONE);
+        }
+        h.step("carry on");
+        add_node(h, Pos2::new(300.0, 300.0), "sine");
+    }
+
+    #[test]
+    fn a_step_that_stops_the_transport_is_named_in_the_live_run() {
+        let out = run(&route(stops_the_transport, one_sine, None, &[]), None);
+        assert_eq!(out.failure, None);
+        let live = &out.score.feedback.live;
+        assert_eq!(live.stops, ["stop it"]);
+        assert_eq!(live.failed, None);
+    }
+
+    #[test]
+    fn a_step_that_cannot_be_done_while_playing_fails_the_live_run_only() {
+        fn cannot(h: &mut Handle, _n: usize) {
+            h.step("find the button");
+            if h.probe().transport_running() {
+                h.find("a label nothing has");
+            }
+            add_node(h, Pos2::new(300.0, 300.0), "sine");
+        }
+        let out = run(&route(cannot, one_sine, None, &[]), None);
+        // The route itself is fine.
+        assert_eq!(out.failure, None);
+        let failed = out.score.feedback.live.failed.expect("fails live");
+        assert!(failed.starts_with("in find the button:"), "{failed}");
+    }
+
+    #[test]
+    fn a_route_that_edits_while_playing_without_trouble_works_live() {
+        let out = run(&route(by_hand, all_by_hand, None, &[]), None);
+        assert!(
+            out.score.feedback.live.ok(),
+            "{:?}",
+            out.score.feedback.live
+        );
+    }
+
+    #[test]
+    fn a_project_that_reads_back_the_same_passes_the_reopen_check() {
+        let out = run(&route(by_hand, all_by_hand, Some(2), &[]), None);
+        assert_eq!(out.score.robustness.reopen, Reopen::Same);
     }
 
     #[allow(dead_code)]

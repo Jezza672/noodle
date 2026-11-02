@@ -3,14 +3,20 @@
 //!
 //! Columns for metric groups that are not built yet show a dash. The repetition
 //! column shows the per-item cost only (the repetition ratio comes later).
+//! The vocabulary report (group E) is a table of its own, written beside the
+//! scorecard.
 
 use std::fmt::Write;
 use std::path::Path;
 
 use super::effort::Effort;
+use super::feedback::{Feedback, Hearing};
 use super::registry::STORIES;
 use super::repetition::PerItem;
 use super::rework::{Rework, RoundTrip};
+use super::robustness::Robustness;
+use super::surface::{Surface, Surfaces};
+use super::vocabulary::{self, Row};
 
 /// One route's result.
 pub struct RouteScore {
@@ -26,6 +32,12 @@ pub struct RouteScore {
     pub round_trip: RoundTrip,
     /// Late changes run from this route's end state.
     pub late: Vec<LateScore>,
+    /// How each action's entry point shows itself (group E).
+    pub surfaces: Surfaces,
+    /// Time to hear, live editing and state visibility (group F).
+    pub feedback: Feedback,
+    /// Dropouts, and save and reopen (group G).
+    pub robustness: Robustness,
 }
 
 pub struct LateScore {
@@ -121,6 +133,71 @@ fn rework_json(r: &Rework, t: &RoundTrip) -> String {
     )
 }
 
+fn strings(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|k| format!("\"{}\"", esc(k)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn surfaces_json(s: &Surfaces) -> String {
+    let counts: Vec<String> = Surface::ALL
+        .iter()
+        .map(|&x| format!("\"{}\":{}", x.name(), s.count(x)))
+        .collect();
+    format!(
+        "{{\"total\":{},\"hidden\":{},\"hidden_share\":{:.3},\"counts\":{{{}}},\
+         \"hidden_entry_points\":[{}],\"untagged\":[{}]}}",
+        s.total,
+        s.hidden_count(),
+        s.hidden_share(),
+        counts.join(","),
+        strings(&s.hidden),
+        strings(&s.untagged)
+    )
+}
+
+fn hearing_json(h: &Hearing) -> String {
+    match h {
+        Hearing::NotListened => "{\"listened\":false}".into(),
+        Hearing::Silent => "{\"listened\":true,\"heard\":false}".into(),
+        Hearing::At {
+            actions,
+            klm_seconds,
+            peak,
+        } => format!(
+            "{{\"listened\":true,\"heard\":true,\"actions\":{actions},\
+             \"klm_seconds\":{klm_seconds:.2},\"peak\":{peak:.3}}}"
+        ),
+    }
+}
+
+fn feedback_json(f: &Feedback) -> String {
+    format!(
+        "{{\"time_to_hear\":{},\"live\":{{\"works\":{},\"stops\":[{}],\"failed\":{}}},\
+         \"unseen\":[{}],\"steps\":{}}}",
+        hearing_json(&f.hearing),
+        f.live.ok(),
+        strings(&f.live.stops),
+        f.live
+            .failed
+            .as_ref()
+            .map_or("null".to_string(), |w| format!("\"{}\"", esc(w))),
+        strings(&f.unseen),
+        f.steps
+    )
+}
+
+fn robustness_json(r: &Robustness) -> String {
+    format!(
+        "{{\"underruns\":{},\"reopen\":{{\"ok\":{},\"detail\":\"{}\"}}}}",
+        r.underruns.map_or("null".to_string(), |n| n.to_string()),
+        r.reopen.ok(),
+        esc(&r.reopen.summary())
+    )
+}
+
 /// The JSON for one route.
 pub fn route_json(r: &RouteScore) -> String {
     let size = r.size.map_or("null".to_string(), |s| s.to_string());
@@ -146,7 +223,8 @@ pub fn route_json(r: &RouteScore) -> String {
         .collect();
     format!(
         "{{\"story\":\"{}\",\"tag\":\"{}\",\"name\":\"{}\",\"size\":{},\"passed\":{},\
-         \"effort\":{},\"per_item\":{},\"rework\":{},\"late_changes\":[{}]}}",
+         \"effort\":{},\"per_item\":{},\"rework\":{},\"late_changes\":[{}],\"surfaces\":{},\
+         \"feedback\":{},\"robustness\":{}}}",
         esc(&r.story),
         esc(&r.tag),
         esc(&r.name),
@@ -155,7 +233,10 @@ pub fn route_json(r: &RouteScore) -> String {
         effort_json(&r.effort),
         per_item_json(&r.per_item),
         rework_json(&r.rework, &r.round_trip),
-        late.join(",")
+        late.join(","),
+        surfaces_json(&r.surfaces),
+        feedback_json(&r.feedback),
+        robustness_json(&r.robustness)
     )
 }
 
@@ -165,9 +246,10 @@ pub fn markdown(routes: &[RouteScore]) -> String {
     let mut out = String::new();
     out.push_str(
         "| Story | Status | Route | Actions | KLM s | Per extra item | Repetition | Rework \
-         | Worst change cost | Loss | Hidden entry points | Naive success |\n",
+         | Worst change cost | Loss | Hidden entry points | Time to hear | Live editing \
+         | Unseen | Dropouts | Save and reopen | Naive success |\n",
     );
-    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut row = |id: &str, title: &str, status: &str, mine: Vec<&RouteScore>| {
         let tags: Vec<&str> = mine.iter().map(|r| r.tag.as_str()).collect();
         let pick = mine.iter().find(|r| r.tag == "default").or(mine.first());
@@ -216,6 +298,37 @@ pub fn markdown(routes: &[RouteScore]) -> String {
         } else {
             format!("LOST {}", lost.join(", "))
         };
+        let hidden = pick.map_or("-".to_string(), |r| {
+            let s = &r.surfaces;
+            format!(
+                "{} of {} ({:.0}%), {} untagged",
+                s.hidden_count(),
+                s.total,
+                s.hidden_share() * 100.0,
+                s.count(Surface::Untagged)
+            )
+        });
+        let hear = pick.map_or("-".to_string(), |r| match &r.feedback.hearing {
+            Hearing::NotListened => "never listens".to_string(),
+            Hearing::Silent => "SILENT".to_string(),
+            Hearing::At {
+                actions,
+                klm_seconds,
+                ..
+            } => format!("{actions} act / {klm_seconds:.1} s"),
+        });
+        let live = pick.map_or("-".to_string(), |r| r.feedback.live.summary());
+        let unseen = pick.map_or("-".to_string(), |r| {
+            if r.feedback.unseen.is_empty() {
+                "none".to_string()
+            } else {
+                format!("{} of {} steps", r.feedback.unseen.len(), r.feedback.steps)
+            }
+        });
+        let dropouts = pick
+            .and_then(|r| r.robustness.underruns)
+            .map_or("-".to_string(), |n| n.to_string());
+        let reopen = pick.map_or("-".to_string(), |r| r.robustness.reopen.summary());
         let route = if tags.is_empty() {
             "-".to_string()
         } else {
@@ -230,7 +343,8 @@ pub fn markdown(routes: &[RouteScore]) -> String {
         let _ = writeln!(
             out,
             "| {id} {title} | {status} | {route} | {actions} | {klm} | {per_item} | - | {rework} | {worst} \
-             | {loss} | - | - |"
+             | {loss} \
+             | {hidden} | {hear} | {live} | {unseen} | {dropouts} | {reopen} | - |"
         );
     };
     for story in &STORIES {
@@ -252,10 +366,18 @@ pub fn markdown(routes: &[RouteScore]) -> String {
     out
 }
 
-/// Writes `scorecard.md` and `routes/<story>-<tag>-<name>.json` under `dir`.
-pub fn write(dir: &Path, routes: &[RouteScore]) -> std::io::Result<()> {
+/// Writes `scorecard.md` (the table, then the vocabulary report),
+/// `vocabulary.json` and `routes/<story>-<tag>-<name>.json` under `dir`.
+pub fn write(dir: &Path, routes: &[RouteScore], words: &[Row]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("routes"))?;
-    std::fs::write(dir.join("scorecard.md"), markdown(routes))?;
+    let card = format!(
+        "{}\n## Vocabulary\n\nThe names other DAWs give a feature, typed into the add-node \
+         search.\n\n{}",
+        markdown(routes),
+        vocabulary::markdown(words)
+    );
+    std::fs::write(dir.join("scorecard.md"), card)?;
+    std::fs::write(dir.join("vocabulary.json"), vocabulary::json(words))?;
     let all: Vec<String> = routes.iter().map(route_json).collect();
     std::fs::write(
         dir.join("scorecard.json"),
@@ -270,6 +392,8 @@ pub fn write(dir: &Path, routes: &[RouteScore]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::feedback::LiveEdit;
+    use super::super::robustness::Reopen;
     use super::*;
 
     fn score(story: &str, tag: &str, actions: usize) -> RouteScore {
@@ -310,6 +434,29 @@ mod tests {
                 klm_ratio: Some(0.5),
                 lost: vec!["automation".into()],
             }],
+            surfaces: Surfaces {
+                counts: [4, 1, 0, 1, 1, 0, 1],
+                total: 8,
+                untagged: vec!["click on an unlabelled target in the node editor".into()],
+                hidden: vec!["Shift+A in the node editor".into()],
+            },
+            feedback: Feedback {
+                hearing: Hearing::At {
+                    actions: 5,
+                    klm_seconds: 9.5,
+                    peak: 0.5,
+                },
+                unseen: vec!["the lane".into()],
+                steps: 4,
+                live: LiveEdit {
+                    stops: vec!["wire".into()],
+                    failed: None,
+                },
+            },
+            robustness: Robustness {
+                underruns: Some(2),
+                reopen: Reopen::Same,
+            },
         }
     }
 
@@ -327,6 +474,16 @@ mod tests {
         assert!(json.contains("\"per_item\":{\"small\":4,\"large\":8,\"actions\":2.500"));
         assert!(json.contains("\"detected\":[\"sine\"]"));
         assert!(json.contains("\"restores_start\":true"));
+        assert!(json.contains("\"hidden_share\":0.125"), "{json}");
+        assert!(json.contains("\"shortcut only\":1"), "{json}");
+        assert!(
+            json.contains("\"untagged\":[\"click on an unlabelled"),
+            "{json}"
+        );
+        assert!(json.contains("\"time_to_hear\":{\"listened\":true,\"heard\":true,\"actions\":5"));
+        assert!(json.contains("\"live\":{\"works\":false,\"stops\":[\"wire\"],\"failed\":null}"));
+        assert!(json.contains("\"unseen\":[\"the lane\"]"));
+        assert!(json.contains("\"robustness\":{\"underruns\":2,\"reopen\":{\"ok\":true"));
     }
 
     #[test]
@@ -346,6 +503,11 @@ mod tests {
         assert!(s12.contains("2.5 act / 3.0 s"), "{s12}");
         assert!(s12.contains("2 recreate (4 act), 2 undo"), "{s12}");
         assert!(s12.contains("LOST automation"), "{s12}");
+        // Group E, F and G.
+        assert!(s12.contains("| 1 of 8 (12%), 1 untagged |"), "{s12}");
+        assert!(s12.contains("| 5 act / 9.5 s |"), "{s12}");
+        assert!(s12.contains("| stops in wire |"), "{s12}");
+        assert!(s12.contains("| 1 of 4 steps | 2 | identical |"), "{s12}");
         let s02 = lines.iter().find(|l| l.contains("| S02 ")).unwrap();
         assert!(s02.contains("| blocked | - | - | - |"), "{s02}");
         assert!(lines.last().unwrap().contains("S00 (framework check)"));
