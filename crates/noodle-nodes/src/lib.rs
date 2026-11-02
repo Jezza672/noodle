@@ -101,7 +101,7 @@ pub use eq::{
     EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
     default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
 };
-pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_export};
+pub use export::{ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,

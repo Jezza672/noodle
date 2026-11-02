@@ -364,9 +364,37 @@ silent partway through.
 Offline nodes that couldn't be rendered are silent in the file and listed in
 the report. Progress is the renders of nodes first (half the bar), then the
 file. The app's File > Export Audio… dialog (`export_dialog.rs`) asks for a
-format and the whole project (to the last clip, plus 4 s of tail) or a range in
-seconds, then for a file, and runs it on the session (`session/export.rs`) with
-a progress bar and cancel. Exports are stereo, at the stream's sample rate.
+format, the files (the mixdown and any top-level group, buses included) and the
+whole project (to the last clip, plus 4 s of tail) or a range in seconds, then
+for a file, or a folder when groups are ticked, and runs it on the session
+(`session/export.rs`) with a progress bar and cancel. Exports are in the chosen
+channel layout, at the stream's sample rate.
+
+**Track export.** `ExportRequest::tracks` lists groups to write one file each.
+The mixdown is the pass above (the Outputs, with the master processing). The
+track files are one `render_taps` pass over all the groups, so they are the
+same length and see the same renders: each tap is on the group's control
+port's stage (`GroupPort::stage()`, `out`), which the compiler always keeps
+for a group's outputs, so a file has the group's gain, mute and solo applied
+and nothing after it (a mixer's own per-input gain and the master group are
+not in it). The tapped signal goes to the file's channels as an Output node
+puts it on the main bus (mono to the first two, otherwise channel n to n,
+voices summed). A track tap renders from tick 0 and drops frames before the
+range's start, as the mixdown does. With the mixer going straight to an Output,
+the track files sum to the mixdown (`tests/export.rs`).
+
+**Loudness and dither.** Every file written is measured as it is written by a
+`noodle_io::LoudnessMeter` (BS.1770 / EBU R128 integrated loudness with both
+gates, K-weighted, channels weighted equally; true peak by 4× windowed-sinc
+oversampling), the same code `noodle-eval`'s `level` uses. The report carries
+the mixdown's and each track's `Loudness`, and the dialog shows them when the
+export ends. `ExportRequest::normalize` is a target in LUFS: the mixdown is
+rendered once to measure it (no file), then written with the gain that reaches
+the target, and the track files get the same gain, so they still sum to it.
+`ExportWriter` adds TPDF dither (two uniform values subtracted, one step
+wide, from a fixed seed, so the same audio writes the same bytes) when it
+rounds to 16 or 24 bits, WAV and FLAC alike; 32-bit float is written as is,
+and exact digital silence is left silent.
 Integer formats cut off samples past full scale. FLAC blocks are chosen so the
 last one is never shorter than FLAC's 16-frame minimum, and its header says
 every block but the last is the stream's block size, as some decoders

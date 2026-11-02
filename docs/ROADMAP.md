@@ -143,31 +143,25 @@ deliberately deferred items.
 
 **Done when.** You loop four bars, record five vocal passes in one go, swipe the best phrase from each into one comp that plays without clicks at the joins, undo a swipe, and export it identical to playback. A comp across linked drum mics stays aligned. An app test records on the virtual output and checks the takes and the comp's samples.
 
-## Track export and render to clip
+## Render to clip
 
-**The problem.** Export writes one mixdown to WAV or FLAC (`noodle-nodes/src/export.rs`). Sharing a song with a mix engineer means one file per track or bus. Freeze plays a group from the cache but never becomes a clip, so you can't render a synth or plugin chain to audio and then cut or warp it. There is no loudness readout.
+Track export, loudness and dither are delivered: see [features/track-export.md](features/track-export.md).
 
-**What you get.** Export offers Mixdown, plus any tracks or groups you tick, written in one pass with matching lengths and names. Render to clip on a track, group or time range makes a new audio track with the rendered clip and mutes the original. The export dialog shows integrated loudness and true peak, can normalise to a target, and dithers at 16 or 24 bits.
+**The problem.** Freeze plays a group from the cache but never becomes a clip, so you can't render a synth or plugin chain to audio and then cut or warp it.
+
+**What you get.** Render to clip on a track, group or time range makes a new audio track with the rendered clip and mutes the original.
 
 **Settled decisions.**
 
-- A track file is taken after the track's gain and mute, before the master group's processing. The mixdown is a separate file with the master processing on it.
-- Any group can be exported, buses included.
 - Render to clip makes a new audio track holding the clip; the original is muted and kept.
 - Rendering a range continues past its end until the effects fall silent, capped at 10 s.
-- Loudness and true peak are always shown; normalising is optional; dither is applied when writing 16 or 24 bits.
-- No MP3 in this item.
-- New terms: "track export" and "render to clip" (CONTEXT.md avoids "bounce", and "stem" is AI separation).
+- The term is "render to clip" (CONTEXT.md avoids "bounce", and "stem" is AI separation).
 
-**Scope.** In: track files from one render through `render_taps` (`noodle-engine/src/render.rs`); Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; BS.1770 loudness moved from `noodle-eval/src/level.rs` to where export can use it; TPDF dither in `noodle_io::ExportWriter`. Out: MP3, OMF, AAF and DAWproject interchange, a render queue.
+**Scope.** In: Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; it can take the group's tap the way track export does (`render_taps`, `noodle-engine/src/render.rs`). Out: MP3, OMF, AAF and DAWproject interchange, a render queue.
 
-**Batches.**
+**Batch.** Track, group and time range, tails, offline and frozen nodes included, one undo step.
 
-1. **Track export.** Group selection in the dialog, one pass, one file per group, a test that the track files sum to the mixdown when the master group is empty.
-2. **Render to clip.** Track, group and time range, tails, offline and frozen nodes included, one undo step.
-3. **Loudness and dither.**
-
-**Done when.** You export a project's tracks, buses and mixdown in one go; with no master processing, the track files sum to the mixdown within the golden tolerance. You render a plugin synth track to a clip and warp it. The dialog's loudness agrees with `noodle-eval` on the example songs.
+**Done when.** You render a plugin synth track to a clip and warp it.
 
 ## MIDI learn and MIDI output
 
