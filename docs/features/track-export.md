@@ -1,0 +1,10 @@
+# Track export, loudness and dither
+
+Delivered. Closes #291. This is roadmap batches 1 and 3 of "Track export and render to clip"; render to clip is still open in [ROADMAP.md](../ROADMAP.md). The design is in [architecture/caching.md](../architecture/caching.md) (Export, Track export, Loudness and dither).
+
+**Status:** done.
+
+1. **Track export.** The export dialog lists the mixdown and every top-level group (tracks and buses) as tick boxes. The mixdown is the existing render through the Outputs. The ticked groups are written by one `render_taps` pass, so the files have matching lengths and the same renders behind them. A track file is the signal at the group's output stage: after the group's gain, mute and solo, before whatever the group feeds, including the master processing. With the mixer going straight to an Output the track files sum to the mixdown (`noodle-nodes/tests/export.rs`). More than one file goes in a folder, named for the groups (`session/export.rs`, `unique_file_name` cleans and de-duplicates).
+2. **Loudness.** The BS.1770 integrated loudness moved from `noodle-eval/src/level.rs` to `noodle_io::LoudnessMeter`, which measures chunk by chunk, and gained true peak (4× oversampled). `noodle-eval` uses the same code. Every file is measured as it is written; the dialog shows integrated loudness and true peak when the export ends. An optional target normalises the mixdown, by a gain that the track files share. `noodle-eval/tests/export_loudness.rs` checks the export's figure against the evaluator's on the written file for every example song.
+3. **Dither.** `ExportWriter` adds TPDF dither when it rounds to 16 or 24 bits (WAV and FLAC), from a fixed seed, leaving exact silence silent. 32-bit float is untouched.
+4. **Not done.** A mixer's own per-input gain and mute are not in a track file (only the group's output gain and the track's mute are). No true-peak limiter after normalising: a gain that pushes the peak over full scale clips in the integer formats and the dialog shows the true peak. Nested groups can't be ticked. No MP3.

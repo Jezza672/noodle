@@ -1605,7 +1605,7 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
-            Action::ExportAudio => self.export.open(&self.session),
+            Action::ExportAudio => self.export.open(&mut self.session),
             Action::StartExport => {
                 if let Some(choice) = self.export.take_choice() {
                     self.start_export(choice);
@@ -1696,22 +1696,35 @@ impl eframe::App for App {
 impl App {
     /// Asks where to write the export and starts it.
     fn start_export(&mut self, choice: crate::session::ExportChoice) {
-        let name = format!("{}.{}", self.session.name(), choice.format.extension());
-        let mut dialog = rfd::FileDialog::new().set_file_name(name);
-        if let Some(dir) = self.session.directory() {
-            dialog = dialog.set_directory(dir);
-        }
-        let Some(path) = dialog
-            .add_filter(choice.format.label(), &[choice.format.extension()])
-            .save_file()
-        else {
-            self.export.declined();
-            return;
-        };
-        // Some platforms' dialogs don't add the extension.
-        let path = if path.extension().is_none() {
-            path.with_extension(choice.format.extension())
+        // One file is a file to save; several go in a folder.
+        let path = if choice.groups.is_empty() {
+            let name = format!("{}.{}", self.session.name(), choice.format.extension());
+            let mut dialog = rfd::FileDialog::new().set_file_name(name);
+            if let Some(dir) = self.session.directory() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(path) = dialog
+                .add_filter(choice.format.label(), &[choice.format.extension()])
+                .save_file()
+            else {
+                self.export.declined();
+                return;
+            };
+            // Some platforms' dialogs don't add the extension.
+            if path.extension().is_none() {
+                path.with_extension(choice.format.extension())
+            } else {
+                path
+            }
         } else {
+            let mut dialog = rfd::FileDialog::new().set_title("Folder for the exported files");
+            if let Some(dir) = self.session.directory() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(path) = dialog.pick_folder() else {
+                self.export.declined();
+                return;
+            };
             path
         };
         match self.session.start_export(path, choice) {
@@ -2316,6 +2329,23 @@ mod tests {
         harness.get_by_label("To");
         // An empty project's range runs from 0 to 0: nothing to write.
         harness.get_by_label("The range ends before it starts");
+    }
+
+    #[test]
+    fn the_export_dialog_offers_the_mixdown_and_loudness_and_wants_something_chosen() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Export Audio…").click();
+        harness.run();
+        harness.get_by_label("Mixdown");
+        harness.get_by_label_contains("Normalise mixdown to");
+        harness.get_by_label_contains("dithered");
+        // With the mixdown unticked and no track, there is nothing to write.
+        harness.get_by_label("Mixdown").click();
+        harness.run();
+        harness.get_by_label("Choose the mixdown or a track to export");
     }
 
     #[test]

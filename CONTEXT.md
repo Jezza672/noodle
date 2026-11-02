@@ -96,7 +96,7 @@ Rendering a subgraph to audio once so that playback reads the result instead of 
 _Avoid_: Bounce, commit
 
 **Track export**:
-Writing one audio file per chosen track or group, taken after its gain and mute and before the master group, alongside the mixdown.
+Writing one audio file per chosen track or group, taken after its gain and mute and before the master group, alongside the mixdown, all in one render. The export also measures each file's integrated loudness and true peak, and can normalise to a target.
 _Avoid_: Stems (that is AI separation), bounce
 
 **Render to clip**:
