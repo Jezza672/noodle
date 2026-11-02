@@ -94,27 +94,22 @@ fn first_phrase(p: &Project) -> String {
 /// Drags across take lane `k` from `from` to `to`, as fractions of the clip.
 fn swipe(h: &mut Handle, id: ClipId, k: usize, from: f32, to: f32) {
     // Lanes below the fold are scrolled to, as a user must.
-    // Back to the top first, then down to the lane.
-    for _ in 0..4 {
-        h.wheel(
-            Pos2::new(600.0, 200.0),
-            egui::MouseWheelUnit::Point,
-            egui::Vec2::new(0.0, 400.0),
-        );
-    }
+    // Scroll only when the lane is off screen or cut short: towards it, which
+    // is up when the lanes below it are showing.
     let mut tries = 0;
     while {
         h.probe().settle();
         h.probe()
             .try_take_lane(id, k)
             .is_none_or(|r| r.height() < 30.0)
-            && tries < 10
-    } {
-        let over = Pos2::new(600.0, 200.0);
+    } && tries < 10
+    {
+        let below = (k + 1..8).any(|j| h.probe().try_take_lane(id, j).is_some());
+        let dy = if below { 60.0 } else { -60.0 };
         h.wheel(
-            over,
+            Pos2::new(600.0, 200.0),
             egui::MouseWheelUnit::Point,
-            egui::Vec2::new(0.0, -60.0),
+            egui::Vec2::new(0.0, dy),
         );
         tries += 1;
     }

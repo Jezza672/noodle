@@ -229,6 +229,10 @@ impl Probe<'_> {
             .unwrap_or_else(|| panic!("{node:?} has no arm button on screen"))
     }
 
+    pub fn automation_mode(&self) -> crate::session::record_automation::AutomationMode {
+        self.h.state().session().automation_mode()
+    }
+
     /// Lets scrolling and animations finish; no input.
     pub fn settle(&mut self) {
         self.h.run_steps(30);

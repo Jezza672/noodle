@@ -44,7 +44,7 @@ pub fn route() -> Route {
     Route {
         story: "S20",
         tag: Tag::Default,
-        name: "ride a fader in touch mode",
+        name: "ride a fader (Touch, the default mode)",
         fixture: sine_gain_output,
         size: None,
         steps,
@@ -66,29 +66,35 @@ fn node_of(p: &Project, type_id: &str) -> NodeId {
         .unwrap_or_else(|| panic!("no {type_id} node"))
 }
 
+/// The lane as text, taken after the first pass for the late change to
+/// compare with.
+static FIRST_PASS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn lane_text(p: &Project) -> String {
+    let auto = node_of(p, AUTOMATION_NODE_ID);
+    p.lane_for(&Endpoint::new(auto, noodle_nodes::AUTOMATION_VALUE))
+        .map_or(String::new(), |(_, lane)| format!("{:?}", lane.points))
+}
+
 fn lane_points(p: &Project) -> usize {
-    let gain = node_of(p, GAIN_ID);
     // The lane belongs to the Automation node feeding the gain.
     let auto = node_of(p, AUTOMATION_NODE_ID);
-    let _ = gain;
     p.lane_for(&Endpoint::new(auto, noodle_nodes::AUTOMATION_VALUE))
         .map_or(0, |(_, lane)| lane.points.len())
 }
 
-fn ride(h: &mut Handle) {
-    let auto = node_of(h.probe().project(), AUTOMATION_NODE_ID);
+fn ride(h: &mut Handle, moves: [f32; 3]) {
     h.step("play");
     h.press_playing(Pos2::new(640.0, 300.0), Modifiers::NONE, Key::Space);
     h.step("move the fader");
     let value = h.find("Value");
-    for dx in [30.0, -30.0, 10.0] {
+    for dx in moves {
         // The pass needs time to pass between moves.
         h.probe().hear(std::time::Duration::from_millis(400));
         h.waited(0.4);
         h.drag_playing(&[value, value + egui::Vec2::new(dx, 0.0)]);
     }
     h.probe().hear(std::time::Duration::from_millis(400));
-    let _ = auto;
     h.step("stop");
     h.press_playing(Pos2::new(640.0, 300.0), Modifiers::NONE, Key::Space);
 }
@@ -103,7 +109,7 @@ fn steps(h: &mut Handle, _size: usize) {
     let auto = node_of(h.probe().project(), AUTOMATION_NODE_ID);
     let arm = h.arm_button(auto);
     h.click(arm, Modifiers::NONE);
-    ride(h);
+    ride(h, [30.0, -30.0, 10.0]);
 }
 
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
@@ -111,13 +117,26 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if n < 3 {
         return Err(format!("the lane has {n} points after the pass"));
     }
+    // The route relies on Touch being the default mode; the transport bar's
+    // dropdown is not reachable by label, so the mode is checked here.
+    if p.automation_mode() != crate::session::record_automation::AutomationMode::Touch {
+        return Err("the pass was not ridden in Touch mode".into());
+    }
+    if p.transport_running() {
+        return Err("the transport still runs".into());
+    }
+    *FIRST_PASS.lock().unwrap() = lane_text(p.project());
     Ok(())
 }
 
 fn ride_again(h: &mut Handle, _size: usize) {
-    ride(h);
+    ride(h, [-40.0, 50.0, -20.0]);
 }
 
 fn rode_again(p: &mut Probe, _size: usize) -> Result<(), String> {
-    done(p, 1)
+    let now = lane_text(p.project());
+    if now == *FIRST_PASS.lock().unwrap() {
+        return Err("the second pass left the lane as it was".into());
+    }
+    Ok(())
 }
