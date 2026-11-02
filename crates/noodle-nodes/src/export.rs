@@ -205,7 +205,7 @@ pub fn export(
     let expected = request.end - request.start;
     // Where each pass's share of the progress bar goes.
     let passes = usize::from(request.normalize.is_some())
-        + usize::from(request.mixdown.is_some() || request.normalize.is_some())
+        + usize::from(request.mixdown.is_some())
         + usize::from(!request.tracks.is_empty());
     let (first, span) = if request.freezer.is_some() {
         (0.5, 0.5)

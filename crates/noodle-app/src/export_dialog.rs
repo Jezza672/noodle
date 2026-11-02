@@ -337,6 +337,13 @@ fn results(ui: &mut egui::Ui, summary: &ExportSummary) -> bool {
                 ui.end_row();
             }
         });
+    if summary.files.iter().any(|(_, l)| l.sample_peak_db > 0.0) {
+        ui.add_space(4.0);
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Some files go past full scale; 16 and 24-bit files cut that off.",
+        );
+    }
     ui.add_space(8.0);
     ui.button("Close").clicked()
 }
