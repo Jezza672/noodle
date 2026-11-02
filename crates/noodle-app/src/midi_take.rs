@@ -391,9 +391,10 @@ mod tests {
     }
 
     #[test]
-    fn a_take_with_no_notes_makes_no_clip() {
-        assert!(take(&[(100, [0xB0, 1, 2])], 1000, Quantise::Off).is_none());
+    fn a_take_with_nothing_played_makes_no_clip() {
         assert!(take(&[], 1000, Quantise::Off).is_none());
+        // Channel mode messages (all notes off) are not performance.
+        assert!(take(&[(100, [0xB0, 123, 0])], 1000, Quantise::Off).is_none());
     }
 
     #[test]
