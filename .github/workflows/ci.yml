@@ -74,7 +74,12 @@ jobs:
       # The baseline is the scorecard artifact of the latest green run on
       # main (an artifact, not a committed file, so PRs never conflict on
       # it). Fork PRs get a read-only token, so they skip the comment.
+      - name: Scorecard diff tests
+        if: runner.os == 'Linux'
+        run: python3 -B -m unittest discover -s scripts
       - name: Scorecard diff
+        # A failed comment call must not turn CI red.
+        continue-on-error: true
         if: >-
           runner.os == 'Linux' && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
@@ -82,7 +87,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          python3 -m unittest discover -s scripts
           mkdir -p baseline
           run=$(gh run list --workflow ci.yml --branch main --status success \
             --limit 1 --json databaseId --jq '.[0].databaseId' || true)
