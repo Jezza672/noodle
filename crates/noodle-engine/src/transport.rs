@@ -21,6 +21,8 @@ pub struct TransportControl {
     /// so the audio thread never sees a start from one loop and an end from
     /// another. Zero means no loop.
     looping: AtomicU64,
+    /// Whether a recording is counting in (see [`TransportControl::set_count_in`]).
+    count_in: AtomicBool,
     seek_tick: AtomicI64,
     /// Counts seeks, so the audio thread notices a new one.
     seek_seq: AtomicU64,
@@ -33,6 +35,7 @@ impl TransportControl {
         Arc::new(Self {
             playing: AtomicBool::new(true),
             looping: AtomicU64::new(0),
+            count_in: AtomicBool::new(false),
             seek_tick: AtomicI64::new(0),
             seek_seq: AtomicU64::new(0),
             position: AtomicU64::new(0),
@@ -49,6 +52,16 @@ impl TransportControl {
 
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
+    }
+
+    /// Makes the metronome click while on, whether or not it is switched on:
+    /// the count-in before a recording.
+    pub fn set_count_in(&self, on: bool) {
+        self.count_in.store(on, Ordering::Relaxed);
+    }
+
+    pub(crate) fn counting_in(&self) -> bool {
+        self.count_in.load(Ordering::Relaxed)
     }
 
     /// Moves the playhead to `tick`. The output fades out and back in around

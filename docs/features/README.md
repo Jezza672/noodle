@@ -30,3 +30,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
 | [midi-learn.md](midi-learn.md) | Several MIDI inputs, Learn MIDI, MIDI Control encoder and pickup modes |
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |
+| [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
