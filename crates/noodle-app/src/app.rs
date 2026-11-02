@@ -145,6 +145,8 @@ enum Action {
     ToggleEngine,
     /// Stops listening to monitored nodes (Escape).
     StopMonitor,
+    /// Stops listening for MIDI learn.
+    StopLearningMidi,
     /// Chooses the device the monitor plays on: the nth listed output, or
     /// the main output for `None`.
     SetMonitorDevice(Option<usize>),
@@ -736,6 +738,13 @@ impl App {
                 && input.consume_key(Modifiers::NONE, Key::Escape)
             {
                 actions.push(Action::StopMonitor);
+            }
+            if !dialog
+                && !typing
+                && self.session.learning_midi()
+                && input.consume_key(Modifiers::NONE, Key::Escape)
+            {
+                actions.push(Action::StopLearningMidi);
             }
             if input.viewport().close_requested() && !self.closing {
                 actions.push(Action::Close);
@@ -1509,6 +1518,7 @@ impl App {
                 }
             }
             Action::StopMonitor => self.session.stop_monitor(),
+            Action::StopLearningMidi => self.session.edit([Edit::CancelLearnMidi]),
             Action::SetMonitorDevice(choice) => {
                 let device = choice
                     .and_then(|n| self.outputs.devices().get(n))

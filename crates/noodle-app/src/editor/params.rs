@@ -10,7 +10,7 @@ use super::draw::MIN_TEXT_ZOOM;
 use super::layout::{NodeGeom, PortKind, Side};
 use crate::session::Edit;
 use crate::widgets::ParamField;
-use crate::widgets::param::{Automate, Gesture};
+use crate::widgets::param::{Automate, Gesture, LearnMidi};
 
 /// The fields of every node, shown one node at a time as the nodes are
 /// painted, so nodes in front cover them.
@@ -132,7 +132,13 @@ impl Fields {
                     .automate(match crate::session::automate::refusal(f.project, &input) {
                         None => Automate::Offered,
                         Some(why) => Automate::Refused(why),
-                    });
+                    })
+                    .learn_midi(
+                        match crate::session::learn_midi::refusal(f.project, &input) {
+                            None => LearnMidi::Offered,
+                            Some(why) => LearnMidi::Refused(why),
+                        },
+                    );
                 let out = if replaced || idle_ride {
                     // Drawn like a disabled field, with the live value on it.
                     ui.scope(|ui| {

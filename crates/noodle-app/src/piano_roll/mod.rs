@@ -9,6 +9,7 @@
 //! Clicking a key on the keyboard plays it on the clip's track (see
 //! [`Output::audition`]).
 
+mod lanes;
 mod looping;
 mod notes;
 
@@ -18,7 +19,7 @@ use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
 use noodle_core::{
-    Clip, ClipContent, ClipId, MidiClip, MidiNote, Project, TICKS_PER_QUARTER, Tick,
+    Clip, ClipContent, ClipId, ControlPoint, MidiClip, MidiNote, Project, TICKS_PER_QUARTER, Tick,
 };
 
 use crate::session::{Edit, Session};
@@ -30,6 +31,8 @@ const TOOLBAR: f32 = crate::toolbar::HEIGHT;
 const RULER: f32 = 18.0;
 const KEYBOARD: f32 = 64.0;
 const VELOCITY: f32 = 56.0;
+/// The least height the grid keeps when lanes crowd it.
+const MIN_GRID: f32 = 100.0;
 const KEY_HEIGHT: f32 = 14.0;
 /// How far from a note's right end a press resizes it instead of moving it.
 const EDGE: f32 = 6.0;
@@ -87,17 +90,21 @@ pub struct PianoRoll {
     release: Option<u8>,
     /// The length the last note had, which the next one starts with.
     last_length: Option<i64>,
+    /// The controller and expression lanes under the notes.
+    lanes: lanes::Lanes,
     #[cfg(test)]
     geometry: Option<Geometry>,
 }
 
 /// Where things were drawn last frame, for tests to point at.
 #[cfg(test)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Geometry {
     pub grid: Rect,
     pub velocity: Rect,
     pub keyboard: Rect,
+    pub lanes: Vec<(noodle_core::ControlKind, Rect)>,
+    pub expression: Option<Rect>,
     origin: f32,
     ppq: f32,
     scroll_y: f32,
@@ -131,6 +138,7 @@ impl Default for PianoRoll {
             sounding: None,
             release: None,
             last_length: None,
+            lanes: lanes::Lanes::default(),
             #[cfg(test)]
             geometry: None,
         }
@@ -145,18 +153,21 @@ impl PianoRoll {
 
     /// Whether there are selected notes to copy, cut or duplicate.
     pub fn can_copy(&self) -> bool {
-        !self.selected.is_empty()
+        !self.selected.is_empty() || !self.lanes.picked.is_empty()
     }
 
     /// Whether there are copied notes to paste.
     pub fn can_paste(&self) -> bool {
-        self.clip.is_some() && crate::clipboard::holds(crate::clipboard::NOTE_MIME)
+        self.clip.is_some()
+            && (crate::clipboard::holds(crate::clipboard::NOTE_MIME)
+                || crate::clipboard::holds(crate::clipboard::CONTROL_MIME))
     }
 
     /// Shows the notes of `clip`.
     pub fn open(&mut self, clip: ClipId) {
         if self.clip != Some(clip) {
             self.clip = Some(clip);
+            self.lanes.reset();
             self.selected.clear();
             self.drag = None;
             self.focus = true;
@@ -167,6 +178,7 @@ impl PianoRoll {
         self.release = self.release.or(self.sounding.take());
         self.clip = None;
         self.drag = None;
+        self.lanes.reset();
         self.selected.clear();
     }
 
@@ -188,6 +200,7 @@ impl PianoRoll {
         match project.clip(id).and_then(Clip::as_midi) {
             None => self.close(),
             Some(midi) => {
+                self.lanes.retain_existing(midi);
                 self.selected
                     .retain(|id| midi.notes.iter().any(|n| n.id == *id));
                 if self
@@ -208,7 +221,7 @@ impl PianoRoll {
 
     #[cfg(test)]
     pub fn geometry(&self) -> Option<Geometry> {
-        self.geometry
+        self.geometry.clone()
     }
 }
 
@@ -321,6 +334,7 @@ pub fn show(
             ui.label(format!("Snap: {}", crate::snap::label(state.step)));
             ui.separator();
             looping::controls(ui, &mut out, id, clip, midi);
+            lanes::controls(ui, &mut state.lanes);
         },
     );
     if closed {
@@ -329,17 +343,25 @@ pub fn show(
     }
 
     let body = Rect::from_min_max(Pos2::new(rect.left(), toolbar.bottom()), rect.max);
+    let lane_layout = lanes::Layout::new(
+        &state.lanes,
+        midi,
+        body.height(),
+        RULER + VELOCITY + MIN_GRID,
+    );
     let grid_rect = Rect::from_min_max(
         Pos2::new(body.left() + KEYBOARD, body.top() + RULER),
         Pos2::new(
             body.right(),
-            (body.bottom() - VELOCITY).max(body.top() + RULER + 40.0),
+            (body.bottom() - VELOCITY - lane_layout.total()).max(body.top() + RULER + 40.0),
         ),
     );
     let velocity_rect = Rect::from_min_max(
         Pos2::new(grid_rect.left(), grid_rect.bottom()),
-        Pos2::new(grid_rect.right(), body.bottom().max(grid_rect.bottom())),
+        Pos2::new(grid_rect.right(), grid_rect.bottom() + VELOCITY),
     );
+    let lane_rects = lane_layout.rects(velocity_rect.bottom(), grid_rect.left(), grid_rect.right());
+    let lanes_bottom = velocity_rect.bottom() + lane_layout.total();
     let keyboard_rect = Rect::from_min_max(
         Pos2::new(body.left(), grid_rect.top()),
         Pos2::new(grid_rect.left(), grid_rect.bottom()),
@@ -382,6 +404,8 @@ pub fn show(
             grid: grid_rect,
             velocity: velocity_rect,
             keyboard: keyboard_rect,
+            lanes: lane_rects.0.clone(),
+            expression: lane_rects.1,
             origin: axes.origin,
             ppq: axes.ppq,
             scroll_y: axes.scroll_y,
@@ -573,6 +597,26 @@ pub fn show(
     // The velocity lane, with a bar per note.
     draw_velocity(ui, state, &mut out, id, clip, midi, velocity_rect, axes);
 
+    // The controller and expression lanes under it.
+    lanes::show(
+        ui,
+        &mut state.lanes,
+        &mut out,
+        &lanes::Ctx {
+            id,
+            clip,
+            midi,
+            axes,
+            map,
+            snap: &|t| notes::snap(map, clip.start, t, step),
+            shift,
+            selected: &state.selected,
+        },
+        &lane_layout,
+        &lane_rects,
+        grid_rect.left(),
+    );
+
     // The keyboard, which plays what is clicked.
     draw_keyboard(ui, state, &mut out, keyboard_rect, axes);
 
@@ -580,19 +624,31 @@ pub fn show(
     if let Some(playhead) = playhead {
         let x = axes.x(playhead.0 - clip.start.0);
         if x >= grid_rect.left() && x <= grid_rect.right() && playhead >= clip.start {
-            ui.painter_at(Rect::from_min_max(ruler_rect.min, velocity_rect.max))
-                .vline(
-                    x,
-                    ruler_rect.top()..=velocity_rect.bottom(),
-                    Stroke::new(1.5, colors::PLAYHEAD),
-                );
+            ui.painter_at(Rect::from_min_max(
+                ruler_rect.min,
+                Pos2::new(velocity_rect.right(), lanes_bottom),
+            ))
+            .vline(
+                x,
+                ruler_rect.top()..=lanes_bottom,
+                Stroke::new(1.5, colors::PLAYHEAD),
+            );
         }
     }
 
     // Keys.
     let typing = ui.ctx().egui_wants_keyboard_input();
-    if hovered && !typing && !state.selected.is_empty() {
-        keyboard_edits(ui, state, &mut out, id, clip, midi);
+    if hovered && !typing {
+        if state.lanes.hover && !state.lanes.picked.is_empty() {
+            if ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, Key::Delete)
+                    || i.consume_key(egui::Modifiers::NONE, Key::Backspace)
+            }) {
+                lanes::delete(&mut state.lanes, &mut out, id, clip, midi);
+            }
+        } else if !state.selected.is_empty() {
+            keyboard_edits(ui, state, &mut out, id, clip, midi);
+        }
     }
     if !typing {
         let chord = |ui: &egui::Ui| {
@@ -630,6 +686,28 @@ pub fn show(
         // Keep the pointer's note hot for the cursor above.
     }
     out
+}
+
+/// The command that sets a clip's controller points.
+fn set_controls(id: ClipId, clip: &Clip, controls: Vec<ControlPoint>, drag: bool) -> Edit {
+    let Some(midi) = clip.as_midi() else {
+        unreachable!("the piano roll only edits MIDI clips")
+    };
+    let command = Command::SetClip {
+        id,
+        clip: Clip {
+            content: ClipContent::Midi(MidiClip {
+                controls,
+                ..midi.clone()
+            }),
+            ..clip.clone()
+        },
+    };
+    if drag {
+        Edit::Drag(command)
+    } else {
+        Edit::Apply(command)
+    }
 }
 
 /// The command that sets a clip's notes.
@@ -716,7 +794,29 @@ fn clipboard_edits(
     midi: &MidiClip,
     playhead: i64,
 ) {
-    use crate::clipboard::{NOTE_MIME, copy, paste};
+    use crate::clipboard::{CONTROL_MIME, NOTE_MIME, copy, holds, paste};
+    // Points when the pointer is over the lanes or no notes are selected; a
+    // paste goes by what is on the clipboard.
+    let points_first = state.lanes.hover || state.selected.is_empty();
+    let for_points = if action == ClipAction::Paste {
+        holds(CONTROL_MIME)
+    } else {
+        points_first && !state.lanes.picked.is_empty()
+    };
+    if for_points
+        && lanes::clipboard(
+            action,
+            &mut state.lanes,
+            state.step,
+            out,
+            id,
+            clip,
+            midi,
+            playhead,
+        )
+    {
+        return;
+    }
     let held = notes::copied(&midi.notes, &state.selected);
     let summary = || {
         let n = held.len();
