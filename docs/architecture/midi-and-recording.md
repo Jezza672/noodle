@@ -82,9 +82,9 @@ restart the audio.
 
 ## MIDI clips
 
-A MIDI clip (`ClipContent::Midi`) is a length and a list of notes, all in
-ticks: a note has a start from the clip's start, a length, a key (0 to 127)
-and a velocity (0 to 1). Unlike an audio clip's, its length follows the tempo,
+A MIDI clip (`ClipContent::Midi`) is a length, a list of notes and a list of
+controller points, all in ticks: a note has a start from the clip's start, a
+length, a key (0 to 127), a velocity (0 to 1) and its own expressions. Unlike an audio clip's, its length follows the tempo,
 because it is music and not a recording. A clip's notes can be in any order;
 the commands that add and change clips check them (no empty notes, none
 before the start, keys and velocities in range).
@@ -99,6 +99,35 @@ before the start, keys and velocities in range).
   clip, start and key, so editing other notes while it sounds doesn't cut it;
   if the note itself is moved, resized or removed, the old one ends at once.
   At most 128 notes sound at once on a track.
+- **Controllers and expressions.** `MidiClip::controls` holds `ControlPoint`s
+  (tick, channel, kind, value, `ramp`): a kind is a controller number, pitch
+  bend, channel pressure or a program change, with values normalised as the
+  engine's events are (0 to 1, bend -1 to 1; the program over 127). No SysEx.
+  A `MidiNote` has `expressions` (`NoteExpression`: tick from the note's
+  start, pitch, poly pressure, timbre, volume or pan, `ramp`). They are not
+  automation lanes: they leave through the track input's `midi` output with
+  the notes (as `EventKind::Channel`, `Midi` for a program change, and
+  `Expression`) and move, loop, split and copy with the clip.
+  - *Scheduling.* `schedule_controls` (in `clip/schedule.rs`) turns
+    `MidiClip::played_controls` (the controllers as they sound, like `played`
+    for notes) into `ScheduledControl`s in `Notes::controls`, sorted by time.
+    A point with `ramp` glides in a straight line to the next of its channel
+    and kind and plays as an event about every 5 ms. A note's expressions play
+    only while the note sounds, so a jump into a note does not send them.
+  - *Chase and release.* After a jump (a seek, or the transport's loop wrap)
+    the track input sends each controller's newest value before the playhead
+    (`play_controls`, a backwards scan with a fixed table, so it does not
+    allocate); the same happens when playback starts. At the clip's end each
+    controller it set gets a release (`ControlKind::rest`: pedals up, wheel
+    and pressure at 0, bend centred, volume, pan and expression back where a
+    synth starts), which a chase skips if it is the newest. A clip's own loop
+    puts every controller back to its value at the loop's start at each
+    repeat, or releases it if it had none.
+  - *Editing.* Trimming the end drops points past it (unless the clip loops);
+    trimming the start and splitting use `controls_from`, which keeps each
+    held controller at the new start so a pedal stays down, and cut an
+    expression the same way (`MidiNote::expressions_from`).
+  - The cache key covers them (`clip.rs`, `instantiate`'s key), as notes are.
 - **Looping.** A clip has `loop_on`, `loop_start` and `loop_len` (ticks from the
   clip's start; at least a sixteenth of a beat). Looped, it plays from its
   start to the loop's end, then the loop section again until the clip's end.
@@ -195,3 +224,14 @@ MIDI alone. The Q menu in the transport sets a grid (off, 1/4, 1/8, 1/16,
 clip is made, keeping their lengths, shortening a note that now runs into the
 same key's next one and dropping a second note on the same tick. What is
 heard while playing is never snapped. The raw timing is not kept.
+
+A take also keeps controllers (the pedal, wheel, any controller but the
+channel-mode ones, 120 and up), pitch bend, channel pressure and program
+changes as `ControlPoint`s, and poly pressure as a pressure expression on the
+note it is for (the held note of that key and channel). A value that repeats
+the one before it is dropped. It subscribes to every message, not only notes,
+so a stream of controllers is kept. Quantising snaps the notes' starts, and
+each note's expressions are counted from its start so they move with it;
+controllers stay where they were played. A take of controllers alone still
+makes a clip. The bus carries MIDI 1.0 values, so a take is 7 bits (14 for
+bend).

@@ -25,5 +25,6 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [code-cleanup.md](code-cleanup.md) | Code cleanup audit: idle power, derived state, file watching |
 | [playback-cache.md](playback-cache.md) | Playback cache, batch 1: reset equals fresh, memory tiers, cache-key gaps |
 | [autosave.md](autosave.md) | Autosave and crash recovery |
+| [midi-controllers-in-clips.md](midi-controllers-in-clips.md) | MIDI controllers and expressions in clips: data, playback, recording |
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension |

@@ -71,24 +71,14 @@ deliberately deferred items.
 
 ## MIDI controllers and expressions in clips
 
-**The problem.** A MIDI clip holds notes and nothing else (`MidiClip::notes` in `noodle-core/src/clip.rs`), and a take keeps only notes (`midi_take.rs`). Sustain pedal, mod wheel, pitch bend, aftertouch and MPE expressions are heard while monitoring and then lost, so a recorded piano part comes back without its pedal. The engine already carries all of them (`EventKind::Channel`, note expressions, `MIDI Control`); only the clip cannot store them.
+Batches 1 and 2 (the data, playback, chase and release, and recording) are built: see [features/midi-controllers-in-clips.md](features/midi-controllers-in-clips.md). What is left is the editing UI.
 
-**What you get.** Clips keep controllers, pitch bend, channel and poly pressure, program changes and per-note expressions, and recording keeps them. The piano roll shows a lane for each controller the clip uses, with "+" to add one, and a lane of expressions for the selected notes.
+**What you get.** The piano roll shows a lane for each controller the clip uses, with "+" to add one, and a lane of expressions for the selected notes.
 
-**Settled decisions.**
-
-- The data lives in the clip and leaves through the track input's `midi` output with the notes, so it moves, loops, splits and copies with them. It is not turned into automation lanes.
-- Values are normalised 32-bit, as the engine's events are (0 to 1, bend -1 to 1), converted only at the device. No SysEx.
-- **Chase and release.** On a seek or loop wrap, each controller's last value before the playhead is sent, so a held pedal stays held. At the clip's end, what it set is released (pedal up, bend centred).
-- A drawn ramp is stored as two points and played as events at a fixed rate (about every 5 ms).
-- Quantising a take moves each note's expressions with it and leaves controllers where they were played.
-
-**Scope.** In: `MidiClip::controls` and expressions on `MidiNote`; scheduling in `ClipFeeds` (`noodle-nodes/src/clip/schedule.rs`); loop, split and trim matching the notes'; cache keys (`noodle-core/src/cache_key.rs`); takes; piano roll lanes with draw, line, select and copy. Out: SysEx, converting between controller data and automation lanes, curves drawn on the notes themselves (later).
+**Scope.** In: piano roll lanes with draw, line, select and copy. Out: SysEx, converting between controller data and automation lanes, curves drawn on the notes themselves (later).
 
 **Batches.**
 
-1. **Data and playback.** The model, chase and release, loop, split and trim, cache keys, and `examples/midi-cc.ron` (pedal and mod wheel into a synth group through `MIDI Control`) with its golden render.
-2. **Recording.** Takes keep controllers and expressions.
 3. **Controller lanes in the piano roll.**
 4. **Expression lane for the selected notes.**
 
