@@ -1,13 +1,16 @@
 //! The scorecard: a JSON file per route and a Markdown table across stories
 //! (the layout in `docs/architecture/usability.md`, section 4).
 //!
-//! Columns for metric groups that are not built yet show a dash.
+//! Columns for metric groups that are not built yet show a dash. The repetition
+//! column shows the per-item cost only (the repetition ratio comes later).
 
 use std::fmt::Write;
 use std::path::Path;
 
 use super::effort::Effort;
 use super::registry::STORIES;
+use super::repetition::PerItem;
+use super::rework::{Rework, RoundTrip};
 
 /// One route's result.
 pub struct RouteScore {
@@ -17,6 +20,10 @@ pub struct RouteScore {
     pub size: Option<usize>,
     pub passed: bool,
     pub effort: Effort,
+    /// What each extra item costs, for a route that scales.
+    pub per_item: Option<PerItem>,
+    pub rework: Rework,
+    pub round_trip: RoundTrip,
     /// Late changes run from this route's end state.
     pub late: Vec<LateScore>,
 }
@@ -28,6 +35,10 @@ pub struct LateScore {
     /// The late change's actions over the route's, or `None` for a route
     /// with no actions.
     pub cost: Option<f64>,
+    /// The late change's KLM seconds over the route's.
+    pub klm_ratio: Option<f64>,
+    /// The parts of the state it had to leave alone and did not.
+    pub lost: Vec<String>,
 }
 
 fn esc(s: &str) -> String {
@@ -75,6 +86,41 @@ fn effort_json(e: &Effort) -> String {
     )
 }
 
+fn opt(v: Option<f64>) -> String {
+    v.map_or("null".to_string(), |c| format!("{c:.3}"))
+}
+
+fn per_item_json(p: &Option<PerItem>) -> String {
+    match p {
+        Some(p) => format!(
+            "{{\"small\":{},\"large\":{},\"actions\":{:.3},\"klm_seconds\":{:.3}}}",
+            p.small, p.large, p.actions, p.klm_seconds
+        ),
+        None => "null".into(),
+    }
+}
+
+fn rework_json(r: &Rework, t: &RoundTrip) -> String {
+    let detected: Vec<String> = r
+        .detected
+        .iter()
+        .map(|k| format!("\"{}\"", esc(k)))
+        .collect();
+    format!(
+        "{{\"marked\":{},\"marked_actions\":{},\"detected\":[{}],\"undos\":{},\
+         \"round_trip\":{{\"undo_steps\":{},\"redo_steps\":{},\"restores_start\":{},\
+         \"restores_end\":{}}}}}",
+        r.marked,
+        r.marked_actions,
+        detected.join(","),
+        r.undos,
+        t.undo_steps,
+        t.redo_steps,
+        t.restores_start,
+        t.restores_end
+    )
+}
+
 /// The JSON for one route.
 pub fn route_json(r: &RouteScore) -> String {
     let size = r.size.map_or("null".to_string(), |s| s.to_string());
@@ -83,23 +129,32 @@ pub fn route_json(r: &RouteScore) -> String {
         .iter()
         .map(|l| {
             format!(
-                "{{\"name\":\"{}\",\"passed\":{},\"cost\":{},\"effort\":{}}}",
+                "{{\"name\":\"{}\",\"passed\":{},\"cost\":{},\"klm_ratio\":{},\
+                 \"lost\":[{}],\"effort\":{}}}",
                 esc(&l.name),
                 l.passed,
-                l.cost.map_or("null".to_string(), |c| format!("{c:.3}")),
+                opt(l.cost),
+                opt(l.klm_ratio),
+                l.lost
+                    .iter()
+                    .map(|k| format!("\"{}\"", esc(k)))
+                    .collect::<Vec<_>>()
+                    .join(","),
                 effort_json(&l.effort)
             )
         })
         .collect();
     format!(
         "{{\"story\":\"{}\",\"tag\":\"{}\",\"name\":\"{}\",\"size\":{},\"passed\":{},\
-         \"effort\":{},\"late_changes\":[{}]}}",
+         \"effort\":{},\"per_item\":{},\"rework\":{},\"late_changes\":[{}]}}",
         esc(&r.story),
         esc(&r.tag),
         esc(&r.name),
         size,
         r.passed,
         effort_json(&r.effort),
+        per_item_json(&r.per_item),
+        rework_json(&r.rework, &r.round_trip),
         late.join(",")
     )
 }
@@ -128,6 +183,39 @@ pub fn markdown(routes: &[RouteScore]) -> String {
             .flat_map(|r| r.late.iter().filter_map(|l| l.cost))
             .fold(None, |a: Option<f64>, c| Some(a.map_or(c, |a| a.max(c))))
             .map_or("-".to_string(), |c| format!("{c:.2}"));
+        let per_item = pick
+            .and_then(|r| r.per_item.as_ref())
+            .map_or("-".to_string(), |p| {
+                format!("{:.1} act / {:.1} s", p.actions, p.klm_seconds)
+            });
+        let rework = pick.map_or("-".to_string(), |r| {
+            let w = &r.rework;
+            let mut text = format!(
+                "{} recreate ({} act), {} undo",
+                w.marked + w.detected.len(),
+                w.marked_actions,
+                w.undos
+            );
+            if !r.round_trip.ok() {
+                text.push_str(", UNDO ROUND TRIP FAILS");
+            }
+            text
+        });
+        let lost: Vec<&str> = mine
+            .iter()
+            .flat_map(|r| {
+                r.late
+                    .iter()
+                    .flat_map(|l| l.lost.iter().map(String::as_str))
+            })
+            .collect();
+        let loss = if mine.iter().all(|r| r.late.is_empty()) {
+            "-".to_string()
+        } else if lost.is_empty() {
+            "none".to_string()
+        } else {
+            format!("LOST {}", lost.join(", "))
+        };
         let route = if tags.is_empty() {
             "-".to_string()
         } else {
@@ -141,7 +229,8 @@ pub fn markdown(routes: &[RouteScore]) -> String {
         };
         let _ = writeln!(
             out,
-            "| {id} {title} | {status} | {route} | {actions} | {klm} | - | - | - | {worst} | - | - | - |"
+            "| {id} {title} | {status} | {route} | {actions} | {klm} | {per_item} | - | {rework} | {worst} \
+             | {loss} | - | - |"
         );
     };
     for story in &STORIES {
@@ -195,11 +284,31 @@ mod tests {
                 klm_seconds: 12.34,
                 ..Effort::default()
             },
+            per_item: Some(PerItem {
+                small: 4,
+                large: 8,
+                actions: 2.5,
+                klm_seconds: 3.0,
+            }),
+            rework: Rework {
+                marked: 1,
+                marked_actions: 4,
+                detected: vec!["sine".into()],
+                undos: 2,
+            },
+            round_trip: RoundTrip {
+                undo_steps: 3,
+                redo_steps: 3,
+                restores_start: true,
+                restores_end: true,
+            },
             late: vec![LateScore {
                 name: "late".into(),
                 passed: true,
                 effort: Effort::default(),
                 cost: Some(0.25),
+                klm_ratio: Some(0.5),
+                lost: vec!["automation".into()],
             }],
         }
     }
@@ -213,6 +322,11 @@ mod tests {
         assert!(json.contains("\"actions\":7"));
         assert!(json.contains("\"seconds\":12.34"));
         assert!(json.contains("\"cost\":0.250"));
+        assert!(json.contains("\"klm_ratio\":0.500"));
+        assert!(json.contains("\"lost\":[\"automation\"]"));
+        assert!(json.contains("\"per_item\":{\"small\":4,\"large\":8,\"actions\":2.500"));
+        assert!(json.contains("\"detected\":[\"sine\"]"));
+        assert!(json.contains("\"restores_start\":true"));
     }
 
     #[test]
@@ -229,6 +343,9 @@ mod tests {
         assert!(s12.contains("default / expert"), "{s12}");
         assert!(s12.contains("| 7 | 12.3 |"), "{s12}");
         assert!(s12.contains("| 0.25 |"), "{s12}");
+        assert!(s12.contains("2.5 act / 3.0 s"), "{s12}");
+        assert!(s12.contains("2 recreate (4 act), 2 undo"), "{s12}");
+        assert!(s12.contains("LOST automation"), "{s12}");
         let s01 = lines.iter().find(|l| l.contains("| S01 ")).unwrap();
         assert!(s01.contains("| blocked | - | - | - |"), "{s01}");
         assert!(lines.last().unwrap().contains("S00 (framework check)"));

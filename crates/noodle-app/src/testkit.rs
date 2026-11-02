@@ -46,6 +46,9 @@ pub enum ActionKind {
     Step(String),
     /// Not an action: the user waited on the app for this many seconds.
     Wait(f64),
+    /// Not an action: the actions up to the next [`ActionKind::Step`] only
+    /// recreate something that already existed (the route's author says so).
+    Recreate(String),
 }
 
 /// The widget under a point, as egui's accessibility tree shows it.
@@ -123,6 +126,18 @@ pub fn step_marker<S>(h: &Harness<'_, S>, name: &str) {
     push(
         h,
         ActionKind::Step(name.into()),
+        Modifiers::NONE,
+        None,
+        None,
+    );
+}
+
+/// Says the actions that follow, up to the next step marker, only recreate
+/// something that already existed, because the app made it necessary.
+pub fn recreate_marker<S>(h: &Harness<'_, S>, name: &str) {
+    push(
+        h,
+        ActionKind::Recreate(name.into()),
         Modifiers::NONE,
         None,
         None,
