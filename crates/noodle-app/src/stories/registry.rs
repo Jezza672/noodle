@@ -66,8 +66,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S09",
         title: "Program a drum pattern with swing and choke",
-        status: Status::Blocked,
-        missing: "No swing or hat choke, and no route yet for the parts that work: #330.",
+        status: Status::Partial,
+        missing: "No swing or hat choke, and loading the samples and swapping the snare are not routed: #330.",
     },
     blocked("S10", "Program multi-articulation orchestral parts"),
     blocked("S11", "Turn an audio phrase into MIDI"),
@@ -86,8 +86,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S19",
         title: "Build a parallel processing mix bus",
-        status: Status::Blocked,
-        missing: "No pre-fader sends, and no route yet for the drum bus and sidechain: #332.",
+        status: Status::Partial,
+        missing: "No pre-fader sends, so no parallel bus and no send switch: #332.",
     },
     Story {
         id: "S20",

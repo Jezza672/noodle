@@ -3,6 +3,8 @@
 
 mod framework_smoke;
 mod s01_comp;
+mod s09_drum_pattern;
+mod s19_drum_bus;
 mod s20_automation;
 
 use std::path::Path;
@@ -21,6 +23,8 @@ pub fn all() -> Vec<Route> {
     vec![
         framework_smoke::route(),
         s01_comp::route(),
+        s09_drum_pattern::route(),
+        s19_drum_bus::route(),
         s20_automation::route(),
     ]
 }
