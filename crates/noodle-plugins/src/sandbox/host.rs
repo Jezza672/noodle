@@ -194,8 +194,8 @@ fn control(mut channel: Channel, node: NodeId, mapping: &Mapping, pumped: bool) 
                 editor::close_editor(node);
                 let _ = channel.send(&FromHost::Done);
             }
-            Ok(Some(ToHost::Capture)) => {
-                let reply = match editor::capture(node) {
+            Ok(Some(ToHost::Capture { with_state })) => {
+                let reply = match editor::capture_with(node, with_state) {
                     Ok(captured) => FromHost::Captured {
                         state: encode(&captured.state),
                         params: captured.params,

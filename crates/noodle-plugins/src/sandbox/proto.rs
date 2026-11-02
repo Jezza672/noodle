@@ -34,7 +34,10 @@ pub(crate) enum ToHost {
     Hello(Box<Hello>),
     OpenEditor,
     CloseEditor,
-    Capture,
+    /// `with_state`: whether to save the plugin's state too.
+    Capture {
+        with_state: bool,
+    },
     /// Leave, now.
     Quit,
 }
