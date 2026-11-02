@@ -58,7 +58,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           NOODLE_SCORECARD_DIR: ${{ github.workspace }}/scorecard
-        run: cargo test -p noodle-app stories::
+        run: 'cargo test -p noodle-app stories::'
       - name: Upload scorecard
         if: runner.os == 'Linux' && !cancelled()
         uses: actions/upload-artifact@v4

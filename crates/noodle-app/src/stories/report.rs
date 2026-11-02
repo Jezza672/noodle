@@ -154,6 +154,7 @@ pub fn markdown(routes: &[RouteScore]) -> String {
         .map(|r| r.story.as_str())
         .filter(|id| !known(id))
         .collect();
+    others.sort_unstable();
     others.dedup();
     for id in others {
         let mine: Vec<&RouteScore> = routes.iter().filter(|r| r.story == id).collect();
