@@ -160,7 +160,9 @@ before the start, keys and velocities in range).
   it (in time and pitch, a whole selection together), dragging its right end
   resizes it, Delete removes, the arrow keys transpose and nudge, Cmd+C/X/V/D
   copy, cut, paste (at the playhead) and duplicate the selected notes, and a bar in
-  the velocity lane sets velocity. Notes snap to the app-wide snap step (the
+  the velocity lane sets velocity. Under it are a lane for each controller the
+  clip uses ("+" adds one) and, if switched on, an expression lane for the
+  selected notes (`piano_roll/lanes.rs`: Draw, Line, Select). Notes snap to the app-wide snap step (the
   *Snap* menu in the menu bar: a beat down to 1/16 of a beat, or off; one
   setting for the arrangement, the piano roll and the clip editor, `snap.rs`),
   Alt turns snapping off. In the piano roll, snapping is on the absolute grid
