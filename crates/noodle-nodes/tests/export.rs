@@ -9,8 +9,8 @@ use noodle_core::{Clip, Command, Connection, Endpoint, History, Node, NodeId, Pr
 use noodle_engine::{OUTPUT_ID, Progress, Registry, Settings};
 use noodle_io::{CacheStore, ExportFormat, decode_file, read_wav, write_wav};
 use noodle_nodes::{
-    ExportJobError, ExportRequest, Freezer, RenderRequest, TRACK_INPUT_ID, TrackExport, export,
-    render_project_with_clips, spawn_export,
+    CLIP_SILENCE, ClipRequest, ExportJobError, ExportRequest, Freezer, RenderRequest,
+    TRACK_INPUT_ID, TrackExport, export, render_clip, render_project_with_clips, spawn_export,
 };
 
 const RATE: u32 = 48_000;
@@ -566,4 +566,85 @@ fn nothing_chosen_and_a_group_without_an_output_are_refused() {
         Err(ExportJobError::NoOutput(_))
     ));
     assert!(!rig.root.join("nowhere.wav").exists());
+}
+
+impl Rig {
+    fn clip_request(&self, group: NodeId, name: &str, range: (u64, u64), tail: u64) -> ClipRequest {
+        ClipRequest {
+            render: RenderRequest {
+                project: self.project.clone(),
+                base: self.root.clone(),
+                settings: SETTINGS,
+                frames: FRAMES,
+                extend_registry: None,
+            },
+            group,
+            name: name.into(),
+            start: range.0,
+            end: range.1,
+            max_tail: tail,
+            path: self.root.join(format!("{name}.wav")),
+            freezer: Some(self.freezer.clone()),
+        }
+    }
+}
+
+#[test]
+fn a_rendered_clip_is_the_tracks_own_render_and_its_tail_stops_at_silence() {
+    let mut rig = setup("clip-match");
+    let (groups, _, _) = two_tracks(&mut rig);
+    // The whole track, as track export writes it.
+    let mut whole = rig.track_request(groups, "whole");
+    whole.mixdown = None;
+    whole.tracks.truncate(1);
+    whole.start = 20_000;
+    export(&whole, &Progress::new()).unwrap();
+    let whole = read(&whole.tracks[0].path);
+
+    // A range that ends before the audio does: the clip runs on to where the
+    // track falls silent, well short of the ten second cap.
+    let request = rig.clip_request(groups[0], "clip", (20_000, 50_000), 10 * RATE as u64);
+    let report = render_clip(&request, &Progress::new()).unwrap();
+    assert!(report.is_complete(), "{report:?}");
+    assert!(!report.capped);
+    assert!(report.tail > 0 && report.frames == 30_000 + report.tail);
+    let clip = read(&request.path);
+    assert_eq!(clip.len() as u64, report.frames * 2);
+    assert_eq!(clip, whole[..clip.len()]);
+    assert!(clip.len() < whole.len());
+    // What it left off is silence.
+    assert!(whole[clip.len()..].iter().all(|s| s.abs() <= CLIP_SILENCE));
+    // The last frame it kept is not.
+    assert!(
+        clip[clip.len() - 2..]
+            .iter()
+            .any(|s| s.abs() > CLIP_SILENCE)
+    );
+}
+
+#[test]
+fn a_tail_still_sounding_at_the_cap_is_cut_with_a_fade() {
+    let mut rig = setup("clip-cap");
+    let (groups, _, _) = two_tracks(&mut rig);
+    let request = rig.clip_request(groups[0], "capped", (20_000, 30_000), 5_000);
+    let report = render_clip(&request, &Progress::new()).unwrap();
+    assert!(report.capped);
+    assert_eq!(report.tail, 5_000);
+    let clip = read(&request.path);
+    assert_eq!(clip.len(), 15_000 * 2);
+    assert!(clip[clip.len() - 2..].iter().all(|s| s.abs() < 1e-3));
+}
+
+#[test]
+fn a_silent_track_makes_no_clip_and_leaves_no_file() {
+    let mut rig = setup("clip-silent");
+    let (groups, inputs, _) = two_tracks(&mut rig);
+    rig.set(inputs[1], "mute", 1.0);
+    let request = rig.clip_request(groups[1], "silent", (0, 30_000), 1_000);
+    let error = render_clip(&request, &Progress::new()).unwrap_err();
+    assert!(matches!(error, ExportJobError::Silent(_)), "{error}");
+    assert!(!request.path.exists());
+    let mut partial = request.path.as_os_str().to_owned();
+    partial.push(".partial");
+    assert!(!std::path::Path::new(&partial).exists());
 }

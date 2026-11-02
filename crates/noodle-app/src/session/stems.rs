@@ -499,7 +499,7 @@ impl Session {
 
 /// The track order of `project` with `new` (which are last) moved to just
 /// after `after`.
-fn order_after(project: &Project, after: NodeId, new: &[NodeId]) -> Vec<NodeId> {
+pub(super) fn order_after(project: &Project, after: NodeId, new: &[NodeId]) -> Vec<NodeId> {
     let mut order: Vec<NodeId> = crate::timeline::tracks(project)
         .into_iter()
         .map(|input| {

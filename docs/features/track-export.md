@@ -1,6 +1,6 @@
 # Track export, loudness and dither
 
-Delivered. Closes #291. This is roadmap batches 1 and 3 of "Track export and render to clip"; render to clip is still open in [ROADMAP.md](../ROADMAP.md). The design is in [architecture/caching.md](../architecture/caching.md) (Export, Track export, Loudness and dither).
+Delivered. Closes #291. This is roadmap batches 1 and 3 of "Track export and render to clip"; render to clip (batch 2) is below. The design is in [architecture/caching.md](../architecture/caching.md) (Export, Track export, Loudness and dither).
 
 **Status:** done.
 
@@ -8,3 +8,15 @@ Delivered. Closes #291. This is roadmap batches 1 and 3 of "Track export and ren
 2. **Loudness.** The BS.1770 integrated loudness moved from `noodle-eval/src/level.rs` to `noodle_io::LoudnessMeter`, which measures chunk by chunk, and gained true peak (4× oversampled). `noodle-eval` uses the same code. Every file is measured as it is written; the dialog shows integrated loudness and true peak when the export ends. An optional target normalises the mixdown, by a gain that the track files share. `noodle-eval/tests/export_loudness.rs` checks the export's figure against the evaluator's on the written file for every example song.
 3. **Dither.** `ExportWriter` adds TPDF dither when it rounds to 16 or 24 bits (WAV and FLAC), from a fixed seed, leaving exact silence silent. 32-bit float is untouched.
 4. **Not done.** A mixer's own per-input gain and mute are not in a track file (only the group's output gain and the track's mute are). No true-peak limiter after normalising: a gain that pushes the peak over full scale clips in the integer formats and the dialog shows the true peak. Nested groups can't be ticked. No MP3.
+
+## Render to clip
+
+Delivered. Closes #292.
+
+A track's header menu has **Render to clip** (the whole timeline) and **Render loop to clip** (the transport loop's span, when it is on). The group is rendered by the same one-pass `render_taps` that writes a track file (`noodle-nodes/src/render_clip.rs`), so the clip is the group's own signal after its gain and mute, offline and frozen nodes included. The render starts at the beginning of the timeline, so stateful nodes are where they would be; the range only chooses what is kept.
+
+- **Tail.** The render runs past the range's end and the file stops after the last sample above -80 dB (`CLIP_SILENCE`), no later than 10 s past the end (`MAX_TAIL_SECONDS`). A tail still sounding at the cap fades out over 2048 frames. The status line says when that happened.
+- **File.** A 32-bit float WAV in `<project> renders/` next to the project file, named for the group (de-duplicated against what is there). The clip refers to it by its path relative to the project, like any audio clip (ADR 0004).
+- **One undo step.** A `Command::Batch` adds a track named `<name> (render)` right under the original, puts the clip on it at the range's start, and mutes the original (kept). The track is an ordinary audio track, so the clip can be cut and warped. `Session::render_to_clip`, `session/render_clip.rs`.
+- **Refused.** An unsaved project (no folder to write to), a group with no output, and a silent render (nothing is written). Cancelling leaves no file.
+- **Tests.** `noodle-nodes/tests/export.rs`: the clip equals the track export's samples, the tail stops at silence or at the cap, a silent track makes no file. `session/render_clip.rs`: the new track, the clip, the muted original, one undo and redo, a range.
