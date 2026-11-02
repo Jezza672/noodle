@@ -457,9 +457,12 @@ impl Scene {
                     p.side == Side::Input
                         && matches!(p.kind, PortKind::Param(_))
                         && graph.source(&Endpoint::new(id, p.key.clone())).is_none()
-                        && project
+                        && (project
                             .lane_for(&Endpoint::new(id, p.key.clone()))
                             .is_none()
+                            // An Automation node's value keeps its field.
+                            || (p.key == noodle_nodes::AUTOMATION_VALUE
+                                && node.type_id == noodle_nodes::AUTOMATION_NODE_ID))
                 };
                 // A group's input or output node labels its port, so the name
                 // is drawn where the port is and can be edited in place.

@@ -750,8 +750,26 @@ fn moved_point(
     Some(moved)
 }
 
-/// A lane's header: its name and a button to remove it.
-pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: bool) -> Vec<Edit> {
+/// An Automation node's lane header controls: its record arm, and while armed
+/// a slider for its value.
+#[derive(Clone, Copy)]
+pub struct Arm {
+    pub node: NodeId,
+    pub armed: bool,
+    /// What the slider shows.
+    pub value: f32,
+}
+
+/// A lane's header: its name, a button to remove it, and for an Automation
+/// node's lane the record arm and value slider.
+pub fn header(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: LaneId,
+    label: &str,
+    refused: bool,
+    arm: Option<Arm>,
+) -> Vec<Edit> {
     let mut edits = Vec::new();
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, colors::AUTOMATION_HEADER);
@@ -781,6 +799,48 @@ pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: b
         .clicked()
     {
         edits.push(Edit::Apply(Command::RemoveLane { id }));
+    }
+    if let Some(arm) = arm {
+        let button = Rect::from_center_size(
+            Pos2::new(rect.right() - 38.0, rect.center().y),
+            vec2(20.0, 18.0),
+        );
+        let dot = egui::RichText::new("●").color(if arm.armed {
+            crate::theme::RECORD
+        } else {
+            colors::TEXT
+        });
+        if ui
+            .put(button, egui::Button::new(dot).selected(arm.armed))
+            .on_hover_text("Arm: record moves of this node into the lane while the transport plays")
+            .clicked()
+        {
+            edits.push(Edit::ArmAutomation {
+                node: arm.node,
+                on: !arm.armed,
+            });
+        }
+        if arm.armed {
+            let slider = Rect::from_min_max(
+                Pos2::new(rect.left() + 16.0, rect.bottom() - 14.0),
+                Pos2::new(rect.right() - 48.0, rect.bottom() - 2.0),
+            );
+            let mut value = arm.value;
+            let response = ui.put(
+                slider,
+                egui::Slider::new(&mut value, 0.0..=1.0).show_value(false),
+            );
+            if response.changed() {
+                edits.push(Edit::Drag(Command::SetParam {
+                    node: arm.node,
+                    key: noodle_nodes::AUTOMATION_VALUE.to_owned(),
+                    value: Some(value),
+                }));
+            }
+            if response.drag_stopped() {
+                edits.push(Edit::EndDrag);
+            }
+        }
     }
     edits
 }

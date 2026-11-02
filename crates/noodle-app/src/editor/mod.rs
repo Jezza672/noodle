@@ -138,6 +138,10 @@ pub struct EditorState {
     freeze: BTreeMap<NodeId, Badge>,
     /// The nodes whose monitor button is lit, from the session.
     monitored: Vec<NodeId>,
+    /// The Automation nodes armed for recording, from the session.
+    armed: Vec<NodeId>,
+    /// What each Automation node's `value` shows, from the session.
+    auto_values: BTreeMap<NodeId, f32>,
 }
 
 /// Nodes, the wires between them and frames, as copied: what goes on the
@@ -208,6 +212,8 @@ impl Default for EditorState {
             unused_menu: None,
             freeze: BTreeMap::new(),
             monitored: Vec::new(),
+            armed: Vec::new(),
+            auto_values: BTreeMap::new(),
         }
     }
 }
@@ -542,6 +548,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     state.freeze.clone_from(session.freeze_badges());
     state.monitored.clear();
     state.monitored.extend_from_slice(session.monitored());
+    state.armed.clear();
+    state.auto_values.clear();
+    for (id, node) in session.project().graph().nodes() {
+        if node.type_id != noodle_nodes::AUTOMATION_NODE_ID {
+            continue;
+        }
+        if session.automation_armed(id) {
+            state.armed.push(id);
+        }
+        if let Some(value) = session.automation_value(id) {
+            state.auto_values.insert(id, value);
+        }
+    }
     if session.freeze_pending() {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -758,7 +777,13 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     });
     let mut fields = params::Fields::new(ui, canvas, front);
     draw::nodes(&painter, &f, state, &problems, front, |node| {
-        fields.show(&f, &state.bodies, node, &mut edits);
+        fields.show(
+            &f,
+            &state.bodies,
+            node,
+            (&state.armed, &state.auto_values),
+            &mut edits,
+        );
     });
     fields.finish(&mut edits);
     if let Some(total) = state.bodies.cpu_total() {
@@ -891,6 +916,23 @@ fn monitor_button(project: &Project, node: &layout::NodeGeom) -> Option<Rect> {
         .iter()
         .any(|p| p.side == Side::Output && p.kind == PortKind::Audio);
     if node.reroute || node.error.is_some() || boundary || !audio_out {
+        return None;
+    }
+    let header = node.header();
+    Some(Rect::from_center_size(
+        header.right_center() - Vec2::new(MONITOR_BUTTON.x / 2.0 + 8.0, 0.0),
+        MONITOR_BUTTON,
+    ))
+}
+
+/// The arm button in an Automation node's header, in the place the monitor
+/// button takes on nodes with audio.
+fn arm_button(project: &Project, node: &layout::NodeGeom) -> Option<Rect> {
+    let is_automation = project
+        .graph()
+        .node(node.id)
+        .is_some_and(|n| n.type_id == noodle_nodes::AUTOMATION_NODE_ID);
+    if !is_automation || node.reroute || node.error.is_some() {
         return None;
     }
     let header = node.header();
@@ -1209,7 +1251,12 @@ fn pointer(
     if response.clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
-        if let Some(node) = monitor_button_at(f, p) {
+        if let Some(node) = arm_button_at(f, p) {
+            edits.push(Edit::ArmAutomation {
+                node,
+                on: !state.armed.contains(&node),
+            });
+        } else if let Some(node) = monitor_button_at(f, p) {
             edits.push(Edit::Monitor {
                 node,
                 command: modifiers.command,
@@ -1276,6 +1323,20 @@ fn pointer(
             _ => {}
         }
     }
+}
+
+/// The Automation node whose arm button is under the screen point `p`.
+fn arm_button_at(f: &Frame_<'_>, p: Pos2) -> Option<NodeId> {
+    let g = f.t.to_graph(p);
+    let node = f
+        .order
+        .iter()
+        .rev()
+        .map(|&i| &f.scene.nodes[i])
+        .find(|node| node.rect.contains(g))?;
+    arm_button(f.project, node)
+        .filter(|button| button.contains(g))
+        .map(|_| node.id)
 }
 
 /// The node whose monitor button is under the screen point `p`.

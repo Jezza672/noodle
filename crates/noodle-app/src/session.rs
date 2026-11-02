@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 pub mod automate;
 mod export;
 mod library;
+pub mod record_automation;
 mod stems;
 pub use export::ExportChoice;
 pub use library::LibraryEdit;
@@ -108,6 +109,12 @@ pub enum Edit {
     /// The Automate shortcut on a parameter: an Automation node, its lane
     /// and the wire into the parameter, as one undo step (see [`automate`]).
     Automate(noodle_core::Endpoint),
+    /// Arms or disarms an Automation node for recording (see
+    /// [`record_automation`]). Session state: not an undo step, not saved.
+    ArmAutomation {
+        node: NodeId,
+        on: bool,
+    },
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
@@ -347,6 +354,13 @@ pub struct Session {
     recording: Option<Recording>,
     /// How the MIDI of the next take is snapped. Not saved with the project.
     record_quantise: crate::midi_take::Quantise,
+    /// Which Automation nodes are armed, and the Pass being recorded.
+    automation: record_automation::Recorder,
+    /// How armed nodes write. Saved as an app preference, not with the project.
+    automation_mode: record_automation::AutomationMode,
+    /// The lanes whose source is playing a move being recorded instead of
+    /// the lane.
+    live_lanes: std::collections::BTreeSet<noodle_core::LaneId>,
     /// The step, in ticks, that clips, notes and markers snap to (see
     /// [`crate::snap`]). Not saved with the project.
     snap: i64,
@@ -602,6 +616,9 @@ impl Session {
             armed_midi: BTreeSet::new(),
             recording: None,
             record_quantise: crate::midi_take::Quantise::default(),
+            automation: record_automation::Recorder::default(),
+            automation_mode: record_automation::AutomationMode::default(),
+            live_lanes: Default::default(),
             snap: crate::snap::DEFAULT,
             #[cfg(test)]
             fake_input: None,
@@ -1409,6 +1426,9 @@ impl Session {
         }
         let mut effect = Effect::default();
         for edit in edits {
+            if self.record_move(&edit) {
+                continue;
+            }
             let command = match edit {
                 Edit::Apply(command) => {
                     self.history.end_group();
@@ -1424,6 +1444,10 @@ impl Session {
                     command
                 }
                 Edit::EndDrag => {
+                    if self.automation.has_pass() {
+                        let tick = self.playhead();
+                        self.automation.released(self.automation_mode, tick);
+                    }
                     self.history.end_group();
                     self.clips.set_preview(false);
                     continue;
@@ -1458,6 +1482,10 @@ impl Session {
                 }
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
+                    continue;
+                }
+                Edit::ArmAutomation { node, on } => {
+                    self.automation.arm(node, on);
                     continue;
                 }
                 Edit::Automate(target) => {
@@ -1819,6 +1847,7 @@ impl Session {
         // ends the take.
         if !running {
             self.stop_recording();
+            self.finish_automation_pass();
         }
         if let Some(audio) = &self.audio {
             let transport = audio.controller.transport();
@@ -1912,6 +1941,145 @@ impl Session {
             .map(|audio| audio.controller.tempo_map())
     }
 
+    /// Whether an Automation node is armed.
+    pub fn automation_armed(&self, node: NodeId) -> bool {
+        self.automation.is_armed(node)
+    }
+
+    /// How armed Automation nodes write.
+    pub fn automation_mode(&self) -> record_automation::AutomationMode {
+        self.automation_mode
+    }
+
+    pub fn set_automation_mode(&mut self, mode: record_automation::AutomationMode) {
+        self.automation_mode = mode;
+    }
+
+    /// What an Automation node's `value` shows: the value being written
+    /// while a Pass is moving it, else the lane's value at the playhead,
+    /// else the stored parameter.
+    pub fn automation_value(&self, node: NodeId) -> Option<f32> {
+        if let Some(held) = self.automation.held(node) {
+            return Some(held);
+        }
+        let (_, lane) = self
+            .project
+            .lane_for(&noodle_core::Endpoint::new(node, record_automation::VALUE))?;
+        lane.value_at(self.playhead().0 as f64)
+    }
+
+    /// A move of an armed node's `value` while the transport plays is
+    /// recorded instead of applied. Says whether it was.
+    fn record_move(&mut self, edit: &Edit) -> bool {
+        let (Edit::Drag(command) | Edit::Apply(command)) = edit else {
+            return false;
+        };
+        let Command::SetParam { node, key, value } = command else {
+            return false;
+        };
+        let Some(value) = *value else {
+            return false;
+        };
+        if key != record_automation::VALUE
+            || !self.automation.is_armed(*node)
+            || !self.transport_running()
+        {
+            return false;
+        }
+        let tick = self.playhead();
+        let taken = self
+            .automation
+            .moved(self.automation_mode, *node, value, tick);
+        // A single set, such as a typed value, is a touch that is over.
+        if taken && matches!(edit, Edit::Apply(_)) {
+            self.automation.released(self.automation_mode, tick);
+        }
+        taken
+    }
+
+    /// Feeds the Pass in progress, and ends it once the transport stops.
+    fn maintain_automation_recording(&mut self) {
+        let graph = self.project.graph();
+        self.automation.retain(|node| graph.node(node).is_some());
+        if !self.transport_running() {
+            self.finish_automation_pass();
+            self.push_live_automation();
+            return;
+        }
+        if self.automation.armed().next().is_none() {
+            return;
+        }
+        let tick = self.playhead();
+        self.automation.advance(tick);
+        let mode = self.automation_mode;
+        let wired: Vec<NodeId> = self
+            .automation
+            .armed()
+            .filter(|&node| {
+                self.project
+                    .graph()
+                    .source(&noodle_core::Endpoint::new(node, record_automation::RECORD))
+                    .is_some()
+            })
+            .collect();
+        for node in wired {
+            if let Some(reading) = self.telemetry.read_param(node, record_automation::RECORD) {
+                self.automation.signal(mode, node, reading.value, tick);
+            }
+        }
+        self.push_live_automation();
+    }
+
+    /// Plays the value being recorded in place of each armed node's lane,
+    /// so a move is heard as it is made, and puts the lane back once it is
+    /// let go.
+    fn push_live_automation(&mut self) {
+        let wanted: Vec<(noodle_core::LaneId, f32)> = self
+            .automation
+            .armed()
+            .filter_map(|node| {
+                let held = self.automation.held(node)?;
+                let (lane, _) = self
+                    .project
+                    .lane_for(&noodle_core::Endpoint::new(node, record_automation::VALUE))?;
+                Some((lane, held))
+            })
+            .collect();
+        let Some(audio) = &mut self.audio else {
+            self.live_lanes.clear();
+            return;
+        };
+        for &(lane, held) in &wanted {
+            let source = noodle_engine::lane_source_id(lane);
+            audio
+                .controller
+                .set_param(source, noodle_engine::LIVE, held);
+            audio
+                .controller
+                .set_param(source, noodle_engine::LIVE_ON, 1.0);
+        }
+        let now: std::collections::BTreeSet<_> = wanted.iter().map(|&(lane, _)| lane).collect();
+        for &lane in self.live_lanes.difference(&now) {
+            audio.controller.set_param(
+                noodle_engine::lane_source_id(lane),
+                noodle_engine::LIVE_ON,
+                0.0,
+            );
+        }
+        self.live_lanes = now;
+    }
+
+    /// Writes the Pass into the lanes as one undo step.
+    fn finish_automation_pass(&mut self) {
+        if !self.automation.has_pass() {
+            return;
+        }
+        let tick = self.playhead();
+        if let Some(command) = self.automation.finish(&self.project, tick) {
+            self.edit([Edit::Apply(command)]);
+        }
+    }
+
     /// Where the playhead is: the transport's while playing, else where it
     /// was left or set.
     pub fn playhead(&self) -> Tick {
@@ -1989,6 +2157,7 @@ impl Session {
         self.poll_plugin_editors();
         self.poll_param_learn();
         self.poll_plugin_hosts(Instant::now());
+        self.maintain_automation_recording();
         let Some(audio) = &mut self.audio else {
             return;
         };

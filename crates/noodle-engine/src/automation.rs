@@ -16,7 +16,7 @@ use noodle_core::{
 
 use crate::{
     Context, Diagnostic, InputKind, Instance, Io, Layout, Location, NodeError, NodeInfo, NodeType,
-    ParamKind, Problem, Registry, Setup,
+    ParamInfo, ParamKind, Problem, Registry, Setup,
 };
 
 pub const AUTOMATION_ID: &str = "noodle.internal.automation";
@@ -28,13 +28,22 @@ const OUT: usize = 0;
 const POINTS: &str = "points";
 const SMOOTHING_MS: &str = "smoothing_ms";
 
+/// The source's live override: while `LIVE_ON` is 1 the source writes `LIVE`
+/// instead of the lane, which is how a move being recorded is heard before
+/// the lane has it. Set with [`Controller::set_param`](crate::Controller) on
+/// the source's [`source_id`].
+pub const LIVE: &str = "live";
+pub const LIVE_ON: &str = "live_on";
+const LIVE_PORT: usize = 0;
+const LIVE_ON_PORT: usize = 1;
+
 /// Lanes to compile, as the project lists them.
 pub type Lanes<'a> = [(LaneId, &'a AutomationLane)];
 
 /// The node ID a lane's source gets in the compiled graph. Counted down from
 /// the top, so it can't clash with a project node, and it's the same every
 /// compile, so the node's state carries over.
-fn source_id(lane: LaneId) -> NodeId {
+pub fn source_id(lane: LaneId) -> NodeId {
     NodeId(u64::MAX - lane.0)
 }
 
@@ -226,7 +235,11 @@ impl NodeType for Automation {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         points(config)?;
-        Ok(Layout::realtime().output("out", "Out").memoryless())
+        Ok(Layout::realtime()
+            .param(LIVE, "Live", ParamInfo::new(0.0, 1.0, 0.0))
+            .param(LIVE_ON, "Live on", ParamInfo::new(0.0, 1.0, 0.0))
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
@@ -308,9 +321,15 @@ impl crate::Node for LaneSource {
             0.0
         };
         let ramp = self.smoothing_ms / 1000.0 * ticks_per_second;
+        let live = io.inputs[LIVE_PORT].lane(0, 0);
+        let live_on = io.inputs[LIVE_ON_PORT].lane(0, 0);
         let out = io.outputs[OUT].lane_mut(0, 0);
         for (i, sample) in out.iter_mut().enumerate() {
-            *sample = self.value_at(transport.tick + i as f64 * ticks_per_sample, ramp);
+            *sample = if live_on[i] >= 0.5 {
+                live[i]
+            } else {
+                self.value_at(transport.tick + i as f64 * ticks_per_sample, ramp)
+            };
         }
     }
 }
