@@ -87,7 +87,9 @@ pub use clip::{
 pub use clock::{CLOCK_ID, Clock, DIVISION_TICKS, DIVISIONS as CLOCK_DIVISIONS};
 pub use comparator::{COMPARATOR_ID, Comparator};
 pub use control::{
-    MIDI_CONTROL_ID, MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
+    CONTROL_CONTROL, CONTROL_MAX, CONTROL_MIN, CONTROL_START, CONTROL_TAPER, ENCODER_ABSOLUTE,
+    ENCODER_BINARY_OFFSET, ENCODER_SIGN_MAGNITUDE, ENCODER_TWOS_COMPLEMENT, MIDI_CONTROL_ID,
+    MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
@@ -118,7 +120,7 @@ pub use lfo::{LFO_ID, Lfo, lfo_wave};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
-pub use midi_in::{MIDI_IN_ID, MidiIn};
+pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
@@ -254,7 +256,6 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Phaser);
     registry.register(Key);
     registry.register(MonoNote);
-    registry.register(MidiControl);
     registry.register(NoteSplit);
     registry.register(RandomSelect);
     registry.register(Arpeggiator);
@@ -271,6 +272,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     let midi = noodle_io::MidiBus::new();
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
+    registry.register(MidiControl::new(&midi));
     let samples = SampleStore::new();
     registry.register(if clips.is_blocking() {
         Sampler::blocking(&samples, &telemetry)

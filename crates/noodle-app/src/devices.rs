@@ -204,23 +204,41 @@ impl DevicePicker {
         .on_hover_text("Records into Input nodes, at the output's sample rate");
         ui.end_row();
 
-        let mut midi = self.draft.midi_input.clone();
         let ports = self.midi_ports.as_ref().map_or(&[][..], |p| &p[..]);
-        let midi_label = match (&midi, &self.midi_ports) {
-            (None, Err(_)) => "Unavailable".to_string(),
-            (None, _) => "Off".to_string(),
-            (Some(name), _) if ports.contains(name) => name.clone(),
-            (Some(name), _) => format!("{name} (not found)"),
-        };
-        combo(ui, "MIDI input", midi_label, |ui| {
-            ui.selectable_value(&mut midi, None, "Off");
-            for name in ports {
-                ui.selectable_value(&mut midi, Some(name.clone()), name);
+        ui.label("MIDI inputs")
+            .on_hover_text("Play into MIDI In nodes, and are heard by MIDI Control and Learn MIDI. Take effect without restarting the audio");
+        ui.vertical(|ui| {
+            if let Err(error) = &self.midi_ports {
+                ui.label(format!("Unavailable: {error}"));
+            } else if ports.is_empty() && self.draft.midi_inputs.is_empty() {
+                ui.label("None found");
             }
-        })
-        .on_hover_text("Plays into MIDI In nodes. Takes effect without restarting the audio");
+            let mut chosen = std::mem::take(&mut self.draft.midi_inputs);
+            fn toggle(ui: &mut egui::Ui, chosen: &mut Vec<String>, name: &str, text: String) {
+                let mut on = chosen.iter().any(|n| n == name);
+                if ui.checkbox(&mut on, text).changed() {
+                    if on {
+                        chosen.push(name.to_owned());
+                    } else {
+                        chosen.retain(|n| n != name);
+                    }
+                }
+            }
+            for name in ports {
+                toggle(ui, &mut chosen, name, name.clone());
+            }
+            // Chosen but not plugged in: kept, and said so.
+            let missing: Vec<String> = chosen
+                .iter()
+                .filter(|n| !ports.contains(n))
+                .cloned()
+                .collect();
+            for name in &missing {
+                toggle(ui, &mut chosen, name, format!("{name} (not found)"));
+            }
+            self.draft.midi_inputs = chosen;
+        });
         ui.end_row();
-        self.draft.midi_input = midi;
 
         let (output_caps, input_caps) = selected(&self.devices, &self.draft);
 
@@ -679,28 +697,33 @@ mod tests {
     }
 
     #[test]
-    fn a_midi_input_can_be_chosen_and_a_missing_one_is_named() {
+    fn several_midi_inputs_can_be_chosen_and_a_missing_one_is_named() {
         let mut harness = harness(AudioConfig::default());
-        assert_eq!(shown(&harness, "MIDI input"), "Off");
-        choose(&mut harness, "MIDI input", "Pad Controller");
+        harness.get_by_label("Pad Controller").click();
+        harness.run();
+        harness.get_by_label("Keystation 49").click();
+        harness.run();
         harness.get_by_label("Apply").click();
         harness.run();
         assert_eq!(
-            harness
-                .state()
-                .applied
-                .as_ref()
-                .unwrap()
-                .midi_input
-                .as_deref(),
-            Some("Pad Controller")
+            harness.state().applied.as_ref().unwrap().midi_inputs,
+            ["Pad Controller", "Keystation 49"]
         );
 
-        let harness = self::harness(AudioConfig {
-            midi_input: Some("Unplugged".into()),
+        let mut harness = self::harness(AudioConfig {
+            midi_inputs: vec!["Unplugged".into(), "Keystation 49".into()],
             ..AudioConfig::default()
         });
-        assert_eq!(shown(&harness, "MIDI input"), "Unplugged (not found)");
+        harness.get_by_label("Unplugged (not found)");
+        // Unchecking one leaves the other.
+        harness.get_by_label("Keystation 49").click();
+        harness.run();
+        harness.get_by_label("Apply").click();
+        harness.run();
+        assert_eq!(
+            harness.state().applied.as_ref().unwrap().midi_inputs,
+            ["Unplugged"]
+        );
     }
 
     #[test]

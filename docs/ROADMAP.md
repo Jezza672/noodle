@@ -91,26 +91,20 @@ Track export, loudness and dither are delivered: see [features/track-export.md](
 
 ## MIDI learn and MIDI output
 
-**The problem.** A hardware knob drives a parameter only if you add a `MIDI Control` node and wire it in yourself, and only from the one MIDI port chosen in settings. There are no relative encoders, no pickup, and no MIDI output at all: external synths can't be sequenced and there is no clock out. This replaces the deferred "more than one MIDI port at a time".
+**The problem.** There is no MIDI output at all: external synths can't be sequenced and there is no clock out. (Several MIDI inputs, Learn MIDI, encoder and pickup modes are built: `features/midi-learn.md`.)
 
-**What you get.** Right-click a parameter, choose Learn MIDI and move a control: a `MIDI Control` node wired into it appears, so the mapping is in the graph and undoes like any edit. Several MIDI inputs are open at once. A `MIDI Out` node sends an events wire to hardware, in time, with clock if you want it.
+**What you get.** A `MIDI Out` node sends an events wire to hardware, in time, with clock if you want it.
 
 **Settled decisions.**
 
-- **Learn MIDI is a graph shortcut,** like Automate: it adds a `MIDI Control` node in the parameter's group, set to the controller just moved and the port it came from, and wires it into the parameter, as one undo step. Nothing else links them. It is disabled on a parameter that already has a wire. On an Automation node it wires into the `record` input, so the knob records into the lane.
-- `MIDI Control` gets the same `min`, `max` and taper as the Automation node, copied once from the target.
-- `MIDI In` and `MIDI Control` name their port as Output nodes name their device, defaulting to "All inputs".
-- `MIDI Control` gains an encoder mode (absolute and the three common relative codings) and a pickup mode (jump, or wait until the knob passes the value). They change no ports, so they are parameters.
 - `MIDI Out` takes an events wire and sends it to a named port, ahead by the output latency. Clock out is a toggle on the node, not a hidden setting.
 
-**Scope.** In: several ports in `noodle-io/src/midi.rs` (one `MidiBus` subscription per port); the port setting, Learn in the session through `spare::wire`; encoder and pickup modes; `MIDI Out`, whose `process` pushes timestamped messages into a preallocated ring that a sender thread hands to `midir` (extend `tests/realtime.rs`); clock and start/stop out. Out: Mackie Control and HUI, motor fader and LED feedback, OSC, MIDI clock in and Ableton Link.
+**Scope.** In: `MIDI Out`, whose `process` pushes timestamped messages into a preallocated ring that a sender thread hands to `midir` (extend `tests/realtime.rs`); clock and start/stop out. Out: Mackie Control and HUI, motor fader and LED feedback, OSC, MIDI clock in and Ableton Link.
 
 **Batches.**
 
-1. **Several MIDI inputs.** Ports per node, the settings list, hot-plug per port.
-2. **MIDI learn.** The menu entry, the listener, range, encoder and pickup modes.
-3. **MIDI Out.** The node, the sender thread, latency offset, a loopback test on a virtual port where the platform has one.
-4. **Clock out.**
+1. **MIDI Out.** The node, the sender thread, latency offset, a loopback test on a virtual port where the platform has one.
+2. **Clock out.**
 
 **Done when.** With two controllers plugged in, you learn a knob onto a synth group's cutoff and an encoder onto an armed Automation node, see both as nodes in the graph, record the encoder into the lane, and sequence an external synth from a MIDI clip in time with the project.
 
@@ -173,8 +167,8 @@ Track export, loudness and dither are delivered: see [features/track-export.md](
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
 - **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
-  can be re-quantised afterwards (quantise on record is built; several MIDI
-  ports, overdub and count-in are in the items above). The 128-frame engine block is fixed;
+  can be re-quantised afterwards (quantise on record and several MIDI
+  ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;
   it could follow the device period.
 - **Virtual output:** remember the live-monitoring toggle between launches and
   retry the saved device when it returns.

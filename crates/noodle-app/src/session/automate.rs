@@ -112,7 +112,7 @@ pub fn command(
 /// the signal as a move along its travel, with 0 meaning no move, so the node
 /// ranges over -1 to 1 travel and starts in the middle: the parameter's own
 /// value stays the base the lane moves around.
-fn range_and_start(info: &ParamInfo, current: f32) -> (f32, f32, bool, f32) {
+pub(super) fn range_and_start(info: &ParamInfo, current: f32) -> (f32, f32, bool, f32) {
     if info.is_offset() {
         (-1.0, 1.0, false, 0.5)
     } else {

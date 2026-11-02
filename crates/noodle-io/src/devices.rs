@@ -50,11 +50,11 @@ pub struct AudioConfig {
     /// multichannel interface. `None` uses the device's default (usually
     /// two); a count the device lacks is an error rather than a guess.
     pub channels: Option<u16>,
-    /// The MIDI input port to play from, by name (see
-    /// [`midi_inputs`](crate::midi_inputs)). `None` opens none. It lives
-    /// here because it is chosen in the same dialog and saved with the rest;
-    /// changing it doesn't restart the audio.
-    pub midi_input: Option<String>,
+    /// The MIDI input ports to open, by name (see
+    /// [`midi_inputs`](crate::midi_inputs)). Empty opens none. They live
+    /// here because they are chosen in the same dialog and saved with the
+    /// rest; changing them doesn't restart the audio.
+    pub midi_inputs: Vec<String>,
     /// Extra threads that help the audio thread render graphs whose branches
     /// can run side by side. 0 renders on the audio thread alone.
     pub threads: usize,

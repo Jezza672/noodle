@@ -1034,6 +1034,7 @@ fn params(
                             Some(why) => Automate::Refused(why),
                         },
                     )
+                    .learn_midi(session.learn_midi_menu(&target))
                     .show(ui);
                 if let Some(source) = &source {
                     out.response
