@@ -252,10 +252,21 @@ built).
   serialised as a binary plist. Latency is `kAudioUnitProperty_Latency`.
 - **Parameters** in the global scope; meters, read-only and non-realtime
   ones are left out.
-- **Not yet:** editors (a Cocoa view factory or `AUViewController`; the
-  properties panel says so, and state changes by wiring the parameter
-  ports), AUv3 units that need asynchronous instantiation, and AUs outside the
-  system registry. `tests/au_realtime.rs` (macOS) counts allocations on the
+- **Editors** (`au/gui.rs`) work like VST3's: the view goes into the window
+  the app makes (`Cocoa` parent), on the plugin thread, which is the main
+  thread on macOS. The view is the unit's own (`kAudioUnitProperty_CocoaUI`:
+  a bundle and an `AUCocoaUIBase` factory class), or, if it publishes none,
+  Apple's `AUGenericView` (CoreAudioKit), so every unit has an editor. Editor
+  keys carry bit 61. The editor borrows the unit's raw `AudioUnit`, so the
+  node's drop hands the unit to the plugin thread, which closes the editor
+  before it disposes the unit. Capture reads the `ClassInfo` state and each
+  exposed parameter with `AudioUnitGetParameter`, as one undo step when the
+  window closes (the CLAP and VST3 path). Sandboxed units get the same
+  editor in the host process.
+- **Not yet:** `AUViewController` editors and AUv3 units that need
+  asynchronous instantiation (both need the `AUAudioUnit` object), and AUs
+  outside the system registry. `tests/au_editor/` (macOS) opens the generic
+  view in a fake window. `tests/au_realtime.rs` (macOS) counts allocations on the
   Rust side of the AU node (the delay with a wired parameter, the synth with
   notes, a seek); what Apple's units do inside their render calls is their
   code and not seen by Rust's allocator.

@@ -5,8 +5,11 @@ is recorded in [features/](features/README.md); the design as it stands is in
 [ARCHITECTURE.md](ARCHITECTURE.md). When a piece of work here is finished, move
 its record to a file in `features/` and delete it from this page.
 
-All milestones M0 to M11 are built in code. What is left is mostly checks that
-need a person and hardware, plus a few deliberately deferred items.
+All milestones M0 to M11 are built in code. What is left is six feature items
+that make Noodle usable in place of another DAW (in order: Automate, MIDI
+controllers in clips, Linked clips, Takes and comping, Track export, MIDI
+learn and output), checks that need a person and hardware, and a few
+deliberately deferred items.
 
 ## Playback cache
 
@@ -39,6 +42,158 @@ need a person and hardware, plus a few deliberately deferred items.
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
 
+## Automate and automation recording
+
+**The problem.** Automating a synth's cutoff or a plugin knob means adding an Automation node by hand, wiring its `out` into the parameter, and drawing its lane a point at a time with linear or hold segments (`noodle_core::automation::Curve`). The node's `value` is 0 to 1 and a wire carries it unchanged, so a cutoff can't be driven in Hz without a Remap. Nothing records a move: riding the node's value while the transport plays changes the sound and leaves the lane as it was.
+
+**What you get.** Right-click any parameter and choose Automate: an Automation node appears next to it, ranged and named after the parameter, with a lane holding the parameter's current value, so nothing you hear changes. Arm the node and ride it while the song plays, and the move is written into its lane. Lanes gain curved segments.
+
+**Settled decisions.**
+
+- **Automate is a graph shortcut, nothing more.** It adds an Automation node in the same group as the parameter, a lane on the node's `value` (one point holding the parameter's current value), and a wire from `out` to the parameter, as one undo step. Nothing compiles differently and nothing links the parameter to the lane except that wire: the parameter is an ordinary wired parameter, greyed like any other. It is offered at any depth (a primitive inside a synth group too) and disabled, with a tooltip, on a parameter that already has a wire.
+- **The node copies, it doesn't link.** The Automation node gains `min`, `max` and a linear or log taper, and the shortcut copies them once from the target's range. It labels the node once after the target ("Lead › Cutoff"); you can rename it. The lane draws under the track whose group holds the node, as free automation lanes do now.
+- **Recording only goes through the Automation node.** You move its `value` in the graph, in the properties panel, or with a new value slider on the lane's header. A new `record` input writes its incoming signal into the lane while armed, so a `MIDI Control` knob records into the lane and an LFO can be printed into it.
+- **Arming is per node** (a button on the node and on the lane header), session state that is not saved, like track arm. There is no global arm. An armed node records whenever the transport plays, not only under Record.
+- **One automation mode for everything:** Read, Touch or Latch (no Write), in the transport bar, saved as an app preference. In Touch and Latch nothing is written until you move the node.
+- **One undo step per Pass**, however many nodes it wrote.
+- Recording is on the UI thread: the session buffers moves and commits them as one `Command::Batch` when the Pass ends, as a take does. The audio thread gains nothing.
+
+**Scope.** In: the Automate menu entry, the node's range and taper, the lane header slider, the `record` input, arming, modes, thinning recorded points to a tolerance, and a tension per segment (exponential through linear to S-curve) evaluated by the lane source (`noodle-engine/src/automation.rs`). Out: recording from plugin editors (a plugin parameter that is automated is wired, so you move its Automation node instead); automation clips; per-clip automation. A plugin editor's edits reaching the project only when its window closes (`Captured::commands`) is a separate bug, fixed on its own.
+
+**Batches.**
+
+1. **Automate.** The shortcut, `min`, `max` and taper on the Automation node, naming, and tension curves with multi-point selection.
+2. **Recording.** Arm, modes, the lane header slider, thinning, one undo step per Pass.
+3. **The `record` input.** Recording a wired signal, with a test that prints an LFO into a lane.
+
+**Done when.** You Automate a filter cutoff inside a synth group, arm its node, ride the lane header slider while looping, stop, hear the move play back, and undo it in one step. An app test records a drag through `testkit` and checks the lane and the rendered level.
+
+## MIDI controllers and expressions in clips
+
+**The problem.** A MIDI clip holds notes and nothing else (`MidiClip::notes` in `noodle-core/src/clip.rs`), and a take keeps only notes (`midi_take.rs`). Sustain pedal, mod wheel, pitch bend, aftertouch and MPE expressions are heard while monitoring and then lost, so a recorded piano part comes back without its pedal. The engine already carries all of them (`EventKind::Channel`, note expressions, `MIDI Control`); only the clip cannot store them.
+
+**What you get.** Clips keep controllers, pitch bend, channel and poly pressure, program changes and per-note expressions, and recording keeps them. The piano roll shows a lane for each controller the clip uses, with "+" to add one, and a lane of expressions for the selected notes.
+
+**Settled decisions.**
+
+- The data lives in the clip and leaves through the track input's `midi` output with the notes, so it moves, loops, splits and copies with them. It is not turned into automation lanes.
+- Values are normalised 32-bit, as the engine's events are (0 to 1, bend -1 to 1), converted only at the device. No SysEx.
+- **Chase and release.** On a seek or loop wrap, each controller's last value before the playhead is sent, so a held pedal stays held. At the clip's end, what it set is released (pedal up, bend centred).
+- A drawn ramp is stored as two points and played as events at a fixed rate (about every 5 ms).
+- Quantising a take moves each note's expressions with it and leaves controllers where they were played.
+
+**Scope.** In: `MidiClip::controls` and expressions on `MidiNote`; scheduling in `ClipFeeds` (`noodle-nodes/src/clip/schedule.rs`); loop, split and trim matching the notes'; cache keys (`noodle-core/src/cache_key.rs`); takes; piano roll lanes with draw, line, select and copy. Out: SysEx, converting between controller data and automation lanes, curves drawn on the notes themselves (later).
+
+**Batches.**
+
+1. **Data and playback.** The model, chase and release, loop, split and trim, cache keys, and `examples/midi-cc.ron` (pedal and mod wheel into a synth group through `MIDI Control`) with its golden render.
+2. **Recording.** Takes keep controllers and expressions.
+3. **Controller lanes in the piano roll.**
+4. **Expression lane for the selected notes.**
+
+**Done when.** You record a piano part with sustain pedal and mod wheel; it plays back the same, including after a seek into the middle of a held pedal; and you edit the pedal in its lane.
+
+## Linked clips across tracks
+
+**The problem.** Clips on different tracks can't be tied together. A multi-mic drum recording, or the stems and source from Split to stems, must be moved, cut and warped one clip at a time, and they drift out of phase the moment one is missed. Split to stems gives each stem its own copy of the source's warp on purpose, because sharing a `WarpId` was the only way to link them.
+
+**What you get.** Select clips on several tracks and Link them: moving, trimming, splitting, looping, warping or deleting one does the same to all. Linked clips have one warp. Selecting one or more of them shows all their warp markers together in the warp editor, and moving a marker or making one concrete applies it to every linked clip.
+
+**Settled decisions.**
+
+- A link is a clip group in the project: an object listing its member clips. An edit to one member is one `Command` applied to all.
+- Shared: move, trim, split, loop, warp, quantise, delete. Per clip: gain and fades.
+- **One warp.** The members share one warp (a common `WarpId` under the hood). Each clip's candidate markers are drawn in its own colour, separately even when they fall a few milliseconds apart (kick mic and overheads), and you choose which to make concrete. How the shared warp is kept in step is the implementer's choice.
+- A link may hold MIDI and audio clips; warping affects the audio ones.
+- Recording several armed tracks in one take links the new clips. Link and Unlink work on a clip selection.
+- Split to stems links every stem, the residual and the muted source, on the source's warp.
+
+**Batches.**
+
+1. **Clip groups.** The model, Link and Unlink, shared edits, takes on several tracks linked.
+2. **Shared warp.** One warp across members, markers from every selected clip in the warp editor, concrete and moved markers applied to all.
+3. **Split to stems links.** The stems, residual and source become one link.
+
+**Done when.** You record drums on four mics, slide the take a beat later and warp it to the grid from the kick and snare mics' markers, and all four stay sample-aligned. Split to stems on a loop gives stems that move and re-warp with the source.
+
+## Takes, loop recording and comping
+
+**The problem.** Record makes one clip per armed track per take, and a seek or a loop wrap ends the take. There is no punch range, no loop recording that keeps every cycle, and no way to build one performance from the best phrases of several. This replaces the overdub and count-in parts of the deferred "Piano roll and recording" item.
+
+**What you get.** Record with the loop on and every cycle becomes a take, stacked in a take folder on the track. Drag across a take to make that phrase the one that plays. Punch in and out at a range, with a count-in and pre-roll. For MIDI, choose whether cycles become takes or merge into one clip.
+
+**Settled decisions.**
+
+- A take folder is one clip holding its takes and a comp: a list of spans, each naming a take. Moving, splitting or copying it carries every take. Flattening gives a plain clip and drops the unused takes from it; the files stay on disk.
+- One audio file per recording; each take is a window into it.
+- MIDI cycles become takes or merge into one clip, set by one Takes or Merge record setting, an app preference. MIDI takes use the same take folders and swipe comping.
+- The takes in a folder share one warp.
+- The punch range is separate from the loop range: its own bar on the ruler, switched on and off. Count-in is 0, 1 or 2 bars of metronome (an app preference); pre-roll plays from a set number of bars before the punch-in point.
+- Comp joins get a 10 ms crossfade by default, draggable per join, using the existing clip crossfade (`AudioClip::crossfade`).
+- **Comping across tracks** uses Linked clips: a swipe on one linked take folder applies the same spans to all of them.
+
+**Scope.** In: the take folder model and its scheduling (`schedule.rs`), loop recording in `noodle-io/src/record.rs` and the session, punch, count-in and pre-roll, MIDI takes and merge (`midi_take.rs`), take lanes and the swipe gesture (`timeline/take.rs`, `timeline/clips.rs`), flatten. Every comp edit is one `Command`. Needs Linked clips for cross-track comping.
+
+**Batches.**
+
+1. **Take folders in the model.** Data, comp scheduling, cache keys, flatten, golden render of a comped example.
+2. **Loop recording and punch.** A take per cycle, punch range, count-in and pre-roll.
+3. **Comping in the arrangement.** Take lanes, swipe, audition, one undo step per swipe, linked folders comped together.
+4. **MIDI takes.** Takes or Merge for MIDI.
+
+**Done when.** You loop four bars, record five vocal passes in one go, swipe the best phrase from each into one comp that plays without clicks at the joins, undo a swipe, and export it identical to playback. A comp across linked drum mics stays aligned. An app test records on the virtual output and checks the takes and the comp's samples.
+
+## Track export and render to clip
+
+**The problem.** Export writes one mixdown to WAV or FLAC (`noodle-nodes/src/export.rs`). Sharing a song with a mix engineer means one file per track or bus. Freeze plays a group from the cache but never becomes a clip, so you can't render a synth or plugin chain to audio and then cut or warp it. There is no loudness readout.
+
+**What you get.** Export offers Mixdown, plus any tracks or groups you tick, written in one pass with matching lengths and names. Render to clip on a track, group or time range makes a new audio track with the rendered clip and mutes the original. The export dialog shows integrated loudness and true peak, can normalise to a target, and dithers at 16 or 24 bits.
+
+**Settled decisions.**
+
+- A track file is taken after the track's gain and mute, before the master group's processing. The mixdown is a separate file with the master processing on it.
+- Any group can be exported, buses included.
+- Render to clip makes a new audio track holding the clip; the original is muted and kept.
+- Rendering a range continues past its end until the effects fall silent, capped at 10 s.
+- Loudness and true peak are always shown; normalising is optional; dither is applied when writing 16 or 24 bits.
+- No MP3 in this item.
+- New terms: "track export" and "render to clip" (CONTEXT.md avoids "bounce", and "stem" is AI separation).
+
+**Scope.** In: track files from one render through `render_taps` (`noodle-engine/src/render.rs`); Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; BS.1770 loudness moved from `noodle-eval/src/level.rs` to where export can use it; TPDF dither in `noodle_io::ExportWriter`. Out: MP3, OMF, AAF and DAWproject interchange, a render queue.
+
+**Batches.**
+
+1. **Track export.** Group selection in the dialog, one pass, one file per group, a test that the track files sum to the mixdown when the master group is empty.
+2. **Render to clip.** Track, group and time range, tails, offline and frozen nodes included, one undo step.
+3. **Loudness and dither.**
+
+**Done when.** You export a project's tracks, buses and mixdown in one go; with no master processing, the track files sum to the mixdown within the golden tolerance. You render a plugin synth track to a clip and warp it. The dialog's loudness agrees with `noodle-eval` on the example songs.
+
+## MIDI learn and MIDI output
+
+**The problem.** A hardware knob drives a parameter only if you add a `MIDI Control` node and wire it in yourself, and only from the one MIDI port chosen in settings. There are no relative encoders, no pickup, and no MIDI output at all: external synths can't be sequenced and there is no clock out. This replaces the deferred "more than one MIDI port at a time".
+
+**What you get.** Right-click a parameter, choose Learn MIDI and move a control: a `MIDI Control` node wired into it appears, so the mapping is in the graph and undoes like any edit. Several MIDI inputs are open at once. A `MIDI Out` node sends an events wire to hardware, in time, with clock if you want it.
+
+**Settled decisions.**
+
+- **Learn MIDI is a graph shortcut,** like Automate: it adds a `MIDI Control` node in the parameter's group, set to the controller just moved and the port it came from, and wires it into the parameter, as one undo step. Nothing else links them. It is disabled on a parameter that already has a wire. On an Automation node it wires into the `record` input, so the knob records into the lane.
+- `MIDI Control` gets the same `min`, `max` and taper as the Automation node, copied once from the target.
+- `MIDI In` and `MIDI Control` name their port as Output nodes name their device, defaulting to "All inputs".
+- `MIDI Control` gains an encoder mode (absolute and the three common relative codings) and a pickup mode (jump, or wait until the knob passes the value). They change no ports, so they are parameters.
+- `MIDI Out` takes an events wire and sends it to a named port, ahead by the output latency. Clock out is a toggle on the node, not a hidden setting.
+
+**Scope.** In: several ports in `noodle-io/src/midi.rs` (one `MidiBus` subscription per port); the port setting, Learn in the session through `spare::wire`; encoder and pickup modes; `MIDI Out`, whose `process` pushes timestamped messages into a preallocated ring that a sender thread hands to `midir` (extend `tests/realtime.rs`); clock and start/stop out. Out: Mackie Control and HUI, motor fader and LED feedback, OSC, MIDI clock in and Ableton Link.
+
+**Batches.**
+
+1. **Several MIDI inputs.** Ports per node, the settings list, hot-plug per port.
+2. **MIDI learn.** The menu entry, the listener, range, encoder and pickup modes.
+3. **MIDI Out.** The node, the sender thread, latency offset, a loopback test on a virtual port where the platform has one.
+4. **Clock out.**
+
+**Done when.** With two controllers plugged in, you learn a knob onto a synth group's cutoff and an encoder onto an armed Automation node, see both as nodes in the graph, record the encoder into the lane, and sequence an external synth from a MIDI clip in time with the project.
+
 ## Owed: needs a person on real hardware
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
@@ -60,8 +215,13 @@ need a person and hardware, plus a few deliberately deferred items.
   in separate processes" on. CI does not cover the sandbox embedding; focus from
   a background host may need `AllowSetForegroundWindow` (Windows) and
   `yieldActivation` (macOS 14+).
-- **AU leftovers** (needs a real Mac or a unit that exercises them): editors,
-  MIDI output from AU instruments, AUv3 async instantiation.
+- **AU editors** (`au/gui.rs`): open a third-party AU that ships its own
+  Cocoa view (not just Apple's generic one), edit in it, close the window and
+  see the edit kept and undoable; the same with "Run plugins in separate
+  processes" on; resizing, and focus when the app is in the background.
+- **AU leftovers** (needs a real Mac or a unit that exercises them): MIDI
+  output from AU instruments, AUv3 async instantiation with `AUViewController`
+  editors.
 - **`noodle profile --threads`** showing real-time workers on Mac and Windows;
   the macOS audio workgroup join is not done.
 - **Recording with a real microphone**, to check the latency compensation, and
@@ -92,9 +252,9 @@ need a person and hardware, plus a few deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Piano roll and recording:** quantise, more
-  than one MIDI port at a time, overdubbing into an existing clip, a count-in,
-  keeping the raw take for re-quantising. The 128-frame engine block is fixed;
+- **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
+  can be re-quantised afterwards (quantise on record is built; several MIDI
+  ports, overdub and count-in are in the items above). The 128-frame engine block is fixed;
   it could follow the device period.
 - **Virtual output:** remember the live-monitoring toggle between launches and
   retry the saved device when it returns.

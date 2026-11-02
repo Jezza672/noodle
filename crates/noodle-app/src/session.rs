@@ -61,6 +61,18 @@ struct LiveEditor {
     dragging: bool,
 }
 
+/// How often "learn" looks at the plugin's parameters.
+const PARAM_LEARN_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A node waiting for its plugin's parameter to be moved.
+struct ParamLearn {
+    node: NodeId,
+    key: noodle_plugins::EditorKey,
+    /// Every parameter's value when learning started.
+    baseline: Vec<(u32, f64)>,
+    checked: Instant,
+}
+
 /// A change a view wants made.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Edit {
@@ -76,6 +88,13 @@ pub enum Edit {
     PluginEditor {
         node: NodeId,
         open: bool,
+    },
+    /// Starts or stops "learn" on a plugin node: with it on, the next
+    /// parameter moved in the plugin's editor gets a port on the node. Opens
+    /// the editor if it isn't up.
+    ParamLearn {
+        node: NodeId,
+        on: bool,
     },
     /// Saves to or deletes from the user's library. Not an undo step: the
     /// project is untouched.
@@ -253,6 +272,8 @@ pub struct Session {
     plugin_live: std::collections::BTreeMap<NodeId, LiveEditor>,
     /// Why a plugin's editor last failed to open, until it opens.
     plugin_editor_errors: std::collections::BTreeMap<NodeId, String>,
+    /// A plugin node waiting for the user to move one of its parameters.
+    param_learn: Option<ParamLearn>,
     /// Whether plugins run in processes of their own.
     sandbox_plugins: bool,
     /// How many restarts of each plugin host have been reported, and when
@@ -542,6 +563,7 @@ impl Session {
             plugin_editors: Default::default(),
             plugin_live: Default::default(),
             plugin_editor_errors: Default::default(),
+            param_learn: None,
             sandbox_plugins: false,
             host_restarts: Default::default(),
             hosts_checked: None,
@@ -963,6 +985,108 @@ impl Session {
         }
     }
 
+    /// Whether the node is waiting for a parameter to be moved.
+    pub fn param_learning(&self, node: NodeId) -> bool {
+        self.param_learn.as_ref().is_some_and(|l| l.node == node)
+    }
+
+    /// Opens the node's editor and remembers every parameter's value, so the
+    /// next one that moves can be found. Works in the plugin's own window, so
+    /// it needs no callback from the plugin and is the same for every format.
+    fn start_param_learn(&mut self, node: NodeId) {
+        self.param_learn = None;
+        if !noodle_plugins::editor_is_open(node) {
+            self.plugin_editor(node, true);
+        }
+        let Some(key) = self.plugin_editors.get(&node).copied() else {
+            return;
+        };
+        match noodle_plugins::capture_key(key) {
+            Ok(captured) => {
+                self.param_learn = Some(ParamLearn {
+                    node,
+                    key,
+                    baseline: captured.params,
+                    checked: Instant::now(),
+                });
+                self.message = Some("Move a control in the plugin's editor".into());
+            }
+            Err(error) => self.message = Some(format!("Couldn't learn: {error}")),
+        }
+    }
+
+    /// Looks, a few times a second, for the control the user moved. That
+    /// parameter gets a port on the node. Building the node again closes the
+    /// editor, so the state is kept in the same undo step, as the parameter
+    /// picker does.
+    fn poll_param_learn(&mut self) {
+        let Some(learn) = &mut self.param_learn else {
+            return;
+        };
+        let (node, key) = (learn.node, learn.key);
+        if !noodle_plugins::editor_key_is_open(key) || !noodle_plugins::editor_instance_running(key)
+        {
+            self.param_learn = None;
+            return;
+        }
+        if learn.checked.elapsed() < PARAM_LEARN_INTERVAL {
+            return;
+        }
+        learn.checked = Instant::now();
+        let baseline = learn.baseline.clone();
+        let Ok(captured) = noodle_plugins::capture_params_key(key) else {
+            return;
+        };
+        let Some(plugin) = self.plugin_of(node) else {
+            self.param_learn = None;
+            return;
+        };
+        let descriptor = plugin.descriptor().clone();
+        let Some(config) = self.project.graph().node(node).map(|n| n.config.clone()) else {
+            self.param_learn = None;
+            return;
+        };
+        let mut chosen: Vec<u32> = noodle_plugins::exposed_params(&descriptor, &config)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        // A parameter already on the node can move by itself (a wire, an
+        // automation lane), so only the others count.
+        let others: Vec<(u32, f64)> = captured
+            .params
+            .iter()
+            .filter(|(id, _)| !chosen.contains(id))
+            .copied()
+            .collect();
+        let Some(id) = noodle_plugins::learned_param(&descriptor, &baseline, &others) else {
+            return;
+        };
+        self.param_learn = None;
+        let name = descriptor
+            .params
+            .iter()
+            .find(|p| p.id == id)
+            .map_or_else(|| format!("parameter {id}"), |p| p.name.clone());
+        chosen.push(id);
+        let config = config.with(
+            noodle_plugins::PARAMS_KEY,
+            noodle_core::Value::Text(noodle_plugins::params_text(&chosen)),
+        );
+        let command = Command::Batch(vec![
+            Command::SetConfig {
+                node,
+                key: noodle_plugins::PARAMS_KEY.to_owned(),
+                value: Some(noodle_core::Value::Text(noodle_plugins::params_text(
+                    &chosen,
+                ))),
+            },
+            captured.commands(node, &descriptor, &config),
+        ]);
+        self.plugin_editors.remove(&node);
+        self.edit([Edit::Apply(command)]);
+        self.message = Some(format!("Added {name} to the node"));
+    }
+
     /// Why the node's plugin editor didn't open, if it hasn't.
     pub fn plugin_editor_error(&self, node: NodeId) -> Option<&str> {
         self.plugin_editor_errors.get(&node).map(String::as_str)
@@ -1205,6 +1329,42 @@ impl Session {
         self.history.position() != self.saved_position
     }
 
+    /// Where in the edit history the project is, for telling whether it has
+    /// changed since a copy was taken.
+    pub fn history_position(&self) -> u64 {
+        self.history.position()
+    }
+
+    /// The project file, if it has one.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The project as a file would hold it.
+    pub fn project_ron(&self) -> String {
+        self.project.to_ron()
+    }
+
+    /// Replaces the project with an autosaved copy of `origin` (`None` for an
+    /// untitled one). It counts as unsaved, so closing asks first. Returns
+    /// whether it loaded; if not, the reason is in [`Self::message`].
+    pub fn recover(&mut self, text: &str, origin: Option<PathBuf>) -> bool {
+        match Project::from_ron(text) {
+            Ok(project) => {
+                self.replace(project, origin);
+                // No history position equals this one, so the project is
+                // dirty until it is saved.
+                self.saved_position = u64::MAX;
+                self.message = Some("Recovered unsaved work. Save to keep it.".into());
+                true
+            }
+            Err(error) => {
+                self.message = Some(format!("Couldn't recover the autosave: {error}"));
+                false
+            }
+        }
+    }
+
     /// Problems found compiling the project, for the views to show where they
     /// happened.
     pub fn diagnostics(&self) -> &[Diagnostic] {
@@ -1258,6 +1418,14 @@ impl Session {
                 }
                 Edit::PluginEditor { node, open } => {
                     self.plugin_editor(node, open);
+                    continue;
+                }
+                Edit::ParamLearn { node, on } => {
+                    if on {
+                        self.start_param_learn(node);
+                    } else {
+                        self.param_learn = None;
+                    }
                     continue;
                 }
                 Edit::Library(edit) => {
@@ -1441,6 +1609,7 @@ impl Session {
         self.path = path;
         self.plugin_editors.clear();
         self.plugin_live.clear();
+        self.param_learn = None;
         self.message = None;
         self.parked = Tick(0);
         self.pass_start = Tick(0);
@@ -1794,6 +1963,7 @@ impl Session {
         self.poll_split();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
+        self.poll_param_learn();
         self.poll_plugin_hosts(Instant::now());
         let Some(audio) = &mut self.audio else {
             return;

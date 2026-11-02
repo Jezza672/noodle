@@ -165,6 +165,7 @@ impl Executor {
             housekeeping(l, now);
         }
         crate::vst3::gui::housekeeping();
+        crate::au::gui_housekeeping();
     }
 
     /// How long until the thread next has something to look at without being
@@ -187,7 +188,7 @@ impl Executor {
                 within(CALLBACK_POLL);
             }
         }
-        if crate::vst3::gui::any() {
+        if crate::vst3::gui::any() || crate::au::gui_any() {
             within(IDLE);
         }
         wake
