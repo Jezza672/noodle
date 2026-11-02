@@ -279,6 +279,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn piano_roll(&self) -> &PianoRoll {
+        &self.piano_roll
+    }
+
+    #[cfg(test)]
     pub fn editor(&self) -> &EditorState {
         &self.editor
     }

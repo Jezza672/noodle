@@ -156,8 +156,51 @@ impl<'h> Handle<'h> {
         self.probe().find(label)
     }
 
+    pub fn find_first(&mut self, label: &str) -> Pos2 {
+        self.probe().find_first(label)
+    }
+
     pub fn arm_button(&mut self, node: NodeId) -> Pos2 {
         self.probe().arm_button(node)
+    }
+
+    /// Where the piano roll drew `key` at `tick`, scrolling to it first as a
+    /// user must when it is off screen.
+    pub fn roll_point(&mut self, tick: i64, key: u8) -> Pos2 {
+        for _ in 0..40 {
+            self.probe().settle();
+            if let Some(at) = self.probe().roll_point(tick, key) {
+                return at;
+            }
+            let grid = self.probe().roll_grid().expect("the piano roll is open");
+            // Rows run high keys at the top; the wheel moves the view.
+            let y = self
+                .probe()
+                .roll_point_unclamped(key)
+                .unwrap_or(grid.center().y);
+            let x = self.probe().roll_x(tick).unwrap_or(grid.center().x);
+            let dy = if y < grid.top() {
+                120.0
+            } else if y > grid.bottom() {
+                -120.0
+            } else {
+                0.0
+            };
+            let dx = if x < grid.left() {
+                120.0
+            } else if x > grid.right() {
+                -120.0
+            } else {
+                0.0
+            };
+            self.wheel(grid.center(), MouseWheelUnit::Point, Vec2::new(dx, dy));
+        }
+        let g = self.probe().roll_grid();
+        panic!(
+            "key {key} never scrolled into view; grid {g:?}, y {:?}, x {:?}",
+            self.probe().roll_point_unclamped(key),
+            self.probe().roll_x(tick)
+        );
     }
 
     /// Where the arrangement drew the clip.
@@ -202,6 +245,17 @@ impl Probe<'_> {
         self.h.get_by_label(label).rect().center()
     }
 
+    /// The first of several widgets with the same label (the snap menu's
+    /// button and the piano roll's label for the same step).
+    pub fn find_first(&self, label: &str) -> Pos2 {
+        self.h
+            .get_all_by_label(label)
+            .next()
+            .unwrap_or_else(|| panic!("nothing labelled {label:?}"))
+            .rect()
+            .center()
+    }
+
     pub fn clip_rect(&self, id: ClipId) -> Rect {
         self.h.state().timeline().clip_rect(id).unwrap_or_else(|| {
             panic!(
@@ -220,6 +274,41 @@ impl Probe<'_> {
     /// The lane, if it is on screen.
     pub fn try_take_lane(&self, id: ClipId, k: usize) -> Option<Rect> {
         self.h.state().timeline().take_lane(id, k)
+    }
+
+    /// Where the piano roll drew `key` at `tick`, if it is open and the
+    /// point is on screen.
+    pub fn roll_point(&self, tick: i64, key: u8) -> Option<Pos2> {
+        let g = self.h.state().piano_roll().geometry()?;
+        let at = Pos2::new(g.x(tick), g.y(key));
+        g.grid.contains(at).then_some(at)
+    }
+
+    fn roll_x(&self, tick: i64) -> Option<f32> {
+        Some(self.h.state().piano_roll().geometry()?.x(tick))
+    }
+
+    fn roll_point_unclamped(&self, key: u8) -> Option<f32> {
+        Some(self.h.state().piano_roll().geometry()?.y(key))
+    }
+
+    /// The piano roll's grid, if it is open.
+    pub fn roll_grid(&self) -> Option<Rect> {
+        Some(self.h.state().piano_roll().geometry()?.grid)
+    }
+
+    /// The notes of the clip open in the piano roll: start, length, key.
+    pub fn roll_notes(&self, clip: ClipId) -> Vec<(i64, i64, u8)> {
+        self.project()
+            .clip(clip)
+            .and_then(|c| c.as_midi())
+            .map(|m| {
+                m.notes
+                    .iter()
+                    .map(|n| (n.start.0, n.length.0, n.key))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Where an Automation node's arm button is.
