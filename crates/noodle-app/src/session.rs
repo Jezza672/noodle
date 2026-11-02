@@ -358,6 +358,9 @@ pub struct Session {
     automation: record_automation::Recorder,
     /// How armed nodes write. Saved as an app preference, not with the project.
     automation_mode: record_automation::AutomationMode,
+    /// The lanes whose source is playing a move being recorded instead of
+    /// the lane.
+    live_lanes: std::collections::BTreeSet<noodle_core::LaneId>,
     /// The step, in ticks, that clips, notes and markers snap to (see
     /// [`crate::snap`]). Not saved with the project.
     snap: i64,
@@ -615,6 +618,7 @@ impl Session {
             record_quantise: crate::midi_take::Quantise::default(),
             automation: record_automation::Recorder::default(),
             automation_mode: record_automation::AutomationMode::default(),
+            live_lanes: Default::default(),
             snap: crate::snap::DEFAULT,
             #[cfg(test)]
             fake_input: None,
@@ -1999,6 +2003,7 @@ impl Session {
         self.automation.retain(|node| graph.node(node).is_some());
         if !self.transport_running() {
             self.finish_automation_pass();
+            self.push_live_automation();
             return;
         }
         if self.automation.armed().next().is_none() {
@@ -2022,6 +2027,46 @@ impl Session {
                 self.automation.signal(mode, node, reading.value, tick);
             }
         }
+        self.push_live_automation();
+    }
+
+    /// Plays the value being recorded in place of each armed node's lane,
+    /// so a move is heard as it is made, and puts the lane back once it is
+    /// let go.
+    fn push_live_automation(&mut self) {
+        let wanted: Vec<(noodle_core::LaneId, f32)> = self
+            .automation
+            .armed()
+            .filter_map(|node| {
+                let held = self.automation.held(node)?;
+                let (lane, _) = self
+                    .project
+                    .lane_for(&noodle_core::Endpoint::new(node, record_automation::VALUE))?;
+                Some((lane, held))
+            })
+            .collect();
+        let Some(audio) = &mut self.audio else {
+            self.live_lanes.clear();
+            return;
+        };
+        for &(lane, held) in &wanted {
+            let source = noodle_engine::lane_source_id(lane);
+            audio
+                .controller
+                .set_param(source, noodle_engine::LIVE, held);
+            audio
+                .controller
+                .set_param(source, noodle_engine::LIVE_ON, 1.0);
+        }
+        let now: std::collections::BTreeSet<_> = wanted.iter().map(|&(lane, _)| lane).collect();
+        for &lane in self.live_lanes.difference(&now) {
+            audio.controller.set_param(
+                noodle_engine::lane_source_id(lane),
+                noodle_engine::LIVE_ON,
+                0.0,
+            );
+        }
+        self.live_lanes = now;
     }
 
     /// Writes the Pass into the lanes as one undo step.

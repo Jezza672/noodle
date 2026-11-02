@@ -558,6 +558,13 @@ mod session_tests {
         let mut session = Session::new(Nodes::all());
         session.set_audio_config(crate::testkit::virtual_audio());
         let node = automated_filter(&mut session);
+        let filter = session
+            .project()
+            .graph()
+            .nodes()
+            .find(|(_, n)| n.type_id == noodle_nodes::SVF_ID)
+            .map(|(id, _)| id)
+            .unwrap();
         let before = level(&session, 48_000);
         session.set_automation_mode(AutomationMode::Touch);
         session.edit([Edit::ArmAutomation { node, on: true }]);
@@ -575,6 +582,15 @@ mod session_tests {
             std::thread::sleep(Duration::from_millis(60));
             session.maintain();
         }
+        // Mid-pass the filter's cutoff signal follows the held value, not
+        // the lane (which still holds 0.5, an offset of 0: 400 Hz): the move is heard.
+        std::thread::sleep(Duration::from_millis(100));
+        session.maintain();
+        let cutoff = session
+            .telemetry()
+            .read_param(filter, "cutoff")
+            .expect("the cutoff is wired and reporting");
+        assert!(cutoff.value > 600.0, "{cutoff:?}");
         session.edit([Edit::EndDrag]);
         let history = session.can_undo();
         session.set_transport_running(false);
