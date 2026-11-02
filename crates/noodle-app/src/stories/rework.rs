@@ -49,7 +49,7 @@ pub fn score(log: &[Action], changes: &[Change]) -> Rework {
                 recreating = true;
             }
             ActionKind::Step(_) => recreating = false,
-            ActionKind::Wait(_) => {}
+            ActionKind::Wait(_) | ActionKind::Heard(_) | ActionKind::Unseen(_) => {}
             kind => {
                 if matches!(kind, ActionKind::Key(egui::Key::Z))
                     && a.modifiers.command

@@ -49,7 +49,11 @@ deliberately deferred items.
 
 **Still owed from groups B to D:** the repetition ratio and per-route batch-path notes (#311), and the premature-commitment and destructive-step tags (#313).
 
-**Then:** remaining stories, findability (entry-point tagging, vocabulary match, naive-agent runs), feedback and robustness metrics, PR scorecard diff, grades, the human rubric.
+**Built since (#317, #318, #320, #321):** entry-point surfaces, the vocabulary match, time to hear, live editing, state visibility, dropouts, and save and reopen.
+
+**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs (#319).
+
+**Then:** remaining stories, naive-agent runs, PR scorecard diff, grades, the human rubric.
 
 
 ## Owed: needs a person on real hardware

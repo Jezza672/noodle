@@ -38,6 +38,10 @@ mod draw;
 mod layout;
 mod params;
 mod search;
+
+/// The add-node search, for the usability scorecard to type vocabulary into.
+#[cfg(test)]
+pub(crate) use search::entries as search_entries;
 mod view;
 mod wire;
 

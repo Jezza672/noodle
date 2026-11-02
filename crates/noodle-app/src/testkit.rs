@@ -49,6 +49,32 @@ pub enum ActionKind {
     /// Not an action: the actions up to the next [`ActionKind::Step`] only
     /// recreate something that already existed (the route's author says so).
     Recreate(String),
+    /// Not an action: the route listened to the output, and this was its
+    /// peak. A peak above [`AUDIBLE`] is the first moment the user can hear
+    /// the work.
+    Heard(f32),
+    /// Not an action: the result of the actions up to the next
+    /// [`ActionKind::Step`] cannot be seen without opening another view (the
+    /// route's author says so).
+    Unseen(String),
+}
+
+/// The peak above which the output counts as heard.
+pub const AUDIBLE: f32 = 0.01;
+
+impl ActionKind {
+    /// Whether this is a marker the route's author or the harness put in the
+    /// log, and not something the user did.
+    pub fn is_marker(&self) -> bool {
+        matches!(
+            self,
+            ActionKind::Step(_)
+                | ActionKind::Wait(_)
+                | ActionKind::Recreate(_)
+                | ActionKind::Heard(_)
+                | ActionKind::Unseen(_)
+        )
+    }
 }
 
 /// The widget under a point, as egui's accessibility tree shows it.
@@ -82,6 +108,33 @@ pub struct Action {
 thread_local! {
     static LOG: RefCell<Option<Vec<Action>>> = const { RefCell::new(None) };
     static VIEWS: RefCell<Vec<(&'static str, Rect)>> = const { RefCell::new(Vec::new()) };
+    static PLAYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While this is alive the helpers settle in a fixed three frames instead of
+/// waiting for the UI to stop repainting, which it never does while the
+/// transport runs. It lets a route written for a stopped transport run with
+/// the transport playing.
+pub struct PlayingMode(());
+
+pub fn playing_mode() -> PlayingMode {
+    PLAYING.with(|p| p.set(true));
+    PlayingMode(())
+}
+
+impl Drop for PlayingMode {
+    fn drop(&mut self) {
+        PLAYING.with(|p| p.set(false));
+    }
+}
+
+/// Lets the UI settle after an action.
+fn settle<S>(h: &mut Harness<'_, S>) {
+    if PLAYING.with(|p| p.get()) {
+        h.run_steps(3);
+    } else {
+        h.run();
+    }
 }
 
 /// Recording is on while this is alive.
@@ -138,6 +191,23 @@ pub fn recreate_marker<S>(h: &Harness<'_, S>, name: &str) {
     push(
         h,
         ActionKind::Recreate(name.into()),
+        Modifiers::NONE,
+        None,
+        None,
+    );
+}
+
+/// Says the output was listened to, and how loud it was at its loudest.
+pub fn heard<S>(h: &Harness<'_, S>, peak: f32) {
+    push(h, ActionKind::Heard(peak), Modifiers::NONE, None, None);
+}
+
+/// Says the result of the actions that follow, up to the next step marker,
+/// cannot be seen without opening another view.
+pub fn unseen_marker<S>(h: &Harness<'_, S>, name: &str) {
+    push(
+        h,
+        ActionKind::Unseen(name.into()),
         Modifiers::NONE,
         None,
         None,
@@ -203,7 +273,7 @@ fn push<S>(
     }
     let start = start.unwrap_or(Pos2::ZERO);
     let end = end.unwrap_or(start);
-    let pointing = !matches!(kind, ActionKind::Step(_) | ActionKind::Wait(_));
+    let pointing = !kind.is_marker();
     let action = Action {
         kind,
         modifiers,
@@ -272,7 +342,7 @@ pub fn drag_with<S>(
     };
     push(h, kind, modifiers, Some(path[0]), path.last().copied());
     gesture(h, button, modifiers, path);
-    h.run();
+    settle(h);
 }
 
 /// A primary-button drag that settles in a fixed three frames, for apps that
@@ -338,7 +408,7 @@ pub fn double_click<S>(h: &mut Harness<'_, S>, at: Pos2) {
         }
         h.step();
     }
-    h.run();
+    settle(h);
 }
 
 /// Presses `key` with the pointer over `at`, holding `modifiers`.
@@ -347,7 +417,7 @@ pub fn press<S>(h: &mut Harness<'_, S>, at: Pos2, modifiers: Modifiers, key: Key
     h.hover_at(at);
     h.step();
     h.key_press_modifiers(modifiers, key);
-    h.run();
+    settle(h);
 }
 
 /// [`press`] for when audio plays and the app keeps repainting: it steps a
@@ -410,7 +480,7 @@ pub fn drop_files<S>(h: &mut Harness<'_, S>, at: Pos2, files: &[PathBuf]) {
             .push(Arc::new(Dropped(file.clone())));
     }
     h.step();
-    h.run();
+    settle(h);
 }
 
 /// Types `text` into the focused field, as one text entry.
@@ -423,7 +493,7 @@ pub fn type_text<S>(h: &mut Harness<'_, S>, at: Pos2, text: &str) {
         None,
     );
     h.event(Event::Text(text.into()));
-    h.run();
+    settle(h);
 }
 
 /// Audio settings that play on the virtual output: the engine runs in real

@@ -80,7 +80,7 @@ pub fn score(log: &[Action]) -> Effort {
     let mut view: Option<&str> = None;
     for a in log {
         let (this_hand, ops) = match &a.kind {
-            ActionKind::Recreate(_) => continue,
+            ActionKind::Recreate(_) | ActionKind::Heard(_) | ActionKind::Unseen(_) => continue,
             ActionKind::Step(_) => {
                 e.steps += 1;
                 e.operators.m += 1;

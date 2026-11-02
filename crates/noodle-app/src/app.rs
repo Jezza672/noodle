@@ -65,6 +65,13 @@ const SHORTCUTS: [(KeyboardShortcut, Action); 9] = [
     (KEYBOARD, Action::ToggleKeyboard),
 ];
 
+/// The global shortcuts, for the usability scorecard to check that it knows
+/// each one.
+#[cfg(test)]
+pub(crate) fn shortcut_chords() -> Vec<KeyboardShortcut> {
+    SHORTCUTS.iter().map(|(shortcut, _)| *shortcut).collect()
+}
+
 pub struct App {
     /// The view the Edit menu's Cut, Copy, Paste and Duplicate act on: the
     /// last one clicked in.
