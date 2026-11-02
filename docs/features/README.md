@@ -25,3 +25,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [code-cleanup.md](code-cleanup.md) | Code cleanup audit: idle power, derived state, file watching |
 | [playback-cache.md](playback-cache.md) | Playback cache, batch 1: reset equals fresh, memory tiers, cache-key gaps |
 | [autosave.md](autosave.md) | Autosave and crash recovery |
+| [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |

@@ -18,6 +18,33 @@ impl fmt::Display for ClipId {
     }
 }
 
+/// Identifies a [`ClipGroup`] within a project. Like clip IDs, they aren't
+/// reused within a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClipGroupId(pub u64);
+
+impl fmt::Display for ClipGroupId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "clip group #{}", self.0)
+    }
+}
+
+/// A link between clips, usually on different tracks: the members move, trim,
+/// split, loop, warp and are deleted together, and share one warp (see
+/// [`Project::section_edit`](crate::Project::section_edit)). Gain and fades
+/// stay per clip. A group may hold audio and MIDI clips; the warp reaches the
+/// audio ones.
+///
+/// A group is only a link while at least two of its members are in the
+/// project: a member that has been deleted (and could come back with an undo)
+/// is kept in the list but ignored, and a group with fewer live members than
+/// that is neither saved nor reported by [`Project::group_of`](crate::Project::group_of).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipGroup {
+    pub members: std::collections::BTreeSet<ClipId>,
+}
+
 /// Something placed on a track's timeline. The start is in ticks, so it
 /// follows the tempo. One track holds clips of every kind.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -69,8 +69,9 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   (`add_track::with_input`, so it is wired to the default mixer, built one after
   another on a copy so each takes its own mixer input) named `<clip> (<part>)`,
   a clip that is the source's section again over the part's file (start, window,
-  gain, fades), and, if the source is warped, an `AddWarp` of a copy of its warp:
-  never the source's `WarpId`, which would link them. It also mutes the source and
+  gain, fades) on the source's own warp, and one `SetClipGroup` linking the source,
+  the stems and the residual (they join the source's link if it has one), so they
+  move, cut and re-warp together. It also mutes the source and
   puts the new tracks right under its track in the track order. The whole batch is
   one undo step. If the clip was removed or its window grew while the job ran,
   nothing is added and the files are deleted.

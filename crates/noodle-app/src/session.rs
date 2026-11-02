@@ -19,7 +19,9 @@ pub use export::ExportChoice;
 pub use library::LibraryEdit;
 
 use crate::freezing::{Badge, Freezing, Look, Polled};
-use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
+use noodle_core::{
+    Clip, ClipId, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick,
+};
 use noodle_engine::{
     Controller, Diagnostic, Pass, Registry, Settings, Telemetry, TempoTable, compile_replacing,
     compile_with_lanes,
@@ -2290,6 +2292,7 @@ impl Session {
             );
             (self.project.next_warp_id(), warp)
         });
+        let mut taken: Vec<ClipId> = Vec::new();
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
                 let mut clip =
@@ -2305,10 +2308,9 @@ impl Session {
                     }
                     audio.warp = Some(*id);
                 }
-                commands.push(Command::AddClip {
-                    id: self.project.new_clip_id(),
-                    clip,
-                });
+                let id = self.project.new_clip_id();
+                taken.push(id);
+                commands.push(Command::AddClip { id, clip });
             }
         }
         for &track in &midi_tracks {
@@ -2317,11 +2319,20 @@ impl Session {
                 if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
                     content.notes = midi.notes.clone();
                 }
-                commands.push(Command::AddClip {
-                    id: self.project.new_clip_id(),
-                    clip,
-                });
+                let id = self.project.new_clip_id();
+                taken.push(id);
+                commands.push(Command::AddClip { id, clip });
             }
+        }
+        // The clips of one take on several tracks are one link, so they can
+        // be slid, cut and warped as the one performance they are.
+        if taken.len() >= 2 {
+            commands.push(Command::SetClipGroup {
+                id: self.project.new_clip_group_id(),
+                group: Some(noodle_core::ClipGroup {
+                    members: taken.into_iter().collect(),
+                }),
+            });
         }
         self.edit([Edit::Apply(Command::Batch(commands))]);
         if let (Some(relative), Some(take)) = (&recording.relative, &take) {
@@ -2688,6 +2699,7 @@ impl Effect {
             | Command::SetParamShown { .. }
             | Command::SetPreset { .. }
             | Command::SetTrackOrder(_)
+            | Command::SetClipGroup { .. }
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}
@@ -4702,6 +4714,10 @@ mod tests {
         assert_eq!(warps[0].0, warps[1].0);
         assert_eq!(warps[0].1.tempo.points()[0].bpm, 120.0);
         assert!(warps[0].1.is_identity());
+
+        // The take's clips are one link, undone with the take.
+        let ids: Vec<_> = session.project().clips().map(|(id, _)| id).collect();
+        assert_eq!(session.project().linked_with(ids[0]), ids);
 
         session.undo();
         assert!(
