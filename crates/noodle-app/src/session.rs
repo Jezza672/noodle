@@ -12,6 +12,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub mod automate;
 mod export;
 mod library;
 mod stems;
@@ -89,6 +90,9 @@ pub enum Edit {
     /// Replaces the contents of a group with its library template's current
     /// version. One undo step.
     UpdateFromTemplate(NodeId),
+    /// The Automate shortcut on a parameter: an Automation node, its lane
+    /// and the wire into the parameter, as one undo step (see [`automate`]).
+    Automate(noodle_core::Endpoint),
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
@@ -1373,6 +1377,18 @@ impl Session {
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
                     continue;
+                }
+                Edit::Automate(target) => {
+                    self.history.end_group();
+                    let node = self.new_node_id();
+                    let lane = self.project.next_lane_id();
+                    match automate::command(&self.project, &self.registry, &target, node, lane) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't automate: {error}"));
+                            continue;
+                        }
+                    }
                 }
                 Edit::UpdateFromTemplate(group) => {
                     self.history.end_group();

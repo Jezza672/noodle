@@ -77,7 +77,7 @@ Automation of one parameter over time, stored with the arrangement rather than a
 _Avoid_: Envelope (that is a synthesis node), automation track
 
 **Automate**:
-A shortcut on a parameter that adds an Automation node beside it, a lane on the node's value, and a wire from the node into the parameter, as one undo step. Nothing links the parameter and the lane except that wire. (Planned.)
+A shortcut on a parameter that adds an Automation node beside it, a lane on the node's value, and a wire from the node into the parameter, as one undo step. Nothing links the parameter and the lane except that wire. The node gets a range and taper copied from the parameter.
 
 **Automation mode**:
 Read, Touch or Latch: one app-wide setting for how an armed Automation node writes its lane while the transport plays. (Planned.)

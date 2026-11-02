@@ -47,11 +47,45 @@ pub enum Gesture {
     Released,
 }
 
+/// Whether the right-click menu offers Automate, and if it's turned off, why.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Automate {
+    /// No entry: the caller can't automate this field.
+    #[default]
+    Hidden,
+    Offered,
+    /// Greyed, with this as its tooltip.
+    Refused(&'static str),
+}
+
+impl Automate {
+    /// The menu entry. Returns whether it was clicked.
+    fn entry(self, ui: &mut Ui) -> bool {
+        match self {
+            Automate::Hidden => false,
+            Automate::Offered => {
+                let clicked = ui.button("Automate").clicked();
+                if clicked {
+                    ui.close();
+                }
+                clicked
+            }
+            Automate::Refused(why) => {
+                ui.add_enabled(false, egui::Button::new("Automate"))
+                    .on_disabled_hover_text(why);
+                false
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ParamOutput {
     pub response: Response,
     pub edit: Option<ParamEdit>,
     pub gesture: Gesture,
+    /// Automate was chosen from the menu.
+    pub automate: bool,
 }
 
 impl ParamOutput {
@@ -64,6 +98,9 @@ impl ParamOutput {
     /// drag's steps become one undo step, closed when it's released.
     pub fn edits(&self, node: NodeId, key: &str) -> Vec<Edit> {
         let mut edits = Vec::new();
+        if self.automate {
+            edits.push(Edit::Automate(noodle_core::Endpoint::new(node, key)));
+        }
         if let Some(edit) = self.edit {
             let command = Command::SetParam {
                 node,
@@ -110,6 +147,7 @@ pub struct ParamField<'a> {
     height: Option<f32>,
     zoom: f32,
     live: Option<Live>,
+    automate: Automate,
     /// Whether the wire replaces the value (the fill follows the live value)
     /// rather than offsetting it (the fill stays at the base).
     replaced: bool,
@@ -129,8 +167,15 @@ impl<'a> ParamField<'a> {
             height: None,
             zoom: 1.0,
             live: None,
+            automate: Automate::Hidden,
             replaced: false,
         }
+    }
+
+    /// Adds the Automate entry to the right-click menu.
+    pub fn automate(mut self, automate: Automate) -> Self {
+        self.automate = automate;
+        self
     }
 
     /// Marks the parameter as wired. The field draws the signal's range as
@@ -303,11 +348,13 @@ impl<'a> ParamField<'a> {
         if wants_reset(ui, &response) {
             edit = Some(ParamEdit::Reset);
         }
+        let mut automate = false;
         response.context_menu(|ui| {
             if ui.button("Reset to default").clicked() {
                 edit = Some(ParamEdit::Reset);
                 ui.close();
             }
+            automate |= self.automate.entry(ui);
         });
 
         let enabled = ui.is_enabled();
@@ -331,6 +378,7 @@ impl<'a> ParamField<'a> {
             response,
             edit,
             gesture,
+            automate,
         }
     }
 
@@ -375,6 +423,7 @@ impl<'a> ParamField<'a> {
             response,
             edit,
             gesture: Gesture::Idle,
+            automate: false,
         }
     }
 
@@ -544,12 +593,14 @@ impl<'a> ParamField<'a> {
         let targeted = responses.iter().any(Response::has_focus)
             || (ui.rect_contains_pointer(rect) && ui.memory(|m| m.focused()).is_none());
         resets |= targeted && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
+        let mut automate = false;
         for button in &responses {
             button.context_menu(|ui| {
                 if ui.button("Reset to default").clicked() {
                     resets = true;
                     ui.close();
                 }
+                automate |= self.automate.entry(ui);
             });
         }
         if resets {
@@ -563,6 +614,7 @@ impl<'a> ParamField<'a> {
             response: response.on_hover_text(tooltip),
             edit,
             gesture: Gesture::Idle,
+            automate,
         }
     }
 
