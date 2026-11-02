@@ -82,6 +82,7 @@ fn main() -> ExitCode {
         session.set_monitor_device(&prefs.monitor_device);
         session.set_auto_cache(prefs.auto_cache);
         session.set_count_in_bars(prefs.count_in_bars);
+        session.set_record_midi(prefs.midi_record);
         session.set_pre_roll_bars(prefs.pre_roll_bars);
         session.set_automation_mode(prefs.automation_mode);
     }

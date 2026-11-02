@@ -87,6 +87,9 @@ fn rig() -> (H, ClipId) {
                 }
                 rig.session.settle_loop();
                 rig.opened.extend(out.open_midi);
+                if let Some(audition) = out.audition {
+                    rig.session.set_take_audition(audition);
+                }
                 for (track, kind, on) in out.arm {
                     rig.session.arm_kind(track, kind, on);
                 }
@@ -2487,4 +2490,128 @@ fn the_context_menu_links_and_unlinks_the_selection() {
     h.get_by_label("Unlink").click();
     h.run();
     assert_eq!(h.state().session.project().linked_with(a), vec![a]);
+}
+
+/// The rig's clip as a folder of three takes comped from take 0, with its
+/// take lanes open.
+fn take_rig() -> (H, ClipId) {
+    let (mut h, id) = rig();
+    let mut folder = clip(&h, id);
+    if let noodle_core::ClipContent::Audio(audio) = &mut folder.content {
+        audio.takes = Some(noodle_core::TakeFolder::new(
+            (0..3)
+                .map(|k| noodle_core::Take { delta: k * 1_000 })
+                .collect(),
+            0,
+        ));
+    }
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetClip { id, clip: folder })]);
+    h.state_mut().timeline.takes.shown.insert(id);
+    h.run();
+    (h, id)
+}
+
+fn comp_of(h: &H, id: ClipId) -> Vec<(u64, usize)> {
+    clip(h, id)
+        .as_audio()
+        .unwrap()
+        .takes
+        .as_ref()
+        .unwrap()
+        .comp
+        .iter()
+        .map(|s| (s.at, s.take))
+        .collect()
+}
+
+#[test]
+fn an_open_take_folder_shows_a_lane_for_each_take() {
+    let (h, id) = take_rig();
+    for k in 0..3 {
+        assert!(
+            h.state().timeline.take_lane_rects.contains_key(&(id, k)),
+            "take {k}"
+        );
+    }
+    let (a, b) = (
+        h.state().timeline.take_lane_rects[&(id, 0)],
+        h.state().timeline.take_lane_rects[&(id, 1)],
+    );
+    assert!(b.top() > a.top());
+    assert!(h.state().timeline.drawn_text.iter().any(|t| t == "Take 3"));
+}
+
+#[test]
+fn dragging_across_a_take_swipes_it_into_the_comp_in_one_undo_step() {
+    let (mut h, id) = take_rig();
+    let lane = h.state().timeline.take_lane_rects[&(id, 1)];
+    // A beat is 60 points and 24000 frames: swipe beats 1 to 2.
+    let (from, to) = (lane.left() + 60.0, lane.left() + 120.0);
+    let y = lane.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(from, y),
+        Pos2::new(to, y),
+    );
+    assert_eq!(comp_of(&h, id), [(0, 0), (24_000, 1), (48_000, 0)]);
+    h.state_mut().session.undo();
+    assert_eq!(comp_of(&h, id), [(0, 0)]);
+}
+
+#[test]
+fn clicking_a_take_auditions_it_and_clicking_again_stops() {
+    let (mut h, id) = take_rig();
+    let lane = h.state().timeline.take_lane_rects[&(id, 2)];
+    click(&mut h, lane.center(), Modifiers::NONE);
+    assert_eq!(h.state().session.take_audition(), Some((id, 2)));
+    // The project is untouched.
+    assert_eq!(comp_of(&h, id), [(0, 0)]);
+    h.run();
+    let lane = h.state().timeline.take_lane_rects[&(id, 2)];
+    click(&mut h, lane.center(), Modifiers::NONE);
+    assert_eq!(h.state().session.take_audition(), None);
+}
+
+#[test]
+fn dragging_a_joins_handle_sets_its_crossfade_on_every_linked_folder() {
+    let (mut h, id) = take_rig();
+    let lane = h.state().timeline.take_lane_rects[&(id, 1)];
+    let y = lane.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(lane.left() + 60.0, y),
+        Pos2::new(lane.left() + 120.0, y),
+    );
+    h.run();
+    let grip = h.state().timeline.join_rects[&(id, 1)];
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        grip.center(),
+        grip.center() + Vec2::new(20.0, 0.0),
+    );
+    let join = clip(&h, id)
+        .as_audio()
+        .unwrap()
+        .takes
+        .as_ref()
+        .unwrap()
+        .comp[1]
+        .crossfade;
+    let join = join.expect("a set crossfade");
+    assert!(join.before.0 > 100 && join.before == join.after, "{join:?}");
+    h.state_mut().session.undo();
+    let join = clip(&h, id)
+        .as_audio()
+        .unwrap()
+        .takes
+        .as_ref()
+        .unwrap()
+        .comp[1]
+        .crossfade;
+    assert_eq!(join, None, "one undo step");
 }

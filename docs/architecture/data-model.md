@@ -148,6 +148,22 @@ The **Project** is the single source of truth. It holds one global graph:
     10 ms), and the takes and comp are in the clip's cache key. Comp edits are
     `SetClip` commands (`TakeFolder::swipe`). Flattening replaces the folder
     with plain clips, one per span.
+  - **MIDI take folders.** A `MidiClip` with `takes: Some(MidiTakes)` holds a
+    `TakeFolder` (the same comp and swipe, counted in ticks from the clip's
+    start, with no deltas) and what each take played (`TakeContent`: notes and
+    controllers). The clip's own `notes` and `controls` are the comp already
+    played out (`MidiTakes::played`, `MidiClip::play_comp`), so playback, the
+    piano roll and the preview need no special case. The project drops the takes
+    when a `SetClip` leaves the clip disagreeing with them (`settle_takes`: a
+    note edited, moved, trimmed or looped), so a hand edit is never overwritten by
+    a later swipe, and "Flatten takes" is the same drop done on purpose.
+  - **Comping across linked clips.** `timeline/comp.rs::swipe` turns a range of
+    ticks into each linked folder's own coordinates (`clips::frame_of_tick` for
+    audio, through its warp) and edits all of them in one `Command::Batch`;
+    `set_join` does the same for a join's crossfade. `Project::auditioning`
+    returns a copy that plays one take alone; the session feeds the clips from
+    it while a take is auditioned (`Session::set_take_audition`), so nothing
+    saved or exported changes.
   - **Mixers are named** by their `name` config (`spare::mixer_name`); the
     default mixer, the one Add track feeds, is "Main". F2 in the graph and a
     text field in the mixer view rename one.

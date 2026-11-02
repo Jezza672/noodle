@@ -372,6 +372,11 @@ pub struct Session {
     pre_roll_bars: u8,
     /// How the MIDI of the next take is snapped. Not saved with the project.
     record_quantise: crate::midi_take::Quantise,
+    /// The take folder and take being auditioned: it plays alone, in place of
+    /// the comp, until this is cleared. Not saved, and not exported.
+    audition: Option<(ClipId, usize)>,
+    /// Whether the cycles of a loop recording of MIDI are takes or merge.
+    record_midi: crate::midi_take::MidiRecord,
     /// Which Automation nodes are armed, and the Pass being recorded.
     automation: record_automation::Recorder,
     /// How armed nodes write. Saved as an app preference, not with the project.
@@ -702,6 +707,8 @@ impl Session {
             count_in_bars: 0,
             pre_roll_bars: 0,
             record_quantise: crate::midi_take::Quantise::default(),
+            audition: None,
+            record_midi: Default::default(),
             automation: record_automation::Recorder::default(),
             automation_mode: record_automation::AutomationMode::default(),
             live_lanes: Default::default(),
@@ -2407,6 +2414,31 @@ impl Session {
         self.record_quantise
     }
 
+    /// The take being auditioned, if any (see [`Session::set_take_audition`]).
+    pub fn take_audition(&self) -> Option<(ClipId, usize)> {
+        self.audition
+    }
+
+    /// Plays take `take` of the take folder (and of the folders linked to
+    /// it) alone, in place of the comp, so it can be heard against the rest
+    /// of the song; `None` goes back to the comp. The project is untouched.
+    pub fn set_take_audition(&mut self, audition: Option<(ClipId, usize)>) {
+        if self.audition != audition {
+            self.audition = audition;
+            self.feed_clips();
+        }
+    }
+
+    /// Whether a loop recording of MIDI makes a take of every cycle or merges
+    /// them into one clip.
+    pub fn record_midi(&self) -> crate::midi_take::MidiRecord {
+        self.record_midi
+    }
+
+    pub fn set_record_midi(&mut self, mode: crate::midi_take::MidiRecord) {
+        self.record_midi = mode;
+    }
+
     pub fn set_record_quantise(&mut self, quantise: crate::midi_take::Quantise) {
         self.record_quantise = quantise;
     }
@@ -2652,7 +2684,7 @@ impl Session {
             .project
             .transport_loop()
             .active()
-            .filter(|&(a, b)| out.is_none() && relative.is_some() && from >= a && from < b);
+            .filter(|&(a, b)| out.is_none() && from >= a && from < b);
         let keep_from = from.max(start);
         self.recording = Some(Recording {
             audio_tracks,
@@ -2774,7 +2806,7 @@ impl Session {
     /// was recorded, and a MIDI clip, if any notes were played, on each track
     /// that was armed, all in one undo step. Does nothing if not recording.
     pub fn stop_recording(&mut self) {
-        let Some(recording) = self.recording.take() else {
+        let Some(mut recording) = self.recording.take() else {
             return;
         };
         let stop_micros = noodle_io::now_micros();
@@ -2798,19 +2830,42 @@ impl Session {
         }
         let (rate, latency) = self.take_timing();
         // Notes only matter if a track is armed to take them.
-        if !recording.midi_tracks.is_empty()
-            && let Some((start, clip)) = recording.midi.finish(&crate::midi_take::Finish {
+        let mut midi_passes = None;
+        if !recording.midi_tracks.is_empty() {
+            let finish = crate::midi_take::Finish {
                 stop_micros,
                 output_latency_micros: latency.as_micros() as u64,
                 sample_rate: rate,
                 tempo_map: self.project.tempo_map(),
                 quantise: recording.quantise,
                 anchor: self.midi.clock().anchor(),
-            })
-        {
-            notes.push((start, clip));
+            };
+            recording.midi.poll(finish.anchor);
+            // With the loop on and Takes chosen, each pass through it is a
+            // take; Merge leaves them all in one clip.
+            if self.record_midi == crate::midi_take::MidiRecord::Takes
+                && let Some((a, b)) = recording.cycle
+            {
+                let table = TempoTable::new(self.project.tempo_map(), rate as f32);
+                let at = |tick: Tick| table.sample_at_tick(tick) as f64;
+                let cycles = crate::midi_take::Cycles {
+                    first: at(b) - at(recording.keep.0),
+                    cycle: at(b) - at(a),
+                    start: a,
+                    end: b,
+                };
+                midi_passes = recording
+                    .midi
+                    .passes(&finish, &cycles)
+                    .filter(|(_, passes)| passes.len() > 1);
+            }
+            if midi_passes.is_none()
+                && let Some(found) = recording.midi.clip_so_far(&finish)
+            {
+                notes.push(found);
+            }
         }
-        if take.is_none() && notes.is_empty() {
+        if take.is_none() && notes.is_empty() && midi_passes.is_none() {
             if notices.is_empty() {
                 notices.push("Nothing was recorded".into());
             }
@@ -2851,7 +2906,7 @@ impl Session {
             // Stopped before the take began, in the pre-roll.
             let _ = std::fs::remove_file(&done.path);
             take = None;
-            if notes.is_empty() {
+            if notes.is_empty() && midi_passes.is_none() {
                 notices.push("Nothing was recorded".into());
                 self.message = Some(notices.join("; "));
                 return;
@@ -2922,6 +2977,29 @@ impl Session {
                 commands.push(Command::AddClip { id, clip });
             }
         }
+        if let Some((start, passes)) = &midi_passes {
+            for &track in &midi_tracks {
+                let length = passes.first().map_or(Tick(1), |p| p.length);
+                let mut clip = Clip::midi(track, *start, length);
+                if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
+                    let latest = passes.len() - 1;
+                    content.takes = Some(noodle_core::MidiTakes::new(
+                        passes
+                            .iter()
+                            .map(|pass| noodle_core::TakeContent {
+                                notes: pass.notes.clone(),
+                                controls: pass.controls.clone(),
+                            })
+                            .collect(),
+                        latest,
+                    ));
+                    content.play_comp();
+                }
+                let id = self.project.new_clip_id();
+                taken.push(id);
+                commands.push(Command::AddClip { id, clip });
+            }
+        }
         // The clips of one take on several tracks are one link, so they can
         // be slid, cut and warped as the one performance they are.
         if taken.len() >= 2 {
@@ -2944,6 +3022,9 @@ impl Session {
         }
         for (_, midi) in &notes {
             notices.push(format!("Recorded {} notes", midi.notes.len()));
+        }
+        if let Some((_, passes)) = &midi_passes {
+            notices.push(format!("Recorded MIDI as {} takes", passes.len()));
         }
         self.message = Some(notices.join("; "));
     }
@@ -2975,7 +3056,11 @@ impl Session {
             .and_then(Path::parent)
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
+        let auditioning = self
+            .audition
+            .map(|(id, take)| self.project.auditioning(id, take));
+        let project = auditioning.as_ref().unwrap_or(&self.project);
+        self.clip_problems = self.clips.update(project, &table, rate as u32, base);
         // The feeds forget a node that is gone, monitoring flag and all, and
         // undoing the delete brings it back unmonitored while still armed.
         for &track in &self.armed_midi {
@@ -5617,6 +5702,133 @@ mod tests {
         assert!(session.message().unwrap().contains("4 takes"));
         session.undo();
         assert_eq!(session.project().clips().count(), 0);
+    }
+
+    #[test]
+    fn a_loop_recording_comped_by_swipes_plays_the_comps_samples() {
+        use crate::timeline::comp;
+        const CYCLE: usize = 24_000;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        let level = |i: usize| (i / CYCLE + 1) as f32 * 0.1 + (i % CYCLE) as f32 * 1e-7;
+        feed(&mut tap, 3 * CYCLE + CYCLE / 2, level);
+        session.stop_recording();
+        let ids: Vec<ClipId> = session.project().clips().map(|(id, _)| id).collect();
+        assert_eq!(ids.len(), 2);
+
+        // Swipe the first quarter second from take 0 and the next eighth from
+        // take 1; the rest stays the last take. Swiping one folder comps both.
+        let map = session.project().tempo_map().clone();
+        for (range, take) in [((0, 480), 0), ((480, 720), 1)] {
+            let command = comp::swipe(
+                session.project(),
+                &map,
+                ids[0],
+                (Tick(range.0), Tick(range.1)),
+                take,
+                &mut |_| 48_000,
+            )
+            .unwrap();
+            session.edit([Edit::Apply(command)]);
+        }
+        for id in &ids {
+            let folder = session
+                .project()
+                .clip(*id)
+                .unwrap()
+                .as_audio()
+                .unwrap()
+                .takes
+                .clone()
+                .unwrap();
+            let comp: Vec<(u64, usize)> = folder.comp.iter().map(|s| (s.at, s.take)).collect();
+            assert_eq!(comp, [(0, 0), (12_000, 1), (18_000, 2)], "{id:?}");
+        }
+
+        // It plays the comp's samples (a join's crossfade aside), and the
+        // offline render, which export uses, is the same one.
+        // Both tracks into a mixer and the output, as they would be in a song.
+        let mut bare = Project::new();
+        let mut commands = vec![
+            Command::AddNode {
+                id: NodeId(90),
+                node: Node::new(noodle_engine::OUTPUT_ID),
+            },
+            Command::AddNode {
+                id: NodeId(91),
+                node: Node::new("noodle.util.mix").with_config(
+                    noodle_core::Config::new().with("inputs", noodle_core::Value::Int(2)),
+                ),
+            },
+            Command::Connect(noodle_core::Connection {
+                from: noodle_core::Endpoint::new(NodeId(91), "out"),
+                to: noodle_core::Endpoint::new(NodeId(90), "in"),
+            }),
+        ];
+        for (n, id) in ids.iter().enumerate() {
+            let track = NodeId(n as u64 + 1);
+            commands.push(Command::AddNode {
+                id: track,
+                node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+            });
+            commands.push(Command::Connect(noodle_core::Connection {
+                from: noodle_core::Endpoint::new(track, "audio"),
+                to: noodle_core::Endpoint::new(NodeId(91), format!("in{}", n + 1)),
+            }));
+            let mut clip = session.project().clip(*id).unwrap().clone();
+            clip.node = track;
+            if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+                audio.warp = None;
+            }
+            commands.push(Command::AddClip { id: *id, clip });
+        }
+        History::new()
+            .apply(&mut bare, Command::Batch(commands))
+            .unwrap();
+        let mut registry = noodle_engine::Registry::with_builtins();
+        let rendered = noodle_nodes::render_project_with_clips(
+            &bare,
+            &mut registry,
+            dir.path(),
+            noodle_engine::Settings {
+                sample_rate: 48_000.0,
+                max_frames: 512,
+                channels: 2,
+            },
+            CYCLE,
+        )
+        .unwrap();
+        assert!(rendered.problems.is_empty(), "{:?}", rendered.problems);
+        let left: Vec<f32> = rendered.render.samples.iter().step_by(2).copied().collect();
+        for (frame, take) in [(6_000usize, 0usize), (15_000, 1), (21_000, 2)] {
+            // Two tracks of the same comp, summed.
+            let expect = 2.0 * ((take + 1) as f32 * 0.1 + frame as f32 * 1e-7);
+            assert!(
+                (left[frame] - expect).abs() < 1e-4,
+                "frame {frame}: {} vs {expect}",
+                left[frame]
+            );
+        }
+        session.undo();
+        session.undo();
+        let folder = session
+            .project()
+            .clip(ids[1])
+            .unwrap()
+            .as_audio()
+            .unwrap()
+            .takes
+            .clone()
+            .unwrap();
+        assert_eq!(folder.comp.len(), 1, "one undo per swipe");
     }
 
     #[test]

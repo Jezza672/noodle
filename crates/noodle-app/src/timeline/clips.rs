@@ -392,6 +392,29 @@ pub fn tick_of_frame(
     }
 }
 
+/// The frame of the clip's file that plays at `tick`, the inverse of
+/// [`tick_of_frame`]. `None` if the warp is missing, or the tick is before the
+/// clip.
+pub fn frame_of_tick(
+    map: &TempoMap,
+    clip: &Clip,
+    tick: Tick,
+    rate: u32,
+    warp: Option<&ClipWarp>,
+) -> Option<u64> {
+    let audio = clip.as_audio()?;
+    match layout(map, audio, warp, rate)? {
+        Layout::Warped(section) => u64::try_from(section.frame_at(clip.start, audio, tick)).ok(),
+        Layout::Frames => {
+            let rate = f64::from(rate);
+            let into = map
+                .sample_at(tick, rate)
+                .checked_sub(map.sample_at(clip.start, rate))?;
+            Some(audio.offset + into)
+        }
+    }
+}
+
 /// The clip cut in two at `at`: the part before it and the part from it on,
 /// each a clip of its own that plays what was there, sample for sample.
 /// `None` if `at` isn't inside the clip. A fade out stays with the second

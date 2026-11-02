@@ -140,6 +140,7 @@ enum Action {
     ToggleKeyboard,
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
+    SetRecordMidi(crate::midi_take::MidiRecord),
     /// Bars of count-in and of pre-roll before a recording.
     SetCountIn(u8),
     SetPreRoll(u8),
@@ -529,6 +530,9 @@ impl App {
                 if let Some(clip) = out.open_midi {
                     self.clip_editor.close();
                     self.piano_roll.open(clip);
+                }
+                if let Some(audition) = out.audition {
+                    self.session.set_take_audition(audition);
                 }
                 if let Some(clip) = out.open_audio {
                     self.piano_roll.close();
@@ -1045,6 +1049,24 @@ impl App {
             })
             .response
             .on_hover_text("Snap the notes of recorded MIDI to this grid");
+        let mode = self.session.record_midi();
+        crate::widgets::Dropdown::from_id_salt("record_midi")
+            .width(64.0)
+            .selected_text(format!("MIDI {}", mode.label()))
+            .show_ui(ui, |ui| {
+                for choice in crate::midi_take::MidiRecord::ALL {
+                    if ui
+                        .selectable_label(choice == mode, choice.label())
+                        .clicked()
+                    {
+                        actions.push(Action::SetRecordMidi(choice));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Loop recording MIDI: Takes makes a take of every cycle to comp from; Merge puts every cycle in one clip",
+            );
     }
 
     /// The count-in (bars of metronome before a take) and the pre-roll (bars of
@@ -1567,6 +1589,10 @@ impl App {
             }
             Action::Rewind => self.session.rewind(),
             Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
+            Action::SetRecordMidi(mode) => {
+                self.session.set_record_midi(mode);
+                crate::prefs::remember_midi_record(mode);
+            }
             Action::SetCountIn(bars) => {
                 self.session.set_count_in_bars(bars);
                 crate::prefs::remember_recording(

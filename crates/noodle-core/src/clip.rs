@@ -86,6 +86,95 @@ pub struct MidiClip {
     /// notes, and move, loop, split and trim with them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<ControlPoint>,
+    /// The takes behind this clip, when it is a take folder (see
+    /// [`MidiTakes`]). `notes` and `controls` then hold what the comp plays,
+    /// so everything that plays or draws the clip needs no special case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takes: Option<MidiTakes>,
+}
+
+/// The takes of a MIDI take folder and the comp that picks which plays where.
+/// It uses the audio [`TakeFolder`] for the comp (so swiping is the same
+/// code), counted in ticks from the start of the clip, with no `delta`s: every
+/// take is the same stretch of music.
+///
+/// The clip's own `notes` and `controls` are the comp already played out
+/// ([`MidiTakes::played`]). A change to the clip that is not a change of comp
+/// leaves them disagreeing with the takes, and the project then drops the
+/// takes (the clip becomes a plain clip with the notes it shows), so an
+/// edited comp is never silently overwritten by a later swipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MidiTakes {
+    pub folder: TakeFolder,
+    /// What each take of `folder` played, parallel to `folder.takes`.
+    pub content: Vec<TakeContent>,
+}
+
+/// What one MIDI take recorded.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TakeContent {
+    pub notes: Vec<MidiNote>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlPoint>,
+}
+
+impl MidiTakes {
+    /// A folder of `content` that plays `active` throughout.
+    pub fn new(content: Vec<TakeContent>, active: usize) -> Self {
+        let takes = vec![Take { delta: 0 }; content.len()];
+        Self {
+            folder: TakeFolder::new(takes, active),
+            content,
+        }
+    }
+
+    /// The notes and controllers the comp plays: from each take, those that
+    /// start in the span that take plays. A note that starts in its span
+    /// plays out in full, past the join.
+    pub fn played(&self) -> (Vec<MidiNote>, Vec<ControlPoint>) {
+        let mut notes = Vec::new();
+        let mut controls = Vec::new();
+        for (index, span) in self.folder.comp.iter().enumerate() {
+            let from = if index == 0 { i64::MIN } else { span.at as i64 };
+            let to = self
+                .folder
+                .span_end(index)
+                .map_or(i64::MAX, |end| end as i64);
+            let Some(content) = self.content.get(span.take) else {
+                continue;
+            };
+            notes.extend(
+                content
+                    .notes
+                    .iter()
+                    .filter(|n| n.start.0 >= from && n.start.0 < to)
+                    .cloned(),
+            );
+            controls.extend(
+                content
+                    .controls
+                    .iter()
+                    .filter(|p| p.tick.0 >= from && p.tick.0 < to)
+                    .cloned(),
+            );
+        }
+        controls.sort_by_key(|p| p.tick);
+        (notes, controls)
+    }
+
+    /// Makes `take` play from `from` to `to` ticks (see [`TakeFolder::swipe`]).
+    pub fn swipe(&mut self, from: Tick, to: Tick, take: usize) {
+        self.folder
+            .swipe(from.0.max(0) as u64, to.0.max(0) as u64, take);
+    }
+
+    fn problem(&self) -> Option<&'static str> {
+        if self.content.len() != self.folder.takes.len() {
+            Some("its take folder has a different number of takes and recordings")
+        } else {
+            self.folder.problem()
+        }
+    }
 }
 
 fn is_zero(tick: &Tick) -> bool {
@@ -355,6 +444,40 @@ impl MidiClip {
             loop_start: Tick::ZERO,
             loop_len: Tick::ZERO,
             controls: Vec::new(),
+            takes: None,
+        }
+    }
+
+    /// Makes the clip play what its comp says: its notes and controllers
+    /// become [`MidiTakes::played`]. Does nothing to a plain clip.
+    pub fn play_comp(&mut self) {
+        if let Some(takes) = &self.takes {
+            let (notes, controls) = takes.played();
+            self.notes = notes;
+            self.controls = controls;
+            self.assign_note_ids();
+        }
+    }
+
+    /// Drops the takes if the clip no longer plays what its comp says: it was
+    /// edited as a plain clip (notes moved, trimmed, looped), so the takes
+    /// would be out of step with it.
+    fn settle_takes(&mut self) {
+        let Some(takes) = &self.takes else {
+            return;
+        };
+        let (notes, controls) = takes.played();
+        let same_notes = notes.len() == self.notes.len()
+            && notes.iter().all(|a| {
+                self.notes.iter().any(|b| {
+                    (a.start, a.length, a.key, a.velocity, &a.expressions)
+                        == (b.start, b.length, b.key, b.velocity, &b.expressions)
+                })
+            });
+        let mut mine = self.controls.clone();
+        mine.sort_by_key(|p| p.tick);
+        if !same_notes || controls != mine || self.loop_on {
+            self.takes = None;
         }
     }
 
@@ -549,6 +672,9 @@ impl MidiClip {
         }
         if self.loop_on && (self.loop_start < Tick::ZERO || self.loop_len.0 < MIN_LOOP_LEN) {
             return Some("its loop starts before the clip or is too short");
+        }
+        if let Some(problem) = self.takes.as_ref().and_then(MidiTakes::problem) {
+            return Some(problem);
         }
         for point in &self.controls {
             if point.tick < Tick::ZERO {
@@ -783,7 +909,7 @@ impl TakeFolder {
     }
 
     /// Why this folder can't be played, if it can't.
-    fn problem(&self) -> Option<&'static str> {
+    pub(crate) fn problem(&self) -> Option<&'static str> {
         if self.takes.is_empty() {
             Some("its take folder has no takes")
         } else if self.comp.is_empty() {
@@ -917,6 +1043,7 @@ impl Clip {
     pub(crate) fn assign_note_ids(&mut self) {
         if let ClipContent::Midi(midi) = &mut self.content {
             midi.assign_note_ids();
+            midi.settle_takes();
         }
     }
 

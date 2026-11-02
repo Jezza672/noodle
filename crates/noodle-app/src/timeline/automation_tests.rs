@@ -512,6 +512,7 @@ fn an_automation_node_in_a_tracks_group_shows_under_that_track() {
         project,
         &tracks,
         &vec![super::colors::LANE_HEIGHT; tracks.len()],
+        &vec![0; tracks.len()],
     );
     assert_eq!(rows.lanes(0), [id]);
     assert!(rows.free_lanes().is_empty());
