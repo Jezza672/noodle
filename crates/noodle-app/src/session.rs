@@ -2316,6 +2316,7 @@ impl Session {
                 let mut clip = Clip::midi(track, *start, midi.length);
                 if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
                     content.notes = midi.notes.clone();
+                    content.controls = midi.controls.clone();
                 }
                 commands.push(Command::AddClip {
                     id: self.project.new_clip_id(),
@@ -4589,6 +4590,110 @@ mod tests {
         let midi = midi_clips(&session);
         assert_eq!(midi.len(), 1);
         assert_eq!(midi[0].0, tracks[1]);
+    }
+
+    #[test]
+    fn a_take_keeps_the_pedal_and_the_mod_wheel_and_plays_them_back() {
+        use noodle_core::ControlKind;
+        let dir = tempfile::tempdir().unwrap();
+        let example =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/midi-cc.ron");
+        let mut session = Session::open(Nodes::all(), &example).expect("the example opens");
+        // The example's own clip goes; the take replaces it.
+        let existing: Vec<_> = session.project().clips().map(|(id, _)| id).collect();
+        for id in existing {
+            session.edit([Edit::Apply(Command::RemoveClip { id })]);
+        }
+        let track = NodeId(1);
+        assert!(session.save_as(&dir.path().join("song.ron")));
+        session.fake_input = Some(Box::new(NoInput));
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        let wait = || std::thread::sleep(Duration::from_millis(80));
+        // Pedal down, a short note with the wheel moving, then the pedal up.
+        let bus = session.midi_bus().clone();
+        bus.send([0xB0, 64, 127]);
+        bus.send([0x90, 57, 100]);
+        bus.send([0xB0, 1, 20]);
+        wait();
+        bus.send([0xB0, 1, 100]);
+        bus.send([0x80, 57, 0]);
+        wait();
+        wait();
+        bus.send([0xB0, 64, 0]);
+        wait();
+        session.stop_recording();
+
+        let (_, clip) = session
+            .project()
+            .clips()
+            .find(|(_, clip)| clip.as_midi().is_some())
+            .expect("the take became a clip");
+        let midi = clip.as_midi().unwrap().clone();
+        assert_eq!(midi.notes.len(), 1);
+        let lane = |kind| -> Vec<(Tick, f32)> {
+            let mut points: Vec<_> = midi
+                .controls
+                .iter()
+                .filter(|p| p.kind == kind)
+                .map(|p| (p.tick, p.value))
+                .collect();
+            points.sort_by_key(|p| p.0);
+            points
+        };
+        let pedal = lane(ControlKind::Controller(64));
+        let wheel = lane(ControlKind::Controller(1));
+        assert_eq!(
+            pedal.iter().map(|p| p.1).collect::<Vec<_>>(),
+            [1.0, 0.0],
+            "{pedal:?}"
+        );
+        assert_eq!(wheel.len(), 2, "{wheel:?}");
+        assert!((wheel[0].1 - 20.0 / 127.0).abs() < 1e-6);
+        assert!((wheel[1].1 - 100.0 / 127.0).abs() < 1e-6);
+
+        // Played back, the pedal holds the note after the key is let go; the
+        // same take without its controllers does not.
+        let tick_to_frames = |tick: Tick| (tick.0 as f64 / 960.0 * 0.5 * 48_000.0) as usize;
+        let note_end = tick_to_frames(Tick(midi.notes[0].start.0 + midi.notes[0].length.0));
+        let pedal_up = tick_to_frames(pedal[1].0);
+        let (from, to) = (note_end + 4_000, pedal_up.saturating_sub(500));
+        assert!(from + 1_000 < to, "the window {from}..{to}");
+        let render = |project: &Project| {
+            let mut registry = noodle_engine::Registry::with_builtins();
+            let render = noodle_nodes::render_project_with_clips(
+                project,
+                &mut registry,
+                dir.path(),
+                noodle_engine::Settings {
+                    sample_rate: 48_000.0,
+                    max_frames: 128,
+                    channels: 1,
+                },
+                pedal_up + 8_000,
+            )
+            .unwrap();
+            assert!(render.problems.is_empty(), "{:?}", render.problems);
+            render.render.samples
+        };
+        let level = |samples: &[f32]| {
+            (samples[from..to].iter().map(|x| x * x).sum::<f32>() / (to - from) as f32).sqrt()
+        };
+        let heard = render(session.project());
+        assert!(level(&heard) > 0.01, "held by the pedal: {}", level(&heard));
+        let mut bare = session.project().clone();
+        let id = bare.clips().next().map(|(id, _)| id).unwrap();
+        let mut stripped = bare.clip(id).unwrap().clone();
+        if let noodle_core::ClipContent::Midi(m) = &mut stripped.content {
+            m.controls.clear();
+        }
+        noodle_core::History::default()
+            .apply(&mut bare, Command::SetClip { id, clip: stripped })
+            .unwrap();
+        assert!(level(&render(&bare)) < 0.001, "without the pedal");
+        // After the pedal is up, and the clip's end, it is quiet again.
+        assert!(heard[pedal_up + 6_000..].iter().all(|x| x.abs() < 0.001));
     }
 
     #[test]

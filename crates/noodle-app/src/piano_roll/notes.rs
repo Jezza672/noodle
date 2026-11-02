@@ -46,12 +46,12 @@ pub fn moved(
         .iter()
         .map(|note| {
             if !selected.contains(&note.id) || note.start.0 >= clip_length {
-                return *note;
+                return note.clone();
             }
             MidiNote {
                 start: Tick(note.start.0 + d_tick),
                 key: (i32::from(note.key) + d_key) as u8,
-                ..*note
+                ..note.clone()
             }
         })
         .collect()
@@ -76,14 +76,14 @@ pub fn resized(
         .iter()
         .map(|note| {
             if !selected.contains(&note.id) || note.start.0 >= clip_length {
-                return *note;
+                return note.clone();
             }
             let length = (note.length.0 + delta)
                 .min(clip_length - note.start.0)
                 .max(min.min(clip_length - note.start.0));
             MidiNote {
                 length: Tick(length),
-                ..*note
+                ..note.clone()
             }
         })
         .collect()
@@ -114,6 +114,7 @@ pub fn added(
         length: Tick(length),
         key,
         velocity: velocity.clamp(0.0, 1.0),
+        expressions: Vec::new(),
     });
     Some((notes, id))
 }
@@ -123,7 +124,7 @@ pub fn removed(notes: &[MidiNote], selected: &BTreeSet<u32>) -> Vec<MidiNote> {
     notes
         .iter()
         .filter(|note| !selected.contains(&note.id))
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -133,7 +134,7 @@ pub fn copied(notes: &[MidiNote], selected: &BTreeSet<u32>) -> Vec<MidiNote> {
     let mut chosen: Vec<MidiNote> = notes
         .iter()
         .filter(|n| selected.contains(&n.id))
-        .copied()
+        .cloned()
         .collect();
     let earliest = chosen.iter().map(|n| n.start.0).min().unwrap_or(0);
     for note in &mut chosen {
@@ -169,7 +170,7 @@ pub fn pasted(
             id: next,
             start: Tick(start),
             length: Tick(note.length.0.min(clip_length - start).max(1)),
-            ..*note
+            ..note.clone()
         });
         ids.insert(next);
         next += 1;
@@ -295,7 +296,7 @@ mod tests {
         assert!(added(&notes, 3840, 480, 64, 0.5, 3840).is_none());
         assert!(added(&notes, -1, 480, 64, 0.5, 3840).is_none());
         assert!(added(&notes, 0, 480, 128, 0.5, 3840).is_none());
-        assert_eq!(removed(&out, &BTreeSet::from([0])), [out[1]]);
+        assert_eq!(removed(&out, &BTreeSet::from([0])), [out[1].clone()]);
         assert_eq!(removed(&out, &all(2)), []);
     }
 

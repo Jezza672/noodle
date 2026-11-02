@@ -170,7 +170,7 @@ fn alt_moves_without_snapping() {
     let from = at(&h, 700, 60);
     let to = at(&h, 700 + 100, 60);
     drag_between(&mut h, Modifiers::ALT, from, to);
-    let moved = notes_of(&h)[0];
+    let moved = notes_of(&h)[0].clone();
     assert!((moved.start.0 - 580).abs() <= 8, "{moved:?}");
 }
 

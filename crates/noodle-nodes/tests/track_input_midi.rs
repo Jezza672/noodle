@@ -384,3 +384,246 @@ fn a_looping_clip_plays_its_loop_again_until_it_ends() {
     // Every note-on has its note-off.
     assert_eq!(events.iter().filter(|e| !e.1).count(), expect.len());
 }
+
+// Controllers and expressions in clips.
+
+use noodle_core::{ControlKind, ControlPoint, ExpressionKind, NoteExpression, Tick};
+use noodle_engine::{ChannelControl, Expression};
+
+/// The pedal's controller number.
+const PEDAL: u8 = 64;
+
+fn midi_of(
+    rig: &mut Rig,
+    id: noodle_core::ClipId,
+    change: impl FnOnce(&mut noodle_core::MidiClip),
+) {
+    rig.edit_clip(id, |clip| {
+        let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        change(midi);
+    });
+    rig.settle();
+}
+
+fn point(tick: i64, kind: ControlKind, value: f32) -> ControlPoint {
+    ControlPoint::new(Tick(tick), 0, kind, value)
+}
+
+/// Every event of a stretch as (sample, event).
+fn all(rig: &mut Rig, from: u64, to: u64, playing: bool) -> Vec<(u64, EventKind)> {
+    let mut out = Vec::new();
+    let mut at = from;
+    while at < to {
+        let n = BLOCK.min((to - at) as usize);
+        out.extend(rig.run_events(at, n, playing));
+        at += n as u64;
+    }
+    out
+}
+
+/// The controller events among them as (sample, controller, value).
+fn controllers(events: &[(u64, EventKind)]) -> Vec<(u64, ChannelControl, u32)> {
+    events
+        .iter()
+        .filter_map(|&(t, kind)| match kind {
+            EventKind::Channel { control, value, .. } => Some((t, control, value)),
+            _ => None,
+        })
+        .collect()
+}
+
+const DOWN: u32 = u32::MAX;
+
+#[test]
+fn controllers_play_with_the_notes_and_are_released_where_the_clip_ends() {
+    let mut rig = rig("cc-play");
+    let id = rig.add_midi_clip(0, 2, &[(0, 480, 60)]);
+    midi_of(&mut rig, id, |midi| {
+        midi.controls = vec![
+            point(0, ControlKind::Controller(PEDAL), 1.0),
+            point(480, ControlKind::PitchBend, 0.5),
+        ];
+    });
+    let events = all(&mut rig, 0, 3 * BEAT, true);
+    let pedal = ChannelControl::Controller(PEDAL);
+    assert_eq!(
+        controllers(&events),
+        [
+            (0, pedal, DOWN),
+            (BEAT / 2, ChannelControl::PitchBend, 0xC000_0000),
+            // The clip ends after two beats: the pedal goes up, the bend
+            // returns to the centre.
+            (2 * BEAT, pedal, 0),
+            (2 * BEAT, ChannelControl::PitchBend, 0x8000_0000),
+        ]
+    );
+}
+
+#[test]
+fn a_seek_into_a_held_pedal_puts_the_pedal_down_and_one_past_its_release_does_not() {
+    let mut rig = rig("cc-chase");
+    let id = rig.add_midi_clip(0, 4, &[]);
+    midi_of(&mut rig, id, |midi| {
+        midi.controls = vec![
+            point(0, ControlKind::Controller(PEDAL), 1.0),
+            point(2880, ControlKind::Controller(PEDAL), 0.0),
+            point(960, ControlKind::Controller(1), 0.25),
+        ];
+    });
+    all(&mut rig, 0, BEAT, true);
+    // A jump to the middle of the held pedal.
+    let at = 2 * BEAT;
+    let events = all(&mut rig, at, at + BLOCK as u64, true);
+    let mut chased = controllers(&events);
+    chased.sort_by_key(|&(_, control, _)| format!("{control:?}"));
+    assert_eq!(
+        chased,
+        [
+            (at, ChannelControl::Controller(1), 0x4000_0000),
+            (at, ChannelControl::Controller(PEDAL), DOWN),
+        ]
+    );
+    // A jump back to the start: nothing was set yet.
+    let events = all(&mut rig, 0, BLOCK as u64, true);
+    assert_eq!(controllers(&events).len(), 1, "{events:?}");
+    // Past the clip's end, where everything was released: no chase.
+    let at = 6 * BEAT;
+    let events = all(&mut rig, at, at + BLOCK as u64, true);
+    assert!(controllers(&events).is_empty(), "{events:?}");
+    // Continuing into the next block is not a jump.
+    let events = all(&mut rig, at + BLOCK as u64, at + 2 * BLOCK as u64, true);
+    assert!(controllers(&events).is_empty());
+}
+
+#[test]
+fn a_ramp_plays_as_events_about_every_five_milliseconds() {
+    let mut rig = rig("cc-ramp");
+    let id = rig.add_midi_clip(0, 2, &[]);
+    midi_of(&mut rig, id, |midi| {
+        let mut start = point(0, ControlKind::Controller(1), 0.0);
+        start.ramp = true;
+        midi.controls = vec![start, point(960, ControlKind::Controller(1), 1.0)];
+    });
+    let events = all(&mut rig, 0, BEAT + 1, true);
+    let values: Vec<(u64, u32)> = controllers(&events)
+        .iter()
+        .map(|&(t, _, v)| (t, v))
+        .collect();
+    // A beat is half a second: about a hundred steps, climbing evenly.
+    assert_eq!(values.first(), Some(&(0, 0)));
+    assert!((98..=102).contains(&values.len()), "{}", values.len());
+    assert!(
+        values
+            .windows(2)
+            .all(|w| w[1].1 > w[0].1 && w[1].0 > w[0].0)
+    );
+    let gaps: Vec<u64> = values.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    assert!(gaps.iter().all(|&g| g == gaps[0]));
+    assert_eq!(gaps[0], 240, "5 ms at 48 kHz");
+    assert_eq!(values.last().unwrap().0, BEAT);
+    assert_eq!(values.last().unwrap().1, DOWN);
+}
+
+#[test]
+fn a_clips_own_loop_puts_each_pass_back_to_where_the_loop_starts() {
+    let mut rig = rig("cc-loop");
+    let id = rig.add_midi_clip(0, 4, &[]);
+    midi_of(&mut rig, id, |midi| {
+        // The loop is the first beat; the pedal goes down inside it and the
+        // wheel is set before it, and neither is let go inside the loop.
+        midi.controls = vec![
+            point(0, ControlKind::Controller(1), 0.5),
+            point(480, ControlKind::Controller(PEDAL), 1.0),
+        ];
+        midi.set_loop(Tick(0), Tick(960));
+        midi.loop_on = true;
+    });
+    let events = all(&mut rig, 0, 4 * BEAT + 1, true);
+    let pedal: Vec<(u64, u32)> = controllers(&events)
+        .iter()
+        .filter(|c| c.1 == ChannelControl::Controller(PEDAL))
+        .map(|&(t, _, v)| (t, v))
+        .collect();
+    // Down half way into each pass; before each later pass it is released
+    // (it had no value at the loop's start), and at the clip's end.
+    assert_eq!(
+        pedal,
+        [
+            (BEAT / 2, DOWN),
+            (BEAT, 0),
+            (BEAT + BEAT / 2, DOWN),
+            (2 * BEAT, 0),
+            (2 * BEAT + BEAT / 2, DOWN),
+            (3 * BEAT, 0),
+            (3 * BEAT + BEAT / 2, DOWN),
+            (4 * BEAT, 0),
+        ]
+    );
+    // The wheel is back at its value at every pass.
+    let wheel = controllers(&events)
+        .iter()
+        .filter(|c| c.1 == ChannelControl::Controller(1))
+        .count();
+    assert_eq!(wheel, 4 + 1, "once a pass, and the release");
+}
+
+#[test]
+fn a_notes_expressions_play_while_it_sounds_and_not_after_a_jump_into_it() {
+    let mut rig = rig("cc-expression");
+    let id = rig.add_midi_clip(0, 4, &[(0, 1920, 60)]);
+    midi_of(&mut rig, id, |midi| {
+        midi.notes[0].expressions = vec![
+            NoteExpression {
+                tick: Tick(0),
+                kind: ExpressionKind::Pressure,
+                value: 0.25,
+                ramp: false,
+            },
+            NoteExpression {
+                tick: Tick(960),
+                kind: ExpressionKind::Timbre,
+                value: 0.75,
+                ramp: false,
+            },
+        ];
+    });
+    let events = all(&mut rig, 0, 3 * BEAT, true);
+    let expressions: Vec<_> = events
+        .iter()
+        .filter_map(|&(t, kind)| match kind {
+            EventKind::Expression {
+                expression, value, ..
+            } => Some((t, expression, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        expressions,
+        [
+            (0, Expression::Pressure, 0.25),
+            (BEAT, Expression::Timbre, 0.75)
+        ]
+    );
+    // The note's on comes before its first expression at the same sample.
+    let on = events
+        .iter()
+        .position(|e| matches!(e.1, EventKind::NoteOn { .. }))
+        .unwrap();
+    let first = events
+        .iter()
+        .position(|e| matches!(e.1, EventKind::Expression { .. }))
+        .unwrap();
+    assert!(on < first);
+    // After a jump the note does not sound, so its expressions don't play.
+    let at = BEAT / 2;
+    all(&mut rig, 0, BLOCK as u64, true);
+    let events = all(&mut rig, at, at + 2 * BEAT, true);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.1, EventKind::Expression { .. })),
+        "{events:?}"
+    );
+}

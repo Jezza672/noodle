@@ -119,6 +119,13 @@ Anything that produces live MIDI: a hardware port or the computer keyboard.
 **MIDI learn**:
 A shortcut on a parameter that adds a MIDI Control node set to the next controller moved and wires it into the parameter, as one undo step. (Planned.)
 
+**Controller point**:
+One value of a controller, pitch bend, channel pressure or program change stored in a MIDI clip, at a tick, on a channel. A point can ramp to the next one. Played out of the track input's `midi` output with the notes; a seek or loop wrap sends each controller's last value, and the clip's end releases them.
+_Avoid_: Automation point (that belongs to an automation lane)
+
+**Note expression**:
+A value of pitch, poly pressure, timbre, volume or pan stored on one note in a MIDI clip, counted from the note's start, that plays only while the note sounds.
+
 **Armed track**:
 A track that Record writes a take to.
 
@@ -136,7 +143,7 @@ _Avoid_: Composite clip
 A time range, separate from the loop, outside which Record writes nothing. (Planned.)
 
 **Quantise (recording)**:
-Snapping the starts of a take's notes to a grid when the take is committed. Monitoring while recording is never quantised.
+Snapping the starts of a take's notes to a grid when the take is committed; a note's expressions move with it and controller points stay where they were played. Monitoring while recording is never quantised.
 
 **Latency compensation**:
 Shifting a take earlier by the output device's latency, so it lines up with what the player heard.

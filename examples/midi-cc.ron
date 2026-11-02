@@ -1,0 +1,71 @@
+// Controllers in a MIDI clip: the sustain pedal and the mod wheel are stored
+// in the clip beside its note and play out of the track input's MIDI output
+// with it. Mono Note turns the track's notes into pitch and gate for a synth,
+// "CC Synth", a group built from ordinary nodes: a saw through a low-pass
+// filter and an envelope through a VCA. Its inputs are pitch, gate, cutoff and
+// sustain. Two MIDI Control nodes read the clip's mod wheel (controller 1) and
+// pedal (controller 64) as signals: the wheel, scaled by a Math node, sets the
+// cutoff, and the pedal holds the gate open, in the group, after the note ends.
+// The clip holds one short note, the pedal down for all of it and up a little
+// after the note ends, and the wheel opening a ramp from closed to open.
+(
+    format: 1,
+    graph: (
+        nodes: {
+            1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.mono", position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.group", config: {"name": "CC Synth"}, position: (x: 600.0, y: 0.0)),
+            4: (type: "noodle.event.control", params: {"control": 1.0, "glide": 0.0}, position: (x: 200.0, y: 200.0)),
+            5: (type: "noodle.util.math", config: {"expr": "a * 3000 + 300"}, position: (x: 400.0, y: 200.0)),
+            6: (type: "noodle.event.control", params: {"control": 64.0, "glide": 0.0}, position: (x: 200.0, y: 400.0)),
+            7: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 850.0, y: 0.0)),
+            8: (type: "noodle.io.output", position: (x: 1050.0, y: 0.0)),
+            10: (type: "noodle.group.input", config: {"ports": "1:pitch\n2:gate\n3:cutoff\n4:sustain"}, parent: Some(3), position: (x: -400.0, y: 0.0)),
+            11: (type: "noodle.util.math", config: {"expr": "max(a, b)"}, parent: Some(3), position: (x: -200.0, y: 150.0)),
+            12: (type: "noodle.osc.saw", parent: Some(3), position: (x: -200.0, y: -100.0)),
+            13: (type: "noodle.filter.svf", params: {"resonance": 0.3}, parent: Some(3), position: (x: 0.0, y: -100.0)),
+            14: (type: "noodle.mod.adsr", params: {"attack": 0.005, "decay": 0.05, "sustain": 0.8, "release": 0.04}, parent: Some(3), position: (x: 0.0, y: 150.0)),
+            15: (type: "noodle.util.vca", parent: Some(3), position: (x: 250.0, y: 0.0)),
+            16: (type: "noodle.group.output", config: {"ports": "1:out"}, parent: Some(3), position: (x: 450.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "midi"), to: (node: 2, port: "in")),
+            (from: (node: 1, port: "midi"), to: (node: 4, port: "in")),
+            (from: (node: 1, port: "midi"), to: (node: 6, port: "in")),
+            (from: (node: 2, port: "pitch"), to: (node: 3, port: "pitch")),
+            (from: (node: 2, port: "gate"), to: (node: 3, port: "gate")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "a")),
+            (from: (node: 5, port: "out"), to: (node: 3, port: "cutoff")),
+            (from: (node: 6, port: "out"), to: (node: 3, port: "sustain")),
+            (from: (node: 3, port: "out"), to: (node: 7, port: "in")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in")),
+            (from: (node: 10, port: "p1"), to: (node: 12, port: "frequency")),
+            (from: (node: 10, port: "p2"), to: (node: 11, port: "a")),
+            (from: (node: 10, port: "p4"), to: (node: 11, port: "b")),
+            (from: (node: 11, port: "out"), to: (node: 14, port: "gate")),
+            (from: (node: 10, port: "p3"), to: (node: 13, port: "cutoff")),
+            (from: (node: 12, port: "out"), to: (node: 13, port: "in")),
+            (from: (node: 13, port: "low"), to: (node: 15, port: "in")),
+            (from: (node: 14, port: "out"), to: (node: 15, port: "level")),
+            (from: (node: 15, port: "out"), to: (node: 16, port: "p1")),
+        ],
+    ),
+    clips: {
+        1: (
+            node: 1,
+            start: 0,
+            content: Midi((
+                length: 3840,
+                notes: [
+                    (start: 0, length: 40, key: 57, velocity: 0.9),
+                ],
+                controls: [
+                    (tick: 0, channel: 0, kind: Controller(64), value: 1.0),
+                    (tick: 160, channel: 0, kind: Controller(64), value: 0.0),
+                    (tick: 0, channel: 0, kind: Controller(1), value: 0.0, ramp: true),
+                    (tick: 200, channel: 0, kind: Controller(1), value: 1.0),
+                ],
+            )),
+        ),
+    },
+)
