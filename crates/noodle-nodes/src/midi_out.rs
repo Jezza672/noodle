@@ -122,7 +122,7 @@ impl Node for MidiOutNode {
         let Some(heard) = self.out.sender.heard_at() else {
             // Nothing drives the engine in real time, so there is no time to
             // send at. Keep the transport in mind for when something does.
-            self.out.playing = ctx.transport.playing;
+            self.out.playing = Some(ctx.transport.playing);
             return;
         };
         self.out.block(
@@ -159,8 +159,12 @@ struct Settings {
 /// What the node does with a block, apart from reading its ports.
 struct Out {
     sender: MidiOutSender,
-    /// Whether the transport was playing in the previous block.
-    playing: bool,
+    /// Whether the transport was playing in the previous block; `None` before
+    /// the first, so a node built during playback doesn't announce a start.
+    playing: Option<bool>,
+    /// Where the previous block's end was expected to be, in ticks, to notice
+    /// a seek or a loop wrap.
+    expected: Option<f64>,
     /// The notes started and not yet ended: id, channel and key.
     held: Vec<(NoteId, u8, u8)>,
 }
@@ -169,7 +173,8 @@ impl Out {
     fn new(sender: MidiOutSender) -> Self {
         Self {
             sender,
-            playing: false,
+            playing: None,
+            expected: None,
             held: Vec::with_capacity(HELD),
         }
     }
@@ -189,27 +194,34 @@ impl Out {
             (base + (f64::from(frame) * 1e6 / f64::from(sample_rate)) as i64).max(0) as u64
         };
 
-        if transport.playing && !self.playing {
+        let was_playing = self.playing.unwrap_or(transport.playing);
+        let ticks_per_frame = transport.bpm / 60.0 * 960.0 / f64::from(sample_rate);
+        let jumped = self
+            .expected
+            .is_some_and(|e| (e - transport.tick).abs() > TICKS_PER_CLOCK);
+        if transport.playing && !was_playing {
             if settings.start_stop {
                 if transport.tick < 0.5 {
                     self.send(at(0), [0xFA, 0, 0]);
                 } else {
-                    // Song position counts sixteenths, in 14 bits.
-                    let position = ((transport.tick / 240.0) as u32).min(0x3FFF);
-                    self.send(
-                        at(0),
-                        [0xF2, (position & 0x7F) as u8, (position >> 7) as u8],
-                    );
+                    self.send_position(at(0), transport.tick);
                     self.send(at(0), [0xFB, 0, 0]);
                 }
             }
-        } else if !transport.playing && self.playing {
+        } else if transport.playing && jumped && settings.start_stop {
+            // A seek or loop wrap: tell the device where the song now is.
+            self.send_position(at(0), transport.tick);
+            self.send(at(0), [0xFB, 0, 0]);
+        } else if !transport.playing && was_playing {
             self.release_all(at(0));
             if settings.start_stop {
                 self.send(at(0), [0xFC, 0, 0]);
             }
         }
-        self.playing = transport.playing;
+        self.playing = Some(transport.playing);
+        self.expected = transport
+            .playing
+            .then_some(transport.tick + frames as f64 * ticks_per_frame);
 
         for event in events {
             if let Some(bytes) = self.translate(&event.kind) {
@@ -218,7 +230,6 @@ impl Out {
         }
 
         if settings.clock && transport.playing && transport.bpm > 0.0 {
-            let ticks_per_frame = transport.bpm / 60.0 * 960.0 / f64::from(sample_rate);
             // The frame a tick falls on is the first at or after it, with a
             // little give so a tick on a block boundary is sent once.
             let frame_of = |tick: f64| ((tick - transport.tick) / ticks_per_frame - 1e-6).ceil();
@@ -232,6 +243,12 @@ impl Out {
                 n += 1.0;
             }
         }
+    }
+
+    /// Song Position Pointer, which counts sixteenths in 14 bits.
+    fn send_position(&mut self, due: u64, tick: f64) {
+        let position = ((tick / 240.0) as u32).min(0x3FFF);
+        self.send(due, [0xF2, (position & 0x7F) as u8, (position >> 7) as u8]);
     }
 
     fn send(&mut self, due: u64, bytes: [u8; 3]) {
@@ -467,6 +484,11 @@ mod tests {
         };
         // From the beginning: Start.
         let (mut node, mut ring) = out();
+        let idle = Transport {
+            playing: false,
+            ..playing_at(0)
+        };
+        node.block(&idle, RATE, 64, &[], 400, both());
         node.block(&playing_at(0), RATE, 64, &[], 500, both());
         assert_eq!(drain(&mut ring), [(500, vec![0xFA])]);
         // Playing on sends nothing more.
@@ -492,11 +514,30 @@ mod tests {
             drain(&mut ring),
             [(1_000, vec![0xF2, 32, 0]), (1_000, vec![0xFB])]
         );
+        // A seek while playing sends the new position and Continue.
+        node.block(&later, RATE, 64, &[], 1_100, both());
+        drain(&mut ring);
+        node.block(&playing_at(8 * 48_000), RATE, 64, &[], 1_200, both());
+        assert_eq!(
+            drain(&mut ring),
+            [(1_200, vec![0xF2, 64, 0]), (1_200, vec![0xFB])]
+        );
         // With the toggle off, none of it.
         let (mut quiet, mut quiet_ring) = out();
         quiet.block(&playing_at(0), RATE, 64, &[], 0, off());
         quiet.block(&stopped, RATE, 64, &[], 0, off());
         assert!(drain(&mut quiet_ring).is_empty());
+    }
+
+    #[test]
+    fn a_node_built_during_playback_does_not_announce_a_start() {
+        let (mut node, mut ring) = out();
+        let both = Settings {
+            start_stop: true,
+            ..off()
+        };
+        node.block(&playing_at(96_000), RATE, 64, &[], 0, both);
+        assert!(drain(&mut ring).is_empty());
     }
 
     #[test]
