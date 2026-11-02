@@ -80,7 +80,7 @@ impl Shared {
         Self {
             blocking,
             preview,
-            latest: Mutex::new((0, Arc::new(Vec::new()), Arc::new(Vec::new()))),
+            latest: Mutex::new((0, Arc::new(Vec::new()), Arc::new(Notes::default()))),
             failed: Mutex::new(Vec::new()),
             position: AtomicU64::new(0),
             loop_start: AtomicU64::new(0),
@@ -346,7 +346,7 @@ impl Hub {
             let message = ToNode::Schedule(
                 version,
                 Box::new(schedule.to_vec()),
-                Box::new(notes.to_vec()),
+                Box::new(Notes::clone(&notes)),
             );
             if to_node.push(message).is_ok() {
                 *sent = Some(version);

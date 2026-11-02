@@ -40,7 +40,7 @@ use hub::{
 };
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
-    ScheduledNote, WarpMap, active_at,
+    ScheduledControl, ScheduledNote, WarpMap, active_at,
 };
 use schedule::{Segments, same_sound};
 pub use stretch::{Source as StretchSource, Stretcher};
@@ -57,6 +57,9 @@ const MIDI: usize = 0;
 /// the engine mutes the audio at the track's group output.
 const MUTE_IN: usize = 0;
 const MUTE_OUT: usize = 1;
+/// The most controllers a jump catches up; the newest are kept.
+const MAX_CHASED: usize = 64;
+
 /// The most MIDI notes one track sounds at once; more are dropped.
 const MAX_SOUNDING: usize = 128;
 /// The note IDs of keys auditioned from the piano roll; see
@@ -257,7 +260,22 @@ impl NodeType for TrackInput {
                         key.i64(note.start.0)
                             .i64(note.length.0)
                             .u64(u64::from(note.key))
-                            .f32(note.velocity);
+                            .f32(note.velocity)
+                            .u64(note.expressions.len() as u64);
+                        for e in &note.expressions {
+                            key.i64(e.tick.0)
+                                .str(&format!("{:?}", e.kind))
+                                .f32(e.value)
+                                .bool(e.ramp);
+                        }
+                    }
+                    key.u64(midi.controls.len() as u64);
+                    for c in &midi.controls {
+                        key.i64(c.tick.0)
+                            .u64(u64::from(c.channel))
+                            .str(&format!("{:?}", c.kind))
+                            .f32(c.value)
+                            .bool(c.ramp);
                     }
                 }
             }
@@ -1234,7 +1252,7 @@ impl TrackInputNode {
         let notes = self.notes.take();
         if self.recheck {
             self.recheck = false;
-            let current = notes.as_deref().map_or(&[][..], Vec::as_slice);
+            let current = notes.as_deref().map_or(&[][..], |n| n.notes.as_slice());
             self.sounding.retain_mut(|s| {
                 let lo = current.partition_point(|note| note.start < s.start);
                 let found = current[lo..]
@@ -1251,7 +1269,7 @@ impl TrackInputNode {
             });
         }
         if playing {
-            let current = notes.as_deref().map_or(&[][..], Vec::as_slice);
+            let current = notes.as_deref().map_or(&[][..], |n| n.notes.as_slice());
             let mut next = current.partition_point(|note| note.start < position);
             loop {
                 let on = current.get(next).filter(|note| note.start < block_end);
@@ -1282,7 +1300,62 @@ impl TrackInputNode {
                 }
             }
         }
+        if playing {
+            let controls = notes.as_deref().map_or(&[][..], |n| n.controls.as_slice());
+            self.play_controls(controls, position, n, continuing, out);
+        }
         self.notes = notes;
+    }
+
+    /// Writes the controller and expression events of the block. After a
+    /// jump (a seek, or the transport's loop wrapping) each controller is
+    /// first put at the value it last had before the playhead, so a held
+    /// pedal stays held; one whose clip has ended since is left alone.
+    fn play_controls(
+        &mut self,
+        controls: &[ScheduledControl],
+        position: u64,
+        n: usize,
+        continuing: bool,
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) {
+        let first = controls.partition_point(|c| c.time < position);
+        if !continuing {
+            // The newest event of each controller before the playhead, found
+            // by looking back until every controller seen is accounted for.
+            let mut seen = [(0u8, 0u16); MAX_CHASED];
+            let mut count = 0;
+            for c in controls[..first].iter().rev() {
+                let Some(lane) = c.lane else { continue };
+                if seen[..count].contains(&lane) {
+                    continue;
+                }
+                if count == MAX_CHASED {
+                    break;
+                }
+                seen[count] = lane;
+                count += 1;
+                if !c.release {
+                    let _ = out.insert(Event {
+                        time: 0,
+                        kind: c.kind,
+                    });
+                }
+            }
+        }
+        let block_end = position + n as u64;
+        for c in controls[first..].iter().take_while(|c| c.time < block_end) {
+            // A note's expression only plays while the note does.
+            if let EventKind::Expression { note, .. } = c.kind
+                && !self.sounding.iter().any(|s| s.id == note.0)
+            {
+                continue;
+            }
+            let _ = out.insert(Event {
+                time: (c.time - position) as u32,
+                kind: c.kind,
+            });
+        }
     }
 
     /// Starts and ends the notes the piano roll's keyboard holds. Their IDs

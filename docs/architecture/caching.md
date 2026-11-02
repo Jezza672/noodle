@@ -66,8 +66,9 @@ key(output) = hash(key(node), output index)
   window, gain, fades, gain points and crossfade, the `extent` of a section
   dragged out past its window, and, when the clip is warped, the warp's mode,
   tempo, markers and `loop_region`, plus whether the warp preview is on
-  (while it is, warped clips play as Repitch). For a MIDI clip: its length
-  and notes, and `loop_on`, `loop_start` and `loop_len`.
+  (while it is, warped clips play as Repitch). For a MIDI clip: its length,
+  notes (with their expressions), controller points, and `loop_on`,
+  `loop_start` and `loop_len`.
 - **Plugin latency** is not keyed separately. It is read from an instance,
   which analysis must not build, and it is a function of what is keyed already:
   the plugin file's size and time, its saved state (in the config), the sample
