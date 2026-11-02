@@ -223,6 +223,19 @@ A switch on a section that silences it without removing it, so it can be brought
 Clips on different tracks grouped (a clip group in the project) so that moving, trimming, splitting, looping, warping or deleting one does the same to all. They share one warp. Gain, fades and mute stay per clip. Recording several armed tracks in one take links the new clips, and Split to stems links the source with its stems and residual.
 _Avoid_: Edit group
 
+**Take folder**:
+An audio clip that holds several takes of the same stretch of music and a comp. Moving, splitting, copying or linking it carries every take. A loop recording makes one: each cycle is a take. The takes are windows into one audio file and share one warp. Flattening turns it into plain clips.
+_Avoid_: Take group, comp clip
+
+**Comp**:
+The list of spans in a take folder that says which take plays from where. Joins between spans crossfade (10 ms unless set).
+
+**Punch range**:
+A span of the timeline, separate from the loop, that a recording keeps: it starts at the punch-in and ends by itself at the punch-out. Saved with the project.
+
+**Count-in and pre-roll**:
+Bars of metronome before a recording starts (0, 1 or 2), and bars of the project played before the punch-in. Both are app preferences.
+
 **Stem warp**:
 Warping a clip by warping each stem and the residual with the mode that suits it, then adding them back together.
 

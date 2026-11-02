@@ -104,6 +104,10 @@ struct Click {
     /// Where the next block should start if time is going on unbroken. A
     /// different position means a seek or a loop wrap.
     next_position: Option<u64>,
+    /// While counting in with the transport stopped: the frames clicked so far
+    /// and the beat that last started a click.
+    free_frames: u64,
+    free_beat: Option<i64>,
     /// A click that's sounding: its oscillator phase, frequency and envelope.
     phase: f32,
     hz: f32,
@@ -122,10 +126,11 @@ impl Node for Click {
         }
         self.next_position = playing.then(|| transport.position + ctx.frames as u64);
 
-        let on = io.inputs[ON]
-            .lane(0, 0)
-            .first()
-            .is_some_and(|&on| on >= 0.5);
+        let on = transport.count_in
+            || io.inputs[ON]
+                .lane(0, 0)
+                .first()
+                .is_some_and(|&on| on >= 0.5);
         let db = io.inputs[LEVEL]
             .lane(0, 0)
             .first()
@@ -161,12 +166,28 @@ impl Node for Click {
         }
         let beat_tick = origin + beat as f64 * beat_ticks;
         let starts = playing && beat_tick < end_tick - EPSILON;
-        let start = (starts && on).then(|| {
+        let mut start = (starts && on).then(|| {
             let frame = ((beat_tick - transport.tick).max(0.0) * frames_per_tick) as usize;
             (frame.min(ctx.frames.saturating_sub(1)), beat)
         });
         if starts {
             self.last_tick = Some(beat_tick);
+        }
+        // A count-in with the transport stopped has no ticks to follow: it
+        // clicks every beat from its own count, starting on a bar.
+        if !playing && transport.count_in {
+            let per_beat = 60.0 * f64::from(ctx.sample_rate) / transport.bpm.max(1.0) * 4.0
+                / f64::from(transport.signature.denominator.max(1));
+            let beat = (self.free_frames as f64 / per_beat - EPSILON).ceil() as i64;
+            let at = beat as f64 * per_beat - self.free_frames as f64;
+            if self.free_beat != Some(beat) && at < ctx.frames as f64 {
+                start = Some((at.max(0.0) as usize, beat));
+                self.free_beat = Some(beat);
+            }
+            self.free_frames += ctx.frames as u64;
+        } else {
+            self.free_frames = 0;
+            self.free_beat = None;
         }
 
         let decay = (-1.0 / (DECAY_SECONDS * ctx.sample_rate)).exp();
@@ -196,6 +217,8 @@ impl Node for Click {
     fn reset(&mut self) {
         self.last_tick = None;
         self.next_position = None;
+        self.free_frames = 0;
+        self.free_beat = None;
         self.envelope = 0.0;
     }
 }
@@ -219,6 +242,7 @@ mod tests {
         signature_start: f64,
         accent: bool,
         pitch: f32,
+        count_in: bool,
     }
 
     impl Rig {
@@ -231,6 +255,7 @@ mod tests {
                 signature_start: 0.0,
                 accent: true,
                 pitch: BEAT_HZ,
+                count_in: false,
             }
         }
 
@@ -247,6 +272,7 @@ mod tests {
                     bpm: 120.0,
                     signature: self.signature,
                     signature_start: self.signature_start,
+                    count_in: self.count_in,
                     ..Transport::default()
                 },
             };
@@ -302,6 +328,42 @@ mod tests {
 
     fn peak(samples: &[f32]) -> f32 {
         samples.iter().fold(0.0, |m, x| m.max(x.abs()))
+    }
+
+    #[test]
+    fn a_count_in_clicks_even_when_the_metronome_is_off() {
+        let mut rig = Rig::new();
+        rig.on = false;
+        let silent = rig.run(BEAT_FRAMES * 2, 512);
+        assert!(peak(&silent) < 1e-6);
+        rig.count_in = true;
+        let samples = rig.run(BEAT_FRAMES * 2, 512);
+        assert_eq!(onsets(&samples).len(), 2);
+    }
+
+    #[test]
+    fn a_count_in_with_the_transport_stopped_clicks_every_beat_from_the_bar() {
+        for block in [64, 512, 7_777] {
+            let mut rig = Rig::new();
+            rig.on = false;
+            rig.count_in = true;
+            let mut samples = Vec::new();
+            while samples.len() < BEAT_FRAMES * 5 {
+                samples.extend(rig.block(block, false));
+            }
+            samples.truncate(BEAT_FRAMES * 5);
+            let clicks = onsets(&samples);
+            assert_eq!(clicks.len(), 5, "block {block}: {clicks:?}");
+            for (n, &at) in clicks.iter().enumerate() {
+                assert!(at.abs_diff(n * BEAT_FRAMES) <= 8, "{clicks:?}");
+            }
+            // The first of a bar of four is the accent.
+            let beat = |n: usize| peak(&samples[n * BEAT_FRAMES..(n + 1) * BEAT_FRAMES]);
+            assert!(beat(0) > beat(1) * 1.2 && beat(4) > beat(3) * 1.2);
+        }
+        // Without the count-in a stopped transport is silent.
+        let mut rig = Rig::new();
+        assert!(peak(&rig.block(BEAT_FRAMES, false)) < 1e-6);
     }
 
     #[test]

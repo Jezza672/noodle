@@ -633,10 +633,174 @@ pub struct AudioClip {
     /// brought back; Split to stems mutes its source this way.
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,
+    /// The takes behind this section, when it is a take folder (see
+    /// [`TakeFolder`]). `source`, `offset` and `length` then give the window
+    /// every take is cut to, in the coordinates of the first take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takes: Option<TakeFolder>,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Several recordings of the same stretch of music, and the comp that picks
+/// which one plays where. It is the `takes` of an [`AudioClip`], so a take
+/// folder is one clip: moving, splitting, copying and linking it carries every
+/// take, and the takes share the clip's warp.
+///
+/// The takes are windows into the clip's one audio file (a loop recording
+/// writes a single file and each cycle is a take). The clip's `offset` and
+/// `length` are counted in the *first coordinates*: the file's frames as the
+/// first take sees them. Take `k` plays the file `delta` frames later than
+/// that for the same moment of the music, so trimming and splitting the clip
+/// move every take with it and need no care.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TakeFolder {
+    pub takes: Vec<Take>,
+    /// The comp: which take plays from each point on. Sorted by `at`; the
+    /// first span also covers everything before it.
+    pub comp: Vec<CompSpan>,
+}
+
+/// One take of a [`TakeFolder`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Take {
+    /// How many frames later in the file this take plays what the first take
+    /// plays at the same moment. A loop recording's take `k` is `k` cycles
+    /// on.
+    pub delta: u64,
+}
+
+/// A stretch of a comp: from `at` (in the clip's first coordinates) until the
+/// next span, the take `take` plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompSpan {
+    pub at: u64,
+    pub take: usize,
+    /// The crossfade at the join into this span (`None` for the first span).
+    /// `None` gives the default of [`DEFAULT_COMP_FADE_SECONDS`]. The
+    /// before and after are in ticks, as for [`AudioClip::crossfade`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossfade: Option<Crossfade>,
+}
+
+/// How long a comp join crossfades unless it has been set: half of this
+/// either side of the join.
+pub const DEFAULT_COMP_FADE_SECONDS: f64 = 0.010;
+
+impl TakeFolder {
+    /// A folder of `takes` that plays `active` throughout.
+    pub fn new(takes: Vec<Take>, active: usize) -> Self {
+        Self {
+            takes,
+            comp: vec![CompSpan {
+                at: 0,
+                take: active,
+                crossfade: None,
+            }],
+        }
+    }
+
+    /// The span that plays at `at`.
+    pub fn span_at(&self, at: u64) -> usize {
+        self.comp
+            .partition_point(|span| span.at <= at)
+            .saturating_sub(1)
+    }
+
+    /// Where span `index` ends, `None` if it runs on for good.
+    pub fn span_end(&self, index: usize) -> Option<u64> {
+        self.comp.get(index + 1).map(|next| next.at)
+    }
+
+    /// Makes `take` play from `from` to `to` (in the clip's first
+    /// coordinates), leaving the rest of the comp as it is. The new joins get
+    /// the default crossfade; spans left side by side with the same take
+    /// become one. Does nothing if the range is empty or `take` doesn't exist.
+    pub fn swipe(&mut self, from: u64, to: u64, take: usize) {
+        if from >= to || take >= self.takes.len() {
+            return;
+        }
+        // The comp as stretches: start, end, take, the join into it.
+        let mut parts: Vec<(u64, u64, usize, Option<Crossfade>)> = Vec::new();
+        for (i, span) in self.comp.iter().enumerate() {
+            let start = if i == 0 { 0 } else { span.at };
+            let end = self.span_end(i).unwrap_or(u64::MAX);
+            parts.push((start, end, span.take, span.crossfade));
+        }
+        let mut out: Vec<(u64, u64, usize, Option<Crossfade>)> = Vec::new();
+        for (start, end, was, join) in parts {
+            if end <= from || start >= to {
+                out.push((start, end, was, join));
+                continue;
+            }
+            if start < from {
+                out.push((start, from, was, join));
+            }
+            if end > to {
+                out.push((to, end, was, None));
+            }
+        }
+        let at = out.partition_point(|part| part.0 < from);
+        out.insert(at, (from, to, take, None));
+        // The first span has no join into it, and equal neighbours merge.
+        let mut comp: Vec<CompSpan> = Vec::new();
+        for (start, _, take, join) in out {
+            if comp.last().is_some_and(|last| last.take == take) {
+                continue;
+            }
+            comp.push(CompSpan {
+                at: start,
+                take,
+                crossfade: if comp.is_empty() { None } else { join },
+            });
+        }
+        if let Some(first) = comp.first_mut() {
+            first.at = 0;
+        }
+        self.comp = comp;
+    }
+
+    /// Sets the crossfade of the join into span `index` (not the first).
+    pub fn set_join(&mut self, index: usize, crossfade: Option<Crossfade>) {
+        if index > 0
+            && let Some(span) = self.comp.get_mut(index)
+        {
+            span.crossfade = crossfade;
+        }
+    }
+
+    /// The takes the comp plays, in order of first use, without repeats.
+    pub fn used(&self) -> Vec<usize> {
+        let mut used = Vec::new();
+        for span in &self.comp {
+            if !used.contains(&span.take) {
+                used.push(span.take);
+            }
+        }
+        used
+    }
+
+    /// Why this folder can't be played, if it can't.
+    fn problem(&self) -> Option<&'static str> {
+        if self.takes.is_empty() {
+            Some("its take folder has no takes")
+        } else if self.comp.is_empty() {
+            Some("its comp is empty")
+        } else if self.comp.iter().any(|span| span.take >= self.takes.len()) {
+            Some("its comp names a take that isn't there")
+        } else if self.comp.windows(2).any(|w| w[1].at <= w[0].at) {
+            Some("its comp is out of order")
+        } else if self.comp.iter().any(|span| {
+            span.crossfade
+                .is_some_and(|x| x.before < Tick::ZERO || x.after < Tick::ZERO)
+        }) {
+            Some("a join in its comp has a negative crossfade")
+        } else {
+            None
+        }
+    }
 }
 
 /// One control point of a clip's gain envelope.
@@ -725,6 +889,7 @@ impl AudioClip {
             warp: None,
             extent: None,
             muted: false,
+            takes: None,
         }
     }
 }
@@ -850,7 +1015,7 @@ impl AudioClip {
         {
             Some("its crossfade is negative")
         } else {
-            None
+            self.takes.as_ref().and_then(TakeFolder::problem)
         }
     }
 }
@@ -958,6 +1123,88 @@ mod tests {
             !flat.contains("gain_points") && !flat.contains("crossfade"),
             "{flat}"
         );
+    }
+
+    fn folder(takes: usize) -> TakeFolder {
+        TakeFolder::new(
+            (0..takes as u64)
+                .map(|k| Take { delta: k * 1000 })
+                .collect(),
+            0,
+        )
+    }
+
+    fn comp(folder: &TakeFolder) -> Vec<(u64, usize)> {
+        folder.comp.iter().map(|s| (s.at, s.take)).collect()
+    }
+
+    #[test]
+    fn swiping_a_range_cuts_the_spans_it_crosses_and_merges_equal_neighbours() {
+        let mut f = folder(3);
+        f.swipe(100, 200, 1);
+        assert_eq!(comp(&f), [(0, 0), (100, 1), (200, 0)]);
+        // Across the join: the later span is shortened, the earlier one cut.
+        f.swipe(150, 400, 2);
+        assert_eq!(comp(&f), [(0, 0), (100, 1), (150, 2), (400, 0)]);
+        // Covering a whole span removes it, and equal neighbours merge.
+        f.swipe(90, 410, 2);
+        assert_eq!(comp(&f), [(0, 0), (90, 2), (410, 0)]);
+        f.swipe(0, 90, 2);
+        assert_eq!(comp(&f), [(0, 2), (410, 0)]);
+        assert_eq!(f.used(), [2, 0]);
+        assert_eq!(f.span_at(409), 0);
+        assert_eq!(f.span_at(410), 1);
+        // Nothing to do for an empty range or a take that isn't there.
+        let before = f.clone();
+        f.swipe(5, 5, 1);
+        f.swipe(5, 9, 7);
+        assert_eq!(f, before);
+    }
+
+    #[test]
+    fn a_swipe_keeps_the_crossfades_of_the_joins_it_leaves_alone() {
+        let mut f = folder(2);
+        f.swipe(100, 200, 1);
+        let x = Crossfade {
+            before: Tick(3),
+            after: Tick(4),
+        };
+        f.set_join(2, Some(x));
+        f.swipe(300, 400, 1);
+        assert_eq!(f.comp[2].crossfade, Some(x));
+        assert_eq!(f.comp[1].crossfade, None);
+        // Joins are never on the first span.
+        f.set_join(0, Some(x));
+        assert_eq!(f.comp[0].crossfade, None);
+    }
+
+    #[test]
+    fn a_broken_folder_is_a_problem() {
+        let mut audio = AudioClip::new("a.wav", 1000);
+        audio.takes = Some(folder(2));
+        assert!(audio.problem().is_none());
+        audio.takes.as_mut().unwrap().comp[0].take = 5;
+        assert!(audio.problem().is_some());
+        audio.takes = Some(TakeFolder {
+            takes: vec![Take { delta: 0 }],
+            comp: vec![],
+        });
+        assert!(audio.problem().is_some());
+        let mut f = folder(2);
+        f.swipe(10, 20, 1);
+        f.comp[2].at = 5;
+        assert!(f.problem().is_some());
+    }
+
+    #[test]
+    fn a_take_folder_survives_a_round_trip_and_a_plain_clip_writes_none() {
+        let mut audio = AudioClip::new("a.wav", 1000);
+        let mut f = folder(3);
+        f.swipe(10, 20, 2);
+        audio.takes = Some(f);
+        let text = ron::to_string(&audio).unwrap();
+        assert_eq!(ron::from_str::<AudioClip>(&text).unwrap(), audio);
+        assert!(!ron::to_string(&clip_with(&[])).unwrap().contains("takes"));
     }
 
     fn looping(length: i64, from: i64, len: i64, notes: &[(i64, i64, u8)]) -> MidiClip {

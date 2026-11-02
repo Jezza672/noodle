@@ -135,6 +135,19 @@ The **Project** is the single source of truth. It holds one global graph:
     half its clip; the two fade equal-power across the whole stretch and the
     node plays both at once (`ScheduledClip::under`). A crossfade whose clips
     are no longer butted is kept but ignored.
+  - **Take folders.** An `AudioClip` with `takes: Some(TakeFolder)` holds
+    several takes of one stretch of music and a comp. The takes are windows
+    into the clip's one file: `offset` and `length` are in the first take's
+    frames, take `k` plays `Take::delta` frames later for the same moment, and
+    the comp is a sorted list of `CompSpan { at, take, crossfade }` in the same
+    coordinates (the first also covers everything before it). Because the
+    window and the takes move together, trimming, splitting, copying and
+    linking the clip need no folder-specific code. They share the clip's one
+    warp. The scheduler cuts the folder into one piece per span
+    (`lay_out_folder`), each joined to the last by a crossfade (the span's, or
+    10 ms), and the takes and comp are in the clip's cache key. Comp edits are
+    `SetClip` commands (`TakeFolder::swipe`). Flattening replaces the folder
+    with plain clips, one per span.
   - **Mixers are named** by their `name` config (`spare::mixer_name`); the
     default mixer, the one Add track feeds, is "Main". F2 in the graph and a
     text field in the mixer view rename one.
