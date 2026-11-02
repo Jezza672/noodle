@@ -20,12 +20,22 @@
 //! MIDI clips have.
 
 use noodle_engine::{
-    ChannelControl, Config, Context, Event, EventKind, Expression, Instance, Io, Layout, Node,
-    NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, Setup,
+    ChannelControl, Config, ConfigInfo, Context, Event, EventKind, Expression, Instance, Io,
+    Layout, Node, NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Ports, Setup,
 };
 use noodle_io::{Attribute, Midi2, MidiBus, MidiReceiver, Packet, TimedPacket, now_micros};
 
 pub const MIDI_IN_ID: &str = "noodle.event.midi_in";
+
+/// The config key of the MIDI input port a MIDI In or MIDI Control node
+/// listens to: a port's name, or empty (or `*`) for every open port. Named
+/// like an Output node names its device. It is config because a MIDI Control
+/// with a port is a source of its own, and one without takes its events from
+/// a wire.
+pub const MIDI_PORT_KEY: &str = "port";
+
+/// The port a MIDI In or MIDI Control node listens to.
+pub static MIDI_PORT: ConfigInfo = ConfigInfo::text(MIDI_PORT_KEY, "Port");
 
 #[derive(Ports)]
 #[ports(nondeterministic)]
@@ -98,13 +108,18 @@ impl NodeType for MidiIn {
         &INFO
     }
 
+    fn config(&self) -> &[ConfigInfo] {
+        std::slice::from_ref(&MIDI_PORT)
+    }
+
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(MidiInPorts::layout())
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        let port = MIDI_PORT.get_text(setup.config);
         Ok(Instance::realtime(MidiInNode {
-            live: LiveMidi::new(&self.bus, self.clock, NOTE_ID_BASE),
+            live: LiveMidi::new(&self.bus, &port, self.clock, NOTE_ID_BASE),
         }))
     }
 }
@@ -144,10 +159,10 @@ pub(crate) struct LiveMidi {
 }
 
 impl LiveMidi {
-    pub fn new(bus: &MidiBus, clock: Option<Clock>, id_base: u32) -> Self {
+    pub fn new(bus: &MidiBus, port: &str, clock: Option<Clock>, id_base: u32) -> Self {
         Self {
             bus: bus.clone(),
-            input: bus.subscribe(),
+            input: bus.subscribe_port(port),
             clock,
             id_base,
             pending: None,

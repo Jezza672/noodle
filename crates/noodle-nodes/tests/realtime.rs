@@ -1939,6 +1939,75 @@ fn midi_control_never_allocates_on_midi1_and_midi2_controllers() {
 }
 
 #[test]
+fn a_midi_control_on_a_port_never_allocates_with_relative_encoders_and_pickup() {
+    use noodle_core::Value;
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (absolute, relative, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    let on_port = |port: &str| {
+        noodle_core::Config::new().with(noodle_nodes::MIDI_PORT_KEY, Value::Text(port.into()))
+    };
+    for (id, node) in [
+        (
+            absolute,
+            Node::new(noodle_nodes::MIDI_CONTROL_ID)
+                .with_config(on_port("Keys"))
+                .with_param("control", 74.0)
+                .with_param("pickup", 1.0)
+                .with_param("start", 0.5)
+                .with_param("min", 20.0)
+                .with_param("max", 20_000.0)
+                .with_param("taper", 1.0),
+        ),
+        (
+            relative,
+            Node::new(noodle_nodes::MIDI_CONTROL_ID)
+                .with_config(on_port("*"))
+                .with_param("control", 16.0)
+                .with_param("encoder", 1.0),
+        ),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    for from in [absolute, relative] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, "out"),
+            to: Endpoint::new(output, "in"),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    for round in 0..16u32 {
+        library
+            .midi
+            .send_from("Keys", [0xB0, 74, (round * 8) as u8 & 127]);
+        library
+            .midi
+            .send_from("Pads", [0xB0, 16, if round % 2 == 0 { 1 } else { 127 }]);
+        transport.seek(noodle_core::Tick(480 * i64::from(round)));
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}
+
+#[test]
 fn a_script_with_loops_arrays_and_events_never_allocates() {
     let mut registry = Registry::with_builtins();
     let library = noodle_nodes::register_library(&mut registry);

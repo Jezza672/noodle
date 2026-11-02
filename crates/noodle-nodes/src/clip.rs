@@ -293,7 +293,7 @@ impl NodeType for TrackInput {
         node.live = self
             .midi
             .as_ref()
-            .map(|bus| LiveMidi::new(bus, None, LIVE_ID));
+            .map(|bus| LiveMidi::new(bus, "", None, LIVE_ID));
         Ok(Instance::realtime(node))
     }
 }
