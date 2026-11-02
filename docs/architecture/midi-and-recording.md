@@ -1,9 +1,37 @@
 # MIDI input, MIDI clips and recording
 
-A MIDI port is chosen in the audio settings dialog (`AudioConfig::midi_input`,
-a port name, saved with the other device preferences). The choice belongs to
-the app, not the project, like the audio device, and changing it doesn't
-restart the audio.
+MIDI ports are chosen in the audio settings dialog (`AudioConfig::midi_inputs`,
+a list of port names with a checkbox each, saved with the other device
+preferences). The choice belongs to the app, not the project, like the audio
+device, and changing it doesn't restart the audio. The session opens one
+`MidiConnection` per chosen port and watches each for unplugging and
+returning. A port is opened or closed alone; the notes a port held are
+released on its own messages only (`all_notes_off_from`).
+
+- **Ports on the bus.** A connection sends what it hears with its name
+  (`MidiBus::send_from`). A subscriber names the port it wants
+  (`subscribe_port`, matched with `same_port`, so ALSA's changing numbers
+  don't matter); empty or `*` (`ALL_INPUTS`) hears every port, and what has no
+  port (the computer keyboard) goes to those only. `MIDI In` and `MIDI
+  Control` name their port in a `port` config, as an Output node names its
+  device. `MidiBus::tap` is the listener MIDI learn uses: every message with
+  its port, read on the UI thread.
+- **`MIDI Control`.** Its `port` config is empty by default, which reads the
+  `in` events wire only, as before; a port name or `*` makes it listen to the
+  bus as well (it then runs every block and is nondeterministic for caching).
+  Parameters: `encoder` (absolute, or relative as two's complement,
+  sign-magnitude or binary offset on a 7-bit controller: a turn moves the held
+  value by 1/128 of the travel per step), `pickup` (jump follows the knob at
+  once; pick up ignores it until it reaches the held value or crosses it),
+  `start` (the value until the knob first moves it; pickup compares against
+  it), and `min`, `max` and `taper` as on the Automation node.
+- **Learn MIDI** is `session/learn_midi.rs`: `Edit::LearnMidi(parameter)`
+  taps the bus and the next controller, pitch bend or channel pressure
+  becomes one `Command::Batch` (a `MIDI Control` in the parameter's group,
+  its `port`, `control`, range and `start` copied once from the target as
+  Automate does, and the wire). On an Automation node the wire goes to
+  `record`. It is refused on a wired parameter; Escape or choosing it again
+  stops listening.
 
 - **From the port to the graph.** `noodle-io/src/midi.rs` opens the port with
   `midir`. The driver calls back on its own thread, which keeps only whole
@@ -80,11 +108,26 @@ restart the audio.
   (it needs a MIDI 2.0 device to talk to), and MIDI clips with 32-bit values
   (a note's velocity is already an `f32`).
 
+## MIDI output
+
+`MIDI Out` (`noodle-nodes/src/midi_out.rs`) pushes `OutMessage`s, each with the
+time it should leave, into a preallocated ring that belongs to the node
+(`MidiOutSender`, `noodle-io/src/midi_out.rs`). One sender thread drains all
+the rings into a queue ordered by time, sleeps until the next is due and sends
+it with `midir` (`MidiSink`). The time is the block's start as the device
+callback publishes it (`AudioClock::set_block`) plus the driver's output
+latency (`set_output_latency`) plus the frame's offset in the block plus the
+node's `Offset`: when the audio it goes with is heard. Nothing is sent when no
+callback has published a block (offline renders). Clock is placed on the
+timeline's tick grid (24 to a quarter note), so it follows tempo changes and
+sends once per tick whatever the block size. See
+[../features/midi-out.md](../features/midi-out.md).
+
 ## MIDI clips
 
-A MIDI clip (`ClipContent::Midi`) is a length and a list of notes, all in
-ticks: a note has a start from the clip's start, a length, a key (0 to 127)
-and a velocity (0 to 1). Unlike an audio clip's, its length follows the tempo,
+A MIDI clip (`ClipContent::Midi`) is a length, a list of notes and a list of
+controller points, all in ticks: a note has a start from the clip's start, a
+length, a key (0 to 127), a velocity (0 to 1) and its own expressions. Unlike an audio clip's, its length follows the tempo,
 because it is music and not a recording. A clip's notes can be in any order;
 the commands that add and change clips check them (no empty notes, none
 before the start, keys and velocities in range).
@@ -99,6 +142,35 @@ before the start, keys and velocities in range).
   clip, start and key, so editing other notes while it sounds doesn't cut it;
   if the note itself is moved, resized or removed, the old one ends at once.
   At most 128 notes sound at once on a track.
+- **Controllers and expressions.** `MidiClip::controls` holds `ControlPoint`s
+  (tick, channel, kind, value, `ramp`): a kind is a controller number, pitch
+  bend, channel pressure or a program change, with values normalised as the
+  engine's events are (0 to 1, bend -1 to 1; the program over 127). No SysEx.
+  A `MidiNote` has `expressions` (`NoteExpression`: tick from the note's
+  start, pitch, poly pressure, timbre, volume or pan, `ramp`). They are not
+  automation lanes: they leave through the track input's `midi` output with
+  the notes (as `EventKind::Channel`, `Midi` for a program change, and
+  `Expression`) and move, loop, split and copy with the clip.
+  - *Scheduling.* `schedule_controls` (in `clip/schedule.rs`) turns
+    `MidiClip::played_controls` (the controllers as they sound, like `played`
+    for notes) into `ScheduledControl`s in `Notes::controls`, sorted by time.
+    A point with `ramp` glides in a straight line to the next of its channel
+    and kind and plays as an event about every 5 ms. A note's expressions play
+    only while the note sounds, so a jump into a note does not send them.
+  - *Chase and release.* After a jump (a seek, or the transport's loop wrap)
+    the track input sends each controller's newest value before the playhead
+    (`play_controls`, a backwards scan with a fixed table, so it does not
+    allocate); the same happens when playback starts. At the clip's end each
+    controller it set gets a release (`ControlKind::rest`: pedals up, wheel
+    and pressure at 0, bend centred, volume, pan and expression back where a
+    synth starts), which a chase skips if it is the newest. A clip's own loop
+    puts every controller back to its value at the loop's start at each
+    repeat, or releases it if it had none.
+  - *Editing.* Trimming the end drops points past it (unless the clip loops);
+    trimming the start and splitting use `controls_from`, which keeps each
+    held controller at the new start so a pedal stays down, and cut an
+    expression the same way (`MidiNote::expressions_from`).
+  - The cache key covers them (`clip.rs`, `instantiate`'s key), as notes are.
 - **Looping.** A clip has `loop_on`, `loop_start` and `loop_len` (ticks from the
   clip's start; at least a sixteenth of a beat). Looped, it plays from its
   start to the loop's end, then the loop section again until the clip's end.
@@ -131,7 +203,9 @@ before the start, keys and velocities in range).
   it (in time and pitch, a whole selection together), dragging its right end
   resizes it, Delete removes, the arrow keys transpose and nudge, Cmd+C/X/V/D
   copy, cut, paste (at the playhead) and duplicate the selected notes, and a bar in
-  the velocity lane sets velocity. Notes snap to the app-wide snap step (the
+  the velocity lane sets velocity. Under it are a lane for each controller the
+  clip uses ("+" adds one) and, if switched on, an expression lane for the
+  selected notes (`piano_roll/lanes.rs`: Draw, Line, Select). Notes snap to the app-wide snap step (the
   *Snap* menu in the menu bar: a beat down to 1/16 of a beat, or off; one
   setting for the arrangement, the piano roll and the clip editor, `snap.rs`),
   Alt turns snapping off. In the piano roll, snapping is on the absolute grid
@@ -170,6 +244,24 @@ The clip starts at the playhead but skips that many frames of the file
 (`recorded_clip`), so the take lines up with the project as heard. MIDI takes
 subtract the output side only.
 
+**Loop recording, punch, pre-roll and count-in.** `Session::record` decides
+where the take begins and ends, and `start_take` starts the recorder. With the
+punch range on (`Project::punch`, saved) the take *keeps* only the range
+(`Recording::keep`): the recorder starts with the transport, which pre-roll
+starts some bars before the punch-in, and `stop_recording` cuts the clip to
+the punch-in (`offset`) and punch-out (`length`); `watch_punch` ends the take
+at the punch-out and starts the MIDI take at the punch-in. A count-in
+(`Session::counting_in`) comes first: the transport stays stopped while the
+Metronome node clicks on its own frame counter (`Transport::count_in`), then
+the take starts. With the loop on and the take starting inside it, the file
+holds one pass after another and `loop_takes` makes each a take of one take
+folder (see data-model.md, "Take folders"). MIDI follows the loop too: with
+the Takes setting (an app preference, `MidiRecord`, the Q dropdown's "Loop recording MIDI" choice) `MidiTake::passes` splits the messages by the pass they were played in (from
+the time since the take began, less the output latency) into one take each,
+every one running to the loop's end, and the clip is a MIDI take folder; with
+Merge every pass lands in one clip as before. A pass with under a quarter of
+the loop at the end is dropped, as for audio.
+
 **The take in progress** is drawn on the arrangement as it grows: a red clip
 from the take's start to the playhead on each armed track, with the notes
 played so far (`MidiTake::clip_so_far`) and, for audio, a waveform from peaks
@@ -195,3 +287,14 @@ MIDI alone. The Q menu in the transport sets a grid (off, 1/4, 1/8, 1/16,
 clip is made, keeping their lengths, shortening a note that now runs into the
 same key's next one and dropping a second note on the same tick. What is
 heard while playing is never snapped. The raw timing is not kept.
+
+A take also keeps controllers (the pedal, wheel, any controller but the
+channel-mode ones, 120 and up), pitch bend, channel pressure and program
+changes as `ControlPoint`s, and poly pressure as a pressure expression on the
+note it is for (the held note of that key and channel). A value that repeats
+the one before it is dropped. It subscribes to every message, not only notes,
+so a stream of controllers is kept. Quantising snaps the notes' starts, and
+each note's expressions are counted from its start so they move with it;
+controllers stay where they were played. A take of controllers alone still
+makes a clip. The bus carries MIDI 1.0 values, so a take is 7 bits (14 for
+bend).

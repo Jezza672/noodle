@@ -1,6 +1,6 @@
 //! The window: menus, the toolbar, the panels, and keyboard shortcuts.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::{Command, NodeId};
@@ -108,6 +108,12 @@ pub struct App {
     outputs: OutputsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
+    /// Writes the unsaved project out now and then. `None` in tests and when
+    /// there is no data directory.
+    autosave: Option<crate::autosave::Autosave>,
+    /// An autosave a crashed run left, waiting for the user to recover or
+    /// discard it. Nothing is autosaved meanwhile, so it isn't overwritten.
+    recovery: Option<crate::autosave::Recovery>,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -134,10 +140,17 @@ enum Action {
     ToggleKeyboard,
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
+    SetRecordMidi(crate::midi_take::MidiRecord),
+    /// Bars of count-in and of pre-roll before a recording.
+    SetCountIn(u8),
+    SetPreRoll(u8),
+    SetAutomationMode(crate::session::record_automation::AutomationMode),
     /// Turns the audio engine on or off.
     ToggleEngine,
     /// Stops listening to monitored nodes (Escape).
     StopMonitor,
+    /// Stops listening for MIDI learn.
+    StopLearningMidi,
     /// Chooses the device the monitor plays on: the nth listed output, or
     /// the main output for `None`.
     SetMonitorDevice(Option<usize>),
@@ -239,7 +252,15 @@ impl App {
             cache_panel: CachePanel::default(),
             outputs: OutputsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
+            autosave: None,
+            recovery: None,
         }
+    }
+
+    /// Turns autosave on, and offers whatever a crashed run left in it.
+    pub fn set_autosave(&mut self, autosave: crate::autosave::Autosave) {
+        self.recovery = autosave.pending();
+        self.autosave = Some(autosave);
     }
 
     #[cfg(test)]
@@ -510,6 +531,9 @@ impl App {
                     self.clip_editor.close();
                     self.piano_roll.open(clip);
                 }
+                if let Some(audition) = out.audition {
+                    self.session.set_take_audition(audition);
+                }
                 if let Some(clip) = out.open_audio {
                     self.piano_roll.close();
                     self.clip_editor.open(clip);
@@ -563,12 +587,14 @@ impl App {
                             crate::sample_view::loaded(ui.ctx(), &self.session, node)
                         }
                     };
+                    let linked = self.linked_candidates(ui.ctx(), subject);
                     let playhead = Some(self.session.playhead());
                     let out = clip_editor::show(
                         ui,
                         &mut self.clip_editor,
                         &self.session,
                         loaded.as_ref(),
+                        linked.as_ref().map(|(own, lanes)| (*own, lanes.as_slice())),
                         playhead,
                     );
                     self.session.edit(out.edits);
@@ -599,6 +625,8 @@ impl App {
         }
 
         self.confirm_dialog(ui.ctx(), &mut actions);
+        self.recovery_dialog(ui.ctx());
+        self.autosave_tick(ui.ctx());
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
         self.cache_panel.show(ui.ctx(), &mut self.session);
@@ -717,6 +745,13 @@ impl App {
                 && input.consume_key(Modifiers::NONE, Key::Escape)
             {
                 actions.push(Action::StopMonitor);
+            }
+            if !dialog
+                && !typing
+                && self.session.learning_midi()
+                && input.consume_key(Modifiers::NONE, Key::Escape)
+            {
+                actions.push(Action::StopLearningMidi);
             }
             if input.viewport().close_requested() && !self.closing {
                 actions.push(Action::Close);
@@ -912,7 +947,7 @@ impl App {
         }
         self.engine_button(ui, actions);
         self.cache_indicator(ui, actions);
-        let recording = self.session.is_recording();
+        let recording = self.session.is_recording() || self.session.is_counting_in();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
             theme::RECORD
         } else {
@@ -929,6 +964,8 @@ impl App {
             actions.push(Action::ToggleRecord);
         }
         self.quantise_menu(ui, actions);
+        self.lead_in_menus(ui, actions);
+        self.automation_mode_menu(ui, actions);
         self.monitor_menu(ui, actions);
         self.keyboard_button(ui, actions);
         self.metronome_button(ui, actions);
@@ -1009,9 +1046,99 @@ impl App {
                         actions.push(Action::SetRecordQuantise(choice));
                     }
                 }
+                ui.separator();
+                ui.label("Loop recording MIDI");
+                let mode = self.session.record_midi();
+                for choice in crate::midi_take::MidiRecord::ALL {
+                    if ui
+                        .selectable_label(choice == mode, choice.label())
+                        .on_hover_text(match choice {
+                            crate::midi_take::MidiRecord::Takes => {
+                                "A take of every cycle, in a take folder to comp from"
+                            }
+                            crate::midi_take::MidiRecord::Merge => "Every cycle in one clip",
+                        })
+                        .clicked()
+                    {
+                        actions.push(Action::SetRecordMidi(choice));
+                    }
+                }
             })
             .response
             .on_hover_text("Snap the notes of recorded MIDI to this grid");
+    }
+
+    /// The count-in (bars of metronome before a take) and the pre-roll (bars of
+    /// the project before a punch-in).
+    fn lead_in_menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let menu = |ui: &mut egui::Ui,
+                    id: &str,
+                    label: &str,
+                    current: u8,
+                    choices: &[u8],
+                    tip: &str,
+                    actions: &mut Vec<Action>,
+                    action: fn(u8) -> Action| {
+            crate::widgets::Dropdown::from_id_salt(id)
+                .width(48.0)
+                .selected_text(format!("{label} {current}"))
+                .show_ui(ui, |ui| {
+                    for &bars in choices {
+                        if ui
+                            .selectable_label(bars == current, format!("{bars} bars"))
+                            .clicked()
+                        {
+                            actions.push(action(bars));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(tip);
+        };
+        menu(
+            ui,
+            "count_in",
+            "In",
+            self.session.count_in_bars(),
+            &[0, 1, 2],
+            "Bars of metronome before recording starts",
+            actions,
+            Action::SetCountIn,
+        );
+        menu(
+            ui,
+            "pre_roll",
+            "Pre",
+            self.session.pre_roll_bars(),
+            &[0, 1, 2, 4],
+            "Bars of the project played before a punch-in",
+            actions,
+            Action::SetPreRoll,
+        );
+    }
+
+    /// How armed Automation nodes write: Read, Touch or Latch.
+    fn automation_mode_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use crate::session::record_automation::AutomationMode;
+        let current = self.session.automation_mode();
+        crate::widgets::Dropdown::from_id_salt("automation_mode")
+            .width(64.0)
+            .selected_text(format!("Auto {}", current.label()))
+            .show_ui(ui, |ui| {
+                for choice in AutomationMode::ALL {
+                    if ui
+                        .selectable_label(choice == current, choice.label())
+                        .on_hover_text(choice.tooltip())
+                        .clicked()
+                    {
+                        actions.push(Action::SetAutomationMode(choice));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "How armed Automation nodes record: Read plays back, Touch writes while you move, Latch holds the last move",
+            );
     }
 
     /// Where the monitor buttons on nodes play: the main output or any other
@@ -1271,11 +1398,95 @@ impl App {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(100));
             }
+            if let Some((fraction, name)) = self.session.render_progress() {
+                ui.separator();
+                ui.label(format!("Rendering {name} to a clip"));
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(120.0)
+                        .show_percentage(),
+                );
+                if ui.small_button("Cancel").clicked() {
+                    self.session.cancel_render();
+                }
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
             if let Some(message) = self.session.message() {
                 ui.separator();
                 ui.label(message);
             }
         });
+    }
+
+    /// Offers the autosave a crashed run left.
+    fn recovery_dialog(&mut self, ctx: &egui::Context) {
+        let Some(recovery) = self.recovery.clone() else {
+            return;
+        };
+        let mut recover = false;
+        let mut discard = false;
+        egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
+            ui.label("Noodle didn't close properly last time.");
+            let when = recovery
+                .age()
+                .map(|a| format!(", saved {a}"))
+                .unwrap_or_default();
+            ui.label(format!(
+                "Recover the unsaved work on {}{when}?",
+                recovery.name()
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                recover = ui.button("Recover").clicked();
+                discard = ui.button("Discard").clicked();
+            });
+        });
+        if recover {
+            let loaded = self
+                .session
+                .recover(&recovery.text, recovery.origin.clone());
+            if loaded {
+                self.editor = EditorState::default();
+            }
+            // A copy that won't load is kept aside, to look at by hand.
+            self.finish_recovery(&recovery, !loaded);
+        } else if discard {
+            self.finish_recovery(&recovery, false);
+        }
+    }
+
+    fn finish_recovery(&mut self, recovery: &crate::autosave::Recovery, keep: bool) {
+        self.recovery = None;
+        if let Some(autosave) = &mut self.autosave {
+            if keep {
+                autosave.set_aside(recovery);
+            } else {
+                autosave.remove(recovery);
+            }
+        }
+    }
+
+    /// Writes the autosave when it is due, and removes it once the project is
+    /// saved.
+    fn autosave_tick(&mut self, ctx: &egui::Context) {
+        let Some(autosave) = &mut self.autosave else {
+            return;
+        };
+        if self.recovery.is_some() {
+            return;
+        }
+        let session = &self.session;
+        autosave.tick(
+            std::time::Instant::now(),
+            session.is_dirty(),
+            session.history_position(),
+            || (session.project_ron(), session.path().map(Path::to_owned)),
+        );
+        if session.is_dirty() {
+            // Wake up for the next write even if nothing else moves.
+            ctx.request_repaint_after(crate::autosave::INTERVAL);
+        }
     }
 
     /// Asks what to do with unsaved changes before an action that would
@@ -1381,6 +1592,7 @@ impl App {
                 }
             }
             Action::StopMonitor => self.session.stop_monitor(),
+            Action::StopLearningMidi => self.session.edit([Edit::CancelLearnMidi]),
             Action::SetMonitorDevice(choice) => {
                 let device = choice
                     .and_then(|n| self.outputs.devices().get(n))
@@ -1390,6 +1602,28 @@ impl App {
             }
             Action::Rewind => self.session.rewind(),
             Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
+            Action::SetRecordMidi(mode) => {
+                self.session.set_record_midi(mode);
+                crate::prefs::remember_midi_record(mode);
+            }
+            Action::SetCountIn(bars) => {
+                self.session.set_count_in_bars(bars);
+                crate::prefs::remember_recording(
+                    self.session.count_in_bars(),
+                    self.session.pre_roll_bars(),
+                );
+            }
+            Action::SetPreRoll(bars) => {
+                self.session.set_pre_roll_bars(bars);
+                crate::prefs::remember_recording(
+                    self.session.count_in_bars(),
+                    self.session.pre_roll_bars(),
+                );
+            }
+            Action::SetAutomationMode(mode) => {
+                self.session.set_automation_mode(mode);
+                crate::prefs::remember_automation_mode(mode);
+            }
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);
@@ -1398,6 +1632,8 @@ impl App {
             Action::ToggleRecord => {
                 if self.session.is_recording() {
                     self.session.stop_recording();
+                } else if self.session.is_counting_in() {
+                    self.session.cancel_count_in();
                 } else {
                     self.session.record();
                 }
@@ -1487,7 +1723,7 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
-            Action::ExportAudio => self.export.open(&self.session),
+            Action::ExportAudio => self.export.open(&mut self.session),
             Action::StartExport => {
                 if let Some(choice) = self.export.take_choice() {
                     self.start_export(choice);
@@ -1557,6 +1793,14 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        // A clean exit leaves nothing to recover. A crash never gets here.
+        // Only this run's files go; an unanswered recovery stays for next time.
+        if let Some(autosave) = &mut self.autosave {
+            autosave.remove_own();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The plugins' timers, and what other threads asked of them, when
         // this thread hosts them (macOS, Windows).
@@ -1570,22 +1814,35 @@ impl eframe::App for App {
 impl App {
     /// Asks where to write the export and starts it.
     fn start_export(&mut self, choice: crate::session::ExportChoice) {
-        let name = format!("{}.{}", self.session.name(), choice.format.extension());
-        let mut dialog = rfd::FileDialog::new().set_file_name(name);
-        if let Some(dir) = self.session.directory() {
-            dialog = dialog.set_directory(dir);
-        }
-        let Some(path) = dialog
-            .add_filter(choice.format.label(), &[choice.format.extension()])
-            .save_file()
-        else {
-            self.export.declined();
-            return;
-        };
-        // Some platforms' dialogs don't add the extension.
-        let path = if path.extension().is_none() {
-            path.with_extension(choice.format.extension())
+        // One file is a file to save; several go in a folder.
+        let path = if choice.groups.is_empty() {
+            let name = format!("{}.{}", self.session.name(), choice.format.extension());
+            let mut dialog = rfd::FileDialog::new().set_file_name(name);
+            if let Some(dir) = self.session.directory() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(path) = dialog
+                .add_filter(choice.format.label(), &[choice.format.extension()])
+                .save_file()
+            else {
+                self.export.declined();
+                return;
+            };
+            // Some platforms' dialogs don't add the extension.
+            if path.extension().is_none() {
+                path.with_extension(choice.format.extension())
+            } else {
+                path
+            }
         } else {
+            let mut dialog = rfd::FileDialog::new().set_title("Folder for the exported files");
+            if let Some(dir) = self.session.directory() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(path) = dialog.pick_folder() else {
+                self.export.declined();
+                return;
+            };
             path
         };
         match self.session.start_export(path, choice) {
@@ -1607,6 +1864,20 @@ impl App {
         let name = self.session.project().clip(id)?.as_audio()?.source.clone();
         let directory = self.session.directory().map(std::path::Path::to_path_buf);
         self.timeline.source(ctx, directory.as_deref(), &name)
+    }
+
+    /// The transients of the clips linked to the open one (see
+    /// [`clip_editor::linked_lanes`]).
+    fn linked_candidates(
+        &mut self,
+        ctx: &egui::Context,
+        subject: clip_editor::subject::Subject,
+    ) -> Option<(egui::Color32, Vec<clip_editor::Lane>)> {
+        let clip_editor::subject::Subject::Clip(open) = subject else {
+            return None;
+        };
+        let project = self.session.project().clone();
+        clip_editor::linked_lanes(&project, open, |member| self.clip_source(ctx, member))
     }
 
     /// A clip or a track carried out of the timeline and let go of over the
@@ -2179,6 +2450,23 @@ mod tests {
     }
 
     #[test]
+    fn the_export_dialog_offers_the_mixdown_and_loudness_and_wants_something_chosen() {
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("File").click();
+        harness.run();
+        harness.get_by_label("Export Audio…").click();
+        harness.run();
+        harness.get_by_label("Mixdown");
+        harness.get_by_label_contains("Normalise mixdown to");
+        harness.get_by_label_contains("dithered");
+        // With the mixdown unticked and no track, there is nothing to write.
+        harness.get_by_label("Mixdown").click();
+        harness.run();
+        harness.get_by_label("Choose the mixdown or a track to export");
+    }
+
+    #[test]
     fn the_plugin_browser_opens_from_the_view_menu() {
         let mut harness = harness(empty());
         harness.run();
@@ -2449,6 +2737,71 @@ mod tests {
             1
         );
         harness.get_by_label("Don't Save");
+    }
+
+    /// A crashed run's autosave of a project with one node.
+    fn crash_leftover(dir: &Path) -> crate::autosave::Autosave {
+        let mut crashed = empty();
+        crashed.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        let mut writer = crate::autosave::Autosave::for_run(dir.to_owned(), 1);
+        let at = writer.next_due();
+        writer.tick(at, true, 1, || (crashed.session.project_ron(), None));
+        crate::autosave::Autosave::new(dir.to_owned())
+    }
+
+    #[test]
+    fn a_crashed_runs_autosave_can_be_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = empty();
+        app.set_autosave(crash_leftover(dir.path()));
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Discard");
+        harness.get_by_label("Recover").click();
+        harness.run();
+        let session = harness.state().session();
+        assert_eq!(session.project().graph().nodes().count(), 1);
+        assert!(session.is_dirty(), "recovered work still needs saving");
+        assert!(harness.query_by_label("Recover").is_none());
+        assert!(
+            crate::autosave::Autosave::new(dir.path().to_owned())
+                .pending()
+                .is_none(),
+            "the copy is gone once recovered"
+        );
+    }
+
+    #[test]
+    fn discarding_the_autosave_leaves_the_project_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = empty();
+        app.set_autosave(crash_leftover(dir.path()));
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Discard").click();
+        harness.run();
+        assert_eq!(
+            harness.state().session().project().graph().nodes().count(),
+            0
+        );
+        assert!(
+            crate::autosave::Autosave::new(dir.path().to_owned())
+                .pending()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn no_autosave_means_no_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = empty();
+        app.set_autosave(crate::autosave::Autosave::new(dir.path().to_owned()));
+        let mut harness = harness(app);
+        harness.run();
+        assert!(harness.query_by_label("Recover").is_none());
     }
 
     #[test]

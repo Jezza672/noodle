@@ -46,6 +46,8 @@ const FLAGS: f32 = 22.0;
 const BRACE: f32 = 14.0;
 /// The row of handles on the detected transients.
 const HANDLES: f32 = 12.0;
+/// How much taller the row is for each clip of a link past the first.
+const HANDLES_PER_LANE: f32 = 7.0;
 /// How close, in points, a press is to a flag or a brace end to take it.
 const GRAB: f32 = 7.0;
 /// How close, in points, a press is to a transient's handle to take it.
@@ -246,6 +248,80 @@ impl ClipEditor {
     }
 }
 
+/// The transients of one clip of a link, for the editor to offer as candidate
+/// markers beside the open clip's own.
+pub struct Lane {
+    pub colour: Color32,
+    pub onsets: Vec<f64>,
+}
+
+/// The transients the editor offers, from every clip of the open clip's link
+/// (just the clip's own when it is not linked). Each clip has a lane of its
+/// own in the handles row, drawn in its colour, so candidates a few
+/// milliseconds apart (a kick mic and the overheads) stay apart. `onsets` is
+/// all of them, the open clip's first, and `lane` says whose each is.
+struct Candidates {
+    onsets: Vec<f64>,
+    lane: Vec<usize>,
+    /// One per lane; `None` draws the plain white a lone clip's are.
+    colours: Vec<Option<Color32>>,
+}
+
+impl Candidates {
+    fn new(own: &[f64], others: &[Lane], own_colour: Option<Color32>) -> Self {
+        let mut onsets = own.to_vec();
+        let mut lane = vec![0; own.len()];
+        let mut colours = vec![own_colour];
+        for (n, other) in others.iter().enumerate() {
+            onsets.extend(&other.onsets);
+            lane.extend(std::iter::repeat_n(n + 1, other.onsets.len()));
+            colours.push(Some(other.colour));
+        }
+        Self {
+            onsets,
+            lane,
+            colours,
+        }
+    }
+
+    fn lanes(&self) -> usize {
+        self.colours.len()
+    }
+}
+
+/// The transients of the clips linked to `open`, each in the colour of its
+/// track, and `open`'s own colour; `None` if it has no link. The warp editor
+/// offers them all as candidate markers, since the link shares one warp.
+/// `source` loads a clip's file.
+pub fn linked_lanes(
+    project: &Project,
+    open: ClipId,
+    mut source: impl FnMut(ClipId) -> Option<Loaded>,
+) -> Option<(Color32, Vec<Lane>)> {
+    let members = project.linked_with(open);
+    if members.len() < 2 {
+        return None;
+    }
+    let tracks = crate::timeline::tracks(project);
+    let colour_of = |id: ClipId| {
+        let node = project.clip(id).map(|c| c.node);
+        let index = tracks.iter().position(|&t| Some(t) == node).unwrap_or(0);
+        colors::track_colour(index)
+    };
+    let lanes = members
+        .iter()
+        .filter(|&&member| member != open)
+        .filter_map(|&member| {
+            let loaded = source(member)?;
+            Some(Lane {
+                colour: colour_of(member),
+                onsets: loaded.analysis.as_ref()?.onsets.clone(),
+            })
+        })
+        .collect();
+    Some((colour_of(open), lanes))
+}
+
 /// What the user did in the clip editor.
 #[derive(Default)]
 pub struct Output {
@@ -287,12 +363,15 @@ fn snap_to(beat: f64, step: f64, origin: f64) -> f64 {
 /// Draws the clip editor for what is open into `ui` and returns what the
 /// user did. `loaded` is what is known about the file (a Sampler's sample is
 /// in memory). `playhead` is the transport position, drawn when it is inside
-/// a clip's section.
+/// a clip's section. `linked` holds the transients of the other clips linked
+/// to the open one, and the open clip's colour among them; empty if it has
+/// no link.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut ClipEditor,
     session: &Session,
     loaded: Option<&Loaded>,
+    linked: Option<(Color32, &[Lane])>,
     playhead: Option<Tick>,
 ) -> Output {
     let mut out = Output::default();
@@ -409,6 +488,11 @@ pub fn show(
         frames: file_frames,
     };
     let id = subject;
+    let own: &[f64] = loaded.analysis.as_ref().map_or(&[], |a| &a.onsets);
+    let cands = match linked {
+        Some((colour, others)) if !others.is_empty() => Candidates::new(own, others, Some(colour)),
+        _ => Candidates::new(own, &[], None),
+    };
 
     let ruler = Rect::from_min_size(body.min, vec2(body.width(), RULER));
     let flags = Rect::from_min_size(
@@ -421,7 +505,10 @@ pub fn show(
     );
     let handles = Rect::from_min_size(
         Pos2::new(body.left(), brace.bottom()),
-        vec2(body.width(), HANDLES),
+        vec2(
+            body.width(),
+            HANDLES + HANDLES_PER_LANE * (cands.lanes() - 1) as f32,
+        ),
     );
     let wave = Rect::from_min_max(Pos2::new(body.left(), handles.bottom()), body.max);
     let area = Rect::from_min_max(ruler.min, body.max);
@@ -462,7 +549,7 @@ pub fn show(
             shift: axis.shift,
         });
     }
-    let onsets: &[f64] = loaded.analysis.as_ref().map_or(&[], |a| &a.onsets);
+    let onsets: &[f64] = &cands.onsets;
 
     let (lo, hi) = (
         (warp
@@ -490,7 +577,7 @@ pub fn show(
     draw_waveform(&painter, wave, axis, warp, loaded, samples, rate, file_secs);
     draw_window(&painter, wave, axis, warp, audio.offset, audio.length, rate);
     draw_ruler(&painter, ruler, wave, axis, warp.grid_offset);
-    draw_handles(&painter, handles, wave, axis, warp, onsets);
+    draw_handles(&painter, handles, wave, axis, warp, &cands);
     draw_loop(&painter, brace, wave, axis, warp);
     draw_flags(&painter, flags, wave, axis, warp, &state.selected);
     if let Some((a, b)) = state.marquee {
@@ -542,7 +629,7 @@ pub fn show(
     // snaps to the setting's grid, in beats.
     let free = alt || session.snap() <= 1;
     let step = session.snap() as f64 / f64::from(TICKS_PER_QUARTER as u32);
-    let hit = |pos: Pos2| hit_test(pos, &rows, axis, warp, onsets);
+    let hit = |pos: Pos2| hit_test(pos, &rows, axis, warp, &cands);
     if let Some(pos) = response.hover_pos() {
         ui.ctx().set_cursor_icon(match hit(pos) {
             Some(Gesture::Marker(_) | Gesture::LoopStart | Gesture::LoopEnd) => {
@@ -768,7 +855,7 @@ fn hit_test(
     rows: &Rows,
     axis: Axis,
     warp: &ClipWarp,
-    onsets: &[f64],
+    cands: &Candidates,
 ) -> Option<Gesture> {
     let Rows {
         ruler,
@@ -798,7 +885,7 @@ fn hit_test(
         }
     }
     if handles.y_range().contains(pos.y)
-        && let Some(t) = transient_at_x(pos.x, axis, warp, onsets)
+        && let Some(t) = transient_at(pos, handles, axis, warp, cands)
     {
         return Some(Gesture::Transient(t));
     }
@@ -814,15 +901,31 @@ fn hit_test(
     None
 }
 
-/// The transient whose handle is nearest `x`, if one is within reach.
-fn transient_at_x(x: f32, axis: Axis, warp: &ClipWarp, onsets: &[f64]) -> Option<usize> {
-    onsets
+/// The transient whose handle is nearest `pos`, if one is within reach. Each
+/// clip's handles are in its own band of the row.
+fn transient_at(
+    pos: Pos2,
+    handles: Rect,
+    axis: Axis,
+    warp: &ClipWarp,
+    cands: &Candidates,
+) -> Option<usize> {
+    let band = lane_of_y(pos.y, handles, cands.lanes());
+    cands
+        .onsets
         .iter()
         .enumerate()
-        .map(|(i, &t)| (i, (axis.x(warp.beat_at(t)) - x).abs()))
+        .filter(|&(i, _)| cands.lane[i] == band)
+        .map(|(i, &t)| (i, (axis.x(warp.beat_at(t)) - pos.x).abs()))
         .filter(|&(_, distance)| distance <= GRAB_HANDLE)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(i, _)| i)
+}
+
+/// Which of the `lanes` equal bands of the handles row `y` is in.
+fn lane_of_y(y: f32, handles: Rect, lanes: usize) -> usize {
+    let band = handles.height() / lanes as f32;
+    (((y - handles.top()) / band) as usize).min(lanes - 1)
 }
 
 /// Where flag `index` is drawn: where its marker plays, or, for a marker warp
@@ -1165,30 +1268,42 @@ fn draw_handles(
     wave: Rect,
     axis: Axis,
     warp: &ClipWarp,
-    onsets: &[f64],
+    cands: &Candidates,
 ) {
     painter.rect_filled(handles, 0.0, colors::HEADER.gamma_multiply(0.5));
-    for &onset in onsets {
+    let band = handles.height() / cands.lanes() as f32;
+    for (i, &onset) in cands.onsets.iter().enumerate() {
         let x = axis.x(warp.beat_at(onset));
         if !(handles.left() - 6.0..=handles.right() + 6.0).contains(&x) {
             continue;
         }
+        let lane = cands.lane[i];
+        let own = cands.colours[lane];
         painter.vline(
             x,
             wave.y_range(),
-            Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.22)),
+            Stroke::new(
+                1.0,
+                own.map_or(Color32::WHITE.gamma_multiply(0.22), |c| {
+                    c.gamma_multiply(0.5)
+                }),
+            ),
         );
         let pinned = warp.marker_at(onset).is_some();
-        let tip = Pos2::new(x, handles.bottom() - 1.0);
+        let (top, bottom) = (
+            handles.top() + band * lane as f32,
+            handles.top() + band * (lane + 1) as f32,
+        );
+        let tip = Pos2::new(x, bottom - 1.0);
         let triangle = vec![
             tip,
-            Pos2::new(x - 4.0, handles.top() + 2.0),
-            Pos2::new(x + 4.0, handles.top() + 2.0),
+            Pos2::new(x - 4.0, top + 2.0),
+            Pos2::new(x + 4.0, top + 2.0),
         ];
-        let colour = if pinned {
-            theme::ACCENT
-        } else {
-            Color32::WHITE.gamma_multiply(0.55)
+        let colour = match (own, pinned) {
+            (_, true) if own.is_none() => theme::ACCENT,
+            (Some(c), _) => c,
+            (None, _) => Color32::WHITE.gamma_multiply(0.55),
         };
         painter.add(egui::Shape::convex_polygon(
             triangle,

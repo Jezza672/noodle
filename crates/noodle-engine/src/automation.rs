@@ -16,7 +16,7 @@ use noodle_core::{
 
 use crate::{
     Context, Diagnostic, InputKind, Instance, Io, Layout, Location, NodeError, NodeInfo, NodeType,
-    ParamKind, Problem, Registry, Setup,
+    ParamInfo, ParamKind, Problem, Registry, Setup,
 };
 
 pub const AUTOMATION_ID: &str = "noodle.internal.automation";
@@ -28,13 +28,22 @@ const OUT: usize = 0;
 const POINTS: &str = "points";
 const SMOOTHING_MS: &str = "smoothing_ms";
 
+/// The source's live override: while `LIVE_ON` is 1 the source writes `LIVE`
+/// instead of the lane, which is how a move being recorded is heard before
+/// the lane has it. Set with [`Controller::set_param`](crate::Controller) on
+/// the source's [`source_id`].
+pub const LIVE: &str = "live";
+pub const LIVE_ON: &str = "live_on";
+const LIVE_PORT: usize = 0;
+const LIVE_ON_PORT: usize = 1;
+
 /// Lanes to compile, as the project lists them.
 pub type Lanes<'a> = [(LaneId, &'a AutomationLane)];
 
 /// The node ID a lane's source gets in the compiled graph. Counted down from
 /// the top, so it can't clash with a project node, and it's the same every
 /// compile, so the node's state carries over.
-fn source_id(lane: LaneId) -> NodeId {
+pub fn source_id(lane: LaneId) -> NodeId {
     NodeId(u64::MAX - lane.0)
 }
 
@@ -180,8 +189,9 @@ fn encode(points: &[AutomationPoint]) -> String {
     let mut text = String::new();
     for point in points {
         let curve = match point.curve {
-            Curve::Linear => 'l',
-            Curve::Hold => 'h',
+            Curve::Linear => "l".to_owned(),
+            Curve::Hold => "h".to_owned(),
+            Curve::Tension(t) => format!("t{t}"),
         };
         let _ = write!(text, "{} {} {curve};", point.tick.0, point.value);
     }
@@ -197,7 +207,7 @@ fn decode(text: &str) -> Option<Vec<AutomationPoint>> {
             let curve = match fields.next()? {
                 "l" => Curve::Linear,
                 "h" => Curve::Hold,
-                _ => return None,
+                other => Curve::Tension(other.strip_prefix('t')?.parse().ok()?),
             };
             Some(AutomationPoint { tick, value, curve })
         })
@@ -225,7 +235,11 @@ impl NodeType for Automation {
 
     fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
         points(config)?;
-        Ok(Layout::realtime().output("out", "Out").memoryless())
+        Ok(Layout::realtime()
+            .param(LIVE, "Live", ParamInfo::new(0.0, 1.0, 0.0))
+            .param(LIVE_ON, "Live on", ParamInfo::new(0.0, 1.0, 0.0))
+            .output("out", "Out")
+            .memoryless())
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
@@ -274,9 +288,9 @@ impl LaneSource {
         };
         let along = tick - before.tick.0 as f64;
         match before.curve {
-            Curve::Linear => {
+            curve @ (Curve::Linear | Curve::Tension(_)) => {
                 let span = (next.tick.0 - before.tick.0) as f64;
-                before.value + (next.value - before.value) * (along / span) as f32
+                before.value + (next.value - before.value) * curve.shape(along / span) as f32
             }
             Curve::Hold => {
                 let from = i.checked_sub(1).map(|j| &points[j]);
@@ -307,9 +321,15 @@ impl crate::Node for LaneSource {
             0.0
         };
         let ramp = self.smoothing_ms / 1000.0 * ticks_per_second;
+        let live = io.inputs[LIVE_PORT].lane(0, 0);
+        let live_on = io.inputs[LIVE_ON_PORT].lane(0, 0);
         let out = io.outputs[OUT].lane_mut(0, 0);
         for (i, sample) in out.iter_mut().enumerate() {
-            *sample = self.value_at(transport.tick + i as f64 * ticks_per_sample, ramp);
+            *sample = if live_on[i] >= 0.5 {
+                live[i]
+            } else {
+                self.value_at(transport.tick + i as f64 * ticks_per_sample, ramp)
+            };
         }
     }
 }
@@ -319,6 +339,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_lane_source_bends_a_segment_by_its_tension() {
+        let point = |tick, value, curve| AutomationPoint {
+            tick: Tick(tick),
+            value,
+            curve,
+        };
+        let source = LaneSource {
+            points: vec![
+                point(0, 0.0, Curve::Tension(-1.0)),
+                point(100, 1.0, Curve::Linear),
+                point(200, 0.0, Curve::Linear),
+            ],
+            smoothing_ms: 0.0,
+        };
+        assert_eq!(source.value_at(0.0, 0.0), 0.0);
+        assert_eq!(source.value_at(100.0, 0.0), 1.0);
+        assert!(source.value_at(50.0, 0.0) < 0.1, "exponential: low at half");
+        assert_eq!(
+            source.value_at(150.0, 0.0),
+            0.5,
+            "a linear segment is straight"
+        );
+    }
+
+    #[test]
     fn points_survive_the_trip_through_config_text() {
         let points: Vec<_> = [0.1f32, -0.0, 1e-30, 123456.79, f32::MIN_POSITIVE]
             .iter()
@@ -326,10 +371,10 @@ mod tests {
             .map(|(i, &value)| AutomationPoint {
                 tick: Tick(i as i64 * 7919),
                 value,
-                curve: if i % 2 == 0 {
-                    Curve::Linear
-                } else {
-                    Curve::Hold
+                curve: match i % 3 {
+                    0 => Curve::Linear,
+                    1 => Curve::Hold,
+                    _ => Curve::Tension(-0.37),
                 },
             })
             .collect();

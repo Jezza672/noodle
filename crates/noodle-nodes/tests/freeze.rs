@@ -565,6 +565,42 @@ fn what_a_looping_or_extended_audio_clip_plays_is_in_the_key() {
 }
 
 #[test]
+fn a_take_folders_takes_and_comp_are_in_the_key() {
+    let plain = key_after(|_, _| {});
+    let folder = |comp: &[(u64, usize)], join: Option<noodle_core::Crossfade>| {
+        let comp = comp.to_vec();
+        key_after(move |rig, id| {
+            edit_audio(rig, id, |audio| {
+                let mut folder = noodle_core::TakeFolder::new(
+                    (0..3)
+                        .map(|k| noodle_core::Take { delta: k * 5_000 })
+                        .collect(),
+                    0,
+                );
+                for (i, &(at, take)) in comp.iter().enumerate() {
+                    let to = comp.get(i + 1).map_or(u64::MAX, |next| next.0);
+                    folder.swipe(at, to, take);
+                }
+                folder.set_join(1, join);
+                audio.takes = Some(folder);
+            });
+        })
+    };
+    let first = folder(&[(0, 0)], None);
+    assert_ne!(first, plain, "the takes are in the key");
+    // Which take plays where, and a join's crossfade.
+    let swiped = folder(&[(0, 0), (2_000, 1)], None);
+    assert_ne!(swiped, first);
+    assert_ne!(folder(&[(0, 0), (2_000, 2)], None), swiped);
+    assert_ne!(folder(&[(0, 0), (3_000, 1)], None), swiped);
+    let join = Some(noodle_core::Crossfade {
+        before: Tick(10),
+        after: Tick(20),
+    });
+    assert_ne!(folder(&[(0, 0), (2_000, 1)], join), swiped);
+}
+
+#[test]
 fn a_midi_clips_loop_is_in_the_key() {
     let key = |change: fn(&mut noodle_core::MidiClip)| {
         let mut rig = setup("midi-loop");

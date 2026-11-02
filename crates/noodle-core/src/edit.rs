@@ -4,8 +4,9 @@
 use std::fmt;
 
 use crate::{
-    AutomationLane, Clip, ClipId, ClipWarp, Connection, Endpoint, Frame, FrameId, LaneId, Node,
-    NodeId, Position, Project, TempoMap, TransportLoop, Value, WarpId,
+    AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint, Frame,
+    FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap, TransportLoop, Value,
+    WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -82,6 +83,8 @@ pub enum Command {
     SetTempoMap(TempoMap),
     /// Replaces the transport's loop.
     SetLoop(TransportLoop),
+    /// Replaces the punch range.
+    SetPunch(PunchRange),
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
@@ -101,6 +104,13 @@ pub enum Command {
     SetClip {
         id: ClipId,
         clip: Clip,
+    },
+    /// Sets, replaces or (with `None`) removes a clip group. The group may
+    /// name clips that are not in the project yet or any more (see
+    /// [`ClipGroup`]), but no clip that is in it may be in another group.
+    SetClipGroup {
+        id: ClipGroupId,
+        group: Option<ClipGroup>,
     },
     /// Adds a warp for audio clips to share. Do this before the `SetClip` or
     /// `AddClip` that uses it.
@@ -183,6 +193,9 @@ impl Command {
             Command::SetLoop(region) => {
                 return Ok(Command::SetLoop(project.replace_loop(region)));
             }
+            Command::SetPunch(range) => {
+                return Ok(Command::SetPunch(project.replace_punch(range)));
+            }
             Command::SetFrozen { node, frozen } => {
                 if project.graph().node(node).is_none() {
                     return Err(EditError::NoSuchNode(node));
@@ -204,6 +217,10 @@ impl Command {
             Command::SetClip { id, clip } => {
                 let old = project.replace_clip(id, clip)?;
                 return Ok(Command::SetClip { id, clip: old });
+            }
+            Command::SetClipGroup { id, group } => {
+                let old = project.replace_clip_group(id, group)?;
+                return Ok(Command::SetClipGroup { id, group: old });
             }
             Command::AddWarp { id, warp } => {
                 project.insert_warp(id, warp)?;
@@ -343,11 +360,13 @@ impl Command {
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
+            | Command::SetPunch(_)
             | Command::SetTrackOrder(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
             | Command::SetClip { .. }
+            | Command::SetClipGroup { .. }
             | Command::AddWarp { .. }
             | Command::RemoveWarp { .. }
             | Command::SetWarp { .. }
@@ -366,10 +385,12 @@ enum Target<'a> {
     Frame(FrameId),
     Param(NodeId, &'a str),
     Clip(ClipId),
+    ClipGroup(ClipGroupId),
     Warp(WarpId),
     Lane(LaneId),
     TempoMap,
     Loop,
+    Punch,
     TrackOrder,
     Frozen(NodeId),
 }
@@ -380,10 +401,12 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetFrame { id, .. } => Some(Target::Frame(*id)),
         Command::SetParam { node, key, .. } => Some(Target::Param(*node, key)),
         Command::SetClip { id, .. } => Some(Target::Clip(*id)),
+        Command::SetClipGroup { id, .. } => Some(Target::ClipGroup(*id)),
         Command::SetWarp { id, .. } => Some(Target::Warp(*id)),
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetLoop(_) => Some(Target::Loop),
+        Command::SetPunch(_) => Some(Target::Punch),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
@@ -442,6 +465,8 @@ pub enum EditError {
     /// What's wrong with the warp.
     InvalidWarp(WarpId, &'static str),
     ClipExists(ClipId),
+    /// A clip is in two clip groups.
+    ClipAlreadyLinked(ClipId, ClipGroupId),
     /// What's wrong with the clip.
     InvalidClip(ClipId, &'static str),
     NoSuchLane(LaneId),
@@ -473,6 +498,9 @@ impl fmt::Display for EditError {
             Self::GroupInsideItself(id) => write!(f, "{id} can't be put inside itself"),
             Self::NoSuchClip(id) => write!(f, "there's no {id}"),
             Self::ClipExists(id) => write!(f, "there's already a {id}"),
+            Self::ClipAlreadyLinked(clip, group) => {
+                write!(f, "the {clip} is already in {group}")
+            }
             Self::NoSuchWarp(id) => write!(f, "there's no {id}"),
             Self::WarpExists(id) => write!(f, "there's already a {id}"),
             Self::WarpInUse(id) => write!(f, "a clip still uses {id}"),

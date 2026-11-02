@@ -1,6 +1,6 @@
 # Assessing how hard each user story is
 
-A draft framework for scoring the 30 stories in [user-stories.md](../usability/stories.md). Nothing is scored yet. The aim is a scorecard per story that can be measured mostly by machine, rerun as Noodle changes, and compared over time and against other DAWs.
+A draft framework for scoring the 30 stories in [stories.md](../usability/stories.md). Nothing is scored yet. The aim is a scorecard per story that can be measured mostly by machine, rerun as Noodle changes, and compared over time and against other DAWs.
 
 ## 1. The unit of measurement: a route
 

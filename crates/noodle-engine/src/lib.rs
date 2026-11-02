@@ -38,7 +38,9 @@ mod tempo;
 pub mod testing;
 mod transport;
 
-pub use automation::{AUTOMATION_ID, INTERNAL_CATEGORY, Lanes};
+pub use automation::{
+    AUTOMATION_ID, INTERNAL_CATEGORY, LIVE, LIVE_ON, Lanes, source_id as lane_source_id,
+};
 pub use builtin::{
     INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, MAX_ROUTES, OUTPUT_DEVICE,
     OUTPUT_DEVICE_KEY, OUTPUT_ID, OUTPUT_ROUTING, OUTPUT_ROUTING_KEY, Output, output_devices,

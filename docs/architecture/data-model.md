@@ -135,6 +135,35 @@ The **Project** is the single source of truth. It holds one global graph:
     half its clip; the two fade equal-power across the whole stretch and the
     node plays both at once (`ScheduledClip::under`). A crossfade whose clips
     are no longer butted is kept but ignored.
+  - **Take folders.** An `AudioClip` with `takes: Some(TakeFolder)` holds
+    several takes of one stretch of music and a comp. The takes are windows
+    into the clip's one file: `offset` and `length` are in the first take's
+    frames, take `k` plays `Take::delta` frames later for the same moment, and
+    the comp is a sorted list of `CompSpan { at, take, crossfade }` in the same
+    coordinates (the first also covers everything before it). Because the
+    window and the takes move together, trimming, splitting, copying and
+    linking the clip need no folder-specific code. They share the clip's one
+    warp. The scheduler cuts the folder into one piece per span
+    (`lay_out_folder`), each joined to the last by a crossfade (the span's, or
+    10 ms), and the takes and comp are in the clip's cache key. Comp edits are
+    `SetClip` commands (`TakeFolder::swipe`). Flattening replaces the folder
+    with plain clips, one per span.
+  - **MIDI take folders.** A `MidiClip` with `takes: Some(MidiTakes)` holds a
+    `TakeFolder` (the same comp and swipe, counted in ticks from the clip's
+    start, with no deltas) and what each take played (`TakeContent`: notes and
+    controllers). The clip's own `notes` and `controls` are the comp already
+    played out (`MidiTakes::played`, `MidiClip::play_comp`), so playback, the
+    piano roll and the preview need no special case. The project drops the takes
+    when a `SetClip` leaves the clip disagreeing with them (`settle_takes`: a
+    note edited, moved, trimmed or looped), so a hand edit is never overwritten by
+    a later swipe, and "Flatten takes" is the same drop done on purpose.
+  - **Comping across linked clips.** `timeline/comp.rs::swipe` turns a range of
+    ticks into each linked folder's own coordinates (`clips::frame_of_tick` for
+    audio, through its warp) and edits all of them in one `Command::Batch`;
+    `set_join` does the same for a join's crossfade. `Project::auditioning`
+    returns a copy that plays one take alone; the session feeds the clips from
+    it while a take is auditioned (`Session::set_take_audition`), so nothing
+    saved or exported changes.
   - **Mixers are named** by their `name` config (`spare::mixer_name`); the
     default mixer, the one Add track feeds, is "Main". F2 in the graph and a
     text field in the mixer view rename one.

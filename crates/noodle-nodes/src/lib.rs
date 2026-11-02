@@ -32,6 +32,7 @@ mod math;
 mod meter;
 mod metronome;
 mod midi_in;
+mod midi_out;
 mod mix;
 mod noise;
 mod normalize;
@@ -42,6 +43,7 @@ mod pan;
 mod phaser;
 mod random_select;
 mod remap;
+mod render_clip;
 mod reroute;
 mod reverb;
 mod reverse;
@@ -67,7 +69,10 @@ pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
     ARPEGGIATOR_ID, Arpeggiator, RATE_NAMES as ARP_RATE_NAMES, RATE_TICKS as ARP_RATE_TICKS,
 };
-pub use automation::{AUTOMATION_NODE_ID, AUTOMATION_VALUE, Automation};
+pub use automation::{
+    AUTOMATION_LABEL, AUTOMATION_MAX, AUTOMATION_MIN, AUTOMATION_NODE_ID, AUTOMATION_RECORD,
+    AUTOMATION_TAPER, AUTOMATION_VALUE, Automation,
+};
 pub use background::{
     CHUNK_FRAMES, CacheRender, ExtendRegistry, RenderReport, RenderRequest, profile,
     render_streaming, spawn_render, spawn_render_to_cache,
@@ -84,7 +89,9 @@ pub use clip::{
 pub use clock::{CLOCK_ID, Clock, DIVISION_TICKS, DIVISIONS as CLOCK_DIVISIONS};
 pub use comparator::{COMPARATOR_ID, Comparator};
 pub use control::{
-    MIDI_CONTROL_ID, MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
+    CONTROL_CONTROL, CONTROL_MAX, CONTROL_MIN, CONTROL_START, CONTROL_TAPER, ENCODER_ABSOLUTE,
+    ENCODER_BINARY_OFFSET, ENCODER_SIGN_MAGNITUDE, ENCODER_TWOS_COMPLEMENT, MIDI_CONTROL_ID,
+    MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
 };
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
@@ -101,7 +108,7 @@ pub use eq::{
     EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
     default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
 };
-pub use export::{ExportJobError, ExportReport, ExportRequest, export, spawn_export};
+pub use export::{ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
@@ -115,7 +122,8 @@ pub use lfo::{LFO_ID, Lfo, lfo_wave};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
-pub use midi_in::{MIDI_IN_ID, MidiIn};
+pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
+pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
@@ -126,6 +134,9 @@ pub use pan::{PAN_ID, Pan};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
 pub use random_select::{MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID, RandomSelect};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
+pub use render_clip::{
+    CLIP_SILENCE, ClipReport, ClipRequest, MAX_TAIL_SECONDS, render_clip, spawn_render_clip,
+};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
 pub use reverse::Reverse;
@@ -178,6 +189,8 @@ pub struct Library {
     /// Where MIDI In nodes get their messages from; connect a port to it
     /// with [`noodle_io::connect_midi`].
     pub midi: noodle_io::MidiBus,
+    /// Where MIDI Out nodes send their messages to.
+    pub midi_out: noodle_io::MidiOutHub,
     /// Where Sampler nodes get their samples, by hash. Give it a folder
     /// ([`SampleStore::set_dir`]) to read them from disk.
     pub samples: SampleStore,
@@ -251,7 +264,6 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Phaser);
     registry.register(Key);
     registry.register(MonoNote);
-    registry.register(MidiControl);
     registry.register(NoteSplit);
     registry.register(RandomSelect);
     registry.register(Arpeggiator);
@@ -268,6 +280,9 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     let midi = noodle_io::MidiBus::new();
     registry.register(TrackInput::with_midi(&clips, &midi));
     registry.register(MidiIn::new(&midi));
+    registry.register(MidiControl::new(&midi));
+    let midi_out = noodle_io::MidiOutHub::new(std::sync::Arc::clone(midi.clock()));
+    registry.register(MidiOut::new(&midi_out));
     let samples = SampleStore::new();
     registry.register(if clips.is_blocking() {
         Sampler::blocking(&samples, &telemetry)
@@ -278,6 +293,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         telemetry,
         clips,
         midi,
+        midi_out,
         samples,
     }
 }

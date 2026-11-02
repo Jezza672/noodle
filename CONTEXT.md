@@ -76,6 +76,15 @@ _Avoid_: Clip player, source
 Automation of one parameter over time, stored with the arrangement rather than as a wire.
 _Avoid_: Envelope (that is a synthesis node), automation track
 
+**Automate**:
+A shortcut on a parameter that adds an Automation node beside it, a lane on the node's value, and a wire from the node into the parameter, as one undo step. Nothing links the parameter and the lane except that wire. The node gets a range and taper copied from the parameter.
+
+**Arm**:
+Per Automation node, session state: an armed node writes its lane whenever the transport plays and its `value` is moved or its `record` input changes, and everything written in one play-to-stop is one undo step. Not saved.
+
+**Automation mode**:
+Read, Touch or Latch: one app-wide setting for how an armed Automation node writes its lane while the transport plays.
+
 **Mixer**:
 A view over a Mix node that shows one strip per input. It is not a separate structure.
 _Avoid_: Console, mixing desk
@@ -85,6 +94,14 @@ _Avoid_: Console, mixing desk
 **Freeze**:
 Rendering a subgraph to audio once so that playback reads the result instead of recomputing it.
 _Avoid_: Bounce, commit
+
+**Track export**:
+Writing one audio file per chosen track or group, taken after its gain and mute and before the master group, alongside the mixdown, all in one render. The export also measures each file's integrated loudness and true peak, and can normalise to a target.
+_Avoid_: Stems (that is AI separation), bounce
+
+**Render to clip**:
+Rendering a track or group, or a stretch of it, to a new audio clip on a new track in the project's renders folder, muting the original and keeping it. It runs on past the range's end until the effects fall silent, to at most 10 s.
+_Avoid_: Bounce, freeze (that keeps no clip)
 
 **Offline node**:
 A node that needs its whole input before it can produce output, so it only ever plays from a cached render.
@@ -102,14 +119,37 @@ A MIDI source that plays notes from the typing keyboard, switched on by a toolba
 **MIDI source**:
 Anything that produces live MIDI: a hardware port or the computer keyboard.
 
+**MIDI learn**:
+A shortcut on a parameter that adds a MIDI Control node set to the next controller moved and wires it into the parameter, as one undo step.
+
+**MIDI Out**:
+A node that sends an events wire to a named MIDI output port, timed to when the audio it goes with is heard, with MIDI clock and start/stop as toggles on the node.
+
+**Controller point**:
+One value of a controller, pitch bend, channel pressure or program change stored in a MIDI clip, at a tick, on a channel. A point can ramp to the next one. Played out of the track input's `midi` output with the notes; a seek or loop wrap sends each controller's last value, and the clip's end releases them.
+_Avoid_: Automation point (that belongs to an automation lane)
+
+**Note expression**:
+A value of pitch, poly pressure, timbre, volume or pan stored on one note in a MIDI clip, counted from the note's start, that plays only while the note sounds.
+
 **Armed track**:
 A track that Record writes a take to.
 
 **Take**:
 What one press of Record captures. It becomes a new clip and section on each armed track, undone as one step.
 
+**Take folder**:
+A clip holding several takes of the same span and a comp that says which take plays where.
+
+**Comp**:
+The list of spans in a take folder, each naming the take it plays. Made by swiping across takes.
+_Avoid_: Composite clip
+
+**Punch range**:
+A time range, separate from the loop, outside which Record writes nothing.
+
 **Quantise (recording)**:
-Snapping the starts of a take's notes to a grid when the take is committed. Monitoring while recording is never quantised.
+Snapping the starts of a take's notes to a grid when the take is committed; a note's expressions move with it and controller points stay where they were played. Monitoring while recording is never quantised.
 
 **Latency compensation**:
 Shifting a take earlier by the output device's latency, so it lines up with what the player heard.
@@ -181,6 +221,23 @@ An action on an audio clip that makes one new clip for each stem, and one for th
 
 **Clip mute**:
 A switch on a section that silences it without removing it, so it can be brought back. (New with Split to stems.)
+
+**Linked clips**:
+Clips on different tracks grouped (a clip group in the project) so that moving, trimming, splitting, looping, warping or deleting one does the same to all. They share one warp. Gain, fades and mute stay per clip. Recording several armed tracks in one take links the new clips, and Split to stems links the source with its stems and residual.
+_Avoid_: Edit group
+
+**Take folder**:
+An audio clip that holds several takes of the same stretch of music and a comp. Moving, splitting, copying or linking it carries every take. A loop recording makes one: each cycle is a take. The takes are windows into one audio file and share one warp. Flattening turns it into plain clips.
+_Avoid_: Take group, comp clip
+
+**Comp**:
+The list of spans in a take folder that says which take plays from where. Joins between spans crossfade (10 ms unless set).
+
+**Punch range**:
+A span of the timeline, separate from the loop, that a recording keeps: it starts at the punch-in and ends by itself at the punch-out. Saved with the project.
+
+**Count-in and pre-roll**:
+Bars of metronome before a recording starts (0, 1 or 2), and bars of the project played before the punch-in. Both are app preferences.
 
 **Stem warp**:
 Warping a clip by warping each stem and the residual with the mode that suits it, then adding them back together.

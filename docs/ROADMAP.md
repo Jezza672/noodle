@@ -5,8 +5,10 @@ is recorded in [features/](features/README.md); the design as it stands is in
 [ARCHITECTURE.md](ARCHITECTURE.md). When a piece of work here is finished, move
 its record to a file in `features/` and delete it from this page.
 
-All milestones M0 to M11 are built in code. What is left is mostly checks that
-need a person and hardware, plus a few deliberately deferred items.
+All milestones M0 to M11 are built in code. What is left is the feature
+items below that make Noodle usable in place of another DAW, checks that need a
+person and hardware, and a few
+deliberately deferred items.
 
 ## Playback cache
 
@@ -47,6 +49,7 @@ need a person and hardware, plus a few deliberately deferred items.
 
 **Then:** remaining stories, findability (entry-point tagging, vocabulary match, naive-agent runs), feedback and robustness metrics, PR scorecard diff, grades, the human rubric.
 
+
 ## Owed: needs a person on real hardware
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
@@ -68,8 +71,13 @@ need a person and hardware, plus a few deliberately deferred items.
   in separate processes" on. CI does not cover the sandbox embedding; focus from
   a background host may need `AllowSetForegroundWindow` (Windows) and
   `yieldActivation` (macOS 14+).
-- **AU leftovers** (needs a real Mac or a unit that exercises them): editors,
-  MIDI output from AU instruments, AUv3 async instantiation.
+- **AU editors** (`au/gui.rs`): open a third-party AU that ships its own
+  Cocoa view (not just Apple's generic one), edit in it, close the window and
+  see the edit kept and undoable; the same with "Run plugins in separate
+  processes" on; resizing, and focus when the app is in the background.
+- **AU leftovers** (needs a real Mac or a unit that exercises them): MIDI
+  output from AU instruments, AUv3 async instantiation with `AUViewController`
+  editors.
 - **`noodle profile --threads`** showing real-time workers on Mac and Windows;
   the macOS audio workgroup join is not done.
 - **Recording with a real microphone**, to check the latency compensation, and
@@ -100,9 +108,9 @@ need a person and hardware, plus a few deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Piano roll and recording:** quantise, more
-  than one MIDI port at a time, overdubbing into an existing clip, a count-in,
-  keeping the raw take for re-quantising. The 128-frame engine block is fixed;
+- **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
+  can be re-quantised afterwards (quantise on record and several MIDI
+  ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;
   it could follow the device period.
 - **Virtual output:** remember the live-monitoring toggle between launches and
   retry the saved device when it returns.

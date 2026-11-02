@@ -10,7 +10,7 @@ use super::draw::MIN_TEXT_ZOOM;
 use super::layout::{NodeGeom, PortKind, Side};
 use crate::session::Edit;
 use crate::widgets::ParamField;
-use crate::widgets::param::Gesture;
+use crate::widgets::param::{Automate, Gesture, LearnMidi};
 
 /// The fields of every node, shown one node at a time as the nodes are
 /// painted, so nodes in front cover them.
@@ -61,8 +61,10 @@ impl Fields {
         f: &Frame_<'_>,
         bodies: &Bodies,
         node: &NodeGeom,
+        automation: (&[NodeId], &std::collections::BTreeMap<NodeId, f32>),
         edits: &mut Vec<Edit>,
     ) {
+        let (armed, shown) = automation;
         let z = f.t.zoom;
         if node.reroute || z < MIN_TEXT_ZOOM {
             return;
@@ -90,9 +92,14 @@ impl Fields {
                     continue;
                 };
                 let input = Endpoint::new(node.id, port.key.clone());
-                if port.side != Side::Input || f.project.lane_for(&input).is_some() {
+                // An Automation node's value keeps its field with a lane: it
+                // shows the lane, and takes moves while the node is armed.
+                let ride =
+                    port.key == noodle_nodes::AUTOMATION_VALUE && shown.contains_key(&node.id);
+                if port.side != Side::Input || (f.project.lane_for(&input).is_some() && !ride) {
                     continue;
                 }
+                let idle_ride = ride && !armed.contains(&node.id);
                 let wired = graph.source(&input).is_some();
                 let is_slider = !matches!(info.kind, noodle_engine::ParamKind::Stepped { .. });
                 // A wire that replaces the value leaves nothing to edit. The
@@ -103,6 +110,9 @@ impl Fields {
                     continue;
                 }
                 let mut value = values.get(&port.key).copied().unwrap_or(info.default);
+                if ride && let Some(&lane_value) = shown.get(&node.id) {
+                    value = lane_value;
+                }
                 let live = if wired {
                     bodies.param_live(node.id, &port.key)
                 } else {
@@ -118,8 +128,18 @@ impl Fields {
                     .id_salt((node.id, &port.key))
                     .compact(true)
                     .zoom(z)
-                    .live(live, replaced);
-                let out = if replaced {
+                    .live(live, replaced)
+                    .automate(match crate::session::automate::refusal(f.project, &input) {
+                        None => Automate::Offered,
+                        Some(why) => Automate::Refused(why),
+                    })
+                    .learn_midi(
+                        match crate::session::learn_midi::refusal(f.project, &input) {
+                            None => LearnMidi::Offered,
+                            Some(why) => LearnMidi::Refused(why),
+                        },
+                    );
+                let out = if replaced || idle_ride {
                     // Drawn like a disabled field, with the live value on it.
                     ui.scope(|ui| {
                         ui.disable();

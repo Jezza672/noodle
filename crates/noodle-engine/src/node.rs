@@ -741,6 +741,9 @@ pub struct Transport {
     /// The tick where that time signature began (0 until the first change),
     /// so bars and beats count from it.
     pub signature_start: f64,
+    /// Whether a recording is counting in: the metronome clicks even if it is
+    /// switched off.
+    pub count_in: bool,
 }
 
 impl Default for Transport {
@@ -754,6 +757,7 @@ impl Default for Transport {
             bpm: 120.0,
             signature: noodle_core::TimeSignature::COMMON,
             signature_start: 0.0,
+            count_in: false,
         }
     }
 }

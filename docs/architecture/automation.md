@@ -64,3 +64,14 @@ into a parameter port.** It is not a clip and not a node the user wires.
   the node and a lane on its `value` as one undo step, and the node's `out` is
   wired like any other output. Its lane is a 0 to 1 slider-style row (not a
   switch), numbered "Automation 1, 2, ..." by node order.
+- **Automate (a graph shortcut).** `Edit::Automate` on a parameter adds an
+  Automation node in the parameter's group, a lane on its `value` and a wire
+  into the parameter, as one undo step; see
+  [features/automate.md](../features/automate.md). The node maps `value` (0 to
+  1) onto its `min` and `max` parameters on a linear or log taper, and keeps a
+  `label` config. Nothing in the compiler knows about it.
+- **Tension.** A point's curve is `Hold`, `Linear` or `Tension(t)` with `t` in
+  -1 to 1 (exponential, through straight, to S-curve). `Curve::shape` shapes
+  the segment for both `AutomationLane::value_at` and the lane source, so the UI
+  and the sound agree.
+- **Recording.** An armed Automation node writes its lane while the transport plays: moves of its `value` and the signal on its `record` input are buffered by the session's `Recorder` and committed as one `Command::Batch` when the Pass ends. See [features/automate.md](../features/automate.md).

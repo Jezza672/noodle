@@ -33,6 +33,14 @@ pub struct Prefs {
     /// Whether the playback cache picks what to cache by itself. On unless
     /// turned off.
     pub auto_cache: bool,
+    /// Bars of metronome before a recording starts (0, 1 or 2).
+    pub count_in_bars: u8,
+    /// Bars of the project played before a punch-in.
+    pub pre_roll_bars: u8,
+    /// Whether the cycles of a loop recording of MIDI are takes or merge.
+    pub midi_record: crate::midi_take::MidiRecord,
+    /// How armed Automation nodes write: Read, Touch or Latch.
+    pub automation_mode: crate::session::record_automation::AutomationMode,
 }
 
 impl Default for Prefs {
@@ -42,6 +50,10 @@ impl Default for Prefs {
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: true,
+            count_in_bars: 0,
+            pre_roll_bars: 0,
+            midi_record: Default::default(),
+            automation_mode: Default::default(),
         }
     }
 }
@@ -128,6 +140,49 @@ pub fn remember_auto_cache(on: bool) {
     });
 }
 
+/// Saves the count-in and pre-roll, with the other preferences, if [`init`]
+/// has been called.
+pub fn remember_recording(count_in_bars: u8, pre_roll_bars: u8) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.count_in_bars = count_in_bars;
+        prefs.pre_roll_bars = pre_roll_bars;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves the Takes or Merge setting for MIDI loop recordings, with the other
+/// preferences, if [`init`] has been called.
+pub fn remember_midi_record(mode: crate::midi_take::MidiRecord) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.midi_record = mode;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves the automation mode, with the other preferences, if [`init`] has
+/// been called.
+pub fn remember_automation_mode(mode: crate::session::record_automation::AutomationMode) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.automation_mode = mode;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// Saves the device the node monitor plays on, with the other preferences, if
 /// [`init`] has been called.
 pub fn remember_monitor_device(device: &str) {
@@ -195,12 +250,16 @@ mod tests {
                 sample_rate: Some(48_000),
                 buffer_size: Some(256),
                 channels: Some(6),
-                midi_input: Some("Keystation 49".into()),
+                midi_inputs: vec!["Keystation 49".into(), "Pad Controller".into()],
                 threads: 2,
             },
+            count_in_bars: 0,
+            pre_roll_bars: 0,
             sandbox_plugins: false,
             monitor_device: String::new(),
             auto_cache: false,
+            midi_record: crate::midi_take::MidiRecord::Takes,
+            automation_mode: crate::session::record_automation::AutomationMode::Latch,
         }
     }
 
@@ -252,15 +311,26 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_input:Some("Keystation 49"),threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
         let prefs: Prefs = ron::from_str(old).unwrap();
-        assert_eq!(prefs.audio.midi_input, None);
+        assert!(prefs.audio.midi_inputs.is_empty());
         assert_eq!(prefs.audio.threads, 0);
         assert_eq!(prefs.audio.buffer_size, Some(256));
         assert!(!prefs.sandbox_plugins);
+    }
+
+    #[test]
+    fn the_automation_mode_is_saved_and_defaults_to_touch() {
+        use crate::session::record_automation::AutomationMode;
+        assert_eq!(Prefs::default().automation_mode, AutomationMode::Touch);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        remember_automation_mode(AutomationMode::Read);
+        assert_eq!(load(&path).unwrap().automation_mode, AutomationMode::Read);
     }
 
     #[test]
@@ -276,6 +346,16 @@ mod tests {
         assert!(!load(&path).unwrap().auto_cache);
         remember_auto_cache(true);
         assert!(load(&path).unwrap().auto_cache);
+    }
+
+    #[test]
+    fn the_count_in_and_pre_roll_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        remember_recording(2, 3);
+        let saved = load(&path).unwrap();
+        assert_eq!((saved.count_in_bars, saved.pre_roll_bars), (2, 3));
     }
 
     #[test]

@@ -15,10 +15,10 @@
 //! (`MusicDeviceMIDIEvent`), parameters through `AudioUnitSetParameter` with
 //! a sample offset, and state is the unit's class-info property list.
 //!
-//! Not supported yet: plugin editors (parameters have ports, and the state
-//! saved in a project is whatever the node already holds), AUv3 extensions
-//! that need asynchronous instantiation, MIDI output, and sidechain buses
-//! beyond what the unit's own input buses give.
+//! Editors are in `gui.rs`. Not supported yet: AUv3 extensions that need
+//! asynchronous instantiation (and with them `AUViewController` editors),
+//! MIDI output, and sidechain buses beyond what the unit's own input buses
+//! give.
 
 // Most of the helpers are for the macOS code; the rest of the crate and the
 // tests still use the pure parts everywhere.
@@ -32,6 +32,8 @@ use noodle_engine::EventKind;
 use crate::host::HostError;
 
 #[cfg(target_os = "macos")]
+pub(crate) mod gui;
+#[cfg(target_os = "macos")]
 mod node;
 #[cfg(target_os = "macos")]
 mod plugin;
@@ -42,6 +44,66 @@ pub(crate) use node::{au_node, load};
 pub use plugin::describe_file;
 #[cfg(target_os = "macos")]
 pub(crate) use plugin::{capture_state, component_files, stamp};
+
+// What the editor code asks of AU editors, which exist on macOS only.
+
+/// Whether `key` is an AU editor's.
+pub(crate) fn is_gui_key(key: u64) -> bool {
+    #[cfg(target_os = "macos")]
+    return gui::is_key(key);
+    #[cfg(not(target_os = "macos"))]
+    return {
+        let _ = key;
+        false
+    };
+}
+
+/// Opens, closes and reads an AU editor's unit.
+pub(crate) fn gui_open(key: u64) -> Result<(), crate::host::HostError> {
+    #[cfg(target_os = "macos")]
+    return gui::open(key);
+    #[cfg(not(target_os = "macos"))]
+    return Err(unsupported_for(key));
+}
+
+pub(crate) fn gui_close(key: u64) {
+    #[cfg(target_os = "macos")]
+    gui::close(key);
+    #[cfg(not(target_os = "macos"))]
+    let _ = key;
+}
+
+pub(crate) fn gui_capture(
+    key: u64,
+    with_state: bool,
+) -> Result<crate::editor::Captured, crate::host::HostError> {
+    #[cfg(target_os = "macos")]
+    return gui::capture(key, with_state);
+    #[cfg(not(target_os = "macos"))]
+    return {
+        let _ = with_state;
+        Err(unsupported_for(key))
+    };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unsupported_for(_key: u64) -> crate::host::HostError {
+    unsupported()
+}
+
+/// Editors the user closed (the plugin thread calls this each time round).
+pub(crate) fn gui_housekeeping() {
+    #[cfg(target_os = "macos")]
+    gui::housekeeping();
+}
+
+/// Whether any AU editor is open and needs the thread to look now and then.
+pub(crate) fn gui_any() -> bool {
+    #[cfg(target_os = "macos")]
+    return gui::any();
+    #[cfg(not(target_os = "macos"))]
+    return false;
+}
 
 /// What starts the path of the virtual file an AU is listed as.
 pub(crate) const PATH_PREFIX: &str = "audiounit:";

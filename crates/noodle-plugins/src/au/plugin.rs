@@ -11,15 +11,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use objc2_audio_toolbox::{
     AURenderCallbackStruct, AudioComponent, AudioComponentCopyName, AudioComponentDescription,
     AudioComponentFindNext, AudioComponentGetDescription, AudioComponentGetVersion,
-    AudioComponentInstanceDispose, AudioComponentInstanceNew, AudioUnit, AudioUnitGetProperty,
-    AudioUnitGetPropertyInfo, AudioUnitInitialize, AudioUnitParameterInfo,
+    AudioComponentInstanceDispose, AudioComponentInstanceNew, AudioUnit, AudioUnitGetParameter,
+    AudioUnitGetProperty, AudioUnitGetPropertyInfo, AudioUnitInitialize, AudioUnitParameterInfo,
     AudioUnitParameterOptions, AudioUnitParameterUnit, AudioUnitReset, AudioUnitSetProperty,
     AudioUnitUninitialize, HostCallbackInfo, kAudioUnitProperty_ClassInfo,
-    kAudioUnitProperty_ElementCount, kAudioUnitProperty_HostCallbacks, kAudioUnitProperty_Latency,
-    kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitProperty_ParameterInfo,
-    kAudioUnitProperty_ParameterList, kAudioUnitProperty_SetRenderCallback,
-    kAudioUnitProperty_StreamFormat, kAudioUnitScope_Global, kAudioUnitScope_Input,
-    kAudioUnitScope_Output,
+    kAudioUnitProperty_CocoaUI, kAudioUnitProperty_ElementCount, kAudioUnitProperty_HostCallbacks,
+    kAudioUnitProperty_Latency, kAudioUnitProperty_MaximumFramesPerSlice,
+    kAudioUnitProperty_ParameterInfo, kAudioUnitProperty_ParameterList,
+    kAudioUnitProperty_SetRenderCallback, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Global,
+    kAudioUnitScope_Input, kAudioUnitScope_Output,
 };
 use objc2_core_audio_types::{
     AudioBufferList, AudioStreamBasicDescription, kAudioFormatFlagIsNonInterleaved,
@@ -320,22 +320,7 @@ impl Unit {
     }
 
     fn get<T>(&self, property: u32, scope: u32, element: u32) -> Result<T, HostError> {
-        let mut value = MaybeUninit::<T>::uninit();
-        let mut size = size_of::<T>() as u32;
-        // SAFETY: the buffer is `size` bytes; the unit fills at most that.
-        let status = unsafe {
-            AudioUnitGetProperty(
-                self.instance,
-                property,
-                scope,
-                element,
-                NonNull::new_unchecked(value.as_mut_ptr().cast()),
-                NonNull::from(&mut size),
-            )
-        };
-        check(status, &format!("reading property {property}"))?;
-        // SAFETY: the unit wrote the value (a plain-data struct or number).
-        Ok(unsafe { value.assume_init() })
+        get_property(self.instance, property, scope, element)
     }
 
     fn get_list<T: Copy>(&self, property: u32, scope: u32) -> Result<Vec<T>, HostError> {
@@ -588,24 +573,7 @@ impl Unit {
 
     /// The unit's state, as a binary property list.
     pub fn save_state(&self) -> Result<Vec<u8>, HostError> {
-        let list: *const CFPropertyList =
-            self.get(kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0)?;
-        let list = NonNull::new(list.cast_mut())
-            .ok_or_else(|| HostError("the Audio Unit has no state".into()))?;
-        // SAFETY: the property hands over a retained property list.
-        let list = unsafe { CFRetained::from_raw(list) };
-        // SAFETY: a live property list and no error out pointer.
-        let data = unsafe {
-            objc2_core_foundation::CFPropertyListCreateData(
-                None,
-                Some(&list),
-                CFPropertyListFormat::BinaryFormat_v1_0,
-                0,
-                ptr::null_mut(),
-            )
-        }
-        .ok_or_else(|| HostError("couldn't serialise the Audio Unit's state".into()))?;
-        Ok(data.to_vec())
+        save_state_of(self.instance)
     }
 
     /// Restores state saved by [`save_state`](Self::save_state).
@@ -631,6 +599,125 @@ impl Unit {
             &pointer,
         )
     }
+}
+
+/// Reads a plain-data property of `instance`.
+fn get_property<T>(
+    instance: AudioUnit,
+    property: u32,
+    scope: u32,
+    element: u32,
+) -> Result<T, HostError> {
+    let mut value = MaybeUninit::<T>::uninit();
+    let mut size = size_of::<T>() as u32;
+    // SAFETY: the buffer is `size` bytes; the unit fills at most that.
+    let status = unsafe {
+        AudioUnitGetProperty(
+            instance,
+            property,
+            scope,
+            element,
+            NonNull::new_unchecked(value.as_mut_ptr().cast()),
+            NonNull::from(&mut size),
+        )
+    };
+    check(status, &format!("reading property {property}"))?;
+    // SAFETY: the unit wrote the value (a plain-data struct or number).
+    Ok(unsafe { value.assume_init() })
+}
+
+/// A unit's state, as a binary property list. `instance` must be live.
+pub(crate) fn save_state_of(instance: AudioUnit) -> Result<Vec<u8>, HostError> {
+    let list: *const CFPropertyList = get_property(
+        instance,
+        kAudioUnitProperty_ClassInfo,
+        kAudioUnitScope_Global,
+        0,
+    )?;
+    let list = NonNull::new(list.cast_mut())
+        .ok_or_else(|| HostError("the Audio Unit has no state".into()))?;
+    // SAFETY: the property hands over a retained property list.
+    let list = unsafe { CFRetained::from_raw(list) };
+    // SAFETY: a live property list and no error out pointer.
+    let data = unsafe {
+        objc2_core_foundation::CFPropertyListCreateData(
+            None,
+            Some(&list),
+            CFPropertyListFormat::BinaryFormat_v1_0,
+            0,
+            ptr::null_mut(),
+        )
+    }
+    .ok_or_else(|| HostError("couldn't serialise the Audio Unit's state".into()))?;
+    Ok(data.to_vec())
+}
+
+/// A parameter's current value in the global scope. `instance` must be live.
+pub(crate) fn parameter_of(instance: AudioUnit, id: u32) -> Option<f32> {
+    let mut value = 0.0f32;
+    // SAFETY: a live unit and a valid out pointer.
+    let status = unsafe {
+        AudioUnitGetParameter(
+            instance,
+            id,
+            kAudioUnitScope_Global,
+            0,
+            NonNull::from(&mut value),
+        )
+    };
+    (status == OK).then_some(value)
+}
+
+/// The view factory a unit publishes for its own editor: the bundle to load
+/// and the name of the class in it. `instance` must be live.
+pub(crate) fn cocoa_view_of(
+    instance: AudioUnit,
+) -> Option<(CFRetained<objc2_core_foundation::CFType>, String)> {
+    let mut size = 0u32;
+    let mut writable = 0u8;
+    // SAFETY: valid out pointers.
+    let status = unsafe {
+        AudioUnitGetPropertyInfo(
+            instance,
+            kAudioUnitProperty_CocoaUI,
+            kAudioUnitScope_Global,
+            0,
+            &mut size,
+            &mut writable,
+        )
+    };
+    // The property is a bundle URL followed by one or more class names.
+    let (word, header) = (size_of::<*const c_void>(), size_of::<*const c_void>() * 2);
+    if status != OK || (size as usize) < header {
+        return None;
+    }
+    let mut words = vec![0usize; (size as usize).div_ceil(word)];
+    let mut got = size;
+    // SAFETY: the buffer holds `size` bytes.
+    let status = unsafe {
+        AudioUnitGetProperty(
+            instance,
+            kAudioUnitProperty_CocoaUI,
+            kAudioUnitScope_Global,
+            0,
+            NonNull::new_unchecked(words.as_mut_ptr().cast()),
+            NonNull::from(&mut got),
+        )
+    };
+    if status != OK {
+        return None;
+    }
+    let count = (got as usize / word).min(words.len());
+    // The unit hands over a reference to each of these.
+    // SAFETY: each word past the first is a CFString (or null), the first a CFURL.
+    let url = NonNull::new(words[0] as *mut objc2_core_foundation::CFType)
+        .map(|p| unsafe { CFRetained::from_raw(p) });
+    let names: Vec<CFRetained<CFString>> = words[1..count]
+        .iter()
+        .filter_map(|&w| NonNull::new(w as *mut CFString))
+        .map(|p| unsafe { CFRetained::from_raw(p) })
+        .collect();
+    Some((url?, names.first()?.to_string()))
 }
 
 impl Drop for Unit {

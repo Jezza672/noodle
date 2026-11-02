@@ -8,7 +8,9 @@ mod export;
 mod files;
 mod hash;
 mod input;
+mod loudness;
 mod midi;
+mod midi_out;
 mod onsets;
 mod output;
 mod peaks;
@@ -30,9 +32,14 @@ pub use export::{ExportError, ExportFormat, ExportWriter};
 pub use files::{AudioFiles, FileStamp};
 pub use hash::{FileHasher, Peek};
 pub use input::{Capture, Feed, InputMeter, input_path, recordable_input_path};
+pub use loudness::{Loudness, LoudnessMeter, measure as measure_loudness};
 pub use midi::{
-    AudioClock, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage, MidiReceiver,
-    TimedMessage, TimedPacket, connect_midi, midi_inputs, now_micros, parse_message, same_port,
+    ALL_INPUTS, AudioClock, Heard, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage,
+    MidiReceiver, MidiTap, TimedMessage, TimedPacket, connect_midi, is_all_inputs, midi_inputs,
+    now_micros, parse_message, same_port,
+};
+pub use midi_out::{
+    MidiOutHub, MidiOutSender, MidiSink, OpenSink, OutMessage, midi_outputs, open_midi_output,
 };
 pub use onsets::{
     ANALYSIS_SECONDS, Analysis, CLEAR_PROMINENCE, CLEAR_TEMPO, PROMINENT_ONSETS, TempoEstimate,

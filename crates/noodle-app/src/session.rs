@@ -12,14 +12,21 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub mod automate;
 mod export;
+pub mod learn_midi;
 mod library;
+pub mod record_automation;
+mod render_clip;
 mod stems;
-pub use export::ExportChoice;
+pub use export::{ExportChoice, ExportSummary};
 pub use library::LibraryEdit;
 
 use crate::freezing::{Badge, Freezing, Look, Polled};
-use noodle_core::{Clip, Command, EditError, FrameId, History, MidiClip, NodeId, Project, Tick};
+use noodle_core::{
+    Clip, ClipId, Command, EditError, FrameId, History, MidiClip, NodeId, Project,
+    TICKS_PER_QUARTER, Tick,
+};
 use noodle_engine::{
     Controller, Diagnostic, Pass, Registry, Settings, Telemetry, TempoTable, compile_replacing,
     compile_with_lanes,
@@ -48,6 +55,31 @@ pub enum Saved {
     NoFile,
 }
 
+/// How often an open plugin editor is looked at for edited parameters.
+const PLUGIN_LIVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// An open plugin editor, as the session last saw it.
+#[derive(Default)]
+struct LiveEditor {
+    polled: Option<Instant>,
+    /// Each parameter's plugin ID and the value last read.
+    seen: std::collections::BTreeMap<u32, f64>,
+    /// A gesture's undo step is open.
+    dragging: bool,
+}
+
+/// How often "learn" looks at the plugin's parameters.
+const PARAM_LEARN_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A node waiting for its plugin's parameter to be moved.
+struct ParamLearn {
+    node: NodeId,
+    key: noodle_plugins::EditorKey,
+    /// Every parameter's value when learning started.
+    baseline: Vec<(u32, f64)>,
+    checked: Instant,
+}
+
 /// A change a view wants made.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Edit {
@@ -64,15 +96,44 @@ pub enum Edit {
         node: NodeId,
         open: bool,
     },
+    /// Starts or stops "learn" on a plugin node: with it on, the next
+    /// parameter moved in the plugin's editor gets a port on the node. Opens
+    /// the editor if it isn't up.
+    ParamLearn {
+        node: NodeId,
+        on: bool,
+    },
     /// Saves to or deletes from the user's library. Not an undo step: the
     /// project is untouched.
     Library(LibraryEdit),
     /// Replaces the contents of a group with its library template's current
     /// version. One undo step.
     UpdateFromTemplate(NodeId),
+    /// The Automate shortcut on a parameter: an Automation node, its lane
+    /// and the wire into the parameter, as one undo step (see [`automate`]).
+    Automate(noodle_core::Endpoint),
+    /// Learn MIDI on a parameter: the next control moved on any open MIDI
+    /// port becomes a MIDI Control node wired into it (see [`learn_midi`]).
+    /// Choosing it again on the same parameter stops listening.
+    LearnMidi(noodle_core::Endpoint),
+    /// Stops listening for MIDI learn.
+    CancelLearnMidi,
+    /// Arms or disarms an Automation node for recording (see
+    /// [`record_automation`]). Session state: not an undo step, not saved.
+    ArmAutomation {
+        node: NodeId,
+        on: bool,
+    },
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
+    /// the loop's span if `in_loop`, else the whole timeline. Not an edit
+    /// itself: the track arrives as one undo step when the render is done.
+    RenderToClip {
+        group: NodeId,
+        in_loop: bool,
+    },
     /// A choice from the monitor button's right-click menu: monitor `node`
     /// in `mode` (alone, or added to the others), or stop. Not an undo step.
     MonitorAs {
@@ -142,6 +203,9 @@ impl Nodes {
             clips,
             midi,
             samples,
+            // The MIDI Out nodes hold the hub; the clock it shares with
+            // `midi` is how the device tells them when blocks are heard.
+            midi_out: _,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
@@ -236,8 +300,12 @@ pub struct Session {
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
     plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
+    /// What each open plugin editor last showed, to turn changes into edits.
+    plugin_live: std::collections::BTreeMap<NodeId, LiveEditor>,
     /// Why a plugin's editor last failed to open, until it opens.
     plugin_editor_errors: std::collections::BTreeMap<NodeId, String>,
+    /// A plugin node waiting for the user to move one of its parameters.
+    param_learn: Option<ParamLearn>,
     /// Whether plugins run in processes of their own.
     sandbox_plugins: bool,
     /// How many restarts of each plugin host have been reported, and when
@@ -250,8 +318,11 @@ pub struct Session {
     midi: noodle_io::MidiBus,
     /// The samples the Samplers play, kept in `samples` beside the project.
     samples: noodle_nodes::SampleStore,
-    /// The open MIDI input port, if one is chosen and opened.
-    midi_connection: Option<noodle_io::MidiConnection>,
+    /// The open MIDI input ports, each with the name it was chosen by.
+    midi_connections: Vec<(String, noodle_io::MidiConnection)>,
+    /// MIDI learn in progress: the parameter waiting for a control, and
+    /// what listens for it.
+    learning: Option<learn_midi::Learning>,
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
     midi_watch: MidiWatch,
     /// Watches the audio files clips play for being replaced on disk.
@@ -303,8 +374,27 @@ pub struct Session {
     armed_midi: BTreeSet<NodeId>,
     /// The take being recorded, if there is one.
     recording: Option<Recording>,
+    /// A recording waiting out its count-in.
+    counting_in: Option<CountIn>,
+    /// Bars of metronome before a recording starts (0 to 2), and bars of the
+    /// project played before a punch-in. App preferences, not saved with the
+    /// project.
+    count_in_bars: u8,
+    pre_roll_bars: u8,
     /// How the MIDI of the next take is snapped. Not saved with the project.
     record_quantise: crate::midi_take::Quantise,
+    /// The take folder and take being auditioned: it plays alone, in place of
+    /// the comp, until this is cleared. Not saved, and not exported.
+    audition: Option<(ClipId, usize)>,
+    /// Whether the cycles of a loop recording of MIDI are takes or merge.
+    record_midi: crate::midi_take::MidiRecord,
+    /// Which Automation nodes are armed, and the Pass being recorded.
+    automation: record_automation::Recorder,
+    /// How armed nodes write. Saved as an app preference, not with the project.
+    automation_mode: record_automation::AutomationMode,
+    /// The lanes whose source is playing a move being recorded instead of
+    /// the lane.
+    live_lanes: std::collections::BTreeSet<noodle_core::LaneId>,
     /// The step, in ticks, that clips, notes and markers snap to (see
     /// [`crate::snap`]). Not saved with the project.
     snap: i64,
@@ -316,6 +406,10 @@ pub struct Session {
     message: Option<String>,
     /// The export under way, if there is one.
     exporting: Option<export::Run>,
+    /// The render to clip under way, if there is one.
+    rendering: Option<render_clip::Run>,
+    /// How the last export went, for the dialog.
+    export_summary: Option<ExportSummary>,
     /// Split to stems: the separator and the split under way, if any.
     stems: stems::Stems,
 }
@@ -353,14 +447,33 @@ pub struct TakePreview {
     pub midi: Option<(Tick, MidiClip)>,
 }
 
+/// A recording that starts when its count-in is over.
+struct CountIn {
+    due: Instant,
+    /// Where the take begins and where it ends (the punch-out), as
+    /// [`Recording::keep`].
+    from: Tick,
+    out: Option<Tick>,
+}
+
 /// A take being recorded.
 struct Recording {
     /// The tracks that get an audio clip of it, and those that get a MIDI
     /// clip.
     audio_tracks: Vec<NodeId>,
     midi_tracks: Vec<NodeId>,
-    /// Where the take starts on the timeline.
+    /// Where the file starts on the timeline: the playhead when the input
+    /// began to be recorded, which is before `keep.0` after a pre-roll.
     start: Tick,
+    /// The part of the timeline the take keeps: from the first tick (the
+    /// punch-in, or where the playhead was) to the second (the punch-out),
+    /// if there is one. The file also holds the pre-roll before it.
+    keep: (Tick, Option<Tick>),
+    /// The loop being recorded in, when every cycle is a take.
+    cycle: Option<(Tick, Tick)>,
+    /// Whether the MIDI take has been restarted at `keep.0`, so the notes
+    /// played in the pre-roll are not in it.
+    midi_started: bool,
     /// The audio file, relative to the project file, when an input is being
     /// recorded.
     relative: Option<String>,
@@ -370,16 +483,58 @@ struct Recording {
     quantise: crate::midi_take::Quantise,
 }
 
-/// The clip for a take of `frames` frames that began when the transport was
-/// at `start`, with its first `latency` frames cut off (they were the sound
-/// that was already on its way when the take began). Keeps at least a frame.
-fn recorded_clip(track: NodeId, start: Tick, relative: &str, frames: u64, latency: u64) -> Clip {
-    let skip = latency.min(frames.saturating_sub(1));
-    let mut clip = Clip::audio(track, start, relative, frames - skip);
+/// The clip for a take whose file has `frames` frames, showing the file from
+/// frame `offset` (the frames before it were the sound already on its way
+/// when the take began, or the pre-roll) for `length` frames, starting at
+/// `at`. Keeps at least a frame.
+fn recorded_clip(
+    track: NodeId,
+    at: Tick,
+    relative: &str,
+    frames: u64,
+    offset: u64,
+    length: u64,
+) -> Clip {
+    let skip = offset.min(frames.saturating_sub(1));
+    let mut clip = Clip::audio(track, at, relative, length.min(frames - skip).max(1));
     if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
         audio.offset = skip;
     }
     clip
+}
+
+/// The takes a loop recording made. The file holds one pass through the loop
+/// after another, `cycle` frames apart; the first pass shows its `window` from
+/// frame `offset`. Each pass with at least a quarter of the window in the file
+/// is a take (a sliver at the end, from stopping just after a wrap, is not).
+/// Returns the takes and the one a new comp plays: the last complete one.
+fn loop_takes(
+    frames: u64,
+    offset: u64,
+    window: u64,
+    cycle: u64,
+) -> (Vec<noodle_core::Take>, usize) {
+    let mut takes = Vec::new();
+    let mut complete = None;
+    if cycle == 0 {
+        return (takes, 0);
+    }
+    for k in 0u64.. {
+        let first = offset.saturating_add(k.saturating_mul(cycle));
+        if first >= frames {
+            break;
+        }
+        let content = (frames - first).min(window);
+        if k > 0 && content * 4 < window {
+            break;
+        }
+        takes.push(noodle_core::Take { delta: k * cycle });
+        if content >= window {
+            complete = Some(takes.len() - 1);
+        }
+    }
+    let last = takes.len().saturating_sub(1);
+    (takes, complete.unwrap_or(last))
 }
 
 /// Something that can record the input to a file.
@@ -525,7 +680,9 @@ impl Session {
             plugin_scan,
             plugin_files,
             plugin_editors: Default::default(),
+            plugin_live: Default::default(),
             plugin_editor_errors: Default::default(),
+            param_learn: None,
             sandbox_plugins: false,
             host_restarts: Default::default(),
             hosts_checked: None,
@@ -533,10 +690,13 @@ impl Session {
             clips,
             midi,
             samples,
-            midi_connection: None,
+            midi_connections: Vec::new(),
+            learning: None,
             midi_watch: MidiWatch::default(),
             file_stamps: HashMap::new(),
             exporting: None,
+            rendering: None,
+            export_summary: None,
             stems: stems::Stems::new(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
@@ -557,7 +717,15 @@ impl Session {
             armed_audio: BTreeSet::new(),
             armed_midi: BTreeSet::new(),
             recording: None,
+            counting_in: None,
+            count_in_bars: 0,
+            pre_roll_bars: 0,
             record_quantise: crate::midi_take::Quantise::default(),
+            audition: None,
+            record_midi: Default::default(),
+            automation: record_automation::Recorder::default(),
+            automation_mode: record_automation::AutomationMode::default(),
+            live_lanes: Default::default(),
             snap: crate::snap::DEFAULT,
             #[cfg(test)]
             fake_input: None,
@@ -706,11 +874,11 @@ impl Session {
     /// Chooses the device to play on. If playing, playback restarts there.
     pub fn set_audio_config(&mut self, config: AudioConfig) {
         let without_midi = |c: &AudioConfig| AudioConfig {
-            midi_input: None,
+            midi_inputs: Vec::new(),
             ..c.clone()
         };
         let audio_changed = without_midi(&self.audio_config) != without_midi(&config);
-        let midi_changed = self.audio_config.midi_input != config.midi_input;
+        let midi_changed = self.audio_config.midi_inputs != config.midi_inputs;
         self.audio_config = config;
         if midi_changed {
             self.connect_midi();
@@ -733,37 +901,47 @@ impl Session {
         &self.midi
     }
 
-    /// The MIDI input port that is open, if any.
+    /// The names of the MIDI input ports that are open.
     #[cfg(test)]
-    pub fn midi_input(&self) -> Option<&str> {
-        self.midi_connection.as_ref().map(|c| c.name())
+    pub fn midi_inputs(&self) -> Vec<&str> {
+        self.midi_connections
+            .iter()
+            .map(|(_, c)| c.name())
+            .collect()
     }
 
-    /// Opens the chosen MIDI input port, closing the one before. A port that
-    /// won't open leaves none open and says why.
+    /// Opens the chosen MIDI input ports and closes the ones no longer
+    /// chosen, leaving the rest as they are. A port that won't open is
+    /// skipped and says why.
     fn connect_midi(&mut self) {
-        self.close_midi();
-        let Some(name) = self.audio_config.midi_input.clone() else {
-            return;
-        };
-        match noodle_io::connect_midi(&name, &self.midi) {
-            Ok(connection) => self.midi_connection = Some(connection),
-            Err(error) => self.message = Some(format!("MIDI input: {error}")),
+        let chosen = self.audio_config.midi_inputs.clone();
+        let kept: Vec<_> = std::mem::take(&mut self.midi_connections)
+            .into_iter()
+            .filter_map(|(name, connection)| {
+                if chosen.contains(&name) {
+                    Some((name, connection))
+                } else {
+                    self.midi.all_notes_off_from(connection.name());
+                    None
+                }
+            })
+            .collect();
+        self.midi_connections = kept;
+        for name in chosen {
+            if self.midi_connections.iter().any(|(n, _)| *n == name) {
+                continue;
+            }
+            match noodle_io::connect_midi(&name, &self.midi) {
+                Ok(connection) => self.midi_connections.push((name, connection)),
+                Err(error) => self.message = Some(format!("MIDI input: {error}")),
+            }
         }
     }
 
     /// Whether a MIDI port is chosen, so the window should look at the
     /// ports now and then even when nothing else makes it redraw.
     pub fn watching_midi(&self) -> bool {
-        self.audio_config.midi_input.is_some()
-    }
-
-    /// Lets go of the MIDI port, releasing the notes it held down (they
-    /// would never see their note-offs).
-    fn close_midi(&mut self) {
-        if self.midi_connection.take().is_some() {
-            self.midi.all_notes_off();
-        }
+        !self.audio_config.midi_inputs.is_empty()
     }
 
     /// Takes the result of the background plugin scan, once it's done: new
@@ -947,6 +1125,108 @@ impl Session {
         }
     }
 
+    /// Whether the node is waiting for a parameter to be moved.
+    pub fn param_learning(&self, node: NodeId) -> bool {
+        self.param_learn.as_ref().is_some_and(|l| l.node == node)
+    }
+
+    /// Opens the node's editor and remembers every parameter's value, so the
+    /// next one that moves can be found. Works in the plugin's own window, so
+    /// it needs no callback from the plugin and is the same for every format.
+    fn start_param_learn(&mut self, node: NodeId) {
+        self.param_learn = None;
+        if !noodle_plugins::editor_is_open(node) {
+            self.plugin_editor(node, true);
+        }
+        let Some(key) = self.plugin_editors.get(&node).copied() else {
+            return;
+        };
+        match noodle_plugins::capture_key(key) {
+            Ok(captured) => {
+                self.param_learn = Some(ParamLearn {
+                    node,
+                    key,
+                    baseline: captured.params,
+                    checked: Instant::now(),
+                });
+                self.message = Some("Move a control in the plugin's editor".into());
+            }
+            Err(error) => self.message = Some(format!("Couldn't learn: {error}")),
+        }
+    }
+
+    /// Looks, a few times a second, for the control the user moved. That
+    /// parameter gets a port on the node. Building the node again closes the
+    /// editor, so the state is kept in the same undo step, as the parameter
+    /// picker does.
+    fn poll_param_learn(&mut self) {
+        let Some(learn) = &mut self.param_learn else {
+            return;
+        };
+        let (node, key) = (learn.node, learn.key);
+        if !noodle_plugins::editor_key_is_open(key) || !noodle_plugins::editor_instance_running(key)
+        {
+            self.param_learn = None;
+            return;
+        }
+        if learn.checked.elapsed() < PARAM_LEARN_INTERVAL {
+            return;
+        }
+        learn.checked = Instant::now();
+        let baseline = learn.baseline.clone();
+        let Ok(captured) = noodle_plugins::capture_params_key(key) else {
+            return;
+        };
+        let Some(plugin) = self.plugin_of(node) else {
+            self.param_learn = None;
+            return;
+        };
+        let descriptor = plugin.descriptor().clone();
+        let Some(config) = self.project.graph().node(node).map(|n| n.config.clone()) else {
+            self.param_learn = None;
+            return;
+        };
+        let mut chosen: Vec<u32> = noodle_plugins::exposed_params(&descriptor, &config)
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        // A parameter already on the node can move by itself (a wire, an
+        // automation lane), so only the others count.
+        let others: Vec<(u32, f64)> = captured
+            .params
+            .iter()
+            .filter(|(id, _)| !chosen.contains(id))
+            .copied()
+            .collect();
+        let Some(id) = noodle_plugins::learned_param(&descriptor, &baseline, &others) else {
+            return;
+        };
+        self.param_learn = None;
+        let name = descriptor
+            .params
+            .iter()
+            .find(|p| p.id == id)
+            .map_or_else(|| format!("parameter {id}"), |p| p.name.clone());
+        chosen.push(id);
+        let config = config.with(
+            noodle_plugins::PARAMS_KEY,
+            noodle_core::Value::Text(noodle_plugins::params_text(&chosen)),
+        );
+        let command = Command::Batch(vec![
+            Command::SetConfig {
+                node,
+                key: noodle_plugins::PARAMS_KEY.to_owned(),
+                value: Some(noodle_core::Value::Text(noodle_plugins::params_text(
+                    &chosen,
+                ))),
+            },
+            captured.commands(node, &descriptor, &config),
+        ]);
+        self.plugin_editors.remove(&node);
+        self.edit([Edit::Apply(command)]);
+        self.message = Some(format!("Added {name} to the node"));
+    }
+
     /// Why the node's plugin editor didn't open, if it hasn't.
     pub fn plugin_editor_error(&self, node: NodeId) -> Option<&str> {
         self.plugin_editor_errors.get(&node).map(String::as_str)
@@ -956,6 +1236,7 @@ impl Session {
     /// stays on the list until that worked, or its plugin instance is gone
     /// (the graph was built again, which loses what the editor changed).
     fn poll_plugin_editors(&mut self) {
+        self.sync_open_plugin_editors();
         let closed: Vec<(NodeId, noodle_plugins::EditorKey)> = self
             .plugin_editors
             .iter()
@@ -963,6 +1244,8 @@ impl Session {
             .filter(|(_, key)| !noodle_plugins::editor_key_is_open(*key))
             .collect();
         for (node, key) in closed {
+            self.end_live_gesture(node);
+            self.plugin_live.remove(&node);
             if !noodle_plugins::editor_instance_running(key) {
                 self.plugin_editors.remove(&node);
                 continue;
@@ -1003,22 +1286,83 @@ impl Session {
         }
     }
 
+    /// While a plugin's editor is open, turns each change of a parameter
+    /// value into a `SetParam` (no rebuild; the state waits for the window to
+    /// close). Changes arriving one poll after another are one gesture and
+    /// one undo step; a poll with no change ends it. Reads parameters only,
+    /// at most every [`PLUGIN_LIVE_INTERVAL`].
+    fn sync_open_plugin_editors(&mut self) {
+        let now = Instant::now();
+        let open: Vec<(NodeId, noodle_plugins::EditorKey)> = self
+            .plugin_editors
+            .iter()
+            .map(|(n, k)| (*n, *k))
+            .filter(|(_, key)| noodle_plugins::editor_key_is_open(*key))
+            .collect();
+        for (node, key) in open {
+            let live = self.plugin_live.entry(node).or_default();
+            if live
+                .polled
+                .is_some_and(|at| now.duration_since(at) < PLUGIN_LIVE_INTERVAL)
+            {
+                continue;
+            }
+            live.polled = Some(now);
+            let Some(plugin) = self.plugin_of(node) else {
+                continue;
+            };
+            let descriptor = plugin.descriptor().clone();
+            let Ok(captured) = noodle_plugins::capture_params_key(key) else {
+                continue;
+            };
+            let config = self
+                .project
+                .graph()
+                .node(node)
+                .map(|n| n.config.clone())
+                .unwrap_or_default();
+            let stored = self.project.graph().node(node).map(|n| n.params.clone());
+            let live = self.plugin_live.entry(node).or_default();
+            let commands =
+                captured.changed_params(node, &descriptor, &config, &mut live.seen, |id| {
+                    stored
+                        .as_ref()
+                        .and_then(|p| p.get(&noodle_plugins::param_key(id)).copied())
+                });
+            if commands.is_empty() {
+                self.end_live_gesture(node);
+            } else {
+                self.plugin_live.entry(node).or_default().dragging = true;
+                self.edit(commands.into_iter().map(Edit::Drag));
+            }
+        }
+    }
+
+    /// Closes the undo step of an editor gesture still going.
+    fn end_live_gesture(&mut self, node: NodeId) {
+        if let Some(live) = self.plugin_live.get_mut(&node)
+            && std::mem::take(&mut live.dragging)
+        {
+            self.edit([Edit::EndDrag]);
+        }
+    }
+
     /// The hook that gives a render's registry the plugin node types.
     pub(crate) fn extend_registry(&self) -> Option<noodle_plugins::ExtendRegistry> {
         (!self.plugins.is_empty()).then(|| self.plugins.extender())
     }
 
-    /// The chosen MIDI port can be unplugged and plugged back in, and the
-    /// drivers don't say when, so look at the list of ports about once a
-    /// second: let go of the port when it is gone, and open it again when it
+    /// The chosen MIDI ports can each be unplugged and plugged back in, and
+    /// the drivers don't say when, so look at the list of ports about once a
+    /// second: let go of a port when it is gone, and open it again when it
     /// returns (or when it was missing from the start). Ports are matched by
     /// name without ALSA's numbers, which change when a device comes back.
     /// An unplug and replug between two looks that leaves the port's name
     /// as it was isn't seen.
     fn watch_midi(&mut self, now: Instant) {
-        let Some(name) = self.audio_config.midi_input.clone() else {
+        if self.audio_config.midi_inputs.is_empty() {
             return;
-        };
+        }
         if self
             .midi_watch
             .checked
@@ -1030,22 +1374,28 @@ impl Session {
         let Ok(ports) = (self.midi_watch.list)() else {
             return;
         };
-        if self
-            .midi_connection
-            .as_ref()
-            .is_some_and(|c| !ports.iter().any(|p| p == c.name()))
-        {
-            self.close_midi();
-            self.message = Some(format!("MIDI input {name:?} was unplugged"));
-        }
-        if self.midi_connection.is_none()
-            && ports.iter().any(|p| noodle_io::same_port(p, &name))
-            // Quietly when it fails: a port that is listed but won't open
-            // would otherwise say so every second.
-            && let Ok(connection) = (self.midi_watch.open)(&name, &self.midi)
-        {
-            self.midi_connection = Some(connection);
-            self.message = Some(format!("MIDI input {name:?} is connected again"));
+        for name in self.audio_config.midi_inputs.clone() {
+            let open = self.midi_connections.iter().position(|(n, _)| *n == name);
+            if let Some(at) = open
+                && !ports
+                    .iter()
+                    .any(|p| p == self.midi_connections[at].1.name())
+            {
+                let (_, connection) = self.midi_connections.remove(at);
+                // The notes it held would never see their note-offs.
+                self.midi.all_notes_off_from(connection.name());
+                self.message = Some(format!("MIDI input {name:?} was unplugged"));
+            } else if open.is_some() {
+                continue;
+            }
+            if ports.iter().any(|p| noodle_io::same_port(p, &name))
+                // Quietly when it fails: a port that is listed but won't open
+                // would otherwise say so every second.
+                && let Ok(connection) = (self.midi_watch.open)(&name, &self.midi)
+            {
+                self.midi_connections.push((name.clone(), connection));
+                self.message = Some(format!("MIDI input {name:?} is connected again"));
+            }
         }
     }
 
@@ -1131,6 +1481,42 @@ impl Session {
         self.history.position() != self.saved_position
     }
 
+    /// Where in the edit history the project is, for telling whether it has
+    /// changed since a copy was taken.
+    pub fn history_position(&self) -> u64 {
+        self.history.position()
+    }
+
+    /// The project file, if it has one.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The project as a file would hold it.
+    pub fn project_ron(&self) -> String {
+        self.project.to_ron()
+    }
+
+    /// Replaces the project with an autosaved copy of `origin` (`None` for an
+    /// untitled one). It counts as unsaved, so closing asks first. Returns
+    /// whether it loaded; if not, the reason is in [`Self::message`].
+    pub fn recover(&mut self, text: &str, origin: Option<PathBuf>) -> bool {
+        match Project::from_ron(text) {
+            Ok(project) => {
+                self.replace(project, origin);
+                // No history position equals this one, so the project is
+                // dirty until it is saved.
+                self.saved_position = u64::MAX;
+                self.message = Some("Recovered unsaved work. Save to keep it.".into());
+                true
+            }
+            Err(error) => {
+                self.message = Some(format!("Couldn't recover the autosave: {error}"));
+                false
+            }
+        }
+    }
+
     /// Problems found compiling the project, for the views to show where they
     /// happened.
     pub fn diagnostics(&self) -> &[Diagnostic] {
@@ -1163,6 +1549,9 @@ impl Session {
         }
         let mut effect = Effect::default();
         for edit in edits {
+            if self.record_move(&edit) {
+                continue;
+            }
             let command = match edit {
                 Edit::Apply(command) => {
                     self.history.end_group();
@@ -1178,12 +1567,24 @@ impl Session {
                     command
                 }
                 Edit::EndDrag => {
+                    if self.automation.has_pass() {
+                        let tick = self.playhead();
+                        self.automation.released(self.automation_mode, tick);
+                    }
                     self.history.end_group();
                     self.clips.set_preview(false);
                     continue;
                 }
                 Edit::PluginEditor { node, open } => {
                     self.plugin_editor(node, open);
+                    continue;
+                }
+                Edit::ParamLearn { node, on } => {
+                    if on {
+                        self.start_param_learn(node);
+                    } else {
+                        self.param_learn = None;
+                    }
                     continue;
                 }
                 Edit::Library(edit) => {
@@ -1205,6 +1606,41 @@ impl Session {
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
                     continue;
+                }
+                Edit::RenderToClip { group, in_loop } => {
+                    let region = self.project.transport_loop();
+                    if !in_loop {
+                        self.render_to_clip(group, None);
+                    } else if region.on {
+                        self.render_to_clip(group, Some((region.start, region.end)));
+                    } else {
+                        self.message = Some("Turn the loop on to render its span".into());
+                    }
+                    continue;
+                }
+                Edit::LearnMidi(target) => {
+                    self.learn_midi(target);
+                    continue;
+                }
+                Edit::CancelLearnMidi => {
+                    self.learning = None;
+                    continue;
+                }
+                Edit::ArmAutomation { node, on } => {
+                    self.automation.arm(node, on);
+                    continue;
+                }
+                Edit::Automate(target) => {
+                    self.history.end_group();
+                    let node = self.new_node_id();
+                    let lane = self.project.next_lane_id();
+                    match automate::command(&self.project, &self.registry, &target, node, lane) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't automate: {error}"));
+                            continue;
+                        }
+                    }
                 }
                 Edit::UpdateFromTemplate(group) => {
                     self.history.end_group();
@@ -1366,6 +1802,8 @@ impl Session {
         self.saved_position = self.history.position();
         self.path = path;
         self.plugin_editors.clear();
+        self.plugin_live.clear();
+        self.param_learn = None;
         self.message = None;
         self.parked = Tick(0);
         self.pass_start = Tick(0);
@@ -1551,6 +1989,8 @@ impl Session {
         // ends the take.
         if !running {
             self.stop_recording();
+            self.cancel_count_in();
+            self.finish_automation_pass();
         }
         if let Some(audio) = &self.audio {
             let transport = audio.controller.transport();
@@ -1597,6 +2037,7 @@ impl Session {
         // The clip would start where the take began, no longer where the
         // audio is on the timeline.
         self.stop_recording();
+        self.cancel_count_in();
         let tick = Tick(tick.0.max(0));
         self.parked = tick;
         self.pass_start = tick;
@@ -1644,6 +2085,145 @@ impl Session {
             .map(|audio| audio.controller.tempo_map())
     }
 
+    /// Whether an Automation node is armed.
+    pub fn automation_armed(&self, node: NodeId) -> bool {
+        self.automation.is_armed(node)
+    }
+
+    /// How armed Automation nodes write.
+    pub fn automation_mode(&self) -> record_automation::AutomationMode {
+        self.automation_mode
+    }
+
+    pub fn set_automation_mode(&mut self, mode: record_automation::AutomationMode) {
+        self.automation_mode = mode;
+    }
+
+    /// What an Automation node's `value` shows: the value being written
+    /// while a Pass is moving it, else the lane's value at the playhead,
+    /// else the stored parameter.
+    pub fn automation_value(&self, node: NodeId) -> Option<f32> {
+        if let Some(held) = self.automation.held(node) {
+            return Some(held);
+        }
+        let (_, lane) = self
+            .project
+            .lane_for(&noodle_core::Endpoint::new(node, record_automation::VALUE))?;
+        lane.value_at(self.playhead().0 as f64)
+    }
+
+    /// A move of an armed node's `value` while the transport plays is
+    /// recorded instead of applied. Says whether it was.
+    fn record_move(&mut self, edit: &Edit) -> bool {
+        let (Edit::Drag(command) | Edit::Apply(command)) = edit else {
+            return false;
+        };
+        let Command::SetParam { node, key, value } = command else {
+            return false;
+        };
+        let Some(value) = *value else {
+            return false;
+        };
+        if key != record_automation::VALUE
+            || !self.automation.is_armed(*node)
+            || !self.transport_running()
+        {
+            return false;
+        }
+        let tick = self.playhead();
+        let taken = self
+            .automation
+            .moved(self.automation_mode, *node, value, tick);
+        // A single set, such as a typed value, is a touch that is over.
+        if taken && matches!(edit, Edit::Apply(_)) {
+            self.automation.released(self.automation_mode, tick);
+        }
+        taken
+    }
+
+    /// Feeds the Pass in progress, and ends it once the transport stops.
+    fn maintain_automation_recording(&mut self) {
+        let graph = self.project.graph();
+        self.automation.retain(|node| graph.node(node).is_some());
+        if !self.transport_running() {
+            self.finish_automation_pass();
+            self.push_live_automation();
+            return;
+        }
+        if self.automation.armed().next().is_none() {
+            return;
+        }
+        let tick = self.playhead();
+        self.automation.advance(tick);
+        let mode = self.automation_mode;
+        let wired: Vec<NodeId> = self
+            .automation
+            .armed()
+            .filter(|&node| {
+                self.project
+                    .graph()
+                    .source(&noodle_core::Endpoint::new(node, record_automation::RECORD))
+                    .is_some()
+            })
+            .collect();
+        for node in wired {
+            if let Some(reading) = self.telemetry.read_param(node, record_automation::RECORD) {
+                self.automation.signal(mode, node, reading.value, tick);
+            }
+        }
+        self.push_live_automation();
+    }
+
+    /// Plays the value being recorded in place of each armed node's lane,
+    /// so a move is heard as it is made, and puts the lane back once it is
+    /// let go.
+    fn push_live_automation(&mut self) {
+        let wanted: Vec<(noodle_core::LaneId, f32)> = self
+            .automation
+            .armed()
+            .filter_map(|node| {
+                let held = self.automation.held(node)?;
+                let (lane, _) = self
+                    .project
+                    .lane_for(&noodle_core::Endpoint::new(node, record_automation::VALUE))?;
+                Some((lane, held))
+            })
+            .collect();
+        let Some(audio) = &mut self.audio else {
+            self.live_lanes.clear();
+            return;
+        };
+        for &(lane, held) in &wanted {
+            let source = noodle_engine::lane_source_id(lane);
+            audio
+                .controller
+                .set_param(source, noodle_engine::LIVE, held);
+            audio
+                .controller
+                .set_param(source, noodle_engine::LIVE_ON, 1.0);
+        }
+        let now: std::collections::BTreeSet<_> = wanted.iter().map(|&(lane, _)| lane).collect();
+        for &lane in self.live_lanes.difference(&now) {
+            audio.controller.set_param(
+                noodle_engine::lane_source_id(lane),
+                noodle_engine::LIVE_ON,
+                0.0,
+            );
+        }
+        self.live_lanes = now;
+    }
+
+    /// Writes the Pass into the lanes as one undo step.
+    fn finish_automation_pass(&mut self) {
+        if !self.automation.has_pass() {
+            return;
+        }
+        let tick = self.playhead();
+        if let Some(command) = self.automation.finish(&self.project, tick) {
+            self.edit([Edit::Apply(command)]);
+        }
+    }
+
     /// Where the playhead is: the transport's while playing, else where it
     /// was left or set.
     pub fn playhead(&self) -> Tick {
@@ -1669,8 +2249,12 @@ impl Session {
         };
         let frame = now + FRAME;
         if self.recording.is_some() {
-            // The bus holds only so many messages.
+            // The bus holds only so many messages, and a punch-out is
+            // watched for.
             at(frame);
+        }
+        if let Some(count) = &self.counting_in {
+            at(count.due);
         }
         if let Some(audio) = &self.audio {
             if audio.controller.has_pending() || audio.controller.transport().is_playing() {
@@ -1678,6 +2262,9 @@ impl Session {
                 at(frame);
             }
             at(now + HEALTH_INTERVAL);
+        }
+        if self.learning.is_some() {
+            at(now + FRAME);
         }
         if self.watching_midi() {
             at(self
@@ -1701,6 +2288,16 @@ impl Session {
         if let Some(recording) = &mut self.recording {
             recording.midi.poll(self.midi.clock().anchor());
         }
+        if self
+            .counting_in
+            .as_ref()
+            .is_some_and(|count| Instant::now() >= count.due)
+            && let Some(CountIn { from, out, .. }) = self.counting_in.take()
+        {
+            self.set_count_in_click(false);
+            self.start_take(from, out);
+        }
+        self.watch_punch();
         match self.freezing.poll() {
             Polled::Nothing => {
                 if self.freezing.due() {
@@ -1716,10 +2313,14 @@ impl Session {
         self.watch_midi(Instant::now());
         self.watch_files();
         self.poll_export();
+        self.poll_render();
         self.poll_split();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
+        self.poll_param_learn();
+        self.poll_learn_midi();
         self.poll_plugin_hosts(Instant::now());
+        self.maintain_automation_recording();
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -1839,6 +2440,31 @@ impl Session {
         self.record_quantise
     }
 
+    /// The take being auditioned, if any (see [`Session::set_take_audition`]).
+    pub fn take_audition(&self) -> Option<(ClipId, usize)> {
+        self.audition
+    }
+
+    /// Plays take `take` of the take folder (and of the folders linked to
+    /// it) alone, in place of the comp, so it can be heard against the rest
+    /// of the song; `None` goes back to the comp. The project is untouched.
+    pub fn set_take_audition(&mut self, audition: Option<(ClipId, usize)>) {
+        if self.audition != audition {
+            self.audition = audition;
+            self.feed_clips();
+        }
+    }
+
+    /// Whether a loop recording of MIDI makes a take of every cycle or merges
+    /// them into one clip.
+    pub fn record_midi(&self) -> crate::midi_take::MidiRecord {
+        self.record_midi
+    }
+
+    pub fn set_record_midi(&mut self, mode: crate::midi_take::MidiRecord) {
+        self.record_midi = mode;
+    }
+
     pub fn set_record_quantise(&mut self, quantise: crate::midi_take::Quantise) {
         self.record_quantise = quantise;
     }
@@ -1877,10 +2503,77 @@ impl Session {
     /// from the playhead, on every armed track. Starts playing if it isn't.
     /// The take becomes a clip on each armed track when it ends; see
     /// [`Session::stop_recording`].
+    ///
+    /// With the punch range on, the take is the part of the timeline inside
+    /// it: recording runs from the punch-in to the punch-out, and a pre-roll
+    /// plays the project from some bars before the punch-in. With the loop
+    /// on and the playhead in it, every cycle of the loop is a take in one
+    /// take folder. A count-in of the metronome comes first when one is set.
     pub fn record(&mut self) {
-        if self.recording.is_some() {
+        if self.recording.is_some() || self.counting_in.is_some() {
             return;
         }
+        if self.armed_tracks().is_none() {
+            return;
+        }
+        let pressed = self.playhead();
+        let punch = self.project.punch().active();
+        if let Some((_, end)) = punch
+            && pressed >= end
+        {
+            self.message = Some("The playhead is past the punch range".into());
+            return;
+        }
+        let from = punch.map_or(pressed, |(start, _)| start.max(pressed));
+        let out = punch.map(|(_, end)| end);
+        // The pre-roll starts the project playing some bars before the
+        // punch-in, unless the playhead is already earlier.
+        let begin = match punch {
+            Some((start, _)) if pressed <= start && self.pre_roll_bars > 0 => {
+                let back = i64::from(self.pre_roll_bars) * self.bar_ticks(start);
+                pressed.min(Tick((start.0 - back).max(0)))
+            }
+            _ => pressed,
+        };
+        if begin != pressed {
+            self.seek(begin);
+        }
+        let mut notice = None;
+        if self.count_in_bars > 0 {
+            if matches!(
+                crate::metronome::binding(&self.project),
+                crate::metronome::Binding::Missing
+            ) {
+                notice = Some("Add the metronome (transport bar) to hear the count-in");
+            } else {
+                self.open_stream(false);
+                if self.audio.is_some() {
+                    self.set_transport_running(false);
+                    self.set_count_in_click(true);
+                    let map = self.project.tempo_map();
+                    let quarters = (i64::from(self.count_in_bars) * self.bar_ticks(begin)) as f64
+                        / TICKS_PER_QUARTER as f64;
+                    let seconds = quarters * 60.0 / map.bpm_at(begin);
+                    self.counting_in = Some(CountIn {
+                        due: Instant::now() + Duration::from_secs_f64(seconds),
+                        from,
+                        out,
+                    });
+                    self.message = Some("Counting in".into());
+                    return;
+                }
+            }
+        }
+        self.start_take(from, out);
+        if let Some(notice) = notice {
+            self.message = Some(notice.into());
+        }
+    }
+
+    /// The tracks armed for audio and for MIDI that are still in the project,
+    /// and where takes are stored; `None` (with the reason in the message)
+    /// when nothing can be recorded.
+    fn armed_tracks(&mut self) -> Option<(Vec<NodeId>, Vec<NodeId>, PathBuf)> {
         let exist = |set: &BTreeSet<NodeId>| -> Vec<NodeId> {
             set.iter()
                 .copied()
@@ -1891,10 +2584,71 @@ impl Session {
         let midi_tracks = exist(&self.armed_midi);
         if audio_tracks.is_empty() && midi_tracks.is_empty() {
             self.message = Some("Arm a track to record on (RA or RM on its header)".into());
-            return;
+            return None;
         }
         let Some(project_path) = self.path.clone() else {
             self.message = Some("Save the project first: takes are stored next to it".into());
+            return None;
+        };
+        Some((audio_tracks, midi_tracks, project_path))
+    }
+
+    /// How many ticks a bar lasts where `tick` is.
+    fn bar_ticks(&self, tick: Tick) -> i64 {
+        let map = self.project.tempo_map();
+        let bar = map.position(tick).bar;
+        map.signatures()
+            .iter()
+            .rev()
+            .find(|change| change.bar <= bar)
+            .map_or(4 * TICKS_PER_QUARTER, |change| {
+                change.signature.ticks_per_bar()
+            })
+    }
+
+    /// Turns the engine's count-in click on or off (see
+    /// [`Transport::count_in`](noodle_engine::Transport::count_in)).
+    fn set_count_in_click(&self, on: bool) {
+        if let Some(audio) = &self.audio {
+            audio.controller.transport().set_count_in(on);
+        }
+    }
+
+    /// Whether a recording is waiting out its count-in.
+    pub fn is_counting_in(&self) -> bool {
+        self.counting_in.is_some()
+    }
+
+    /// Gives up on a recording that is counting in.
+    pub(crate) fn cancel_count_in(&mut self) {
+        if self.counting_in.take().is_some() {
+            self.set_count_in_click(false);
+            self.message = Some("Count-in stopped".into());
+        }
+    }
+
+    /// Bars of metronome before a recording starts: 0, 1 or 2.
+    pub fn count_in_bars(&self) -> u8 {
+        self.count_in_bars
+    }
+
+    pub fn set_count_in_bars(&mut self, bars: u8) {
+        self.count_in_bars = bars.min(2);
+    }
+
+    /// Bars of the project played before the punch-in.
+    pub fn pre_roll_bars(&self) -> u8 {
+        self.pre_roll_bars
+    }
+
+    pub fn set_pre_roll_bars(&mut self, bars: u8) {
+        self.pre_roll_bars = bars.min(8);
+    }
+
+    /// Begins the take: `from` is where it starts keeping what is recorded,
+    /// `out` where it stops (the punch-out).
+    fn start_take(&mut self, from: Tick, out: Option<Tick>) {
+        let Some((audio_tracks, midi_tracks, project_path)) = self.armed_tracks() else {
             return;
         };
         #[cfg(test)]
@@ -1950,10 +2704,21 @@ impl Session {
                 .tempo_map()
                 .sample_at(start, f64::from(FREEZE_SETTINGS.sample_rate)),
         };
+        // With the loop on and the take starting inside it, each cycle is a
+        // take (unless a punch range holds the take to its own span).
+        let cycle = self
+            .project
+            .transport_loop()
+            .active()
+            .filter(|&(a, b)| out.is_none() && from >= a && from < b);
+        let keep_from = from.max(start);
         self.recording = Some(Recording {
             audio_tracks,
             midi_tracks,
             start,
+            keep: (keep_from, out),
+            cycle,
+            midi_started: keep_from <= start,
             relative,
             midi: crate::midi_take::MidiTake::start(
                 &self.midi,
@@ -2012,8 +2777,8 @@ impl Session {
         Some(TakePreview {
             audio_tracks: recording.audio_tracks.clone(),
             midi_tracks: recording.midi_tracks.clone(),
-            start: recording.start,
-            end: self.playhead().max(recording.start),
+            start: recording.keep.0,
+            end: self.playhead().max(recording.keep.0),
             audio: recording.relative.is_some(),
             midi,
         })
@@ -2033,11 +2798,41 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// During a take: starts the MIDI take once the playhead reaches the
+    /// punch-in, and ends the take at the punch-out.
+    fn watch_punch(&mut self) {
+        let Some(recording) = &self.recording else {
+            return;
+        };
+        let head = self.playhead();
+        let (restart, out) = (
+            !recording.midi_started && head >= recording.keep.0,
+            recording.keep.1.is_some_and(|out| head >= out),
+        );
+        if restart {
+            let sample = match &self.audio {
+                Some(audio) => audio.controller.transport().position(),
+                None => self
+                    .project
+                    .tempo_map()
+                    .sample_at(head, f64::from(FREEZE_SETTINGS.sample_rate)),
+            };
+            if let Some(recording) = &mut self.recording {
+                recording.midi =
+                    crate::midi_take::MidiTake::start(&self.midi, noodle_io::now_micros(), sample);
+                recording.midi_started = true;
+            }
+        }
+        if out {
+            self.stop_recording();
+        }
+    }
+
     /// Ends the take and adds it to the project: an audio clip, if an input
     /// was recorded, and a MIDI clip, if any notes were played, on each track
     /// that was armed, all in one undo step. Does nothing if not recording.
     pub fn stop_recording(&mut self) {
-        let Some(recording) = self.recording.take() else {
+        let Some(mut recording) = self.recording.take() else {
             return;
         };
         let stop_micros = noodle_io::now_micros();
@@ -2061,19 +2856,42 @@ impl Session {
         }
         let (rate, latency) = self.take_timing();
         // Notes only matter if a track is armed to take them.
-        if !recording.midi_tracks.is_empty()
-            && let Some((start, clip)) = recording.midi.finish(&crate::midi_take::Finish {
+        let mut midi_passes = None;
+        if !recording.midi_tracks.is_empty() {
+            let finish = crate::midi_take::Finish {
                 stop_micros,
                 output_latency_micros: latency.as_micros() as u64,
                 sample_rate: rate,
                 tempo_map: self.project.tempo_map(),
                 quantise: recording.quantise,
                 anchor: self.midi.clock().anchor(),
-            })
-        {
-            notes.push((start, clip));
+            };
+            recording.midi.poll(finish.anchor);
+            // With the loop on and Takes chosen, each pass through it is a
+            // take; Merge leaves them all in one clip.
+            if self.record_midi == crate::midi_take::MidiRecord::Takes
+                && let Some((a, b)) = recording.cycle
+            {
+                let table = TempoTable::new(self.project.tempo_map(), rate as f32);
+                let at = |tick: Tick| table.sample_at_tick(tick) as f64;
+                let cycles = crate::midi_take::Cycles {
+                    first: at(b) - at(recording.keep.0),
+                    cycle: at(b) - at(a),
+                    start: a,
+                    end: b,
+                };
+                midi_passes = recording
+                    .midi
+                    .passes(&finish, &cycles)
+                    .filter(|(_, passes)| passes.len() > 1);
+            }
+            if midi_passes.is_none()
+                && let Some(found) = recording.midi.clip_so_far(&finish)
+            {
+                notes.push(found);
+            }
         }
-        if take.is_none() && notes.is_empty() {
+        if take.is_none() && notes.is_empty() && midi_passes.is_none() {
             if notices.is_empty() {
                 notices.push("Nothing was recorded".into());
             }
@@ -2103,27 +2921,74 @@ impl Session {
         let mut commands = Vec::new();
         // What was played arrived after the round trip through the output and
         // back in through the input, so the file starts that much late: skip
-        // it and the take lines up with the project the player heard.
+        // it and the take lines up with the project the player heard. The
+        // pre-roll before the punch-in is skipped too.
         let round_trip = ((latency + self.input_latency()).as_secs_f64() * rate) as u64;
+        let table = TempoTable::new(self.project.tempo_map(), rate as f32);
+        let at = |tick: Tick| table.sample_at_tick(tick);
+        let (keep_from, keep_out) = recording.keep;
+        let offset = round_trip + at(keep_from).saturating_sub(at(recording.start));
+        if let Some(done) = take.as_ref().filter(|done| done.frames <= offset) {
+            // Stopped before the take began, in the pre-roll.
+            let _ = std::fs::remove_file(&done.path);
+            take = None;
+            if notes.is_empty() && midi_passes.is_none() {
+                notices.push("Nothing was recorded".into());
+                self.message = Some(notices.join("; "));
+                return;
+            }
+        }
+        // Where the file has the part of the timeline the take keeps.
+        let length = keep_out.map_or(u64::MAX, |out| at(out).saturating_sub(at(keep_from)));
+        let folder = take
+            .as_ref()
+            .zip(recording.cycle)
+            .and_then(|(take, (a, b))| {
+                let cycle = at(b).saturating_sub(at(a));
+                let window = at(b).saturating_sub(at(keep_from));
+                let (takes, active) = loop_takes(take.frames, offset, window, cycle);
+                (takes.len() > 1).then_some((takes, active, window))
+            });
+        // Folders linked across tracks are compared by take number, so MIDI
+        // has as many takes as the audio, whichever rule counted the slivers.
+        if let (Some((_, passes)), Some((takes, _, _))) = (&mut midi_passes, &folder) {
+            passes.truncate(takes.len());
+            while passes.len() < takes.len() {
+                let mut empty = passes
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| MidiClip::new(Tick(1)));
+                empty.notes.clear();
+                empty.controls.clear();
+                passes.push(empty);
+            }
+        }
         // The take's clip tempo is the timeline's where it was recorded. The
         // sections on every armed track show the same clip, so they share one
         // warp. Its seconds count from the start of the file, which is
-        // `round_trip` frames before the sections begin.
+        // `offset` frames before the sections begin.
         let warp = take.as_ref().filter(|_| rate > 0.0).map(|take| {
-            let skip = round_trip.min(take.frames.saturating_sub(1)) as f64 / rate;
+            let skip = offset.min(take.frames.saturating_sub(1)) as f64 / rate;
             let seconds = take.frames as f64 / rate;
-            let warp = noodle_core::ClipWarp::recorded(
-                self.project.tempo_map(),
-                recording.start,
-                skip,
-                seconds,
-            );
+            let warp =
+                noodle_core::ClipWarp::recorded(self.project.tempo_map(), keep_from, skip, seconds);
             (self.project.next_warp_id(), warp)
         });
+        let mut taken: Vec<ClipId> = Vec::new();
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
-                let mut clip =
-                    recorded_clip(track, recording.start, relative, take.frames, round_trip);
+                let mut clip = match &folder {
+                    Some((_, _, window)) => {
+                        recorded_clip(track, keep_from, relative, take.frames, offset, *window)
+                    }
+                    None => recorded_clip(track, keep_from, relative, take.frames, offset, length),
+                };
+                if let (Some((_, active, _)), noodle_core::ClipContent::Audio(audio)) =
+                    (&folder, &mut clip.content)
+                {
+                    let takes = folder.as_ref().map(|f| f.0.clone()).unwrap_or_default();
+                    audio.takes = Some(noodle_core::TakeFolder::new(takes, *active));
+                }
                 if let (Some((id, warp)), noodle_core::ClipContent::Audio(audio)) =
                     (&warp, &mut clip.content)
                 {
@@ -2135,10 +3000,9 @@ impl Session {
                     }
                     audio.warp = Some(*id);
                 }
-                commands.push(Command::AddClip {
-                    id: self.project.new_clip_id(),
-                    clip,
-                });
+                let id = self.project.new_clip_id();
+                taken.push(id);
+                commands.push(Command::AddClip { id, clip });
             }
         }
         for &track in &midi_tracks {
@@ -2146,22 +3010,61 @@ impl Session {
                 let mut clip = Clip::midi(track, *start, midi.length);
                 if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
                     content.notes = midi.notes.clone();
+                    content.controls = midi.controls.clone();
                 }
-                commands.push(Command::AddClip {
-                    id: self.project.new_clip_id(),
-                    clip,
-                });
+                let id = self.project.new_clip_id();
+                taken.push(id);
+                commands.push(Command::AddClip { id, clip });
             }
+        }
+        if let Some((start, passes)) = &midi_passes {
+            for &track in &midi_tracks {
+                let length = passes.first().map_or(Tick(1), |p| p.length);
+                let mut clip = Clip::midi(track, *start, length);
+                if let noodle_core::ClipContent::Midi(content) = &mut clip.content {
+                    let latest = passes.len() - 1;
+                    content.takes = Some(noodle_core::MidiTakes::new(
+                        passes
+                            .iter()
+                            .map(|pass| noodle_core::TakeContent {
+                                notes: pass.notes.clone(),
+                                controls: pass.controls.clone(),
+                            })
+                            .collect(),
+                        latest,
+                    ));
+                    content.play_comp();
+                }
+                let id = self.project.new_clip_id();
+                taken.push(id);
+                commands.push(Command::AddClip { id, clip });
+            }
+        }
+        // The clips of one take on several tracks are one link, so they can
+        // be slid, cut and warped as the one performance they are.
+        if taken.len() >= 2 {
+            commands.push(Command::SetClipGroup {
+                id: self.project.new_clip_group_id(),
+                group: Some(noodle_core::ClipGroup {
+                    members: taken.into_iter().collect(),
+                }),
+            });
         }
         self.edit([Edit::Apply(Command::Batch(commands))]);
         if let (Some(relative), Some(take)) = (&recording.relative, &take) {
+            let count = folder
+                .as_ref()
+                .map_or(String::new(), |f| format!(" as {} takes", f.0.len()));
             notices.push(match take.dropped {
-                0 => format!("Recorded {relative}"),
-                lost => format!("Recorded {relative}, but {lost} frames of input were lost"),
+                0 => format!("Recorded {relative}{count}"),
+                lost => format!("Recorded {relative}{count}, but {lost} frames of input were lost"),
             });
         }
         for (_, midi) in &notes {
             notices.push(format!("Recorded {} notes", midi.notes.len()));
+        }
+        if let Some((_, passes)) = &midi_passes {
+            notices.push(format!("Recorded MIDI as {} takes", passes.len()));
         }
         self.message = Some(notices.join("; "));
     }
@@ -2193,7 +3096,11 @@ impl Session {
             .and_then(Path::parent)
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        self.clip_problems = self.clips.update(&self.project, &table, rate as u32, base);
+        let auditioning = self
+            .audition
+            .map(|(id, take)| self.project.auditioning(id, take));
+        let project = auditioning.as_ref().unwrap_or(&self.project);
+        self.clip_problems = self.clips.update(project, &table, rate as u32, base);
         // The feeds forget a node that is gone, monitoring flag and all, and
         // undoing the delete brings it back unmonitored while still armed.
         for &track in &self.armed_midi {
@@ -2518,6 +3425,7 @@ impl Effect {
             | Command::SetParamShown { .. }
             | Command::SetPreset { .. }
             | Command::SetTrackOrder(_)
+            | Command::SetClipGroup { .. }
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
             | Command::SetFrame { .. } => {}
@@ -2739,7 +3647,7 @@ fn fallback(config: &AudioConfig) -> Option<AudioConfig> {
     // Neither the MIDI port nor the worker threads play a part in opening
     // the audio.
     let tried = AudioConfig {
-        midi_input: None,
+        midi_inputs: Vec::new(),
         threads: 0,
         ..config.clone()
     };
@@ -3298,21 +4206,21 @@ mod tests {
         session.use_cache_dir(dir.path().join("cache"));
         // Nothing on the timeline: the whole project is nothing.
         sine_chain(&mut session, None);
-        let whole = ExportChoice {
-            format: ExportFormat::Wav16,
-            layout: noodle_engine::ChannelLayout::Stereo,
-            range: None,
-        };
+        let whole = ExportChoice::mixdown(
+            ExportFormat::Wav16,
+            noodle_engine::ChannelLayout::Stereo,
+            None,
+        );
         assert!(
             session
                 .start_export(dir.path().join("x.wav"), whole)
                 .is_err()
         );
-        let empty = ExportChoice {
-            format: ExportFormat::Wav16,
-            layout: noodle_engine::ChannelLayout::Stereo,
-            range: Some((2.0, 2.0)),
-        };
+        let empty = ExportChoice::mixdown(
+            ExportFormat::Wav16,
+            noodle_engine::ChannelLayout::Stereo,
+            Some((2.0, 2.0)),
+        );
         assert!(
             session
                 .start_export(dir.path().join("x.wav"), empty)
@@ -3320,12 +4228,12 @@ mod tests {
         );
 
         let path = dir.path().join("half.wav");
-        let choice = ExportChoice {
-            format: ExportFormat::Wav16,
-            layout: noodle_engine::ChannelLayout::Stereo,
-            range: Some((0.0, 0.5)),
-        };
-        session.start_export(path.clone(), choice).unwrap();
+        let choice = ExportChoice::mixdown(
+            ExportFormat::Wav16,
+            noodle_engine::ChannelLayout::Stereo,
+            Some((0.0, 0.5)),
+        );
+        session.start_export(path.clone(), choice.clone()).unwrap();
         assert!(
             session
                 .start_export(dir.path().join("two.wav"), choice)
@@ -3344,6 +4252,87 @@ mod tests {
     }
 
     #[test]
+    fn groups_are_exported_to_files_in_a_folder_with_the_mixdown() {
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, None);
+        assert!(session.exportable_groups().is_empty());
+        // Fold the oscillator into a group, which then has an output.
+        let osc = session
+            .project()
+            .graph()
+            .nodes()
+            .find(|(_, n)| n.type_id == "noodle.osc.sine")
+            .map(|(id, _)| id)
+            .unwrap();
+        let project = session.project().clone();
+        let mut next = project.clone();
+        let (group, command) =
+            noodle_core::group::group_nodes(&project, &[osc], || next.new_node_id()).unwrap();
+        session.edit([Edit::Apply(command)]);
+        let groups = session.exportable_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, group);
+
+        let folder = dir.path().join("out");
+        let mut choice = ExportChoice::mixdown(
+            ExportFormat::WavFloat,
+            noodle_engine::ChannelLayout::Stereo,
+            Some((0.0, 0.5)),
+        );
+        choice.groups = vec![group];
+        session.start_export(folder.clone(), choice).unwrap();
+        until(&mut session, "the export finishes", |s| {
+            s.export_progress().is_none()
+        });
+        assert_eq!(
+            session.message(),
+            Some("Exported 2 files of 0.5 s to out"),
+            "{:?}",
+            session.message()
+        );
+        let name = &groups[0].1;
+        for file in ["Mixdown".to_owned(), name.clone()] {
+            let audio = noodle_io::decode_file(&folder.join(format!("{file}.wav"))).unwrap();
+            assert_eq!(audio.samples.len(), 24_000 * 2, "{file}");
+            assert!(audio.samples.iter().any(|&x| x.abs() > 0.05), "{file}");
+        }
+        // The dialog is told how loud each file is.
+        let summary = session.last_export().unwrap();
+        let names: Vec<&str> = summary.files.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Mixdown", name.as_str()]);
+        assert!(summary.files.iter().all(|(_, l)| l.lufs.is_finite()));
+
+        // Nothing chosen is refused.
+        let mut none = ExportChoice::mixdown(
+            ExportFormat::WavFloat,
+            noodle_engine::ChannelLayout::Stereo,
+            None,
+        );
+        none.mixdown = false;
+        assert!(session.start_export(folder, none).is_err());
+    }
+
+    #[test]
+    fn export_file_names_are_clean_and_never_repeat() {
+        let mut taken = vec!["Mixdown".to_owned()];
+        for (name, want) in [
+            ("Mixdown", "Mixdown 2"),
+            ("mixdown", "mixdown 3"),
+            ("Lead/Pad: 1", "Lead_Pad_ 1"),
+            ("", "Track"),
+            ("..", "Track 2"),
+        ] {
+            let got = export::unique_file_name(name, &taken);
+            assert_eq!(got, want);
+            taken.push(got);
+        }
+    }
+
+    #[test]
     fn a_surround_export_writes_every_channel_of_the_layout() {
         use noodle_engine::ChannelLayout;
         use noodle_io::ExportFormat;
@@ -3354,12 +4343,12 @@ mod tests {
         // A sine panned to the centre speaker of the default 5.1.
         sine_chain(&mut session, Some(noodle_nodes::SURROUND_PAN_ID));
         let path = dir.path().join("surround.wav");
-        let choice = ExportChoice {
-            format: ExportFormat::WavFloat,
-            layout: ChannelLayout::Surround51,
-            range: Some((0.0, 0.25)),
-        };
-        session.start_export(path.clone(), choice).unwrap();
+        let choice = ExportChoice::mixdown(
+            ExportFormat::WavFloat,
+            ChannelLayout::Surround51,
+            Some((0.0, 0.25)),
+        );
+        session.start_export(path.clone(), choice.clone()).unwrap();
         until(&mut session, "the export finishes", |s| {
             s.export_progress().is_none()
         });
@@ -3415,11 +4404,7 @@ mod tests {
         };
         let export = |session: &mut Session, name: &str, layout| {
             let path = dir.path().join(name);
-            let choice = ExportChoice {
-                format: ExportFormat::WavFloat,
-                layout,
-                range: Some((0.0, 0.25)),
-            };
+            let choice = ExportChoice::mixdown(ExportFormat::WavFloat, layout, Some((0.0, 0.25)));
             session.start_export(path.clone(), choice).unwrap();
             until(session, "the export finishes", |s| {
                 s.export_progress().is_none()
@@ -3458,14 +4443,14 @@ mod tests {
         let mut session = Session::new(Nodes::all());
         session.use_cache_dir(dir.path().join("cache"));
         sine_chain(&mut session, Some("noodle.offline.reverse"));
-        let choice = ExportChoice {
-            format: ExportFormat::Flac16,
-            layout: noodle_engine::ChannelLayout::Stereo,
-            // Inside the 30 s the offline node is rendered over.
-            range: Some((1.0, 2.0)),
-        };
+        // Inside the 30 s the offline node is rendered over.
+        let choice = ExportChoice::mixdown(
+            ExportFormat::Flac16,
+            noodle_engine::ChannelLayout::Stereo,
+            Some((1.0, 2.0)),
+        );
         let path = dir.path().join("reversed.flac");
-        session.start_export(path.clone(), choice).unwrap();
+        session.start_export(path.clone(), choice.clone()).unwrap();
         until(&mut session, "the export finishes", |s| {
             s.export_progress().is_none()
         });
@@ -3475,7 +4460,7 @@ mod tests {
 
         // Cancelled, it leaves no file.
         let path = dir.path().join("cancelled.flac");
-        session.start_export(path.clone(), choice).unwrap();
+        session.start_export(path.clone(), choice.clone()).unwrap();
         session.cancel_export();
         until(&mut session, "the export stops", |s| {
             s.export_progress().is_none()
@@ -3786,10 +4771,10 @@ mod tests {
     fn a_midi_port_that_will_not_open_is_reported_and_leaves_none_open() {
         let mut session = Session::new(Nodes::all());
         session.set_audio_config(AudioConfig {
-            midi_input: Some("No Such Port".into()),
+            midi_inputs: vec!["No Such Port".into()],
             ..AudioConfig::default()
         });
-        assert_eq!(session.midi_input(), None);
+        assert!(session.midi_inputs().is_empty());
         assert!(
             session
                 .message()
@@ -3797,7 +4782,7 @@ mod tests {
         );
         // Turning it off again needs no port and says nothing new.
         session.set_audio_config(AudioConfig::default());
-        assert_eq!(session.midi_input(), None);
+        assert!(session.midi_inputs().is_empty());
     }
 
     thread_local! {
@@ -3830,7 +4815,7 @@ mod tests {
         session.midi_watch.list = Box::new(fake_ports);
         session.midi_watch.open = fake_open;
         PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into()]);
-        session.audio_config.midi_input = Some("Keys".into());
+        session.audio_config.midi_inputs = vec!["Keys".into()];
         let mut now = Instant::now();
         let mut step = |session: &mut Session| {
             now += Duration::from_secs(2);
@@ -3838,23 +4823,23 @@ mod tests {
         };
         // Chosen but not open (it was missing when chosen): opens once listed.
         step(&mut session);
-        assert_eq!(session.midi_input(), Some("Keys"));
+        assert_eq!(session.midi_inputs(), ["Keys"]);
         // Unplugged.
         PORTS.with(|p| p.borrow_mut().clear());
         step(&mut session);
-        assert_eq!(session.midi_input(), None);
+        assert!(session.midi_inputs().is_empty());
         assert!(session.message().is_some_and(|m| m.contains("unplugged")));
         // Still gone: nothing changes.
         step(&mut session);
-        assert_eq!(session.midi_input(), None);
+        assert!(session.midi_inputs().is_empty());
         // Plugged back in.
         PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into()]);
         step(&mut session);
-        assert_eq!(session.midi_input(), Some("Keys"));
+        assert_eq!(session.midi_inputs(), ["Keys"]);
         // Looks at most once a second.
         PORTS.with(|p| p.borrow_mut().clear());
         session.watch_midi(now + Duration::from_millis(100));
-        assert_eq!(session.midi_input(), Some("Keys"));
+        assert_eq!(session.midi_inputs(), ["Keys"]);
     }
 
     #[test]
@@ -3863,7 +4848,7 @@ mod tests {
         session.midi_watch.list = Box::new(fake_ports);
         session.midi_watch.open = fake_open;
         PORTS.with(|p| *p.borrow_mut() = vec!["Keys MIDI 1 24:0".into()]);
-        session.audio_config.midi_input = Some("Keys MIDI 1 24:0".into());
+        session.audio_config.midi_inputs = vec!["Keys MIDI 1 24:0".into()];
         let mut receiver = session.midi.subscribe();
         let mut now = Instant::now();
         let mut step = |session: &mut Session| {
@@ -3871,16 +4856,44 @@ mod tests {
             session.watch_midi(now);
         };
         step(&mut session);
-        assert_eq!(session.midi_input(), Some("Keys MIDI 1 24:0"));
+        assert_eq!(session.midi_inputs(), ["Keys MIDI 1 24:0"]);
         // Unplugged and plugged in again between two looks, as number 28.
         PORTS.with(|p| *p.borrow_mut() = vec!["Keys MIDI 1 28:0".into()]);
         step(&mut session);
-        assert_eq!(session.midi_input(), Some("Keys MIDI 1 28:0"));
+        assert_eq!(session.midi_inputs(), ["Keys MIDI 1 28:0"]);
         // The notes it held were let go.
         assert_eq!(receiver.pop(), Some([0xB0, 123, 0]));
         // And it stays open on later looks.
         step(&mut session);
-        assert_eq!(session.midi_input(), Some("Keys MIDI 1 28:0"));
+        assert_eq!(session.midi_inputs(), ["Keys MIDI 1 28:0"]);
+    }
+
+    #[test]
+    fn several_midi_ports_are_watched_and_replugged_one_at_a_time() {
+        let mut session = Session::new(Nodes::all());
+        session.midi_watch.list = Box::new(fake_ports);
+        session.midi_watch.open = fake_open;
+        PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into(), "Pads".into()]);
+        session.audio_config.midi_inputs = vec!["Keys".into(), "Pads".into(), "Absent".into()];
+        let mut keys = session.midi.subscribe_port("Keys");
+        let mut pads = session.midi.subscribe_port("Pads");
+        let mut now = Instant::now();
+        let mut step = |session: &mut Session| {
+            now += Duration::from_secs(2);
+            session.watch_midi(now);
+        };
+        step(&mut session);
+        assert_eq!(session.midi_inputs(), ["Keys", "Pads"]);
+        // One goes: only its notes are released, and the other stays open.
+        PORTS.with(|p| *p.borrow_mut() = vec!["Pads".into()]);
+        step(&mut session);
+        assert_eq!(session.midi_inputs(), ["Pads"]);
+        assert_eq!(keys.pop(), Some([0xB0, 123, 0]));
+        assert_eq!(pads.pop(), None);
+        // The missing one turns up, and the one that left returns.
+        PORTS.with(|p| *p.borrow_mut() = vec!["Keys".into(), "Pads".into(), "Absent".into()]);
+        step(&mut session);
+        assert_eq!(session.midi_inputs(), ["Pads", "Keys", "Absent"]);
     }
 
     #[test]
@@ -3892,7 +4905,7 @@ mod tests {
             sample_rate: Some(96_000),
             buffer_size: Some(64),
             channels: Some(6),
-            midi_input: Some("Keys".into()),
+            midi_inputs: vec!["Keys".into()],
             threads: 3,
         };
         assert_eq!(
@@ -4422,6 +5435,110 @@ mod tests {
     }
 
     #[test]
+    fn a_take_keeps_the_pedal_and_the_mod_wheel_and_plays_them_back() {
+        use noodle_core::ControlKind;
+        let dir = tempfile::tempdir().unwrap();
+        let example =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/midi-cc.ron");
+        let mut session = Session::open(Nodes::all(), &example).expect("the example opens");
+        // The example's own clip goes; the take replaces it.
+        let existing: Vec<_> = session.project().clips().map(|(id, _)| id).collect();
+        for id in existing {
+            session.edit([Edit::Apply(Command::RemoveClip { id })]);
+        }
+        let track = NodeId(1);
+        assert!(session.save_as(&dir.path().join("song.ron")));
+        session.fake_input = Some(Box::new(NoInput));
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        let wait = || std::thread::sleep(Duration::from_millis(80));
+        // Pedal down, a short note with the wheel moving, then the pedal up.
+        let bus = session.midi_bus().clone();
+        bus.send([0xB0, 64, 127]);
+        bus.send([0x90, 57, 100]);
+        bus.send([0xB0, 1, 20]);
+        wait();
+        bus.send([0xB0, 1, 100]);
+        bus.send([0x80, 57, 0]);
+        wait();
+        wait();
+        bus.send([0xB0, 64, 0]);
+        wait();
+        session.stop_recording();
+
+        let (_, clip) = session
+            .project()
+            .clips()
+            .find(|(_, clip)| clip.as_midi().is_some())
+            .expect("the take became a clip");
+        let midi = clip.as_midi().unwrap().clone();
+        assert_eq!(midi.notes.len(), 1);
+        let lane = |kind| -> Vec<(Tick, f32)> {
+            let mut points: Vec<_> = midi
+                .controls
+                .iter()
+                .filter(|p| p.kind == kind)
+                .map(|p| (p.tick, p.value))
+                .collect();
+            points.sort_by_key(|p| p.0);
+            points
+        };
+        let pedal = lane(ControlKind::Controller(64));
+        let wheel = lane(ControlKind::Controller(1));
+        assert_eq!(
+            pedal.iter().map(|p| p.1).collect::<Vec<_>>(),
+            [1.0, 0.0],
+            "{pedal:?}"
+        );
+        assert_eq!(wheel.len(), 2, "{wheel:?}");
+        assert!((wheel[0].1 - 20.0 / 127.0).abs() < 1e-6);
+        assert!((wheel[1].1 - 100.0 / 127.0).abs() < 1e-6);
+
+        // Played back, the pedal holds the note after the key is let go; the
+        // same take without its controllers does not.
+        let tick_to_frames = |tick: Tick| (tick.0 as f64 / 960.0 * 0.5 * 48_000.0) as usize;
+        let note_end = tick_to_frames(Tick(midi.notes[0].start.0 + midi.notes[0].length.0));
+        let pedal_up = tick_to_frames(pedal[1].0);
+        let (from, to) = (note_end + 4_000, pedal_up.saturating_sub(500));
+        assert!(from + 1_000 < to, "the window {from}..{to}");
+        let render = |project: &Project| {
+            let mut registry = noodle_engine::Registry::with_builtins();
+            let render = noodle_nodes::render_project_with_clips(
+                project,
+                &mut registry,
+                dir.path(),
+                noodle_engine::Settings {
+                    sample_rate: 48_000.0,
+                    max_frames: 128,
+                    channels: 1,
+                },
+                pedal_up + 8_000,
+            )
+            .unwrap();
+            assert!(render.problems.is_empty(), "{:?}", render.problems);
+            render.render.samples
+        };
+        let level = |samples: &[f32]| {
+            (samples[from..to].iter().map(|x| x * x).sum::<f32>() / (to - from) as f32).sqrt()
+        };
+        let heard = render(session.project());
+        assert!(level(&heard) > 0.01, "held by the pedal: {}", level(&heard));
+        let mut bare = session.project().clone();
+        let id = bare.clips().next().map(|(id, _)| id).unwrap();
+        let mut stripped = bare.clip(id).unwrap().clone();
+        if let noodle_core::ClipContent::Midi(m) = &mut stripped.content {
+            m.controls.clear();
+        }
+        noodle_core::History::default()
+            .apply(&mut bare, Command::SetClip { id, clip: stripped })
+            .unwrap();
+        assert!(level(&render(&bare)) < 0.001, "without the pedal");
+        // After the pedal is up, and the clip's end, it is quiet again.
+        assert!(heard[pedal_up + 6_000..].iter().all(|x| x.abs() < 0.001));
+    }
+
+    #[test]
     fn only_a_midi_arm_monitors_and_only_an_audio_arm_records_audio() {
         let dir = tempfile::tempdir().unwrap();
         let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
@@ -4533,6 +5650,10 @@ mod tests {
         assert_eq!(warps[0].1.tempo.points()[0].bpm, 120.0);
         assert!(warps[0].1.is_identity());
 
+        // The take's clips are one link, undone with the take.
+        let ids: Vec<_> = session.project().clips().map(|(id, _)| id).collect();
+        assert_eq!(session.project().linked_with(ids[0]), ids);
+
         session.undo();
         assert!(
             clips(&session).is_empty(),
@@ -4560,6 +5681,322 @@ mod tests {
                 "song recordings/take-002.wav"
             ]
         );
+    }
+
+    /// Feeds `frames` of mono input to the recorder in chunks the writer can
+    /// keep up with.
+    fn feed(tap: &mut noodle_io::RecordTap, frames: usize, value: impl Fn(usize) -> f32) {
+        for chunk in (0..frames).step_by(4_800) {
+            let samples: Vec<f32> = (chunk..(chunk + 4_800).min(frames)).map(&value).collect();
+            tap.push(&samples);
+            std::thread::sleep(std::time::Duration::from_millis(12));
+        }
+    }
+
+    #[test]
+    fn loop_recording_makes_a_take_of_every_cycle_in_one_folder() {
+        const CYCLE: usize = 24_000;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        // One beat (half a second at 120 bpm) is the loop.
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        // Three whole cycles and half of a fourth, each at its own level.
+        let level = |i: usize| (i / CYCLE + 1) as f32 * 0.1 + (i % CYCLE) as f32 * 1e-7;
+        feed(&mut tap, 3 * CYCLE + CYCLE / 2, level);
+        session.stop_recording();
+
+        let clips: Vec<_> = session.project().clips().collect();
+        assert_eq!(clips.len(), 2, "{:?}", session.message());
+        for (_, clip) in &clips {
+            let audio = clip.as_audio().unwrap();
+            assert_eq!((audio.offset, audio.length), (0, CYCLE as u64));
+            let folder = audio.takes.as_ref().expect("a take folder");
+            let deltas: Vec<u64> = folder.takes.iter().map(|t| t.delta).collect();
+            assert_eq!(deltas, [0, 24_000, 48_000, 72_000]);
+            // A new comp plays the last complete take.
+            assert_eq!(folder.comp.len(), 1);
+            assert_eq!(folder.comp[0].take, 2);
+        }
+        // Each take is its cycle's samples, in the one file.
+        let file = noodle_io::read_wav(&dir.path().join("song recordings/take-001.wav")).unwrap();
+        assert_eq!(file.samples.len(), 3 * CYCLE + CYCLE / 2);
+        let folder = clips[0].1.as_audio().unwrap().takes.as_ref().unwrap();
+        for (k, take) in folder.takes.iter().enumerate() {
+            let at = take.delta as usize + 100;
+            assert!(
+                (file.samples[at] - ((k + 1) as f32 * 0.1 + 100.0 * 1e-7)).abs() < 1e-6,
+                "take {k}"
+            );
+        }
+        // Both tracks' folders are one link, and one undo takes them away.
+        let ids: Vec<_> = clips.iter().map(|(id, _)| *id).collect();
+        assert_eq!(session.project().linked_with(ids[0]), ids);
+        assert!(session.message().unwrap().contains("4 takes"));
+        session.undo();
+        assert_eq!(session.project().clips().count(), 0);
+    }
+
+    #[test]
+    fn a_loop_recording_comped_by_swipes_plays_the_comps_samples() {
+        use crate::timeline::comp;
+        const CYCLE: usize = 24_000;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        let level = |i: usize| (i / CYCLE + 1) as f32 * 0.1 + (i % CYCLE) as f32 * 1e-7;
+        feed(&mut tap, 3 * CYCLE + CYCLE / 2, level);
+        session.stop_recording();
+        let ids: Vec<ClipId> = session.project().clips().map(|(id, _)| id).collect();
+        assert_eq!(ids.len(), 2);
+
+        // Swipe the first quarter second from take 0 and the next eighth from
+        // take 1; the rest stays the last take. Swiping one folder comps both.
+        let map = session.project().tempo_map().clone();
+        for (range, take) in [((0, 480), 0), ((480, 720), 1)] {
+            let command = comp::swipe(
+                session.project(),
+                &map,
+                ids[0],
+                (Tick(range.0), Tick(range.1)),
+                take,
+                &mut |_| 48_000,
+            )
+            .unwrap();
+            session.edit([Edit::Apply(command)]);
+        }
+        for id in &ids {
+            let folder = session
+                .project()
+                .clip(*id)
+                .unwrap()
+                .as_audio()
+                .unwrap()
+                .takes
+                .clone()
+                .unwrap();
+            let comp: Vec<(u64, usize)> = folder.comp.iter().map(|s| (s.at, s.take)).collect();
+            assert_eq!(comp, [(0, 0), (12_000, 1), (18_000, 2)], "{id:?}");
+        }
+
+        // It plays the comp's samples (a join's crossfade aside), and the
+        // offline render, which export uses, is the same one.
+        // Both tracks into a mixer and the output, as they would be in a song.
+        let mut bare = Project::new();
+        let mut commands = vec![
+            Command::AddNode {
+                id: NodeId(90),
+                node: Node::new(noodle_engine::OUTPUT_ID),
+            },
+            Command::AddNode {
+                id: NodeId(91),
+                node: Node::new("noodle.util.mix").with_config(
+                    noodle_core::Config::new().with("inputs", noodle_core::Value::Int(2)),
+                ),
+            },
+            Command::Connect(noodle_core::Connection {
+                from: noodle_core::Endpoint::new(NodeId(91), "out"),
+                to: noodle_core::Endpoint::new(NodeId(90), "in"),
+            }),
+        ];
+        for (n, id) in ids.iter().enumerate() {
+            let track = NodeId(n as u64 + 1);
+            commands.push(Command::AddNode {
+                id: track,
+                node: Node::new(noodle_nodes::TRACK_INPUT_ID),
+            });
+            commands.push(Command::Connect(noodle_core::Connection {
+                from: noodle_core::Endpoint::new(track, "audio"),
+                to: noodle_core::Endpoint::new(NodeId(91), format!("in{}", n + 1)),
+            }));
+            let mut clip = session.project().clip(*id).unwrap().clone();
+            clip.node = track;
+            if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
+                audio.warp = None;
+            }
+            commands.push(Command::AddClip { id: *id, clip });
+        }
+        History::new()
+            .apply(&mut bare, Command::Batch(commands))
+            .unwrap();
+        let mut registry = noodle_engine::Registry::with_builtins();
+        let rendered = noodle_nodes::render_project_with_clips(
+            &bare,
+            &mut registry,
+            dir.path(),
+            noodle_engine::Settings {
+                sample_rate: 48_000.0,
+                max_frames: 512,
+                channels: 2,
+            },
+            CYCLE,
+        )
+        .unwrap();
+        assert!(rendered.problems.is_empty(), "{:?}", rendered.problems);
+        let left: Vec<f32> = rendered.render.samples.iter().step_by(2).copied().collect();
+        for (frame, take) in [(6_000usize, 0usize), (15_000, 1), (21_000, 2)] {
+            // Two tracks of the same comp, summed.
+            let expect = 2.0 * ((take + 1) as f32 * 0.1 + frame as f32 * 1e-7);
+            assert!(
+                (left[frame] - expect).abs() < 1e-4,
+                "frame {frame}: {} vs {expect}",
+                left[frame]
+            );
+        }
+        session.undo();
+        session.undo();
+        let folder = session
+            .project()
+            .clip(ids[1])
+            .unwrap()
+            .as_audio()
+            .unwrap()
+            .takes
+            .clone()
+            .unwrap();
+        assert_eq!(folder.comp.len(), 1, "one undo per swipe");
+    }
+
+    #[test]
+    fn stopping_a_loop_recording_in_the_first_cycle_makes_a_plain_clip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        feed(&mut tap, 10_000, |_| 0.2);
+        session.stop_recording();
+        let clip = session
+            .project()
+            .clips()
+            .next()
+            .unwrap()
+            .1
+            .as_audio()
+            .unwrap()
+            .clone();
+        assert!(clip.takes.is_none());
+        assert_eq!(clip.length, 10_000);
+    }
+
+    #[test]
+    fn a_punch_keeps_only_its_range_and_a_pre_roll_starts_the_project_earlier() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        // Punch in at bar 2 for one beat, with a bar of pre-roll.
+        session.edit([Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+            on: true,
+            start: Tick(3840),
+            end: Tick(3840 + 960),
+        }))]);
+        session.set_pre_roll_bars(1);
+        session.advance_playhead(Tick(3840));
+        session.record();
+        assert!(session.is_recording(), "{:?}", session.message());
+        assert_eq!(session.playhead(), Tick(0), "the pre-roll goes back a bar");
+        // The bar of pre-roll, the beat in the range, and a beat past it.
+        feed(&mut tap, 96_000 + 24_000 + 24_000, |i| i as f32 * 1e-6);
+        // Still before the punch-out: the take goes on.
+        session.advance_playhead(Tick(3840 + 480));
+        session.maintain();
+        assert!(session.is_recording());
+        session.advance_playhead(Tick(3840 + 960));
+        session.maintain();
+        assert!(!session.is_recording(), "the punch-out ends the take");
+
+        let (_, clip) = session.project().clips().next().unwrap();
+        assert_eq!(clip.start, Tick(3840));
+        let audio = clip.as_audio().unwrap();
+        assert_eq!((audio.offset, audio.length), (96_000, 24_000));
+        let file = noodle_io::read_wav(&dir.path().join("song recordings/take-001.wav")).unwrap();
+        assert!((file.samples[audio.offset as usize] - 0.096).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recording_past_the_punch_range_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.edit([Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+            on: true,
+            start: Tick(960),
+            end: Tick(1920),
+        }))]);
+        session.advance_playhead(Tick(2000));
+        session.record();
+        assert!(!session.is_recording());
+        assert!(session.message().unwrap().contains("past the punch range"));
+    }
+
+    #[test]
+    fn stopping_in_the_pre_roll_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.edit([Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+            on: true,
+            start: Tick(3840),
+            end: Tick(4800),
+        }))]);
+        session.set_pre_roll_bars(1);
+        session.advance_playhead(Tick(3840));
+        session.record();
+        feed(&mut tap, 4_800, |_| 0.3);
+        session.stop_recording();
+        assert_eq!(session.project().clips().count(), 0);
+        assert!(!dir.path().join("song recordings/take-001.wav").exists());
+    }
+
+    #[test]
+    fn a_count_in_waits_before_the_take_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, tracks) = recording_session(dir.path(), 1);
+        session.set_audio_config(crate::testkit::virtual_audio());
+        session.arm(tracks[0], true);
+        session.set_count_in_bars(1);
+        // Without a metronome in the project there is nothing to count with:
+        // the take starts at once, and says why.
+        session.record();
+        assert!(session.is_recording());
+        assert!(session.message().unwrap().contains("metronome"));
+        session.stop_recording();
+
+        let ids = std::array::from_fn(|_| session.new_node_id());
+        let press = crate::metronome::press(session.project(), || ids).unwrap();
+        session.edit([Edit::Apply(press)]);
+        session.record();
+        assert!(session.is_counting_in());
+        assert!(!session.is_recording());
+        // Pressing record's button again gives up on it.
+        session.cancel_count_in();
+        assert!(!session.is_counting_in());
+        session.record();
+        assert!(session.is_counting_in());
+        // When the bar is over, the take starts.
+        session.counting_in.as_mut().unwrap().due = Instant::now();
+        session.maintain();
+        assert!(!session.is_counting_in());
+        assert!(session.is_recording());
+        session.stop_recording();
     }
 
     #[test]
@@ -5153,20 +6590,26 @@ mod recorded_clip_tests {
 
     #[test]
     fn a_take_skips_the_round_trip_latency() {
-        let clip = recorded_clip(NodeId(1), Tick(960), "t.wav", 48_000, 1_200);
+        let clip = recorded_clip(NodeId(1), Tick(960), "t.wav", 48_000, 1_200, u64::MAX);
         assert_eq!(clip.start, Tick(960));
         assert_eq!(audio(&clip), (1_200, 46_800));
     }
 
     #[test]
+    fn a_punch_out_cuts_the_take_short() {
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 1_000, 20_000);
+        assert_eq!(audio(&clip), (1_000, 20_000));
+    }
+
+    #[test]
     fn no_latency_leaves_the_take_whole() {
-        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 0);
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 48_000, 0, u64::MAX);
         assert_eq!(audio(&clip), (0, 48_000));
     }
 
     #[test]
     fn a_take_shorter_than_the_latency_keeps_a_frame() {
-        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 100, 5_000);
+        let clip = recorded_clip(NodeId(1), Tick(0), "t.wav", 100, 5_000, u64::MAX);
         assert_eq!(audio(&clip), (99, 1));
     }
 }

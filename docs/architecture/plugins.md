@@ -206,8 +206,15 @@ parameter, so the ports agree with the plugin (the ports win on the first
 block). The app opens editors from the properties panel or a double-click on the node (`Edit::PluginEditor`; a failure to open stays beside the button)
 and captures when the window closes (`Session::poll_plugin_editors`), as one
 undo step. That is a config change, so the node recompiles and its plugin is
-reloaded from the stored state. State changed while an editor is open is
-stored only when it closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and its unsaved edits with it. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
+reloaded from the stored state. While the window is open the app also reads
+the parameters alone (`capture_params_key`, no state saved; every 50 ms,
+`Session::sync_open_plugin_editors`) and turns each changed value into a
+`SetParam` via `Captured::changed_params`, so the ports, properties panel and
+saved project follow the editor without rebuilding the node. Changes in
+consecutive polls are one gesture (`Edit::Drag`), one undo step; a poll with no
+change ends it (`Edit::EndDrag`). The gesture is inferred from values settling,
+not from the plugin's begin/end events. Other state is stored only when the
+window closes. The app follows an editor by its instance (`EditorKey`), not the node ID, so a freeze render of the same node can't take its place; if the node is rebuilt (rewired, config changed) while the editor is open, the editor's instance is gone and only the state not held in parameters is lost. Editor commands wait up to 10 s on the plugin thread, and the app calls them synchronously, so a busy plugin thread freezes the UI that long.
 
 ## AU hosting
 
@@ -245,10 +252,21 @@ built).
   serialised as a binary plist. Latency is `kAudioUnitProperty_Latency`.
 - **Parameters** in the global scope; meters, read-only and non-realtime
   ones are left out.
-- **Not yet:** editors (a Cocoa view factory or `AUViewController`; the
-  properties panel says so, and state changes by wiring the parameter
-  ports), AUv3 units that need asynchronous instantiation, and AUs outside the
-  system registry. `tests/au_realtime.rs` (macOS) counts allocations on the
+- **Editors** (`au/gui.rs`) work like VST3's: the view goes into the window
+  the app makes (`Cocoa` parent), on the plugin thread, which is the main
+  thread on macOS. The view is the unit's own (`kAudioUnitProperty_CocoaUI`:
+  a bundle and an `AUCocoaUIBase` factory class), or, if it publishes none,
+  Apple's `AUGenericView` (CoreAudioKit), so every unit has an editor. Editor
+  keys carry bit 61. The editor borrows the unit's raw `AudioUnit`, so the
+  node's drop hands the unit to the plugin thread, which closes the editor
+  before it disposes the unit. Capture reads the `ClassInfo` state and each
+  exposed parameter with `AudioUnitGetParameter`, as one undo step when the
+  window closes (the CLAP and VST3 path). Sandboxed units get the same
+  editor in the host process.
+- **Not yet:** `AUViewController` editors and AUv3 units that need
+  asynchronous instantiation (both need the `AUAudioUnit` object), and AUs
+  outside the system registry. `tests/au_editor/` (macOS) opens the generic
+  view in a fake window. `tests/au_realtime.rs` (macOS) counts allocations on the
   Rust side of the AU node (the delay with a wired parameter, the synth with
   notes, a seek); what Apple's units do inside their render calls is their
   code and not seen by Rust's allocator.

@@ -38,6 +38,10 @@ const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 pub struct State {
     /// The selected point: a lane and an index into its points.
     selected: Option<(LaneId, usize)>,
+    /// The points picked together with Shift-click, in one lane, with the
+    /// selected point among them. Tension set on one of their segments is set
+    /// on all of them.
+    marked: std::collections::BTreeSet<(LaneId, usize)>,
     drag: Option<PointDrag>,
     /// Where each point was drawn last frame, for tests to aim at.
     #[cfg(test)]
@@ -56,6 +60,31 @@ struct PointDrag {
     index: usize,
     /// The lane as it was when the drag began.
     original: AutomationLane,
+    /// Set when the drag bends segments instead of moving the point.
+    bend: Option<Bend>,
+}
+
+/// A Ctrl-drag on a segment: its tension follows the pointer's height.
+struct Bend {
+    start_y: f32,
+    /// The segments, by the index of the point each one starts at.
+    segments: Vec<usize>,
+}
+
+/// How many pixels of vertical drag cover the whole tension range.
+const BEND_PIXELS: f32 = 60.0;
+
+/// `lane` with every segment starting at one of `segments` given `tension`.
+/// A hold segment stays a hold, and the last point has no segment.
+pub fn with_tension(lane: &AutomationLane, segments: &[usize], tension: f32) -> AutomationLane {
+    let mut lane = lane.clone();
+    let last = lane.points.len().saturating_sub(1);
+    for &i in segments.iter().filter(|&&i| i < last) {
+        if lane.points[i].curve != Curve::Hold {
+            lane.points[i].curve = Curve::with_tension(tension);
+        }
+    }
+    lane
 }
 
 impl State {
@@ -69,6 +98,7 @@ impl State {
         if self.selected.is_some_and(|(lane, i)| !exists(lane, i)) {
             self.selected = None;
         }
+        self.marked.retain(|&(lane, i)| exists(lane, i));
         if self
             .drag
             .as_ref()
@@ -95,6 +125,7 @@ impl State {
 
     pub fn deselect(&mut self) {
         self.selected = None;
+        self.marked.clear();
     }
 
     pub fn selected(&self) -> Option<(LaneId, usize)> {
@@ -143,6 +174,8 @@ pub struct Rows {
     tops: Vec<f32>,
     /// Each track's own lane height.
     heights: Vec<f32>,
+    /// The height of the take lanes shown under each track's own lane.
+    takes: Vec<f32>,
     lanes: Vec<Vec<LaneId>>,
     /// Lanes on Automation nodes that no track claims, after the last track.
     free: Vec<LaneId>,
@@ -151,15 +184,20 @@ pub struct Rows {
 }
 
 impl Rows {
-    /// `heights` is each track's own lane height, parallel to `tracks`.
-    pub fn new(project: &Project, tracks: &[NodeId], heights: &[f32]) -> Self {
+    /// `heights` is each track's own lane height, parallel to `tracks`, and
+    /// `takes` how many take lanes each shows under it.
+    pub fn new(project: &Project, tracks: &[NodeId], heights: &[f32], takes: &[usize]) -> Self {
+        let takes: Vec<f32> = takes
+            .iter()
+            .map(|&n| n as f32 * super::takes::LANE)
+            .collect();
         let mut tops = Vec::with_capacity(tracks.len());
         let mut lanes = Vec::with_capacity(tracks.len());
         let mut at = 0.0;
-        for (&track, &height) in tracks.iter().zip(heights) {
+        for (index, (&track, &height)) in tracks.iter().zip(heights).enumerate() {
             let own = lanes_for(project, track);
             tops.push(at);
-            at += height + own.len() as f32 * HEIGHT;
+            at += height + takes[index] + own.len() as f32 * HEIGHT;
             lanes.push(own);
         }
         let claimed: std::collections::BTreeSet<LaneId> = lanes.iter().flatten().copied().collect();
@@ -175,6 +213,7 @@ impl Rows {
         Self {
             tops,
             heights: heights.to_vec(),
+            takes,
             lanes,
             free,
             free_top,
@@ -216,7 +255,7 @@ impl Rows {
 
     /// The height of track `index`'s block, automation included.
     pub fn height(&self, index: usize) -> f32 {
-        self.heights[index] + self.lanes[index].len() as f32 * HEIGHT
+        self.heights[index] + self.takes[index] + self.lanes[index].len() as f32 * HEIGHT
     }
 
     /// The height of track `index`'s own lane, without its automation.
@@ -236,7 +275,7 @@ impl Rows {
 
     /// Where the row for the `k`th automation lane of track `index` begins.
     pub fn lane_top(&self, index: usize, k: usize) -> f32 {
-        self.tops[index] + self.heights[index] + k as f32 * HEIGHT
+        self.tops[index] + self.heights[index] + self.takes[index] + k as f32 * HEIGHT
     }
 
     /// The track whose block contains `y`, in points below the top of the
@@ -286,6 +325,14 @@ fn name(key: &str) -> &str {
 pub fn label(project: &Project, lane: &AutomationLane) -> String {
     if !is_automation_node(project, lane.target.node) {
         return format!("{} lane", name(&lane.target.port));
+    }
+    // A name the node was given, or copied from its parameter by Automate.
+    let node = project.graph().node(lane.target.node);
+    if let Some(noodle_core::Value::Text(label)) =
+        node.and_then(|n| n.config.get(noodle_nodes::AUTOMATION_LABEL))
+        && !label.is_empty()
+    {
+        return label.clone();
     }
     let number = project
         .graph()
@@ -448,10 +495,39 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                     .or(response.interact_pointer_pos());
                 if let Some(i) = press.and_then(near) {
                     state.selected = Some((id, i));
+                    if !state.marked.contains(&(id, i)) {
+                        state.marked.clear();
+                    }
+                    state.marked.insert((id, i));
                     state.drag = Some(PointDrag {
                         lane: id,
                         index: i,
                         original: lane.clone(),
+                        bend: None,
+                    });
+                } else if ui.input(|i| i.modifiers.command)
+                    && let Some(pos) = press
+                    && let Some(i) = segment_at(lane, view.axis.tick(pos.x))
+                {
+                    // The segments that bend together: the picked ones, if
+                    // this one is among them, else just this one.
+                    let mut segments: Vec<usize> = state
+                        .marked
+                        .iter()
+                        .filter(|&&(l, _)| l == id)
+                        .map(|&(_, i)| i)
+                        .collect();
+                    if !segments.contains(&i) {
+                        segments = vec![i];
+                    }
+                    state.drag = Some(PointDrag {
+                        lane: id,
+                        index: i,
+                        original: lane.clone(),
+                        bend: Some(Bend {
+                            start_y: pos.y,
+                            segments,
+                        }),
                     });
                 }
             }
@@ -459,12 +535,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
                 && drag.lane == id
             {
-                let moved = moved_point(
-                    &drag.original,
-                    drag.index,
-                    snap(pos.x),
-                    value_at(row, key, pos.y),
-                );
+                let moved = match &drag.bend {
+                    Some(bend) => {
+                        let from = drag.original.points[drag.index].curve.tension();
+                        let tension = from.unwrap_or(0.0) + (pos.y - bend.start_y) / BEND_PIXELS;
+                        Some(with_tension(
+                            &drag.original,
+                            &bend.segments,
+                            tension.clamp(-1.0, 1.0),
+                        ))
+                    }
+                    None => moved_point(
+                        &drag.original,
+                        drag.index,
+                        snap(pos.x),
+                        value_at(row, key, pos.y),
+                    ),
+                };
                 if let Some(moved) = moved
                     && moved != *lane
                 {
@@ -479,8 +566,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 && let Some(pos) = response.interact_pointer_pos()
             {
                 match near(pos) {
-                    Some(i) => state.selected = Some((id, i)),
+                    Some(i) if ui.input(|i| i.modifiers.shift) => {
+                        // Shift-click picks points together, or lets one go.
+                        state.marked.retain(|&(l, _)| l == id);
+                        if !state.marked.remove(&(id, i)) {
+                            state.marked.insert((id, i));
+                            state.selected = Some((id, i));
+                        }
+                    }
+                    Some(i) => {
+                        state.selected = Some((id, i));
+                        state.marked.clear();
+                        state.marked.insert((id, i));
+                    }
                     None => {
+                        state.marked.clear();
                         let point = AutomationPoint {
                             tick: snap(pos.x),
                             value: value_at(row, key, pos.y),
@@ -510,6 +610,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 let mut lane = lane.clone();
                 lane.points.remove(i);
                 state.selected = None;
+                state.marked.clear();
                 edits.push(Edit::Apply(Command::SetLane { id, lane }));
             }
 
@@ -518,7 +619,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
             if dimmed {
                 state.texts.push(REFUSED.into());
             }
-            paint(ui, row, visible, lane, &screen, selected, dimmed);
+            let marked: Vec<usize> = state
+                .marked
+                .iter()
+                .filter(|&&(l, _)| l == id)
+                .map(|&(_, i)| i)
+                .collect();
+            let picked: Vec<usize> = marked.into_iter().chain(selected).collect();
+            paint(ui, row, visible, lane, &screen, &picked, dimmed);
         }
     }
     // A drag whose widget never saw its release would leave the undo group
@@ -538,7 +646,7 @@ fn paint(
     visible: Rect,
     lane: &AutomationLane,
     screen: &[Pos2],
-    selected: Option<usize>,
+    picked: &[usize],
     dimmed: bool,
 ) {
     let painter = ui.painter_at(visible);
@@ -561,12 +669,22 @@ fn paint(
         shape.push(Pos2::new(row.left(), first.y));
     }
     for (i, &p) in screen.iter().enumerate() {
-        let hold = lane.points[i].curve == Curve::Hold;
-        if hold && let Some(next) = screen.get(i + 1) {
-            shape.push(p);
-            shape.push(Pos2::new(next.x, p.y));
-        } else {
-            shape.push(p);
+        let curve = lane.points[i].curve;
+        shape.push(p);
+        if let Some(&next) = screen.get(i + 1) {
+            match curve {
+                Curve::Hold => shape.push(Pos2::new(next.x, p.y)),
+                Curve::Linear => {}
+                Curve::Tension(_) => {
+                    for step in 1..CURVE_STEPS {
+                        let along = step as f32 / CURVE_STEPS as f32;
+                        shape.push(Pos2::new(
+                            p.x + (next.x - p.x) * along,
+                            p.y + (next.y - p.y) * curve.shape(f64::from(along)) as f32,
+                        ));
+                    }
+                }
+            }
         }
     }
     if let Some(last) = screen.last() {
@@ -574,7 +692,7 @@ fn paint(
     }
     painter.add(egui::Shape::line(shape, stroke));
     for (i, &p) in screen.iter().enumerate() {
-        let on = selected == Some(i);
+        let on = picked.contains(&i);
         painter.circle_filled(
             p,
             if on { 5.0 } else { 3.5 },
@@ -590,6 +708,17 @@ fn paint(
             colors::MISSING,
         );
     }
+}
+
+/// Straight pieces a bent segment is drawn in.
+const CURVE_STEPS: usize = 24;
+
+/// The segment (by its first point) that `tick` falls in, if it has a next
+/// point and isn't a hold.
+fn segment_at(lane: &AutomationLane, tick: Tick) -> Option<usize> {
+    let after = lane.points.partition_point(|p| p.tick <= tick);
+    let i = after.checked_sub(1)?;
+    (i + 1 < lane.points.len() && lane.points[i].curve != Curve::Hold).then_some(i)
 }
 
 /// `lane` with `point` in it, at its place in tick order, and that place. A
@@ -629,8 +758,26 @@ fn moved_point(
     Some(moved)
 }
 
-/// A lane's header: its name and a button to remove it.
-pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: bool) -> Vec<Edit> {
+/// An Automation node's lane header controls: its record arm, and while armed
+/// a slider for its value.
+#[derive(Clone, Copy)]
+pub struct Arm {
+    pub node: NodeId,
+    pub armed: bool,
+    /// What the slider shows.
+    pub value: f32,
+}
+
+/// A lane's header: its name, a button to remove it, and for an Automation
+/// node's lane the record arm and value slider.
+pub fn header(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: LaneId,
+    label: &str,
+    refused: bool,
+    arm: Option<Arm>,
+) -> Vec<Edit> {
     let mut edits = Vec::new();
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, colors::AUTOMATION_HEADER);
@@ -660,6 +807,48 @@ pub fn header(ui: &mut egui::Ui, rect: Rect, id: LaneId, label: &str, refused: b
         .clicked()
     {
         edits.push(Edit::Apply(Command::RemoveLane { id }));
+    }
+    if let Some(arm) = arm {
+        let button = Rect::from_center_size(
+            Pos2::new(rect.right() - 38.0, rect.center().y),
+            vec2(20.0, 18.0),
+        );
+        let dot = egui::RichText::new("●").color(if arm.armed {
+            crate::theme::RECORD
+        } else {
+            colors::TEXT
+        });
+        if ui
+            .put(button, egui::Button::new(dot).selected(arm.armed))
+            .on_hover_text("Arm: record moves of this node into the lane while the transport plays")
+            .clicked()
+        {
+            edits.push(Edit::ArmAutomation {
+                node: arm.node,
+                on: !arm.armed,
+            });
+        }
+        if arm.armed {
+            let slider = Rect::from_min_max(
+                Pos2::new(rect.left() + 16.0, rect.bottom() - 14.0),
+                Pos2::new(rect.right() - 48.0, rect.bottom() - 2.0),
+            );
+            let mut value = arm.value;
+            let response = ui.put(
+                slider,
+                egui::Slider::new(&mut value, 0.0..=1.0).show_value(false),
+            );
+            if response.changed() {
+                edits.push(Edit::Drag(Command::SetParam {
+                    node: arm.node,
+                    key: noodle_nodes::AUTOMATION_VALUE.to_owned(),
+                    value: Some(value),
+                }));
+            }
+            if response.drag_stopped() {
+                edits.push(Edit::EndDrag);
+            }
+        }
     }
     edits
 }

@@ -13,6 +13,7 @@ use noodle_engine::{InputKind, Location, NodeType, NodeView, ParamReading};
 
 use crate::session::{Edit, LibraryEdit, Session};
 use crate::widgets::format::format_value;
+use crate::widgets::param::Automate;
 use crate::widgets::{
     ConfigField, CurveEditor, EnvelopeEditor, GraphEditor, GraphKind, Live, ParamField,
 };
@@ -209,15 +210,6 @@ fn plugin_editor(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edi
     let Some(plugin) = session.plugin_of(id) else {
         return;
     };
-    if plugin.descriptor().format == noodle_plugins::PluginFormat::Au {
-        ui.label(
-            RichText::new(
-                "Audio Units have no editor window yet; set them through their parameters.",
-            )
-            .weak(),
-        );
-        return;
-    }
     let open = session.plugin_editor_open(id);
     let label = if open { "Close editor" } else { "Open editor" };
     if ui
@@ -854,7 +846,24 @@ fn param_picker(
     .id_salt(("param-picker", id))
     .default_open(false)
     .show(ui, |ui| {
-        ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search parameters"));
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search parameters"));
+            let learning = session.param_learning(id);
+            let label = if learning { "Listening…" } else { "Learn" };
+            if ui
+                .selectable_label(learning, label)
+                .on_hover_text(
+                    "Press, then move a control in the plugin's editor (it opens if needed): \
+                     that parameter gets a port on the node.",
+                )
+                .clicked()
+            {
+                edits.push(Edit::ParamLearn {
+                    node: id,
+                    on: !learning,
+                });
+            }
+        });
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
         let matches: Vec<&noodle_plugins::ParamDesc> = descriptor
             .params
@@ -997,7 +1006,14 @@ fn params(
                 max: live.max,
             })
         });
-        let shown_value = reading.map_or(value, |reading| reading.value);
+        let mut shown_value = reading.map_or(value, |reading| reading.value);
+        // An Automation node's value shows its lane, and the value being
+        // written while it records.
+        if key == noodle_nodes::AUTOMATION_VALUE
+            && let Some(lane_value) = session.automation_value(id)
+        {
+            shown_value = lane_value;
+        }
         let lane = session
             .project()
             .lane_for(&Endpoint::new(id, key))
@@ -1008,9 +1024,17 @@ fn params(
                 edits.push(edit);
             }
             ui.add_enabled_ui(source.is_none(), |ui| {
+                let target = Endpoint::new(id, key);
                 let out = ParamField::new(&input.name, info, shown_value)
                     .id_salt((id, key))
                     .width(ui.available_width())
+                    .automate(
+                        match crate::session::automate::refusal(session.project(), &target) {
+                            None => Automate::Offered,
+                            Some(why) => Automate::Refused(why),
+                        },
+                    )
+                    .learn_midi(session.learn_midi_menu(&target))
                     .show(ui);
                 if let Some(source) = &source {
                     out.response

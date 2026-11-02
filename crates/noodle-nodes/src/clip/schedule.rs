@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use noodle_core::{
-    ClipContent, ClipId, MIN_LOOP_SECONDS, NodeId, Project, TICKS_PER_QUARTER, Tick, WarpAxis,
-    WarpMode,
+    ClipContent, ClipId, ControlKind, ExpressionKind, MIN_LOOP_SECONDS, NodeId, Project,
+    TICKS_PER_QUARTER, Tick, WarpAxis, WarpMode,
 };
-use noodle_engine::TempoTable;
+use noodle_engine::{ChannelControl, EventKind, Expression, NoteId, TempoTable};
 use noodle_io::{AudioFiles, Decoder, FileInfo, FileStamp, clip_frames};
 
 use super::hub::Shared;
@@ -288,6 +288,10 @@ struct Piece {
     from: u64,
     len: u64,
     warp: Option<(Arc<WarpMap>, WarpMode)>,
+    /// For a span of a take folder: whether it is joined to the one before
+    /// it, and the crossfade set for the join. Such a piece reads its own
+    /// part of the file, with the rest of the file for room on both sides.
+    join: Option<Option<noodle_core::Crossfade>>,
 }
 
 /// The most pieces one section is laid out as; a longer section is cut off.
@@ -312,6 +316,147 @@ fn lay_out(
     table: &TempoTable,
     rate: u32,
 ) -> (Vec<Piece>, Option<String>) {
+    match &audio.takes {
+        Some(folder) => lay_out_folder(project, clip, audio, folder, info, table, rate),
+        None => lay_out_plain(project, clip, audio, info, table, rate),
+    }
+}
+
+/// The most spans of one comp that are laid out; later ones are left out.
+const MAX_SPANS: usize = 4_000;
+
+/// How a take folder is laid out: one piece per span of its comp, back to
+/// back, each playing its take's part of the file. The folder is first laid
+/// out as a plain clip of its window (so a warp places it as it does any
+/// section), and the spans are cut from that; the pieces of a span's take
+/// are the same part of the music, `delta` frames later in the file. The
+/// pieces carry the join into them, so their crossfades can be laid out.
+fn lay_out_folder(
+    project: &Project,
+    clip: &noodle_core::Clip,
+    audio: &noodle_core::AudioClip,
+    folder: &noodle_core::TakeFolder,
+    info: &FileInfo,
+    table: &TempoTable,
+    rate: u32,
+) -> (Vec<Piece>, Option<String>) {
+    let plain = noodle_core::AudioClip {
+        takes: None,
+        ..audio.clone()
+    };
+    let (whole, problem) = lay_out_plain(project, clip, &plain, info, table, rate);
+    // A loop in the warp is not carried across the spans: the window plays
+    // once.
+    let base = whole.into_iter().next().expect("a layout has a piece");
+    let file_rate = f64::from(info.sample_rate);
+    let engine_rate = f64::from(rate);
+    let (window_start, window_end) = (audio.offset, audio.offset + audio.length);
+    let warp = base
+        .warp
+        .as_ref()
+        .and_then(|_| audio.warp.and_then(|id| project.warp(id)));
+    let curve = warp.map(|w| w.curve());
+    let origin = audio.offset as f64 / file_rate;
+    // Where, in engine frames from the section's start, the window's frame
+    // `coord` plays.
+    let place = |coord: u64| -> u64 {
+        let source = (coord - window_start) as f64 * engine_rate / file_rate;
+        match &base.warp {
+            Some((map, _)) => map.out_at(source).round() as u64,
+            None => source.round() as u64,
+        }
+    };
+    let mut pieces: Vec<Piece> = Vec::new();
+    for (index, span) in folder.comp.iter().enumerate().take(MAX_SPANS) {
+        let begin = if index == 0 {
+            window_start
+        } else {
+            span.at.max(window_start)
+        };
+        let end = folder
+            .span_end(index)
+            .map_or(window_end, |at| at.min(window_end));
+        if begin >= end {
+            continue;
+        }
+        let Some(take) = folder.takes.get(span.take) else {
+            continue;
+        };
+        let (offset, length) = (begin + take.delta, end - begin);
+        let frames = clip_frames(info, offset, length, rate);
+        if frames == 0 {
+            continue;
+        }
+        let from = place(begin);
+        let until = if end == window_end {
+            base.len
+        } else {
+            place(end)
+        };
+        let span_len = until.saturating_sub(from).max(1);
+        let join = (!pieces.is_empty()).then_some(span.crossfade);
+        let piece = match (&base.warp, &curve) {
+            (Some((_, mode)), Some(curve)) => {
+                let begin_sec = begin as f64 / file_rate;
+                let tick = match curve.axis {
+                    WarpAxis::Beats => Tick(
+                        clip.start.0
+                            + ((curve.at(begin_sec) - curve.at(origin)) * TICKS_PER_QUARTER as f64)
+                                .round() as i64,
+                    ),
+                    WarpAxis::Seconds => clip.start,
+                };
+                let map = WarpMap::build(
+                    curve,
+                    table,
+                    tick,
+                    engine_rate,
+                    begin_sec,
+                    frames as f64 / engine_rate,
+                    frames,
+                );
+                let len = span_len.min((map.out_len().round() as u64).max(1));
+                let map = if (len as f64) < map.out_len() {
+                    map.truncated(len as f64)
+                } else {
+                    map
+                };
+                Piece {
+                    offset,
+                    length,
+                    from,
+                    len,
+                    warp: Some((Arc::new(map), *mode)),
+                    join,
+                }
+            }
+            _ => Piece {
+                offset,
+                length,
+                from,
+                len: span_len.min(frames),
+                warp: None,
+                join,
+            },
+        };
+        pieces.push(piece);
+    }
+    if pieces.is_empty() {
+        // Nothing of any take is there: play the first span's take as a
+        // plain clip, so there is something to schedule and report.
+        return lay_out_plain(project, clip, &plain, info, table, rate);
+    }
+    (pieces, problem)
+}
+
+fn lay_out_plain(
+    project: &Project,
+    clip: &noodle_core::Clip,
+    audio: &noodle_core::AudioClip,
+    info: &FileInfo,
+    table: &TempoTable,
+    rate: u32,
+) -> (Vec<Piece>, Option<String>) {
     let source_frames = clip_frames(info, audio.offset, audio.length, rate);
     let Some(warp) = audio
         .warp
@@ -324,6 +469,7 @@ fn lay_out(
             from: 0,
             len: source_frames,
             warp: None,
+            join: None,
         };
         return (vec![piece], None);
     };
@@ -362,6 +508,7 @@ fn lay_out(
             from: 0,
             len: total.min(len),
             warp: Some((Arc::new(map), warp.mode)),
+            join: None,
         }]
     };
     let Some((loop_start, loop_end)) = looped else {
@@ -427,6 +574,7 @@ fn lay_out(
             from: at,
             len,
             warp: Some((shared, warp.mode)),
+            join: None,
         });
         elapsed = end;
         from = loop_start;
@@ -511,9 +659,219 @@ pub struct ScheduledNote {
 /// the one below that.
 pub const CLIP_NOTE_MASK: u32 = 0x1FFF_FFFF;
 
-/// A track's MIDI notes, sorted by start (then ID). Notes of overlapping
-/// clips all play.
-pub type Notes = Vec<ScheduledNote>;
+/// One controller, program or note-expression event of a MIDI clip, placed
+/// on the timeline in samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScheduledControl {
+    pub time: u64,
+    pub kind: EventKind,
+    /// Which controller of which channel it sets, for catching up after a
+    /// jump; `None` for a note's expression, which only plays while the note
+    /// sounds.
+    pub lane: Option<(u8, u16)>,
+    /// Set at the end of a clip to let go of what it set (pedal up, bend
+    /// centred). A catch-up skips the controllers whose latest event is one.
+    pub release: bool,
+}
+
+/// A track's MIDI: the notes sorted by start (then ID), and the controllers
+/// and expressions sorted by time. Those of overlapping clips all play.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notes {
+    pub notes: Vec<ScheduledNote>,
+    pub controls: Vec<ScheduledControl>,
+}
+
+impl Notes {
+    pub fn is_empty(&self) -> bool {
+        self.notes.is_empty() && self.controls.is_empty()
+    }
+}
+
+/// How often a ramp between two points is played: about every 5 ms.
+const RAMP_SECONDS: f64 = 0.005;
+
+fn unit_to_u32(value: f32) -> u32 {
+    (f64::from(value.clamp(0.0, 1.0)) * 4_294_967_296.0).min(f64::from(u32::MAX)) as u32
+}
+
+fn bend_to_u32(value: f32) -> u32 {
+    ((f64::from(value.clamp(-1.0, 1.0)) + 1.0) * 2_147_483_648.0).min(f64::from(u32::MAX)) as u32
+}
+
+/// The controller `kind` set to `value` on `channel`, as the engine plays it.
+fn control_event(channel: u8, kind: ControlKind, value: f32) -> (EventKind, (u8, u16)) {
+    let (code, event) = match kind {
+        ControlKind::Controller(n) => (
+            u16::from(n & 127),
+            EventKind::Channel {
+                channel,
+                control: ChannelControl::Controller(n & 127),
+                value: unit_to_u32(value),
+            },
+        ),
+        ControlKind::PitchBend => (
+            128,
+            EventKind::Channel {
+                channel,
+                control: ChannelControl::PitchBend,
+                value: bend_to_u32(value),
+            },
+        ),
+        ControlKind::ChannelPressure => (
+            129,
+            EventKind::Channel {
+                channel,
+                control: ChannelControl::Pressure,
+                value: unit_to_u32(value),
+            },
+        ),
+        ControlKind::ProgramChange => (
+            130,
+            EventKind::Midi([
+                0xC0 | channel,
+                (value.clamp(0.0, 1.0) * 127.0).round() as u8,
+                0,
+            ]),
+        ),
+    };
+    (event, (channel, code))
+}
+
+fn expression_kind(kind: ExpressionKind) -> Expression {
+    match kind {
+        ExpressionKind::Pitch => Expression::Pitch,
+        ExpressionKind::Pressure => Expression::Pressure,
+        ExpressionKind::Timbre => Expression::Timbre,
+        ExpressionKind::Volume => Expression::Volume,
+        ExpressionKind::Pan => Expression::Pan,
+    }
+}
+
+/// The samples at which a ramp from `from` to `to` (both sample times) puts
+/// out a value, and the share of the way (0 to 1) it has gone there: after
+/// `from`, every [`RAMP_SECONDS`], and before `to`.
+fn ramp_steps(from: u64, to: u64, rate: u32) -> impl Iterator<Item = (u64, f32)> {
+    let step = ((f64::from(rate) * RAMP_SECONDS) as u64).max(1);
+    (1..)
+        .map(move |k| from + k * step)
+        .take_while(move |&t| t < to)
+        .map(move |t| (t, (t - from) as f32 / (to - from) as f32))
+}
+
+/// The id a note sounds under.
+fn note_id(id: ClipId, note: &noodle_core::MidiNote) -> u32 {
+    // A note is known by its clip, place and key, so removing or moving
+    // other notes leaves it alone. Two notes can only share an identity
+    // by being the same note twice.
+    let mut hasher = DefaultHasher::new();
+    (id, note.start, note.key).hash(&mut hasher);
+    hasher.finish() as u32 & CLIP_NOTE_MASK
+}
+
+/// Turns the controllers and note expressions of a MIDI clip into scheduled
+/// events: ramps become events at a fixed rate, and what the clip set is
+/// released where it ends.
+fn schedule_controls(
+    table: &TempoTable,
+    rate: u32,
+    id: ClipId,
+    clip: &noodle_core::Clip,
+    midi: &noodle_core::MidiClip,
+    out: &mut Notes,
+) {
+    let at = |ticks: i64| table.sample_at_tick(noodle_core::Tick(clip.start.0 + ticks));
+    let clip_end = at(midi.length.0);
+    let mut groups: std::collections::BTreeMap<(u8, ControlKind), Vec<noodle_core::ControlPoint>> =
+        Default::default();
+    for point in midi.played_controls() {
+        groups
+            .entry((point.channel, point.kind))
+            .or_default()
+            .push(point);
+    }
+    for ((channel, kind), points) in &groups {
+        for (i, point) in points.iter().enumerate() {
+            let time = at(point.tick.0);
+            let (event, lane) = control_event(*channel, *kind, point.value);
+            out.controls.push(ScheduledControl {
+                time,
+                kind: event,
+                lane: Some(lane),
+                release: false,
+            });
+            if let (true, Some(next)) = (point.ramp, points.get(i + 1)) {
+                let to = at(next.tick.0).min(clip_end);
+                for (t, share) in ramp_steps(time, to, rate) {
+                    let value = point.value + (next.value - point.value) * share;
+                    out.controls.push(ScheduledControl {
+                        time: t,
+                        kind: control_event(*channel, *kind, value).0,
+                        lane: Some(lane),
+                        release: false,
+                    });
+                }
+            }
+        }
+        if let Some(rest) = kind.rest() {
+            let (event, lane) = control_event(*channel, *kind, rest);
+            out.controls.push(ScheduledControl {
+                time: clip_end,
+                kind: event,
+                lane: Some(lane),
+                release: true,
+            });
+        }
+    }
+    for note in &midi.played() {
+        if note.expressions.is_empty() {
+            continue;
+        }
+        let start = at(note.start.0);
+        if start >= clip_end {
+            continue;
+        }
+        let end = at(note.end().0).min(clip_end).max(start + 1);
+        let note_id = NoteId(note_id(id, note));
+        let expressions = note.expressions_until(note.length.0);
+        let mut kinds: Vec<ExpressionKind> = expressions.iter().map(|e| e.kind).collect();
+        kinds.sort();
+        kinds.dedup();
+        for kind in kinds {
+            let mut points: Vec<&noodle_core::NoteExpression> =
+                expressions.iter().filter(|e| e.kind == kind).collect();
+            points.sort_by_key(|e| e.tick);
+            let event = |value: f32| EventKind::Expression {
+                note: note_id,
+                expression: expression_kind(kind),
+                value,
+            };
+            for (i, point) in points.iter().enumerate() {
+                let time = at(note.start.0 + point.tick.0).max(start);
+                if time >= end {
+                    continue;
+                }
+                out.controls.push(ScheduledControl {
+                    time,
+                    kind: event(point.value),
+                    lane: None,
+                    release: false,
+                });
+                if let (true, Some(next)) = (point.ramp, points.get(i + 1)) {
+                    let to = at(note.start.0 + next.tick.0).min(end);
+                    for (t, share) in ramp_steps(time, to, rate) {
+                        out.controls.push(ScheduledControl {
+                            time: t,
+                            kind: event(point.value + (next.value - point.value) * share),
+                            lane: None,
+                            release: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Turns the notes of a MIDI clip into scheduled notes.
 fn schedule_notes(
@@ -531,13 +889,8 @@ fn schedule_notes(
             continue;
         }
         let end = at(note.end().0).min(clip_end).max(start + 1);
-        // A note is known by its clip, place and key, so removing or moving
-        // other notes leaves it alone. Two notes can only share an identity
-        // by being the same note twice.
-        let mut hasher = DefaultHasher::new();
-        (id, note.start, note.key).hash(&mut hasher);
-        out.push(ScheduledNote {
-            id: hasher.finish() as u32 & CLIP_NOTE_MASK,
+        out.notes.push(ScheduledNote {
+            id: note_id(id, note),
             start,
             end,
             key: note.key,
@@ -860,13 +1213,9 @@ impl ClipFeeds {
             let audio = match &clip.content {
                 ClipContent::Audio(audio) => audio,
                 ClipContent::Midi(midi) => {
-                    schedule_notes(
-                        table,
-                        id,
-                        clip,
-                        midi,
-                        notes_by_node.entry(clip.node).or_default(),
-                    );
+                    let out = notes_by_node.entry(clip.node).or_default();
+                    schedule_notes(table, id, clip, midi, out);
+                    schedule_controls(table, rate, id, clip, midi, out);
                     continue;
                 }
             };
@@ -911,7 +1260,27 @@ impl ClipFeeds {
                     at(clip.start.0 + x.after.0) - first_start,
                 ));
             }
+            let default_fade =
+                (f64::from(rate) * noodle_core::DEFAULT_COMP_FADE_SECONDS / 2.0).round() as u64;
             for (k, piece) in pieces.into_iter().enumerate() {
+                if let Some(join) = piece.join {
+                    let place = first_start + piece.from;
+                    let (before, after) = match join.filter(|x| !x.is_empty()) {
+                        None => (default_fade, default_fade),
+                        Some(x) => {
+                            let at = |ticks: i64| table.sample_at_tick(Tick(ticks.max(0)));
+                            let tick = table.tick_at(place).round() as i64;
+                            (
+                                place.saturating_sub(at(tick - x.before.0)),
+                                at(tick + x.after.0).saturating_sub(place),
+                            )
+                        }
+                    };
+                    crossfades
+                        .entry(clip.node)
+                        .or_default()
+                        .push((piece_id(id, k), before, after));
+                }
                 // Fades are counted in the file's frames; a warp stretches
                 // them along with the audio. A section fades in over its
                 // first piece and out over its last.
@@ -945,11 +1314,18 @@ impl ClipFeeds {
                     )
                 });
                 let (head_slope, tail_slope) = slopes.unwrap_or((1.0, 1.0));
-                if k == 0 {
+                let spanned = audio.takes.is_some();
+                if k == 0 || spanned {
                     head_room = (to_engine(piece.offset) as f64 / head_slope).floor() as u64;
                 }
-                if k == last && info.frames.is_some() {
-                    tail_room = (to_engine(after_window) as f64 / tail_slope).floor() as u64;
+                if (k == last || spanned) && info.frames.is_some() {
+                    let after = if spanned {
+                        info.frames
+                            .map_or(0, |f| f.saturating_sub(piece.offset + piece.length))
+                    } else {
+                        after_window
+                    };
+                    tail_room = (to_engine(after) as f64 / tail_slope).floor() as u64;
                 }
                 let mut scheduled = ScheduledClip::new(
                     piece_id(id, k),
@@ -1002,7 +1378,9 @@ impl ClipFeeds {
                 schedule.sort_by_key(|c| (c.start, c.id));
             }
             let mut notes = notes_by_node.remove(node).unwrap_or_default();
-            notes.sort_by_key(|n| (n.start, n.id));
+            notes.notes.sort_by_key(|n| (n.start, n.id));
+            // A release comes before what another clip sets at the same time.
+            notes.controls.sort_by_key(|c| (c.time, !c.release));
             shared.set(schedule, notes);
         }
         // Forget nodes that are gone: nothing holds their entry but this map

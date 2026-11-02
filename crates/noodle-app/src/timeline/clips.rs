@@ -175,12 +175,19 @@ pub fn trim_end(
             .notes
             .iter()
             .filter(|note| midi.loop_on || note.start.0 < length)
+            .cloned()
+            .collect();
+        let controls = midi
+            .controls
+            .iter()
+            .filter(|p| midi.loop_on || p.tick.0 < length)
             .copied()
             .collect();
         return Some(Clip {
             content: ClipContent::Midi(MidiClip {
                 length: Tick(length),
                 notes,
+                controls,
                 ..midi.clone()
             }),
             ..clip.clone()
@@ -280,13 +287,15 @@ fn trim_midi_start(clip: &Clip, midi: &MidiClip, edge: Tick) -> Clip {
             (to > 0).then(|| noodle_core::MidiNote {
                 start: Tick(from.max(0)),
                 length: Tick(to - from.max(0)),
-                ..*note
+                expressions: note.expressions_from(-from),
+                ..note.clone()
             })
         })
         .collect();
     let mut trimmed = MidiClip {
         length: Tick(end - start),
         notes,
+        controls: noodle_core::controls_from(&midi.controls, delta),
         ..midi.clone()
     };
     if trimmed.loop_on {
@@ -357,6 +366,55 @@ pub fn set_fade_out(
     })
 }
 
+/// The tick at which `frame` of the clip's file plays, for an audio clip
+/// showing the file from its offset. `None` if the warp is missing, or the
+/// frame is before the clip's offset.
+pub fn tick_of_frame(
+    map: &TempoMap,
+    clip: &Clip,
+    frame: u64,
+    rate: u32,
+    warp: Option<&ClipWarp>,
+) -> Option<Tick> {
+    let audio = clip.as_audio()?;
+    let into = frame.checked_sub(audio.offset)?;
+    match layout(map, audio, warp, rate)? {
+        Layout::Warped(section) => Some(section.tick_of(
+            clip.start,
+            audio.offset as f64 / f64::from(rate),
+            frame as f64 / f64::from(rate),
+        )),
+        Layout::Frames => {
+            let rate = f64::from(rate);
+            let at = map.sample_at(clip.start, rate) + into;
+            Some(Tick(map.tick_at_sample(at, rate).round() as i64))
+        }
+    }
+}
+
+/// The frame of the clip's file that plays at `tick`, the inverse of
+/// [`tick_of_frame`]. `None` if the warp is missing, or the tick is before the
+/// clip.
+pub fn frame_of_tick(
+    map: &TempoMap,
+    clip: &Clip,
+    tick: Tick,
+    rate: u32,
+    warp: Option<&ClipWarp>,
+) -> Option<u64> {
+    let audio = clip.as_audio()?;
+    match layout(map, audio, warp, rate)? {
+        Layout::Warped(section) => u64::try_from(section.frame_at(clip.start, audio, tick)).ok(),
+        Layout::Frames => {
+            let rate = f64::from(rate);
+            let into = map
+                .sample_at(tick, rate)
+                .checked_sub(map.sample_at(clip.start, rate))?;
+            Some(audio.offset + into)
+        }
+    }
+}
+
 /// The clip cut in two at `at`: the part before it and the part from it on,
 /// each a clip of its own that plays what was there, sample for sample.
 /// `None` if `at` isn't inside the clip. A fade out stays with the second
@@ -414,13 +472,27 @@ pub fn split(
             }
             let mut before = Vec::new();
             let mut after = Vec::new();
+            let played = midi.played_controls();
+            // The first half has the controllers cut off where it ends (a
+            // ramp ends on the value it had there); the second has each
+            // controller start at the value it had at the cut.
+            let controls_before = MidiClip {
+                length: Tick(cut),
+                loop_on: false,
+                controls: played.clone(),
+                ..MidiClip::new(Tick(cut))
+            }
+            .played_controls();
+            let controls_after = noodle_core::controls_from(&played, cut);
             // A looping clip is split as it sounds, into two that don't loop.
             for note in &midi.played() {
                 let end = note.start.0 + note.length.0;
                 if note.start.0 < cut {
+                    let length = note.length.0.min(cut - note.start.0);
                     before.push(noodle_core::MidiNote {
-                        length: Tick(note.length.0.min(cut - note.start.0)),
-                        ..*note
+                        length: Tick(length),
+                        expressions: note.expressions_until(length),
+                        ..note.clone()
                     });
                 }
                 if end > cut {
@@ -428,7 +500,8 @@ pub fn split(
                     after.push(noodle_core::MidiNote {
                         start: Tick(from),
                         length: Tick(end - cut - from),
-                        ..*note
+                        expressions: note.expressions_from(cut - note.start.0),
+                        ..note.clone()
                     });
                 }
             }
@@ -437,6 +510,7 @@ pub fn split(
                     content: ClipContent::Midi(MidiClip {
                         length: Tick(cut),
                         notes: before,
+                        controls: controls_before,
                         loop_on: false,
                         ..midi.clone()
                     }),
@@ -447,6 +521,7 @@ pub fn split(
                     content: ClipContent::Midi(MidiClip {
                         length: Tick(midi.length.0 - cut),
                         notes: after,
+                        controls: controls_after,
                         loop_on: false,
                         ..midi.clone()
                     }),
@@ -626,6 +701,103 @@ mod tests {
             .map(|&(s, l, k)| noodle_core::MidiNote::new(Tick(s), Tick(l), k))
             .collect();
         clip
+    }
+
+    fn with_controls(mut clip: Clip) -> Clip {
+        use noodle_core::{ControlKind, ControlPoint, ExpressionKind, NoteExpression};
+        let ClipContent::Midi(midi) = &mut clip.content else {
+            unreachable!()
+        };
+        let pedal = ControlKind::Controller(64);
+        midi.controls = vec![
+            ControlPoint::new(Tick(0), 0, pedal, 1.0),
+            ControlPoint::new(Tick(2400), 0, pedal, 0.0),
+            ControlPoint {
+                ramp: true,
+                ..ControlPoint::new(Tick(0), 0, ControlKind::Controller(1), 0.0)
+            },
+            ControlPoint::new(Tick(2000), 0, ControlKind::Controller(1), 1.0),
+        ];
+        midi.notes[0].expressions = vec![
+            NoteExpression {
+                tick: Tick(0),
+                kind: ExpressionKind::Pressure,
+                value: 0.2,
+                ramp: false,
+            },
+            NoteExpression {
+                tick: Tick(400),
+                kind: ExpressionKind::Pressure,
+                value: 0.9,
+                ramp: false,
+            },
+        ];
+        clip
+    }
+
+    fn lane(midi: &MidiClip, kind: noodle_core::ControlKind) -> Vec<(i64, f32)> {
+        let mut points: Vec<_> = midi
+            .controls
+            .iter()
+            .filter(|p| p.kind == kind)
+            .map(|p| (p.tick.0, p.value))
+            .collect();
+        points.sort_by_key(|p| p.0);
+        points
+    }
+
+    #[test]
+    fn splitting_a_midi_clip_carries_its_held_controllers_and_expressions_across() {
+        use noodle_core::ControlKind;
+        let clip = with_controls(midi_clip(0, 3840, &[(0, 1000, 60)]));
+        let (first, second) = split(&map(), &clip, Tick(1200), RATE, None).unwrap();
+        let (a, b) = (first.as_midi().unwrap(), second.as_midi().unwrap());
+        let pedal = ControlKind::Controller(64);
+        let wheel = ControlKind::Controller(1);
+        // The pedal goes down in the first half and is still down at the
+        // start of the second, which lets it go where it was let go.
+        assert_eq!(lane(a, pedal), [(0, 1.0)]);
+        assert_eq!(lane(b, pedal), [(0, 1.0), (1200, 0.0)]);
+        // The wheel's ramp is cut where the clip is, at the value it had.
+        let cut = lane(a, wheel);
+        assert_eq!((cut[0], cut[1].0), ((0, 0.0), 1200));
+        assert!((cut[1].1 - 0.6).abs() < 1e-6);
+        let rest = lane(b, wheel);
+        assert!((rest[0].1 - 0.6).abs() < 1e-6 && rest[0].0 == 0);
+        assert_eq!(rest[1], (800, 1.0));
+        assert!(b.controls.iter().find(|p| p.kind == wheel).unwrap().ramp);
+        // The note ends before the cut: all its expressions stay with it.
+        assert_eq!(a.notes[0].expressions.len(), 2);
+        assert!(b.notes.is_empty());
+        // Cut through the note, its expressions are cut with it: the later
+        // half starts with the value the first left off at.
+        let (first, second) = split(&map(), &clip, Tick(600), RATE, None).unwrap();
+        assert_eq!(first.as_midi().unwrap().notes[0].expressions.len(), 2);
+        let second = &second.as_midi().unwrap().notes[0].expressions;
+        assert_eq!(second.len(), 1);
+        assert_eq!((second[0].tick.0, second[0].value), (0, 0.9));
+    }
+
+    #[test]
+    fn trimming_a_midi_clip_keeps_its_controllers_in_step_with_the_notes() {
+        use noodle_core::ControlKind;
+        let clip = with_controls(midi_clip(960, 3840, &[(0, 1000, 60)]));
+        let pedal = ControlKind::Controller(64);
+        // Cutting 1000 ticks off the front: the pedal is held at the start.
+        let out = trim_start(&map(), &clip, Tick(1960), RATE, None).unwrap();
+        let midi = out.as_midi().unwrap();
+        assert_eq!(lane(midi, pedal), [(0, 1.0), (1400, 0.0)]);
+        // The note lost its first 1000 ticks: only the part left remains.
+        assert!(midi.notes.is_empty());
+        // Made longer at the front, everything moves later.
+        let out = trim_start(&map(), &clip, Tick(460), RATE, None).unwrap();
+        assert_eq!(
+            lane(out.as_midi().unwrap(), pedal),
+            [(500, 1.0), (2900, 0.0)]
+        );
+        // The end cuts controllers that start past it, like notes.
+        let out = trim_end(&map(), &clip, Tick(960 + 2000), RATE, None, None).unwrap();
+        assert_eq!(lane(out.as_midi().unwrap(), pedal), [(0, 1.0)]);
     }
 
     #[test]

@@ -6,8 +6,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AutomationLane, Clip, ClipId, ClipWarp, Command, EditError, Endpoint, Frame, FrameId, Graph,
-    LaneId, NodeId, TempoMap, Tick, WarpId,
+    AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Command, EditError, Endpoint,
+    Frame, FrameId, Graph, LaneId, NodeId, TempoMap, Tick, WarpId,
 };
 
 /// Everything that gets saved: the graph, the frames drawn around parts of
@@ -20,8 +20,12 @@ pub struct Project {
     next_frame_id: u64,
     tempo_map: TempoMap,
     transport_loop: TransportLoop,
+    punch: PunchRange,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
+    /// The links between clips (see [`ClipGroup`]).
+    clip_groups: BTreeMap<ClipGroupId, ClipGroup>,
+    next_clip_group_id: u64,
     /// The warps audio clips refer to (see [`ClipWarp`]). Sections that show
     /// the same clip name the same one.
     warps: BTreeMap<WarpId, ClipWarp>,
@@ -47,8 +51,11 @@ impl Default for Project {
             next_frame_id: 1,
             tempo_map: TempoMap::default(),
             transport_loop: TransportLoop::default(),
+            punch: PunchRange::default(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
+            clip_groups: BTreeMap::new(),
+            next_clip_group_id: 1,
             warps: BTreeMap::new(),
             next_warp_id: 1,
             lanes: BTreeMap::new(),
@@ -73,7 +80,9 @@ impl PartialEq for Project {
             && self.frames == other.frames
             && self.tempo_map == other.tempo_map
             && self.transport_loop == other.transport_loop
+            && self.punch == other.punch
             && self.clips == other.clips
+            && self.live_groups() == other.live_groups()
             && self.used_warps() == other.used_warps()
             && self.lanes == other.lanes
             && self.track_order == other.track_order
@@ -92,8 +101,12 @@ struct ProjectFile {
     tempo_map: TempoMap,
     #[serde(default, skip_serializing_if = "is_default_loop")]
     transport_loop: TransportLoop,
+    #[serde(default, skip_serializing_if = "is_default_punch")]
+    punch: PunchRange,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clips: BTreeMap<ClipId, Clip>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    clip_groups: BTreeMap<ClipGroupId, ClipGroup>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     warps: BTreeMap<WarpId, ClipWarp>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -109,6 +122,10 @@ pub(crate) type Dependents = (Vec<(ClipId, Clip)>, Vec<(LaneId, AutomationLane)>
 
 fn is_default_tempo_map(map: &TempoMap) -> bool {
     *map == TempoMap::default()
+}
+
+fn is_default_punch(range: &PunchRange) -> bool {
+    *range == PunchRange::default()
 }
 
 fn is_default_loop(region: &TransportLoop) -> bool {
@@ -139,6 +156,33 @@ impl TransportLoop {
     /// The span the engine loops, when it is on.
     pub fn active(self) -> Option<(Tick, Tick)> {
         self.on.then_some((self.start, self.end))
+    }
+}
+
+/// The punch range: where recording starts and stops while it is `on`,
+/// separate from the loop. It is saved with the project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PunchRange {
+    pub on: bool,
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl Default for PunchRange {
+    /// Off, over bars 5 to 8 of 4/4.
+    fn default() -> Self {
+        Self {
+            on: false,
+            start: Tick(16 * crate::TICKS_PER_QUARTER),
+            end: Tick(32 * crate::TICKS_PER_QUARTER),
+        }
+    }
+}
+
+impl PunchRange {
+    /// The span recording is held to, when the range is on and not empty.
+    pub fn active(self) -> Option<(Tick, Tick)> {
+        (self.on && self.start < self.end).then_some((self.start, self.end))
     }
 }
 
@@ -265,6 +309,15 @@ impl Project {
         std::mem::replace(&mut self.track_order, order)
     }
 
+    /// The punch range (see [`PunchRange`]).
+    pub fn punch(&self) -> PunchRange {
+        self.punch
+    }
+
+    pub(crate) fn replace_punch(&mut self, range: PunchRange) -> PunchRange {
+        std::mem::replace(&mut self.punch, range)
+    }
+
     pub(crate) fn replace_loop(&mut self, region: TransportLoop) -> TransportLoop {
         std::mem::replace(&mut self.transport_loop, region)
     }
@@ -296,6 +349,187 @@ impl Project {
     /// The ID [`new_clip_id`](Self::new_clip_id) would return next.
     pub fn next_clip_id(&self) -> ClipId {
         ClipId(self.next_clip_id)
+    }
+
+    /// The clip groups with fewer than two members left out, and the members
+    /// that are not in the project: what the project means by its links.
+    fn live_groups(&self) -> BTreeMap<ClipGroupId, Vec<ClipId>> {
+        self.clip_groups
+            .iter()
+            .filter_map(|(&id, group)| {
+                let members: Vec<ClipId> = group
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|m| self.clips.contains_key(m))
+                    .collect();
+                (members.len() >= 2).then_some((id, members))
+            })
+            .collect()
+    }
+
+    pub fn clip_group(&self, id: ClipGroupId) -> Option<&ClipGroup> {
+        self.clip_groups.get(&id)
+    }
+
+    /// Every clip group, including ones that no longer link anything (see
+    /// [`ClipGroup`]); [`group_of`](Self::group_of) is what a view wants.
+    pub fn clip_groups(&self) -> impl Iterator<Item = (ClipGroupId, &ClipGroup)> {
+        self.clip_groups.iter().map(|(&id, group)| (id, group))
+    }
+
+    /// Reserves an ID for a clip group that's about to be added.
+    pub fn new_clip_group_id(&mut self) -> ClipGroupId {
+        let id = self.next_clip_group_id();
+        self.next_clip_group_id += 1;
+        id
+    }
+
+    /// The ID [`new_clip_group_id`](Self::new_clip_group_id) would return next.
+    pub fn next_clip_group_id(&self) -> ClipGroupId {
+        ClipGroupId(self.next_clip_group_id)
+    }
+
+    /// The link `clip` is in, and its members that are in the project
+    /// (including `clip`), in ID order. `None` for a clip that is not linked
+    /// to another.
+    pub fn group_of(&self, clip: ClipId) -> Option<(ClipGroupId, Vec<ClipId>)> {
+        if !self.clips.contains_key(&clip) {
+            return None;
+        }
+        let group = self
+            .clip_groups
+            .iter()
+            .find_map(|(&id, group)| group.members.contains(&clip).then_some(id))?;
+        let members: Vec<ClipId> = self.clip_groups[&group]
+            .members
+            .iter()
+            .copied()
+            .filter(|m| self.clips.contains_key(m))
+            .collect();
+        (members.len() >= 2).then_some((group, members))
+    }
+
+    /// `clip` and the clips linked to it, in ID order; just `clip` if it is
+    /// not linked, and nothing if it is not in the project.
+    pub fn linked_with(&self, clip: ClipId) -> Vec<ClipId> {
+        match self.group_of(clip) {
+            Some((_, members)) => members,
+            None => self
+                .clips
+                .contains_key(&clip)
+                .then_some(clip)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// `clips` and everything linked to them, each once, in ID order.
+    pub fn with_linked(&self, clips: impl IntoIterator<Item = ClipId>) -> Vec<ClipId> {
+        let all: BTreeSet<ClipId> = clips
+            .into_iter()
+            .flat_map(|clip| self.linked_with(clip))
+            .collect();
+        all.into_iter().collect()
+    }
+
+    fn check_clip_group(&self, id: ClipGroupId, group: &ClipGroup) -> Result<(), EditError> {
+        for &member in &group.members {
+            if !self.clips.contains_key(&member) {
+                continue;
+            }
+            let other = self
+                .clip_groups
+                .iter()
+                .find(|(other, g)| **other != id && g.members.contains(&member));
+            if let Some((&other, _)) = other
+                && self.live_groups().contains_key(&other)
+            {
+                return Err(EditError::ClipAlreadyLinked(member, other));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replace_clip_group(
+        &mut self,
+        id: ClipGroupId,
+        group: Option<ClipGroup>,
+    ) -> Result<Option<ClipGroup>, EditError> {
+        let old = match group {
+            Some(group) => {
+                self.check_clip_group(id, &group)?;
+                self.next_clip_group_id = self.next_clip_group_id.max(id.0 + 1);
+                self.clip_groups.insert(id, group)
+            }
+            None => self.clip_groups.remove(&id),
+        };
+        Ok(old)
+    }
+
+    /// The command that links `clips` (and everything already linked to them)
+    /// into one group, or `None` when that is fewer than two clips. The
+    /// members' audio all comes to use the warp of the lowest-numbered one
+    /// that has one, so they are warped as one. Apply the command before
+    /// asking for another: it uses the next free group ID.
+    pub fn link_command(&self, clips: &[ClipId]) -> Option<Command> {
+        let members = self.with_linked(clips.iter().copied());
+        if members.len() < 2 {
+            return None;
+        }
+        let mut commands = Vec::new();
+        let lead = members.iter().find_map(|&m| self.clip(m)?.as_audio()?.warp);
+        if let Some(lead) = lead {
+            for &member in &members {
+                let clip = self.clip(member)?;
+                if let Some(audio) = clip.as_audio()
+                    && audio.warp != Some(lead)
+                {
+                    let mut clip = clip.clone();
+                    if let crate::ClipContent::Audio(audio) = &mut clip.content {
+                        audio.warp = Some(lead);
+                    }
+                    commands.push(Command::SetClip { id: member, clip });
+                }
+            }
+        }
+        let mut old: Vec<ClipGroupId> = members
+            .iter()
+            .filter_map(|&m| Some(self.group_of(m)?.0))
+            .collect();
+        old.sort();
+        old.dedup();
+        for id in old {
+            commands.push(Command::SetClipGroup { id, group: None });
+        }
+        commands.push(Command::SetClipGroup {
+            id: self.next_clip_group_id(),
+            group: Some(ClipGroup {
+                members: members.into_iter().collect(),
+            }),
+        });
+        Some(Command::Batch(commands))
+    }
+
+    /// The command that takes `clips` out of their links, or `None` if none
+    /// is linked. A group left with one clip goes. The clips keep sharing
+    /// their warp, but as sections of one clip do: editing it forks.
+    pub fn unlink_command(&self, clips: &[ClipId]) -> Option<Command> {
+        let mut commands = Vec::new();
+        let mut seen = BTreeSet::new();
+        for &clip in clips {
+            let Some((id, members)) = self.group_of(clip) else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            let rest: BTreeSet<ClipId> =
+                members.into_iter().filter(|m| !clips.contains(m)).collect();
+            let group = (rest.len() >= 2).then_some(ClipGroup { members: rest });
+            commands.push(Command::SetClipGroup { id, group });
+        }
+        (!commands.is_empty()).then_some(Command::Batch(commands))
     }
 
     pub fn warp(&self, id: WarpId) -> Option<&ClipWarp> {
@@ -419,7 +653,9 @@ impl Project {
     /// Sections that show the same clip share a warp, so an edit that reaches
     /// them all is one `SetWarp`. When this section shares its warp with
     /// others, the edit is made on a copy that only it uses (it forks), and
-    /// the others are left as they were. Apply the command before asking for
+    /// the others are left as they were. The clips linked to this one (see
+    /// [`ClipGroup`]) count as this one: they all share the warp the edit
+    /// reaches, and fork it together if a clip outside the link uses it. Apply the command before asking for
     /// another: it uses the next free warp ID.
     pub fn warp_edit(
         &self,
@@ -433,7 +669,8 @@ impl Project {
     /// section itself (which part of the file it shows), such as sliding the
     /// audio under the clip's beat lines. The section is changed in the same
     /// command, so it is one undo step and the fork, if there is one, keeps
-    /// it.
+    /// it. Linked clips move their sections by the same number of frames
+    /// (their gain and fades stay their own).
     pub fn section_edit(
         &self,
         clip: ClipId,
@@ -456,32 +693,72 @@ impl Project {
             change(&mut warp, audio);
         }
         let moved = edited != *section;
+        // The clips linked to this one share its warp and follow its section
+        // by how far it moved: the part of the file that plays and how much
+        // of it, not the gain or fades, which stay each clip's own.
+        let members = self.linked_with(clip);
+        let after = edited.as_audio().unwrap_or(audio);
+        let d_offset = after.offset as i64 - audio.offset as i64;
+        let d_length = after.length as i64 - audio.length as i64;
+        let new_extent = (after.extent != audio.extent).then_some(after.extent);
+        let follow = |id: ClipId, warp_id: Option<WarpId>| -> Option<Command> {
+            let peer = self.clip(id)?;
+            let mut changed = peer.clone();
+            let crate::ClipContent::Audio(a) = &mut changed.content else {
+                return None;
+            };
+            a.offset = a.offset.saturating_add_signed(d_offset);
+            a.length = a.length.saturating_add_signed(d_length).max(1);
+            a.fade_in = a.fade_in.min(a.length);
+            a.fade_out = a.fade_out.min(a.length - a.fade_in);
+            if let Some(extent) = new_extent {
+                a.extent = extent;
+            }
+            if warp_id.is_some() {
+                a.warp = warp_id;
+            }
+            (changed != *peer).then_some(Command::SetClip { id, clip: changed })
+        };
+        let peers: Vec<ClipId> = members
+            .iter()
+            .copied()
+            .filter(|&m| m != clip && self.clip(m).is_some_and(|c| c.as_audio().is_some()))
+            .collect();
+        let in_place = current.is_some_and(|(id, _)| {
+            self.clips_using(id).all(|other| members.contains(&other))
+                && peers
+                    .iter()
+                    .all(|&p| self.clip(p).and_then(|c| c.as_audio()?.warp) == Some(id))
+        });
         match current {
-            Some((id, _)) if self.clips_using(id).all(|other| other == clip) => {
+            Some((id, _)) if in_place => {
+                let mut commands = vec![Command::SetWarp { id, warp }];
                 if moved {
-                    Ok(Command::Batch(vec![
-                        Command::SetWarp { id, warp },
-                        Command::SetClip {
-                            id: clip,
-                            clip: edited,
-                        },
-                    ]))
-                } else {
-                    Ok(Command::SetWarp { id, warp })
+                    commands.push(Command::SetClip {
+                        id: clip,
+                        clip: edited,
+                    });
                 }
+                commands.extend(peers.iter().filter_map(|&p| follow(p, None)));
+                Ok(match commands.len() {
+                    1 => commands.remove(0),
+                    _ => Command::Batch(commands),
+                })
             }
             _ => {
                 let id = self.next_warp_id();
                 if let crate::ClipContent::Audio(audio) = &mut edited.content {
                     audio.warp = Some(id);
                 }
-                Ok(Command::Batch(vec![
+                let mut commands = vec![
                     Command::AddWarp { id, warp },
                     Command::SetClip {
                         id: clip,
                         clip: edited,
                     },
-                ]))
+                ];
+                commands.extend(peers.iter().filter_map(|&p| follow(p, Some(id))));
+                Ok(Command::Batch(commands))
             }
         }
     }
@@ -499,6 +776,42 @@ impl Project {
             return Err(EditError::NoSuchNode(clip.node));
         }
         Ok(())
+    }
+
+    /// A copy of the project in which the take folder `id`, and the take
+    /// folders linked to it, play only their take `take`: for auditioning one
+    /// take against the rest of the song. The project itself, and what is
+    /// saved or exported, is untouched. Folders with no such take are left
+    /// as they are.
+    pub fn auditioning(&self, id: ClipId, take: usize) -> Project {
+        let mut copy = self.clone();
+        for member in self.linked_with(id) {
+            let Some(clip) = copy.clips.get_mut(&member) else {
+                continue;
+            };
+            match &mut clip.content {
+                crate::ClipContent::Audio(audio) => {
+                    if let Some(folder) = audio.takes.as_mut()
+                        && take < folder.takes.len()
+                    {
+                        *folder = crate::TakeFolder {
+                            takes: folder.takes.clone(),
+                            comp: crate::TakeFolder::new(folder.takes.clone(), take).comp,
+                        };
+                    }
+                }
+                crate::ClipContent::Midi(midi) => {
+                    if let Some(takes) = midi.takes.as_mut()
+                        && take < takes.content.len()
+                    {
+                        takes.folder.comp =
+                            crate::TakeFolder::new(takes.folder.takes.clone(), take).comp;
+                        midi.play_comp();
+                    }
+                }
+            }
+        }
+        copy
     }
 
     pub(crate) fn insert_clip(&mut self, id: ClipId, mut clip: Clip) -> Result<(), EditError> {
@@ -634,7 +947,16 @@ impl Project {
             frames: self.frames.clone(),
             tempo_map: self.tempo_map.clone(),
             transport_loop: self.transport_loop,
+            punch: self.punch,
             clips: self.clips.clone(),
+            clip_groups: self
+                .live_groups()
+                .into_iter()
+                .map(|(id, members)| {
+                    let members = members.into_iter().collect();
+                    (id, ClipGroup { members })
+                })
+                .collect(),
             warps: self
                 .used_warps()
                 .into_iter()
@@ -667,6 +989,7 @@ impl Project {
         }
         let next_frame_id = file.frames.keys().last().map_or(1, |id| id.0 + 1);
         let next_clip_id = file.clips.keys().last().map_or(1, |id| id.0 + 1);
+        let next_clip_group_id = file.clip_groups.keys().last().map_or(1, |id| id.0 + 1);
         let next_warp_id = file.warps.keys().last().map_or(1, |id| id.0 + 1);
         let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
         let mut lanes = file.lanes;
@@ -682,8 +1005,11 @@ impl Project {
             next_frame_id,
             tempo_map: file.tempo_map,
             transport_loop: file.transport_loop,
+            punch: file.punch,
             clips,
             next_clip_id,
+            clip_groups: file.clip_groups,
+            next_clip_group_id,
             warps: file.warps,
             next_warp_id,
             lanes,
@@ -711,6 +1037,11 @@ impl Project {
         }
         for (id, lane) in &project.lanes {
             project.check_lane(*id, lane).map_err(LoadError::Broken)?;
+        }
+        for (&id, group) in &project.clip_groups {
+            project
+                .check_clip_group(id, group)
+                .map_err(LoadError::Broken)?;
         }
         Ok(project)
     }
@@ -968,6 +1299,24 @@ mod tests {
         assert_eq!(Project::from_ron(&text).unwrap().transport_loop(), region);
         history.undo(&mut project).unwrap();
         assert_eq!(project.transport_loop(), TransportLoop::default());
+    }
+
+    #[test]
+    fn the_punch_range_is_saved_with_the_project_and_undoes() {
+        let (mut project, mut history, _, _, _) = with_timeline();
+        assert!(!project.to_ron().contains("punch"));
+        assert_eq!(project.punch().active(), None);
+        let range = PunchRange {
+            on: true,
+            start: Tick(960),
+            end: Tick(7680),
+        };
+        apply(&mut project, &mut history, Command::SetPunch(range));
+        let text = project.to_ron();
+        assert_eq!(Project::from_ron(&text).unwrap().punch(), range);
+        assert_eq!(project.punch().active(), Some((Tick(960), Tick(7680))));
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.punch(), PunchRange::default());
     }
 
     #[test]
@@ -1733,5 +2082,262 @@ mod tests {
             Project::from_ron(&broken),
             Err(LoadError::Broken(EditError::NoSuchWarp(_)))
         ));
+    }
+
+    // Clip groups: links that share edits and one warp.
+
+    /// Three audio clips on the same track, linked, over one warp.
+    fn linked_trio() -> (Project, History, [ClipId; 3], WarpId) {
+        let (mut project, mut history, player, first, _) = with_timeline();
+        let warp = project.next_warp_id();
+        let (b, c) = (project.new_clip_id(), project.new_clip_id());
+        let mut commands = vec![Command::AddWarp {
+            id: warp,
+            warp: crate::ClipWarp::at_tempo(100.0),
+        }];
+        for (id, source) in [(first, None), (b, Some("snare.wav")), (c, Some("hat.wav"))] {
+            let mut clip = match source {
+                Some(file) => Clip::audio(player, Tick(0), file, 48_000),
+                None => project.clip(first).unwrap().clone(),
+            };
+            let ClipContent::Audio(audio) = &mut clip.content else {
+                unreachable!("not an audio clip")
+            };
+            audio.warp = Some(warp);
+            audio.offset = 0;
+            audio.length = 48_000;
+            clip.start = Tick(0);
+            commands.push(if id == first {
+                Command::SetClip { id, clip }
+            } else {
+                Command::AddClip { id, clip }
+            });
+        }
+        apply(&mut project, &mut history, Command::Batch(commands));
+        let link = project.link_command(&[first, b, c]).unwrap();
+        apply(&mut project, &mut history, link);
+        (project, history, [first, b, c], warp)
+    }
+
+    #[test]
+    fn linking_makes_one_group_and_undo_unlinks() {
+        let (mut project, mut history, [a, b, c], _) = linked_trio();
+        assert_eq!(project.group_of(b).unwrap().1, vec![a, b, c]);
+        assert_eq!(project.linked_with(a), vec![a, b, c]);
+        history.undo(&mut project).unwrap();
+        assert!(project.group_of(a).is_none());
+        assert_eq!(project.linked_with(a), vec![a]);
+        history.redo(&mut project).unwrap();
+        assert!(project.group_of(a).is_some());
+    }
+
+    #[test]
+    fn linking_gives_the_members_the_first_warp() {
+        let (mut project, mut history, player, first, _) = with_timeline();
+        let (warp, b) = (project.next_warp_id(), project.new_clip_id());
+        let mut clip = Clip::audio(player, Tick(0), "snare.wav", 48_000);
+        let mut other = crate::ClipWarp::at_tempo(100.0);
+        other.tempo_conversion = false;
+        let ClipContent::Audio(audio) = &mut clip.content else {
+            unreachable!()
+        };
+        audio.warp = Some(warp);
+        apply(
+            &mut project,
+            &mut history,
+            Command::Batch(vec![
+                Command::AddWarp {
+                    id: warp,
+                    warp: other,
+                },
+                Command::AddClip { id: b, clip },
+            ]),
+        );
+        let link = project.link_command(&[first, b]).unwrap();
+        apply(&mut project, &mut history, link);
+        let warp_of = |id| project.clip(id).unwrap().as_audio().unwrap().warp;
+        assert_eq!(warp_of(first), Some(warp));
+        assert_eq!(warp_of(b), Some(warp));
+    }
+
+    #[test]
+    fn a_warp_edit_on_one_member_changes_the_shared_warp_for_all_without_forking() {
+        let (mut project, mut history, [a, b, c], warp) = linked_trio();
+        let edit = project
+            .warp_edit(b, |w| w.tempo_conversion = false)
+            .unwrap();
+        assert!(
+            matches!(edit, Command::SetWarp { id, .. } if id == warp),
+            "{edit:?}"
+        );
+        apply(&mut project, &mut history, edit);
+        for id in [a, b, c] {
+            assert_eq!(project.warp_of(id).unwrap().0, warp);
+        }
+        assert!(!project.warp(warp).unwrap().tempo_conversion);
+        history.undo(&mut project).unwrap();
+        assert!(project.warp(warp).unwrap().tempo_conversion);
+    }
+
+    #[test]
+    fn a_section_edit_slides_every_member_by_the_same_frames() {
+        let (mut project, mut history, [a, b, c], _) = linked_trio();
+        // Per-clip gain and fades are left alone.
+        let mut quiet = project.clip(c).unwrap().clone();
+        if let ClipContent::Audio(audio) = &mut quiet.content {
+            audio.gain = 0.5;
+            audio.fade_in = 100;
+        }
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetClip { id: c, clip: quiet },
+        );
+        let edit = project
+            .section_edit(a, |_, audio| {
+                audio.offset += 4_800;
+                audio.length -= 4_800;
+            })
+            .unwrap();
+        apply(&mut project, &mut history, edit);
+        for id in [a, b, c] {
+            let audio = project.clip(id).unwrap().as_audio().unwrap();
+            assert_eq!((audio.offset, audio.length), (4_800, 43_200), "{id}");
+        }
+        let audio = project.clip(c).unwrap().as_audio().unwrap();
+        assert_eq!((audio.gain, audio.fade_in), (0.5, 100));
+        history.undo(&mut project).unwrap();
+        for id in [a, b, c] {
+            let audio = project.clip(id).unwrap().as_audio().unwrap();
+            assert_eq!((audio.offset, audio.length), (0, 48_000), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_warp_shared_with_a_clip_outside_the_link_forks_for_the_whole_link() {
+        let (mut project, mut history, [a, b, c], warp) = linked_trio();
+        let player = project.clip(a).unwrap().node;
+        let outsider = project.new_clip_id();
+        let mut clip = Clip::audio(player, Tick(30_000), "kick.wav", 48_000);
+        if let ClipContent::Audio(audio) = &mut clip.content {
+            audio.warp = Some(warp);
+        }
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddClip { id: outsider, clip },
+        );
+        let edit = project
+            .warp_edit(a, |w| w.tempo_conversion = false)
+            .unwrap();
+        apply(&mut project, &mut history, edit);
+        let forked = project.warp_of(a).unwrap().0;
+        assert_ne!(forked, warp);
+        assert_eq!(project.warp_of(b).unwrap().0, forked);
+        assert_eq!(project.warp_of(c).unwrap().0, forked);
+        assert_eq!(project.warp_of(outsider).unwrap().0, warp);
+        assert!(project.warp(warp).unwrap().tempo_conversion);
+    }
+
+    #[test]
+    fn an_unwarped_link_gets_one_warp_on_the_first_warp_edit() {
+        let (mut project, mut history, player, first, _) = with_timeline();
+        let b = project.new_clip_id();
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddClip {
+                id: b,
+                clip: Clip::audio(player, Tick(0), "snare.wav", 48_000),
+            },
+        );
+        let link = project.link_command(&[first, b]).unwrap();
+        apply(&mut project, &mut history, link);
+        let edit = project.warp_edit(b, |w| w.use_markers = false).unwrap();
+        apply(&mut project, &mut history, edit);
+        let (wa, wb) = (
+            project.warp_of(first).unwrap().0,
+            project.warp_of(b).unwrap().0,
+        );
+        assert_eq!(wa, wb);
+    }
+
+    #[test]
+    fn unlinking_leaves_the_rest_linked_and_a_pair_unlinked() {
+        let (mut project, mut history, [a, b, c], _) = linked_trio();
+        let unlink = project.unlink_command(&[c]).unwrap();
+        apply(&mut project, &mut history, unlink);
+        assert_eq!(project.linked_with(a), vec![a, b]);
+        assert_eq!(project.linked_with(c), vec![c]);
+        let unlink = project.unlink_command(&[a]).unwrap();
+        apply(&mut project, &mut history, unlink);
+        assert!(project.group_of(a).is_none() && project.group_of(b).is_none());
+        assert!(project.unlink_command(&[a]).is_none());
+        history.undo(&mut project).unwrap();
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.linked_with(a), vec![a, b, c]);
+    }
+
+    #[test]
+    fn linking_a_clip_to_a_link_merges_them() {
+        let (mut project, mut history, [a, b, c], _) = linked_trio();
+        let player = project.clip(a).unwrap().node;
+        let d = project.new_clip_id();
+        apply(
+            &mut project,
+            &mut history,
+            Command::AddClip {
+                id: d,
+                clip: Clip::audio(player, Tick(0), "room.wav", 48_000),
+            },
+        );
+        let link = project.link_command(&[c, d]).unwrap();
+        apply(&mut project, &mut history, link);
+        assert_eq!(project.linked_with(a), vec![a, b, c, d]);
+        let groups: Vec<_> = project.live_groups().into_keys().collect();
+        assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn a_clip_cannot_be_in_two_groups() {
+        let (mut project, _, [a, b, _], _) = linked_trio();
+        let id = project.new_clip_group_id();
+        let result = Command::SetClipGroup {
+            id,
+            group: Some(ClipGroup {
+                members: [a, b].into_iter().collect(),
+            }),
+        }
+        .apply(&mut project);
+        assert!(
+            matches!(result, Err(EditError::ClipAlreadyLinked(..))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn deleting_members_leaves_a_group_that_undo_brings_back() {
+        let (mut project, mut history, [a, b, c], _) = linked_trio();
+        apply(
+            &mut project,
+            &mut history,
+            Command::Batch(vec![
+                Command::RemoveClip { id: a },
+                Command::RemoveClip { id: b },
+            ]),
+        );
+        assert!(project.group_of(c).is_none());
+        assert!(!project.to_ron().contains("clip_groups"));
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.linked_with(c), vec![a, b, c]);
+    }
+
+    #[test]
+    fn links_survive_saving_and_loading() {
+        let (project, _, [a, b, c], _) = linked_trio();
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.linked_with(b), vec![a, b, c]);
+        assert_ne!(loaded.next_clip_group_id(), loaded.group_of(a).unwrap().0);
     }
 }

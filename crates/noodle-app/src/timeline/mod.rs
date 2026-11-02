@@ -11,6 +11,7 @@
 pub(crate) mod add_track;
 mod automation;
 pub(crate) mod clips;
+pub(crate) mod comp;
 mod crossfade;
 pub(crate) mod grid;
 pub(crate) mod header;
@@ -18,6 +19,7 @@ pub mod import;
 mod midi_preview;
 mod sources;
 mod take;
+mod takes;
 mod tempo_lane;
 mod warped;
 mod warped_waves;
@@ -103,6 +105,7 @@ pub struct TimelineState {
     warped_waves: warped_waves::WarpedWaves,
     automation: automation::State,
     crossfade: crossfade::State,
+    takes: takes::State,
     /// The bar a right-click on the ruler opened its menu at.
     ruler_menu_bar: Option<u32>,
     /// Whether the tempo lane is shown under the ruler.
@@ -112,6 +115,10 @@ pub struct TimelineState {
     clip_rects: HashMap<ClipId, Rect>,
     #[cfg(test)]
     take_rects: HashMap<NodeId, Rect>,
+    #[cfg(test)]
+    take_lane_rects: HashMap<(ClipId, usize), Rect>,
+    #[cfg(test)]
+    join_rects: HashMap<(ClipId, usize), Rect>,
     #[cfg(test)]
     fade_handles: HashMap<(ClipId, bool), Rect>,
     /// The text drawn on the lanes last frame; painted text isn't in the
@@ -145,6 +152,7 @@ impl Default for TimelineState {
             warped_waves: warped_waves::WarpedWaves::default(),
             automation: automation::State::default(),
             crossfade: crossfade::State::default(),
+            takes: takes::State::default(),
             show_tempo: false,
             ruler_menu_bar: None,
             tempo: tempo_lane::State::default(),
@@ -152,6 +160,10 @@ impl Default for TimelineState {
             clip_rects: HashMap::new(),
             #[cfg(test)]
             take_rects: HashMap::new(),
+            #[cfg(test)]
+            take_lane_rects: HashMap::new(),
+            #[cfg(test)]
+            join_rects: HashMap::new(),
             #[cfg(test)]
             fade_handles: HashMap::new(),
             #[cfg(test)]
@@ -258,6 +270,11 @@ impl TimelineState {
         name: &str,
     ) -> Option<Loaded> {
         self.sources.get(ctx, directory, name)
+    }
+
+    #[cfg(test)]
+    pub fn select_only(&mut self, id: ClipId) {
+        self.selected = BTreeSet::from([id]);
     }
 
     #[cfg(test)]
@@ -379,6 +396,9 @@ struct Drag {
     /// Whether `originals` are copies the drag made, leaving the clips it
     /// started with where they were.
     copied: bool,
+    /// What each audio clip in `originals` knows about its file, for the
+    /// trims and slips that work out lengths.
+    sources: BTreeMap<ClipId, Source>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -463,6 +483,9 @@ pub struct Output {
     pub open_midi: Option<ClipId>,
     /// An audio clip they double-clicked, to open in the clip editor.
     pub open_audio: Option<ClipId>,
+    /// They clicked a take to audition (or the same one to stop): the take
+    /// folder and take.
+    pub audition: Option<Option<(ClipId, usize)>>,
 }
 
 /// Where imported audio goes when it isn't dropped on a lane.
@@ -484,7 +507,9 @@ pub fn show(
     state.retain_existing(project);
     let tracks = state.tracks(project);
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
-    let rows = automation::Rows::new(project, &tracks, &heights);
+    state.takes.retain(project);
+    let take_lanes = state.takes.lanes(project, &tracks);
+    let rows = automation::Rows::new(project, &tracks, &heights, &take_lanes);
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -529,6 +554,7 @@ pub fn show(
     let mut edits = Vec::new();
     let mut open_midi = None;
     let mut open_audio = None;
+    let mut audition = None;
     let mut notice: Option<String> = None;
     let mut arm = Vec::new();
     let mut jump = None;
@@ -536,6 +562,8 @@ pub fn show(
     {
         state.clip_rects.clear();
         state.take_rects.clear();
+        state.take_lane_rects.clear();
+        state.join_rects.clear();
         state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
@@ -681,9 +709,11 @@ pub fn show(
                             .or(response.interact_pointer_pos())
                             .unwrap_or(full.center());
                         if !selected && !ui.input(|i| i.modifiers.shift) {
-                            state.selected = BTreeSet::from([id]);
+                            state.selected = BTreeSet::new();
                         }
                         state.selected.insert(id);
+                        // A link moves, trims and slips as one.
+                        state.selected = project.with_linked(state.selected.iter().copied()).into_iter().collect();
                         let slipping =
                             clip.as_audio().is_some() && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
                         let mode = if slipping {
@@ -693,15 +723,19 @@ pub fn show(
                         };
                         let copying = mode == Mode::Move && ui.input(|i| i.modifiers.command);
                         let mut grabbed = id;
-                        let mut originals = if mode == Mode::Move {
+                        let mut originals: Vec<(ClipId, Clip)> = if mode == Mode::Move {
                             state
                                 .selected
                                 .iter()
                                 .filter_map(|&sel| Some((sel, project.clip(sel)?.clone())))
                                 .collect()
                         } else {
-                            state.selected = BTreeSet::from([id]);
-                            vec![(id, clip.clone())]
+                            state.selected = project.linked_with(id).into_iter().collect();
+                            state
+                                .selected
+                                .iter()
+                                .filter_map(|&sel| Some((sel, project.clip(sel)?.clone())))
+                                .collect()
                         };
                         if copying {
                             // The copies are what the drag moves; the originals stay.
@@ -712,26 +746,42 @@ pub fn show(
                             grabbed = copies.grabbed;
                             state.selected = originals.iter().map(|(copy, _)| *copy).collect();
                         }
+                        let sources = originals
+                            .iter()
+                            .filter_map(|(member, original)| {
+                                let audio = original.as_audio()?;
+                                let loaded = state.sources.get(
+                                    ui.ctx(),
+                                    directory.as_deref(),
+                                    &audio.source,
+                                )?;
+                                Some((*member, loaded.source))
+                            })
+                            .collect();
                         state.drag = Some(Drag {
                             mode,
                             grabbed,
                             originals,
                             press_x: press.x,
                             copied: copying,
+                            sources,
                         });
                     } else if response.double_clicked() && clip.as_midi().is_some() {
-                        state.selected = BTreeSet::from([id]);
+                        state.selected = project.linked_with(id).into_iter().collect();
                         open_midi = Some(id);
                     } else if response.double_clicked() && clip.as_audio().is_some() {
-                        state.selected = BTreeSet::from([id]);
+                        state.selected = project.linked_with(id).into_iter().collect();
                         open_audio = Some(id);
                     } else if response.clicked() {
+                        let link: BTreeSet<ClipId> = project.linked_with(id).into_iter().collect();
                         if ui.input(|i| i.modifiers.shift) {
-                            if !state.selected.remove(&id) {
-                                state.selected.insert(id);
+                            if state.selected.contains(&id) {
+                                state.selected.retain(|member| !link.contains(member));
+                            } else {
+                                state.selected.extend(link);
                             }
                         } else {
-                            state.selected = BTreeSet::from([id]);
+                            state.selected = link;
                         }
                     }
                     // Pressing Ctrl/Cmd partway through a move drops copies where the
@@ -808,7 +858,7 @@ pub fn show(
                     }
 
                     if response.secondary_clicked() && !selected {
-                        state.selected = BTreeSet::from([id]);
+                        state.selected = project.linked_with(id).into_iter().collect();
                     }
                     response.context_menu(|ui| {
                         if let Some(audio) = audio {
@@ -816,6 +866,32 @@ pub fn show(
                             if ui.button(mute).clicked() {
                                 ui.close();
                                 edits.push(Edit::Apply(toggle_mute(id, clip)));
+                            }
+                            if audio.takes.is_some() {
+                                let open = state.takes.shown.contains(&id);
+                                if ui
+                                    .button(if open { "Hide takes" } else { "Show takes" })
+                                    .on_hover_text("Show the takes under the track to comp them: drag across a take to play that part of it, click one to audition it")
+                                    .clicked()
+                                {
+                                    ui.close();
+                                    if open {
+                                        state.takes.shown.remove(&id);
+                                    } else {
+                                        state.takes.shown.insert(id);
+                                    }
+                                }
+                            }
+                            if audio.takes.is_some()
+                                && ui
+                                    .button("Flatten takes")
+                                    .on_hover_text(
+                                        "Cut the comp at its joins into plain clips and drop the takes it doesn't play",
+                                    )
+                                    .clicked()
+                            {
+                                ui.close();
+                                edits.extend(comp::flatten(project, map, id, rate).map(Edit::Apply));
                             }
                             if ui
                                 .button("Split to stems")
@@ -829,6 +905,53 @@ pub fn show(
                             }
                             ui.separator();
                         }
+                        if let Some(midi) = clip.as_midi()
+                            && midi.takes.is_some()
+                        {
+                            let open = state.takes.shown.contains(&id);
+                            if ui
+                                .button(if open { "Hide takes" } else { "Show takes" })
+                                .clicked()
+                            {
+                                ui.close();
+                                if open {
+                                    state.takes.shown.remove(&id);
+                                } else {
+                                    state.takes.shown.insert(id);
+                                }
+                            }
+                            if ui
+                                .button("Flatten takes")
+                                .on_hover_text("Keep what the comp plays as a plain clip and drop the takes")
+                                .clicked()
+                            {
+                                ui.close();
+                                edits.extend(comp::flatten_midi(project, id).map(Edit::Apply));
+                            }
+                            ui.separator();
+                        }
+                        let chosen: Vec<ClipId> = state.selected.iter().copied().collect();
+                        let linked = project.group_of(id).map(|(_, members)| members);
+                        let whole_link = linked.as_ref().is_some_and(|m| *m == chosen);
+                        if chosen.len() >= 2
+                            && !whole_link
+                            && ui
+                                .button("Link")
+                                .on_hover_text(
+                                    "Move, trim, cut, warp and delete these clips together",
+                                )
+                                .clicked()
+                        {
+                            ui.close();
+                            edits.extend(project.link_command(&chosen).map(Edit::Apply));
+                        }
+                        if chosen.iter().any(|&c| project.group_of(c).is_some())
+                            && ui.button("Unlink").clicked()
+                        {
+                            ui.close();
+                            edits.extend(project.unlink_command(&chosen).map(Edit::Apply));
+                        }
+                        ui.separator();
                         for (action, label) in [
                             (ClipAction::Cut, "Cut"),
                             (ClipAction::Copy, "Copy"),
@@ -1012,6 +1135,33 @@ pub fn show(
                 }
             }
 
+            // The take lanes of the open take folders, track by track.
+            for (index, &track) in tracks.iter().enumerate() {
+                if take_lanes[index] == 0 {
+                    continue;
+                }
+                let lane_height = rows.lane_height(index);
+                let top = lane_top(index);
+                if top > content.bottom() || top + rows.height(index) < content.top() {
+                    continue;
+                }
+                let shown = takes::View {
+                    project,
+                    axis,
+                    content,
+                    directory: directory.as_deref(),
+                    colour: colors::track_colour(index),
+                    lane_top: top,
+                    lane_height,
+                    audition: session.take_audition(),
+                };
+                let lanes = takes::show(ui, state, &shown, track);
+                edits.extend(lanes.edits);
+                if lanes.audition.is_some() {
+                    audition = lanes.audition;
+                }
+            }
+
             // The handles and crossfades where audio clips are butted together.
             let infos: crossfade::Infos = project
                 .clips()
@@ -1040,7 +1190,15 @@ pub fn show(
                     lane_height: colors::LANE_HEIGHT,
                 },
             ));
+            let before_box = state.selected.clone();
             select_by_box(ui, state, &background, content, &drawn, state.scroll_x, scroll_y);
+            // A clip picked takes its link with it.
+            if state.selected != before_box {
+                state.selected = project
+                    .with_linked(state.selected.iter().copied())
+                    .into_iter()
+                    .collect();
+            }
 
             // Clips and automation points share the Delete key, so picking one
             // drops the other from the selection.
@@ -1097,10 +1255,10 @@ pub fn show(
                 state.selected_track = None;
             }
             if delete_pressed && !state.selected.is_empty() && state.tempo.selected().is_none() {
-                let removals = state
-                    .selected
-                    .iter()
-                    .map(|&id| Command::RemoveClip { id })
+                let removals = project
+                    .with_linked(state.selected.iter().copied())
+                    .into_iter()
+                    .map(|id| Command::RemoveClip { id })
                     .collect();
                 edits.push(Edit::Apply(Command::Batch(removals)));
             }
@@ -1119,14 +1277,18 @@ pub fn show(
                     })
                 };
                 if split_key && let Some(at) = playhead {
+                    // Cutting one linked clip cuts them all.
                     let wanted: Vec<ClipId> = if state.selected.is_empty() {
                         project.clips().map(|(id, _)| id).collect()
                     } else {
-                        state.selected.iter().copied().collect()
+                        project.with_linked(state.selected.iter().copied())
                     };
                     let mut commands = Vec::new();
                     let mut right_halves = BTreeSet::new();
                     let mut next = project.next_clip_id();
+                    // Which right half came from which clip, to link them as
+                    // the clips they come from were.
+                    let mut halves: BTreeMap<ClipId, ClipId> = BTreeMap::new();
                     for id in wanted {
                         let Some(clip) = project.clip(id) else {
                             continue;
@@ -1141,7 +1303,30 @@ pub fn show(
                                 clip: second,
                             });
                             right_halves.insert(next);
+                            halves.insert(id, next);
                             next.0 += 1;
+                        }
+                    }
+                    // The left halves stay in their link; the right halves
+                    // make one of their own, which shares the warp (a clip
+                    // cut in two has one warp until a half is edited alone).
+                    let mut group_id = project.next_clip_group_id();
+                    let mut made = BTreeSet::new();
+                    for &id in halves.keys() {
+                        let Some((old, members)) = project.group_of(id) else {
+                            continue;
+                        };
+                        if !made.insert(old) {
+                            continue;
+                        }
+                        let rights: BTreeSet<ClipId> =
+                            members.iter().filter_map(|m| halves.get(m).copied()).collect();
+                        if rights.len() >= 2 {
+                            commands.push(Command::SetClipGroup {
+                                id: group_id,
+                                group: Some(noodle_core::ClipGroup { members: rights }),
+                            });
+                            group_id.0 += 1;
                         }
                     }
                     if commands.is_empty() {
@@ -1408,6 +1593,52 @@ pub fn show(
             }
         }
     }
+    // The punch range is a second band, along the bottom of the ruler: the
+    // part of the timeline a recording keeps. Its edges can be dragged.
+    {
+        let punch = session.project().punch();
+        let strip = Rect::from_x_y_ranges(ruler.x_range(), ruler.bottom() - 6.0..=ruler.bottom());
+        let (x0, x1) = (axis.x(punch.start), axis.x(punch.end));
+        let band = Rect::from_x_y_ranges(
+            x0.max(ruler.left())..=x1.min(ruler.right()),
+            strip.y_range(),
+        );
+        if band.width() > 0.0 {
+            ui.painter_at(ruler).rect_filled(
+                band,
+                0.0,
+                crate::theme::RECORD.gamma_multiply(if punch.on { 0.8 } else { 0.25 }),
+            );
+        }
+        for (is_start, x) in [(true, x0), (false, x1)] {
+            if x < ruler.left() - 4.0 || x > ruler.right() + 4.0 {
+                continue;
+            }
+            let handle = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, strip.y_range());
+            let id = ui.id().with(("punch_edge", is_start));
+            let response = ui
+                .interact(handle, id, Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                .on_hover_text(if is_start { "Punch in" } else { "Punch out" });
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let tick = axis.snap(axis.tick(pos.x).max(Tick::ZERO));
+                let mut moved = punch;
+                if is_start {
+                    moved.start = tick.min(Tick((punch.end.0 - 1).max(0)));
+                } else {
+                    moved.end = tick.max(Tick(punch.start.0 + 1));
+                }
+                if moved != punch {
+                    edits.push(Edit::Drag(Command::SetPunch(moved)));
+                }
+            }
+            if response.drag_stopped() {
+                edits.push(Edit::EndDrag);
+            }
+        }
+    }
     if scrub.secondary_clicked() {
         state.ruler_menu_bar = scrub
             .interact_pointer_pos()
@@ -1457,6 +1688,47 @@ pub fn show(
                 ..region
             });
         }
+        ui.separator();
+        let punch = session.project().punch();
+        ui.menu_button("Punch", |ui| {
+            if ui
+                .button(if punch.on { "Punch off" } else { "Punch on" })
+                .clicked()
+            {
+                ui.close();
+                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+                    on: !punch.on,
+                    ..punch
+                })));
+            }
+            if ui.button("Set punch in here").clicked() {
+                ui.close();
+                let end = if punch.end > here {
+                    punch.end
+                } else {
+                    bar_tick(map, bar + 2)
+                };
+                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+                    start: here,
+                    end,
+                    ..punch
+                })));
+            }
+            if ui.button("Set punch out here").clicked() {
+                ui.close();
+                let start = if punch.start < here {
+                    punch.start
+                } else {
+                    Tick::ZERO
+                };
+                let end = if here > start { here } else { bar_tick(map, 2) };
+                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
+                    start,
+                    end,
+                    ..punch
+                })));
+            }
+        });
         ui.separator();
         if ui
             .button(format!("Add tempo change at bar {}", bar + 1))
@@ -1643,6 +1915,7 @@ pub fn show(
         arm,
         open_midi,
         open_audio,
+        audition,
     }
 }
 
@@ -1835,6 +2108,7 @@ fn fade_handles(h: Handles<'_>, id: ClipId, clip: &Clip) -> Vec<Edit> {
                 originals: vec![(id, clip.clone())],
                 press_x: x,
                 copied: false,
+                sources: BTreeMap::new(),
             });
         }
         if response.dragged()
@@ -2110,6 +2384,11 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
     let delta = axis.tick(x).0 - axis.tick(drag.press_x).0;
     let (_, grabbed) = drag.originals.iter().find(|(id, _)| *id == drag.grabbed)?;
     let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
+    // What a member knows about its file; the grabbed clip's came with the
+    // drag, and a member that isn't known is taken to be like it.
+    let member_source = |id: ClipId, grabbed_source: Option<Source>| {
+        drag.sources.get(&id).copied().or(grabbed_source)
+    };
     let commands: Vec<Command> = match drag.mode {
         Mode::Move => {
             let earliest = drag.originals.iter().map(|(_, c)| c.start.0).min()?;
@@ -2128,42 +2407,59 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
                 })
                 .collect()
         }
+        // A trim or slip reaches every clip in the drag: the grabbed one and
+        // those linked to it, each worked out against its own file and moved
+        // by as much as the grabbed one is.
         Mode::TrimStart => {
-            let edge = snap(Tick(grabbed.start.0 + delta));
-            let warp = warp_of(project, grabbed);
-            let clip = clips::trim_start(map, grabbed, edge, rate, warp)?;
-            vec![Command::SetClip {
-                id: drag.grabbed,
-                clip,
-            }]
+            let by = snap(Tick(grabbed.start.0 + delta)).0 - grabbed.start.0;
+            drag.originals
+                .iter()
+                .filter_map(|(id, original)| {
+                    let rate = member_source(*id, source).map_or(FALLBACK_RATE, |s| s.sample_rate);
+                    let edge = Tick(original.start.0 + by);
+                    let warp = warp_of(project, original);
+                    let clip = clips::trim_start(map, original, edge, rate, warp)?;
+                    Some(Command::SetClip { id: *id, clip })
+                })
+                .collect()
         }
         Mode::FadeIn | Mode::FadeOut => return None,
-        Mode::Slip => {
-            let warp = warp_of(project, grabbed);
-            let frames = source.and_then(|s| s.frames);
-            // Unwarped content plays in real time, so measure the pointer's
-            // seconds from the clip start; warped content follows beats.
-            let slip_delta = if warp.is_some() {
-                delta
-            } else {
-                axis.tick(axis.x(grabbed.start) + x - drag.press_x).0 - grabbed.start.0
-            };
-            let clip = clips::slip(map, grabbed, slip_delta, rate, frames, warp)?;
-            vec![Command::SetClip {
-                id: drag.grabbed,
-                clip,
-            }]
-        }
+        Mode::Slip => drag
+            .originals
+            .iter()
+            .filter_map(|(id, original)| {
+                let warp = warp_of(project, original);
+                let found = member_source(*id, source);
+                let rate = found.map_or(FALLBACK_RATE, |s| s.sample_rate);
+                let frames = found.and_then(|s| s.frames);
+                // Unwarped content plays in real time, so measure the
+                // pointer's seconds from the clip start; warped content
+                // follows beats.
+                let slip_delta = if warp.is_some() {
+                    delta
+                } else {
+                    axis.tick(axis.x(original.start) + x - drag.press_x).0 - original.start.0
+                };
+                let clip = clips::slip(map, original, slip_delta, rate, frames, warp)?;
+                Some(Command::SetClip { id: *id, clip })
+            })
+            .collect(),
         Mode::TrimEnd => {
-            let end = clips::clip_end(map, grabbed, rate, warp_of(project, grabbed));
-            let edge = snap(Tick(end.0 + delta));
-            let warp = warp_of(project, grabbed);
-            let frames = source.and_then(|s| s.frames);
-            let clip = clips::trim_end(map, grabbed, edge, rate, frames, warp)?;
-            vec![Command::SetClip {
-                id: drag.grabbed,
-                clip,
-            }]
+            let grabbed_end = clips::clip_end(map, grabbed, rate, warp_of(project, grabbed));
+            let by = snap(Tick(grabbed_end.0 + delta)).0 - grabbed_end.0;
+            drag.originals
+                .iter()
+                .filter_map(|(id, original)| {
+                    let found = member_source(*id, source);
+                    let rate = found.map_or(FALLBACK_RATE, |s| s.sample_rate);
+                    let frames = found.and_then(|s| s.frames);
+                    let warp = warp_of(project, original);
+                    let end = clips::clip_end(map, original, rate, warp);
+                    let clip =
+                        clips::trim_end(map, original, Tick(end.0 + by), rate, frames, warp)?;
+                    Some(Command::SetClip { id: *id, clip })
+                })
+                .collect()
         }
     };
     let changed: Vec<Command> = commands
@@ -2343,8 +2639,13 @@ fn draw_headers(
         // lanes with it.
         let source =
             automation::is_automation_node(project, lane.target.node).then_some(lane.target.node);
+        let arm = source.map(|node| automation::Arm {
+            node,
+            armed: session.automation_armed(node),
+            value: session.automation_value(node).unwrap_or(0.0),
+        });
         edits.extend(
-            automation::header(ui, row, id, &label, refused)
+            automation::header(ui, row, id, &label, refused, arm)
                 .into_iter()
                 .map(|edit| match (edit, source) {
                     (Edit::Apply(Command::RemoveLane { .. }), Some(node)) => {

@@ -183,8 +183,8 @@ impl Remote {
         self.0.editor_open.load(Ordering::Acquire)
     }
 
-    pub fn capture(&self) -> Result<Captured, HostError> {
-        match self.0.request(ToHost::Capture)? {
+    pub fn capture(&self, with_state: bool) -> Result<Captured, HostError> {
+        match self.0.request(ToHost::Capture { with_state })? {
             FromHost::Captured { state, params } => Ok(Captured {
                 state: decode(&state)
                     .ok_or_else(|| HostError("the host sent a damaged state".into()))?,

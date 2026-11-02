@@ -1,6 +1,6 @@
 # DAW user stories: advanced user
 
-Thirty goals an experienced user would expect to reach in a serious DAW. Each is a moderately complex, end-to-end task, written from the user's side and not tailored to Noodle's current features. Twenty came from a writer with no knowledge of Noodle; ten were kept from a first draft where they covered ground the other list did not. Difficulty is not assessed yet; the method is in [assessment-framework.md](../architecture/usability.md).
+Thirty goals an experienced user would expect to reach in a serious DAW. Each is a moderately complex, end-to-end task, written from the user's side and not tailored to Noodle's current features. Twenty came from a writer with no knowledge of Noodle; ten were kept from a first draft where they covered ground the other list did not. Difficulty is not assessed yet; the method is in [usability.md](../architecture/usability.md).
 
 Each story has a stable ID so scores, scripts and issues can refer to it. Never renumber: retire a story by marking it retired, and give a new one the next free ID.
 

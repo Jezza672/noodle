@@ -20,6 +20,8 @@ pub const NODE_MIME: &str = "application/x.noodle.node";
 
 /// Notes copied from the piano roll.
 pub const NOTE_MIME: &str = "application/x.noodle.notes";
+/// Controller points copied from the piano roll's lanes.
+pub const CONTROL_MIME: &str = "application/x.noodle.controls";
 /// Automation points copied from a lane in the arrangement.
 pub const POINT_MIME: &str = "application/x.noodle.points";
 

@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod acceptance;
 mod app;
+mod autosave;
 mod cache_panel;
 mod carry;
 mod clip_editor;
@@ -80,6 +81,10 @@ fn main() -> ExitCode {
         session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
         session.set_auto_cache(prefs.auto_cache);
+        session.set_count_in_bars(prefs.count_in_bars);
+        session.set_record_midi(prefs.midi_record);
+        session.set_pre_roll_bars(prefs.pre_roll_bars);
+        session.set_automation_mode(prefs.automation_mode);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.
@@ -100,7 +105,11 @@ fn main() -> ExitCode {
             noodle_engine::wake::set_waker(Some(std::sync::Arc::new(move || {
                 ctx.request_repaint()
             })));
-            Ok(Box::new(App::new(session)))
+            let mut app = App::new(session);
+            if let Some(dir) = autosave::default_dir() {
+                app.set_autosave(autosave::Autosave::new(dir));
+            }
+            Ok(Box::new(app))
         }),
     );
     match result {

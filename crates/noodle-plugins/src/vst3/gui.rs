@@ -154,12 +154,16 @@ pub(crate) fn close(key: u64) {
 }
 
 /// Reads the plugin's state and parameter values.
-pub(crate) fn capture(key: u64) -> Result<Captured, HostError> {
+pub(crate) fn capture(key: u64, with_state: bool) -> Result<Captured, HostError> {
     thread::run_job(COMMAND_TIMEOUT, move || {
         with_gui(key, |gui| {
             sync_controller(gui);
             Ok(Captured {
-                state: gui.control.save_state()?,
+                state: if with_state {
+                    gui.control.save_state()?
+                } else {
+                    Vec::new()
+                },
                 params: gui.control.values(),
             })
         })

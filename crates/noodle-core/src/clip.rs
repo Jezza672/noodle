@@ -18,6 +18,33 @@ impl fmt::Display for ClipId {
     }
 }
 
+/// Identifies a [`ClipGroup`] within a project. Like clip IDs, they aren't
+/// reused within a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClipGroupId(pub u64);
+
+impl fmt::Display for ClipGroupId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "clip group #{}", self.0)
+    }
+}
+
+/// A link between clips, usually on different tracks: the members move, trim,
+/// split, loop, warp and are deleted together, and share one warp (see
+/// [`Project::section_edit`](crate::Project::section_edit)). Gain and fades
+/// stay per clip. A group may hold audio and MIDI clips; the warp reaches the
+/// audio ones.
+///
+/// A group is only a link while at least two of its members are in the
+/// project: a member that has been deleted (and could come back with an undo)
+/// is kept in the list but ignored, and a group with fewer live members than
+/// that is neither saved nor reported by [`Project::group_of`](crate::Project::group_of).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipGroup {
+    pub members: std::collections::BTreeSet<ClipId>,
+}
+
 /// Something placed on a track's timeline. The start is in ticks, so it
 /// follows the tempo. One track holds clips of every kind.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +81,100 @@ pub struct MidiClip {
     /// How long the loop section is; at least [`MIN_LOOP_LEN`] while looping.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub loop_len: Tick,
+    /// Controllers, pitch bend, pressure and program changes, in no
+    /// particular order. They leave through the `midi` output with the
+    /// notes, and move, loop, split and trim with them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlPoint>,
+    /// The takes behind this clip, when it is a take folder (see
+    /// [`MidiTakes`]). `notes` and `controls` then hold what the comp plays,
+    /// so everything that plays or draws the clip needs no special case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takes: Option<MidiTakes>,
+}
+
+/// The takes of a MIDI take folder and the comp that picks which plays where.
+/// It uses the audio [`TakeFolder`] for the comp (so swiping is the same
+/// code), counted in ticks from the start of the clip, with no `delta`s: every
+/// take is the same stretch of music.
+///
+/// The clip's own `notes` and `controls` are the comp already played out
+/// ([`MidiTakes::played`]). A change to the clip that is not a change of comp
+/// leaves them disagreeing with the takes, and the project then drops the
+/// takes (the clip becomes a plain clip with the notes it shows), so an
+/// edited comp is never silently overwritten by a later swipe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MidiTakes {
+    pub folder: TakeFolder,
+    /// What each take of `folder` played, parallel to `folder.takes`.
+    pub content: Vec<TakeContent>,
+}
+
+/// What one MIDI take recorded.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TakeContent {
+    pub notes: Vec<MidiNote>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlPoint>,
+}
+
+impl MidiTakes {
+    /// A folder of `content` that plays `active` throughout.
+    pub fn new(content: Vec<TakeContent>, active: usize) -> Self {
+        let takes = vec![Take { delta: 0 }; content.len()];
+        Self {
+            folder: TakeFolder::new(takes, active),
+            content,
+        }
+    }
+
+    /// The notes and controllers the comp plays: from each take, those that
+    /// start in the span that take plays. A note that starts in its span
+    /// plays out in full, past the join.
+    pub fn played(&self) -> (Vec<MidiNote>, Vec<ControlPoint>) {
+        let mut notes = Vec::new();
+        let mut controls = Vec::new();
+        for (index, span) in self.folder.comp.iter().enumerate() {
+            let from = if index == 0 { i64::MIN } else { span.at as i64 };
+            let to = self
+                .folder
+                .span_end(index)
+                .map_or(i64::MAX, |end| end as i64);
+            let Some(content) = self.content.get(span.take) else {
+                continue;
+            };
+            notes.extend(
+                content
+                    .notes
+                    .iter()
+                    .filter(|n| n.start.0 >= from && n.start.0 < to)
+                    .cloned(),
+            );
+            controls.extend(
+                content
+                    .controls
+                    .iter()
+                    .filter(|p| p.tick.0 >= from && p.tick.0 < to)
+                    .cloned(),
+            );
+        }
+        controls.sort_by_key(|p| p.tick);
+        (notes, controls)
+    }
+
+    /// Makes `take` play from `from` to `to` ticks (see [`TakeFolder::swipe`]).
+    pub fn swipe(&mut self, from: Tick, to: Tick, take: usize) {
+        self.folder
+            .swipe(from.0.max(0) as u64, to.0.max(0) as u64, take);
+    }
+
+    fn problem(&self) -> Option<&'static str> {
+        if self.content.len() != self.folder.takes.len() {
+            Some("its take folder has a different number of takes and recordings")
+        } else {
+            self.folder.problem()
+        }
+    }
 }
 
 fn is_zero(tick: &Tick) -> bool {
@@ -63,8 +184,169 @@ fn is_zero(tick: &Tick) -> bool {
 /// The shortest loop a MIDI clip may have: a sixteenth of a beat.
 pub const MIN_LOOP_LEN: i64 = TICKS_PER_QUARTER / 16;
 
-/// One note in a MIDI clip.
+/// What a [`ControlPoint`] sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ControlKind {
+    /// A controller by number, 0 to 127. Its value is 0 to 1.
+    Controller(u8),
+    /// Pitch bend, -1 to 1 with 0 at the centre.
+    PitchBend,
+    /// Channel pressure (aftertouch), 0 to 1.
+    ChannelPressure,
+    /// A program change; the value is the program, 0 to 127, over 127.
+    ProgramChange,
+}
+
+impl ControlKind {
+    /// The value that lets go of what the kind sets: pedals up, the wheel
+    /// down, the bend centred, and the channel's mixing controllers (volume,
+    /// pan, expression) where a synth starts. A program change is not
+    /// released.
+    pub fn rest(self) -> Option<f32> {
+        match self {
+            ControlKind::Controller(7) => Some(100.0 / 127.0),
+            ControlKind::Controller(10) => Some(64.0 / 127.0),
+            ControlKind::Controller(11) => Some(1.0),
+            ControlKind::Controller(_) | ControlKind::PitchBend | ControlKind::ChannelPressure => {
+                Some(0.0)
+            }
+            ControlKind::ProgramChange => None,
+        }
+    }
+}
+
+/// One value of a controller in a MIDI clip. Values are normalised, as the
+/// engine's events are, and converted only at the device.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ControlPoint {
+    /// From the start of the clip.
+    pub tick: Tick,
+    /// 0 to 15.
+    pub channel: u8,
+    pub kind: ControlKind,
+    pub value: f32,
+    /// Whether the value glides in a straight line to the next point of the
+    /// same channel and kind (played as events at a fixed rate), instead of
+    /// holding until it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ramp: bool,
+}
+
+impl ControlPoint {
+    pub fn new(tick: Tick, channel: u8, kind: ControlKind, value: f32) -> Self {
+        Self {
+            tick,
+            channel,
+            kind,
+            value,
+            ramp: false,
+        }
+    }
+}
+
+/// What a [`NoteExpression`] sets, on one note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ExpressionKind {
+    /// In semitones.
+    Pitch,
+    /// Poly pressure, 0 to 1.
+    Pressure,
+    Timbre,
+    Volume,
+    Pan,
+}
+
+/// One value of a per-note expression, counted from the note's start.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NoteExpression {
+    pub tick: Tick,
+    pub kind: ExpressionKind,
+    pub value: f32,
+    /// As [`ControlPoint::ramp`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ramp: bool,
+}
+
+/// The value at `tick` of the points `of` (one channel and kind, sorted by
+/// tick): the last at or before it, or on the way to the next if it ramps.
+/// `None` before the first.
+fn value_along(of: impl Iterator<Item = (Tick, f32, bool)>, tick: Tick) -> Option<f32> {
+    let mut before: Option<(Tick, f32, bool)> = None;
+    for point in of {
+        if point.0 <= tick {
+            before = Some(point);
+        } else {
+            return Some(match before {
+                Some((at, value, true)) => {
+                    let along = (tick.0 - at.0) as f32 / (point.0.0 - at.0) as f32;
+                    value + (point.1 - value) * along
+                }
+                Some((_, value, false)) => value,
+                None => return None,
+            });
+        }
+    }
+    before.map(|p| p.1)
+}
+
+/// The value of a controller of `points` at `tick`; `None` before its first
+/// point.
+pub fn control_value_at(
+    points: &[ControlPoint],
+    channel: u8,
+    kind: ControlKind,
+    tick: Tick,
+) -> Option<f32> {
+    let mut of: Vec<&ControlPoint> = points
+        .iter()
+        .filter(|p| p.channel == channel && p.kind == kind)
+        .collect();
+    of.sort_by_key(|p| p.tick);
+    value_along(of.into_iter().map(|p| (p.tick, p.value, p.ramp)), tick)
+}
+
+/// The controllers `points` as they are from `delta` ticks in, for a clip
+/// cut there (or, if `delta` is negative, made longer at the front): the
+/// later points moved earlier by `delta`, and, for each controller that had a
+/// value by then, that value at the start, so a held pedal stays held.
+pub fn controls_from(points: &[ControlPoint], delta: i64) -> Vec<ControlPoint> {
+    let mut out: Vec<ControlPoint> = Vec::new();
+    let mut sorted = points.to_vec();
+    sorted.sort_by_key(|p| p.tick);
+    let mut lanes: Vec<(u8, ControlKind)> = sorted.iter().map(|p| (p.channel, p.kind)).collect();
+    lanes.sort();
+    lanes.dedup();
+    for (channel, kind) in lanes {
+        let lane = || {
+            sorted
+                .iter()
+                .filter(|p| p.channel == channel && p.kind == kind)
+        };
+        if delta > 0 && !lane().any(|p| p.tick.0 == delta) {
+            let value = value_along(lane().map(|p| (p.tick, p.value, p.ramp)), Tick(delta));
+            let ramp = lane().rfind(|p| p.tick.0 < delta).is_some_and(|p| p.ramp)
+                && lane().any(|p| p.tick.0 > delta);
+            if let Some(value) = value {
+                out.push(ControlPoint {
+                    tick: Tick::ZERO,
+                    channel,
+                    kind,
+                    value,
+                    ramp,
+                });
+            }
+        }
+        out.extend(lane().filter(|p| p.tick.0 >= delta).map(|p| ControlPoint {
+            tick: Tick(p.tick.0 - delta),
+            ..*p
+        }));
+    }
+    out.sort_by_key(|p| p.tick);
+    out
+}
+
+/// One note in a MIDI clip.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MidiNote {
     /// Names the note within its clip, and stays with it as it is edited, so
     /// a view can keep it selected through undo. The project makes ids
@@ -79,6 +361,10 @@ pub struct MidiNote {
     pub key: u8,
     /// 0 to 1.
     pub velocity: f32,
+    /// Per-note modulation (poly pressure, MPE), from the note's start. It
+    /// plays while the note sounds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expressions: Vec<NoteExpression>,
 }
 
 impl MidiNote {
@@ -89,7 +375,58 @@ impl MidiNote {
             length,
             key,
             velocity: 0.8,
+            expressions: Vec::new(),
         }
+    }
+
+    /// The expressions of the note as they are from `delta` ticks in on: the
+    /// later ones moved earlier by `delta`, and, for each kind that had a
+    /// value by then, that value at the start. For a note cut in two.
+    pub fn expressions_from(&self, delta: i64) -> Vec<NoteExpression> {
+        if delta <= 0 {
+            return self.expressions.clone();
+        }
+        let mut sorted = self.expressions.clone();
+        sorted.sort_by_key(|e| e.tick);
+        let mut kinds: Vec<ExpressionKind> = sorted.iter().map(|e| e.kind).collect();
+        kinds.sort();
+        kinds.dedup();
+        let mut out = Vec::new();
+        for kind in kinds {
+            let of = || {
+                sorted
+                    .iter()
+                    .filter(move |e| e.kind == kind)
+                    .map(|e| (e.tick, e.value, e.ramp))
+            };
+            let ramps = of()
+                .rfind(|p| p.0.0 <= delta)
+                .is_some_and(|p| p.2 && of().any(|q| q.0.0 > delta));
+            if let Some(value) = value_along(of(), Tick(delta)) {
+                out.push(NoteExpression {
+                    tick: Tick::ZERO,
+                    kind,
+                    value,
+                    ramp: ramps,
+                });
+            }
+            out.extend(of().filter(|p| p.0.0 > delta).map(|p| NoteExpression {
+                tick: Tick(p.0.0 - delta),
+                kind,
+                value: p.1,
+                ramp: p.2,
+            }));
+        }
+        out
+    }
+
+    /// The expressions with those past the note's end dropped.
+    pub fn expressions_until(&self, end: i64) -> Vec<NoteExpression> {
+        self.expressions
+            .iter()
+            .filter(|e| e.tick.0 < end)
+            .copied()
+            .collect()
     }
 
     /// The first tick after the note.
@@ -106,6 +443,41 @@ impl MidiClip {
             loop_on: false,
             loop_start: Tick::ZERO,
             loop_len: Tick::ZERO,
+            controls: Vec::new(),
+            takes: None,
+        }
+    }
+
+    /// Makes the clip play what its comp says: its notes and controllers
+    /// become [`MidiTakes::played`]. Does nothing to a plain clip.
+    pub fn play_comp(&mut self) {
+        if let Some(takes) = &self.takes {
+            let (notes, controls) = takes.played();
+            self.notes = notes;
+            self.controls = controls;
+            self.assign_note_ids();
+        }
+    }
+
+    /// Drops the takes if the clip no longer plays what its comp says: it was
+    /// edited as a plain clip (notes moved, trimmed, looped), so the takes
+    /// would be out of step with it.
+    fn settle_takes(&mut self) {
+        let Some(takes) = &self.takes else {
+            return;
+        };
+        let (notes, controls) = takes.played();
+        let same_notes = notes.len() == self.notes.len()
+            && notes.iter().all(|a| {
+                self.notes.iter().any(|b| {
+                    (a.start, a.length, a.key, a.velocity, &a.expressions)
+                        == (b.start, b.length, b.key, b.velocity, &b.expressions)
+                })
+            });
+        let mut mine = self.controls.clone();
+        mine.sort_by_key(|p| p.tick);
+        if !same_notes || controls != mine || self.loop_on {
+            self.takes = None;
         }
     }
 
@@ -157,7 +529,7 @@ impl MidiClip {
                 out.push(MidiNote {
                     start: Tick(start),
                     length: Tick(note.length.0.min(end - note.start.0)),
-                    ..**note
+                    ..(*note).clone()
                 });
             }
             shift += self.loop_len.0;
@@ -182,13 +554,89 @@ impl MidiClip {
                 }
                 out.push(MidiNote {
                     length: Tick(note.length.0.min(end - note.start.0)),
-                    ..*note
+                    ..note.clone()
                 });
             } else {
-                out.push(*note);
+                out.push(note.clone());
             }
         }
         out.extend(self.repeats());
+        out
+    }
+
+    /// The controllers as they sound, in clip time and sorted by tick, the
+    /// way [`played`](Self::played) gives the notes: points past the clip's
+    /// end (or, if it loops, the loop's) are dropped, the loop section's
+    /// points repeat, and a ramp that is cut off ends on the value it had
+    /// there. At each repeat, every controller of the clip is put back to
+    /// the value it had where the loop section starts (or released if it had
+    /// none yet), so what an earlier pass left behind does not carry over.
+    pub fn played_controls(&self) -> Vec<ControlPoint> {
+        let mut groups: std::collections::BTreeMap<(u8, ControlKind), Vec<ControlPoint>> =
+            Default::default();
+        for point in &self.controls {
+            // Points past the end stay, for a ramp to head towards.
+            if point.tick.0 >= 0 {
+                groups
+                    .entry((point.channel, point.kind))
+                    .or_default()
+                    .push(*point);
+            }
+        }
+        let looping = self.loop_on && self.loop_len.0 >= MIN_LOOP_LEN;
+        let (from, end) = (self.loop_start.0, self.loop_end().0);
+        let limit = self.length.0;
+        let mut out = Vec::new();
+        for ((_, kind), group) in groups.iter_mut() {
+            group.sort_by_key(|p| p.tick);
+            let group = &*group;
+            if group[0].tick.0 >= limit {
+                continue;
+            }
+            let value_at = |tick: i64| {
+                value_along(group.iter().map(|p| (p.tick, p.value, p.ramp)), Tick(tick))
+            };
+            let pass = |lo: i64, hi: i64, shift: i64, out: &mut Vec<ControlPoint>| {
+                let mark = out.len();
+                for p in group.iter().filter(|p| p.tick.0 >= lo && p.tick.0 < hi) {
+                    if p.tick.0 + shift < limit {
+                        out.push(ControlPoint {
+                            tick: Tick(p.tick.0 + shift),
+                            ..*p
+                        });
+                    }
+                }
+                let cut = (hi + shift).min(limit);
+                if out.len() > mark
+                    && out.last().is_some_and(|p| p.ramp)
+                    && let Some(value) = value_at(cut - shift)
+                {
+                    let last = *out.last().expect("checked above");
+                    out.push(ControlPoint {
+                        tick: Tick(cut),
+                        value,
+                        ramp: false,
+                        ..last
+                    });
+                }
+            };
+            let channel = group[0].channel;
+            if looping {
+                pass(0, end.min(limit), 0, &mut out);
+                let mut shift = self.loop_len.0;
+                while from + shift < limit {
+                    let set_there = group.iter().any(|p| p.tick.0 == from);
+                    if !set_there && let Some(value) = value_at(from).or(kind.rest()) {
+                        out.push(ControlPoint::new(Tick(from + shift), channel, *kind, value));
+                    }
+                    pass(from, end, shift, &mut out);
+                    shift += self.loop_len.0;
+                }
+            } else {
+                pass(0, limit, 0, &mut out);
+            }
+        }
+        out.sort_by_key(|p| p.tick);
         out
     }
 
@@ -225,7 +673,35 @@ impl MidiClip {
         if self.loop_on && (self.loop_start < Tick::ZERO || self.loop_len.0 < MIN_LOOP_LEN) {
             return Some("its loop starts before the clip or is too short");
         }
+        if let Some(problem) = self.takes.as_ref().and_then(MidiTakes::problem) {
+            return Some(problem);
+        }
+        for point in &self.controls {
+            if point.tick < Tick::ZERO {
+                return Some("a controller point starts before the clip");
+            }
+            if point.channel > 15 {
+                return Some("a controller point's channel is out of range");
+            }
+            let range = match point.kind {
+                ControlKind::Controller(number) if number > 127 => {
+                    return Some("a controller number is out of range");
+                }
+                ControlKind::PitchBend => -1.0..=1.0,
+                _ => 0.0..=1.0,
+            };
+            if !range.contains(&point.value) {
+                return Some("a controller value is out of range");
+            }
+        }
         for note in &self.notes {
+            if note
+                .expressions
+                .iter()
+                .any(|e| e.tick < Tick::ZERO || !e.value.is_finite())
+            {
+                return Some("a note's expression starts before the note or is not a number");
+            }
             if note.start < Tick::ZERO {
                 return Some("a note starts before the clip");
             }
@@ -283,10 +759,174 @@ pub struct AudioClip {
     /// brought back; Split to stems mutes its source this way.
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,
+    /// The takes behind this section, when it is a take folder (see
+    /// [`TakeFolder`]). `source`, `offset` and `length` then give the window
+    /// every take is cut to, in the coordinates of the first take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takes: Option<TakeFolder>,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Several recordings of the same stretch of music, and the comp that picks
+/// which one plays where. It is the `takes` of an [`AudioClip`], so a take
+/// folder is one clip: moving, splitting, copying and linking it carries every
+/// take, and the takes share the clip's warp.
+///
+/// The takes are windows into the clip's one audio file (a loop recording
+/// writes a single file and each cycle is a take). The clip's `offset` and
+/// `length` are counted in the *first coordinates*: the file's frames as the
+/// first take sees them. Take `k` plays the file `delta` frames later than
+/// that for the same moment of the music, so trimming and splitting the clip
+/// move every take with it and need no care.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TakeFolder {
+    pub takes: Vec<Take>,
+    /// The comp: which take plays from each point on. Sorted by `at`; the
+    /// first span also covers everything before it.
+    pub comp: Vec<CompSpan>,
+}
+
+/// One take of a [`TakeFolder`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Take {
+    /// How many frames later in the file this take plays what the first take
+    /// plays at the same moment. A loop recording's take `k` is `k` cycles
+    /// on.
+    pub delta: u64,
+}
+
+/// A stretch of a comp: from `at` (in the clip's first coordinates) until the
+/// next span, the take `take` plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompSpan {
+    pub at: u64,
+    pub take: usize,
+    /// The crossfade at the join into this span (`None` for the first span).
+    /// `None` gives the default of [`DEFAULT_COMP_FADE_SECONDS`]. The
+    /// before and after are in ticks, as for [`AudioClip::crossfade`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossfade: Option<Crossfade>,
+}
+
+/// How long a comp join crossfades unless it has been set: half of this
+/// either side of the join.
+pub const DEFAULT_COMP_FADE_SECONDS: f64 = 0.010;
+
+impl TakeFolder {
+    /// A folder of `takes` that plays `active` throughout.
+    pub fn new(takes: Vec<Take>, active: usize) -> Self {
+        Self {
+            takes,
+            comp: vec![CompSpan {
+                at: 0,
+                take: active,
+                crossfade: None,
+            }],
+        }
+    }
+
+    /// The span that plays at `at`.
+    pub fn span_at(&self, at: u64) -> usize {
+        self.comp
+            .partition_point(|span| span.at <= at)
+            .saturating_sub(1)
+    }
+
+    /// Where span `index` ends, `None` if it runs on for good.
+    pub fn span_end(&self, index: usize) -> Option<u64> {
+        self.comp.get(index + 1).map(|next| next.at)
+    }
+
+    /// Makes `take` play from `from` to `to` (in the clip's first
+    /// coordinates), leaving the rest of the comp as it is. The new joins get
+    /// the default crossfade; spans left side by side with the same take
+    /// become one. Does nothing if the range is empty or `take` doesn't exist.
+    pub fn swipe(&mut self, from: u64, to: u64, take: usize) {
+        if from >= to || take >= self.takes.len() {
+            return;
+        }
+        // The comp as stretches: start, end, take, the join into it.
+        let mut parts: Vec<(u64, u64, usize, Option<Crossfade>)> = Vec::new();
+        for (i, span) in self.comp.iter().enumerate() {
+            let start = if i == 0 { 0 } else { span.at };
+            let end = self.span_end(i).unwrap_or(u64::MAX);
+            parts.push((start, end, span.take, span.crossfade));
+        }
+        let mut out: Vec<(u64, u64, usize, Option<Crossfade>)> = Vec::new();
+        for (start, end, was, join) in parts {
+            if end <= from || start >= to {
+                out.push((start, end, was, join));
+                continue;
+            }
+            if start < from {
+                out.push((start, from, was, join));
+            }
+            if end > to {
+                out.push((to, end, was, None));
+            }
+        }
+        let at = out.partition_point(|part| part.0 < from);
+        out.insert(at, (from, to, take, None));
+        // The first span has no join into it, and equal neighbours merge.
+        let mut comp: Vec<CompSpan> = Vec::new();
+        for (start, _, take, join) in out {
+            if comp.last().is_some_and(|last| last.take == take) {
+                continue;
+            }
+            comp.push(CompSpan {
+                at: start,
+                take,
+                crossfade: if comp.is_empty() { None } else { join },
+            });
+        }
+        if let Some(first) = comp.first_mut() {
+            first.at = 0;
+        }
+        self.comp = comp;
+    }
+
+    /// Sets the crossfade of the join into span `index` (not the first).
+    pub fn set_join(&mut self, index: usize, crossfade: Option<Crossfade>) {
+        if index > 0
+            && let Some(span) = self.comp.get_mut(index)
+        {
+            span.crossfade = crossfade;
+        }
+    }
+
+    /// The takes the comp plays, in order of first use, without repeats.
+    pub fn used(&self) -> Vec<usize> {
+        let mut used = Vec::new();
+        for span in &self.comp {
+            if !used.contains(&span.take) {
+                used.push(span.take);
+            }
+        }
+        used
+    }
+
+    /// Why this folder can't be played, if it can't.
+    pub(crate) fn problem(&self) -> Option<&'static str> {
+        if self.takes.is_empty() {
+            Some("its take folder has no takes")
+        } else if self.comp.is_empty() {
+            Some("its comp is empty")
+        } else if self.comp.iter().any(|span| span.take >= self.takes.len()) {
+            Some("its comp names a take that isn't there")
+        } else if self.comp.windows(2).any(|w| w[1].at <= w[0].at) {
+            Some("its comp is out of order")
+        } else if self.comp.iter().any(|span| {
+            span.crossfade
+                .is_some_and(|x| x.before < Tick::ZERO || x.after < Tick::ZERO)
+        }) {
+            Some("a join in its comp has a negative crossfade")
+        } else {
+            None
+        }
+    }
 }
 
 /// One control point of a clip's gain envelope.
@@ -375,6 +1015,7 @@ impl AudioClip {
             warp: None,
             extent: None,
             muted: false,
+            takes: None,
         }
     }
 }
@@ -402,6 +1043,7 @@ impl Clip {
     pub(crate) fn assign_note_ids(&mut self) {
         if let ClipContent::Midi(midi) = &mut self.content {
             midi.assign_note_ids();
+            midi.settle_takes();
         }
     }
 
@@ -500,7 +1142,7 @@ impl AudioClip {
         {
             Some("its crossfade is negative")
         } else {
-            None
+            self.takes.as_ref().and_then(TakeFolder::problem)
         }
     }
 }
@@ -610,6 +1252,88 @@ mod tests {
         );
     }
 
+    fn folder(takes: usize) -> TakeFolder {
+        TakeFolder::new(
+            (0..takes as u64)
+                .map(|k| Take { delta: k * 1000 })
+                .collect(),
+            0,
+        )
+    }
+
+    fn comp(folder: &TakeFolder) -> Vec<(u64, usize)> {
+        folder.comp.iter().map(|s| (s.at, s.take)).collect()
+    }
+
+    #[test]
+    fn swiping_a_range_cuts_the_spans_it_crosses_and_merges_equal_neighbours() {
+        let mut f = folder(3);
+        f.swipe(100, 200, 1);
+        assert_eq!(comp(&f), [(0, 0), (100, 1), (200, 0)]);
+        // Across the join: the later span is shortened, the earlier one cut.
+        f.swipe(150, 400, 2);
+        assert_eq!(comp(&f), [(0, 0), (100, 1), (150, 2), (400, 0)]);
+        // Covering a whole span removes it, and equal neighbours merge.
+        f.swipe(90, 410, 2);
+        assert_eq!(comp(&f), [(0, 0), (90, 2), (410, 0)]);
+        f.swipe(0, 90, 2);
+        assert_eq!(comp(&f), [(0, 2), (410, 0)]);
+        assert_eq!(f.used(), [2, 0]);
+        assert_eq!(f.span_at(409), 0);
+        assert_eq!(f.span_at(410), 1);
+        // Nothing to do for an empty range or a take that isn't there.
+        let before = f.clone();
+        f.swipe(5, 5, 1);
+        f.swipe(5, 9, 7);
+        assert_eq!(f, before);
+    }
+
+    #[test]
+    fn a_swipe_keeps_the_crossfades_of_the_joins_it_leaves_alone() {
+        let mut f = folder(2);
+        f.swipe(100, 200, 1);
+        let x = Crossfade {
+            before: Tick(3),
+            after: Tick(4),
+        };
+        f.set_join(2, Some(x));
+        f.swipe(300, 400, 1);
+        assert_eq!(f.comp[2].crossfade, Some(x));
+        assert_eq!(f.comp[1].crossfade, None);
+        // Joins are never on the first span.
+        f.set_join(0, Some(x));
+        assert_eq!(f.comp[0].crossfade, None);
+    }
+
+    #[test]
+    fn a_broken_folder_is_a_problem() {
+        let mut audio = AudioClip::new("a.wav", 1000);
+        audio.takes = Some(folder(2));
+        assert!(audio.problem().is_none());
+        audio.takes.as_mut().unwrap().comp[0].take = 5;
+        assert!(audio.problem().is_some());
+        audio.takes = Some(TakeFolder {
+            takes: vec![Take { delta: 0 }],
+            comp: vec![],
+        });
+        assert!(audio.problem().is_some());
+        let mut f = folder(2);
+        f.swipe(10, 20, 1);
+        f.comp[2].at = 5;
+        assert!(f.problem().is_some());
+    }
+
+    #[test]
+    fn a_take_folder_survives_a_round_trip_and_a_plain_clip_writes_none() {
+        let mut audio = AudioClip::new("a.wav", 1000);
+        let mut f = folder(3);
+        f.swipe(10, 20, 2);
+        audio.takes = Some(f);
+        let text = ron::to_string(&audio).unwrap();
+        assert_eq!(ron::from_str::<AudioClip>(&text).unwrap(), audio);
+        assert!(!ron::to_string(&clip_with(&[])).unwrap().contains("takes"));
+    }
+
     fn looping(length: i64, from: i64, len: i64, notes: &[(i64, i64, u8)]) -> MidiClip {
         let mut clip = MidiClip::new(Tick(length));
         clip.notes = notes
@@ -717,5 +1441,145 @@ mod tests {
         assert_eq!(ron::from_str::<MidiClip>(&text).unwrap(), clip);
         let old = ron::from_str::<MidiClip>("(length: 960, notes: [])").unwrap();
         assert!(!old.loop_on);
+    }
+    fn cc(tick: i64, kind: ControlKind, value: f32, ramp: bool) -> ControlPoint {
+        ControlPoint {
+            ramp,
+            ..ControlPoint::new(Tick(tick), 0, kind, value)
+        }
+    }
+
+    const PEDAL: ControlKind = ControlKind::Controller(64);
+
+    #[test]
+    fn controls_and_expressions_survive_a_round_trip_and_an_old_file_has_none() {
+        let mut clip = looping(3840, 0, 960, &[(0, 480, 60)]);
+        clip.controls = vec![
+            cc(0, PEDAL, 1.0, false),
+            cc(10, ControlKind::PitchBend, -0.5, true),
+        ];
+        clip.notes[0].expressions = vec![NoteExpression {
+            tick: Tick(5),
+            kind: ExpressionKind::Pressure,
+            value: 0.5,
+            ramp: true,
+        }];
+        let text = ron::to_string(&clip).unwrap();
+        assert_eq!(ron::from_str::<MidiClip>(&text).unwrap(), clip);
+        let old = ron::from_str::<MidiClip>("(length: 960, notes: [])").unwrap();
+        assert!(old.controls.is_empty());
+    }
+
+    #[test]
+    fn out_of_range_controls_are_problems() {
+        let mut clip = MidiClip::new(Tick(960));
+        for bad in [
+            cc(0, ControlKind::Controller(128), 0.5, false),
+            cc(0, PEDAL, 1.5, false),
+            cc(0, ControlKind::PitchBend, -1.5, false),
+            cc(-1, PEDAL, 0.5, false),
+            ControlPoint {
+                channel: 16,
+                ..cc(0, PEDAL, 0.5, false)
+            },
+        ] {
+            clip.controls = vec![bad];
+            assert!(clip.problem().is_some(), "{bad:?}");
+        }
+        clip.controls = vec![cc(0, ControlKind::PitchBend, -1.0, false)];
+        assert_eq!(clip.problem(), None);
+    }
+
+    #[test]
+    fn played_controls_drop_what_is_past_the_end_and_cut_ramps_there() {
+        let mut clip = MidiClip::new(Tick(960));
+        clip.controls = vec![
+            cc(0, ControlKind::Controller(1), 0.0, true),
+            cc(1920, ControlKind::Controller(1), 1.0, false),
+            cc(2000, PEDAL, 1.0, false),
+        ];
+        let played = clip.played_controls();
+        // The ramp is cut at the clip's end, half way up; the pedal is gone.
+        assert_eq!(played.len(), 2);
+        assert_eq!(
+            (played[1].tick, played[1].value, played[1].ramp),
+            (Tick(960), 0.5, false)
+        );
+    }
+
+    #[test]
+    fn a_looping_clip_repeats_its_controls_and_puts_each_pass_back() {
+        let mut clip = looping(3840, 960, 960, &[]);
+        clip.controls = vec![
+            cc(0, ControlKind::Controller(1), 0.25, false),
+            cc(1200, PEDAL, 1.0, false),
+            // After the loop's end: never played.
+            cc(2000, PEDAL, 0.0, false),
+        ];
+        let played = clip.played_controls();
+        let pedal: Vec<(i64, f32)> = played
+            .iter()
+            .filter(|p| p.kind == PEDAL)
+            .map(|p| (p.tick.0, p.value))
+            .collect();
+        // The loop is the second beat; the first pass plays everything up to
+        // its end, and each repeat starts by releasing the pedal (it had no
+        // value where the loop starts) before pressing it again.
+        assert_eq!(
+            pedal,
+            [
+                (1200, 1.0),
+                (1920, 0.0),
+                (2160, 1.0),
+                (2880, 0.0),
+                (3120, 1.0)
+            ]
+        );
+        // The wheel, set before the loop, is put back at each repeat.
+        let wheel: Vec<(i64, f32)> = played
+            .iter()
+            .filter(|p| p.kind == ControlKind::Controller(1))
+            .map(|p| (p.tick.0, p.value))
+            .collect();
+        assert_eq!(wheel, [(0, 0.25), (1920, 0.25), (2880, 0.25)]);
+    }
+
+    #[test]
+    fn cutting_the_front_off_keeps_a_held_pedal_held_and_ramps_going() {
+        let points = vec![
+            cc(0, PEDAL, 1.0, false),
+            cc(1000, PEDAL, 0.0, false),
+            cc(0, ControlKind::Controller(1), 0.0, true),
+            cc(800, ControlKind::Controller(1), 1.0, false),
+        ];
+        let from = controls_from(&points, 400);
+        let of = |kind| -> Vec<(i64, f32, bool)> {
+            from.iter()
+                .filter(|p| p.kind == kind)
+                .map(|p| (p.tick.0, p.value, p.ramp))
+                .collect()
+        };
+        assert_eq!(of(PEDAL), [(0, 1.0, false), (600, 0.0, false)]);
+        assert_eq!(
+            of(ControlKind::Controller(1)),
+            [(0, 0.5, true), (400, 1.0, false)]
+        );
+        // Made longer at the front: everything moves later.
+        assert_eq!(controls_from(&points, -100)[0].tick, Tick(100));
+    }
+
+    #[test]
+    fn a_note_cut_in_two_keeps_its_expressions_going() {
+        let mut note = MidiNote::new(Tick(0), Tick(1000), 60);
+        let at = |tick, value, ramp| NoteExpression {
+            tick: Tick(tick),
+            kind: ExpressionKind::Pressure,
+            value,
+            ramp,
+        };
+        note.expressions = vec![at(0, 0.0, true), at(800, 1.0, false)];
+        let later = note.expressions_from(400);
+        assert_eq!(later, [at(0, 0.5, true), at(400, 1.0, false)]);
+        assert_eq!(note.expressions_until(500), [at(0, 0.0, true)]);
     }
 }

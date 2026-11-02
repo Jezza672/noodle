@@ -87,6 +87,9 @@ fn rig() -> (H, ClipId) {
                 }
                 rig.session.settle_loop();
                 rig.opened.extend(out.open_midi);
+                if let Some(audition) = out.audition {
+                    rig.session.set_take_audition(audition);
+                }
                 for (track, kind, on) in out.arm {
                     rig.session.arm_kind(track, kind, on);
                 }
@@ -2336,4 +2339,279 @@ fn a_time_signature_change_shows_as_a_ruler_marker_that_can_be_removed() {
     assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
     h.run();
     assert!(!h.state().timeline.drawn_text.contains(&"3/4".to_string()));
+}
+
+// Linked clips: an edit to one is made to all.
+
+/// `rig()` with a second clip of the same length on the second track, linked
+/// to the first. Returns both.
+fn linked() -> (H, ClipId, ClipId) {
+    let (mut h, first) = rig();
+    let second = h.state().session.project().next_clip_id();
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::AddClip {
+        id: second,
+        clip: Clip::audio(NodeId(2), Tick(0), "a.wav", 96_000),
+    })]);
+    let link = session.project().link_command(&[first, second]);
+    session.edit(link.map(Edit::Apply));
+    h.run();
+    (h, first, second)
+}
+
+#[test]
+fn clicking_a_linked_clip_selects_the_whole_link() {
+    let (mut h, a, b) = linked();
+    let c = centre(&h, a);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    let selected = h.state().timeline.selected();
+    assert!(
+        selected.contains(&a) && selected.contains(&b),
+        "{selected:?}"
+    );
+}
+
+#[test]
+fn dragging_a_linked_clip_moves_both_and_one_undo_puts_them_back() {
+    let (mut h, a, b) = linked();
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        a,
+        Grab::Body,
+        Vec2::new(130.0, 0.0),
+    );
+    assert_eq!((start(&h, a), start(&h, b)), (Tick(1920), Tick(1920)));
+    // Both stay on their own tracks.
+    assert_eq!((clip(&h, a).node, clip(&h, b).node), (NodeId(1), NodeId(2)));
+    h.state_mut().session.undo();
+    assert_eq!((start(&h, a), start(&h, b)), (Tick(0), Tick(0)));
+}
+
+#[test]
+fn trimming_a_linked_clip_trims_both() {
+    let (mut h, a, b) = linked();
+    drag_by(&mut h, Modifiers::NONE, b, Grab::End, Vec2::new(-60.0, 0.0));
+    assert_eq!((length(&h, a), length(&h, b)), (72_000, 72_000));
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        a,
+        Grab::Start,
+        Vec2::new(60.0, 0.0),
+    );
+    for id in [a, b] {
+        let c = clip(&h, id);
+        let audio = c.as_audio().unwrap();
+        assert_eq!(
+            (c.start, audio.offset, audio.length),
+            (Tick(960), 24_000, 48_000)
+        );
+    }
+    h.state_mut().session.undo();
+    h.state_mut().session.undo();
+    assert_eq!((length(&h, a), length(&h, b)), (96_000, 96_000));
+}
+
+#[test]
+fn cutting_a_linked_clip_cuts_both_and_links_the_halves() {
+    let (mut h, a, b) = linked();
+    h.state_mut().playhead = Some(Tick(1_920));
+    let c = centre(&h, a);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.key_press(Key::S);
+    h.run();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), 4);
+    let rights: Vec<ClipId> = project
+        .clips()
+        .map(|(i, _)| i)
+        .filter(|i| ![a, b].contains(i))
+        .collect();
+    for id in [a, b] {
+        assert_eq!(length(&h, id), 48_000);
+    }
+    for &id in &rights {
+        assert_eq!(start(&h, id), Tick(1_920));
+    }
+    // The left halves are still a link, and the right halves are one.
+    assert_eq!(project.linked_with(a), vec![a, b]);
+    assert_eq!(project.linked_with(rights[0]), rights);
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), 2);
+    assert_eq!(project.linked_with(a), vec![a, b]);
+}
+
+#[test]
+fn deleting_a_linked_clip_deletes_both() {
+    let (mut h, a, b) = linked();
+    // Select just one, as a shift-click away from the other could.
+    let c = centre(&h, a);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.state_mut().timeline.select_only(a);
+    h.key_press(Key::Delete);
+    h.run();
+    assert_eq!(h.state().session.project().clips().count(), 0);
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(
+        project.linked_with(b),
+        vec![a, b],
+        "the link comes back too"
+    );
+}
+
+#[test]
+fn the_context_menu_links_and_unlinks_the_selection() {
+    let (mut h, a) = rig();
+    let b = h.state().session.project().next_clip_id();
+    h.state_mut().session.edit([Edit::Apply(Command::AddClip {
+        id: b,
+        clip: Clip::audio(NodeId(2), Tick(0), "a.wav", 96_000),
+    })]);
+    h.run();
+    let (at_a, at_b) = (centre(&h, a), centre(&h, b));
+    click(&mut h, at_a, Modifiers::NONE);
+    click(&mut h, at_b, Modifiers::SHIFT);
+    assert_eq!(h.state().timeline.selected().len(), 2);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at_b);
+    h.run();
+    h.get_by_label("Link").click();
+    h.run();
+    assert_eq!(h.state().session.project().linked_with(a), vec![a, b]);
+    // One undo step.
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project().linked_with(a), vec![a]);
+    h.state_mut().session.redo();
+
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at_b);
+    h.run();
+    h.get_by_label("Unlink").click();
+    h.run();
+    assert_eq!(h.state().session.project().linked_with(a), vec![a]);
+}
+
+/// The rig's clip as a folder of three takes comped from take 0, with its
+/// take lanes open.
+fn take_rig() -> (H, ClipId) {
+    let (mut h, id) = rig();
+    let mut folder = clip(&h, id);
+    if let noodle_core::ClipContent::Audio(audio) = &mut folder.content {
+        audio.takes = Some(noodle_core::TakeFolder::new(
+            (0..3)
+                .map(|k| noodle_core::Take { delta: k * 1_000 })
+                .collect(),
+            0,
+        ));
+    }
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetClip { id, clip: folder })]);
+    h.state_mut().timeline.takes.shown.insert(id);
+    h.run();
+    (h, id)
+}
+
+fn comp_of(h: &H, id: ClipId) -> Vec<(u64, usize)> {
+    clip(h, id)
+        .as_audio()
+        .unwrap()
+        .takes
+        .as_ref()
+        .unwrap()
+        .comp
+        .iter()
+        .map(|s| (s.at, s.take))
+        .collect()
+}
+
+#[test]
+fn an_open_take_folder_shows_a_lane_for_each_take() {
+    let (h, id) = take_rig();
+    for k in 0..3 {
+        assert!(
+            h.state().timeline.take_lane_rects.contains_key(&(id, k)),
+            "take {k}"
+        );
+    }
+    let (a, b) = (
+        h.state().timeline.take_lane_rects[&(id, 0)],
+        h.state().timeline.take_lane_rects[&(id, 1)],
+    );
+    assert!(b.top() > a.top());
+    assert!(h.state().timeline.drawn_text.iter().any(|t| t == "Take 3"));
+}
+
+#[test]
+fn dragging_across_a_take_swipes_it_into_the_comp_in_one_undo_step() {
+    let (mut h, id) = take_rig();
+    let lane = h.state().timeline.take_lane_rects[&(id, 1)];
+    // A beat is 60 points and 24000 frames: swipe beats 1 to 2.
+    let (from, to) = (lane.left() + 60.0, lane.left() + 120.0);
+    let y = lane.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(from, y),
+        Pos2::new(to, y),
+    );
+    assert_eq!(comp_of(&h, id), [(0, 0), (24_000, 1), (48_000, 0)]);
+    h.state_mut().session.undo();
+    assert_eq!(comp_of(&h, id), [(0, 0)]);
+}
+
+#[test]
+fn clicking_a_take_auditions_it_and_clicking_again_stops() {
+    let (mut h, id) = take_rig();
+    let lane = h.state().timeline.take_lane_rects[&(id, 2)];
+    click(&mut h, lane.center(), Modifiers::NONE);
+    assert_eq!(h.state().session.take_audition(), Some((id, 2)));
+    // The project is untouched.
+    assert_eq!(comp_of(&h, id), [(0, 0)]);
+    h.run();
+    let lane = h.state().timeline.take_lane_rects[&(id, 2)];
+    click(&mut h, lane.center(), Modifiers::NONE);
+    assert_eq!(h.state().session.take_audition(), None);
+}
+
+#[test]
+fn dragging_a_joins_handle_sets_its_crossfade_on_every_linked_folder() {
+    let (mut h, id) = take_rig();
+    let lane = h.state().timeline.take_lane_rects[&(id, 1)];
+    let y = lane.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        Pos2::new(lane.left() + 60.0, y),
+        Pos2::new(lane.left() + 120.0, y),
+    );
+    h.run();
+    let grip = h.state().timeline.join_rects[&(id, 1)];
+    drag_between(
+        &mut h,
+        Modifiers::NONE,
+        grip.center(),
+        grip.center() + Vec2::new(20.0, 0.0),
+    );
+    let join = clip(&h, id)
+        .as_audio()
+        .unwrap()
+        .takes
+        .as_ref()
+        .unwrap()
+        .comp[1]
+        .crossfade;
+    let join = join.expect("a set crossfade");
+    assert!(join.before.0 > 100 && join.before == join.after, "{join:?}");
+    h.state_mut().session.undo();
+    let join = clip(&h, id)
+        .as_audio()
+        .unwrap()
+        .takes
+        .as_ref()
+        .unwrap()
+        .comp[1]
+        .crossfade;
+    assert_eq!(join, None, "one undo step");
 }
