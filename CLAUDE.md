@@ -81,6 +81,10 @@ cargo run -p noodle-cli -- render examples/vibrato.ron out.wav
   `Layout` by hand.
 - **Output nodes are mixed at their step in the schedule**, not at the end of
   the block, because buffers are reused after their last reader.
+- **Story routes move with code.** A PR that changes how a usability story
+  is done updates its route (`crates/noodle-app/src/stories/routes/`) in the
+  same PR. Routes act only through the `testkit` helpers; CI uploads the
+  scorecard they produce. See `docs/architecture/usability.md`.
 - **Docs move with code.** If a change alters something a doc under `docs/`
   describes, update it in the same PR. Finished work leaves ROADMAP.md and goes
   into the matching file in `docs/features/`.

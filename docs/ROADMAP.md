@@ -45,7 +45,7 @@ deliberately deferred items.
 
 **What it is.** Thirty user stories for advanced DAW users (`docs/usability/stories.md`), each driven through the app by one or more scripted *routes* that use only real pointer and key events. Every route logs its actions; a scorer turns the log into a scorecard of effort, repetition, rework, the cost of late changes, findability, feedback and robustness. Routes are app tests, so CI keeps them current, and each PR shows how it moved the scorecard. The design is in `docs/architecture/usability.md`; the work is tracked in #306.
 
-**MVP:** action log, route framework, scorers for groups A to D, report in CI, six stories routed (S01, S07, S09, S12, S19, S20).
+**MVP:** scorers for groups B to D (repetition, rework, late changes), six stories routed (S01, S07, S09, S12, S19, S20). Built: the action log, the route framework and registry, the effort scorer (group A) and the report in CI (#308, #309, #310, #314).
 
 **Then:** remaining stories, findability (entry-point tagging, vocabulary match, naive-agent runs), feedback and robustness metrics, PR scorecard diff, grades, the human rubric.
 
