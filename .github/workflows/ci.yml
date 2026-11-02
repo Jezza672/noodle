@@ -52,6 +52,20 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # The story routes already ran in the Test step. This reruns just them
+      # to write the usability scorecard, which is uploaded for the PR.
+      - name: Usability scorecard
+        if: runner.os == 'Linux'
+        env:
+          NOODLE_SCORECARD_DIR: ${{ github.workspace }}/scorecard
+        run: cargo test -p noodle-app stories::
+      - name: Upload scorecard
+        if: runner.os == 'Linux' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usability-scorecard
+          path: scorecard/
+          if-no-files-found: warn
       - name: Real plugins' editors
         if: runner.os == 'Linux'
         env:

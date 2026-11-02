@@ -106,6 +106,13 @@ The app already has what this needs. `crates/noodle-app/src/testkit.rs` drives t
 5. **Track blocked stories in the same place.** A blocked or partial story is a route file with its status and the missing feature named, so the table always covers all 30. When a feature lands, the PR that adds it updates or adds the route. That makes it a "docs move with code" rule, which can go into CLAUDE.md.
 6. **Naive runs, periodically.** Once a month or per milestone, a fresh agent with no Noodle context gets the story text and drives the app through the same harness (screenshots plus the accessibility tree egui exposes), with an action budget. It records success, actions and the places it got lost. This is the only automated measure of findability, and its dead ends are a good source of issues.
 
+### What is built
+
+- **Action log** (`testkit.rs`). `testkit::record()` turns recording on for the thread; every helper then logs an `Action` (kind, modifiers, start and end point, the widget under each end from egui's accessibility tree, the view each end is in, frame time). The app marks its panels with `testkit::mark_view`, so views are `node editor`, `timeline`, `piano roll`, `clip editor`, `mixer`, `outputs`, `scope`, `properties`, `menu`, `status`, or `overlay` for a dialog, menu or popup. Off by default, so other tests are unchanged.
+- **Routes** (`noodle-app/src/stories/`, test-only). A `Route` has a story, a tag, a fixture, an optional size, steps and a done check; a `LateChange` starts from a route's end state. Steps get a `Handle` (input events only), the done check a `Probe` (read only). The registry (`registry.rs`) lists all 30 stories with a status and the missing piece; a test keeps it in step with `stories.md`. Routes live in `stories/routes/`, one file per story.
+- **Effort scorer** (`effort.rs`, group A): action counts, view and dialog switches, wait time, and KLM time. The rules that place the operators are in the file's header.
+- **Report** (`report.rs`): a JSON file per route and a Markdown table across the stories. With `NOODLE_SCORECARD_DIR` set the route test writes them; CI (Linux) does so and uploads the `usability-scorecard` artifact.
+
 ### Keeping it current
 
 - **New features:** the route file is the record. A feature that makes a story easier should come with a new or shorter route, and the scorecard diff shows the gain.

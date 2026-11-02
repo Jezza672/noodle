@@ -359,6 +359,8 @@ impl App {
     /// Draws the whole window. Separate from [`eframe::App`] so tests can
     /// drive it without a window.
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        #[cfg(test)]
+        crate::testkit::clear_views();
         self.session.maintain();
         // The monitor menu lists devices from the Outputs view's listing.
         self.outputs
@@ -370,6 +372,8 @@ impl App {
         let mut actions = self.shortcuts(ui.ctx());
 
         egui::Panel::top("menu").show(ui, |ui| {
+            #[cfg(test)]
+            crate::testkit::mark_view(ui, "menu");
             egui::MenuBar::new().ui(ui, |ui| {
                 self.menus(ui, &mut actions);
                 ui.separator();
@@ -381,12 +385,18 @@ impl App {
             });
         });
 
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| {
+            #[cfg(test)]
+            crate::testkit::mark_view(ui, "status");
+            self.status_bar(ui)
+        });
 
         if self.mixer_open {
             egui::Panel::bottom("mixer")
                 .resizable(false)
                 .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "mixer");
                     let edits = mixer::show(
                         ui,
                         self.session.project(),
@@ -401,6 +411,8 @@ impl App {
             egui::Panel::bottom("outputs")
                 .resizable(false)
                 .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "outputs");
                     let edits = self.outputs.show(ui, &self.session);
                     self.session.edit(edits);
                 });
@@ -409,7 +421,11 @@ impl App {
         if self.scope_open {
             egui::Panel::bottom("scope")
                 .resizable(false)
-                .show(ui, |ui| self.scope_pane(ui));
+                .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "scope");
+                    self.scope_pane(ui)
+                });
         }
 
         let active = self.editor.active;
@@ -417,6 +433,8 @@ impl App {
             .default_size(theme::PROPERTIES_WIDTH)
             .frame(egui::Frame::side_top_panel(ui.style()).fill(theme::PANEL))
             .show(ui, |ui| {
+                #[cfg(test)]
+                crate::testkit::mark_view(ui, "properties");
                 // A panel is remembered at the size of its contents, so
                 // short contents (nothing selected) would shrink it, and
                 // the next node would open it at its default width.
@@ -498,6 +516,8 @@ impl App {
             .default_size(theme::timeline::DEFAULT_HEIGHT)
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
+                #[cfg(test)]
+                crate::testkit::mark_view(ui, "timeline");
                 let playhead = Some(self.session.playhead());
                 let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
                 let automation = added_automation_node(&out.edits);
@@ -557,6 +577,8 @@ impl App {
                     .default_size(piano_roll::DEFAULT_HEIGHT)
                     .frame(egui::Frame::NONE.fill(theme::PANEL))
                     .show(ui, |ui| {
+                        #[cfg(test)]
+                        crate::testkit::mark_view(ui, "piano roll");
                         let playhead = Some(self.session.playhead());
                         let out =
                             piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
@@ -579,6 +601,8 @@ impl App {
                 .default_size(clip_editor::DEFAULT_HEIGHT)
                 .frame(egui::Frame::NONE.fill(theme::PANEL))
                 .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "clip editor");
                     let loaded = match subject {
                         clip_editor::subject::Subject::Clip(clip) => {
                             self.clip_source(ui.ctx(), clip)
@@ -610,6 +634,8 @@ impl App {
         let graph = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(theme::CANVAS))
             .show(ui, |ui| {
+                #[cfg(test)]
+                crate::testkit::mark_view(ui, "node editor");
                 let edits = editor::show(ui, &mut self.editor, &self.session);
                 self.session.edit(edits);
                 self.open_requested_view();
