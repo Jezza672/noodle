@@ -53,7 +53,9 @@ deliberately deferred items.
 
 **Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs (#319).
 
-**Then:** remaining stories, naive-agent runs, PR scorecard diff, grades, the human rubric.
+**Built since (#322):** the scorecard diff on PRs.
+
+**Then:** remaining stories, naive-agent runs, grades, the human rubric.
 
 
 ## Owed: needs a person on real hardware
