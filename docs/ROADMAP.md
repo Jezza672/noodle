@@ -42,21 +42,6 @@ deliberately deferred items.
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
 
-## MIDI controllers and expressions in clips
-
-Batches 1 and 2 (the data, playback, chase and release, and recording) are built: see [features/midi-controllers-in-clips.md](features/midi-controllers-in-clips.md). What is left is the editing UI.
-
-**What you get.** The piano roll shows a lane for each controller the clip uses, with "+" to add one, and a lane of expressions for the selected notes.
-
-**Scope.** In: piano roll lanes with draw, line, select and copy. Out: SysEx, converting between controller data and automation lanes, curves drawn on the notes themselves (later).
-
-**Batches.**
-
-3. **Controller lanes in the piano roll.**
-4. **Expression lane for the selected notes.**
-
-**Done when.** You record a piano part with sustain pedal and mod wheel; it plays back the same, including after a seek into the middle of a held pedal; and you edit the pedal in its lane.
-
 ## Takes, loop recording and comping
 
 **The problem.** Record makes one clip per armed track per take, and a seek or a loop wrap ends the take. There is no punch range, no loop recording that keeps every cycle, and no way to build one performance from the best phrases of several. This replaces the overdub and count-in parts of the deferred "Piano roll and recording" item.
