@@ -42,7 +42,6 @@ deliberately deferred items.
 
 **Known limits.** Live branches and anything downstream stay live. Feedback loops are uncached. Pause→play is uncached. The first pass is always computed. A plugin that cannot return to a fresh state is unbounded or uncacheable. Cache entries are per machine, because transcendentals differ across platforms.
 
-
 ## Takes, loop recording and comping
 
 **The problem.** Record makes one clip per armed track per take, and a seek or a loop wrap ends the take. There is no punch range, no loop recording that keeps every cycle, and no way to build one performance from the best phrases of several. This replaces the overdub and count-in parts of the deferred "Piano roll and recording" item.
