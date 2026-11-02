@@ -2969,6 +2969,18 @@ pub(crate) fn socket_on_screen(
     Some(state.view.on(state.canvas).to_screen(socket))
 }
 
+/// Where an Automation node's arm button is on screen.
+#[cfg(test)]
+pub(crate) fn arm_button_on_screen(
+    state: &EditorState,
+    session: &Session,
+    node: NodeId,
+) -> Option<Pos2> {
+    let scene = state.peek_scene(session.project(), session.registry());
+    let button = arm_button(session.project(), scene.node(node)?)?;
+    Some(state.view.on(state.canvas).to_screen(button.center()))
+}
+
 /// The canvas and the wheel: a turn the canvas has acted on must not reach a
 /// scroll area around it.
 ///

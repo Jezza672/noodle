@@ -2,6 +2,8 @@
 //! check is `framework_smoke`.
 
 mod framework_smoke;
+mod s01_comp;
+mod s20_automation;
 
 use std::path::Path;
 
@@ -16,7 +18,11 @@ use crate::testkit::virtual_audio;
 
 /// Every route, in story order.
 pub fn all() -> Vec<Route> {
-    vec![framework_smoke::route()]
+    vec![
+        framework_smoke::route(),
+        s01_comp::route(),
+        s20_automation::route(),
+    ]
 }
 
 /// An empty project that saves to a file in `dir`, playing on the virtual
@@ -25,6 +31,26 @@ pub fn empty_project(dir: &Path) -> App {
     let path = dir.join("project.ron");
     std::fs::write(&path, Project::new().to_ron()).expect("the project file is written");
     let mut session = Session::open(Nodes::all(), &path).expect("the project opens");
+    session.set_audio_config(virtual_audio());
+    App::new(session)
+}
+
+/// A new, saved session for fixtures that build a project by hand.
+pub fn virtual_session(dir: &Path) -> Session {
+    let mut session = Session::new(Nodes::all());
+    assert!(
+        session.save_as(&dir.join("project.ron")),
+        "the project saves"
+    );
+    session
+}
+
+/// The fixture's session saved and opened again on the virtual output, so
+/// that building it leaves nothing on the undo stack for a route to undo.
+pub fn finished(mut session: Session, dir: &Path) -> App {
+    session.save();
+    let mut session =
+        Session::open(Nodes::all(), &dir.join("project.ron")).expect("the project opens");
     session.set_audio_config(virtual_audio());
     App::new(session)
 }

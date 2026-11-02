@@ -45,26 +45,56 @@ const fn blocked(id: &'static str, title: &'static str) -> Story {
 }
 
 pub const STORIES: [Story; 30] = [
-    blocked("S01", "Comp a vocal from multiple takes"),
+    Story {
+        id: "S01",
+        title: "Comp a vocal from multiple takes",
+        status: Status::Partial,
+        missing: "Recording the takes (the route starts from a take folder), a ninth take and sliding the comp: #334.",
+    },
     blocked("S02", "Punch in on a live overdub"),
     blocked("S03", "Drive external hardware like an internal instrument"),
     blocked("S04", "Tighten a multitrack drum recording"),
     blocked("S05", "Conform audio to a new tempo and key"),
     blocked("S06", "Separate a song into stems and remix it"),
-    blocked("S07", "Restructure an arrangement by section"),
+    Story {
+        id: "S07",
+        title: "Restructure an arrangement by section",
+        status: Status::Blocked,
+        missing: "No named arrangement sections: #329.",
+    },
     blocked("S08", "Edit MIDI performance detail"),
-    blocked("S09", "Program a drum pattern with swing and choke"),
+    Story {
+        id: "S09",
+        title: "Program a drum pattern with swing and choke",
+        status: Status::Blocked,
+        missing: "No swing or hat choke, and no route yet for the parts that work: #330.",
+    },
     blocked("S10", "Program multi-articulation orchestral parts"),
     blocked("S11", "Turn an audio phrase into MIDI"),
-    blocked("S12", "Build a multisampled instrument from a folder"),
+    Story {
+        id: "S12",
+        title: "Build a multisampled instrument from a folder",
+        status: Status::Blocked,
+        missing: "Nothing maps a folder of note-named samples to an instrument: #331.",
+    },
     blocked("S13", "Design a modulated synth patch"),
     blocked("S14", "Share modulation sources across many parameters"),
     blocked("S15", "Make a tempo-synced rhythmic gate"),
     blocked("S16", "Make a vocoder or spectral effect"),
     blocked("S17", "Resample and mangle audio"),
     blocked("S18", "Use third-party plugins"),
-    blocked("S19", "Build a parallel processing mix bus"),
-    blocked("S20", "Automate a mix in real time"),
+    Story {
+        id: "S19",
+        title: "Build a parallel processing mix bus",
+        status: Status::Blocked,
+        missing: "No pre-fader sends, and no route yet for the drum bus and sidechain: #332.",
+    },
+    Story {
+        id: "S20",
+        title: "Automate a mix in real time",
+        status: Status::Partial,
+        missing: "Control surface cannot be driven, and no relative trim over a range: #333.",
+    },
     blocked("S21", "Recall alternate mix versions"),
     blocked("S22", "Produce a surround or immersive mix"),
     blocked("S23", "Master to loudness targets"),
@@ -100,7 +130,7 @@ mod tests {
     fn every_story_has_a_status_and_a_missing_piece() {
         for (i, story) in STORIES.iter().enumerate() {
             assert_eq!(story.id, format!("S{:02}", i + 1));
-            assert_eq!(story.status, Status::Blocked, "{}", story.id);
+
             if story.status != Status::Full {
                 assert!(!story.missing.is_empty(), "{}", story.id);
             }

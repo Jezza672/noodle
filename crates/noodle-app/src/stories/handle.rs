@@ -10,10 +10,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use egui::{Key, Modifiers, MouseWheelUnit, Pos2, Vec2};
+use egui::{Key, Modifiers, MouseWheelUnit, Pos2, Rect, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use noodle_core::{NodeId, Project};
+use noodle_core::{ClipId, NodeId, Project};
 
 use super::rework::Change;
 use crate::app::App;
@@ -75,6 +75,11 @@ impl<'h> Handle<'h> {
         self.watch(false);
     }
 
+    pub fn right_click(&mut self, at: Pos2) {
+        testkit::click_with(self.h, egui::PointerButton::Secondary, Modifiers::NONE, at);
+        self.watch(false);
+    }
+
     pub fn double_click(&mut self, at: Pos2) {
         testkit::double_click(self.h, at);
         self.watch(false);
@@ -82,6 +87,12 @@ impl<'h> Handle<'h> {
 
     pub fn drag(&mut self, modifiers: Modifiers, path: &[Pos2]) {
         testkit::drag(self.h, modifiers, path);
+        self.watch(false);
+    }
+
+    /// A drag while the transport runs (the UI cannot be waited on).
+    pub fn drag_playing(&mut self, path: &[Pos2]) {
+        testkit::drag_playing(self.h, path);
         self.watch(false);
     }
 
@@ -144,6 +155,20 @@ impl<'h> Handle<'h> {
     pub fn find(&mut self, label: &str) -> Pos2 {
         self.probe().find(label)
     }
+
+    pub fn arm_button(&mut self, node: NodeId) -> Pos2 {
+        self.probe().arm_button(node)
+    }
+
+    /// Where the arrangement drew the clip.
+    pub fn clip_rect(&mut self, id: ClipId) -> Rect {
+        self.probe().clip_rect(id)
+    }
+
+    /// Where the arrangement drew take `k` of a take folder.
+    pub fn take_lane(&mut self, id: ClipId, k: usize) -> Rect {
+        self.probe().take_lane(id, k)
+    }
 }
 
 /// Read-only access, for the done check and for finding things to act on.
@@ -175,6 +200,42 @@ impl Probe<'_> {
 
     pub fn find(&self, label: &str) -> Pos2 {
         self.h.get_by_label(label).rect().center()
+    }
+
+    pub fn clip_rect(&self, id: ClipId) -> Rect {
+        self.h.state().timeline().clip_rect(id).unwrap_or_else(|| {
+            panic!(
+                "clip {id:?} is not drawn; tracks {:?} scroll {}",
+                self.h.state().session().project().clips().count(),
+                self.h.state().timeline().scroll_y()
+            )
+        })
+    }
+
+    pub fn take_lane(&self, id: ClipId, k: usize) -> Rect {
+        self.try_take_lane(id, k)
+            .unwrap_or_else(|| panic!("take {k} of clip {id:?} is not drawn"))
+    }
+
+    /// The lane, if it is on screen.
+    pub fn try_take_lane(&self, id: ClipId, k: usize) -> Option<Rect> {
+        self.h.state().timeline().take_lane(id, k)
+    }
+
+    /// Where an Automation node's arm button is.
+    pub fn arm_button(&self, node: NodeId) -> Pos2 {
+        let app = self.h.state();
+        crate::editor::arm_button_on_screen(app.editor(), app.session(), node)
+            .unwrap_or_else(|| panic!("{node:?} has no arm button on screen"))
+    }
+
+    pub fn automation_mode(&self) -> crate::session::record_automation::AutomationMode {
+        self.h.state().session().automation_mode()
+    }
+
+    /// Lets scrolling and animations finish; no input.
+    pub fn settle(&mut self) {
+        self.h.run_steps(30);
     }
 
     /// Whether the transport is running.
