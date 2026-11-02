@@ -4,12 +4,12 @@
 use std::time::Duration;
 
 use egui::{Key, Modifiers, Pos2};
-use noodle_core::{Endpoint, NodeId};
+use noodle_core::Endpoint;
 use noodle_engine::OUTPUT_ID;
 
 use super::super::handle::{Handle, Probe, peak};
 use super::super::{LateChange, Route, Tag};
-use super::empty_project;
+use super::{add_node, empty_project};
 
 pub fn route() -> Route {
     Route {
@@ -24,21 +24,9 @@ pub fn route() -> Route {
             name: "stop the transport",
             steps: stop,
             done: stopped,
+            keep: &[],
         }],
     }
-}
-
-/// Shift+A at `at`, types `query`, Enter on the first result.
-fn add_node(h: &mut Handle, at: Pos2, query: &str) -> NodeId {
-    let before = h.probe().nodes();
-    h.press(at, Modifiers::SHIFT, Key::A);
-    h.type_text(at, query);
-    h.press(at, Modifiers::NONE, Key::Enter);
-    let after = h.probe().nodes();
-    *after
-        .iter()
-        .find(|id| !before.contains(id))
-        .unwrap_or_else(|| panic!("searching for {query:?} added no node"))
 }
 
 fn steps(h: &mut Handle, _size: usize) {

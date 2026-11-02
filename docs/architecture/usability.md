@@ -113,6 +113,10 @@ The app already has what this needs. `crates/noodle-app/src/testkit.rs` drives t
 - **Effort scorer** (`effort.rs`, group A): action counts, view and dialog switches, wait time, and KLM time. The rules that place the operators are in the file's header.
 - **Report** (`report.rs`): a JSON file per route and a Markdown table across the stories. With `NOODLE_SCORECARD_DIR` set the route test writes them; CI (Linux) does so and uploads the `usability-scorecard` artifact.
 
+- **Repetition scorer** (`repetition.rs`, group B). A route with a `size` runs again at twice that size; the extra actions and KLM seconds per extra item go in the scorecard. The repetition ratio and batch-path notes are not built yet.
+- **Rework scorer** (`rework.rs`, group C). Counts the actions in steps the author marks with `Handle::recreating`, flags a node kind added after one of that kind was removed (the `Handle` watches the graph after each action; undo and redo are not counted), and counts undo chords. After each route it undoes everything and redoes it, and checks both ends against the project as it was; a mismatch shows as "UNDO ROUND TRIP FAILS".
+- **Late-change runner** (`mod.rs`, group D). Each `LateChange` runs from the route's end state and reports its actions and KLM time as a ratio of the route's. It declares what it must leave alone as `Keep` entries (a named projection of the project as text); one that differs after the change is reported as lost. Premature-commitment and destructive-step tags are not built yet.
+
 ### Keeping it current
 
 - **New features:** the route file is the record. A feature that makes a story easier should come with a new or shorter route, and the scorecard diff shows the gain.
