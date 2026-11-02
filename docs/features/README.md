@@ -26,7 +26,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [playback-cache.md](playback-cache.md) | Playback cache, batch 1: reset equals fresh, memory tiers, cache-key gaps |
 | [autosave.md](autosave.md) | Autosave and crash recovery |
 | [midi-controllers-in-clips.md](midi-controllers-in-clips.md) | MIDI controllers and expressions in clips: data, playback, recording, piano roll lanes |
-| [track-export.md](track-export.md) | Track export, loudness and dither |
+| [track-export.md](track-export.md) | Track export, loudness and dither, render to clip |
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
 | [midi-learn.md](midi-learn.md) | Several MIDI inputs, Learn MIDI, MIDI Control encoder and pickup modes |
 | [midi-out.md](midi-out.md) | MIDI Out node, sender thread, output latency, clock and start/stop out |

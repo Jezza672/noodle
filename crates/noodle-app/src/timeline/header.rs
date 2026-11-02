@@ -205,6 +205,17 @@ pub fn show(
                 edits.push(Edit::Apply(delete_track(group)));
             }
         }
+        for (label, in_loop) in [("Render to clip", false), ("Render loop to clip", true)] {
+            if ui
+                .add_enabled(group_of_track.is_some(), egui::Button::new(label))
+                .clicked()
+            {
+                ui.close();
+                if let Some(group) = group_of_track {
+                    edits.push(Edit::RenderToClip { group, in_loop });
+                }
+            }
+        }
     });
     let painter = ui.painter_at(lane);
     if selected {

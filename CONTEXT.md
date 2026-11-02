@@ -100,7 +100,7 @@ Writing one audio file per chosen track or group, taken after its gain and mute 
 _Avoid_: Stems (that is AI separation), bounce
 
 **Render to clip**:
-Rendering a track, group or time range to a new audio clip on a new track, muting the original.
+Rendering a track or group, or a stretch of it, to a new audio clip on a new track in the project's renders folder, muting the original and keeping it. It runs on past the range's end until the effects fall silent, to at most 10 s.
 _Avoid_: Bounce, freeze (that keeps no clip)
 
 **Offline node**:

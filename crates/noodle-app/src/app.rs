@@ -1377,6 +1377,20 @@ impl App {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(100));
             }
+            if let Some((fraction, name)) = self.session.render_progress() {
+                ui.separator();
+                ui.label(format!("Rendering {name} to a clip"));
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(120.0)
+                        .show_percentage(),
+                );
+                if ui.small_button("Cancel").clicked() {
+                    self.session.cancel_render();
+                }
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
             if let Some(message) = self.session.message() {
                 ui.separator();
                 ui.label(message);

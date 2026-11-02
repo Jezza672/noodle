@@ -70,24 +70,6 @@ deliberately deferred items.
 
 **Done when.** You loop four bars, record five vocal passes in one go, swipe the best phrase from each into one comp that plays without clicks at the joins, undo a swipe, and export it identical to playback. A comp across linked drum mics stays aligned. An app test records on the virtual output and checks the takes and the comp's samples.
 
-## Render to clip
-
-Track export, loudness and dither are delivered: see [features/track-export.md](features/track-export.md).
-
-**The problem.** Freeze plays a group from the cache but never becomes a clip, so you can't render a synth or plugin chain to audio and then cut or warp it.
-
-**What you get.** Render to clip on a track, group or time range makes a new audio track with the rendered clip and mutes the original.
-
-**Settled decisions.**
-
-- Render to clip makes a new audio track holding the clip; the original is muted and kept.
-- Rendering a range continues past its end until the effects fall silent, capped at 10 s.
-- The term is "render to clip" (CONTEXT.md avoids "bounce", and "stem" is AI separation).
-
-**Scope.** In: Render to clip writing to a `<project> renders` folder, stored and keyed like any sample (ADR 0004), added as one `Command::Batch`; it can take the group's tap the way track export does (`render_taps`, `noodle-engine/src/render.rs`). Out: MP3, OMF, AAF and DAWproject interchange, a render queue.
-
-**Batch.** Track, group and time range, tails, offline and frozen nodes included, one undo step.
-
 **Done when.** You render a plugin synth track to a clip and warp it.
 
 ## Owed: needs a person on real hardware

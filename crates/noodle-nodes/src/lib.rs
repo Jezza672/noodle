@@ -43,6 +43,7 @@ mod pan;
 mod phaser;
 mod random_select;
 mod remap;
+mod render_clip;
 mod reroute;
 mod reverb;
 mod reverse;
@@ -133,6 +134,9 @@ pub use pan::{PAN_ID, Pan};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
 pub use random_select::{MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID, RandomSelect};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
+pub use render_clip::{
+    CLIP_SILENCE, ClipReport, ClipRequest, MAX_TAIL_SECONDS, render_clip, spawn_render_clip,
+};
 pub use reroute::{REROUTE_ID, Reroute};
 pub use reverb::{MAX_PREDELAY as REVERB_MAX_PREDELAY, REVERB_ID, Reverb};
 pub use reverse::Reverse;
