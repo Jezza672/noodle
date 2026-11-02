@@ -2337,3 +2337,154 @@ fn a_time_signature_change_shows_as_a_ruler_marker_that_can_be_removed() {
     h.run();
     assert!(!h.state().timeline.drawn_text.contains(&"3/4".to_string()));
 }
+
+// Linked clips: an edit to one is made to all.
+
+/// `rig()` with a second clip of the same length on the second track, linked
+/// to the first. Returns both.
+fn linked() -> (H, ClipId, ClipId) {
+    let (mut h, first) = rig();
+    let second = h.state().session.project().next_clip_id();
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::AddClip {
+        id: second,
+        clip: Clip::audio(NodeId(2), Tick(0), "a.wav", 96_000),
+    })]);
+    let link = session.project().link_command(&[first, second]);
+    session.edit(link.map(Edit::Apply));
+    h.run();
+    (h, first, second)
+}
+
+#[test]
+fn clicking_a_linked_clip_selects_the_whole_link() {
+    let (mut h, a, b) = linked();
+    let c = centre(&h, a);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    let selected = h.state().timeline.selected();
+    assert!(
+        selected.contains(&a) && selected.contains(&b),
+        "{selected:?}"
+    );
+}
+
+#[test]
+fn dragging_a_linked_clip_moves_both_and_one_undo_puts_them_back() {
+    let (mut h, a, b) = linked();
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        a,
+        Grab::Body,
+        Vec2::new(130.0, 0.0),
+    );
+    assert_eq!((start(&h, a), start(&h, b)), (Tick(1920), Tick(1920)));
+    // Both stay on their own tracks.
+    assert_eq!((clip(&h, a).node, clip(&h, b).node), (NodeId(1), NodeId(2)));
+    h.state_mut().session.undo();
+    assert_eq!((start(&h, a), start(&h, b)), (Tick(0), Tick(0)));
+}
+
+#[test]
+fn trimming_a_linked_clip_trims_both() {
+    let (mut h, a, b) = linked();
+    drag_by(&mut h, Modifiers::NONE, b, Grab::End, Vec2::new(-60.0, 0.0));
+    assert_eq!((length(&h, a), length(&h, b)), (72_000, 72_000));
+    drag_by(
+        &mut h,
+        Modifiers::NONE,
+        a,
+        Grab::Start,
+        Vec2::new(60.0, 0.0),
+    );
+    for id in [a, b] {
+        let c = clip(&h, id);
+        let audio = c.as_audio().unwrap();
+        assert_eq!(
+            (c.start, audio.offset, audio.length),
+            (Tick(960), 24_000, 48_000)
+        );
+    }
+    h.state_mut().session.undo();
+    h.state_mut().session.undo();
+    assert_eq!((length(&h, a), length(&h, b)), (96_000, 96_000));
+}
+
+#[test]
+fn cutting_a_linked_clip_cuts_both_and_links_the_halves() {
+    let (mut h, a, b) = linked();
+    h.state_mut().playhead = Some(Tick(1_920));
+    let c = centre(&h, a);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.key_press(Key::S);
+    h.run();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), 4);
+    let rights: Vec<ClipId> = project
+        .clips()
+        .map(|(i, _)| i)
+        .filter(|i| ![a, b].contains(i))
+        .collect();
+    for id in [a, b] {
+        assert_eq!(length(&h, id), 48_000);
+    }
+    for &id in &rights {
+        assert_eq!(start(&h, id), Tick(1_920));
+    }
+    // The left halves are still a link, and the right halves are one.
+    assert_eq!(project.linked_with(a), vec![a, b]);
+    assert_eq!(project.linked_with(rights[0]), rights);
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), 2);
+    assert_eq!(project.linked_with(a), vec![a, b]);
+}
+
+#[test]
+fn deleting_a_linked_clip_deletes_both() {
+    let (mut h, a, b) = linked();
+    // Select just one, as a shift-click away from the other could.
+    let c = centre(&h, a);
+    drag(&mut h, Modifiers::NONE, &[c]);
+    h.state_mut().timeline.select_only(a);
+    h.key_press(Key::Delete);
+    h.run();
+    assert_eq!(h.state().session.project().clips().count(), 0);
+    h.state_mut().session.undo();
+    let project = h.state().session.project();
+    assert_eq!(
+        project.linked_with(b),
+        vec![a, b],
+        "the link comes back too"
+    );
+}
+
+#[test]
+fn the_context_menu_links_and_unlinks_the_selection() {
+    let (mut h, a) = rig();
+    let b = h.state().session.project().next_clip_id();
+    h.state_mut().session.edit([Edit::Apply(Command::AddClip {
+        id: b,
+        clip: Clip::audio(NodeId(2), Tick(0), "a.wav", 96_000),
+    })]);
+    h.run();
+    let (at_a, at_b) = (centre(&h, a), centre(&h, b));
+    click(&mut h, at_a, Modifiers::NONE);
+    click(&mut h, at_b, Modifiers::SHIFT);
+    assert_eq!(h.state().timeline.selected().len(), 2);
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at_b);
+    h.run();
+    h.get_by_label("Link").click();
+    h.run();
+    assert_eq!(h.state().session.project().linked_with(a), vec![a, b]);
+    // One undo step.
+    h.state_mut().session.undo();
+    assert_eq!(h.state().session.project().linked_with(a), vec![a]);
+    h.state_mut().session.redo();
+
+    crate::testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, at_b);
+    h.run();
+    h.get_by_label("Unlink").click();
+    h.run();
+    assert_eq!(h.state().session.project().linked_with(a), vec![a]);
+}

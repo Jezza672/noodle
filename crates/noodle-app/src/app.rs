@@ -578,12 +578,14 @@ impl App {
                             crate::sample_view::loaded(ui.ctx(), &self.session, node)
                         }
                     };
+                    let linked = self.linked_candidates(ui.ctx(), subject);
                     let playhead = Some(self.session.playhead());
                     let out = clip_editor::show(
                         ui,
                         &mut self.clip_editor,
                         &self.session,
                         loaded.as_ref(),
+                        linked.as_ref().map(|(own, lanes)| (*own, lanes.as_slice())),
                         playhead,
                     );
                     self.session.edit(out.edits);
@@ -1731,6 +1733,20 @@ impl App {
         let name = self.session.project().clip(id)?.as_audio()?.source.clone();
         let directory = self.session.directory().map(std::path::Path::to_path_buf);
         self.timeline.source(ctx, directory.as_deref(), &name)
+    }
+
+    /// The transients of the clips linked to the open one (see
+    /// [`clip_editor::linked_lanes`]).
+    fn linked_candidates(
+        &mut self,
+        ctx: &egui::Context,
+        subject: clip_editor::subject::Subject,
+    ) -> Option<(egui::Color32, Vec<clip_editor::Lane>)> {
+        let clip_editor::subject::Subject::Clip(open) = subject else {
+            return None;
+        };
+        let project = self.session.project().clone();
+        clip_editor::linked_lanes(&project, open, |member| self.clip_source(ctx, member))
     }
 
     /// A clip or a track carried out of the timeline and let go of over the
