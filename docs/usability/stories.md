@@ -33,9 +33,9 @@ Under each story are its **late changes**: edits to an early decision, made afte
 - **S06** **Separate a song into stems and remix it.** As a remixer, I want to split a finished stereo track into vocals, drums, bass and other, then mute, re-effect and rearrange those parts, so that I can build a remix from a single file.
   - *Late change:* Rerun separation at a higher quality setting, keeping the arrangement edits.
   - *Late change:* Bring back the original full mix for the last chorus only.
-- **S07** **Restructure an arrangement by section.** As a songwriter, I want to mark the intro, verse, chorus and bridge as named arrangement sections, then duplicate, reorder or delete whole sections across all tracks, with automation, tempo and markers moving with them, so that I can try a new song structure in minutes.
+- **S07** **Restructure an arrangement by section.** As a songwriter, I want to mark the intro, verse, chorus and bridge with named markers, then copy and paste a selection across all tracks (for example all the clips of a verse, put after an existing chorus), with its automation and tempo coming along, so that I can try a new song structure in minutes.
   - *Late change:* Move the bridge before the second chorus after automation is drawn.
-  - *Late change:* Lengthen the chorus by four bars.
+  - *Late change:* Lengthen the chorus by four bars (insert time, then copy).
   - *Late change:* Give the bridge its own tempo.
 
 ## MIDI and composition

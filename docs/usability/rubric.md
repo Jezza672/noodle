@@ -24,7 +24,7 @@ First pass by the route author, from the routes as of #340. A person should chec
 | Story | Hidden dependencies | Hard mental operations | Progressive evaluation | Role expressiveness | Abstraction gradient | Consistency |
 |---|---|---|---|---|---|---|
 | S01 comp (`partial`) | Fair: the comp lives in the clip's menu, effects on the track do not show which take feeds them | Good: swiping is direct | Good: audition while swiping | Good: lanes show takes | Fair: flatten is the only way to use a comp as plain clips | Good: same gestures as clip editing |
-| S07 restructure (`blocked`) | Not rated: no sections yet (#329). To rate once built: do automation and tempo move with a section? | | | | | |
+| S07 restructure (`full`) | Not rated yet: markers and the range selection are new. To rate: do automation and tempo move with a copied section? | | | | | |
 | S09 drum pattern (`partial`) | Good: the Drum Rack shows its pads | Fair: pitch numbers stand for pads until named | Good: plays while editing | Good: pads are labelled | Fair: no swing or choke at the rack, only through nodes | Fair: piano roll and rack use different note names |
 | S12 multisample (`blocked`) | Not rated: no folder import (#331). By hand it would be a Note Split and one Sampler per file with ranges typed by hand: Poor on hard mental operations | | | | | |
 | S19 drum bus (`partial`) | Fair: sidechain wiring is on the Dynamics node but the source is a wire far away | Fair: the user places pre or post fader by choosing where to tap | Good: meters while playing | Fair: a parallel bus is an ordinary Mix node | Good: the bus is a group | Good |

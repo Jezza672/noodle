@@ -21,6 +21,8 @@ pub struct Project {
     tempo_map: TempoMap,
     transport_loop: TransportLoop,
     punch: PunchRange,
+    /// Named points on the timeline, in order of position.
+    markers: Vec<Marker>,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
     /// The links between clips (see [`ClipGroup`]).
@@ -52,6 +54,7 @@ impl Default for Project {
             tempo_map: TempoMap::default(),
             transport_loop: TransportLoop::default(),
             punch: PunchRange::default(),
+            markers: Vec::new(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
             clip_groups: BTreeMap::new(),
@@ -81,6 +84,7 @@ impl PartialEq for Project {
             && self.tempo_map == other.tempo_map
             && self.transport_loop == other.transport_loop
             && self.punch == other.punch
+            && self.markers == other.markers
             && self.clips == other.clips
             && self.live_groups() == other.live_groups()
             && self.used_warps() == other.used_warps()
@@ -103,6 +107,8 @@ struct ProjectFile {
     transport_loop: TransportLoop,
     #[serde(default, skip_serializing_if = "is_default_punch")]
     punch: PunchRange,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    markers: Vec<Marker>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clips: BTreeMap<ClipId, Clip>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -157,6 +163,15 @@ impl TransportLoop {
     pub fn active(self) -> Option<(Tick, Tick)> {
         self.on.then_some((self.start, self.end))
     }
+}
+
+/// A named point on the timeline: where the intro, a verse or the chorus
+/// starts. The span from one marker to the next is a section, which the
+/// timeline can select, copy, cut and paste.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marker {
+    pub name: String,
+    pub at: Tick,
 }
 
 /// The punch range: where recording starts and stops while it is `on`,
@@ -312,6 +327,17 @@ impl Project {
     /// The punch range (see [`PunchRange`]).
     pub fn punch(&self) -> PunchRange {
         self.punch
+    }
+
+    /// The markers, in order of position.
+    pub fn markers(&self) -> &[Marker] {
+        &self.markers
+    }
+
+    /// Replaces the markers, putting them in order; returns the old ones.
+    pub(crate) fn replace_markers(&mut self, mut markers: Vec<Marker>) -> Vec<Marker> {
+        markers.sort_by_key(|marker| marker.at);
+        std::mem::replace(&mut self.markers, markers)
     }
 
     pub(crate) fn replace_punch(&mut self, range: PunchRange) -> PunchRange {
@@ -948,6 +974,7 @@ impl Project {
             tempo_map: self.tempo_map.clone(),
             transport_loop: self.transport_loop,
             punch: self.punch,
+            markers: self.markers.clone(),
             clips: self.clips.clone(),
             clip_groups: self
                 .live_groups()
@@ -1006,6 +1033,7 @@ impl Project {
             tempo_map: file.tempo_map,
             transport_loop: file.transport_loop,
             punch: file.punch,
+            markers: file.markers,
             clips,
             next_clip_id,
             clip_groups: file.clip_groups,
@@ -1299,6 +1327,29 @@ mod tests {
         assert_eq!(Project::from_ron(&text).unwrap().transport_loop(), region);
         history.undo(&mut project).unwrap();
         assert_eq!(project.transport_loop(), TransportLoop::default());
+    }
+
+    #[test]
+    fn markers_are_saved_in_order_and_undo() {
+        let (mut project, mut history, _, _, _) = with_timeline();
+        assert!(!project.to_ron().contains("markers"));
+        let marker = |name: &str, at: i64| Marker {
+            name: name.into(),
+            at: Tick(at),
+        };
+        let markers = vec![marker("Chorus", 7680), marker("Verse", 960)];
+        apply(&mut project, &mut history, Command::SetMarkers(markers));
+        assert_eq!(
+            project.markers(),
+            [marker("Verse", 960), marker("Chorus", 7680)]
+        );
+        let text = project.to_ron();
+        assert_eq!(
+            Project::from_ron(&text).unwrap().markers(),
+            project.markers()
+        );
+        history.undo(&mut project).unwrap();
+        assert!(project.markers().is_empty());
     }
 
     #[test]

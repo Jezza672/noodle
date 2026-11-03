@@ -817,6 +817,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
                 &mut edits,
             ),
             ClipAction::Duplicate => duplicate(state, &f, &mut inputs, &mut edits),
+            ClipAction::InsertTime | ClipAction::DeleteTime => {}
         }
     }
 
