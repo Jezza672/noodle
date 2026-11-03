@@ -2,8 +2,10 @@
 //!
 //! Partial. A control surface cannot be driven from a test, so the pass is
 //! ridden with the mouse on the Automation node's own slider. Trimming a
-//! range by a relative amount does not exist, so that late change is not
-//! routed (see the registry).
+//! range by a relative amount (Shift-drag a span on the lane, then drag a
+//! picked point or use the lane's Trim menu) is covered by
+//! `timeline/automation_tests.rs`; the route stays in the graph view, so it
+//! is not a late change here.
 
 use std::path::Path;
 

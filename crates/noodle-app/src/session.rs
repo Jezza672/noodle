@@ -16,6 +16,7 @@ pub mod automate;
 mod export;
 pub mod learn_midi;
 mod library;
+pub mod map_to;
 pub mod record_automation;
 mod render_clip;
 mod stems;
@@ -112,6 +113,12 @@ pub enum Edit {
     /// The Automate shortcut on a parameter: an Automation node, its lane
     /// and the wire into the parameter, as one undo step (see [`automate`]).
     Automate(noodle_core::Endpoint),
+    /// The Map to gesture: `from` wired to the parameter `to` through a new
+    /// Remap, as one undo step (see [`map_to`]).
+    MapTo {
+        from: noodle_core::Endpoint,
+        to: noodle_core::Endpoint,
+    },
     /// Learn MIDI on a parameter: the next control moved on any open MIDI
     /// port becomes a MIDI Control node wired into it (see [`learn_midi`]).
     /// Choosing it again on the same parameter stops listening.
@@ -1638,6 +1645,17 @@ impl Session {
                         Ok(command) => command,
                         Err(error) => {
                             self.message = Some(format!("Couldn't automate: {error}"));
+                            continue;
+                        }
+                    }
+                }
+                Edit::MapTo { from, to } => {
+                    self.history.end_group();
+                    let remap = self.new_node_id();
+                    match map_to::command(&self.project, &self.registry, &from, &to, remap) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't map: {error}"));
                             continue;
                         }
                     }

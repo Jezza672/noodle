@@ -93,7 +93,7 @@ pub const STORIES: [Story; 30] = [
         id: "S20",
         title: "Automate a mix in real time",
         status: Status::Partial,
-        missing: "Control surface cannot be driven, and no relative trim over a range: #333.",
+        missing: "Control surface cannot be driven from a test.",
     },
     blocked("S21", "Recall alternate mix versions"),
     blocked("S22", "Produce a surround or immersive mix"),
