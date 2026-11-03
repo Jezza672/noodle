@@ -203,6 +203,10 @@ impl Node for Quantiser {
             _ => 0.0,
         };
         let origin = ctx.transport.signature_start;
+        if !toggle || unit <= 0.0 {
+            // Switches only exist in toggle mode; leaving it forgets them.
+            self.running = [None; 128];
+        }
         // The first boundary at or after `tick`.
         let boundary = |tick: f64| {
             if unit <= 0.0 {
@@ -447,5 +451,18 @@ mod tests {
         };
         let heard = run(&mut h, 1, &[bend]);
         assert_eq!(heard, [(77, "other", 0)]);
+    }
+
+    #[test]
+    fn leaving_toggle_mode_forgets_the_switches() {
+        let mut h = harness(3.0, true);
+        run(&mut h, 4, &[on(10_000, 1, 36)]);
+        h.set(Ps::MODE, 0.0);
+        run(&mut h, 1, &[]);
+        h.set(Ps::MODE, 1.0);
+        // The key is a fresh switch: this press starts a note, not stops one.
+        let heard = run(&mut h, 8, &[on(10_000, 2, 36)]);
+        assert_eq!(heard.iter().filter(|e| e.1 == "on").count(), 1, "{heard:?}");
+        assert!(heard.iter().all(|e| e.1 != "off"), "{heard:?}");
     }
 }
