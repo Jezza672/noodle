@@ -301,6 +301,11 @@ impl SelectorNode {
                         } else {
                             lane.waited += 1;
                         }
+                    } else {
+                        // The choice came back to the input already in force:
+                        // an earlier uncrossed request must not count towards
+                        // the next one's wait.
+                        lane.waited = 0;
                     }
                     let used = lane.active;
                     if !io.inputs[used].is_silent(voice, channel) {
@@ -386,16 +391,18 @@ impl SelectorNode {
                 now = self.edges[edge].1;
                 edge += 1;
                 if cut {
-                    for &(_, note) in &self.held {
-                        let _ = out.insert(Event {
+                    // A cut that can't be output keeps its note held, so a
+                    // later cut can still end it rather than leaving it on.
+                    self.held.retain(|&(_, note)| {
+                        out.insert(Event {
                             time: start as u32,
                             kind: EventKind::NoteOff {
                                 note,
                                 velocity: 0.0,
                             },
-                        });
-                    }
-                    self.held.clear();
+                        })
+                        .is_err()
+                    });
                 }
             }
             let end = self.edges.get(edge).map_or(ctx.frames, |&(frame, _)| frame);
@@ -406,28 +413,34 @@ impl SelectorNode {
                     }
                     self.cursors[input] += 1;
                     let current = input == now;
-                    let pass = match event.kind {
+                    match event.kind {
                         EventKind::NoteOn { note, .. } => {
-                            // A note-on that can't be remembered is dropped, so
-                            // it can't be left without its note-off.
-                            let room = self.held.len() < HELD;
-                            if current && room {
+                            // A note-on that can't be output or remembered is
+                            // dropped, so it can't be left without its off.
+                            if current && self.held.len() < HELD && out.insert(event).is_ok() {
                                 self.held.push((input, note));
                             }
-                            current && room
                         }
                         EventKind::NoteOff { note, .. } => {
                             let at = self.held.iter().position(|&h| h == (input, note));
-                            if let Some(at) = at {
+                            // Keep the note held if its off can't be output,
+                            // so a later off can still end it.
+                            if let Some(at) = at
+                                && out.insert(event).is_ok()
+                            {
                                 self.held.swap_remove(at);
                             }
-                            at.is_some()
                         }
-                        EventKind::Expression { note, .. } => self.held.contains(&(input, note)),
-                        EventKind::Midi(_) | EventKind::Channel { .. } => current,
-                    };
-                    if pass {
-                        let _ = out.insert(event);
+                        EventKind::Expression { note, .. } => {
+                            if self.held.contains(&(input, note)) {
+                                let _ = out.insert(event);
+                            }
+                        }
+                        EventKind::Midi(_) | EventKind::Channel { .. } => {
+                            if current {
+                                let _ = out.insert(event);
+                            }
+                        }
                     }
                 }
             }
@@ -598,6 +611,40 @@ mod tests {
             assert!(seen < wait + 4 * FRAMES, "never switched");
         }
         assert!(seen >= wait, "switched before giving up");
+    }
+
+    #[test]
+    fn cancelling_a_zero_crossing_switch_resets_the_wait() {
+        let mut h = signal(2);
+        h.input(0, FRAMES).fill(1.0);
+        h.input(1, FRAMES).fill(2.0);
+        h.set(2, 0.0);
+        h.set(3, 0.0);
+        h.run(FRAMES).unwrap();
+        h.set(3, 1.0);
+
+        // Request input 2 on DC: it waits, but then the choice comes back.
+        h.set(2, 1.0);
+        for _ in 0..8 {
+            h.run(FRAMES).unwrap();
+        }
+        h.set(2, 0.0);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.output(OUT).lane(0, 0), &[1.0; FRAMES]);
+
+        // A fresh request must get the whole 20 ms, not the cancelled wait.
+        h.set(2, 1.0);
+        let wait = (48_000.0 * MAX_WAIT_MS / 1000.0) as usize;
+        let mut seen = 0;
+        loop {
+            h.run(FRAMES).unwrap();
+            seen += FRAMES;
+            if h.output(OUT).lane(0, 0)[FRAMES - 1] == 2.0 {
+                break;
+            }
+            assert!(seen < wait + 4 * FRAMES, "never switched");
+        }
+        assert!(seen >= wait, "inherited a cancelled wait");
     }
 
     #[test]
@@ -834,6 +881,65 @@ mod tests {
         h.send_events(1, &[off(10, 2)]);
         h.run(FRAMES).unwrap();
         assert_eq!(h.events(0), [off(5, 2), on(8, 1)]);
+    }
+
+    #[test]
+    fn a_note_on_that_cannot_be_output_is_not_held() {
+        let mut h = notes(2);
+        h.set(1, 0.0);
+        // Fill the output, then a note-on that cannot fit is not remembered,
+        // so a later note-off for it does not leak through.
+        let mut events: Vec<Event> = (0..1024)
+            .map(|i| Event {
+                time: (i % 16) as u32,
+                kind: EventKind::Midi([0xB0, 1, 64]),
+            })
+            .collect();
+        events.push(on(20, 9));
+        h.send_events(0, &events);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0).len(), 1024);
+
+        h.send_events(0, &[off(5, 9)]);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0), [], "the dropped note-on was not held");
+    }
+
+    #[test]
+    fn a_cut_that_cannot_be_output_keeps_its_note_held() {
+        let mut h = notes(2);
+        h.set(1, 1.0);
+        h.input(0, FRAMES).fill(0.0);
+        h.send_events(0, &[on(1, 9)]);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0), [on(1, 9)]);
+
+        // Fill the output before a cut at frame 30: its note-off cannot fit.
+        let mut which = h.input(0, FRAMES);
+        which.fill(0.0);
+        which.lane_mut(0, 0)[30..].fill(1.0);
+        let events: Vec<Event> = (0..1024)
+            .map(|i| Event {
+                time: (i % 30) as u32,
+                kind: EventKind::Midi([0xB0, 1, 64]),
+            })
+            .collect();
+        h.send_events(0, &events);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0).len(), 1024);
+        assert!(
+            !h.events(0)
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::NoteOff { note, .. } if note == NoteId(9))),
+            "the cut could not fit"
+        );
+
+        // Back on input 1 the cut is tried again with room in the buffer.
+        let mut which = h.input(0, FRAMES);
+        which.fill(0.0);
+        h.send_events(0, &[]);
+        h.run(FRAMES).unwrap();
+        assert_eq!(h.events(0), [off(0, 9)]);
     }
 
     #[test]

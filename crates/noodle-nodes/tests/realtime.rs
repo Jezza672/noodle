@@ -2625,19 +2625,26 @@ fn selector_note_sample_and_spectral_kinds_never_allocate() {
     use noodle_io::Audio;
     use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
 
-    // Key -> Selector (notes) -> MonoNote -> saw and VCA -> output.
+    // Two keys -> Selector (notes), with a clock moving `which` while notes
+    // are held; its output plays through MonoNote, a saw and a VCA.
     let mut notes = Session::new();
     let nselect = notes.add(
         Node::new(noodle_nodes::SELECTOR_ID).with_config(Config::new().with("kind", Value::Int(1))),
     );
     let button = notes.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let button2 = notes.add(Node::new("noodle.input.button"));
     let key = notes.add(Node::new("noodle.event.key"));
+    let key2 = notes.add(Node::new("noodle.event.key").with_param("note", 55.0));
+    let nclock = notes.add(Node::new("noodle.generator.clock").with_param("rate", 2.0));
     let mono = notes.add(Node::new("noodle.event.mono"));
     let saw = notes.add(Node::new("noodle.osc.saw"));
     let vca = notes.add(Node::new("noodle.util.vca"));
     let nout = notes.add(Node::new(OUTPUT_ID));
     notes.wire(button, "out", key, "gate");
+    notes.wire(button2, "out", key2, "gate");
     notes.wire(key, "out", nselect, "in1");
+    notes.wire(key2, "out", nselect, "in2");
+    notes.wire(nclock, "out", nselect, "which");
     notes.wire(nselect, "out", mono, "in");
     notes.wire(mono, "pitch", saw, "frequency");
     notes.wire(mono, "gate", vca, "level");
@@ -2710,13 +2717,34 @@ fn selector_note_sample_and_spectral_kinds_never_allocate() {
 
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
     let mut heard = false;
+    let mut notes_heard = false;
     for round in 0..12 {
         let switch = (round % 2) as f32;
         notes.controller.set_param(nselect, "switch", switch);
+        // Overlapping gates keep notes held across the clock's switches, so
+        // both Finish held and Cut held see notes to release.
+        notes.controller.set_param(
+            button,
+            "state",
+            if round % 4 == 0 || round % 4 == 1 {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        notes.controller.set_param(
+            button2,
+            "state",
+            if round % 4 == 1 || round % 4 == 2 {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        notes.controller.set_param(key, "note", 48.0 + round as f32);
         notes
             .controller
-            .set_param(button, "state", if round % 4 == 3 { 0.0 } else { 1.0 });
-        notes.controller.set_param(key, "note", 48.0 + round as f32);
+            .set_param(key2, "note", 60.0 + round as f32);
         samples.controller.set_param(sselect, "switch", switch);
         notes.controller.maintain();
         samples.controller.maintain();
@@ -2724,7 +2752,9 @@ fn selector_note_sample_and_spectral_kinds_never_allocate() {
         let violations = realtime(|| {
             for _ in 0..4 {
                 notes.processor.process(&mut out);
-                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+                let sound = out.iter().any(|&x| x.abs() > 1e-3);
+                heard |= sound;
+                notes_heard |= sound;
                 samples.processor.process(&mut out);
                 heard |= out.iter().any(|&x| x.abs() > 1e-3);
                 spectra.processor.process(&mut out);
@@ -2735,4 +2765,5 @@ fn selector_note_sample_and_spectral_kinds_never_allocate() {
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
     assert!(heard, "the patch never sounded");
+    assert!(notes_heard, "the notes path never sounded");
 }
