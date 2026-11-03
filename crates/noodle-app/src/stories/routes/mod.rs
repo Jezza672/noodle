@@ -4,6 +4,7 @@
 mod framework_smoke;
 mod s01_comp;
 mod s09_drum_pattern;
+mod s12_multisampler;
 mod s19_drum_bus;
 mod s20_automation;
 
@@ -24,6 +25,7 @@ pub fn all() -> Vec<Route> {
         framework_smoke::route(),
         s01_comp::route(),
         s09_drum_pattern::route(),
+        s12_multisampler::route(),
         s19_drum_bus::route(),
         s20_automation::route(),
     ]
@@ -65,9 +67,76 @@ pub fn add_node(h: &mut Handle, at: Pos2, query: &str) -> NodeId {
     h.press(at, Modifiers::SHIFT, Key::A);
     h.type_text(at, query);
     h.press(at, Modifiers::NONE, Key::Enter);
+    added(h, &before, query)
+}
+
+/// [`add_node`] for when the app keeps repainting (audio playing, or live
+/// values on the canvas), so it cannot wait for the UI to settle.
+pub fn add_node_playing(h: &mut Handle, at: Pos2, query: &str) -> NodeId {
+    let before = h.probe().nodes();
+    h.press_playing(at, Modifiers::SHIFT, Key::A);
+    h.type_text_playing(at, query);
+    h.press_playing(at, Modifiers::NONE, Key::Enter);
+    added(h, &before, query)
+}
+
+fn added(h: &mut Handle, before: &[NodeId], query: &str) -> NodeId {
     let after = h.probe().nodes();
     *after
         .iter()
         .find(|id| !before.contains(id))
         .unwrap_or_else(|| panic!("searching for {query:?} added no node"))
+}
+
+/// Pans the canvas, as a user scrolls, until every point is on it (they
+/// must fit at once). Returns how far the view moved, so the caller can look
+/// again for what it is aiming at.
+pub fn reveal(h: &mut Handle, points: &[Pos2]) -> egui::Vec2 {
+    let canvas = h.probe().canvas().shrink(30.0);
+    let shift = |low: f32, high: f32, min: f32, max: f32| {
+        if high > max {
+            max - high
+        } else if low < min {
+            min - low
+        } else {
+            0.0
+        }
+    };
+    let fold = |f: fn(&Pos2) -> f32| {
+        let lo = points.iter().map(f).fold(f32::INFINITY, f32::min);
+        let hi = points.iter().map(f).fold(f32::NEG_INFINITY, f32::max);
+        (lo, hi)
+    };
+    let (left, right) = fold(|p| p.x);
+    let (top, bottom) = fold(|p| p.y);
+    let pan = egui::Vec2::new(
+        shift(left, right, canvas.left(), canvas.right()),
+        shift(top, bottom, canvas.top(), canvas.bottom()),
+    );
+    if pan != egui::Vec2::ZERO {
+        h.wheel(canvas.center(), egui::MouseWheelUnit::Point, pan);
+    }
+    pan
+}
+
+/// Brings the points `at` gives into view on the canvas together: zooms out
+/// (the mouse wheel) while they are too far apart to fit, then pans. Returns
+/// where they are now.
+pub fn in_view<const N: usize>(h: &mut Handle, at: impl Fn(&mut Handle) -> [Pos2; N]) -> [Pos2; N] {
+    for _ in 0..12 {
+        let points = at(h);
+        let canvas = h.probe().canvas().shrink(30.0);
+        let span = egui::Rect::from_points(&points);
+        if span.width() <= canvas.width() && span.height() <= canvas.height() {
+            reveal(h, &points);
+            return at(h);
+        }
+        h.wheel(
+            canvas.center(),
+            egui::MouseWheelUnit::Line,
+            egui::Vec2::new(0.0, -1.0),
+        );
+        h.probe().settle();
+    }
+    panic!("the points never fit on the canvas: {:?}", at(h));
 }
