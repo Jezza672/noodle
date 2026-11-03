@@ -139,6 +139,13 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Splits the clip a clip's stems came from again, at the chosen quality,
+    /// and points the stem clips at the new files (see
+    /// [`Session::resplit_stems`]). One undo step, when the job is done.
+    ResplitStems(noodle_core::ClipId),
+    /// Chooses how hard the next split works. Session state: not an undo
+    /// step, not saved.
+    SetStemsQuality(noodle_stems::Quality),
     /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
     /// the loop's span if `in_loop`, else the whole timeline. Not an edit
     /// itself: the track arrives as one undo step when the render is done.
@@ -1632,6 +1639,14 @@ impl Session {
                 }
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
+                    continue;
+                }
+                Edit::ResplitStems(clip) => {
+                    self.resplit_stems(clip);
+                    continue;
+                }
+                Edit::SetStemsQuality(quality) => {
+                    self.set_stems_quality(quality);
                     continue;
                 }
                 Edit::RenderToClip { group, in_loop } => {
@@ -4279,7 +4294,60 @@ mod tests {
             }
             None => edits.push(wire(osc, out)),
         }
+        // The oscillator never falls silent: tests that count samples want
+        // no tail unless they ask for one.
+        edits.push(Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::Fixed { seconds: 0.0 },
+            },
+        )));
         session.edit(edits);
+    }
+
+    #[test]
+    fn the_export_tail_follows_a_range_and_is_one_length_for_every_file() {
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, None);
+        let choice = || {
+            ExportChoice::mixdown(
+                ExportFormat::WavFloat,
+                noodle_engine::ChannelLayout::Stereo,
+                Some((0.0, 0.5)),
+            )
+        };
+        let frames = |session: &mut Session, name: &str| {
+            let path = dir.path().join(name);
+            session.start_export(path.clone(), choice()).unwrap();
+            until(session, "the export finishes", |s| {
+                s.export_progress().is_none()
+            });
+            noodle_io::decode_file(&path).unwrap().samples.len() / 2
+        };
+        // Fixed: the range and the seconds.
+        session.edit([Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::Fixed { seconds: 1.0 },
+            },
+        ))]);
+        assert_eq!(frames(&mut session, "fixed.wav"), 72_000);
+        // To silence: a steady sine never falls silent, so it runs to the cap
+        // and fades out there.
+        session.edit([Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::ToSilence { cap: 2.0 },
+            },
+        ))]);
+        assert_eq!(frames(&mut session, "silence.wav"), 120_000);
+        let audio = noodle_io::decode_file(&dir.path().join("silence.wav")).unwrap();
+        assert!(
+            audio.samples[audio.samples.len() - 2..]
+                .iter()
+                .all(|s| s.abs() < 1e-3)
+        );
     }
 
     #[test]

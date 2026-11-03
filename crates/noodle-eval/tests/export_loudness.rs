@@ -49,6 +49,7 @@ fn the_exports_loudness_agrees_with_the_evaluators_on_the_example_songs() {
             format: ExportFormat::WavFloat,
             normalize: None,
             freezer: None,
+            silent_tail: None,
         };
         let report = export(&request, &Progress::new()).unwrap_or_else(|e| panic!("{name}: {e}"));
         let reported = report.mixdown.unwrap();
