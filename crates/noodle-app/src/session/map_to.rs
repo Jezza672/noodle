@@ -94,6 +94,7 @@ mod tests {
         session.edit([Edit::MapTo {
             from: Endpoint::new(knob, "out"),
             to: Endpoint::new(filter, "cutoff"),
+            prepare: Vec::new(),
         }]);
         let graph = session.project().graph();
         assert_eq!(graph.nodes().count(), before + 1);
@@ -119,6 +120,7 @@ mod tests {
         session.edit([Edit::MapTo {
             from: Endpoint::new(knob, "out"),
             to,
+            prepare: Vec::new(),
         }]);
         assert!(session.message().is_some_and(|m| m.contains("already")));
     }

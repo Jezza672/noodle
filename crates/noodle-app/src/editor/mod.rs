@@ -1841,8 +1841,11 @@ fn finish(
                 for (endpoint, side) in [(&anchor, side), (&to, side.other())] {
                     commands.extend(make_real(f, endpoint, side, inputs));
                 }
-                edits.extend(commands.into_iter().map(Edit::Apply));
-                edits.push(Edit::MapTo { from: anchor, to });
+                edits.push(Edit::MapTo {
+                    from: anchor,
+                    to,
+                    prepare: commands,
+                });
                 return;
             }
             let command = match (target, detached) {

@@ -579,6 +579,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 } else if let Some(i) = press.and_then(near) {
                     state.selected = Some((id, i));
                     if !state.marked.contains(&(id, i)) {
+                        state.range = None;
                         state.marked.clear();
                     }
                     state.marked.insert((id, i));
@@ -677,6 +678,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 match near(pos) {
                     Some(i) if ui.input(|i| i.modifiers.shift) => {
                         // Shift-click picks points together, or lets one go.
+                        state.range = None;
                         state.marked.retain(|&(l, _)| l == id);
                         if !state.marked.remove(&(id, i)) {
                             state.marked.insert((id, i));
@@ -685,10 +687,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                     }
                     Some(i) => {
                         state.selected = Some((id, i));
+                        state.range = None;
                         state.marked.clear();
                         state.marked.insert((id, i));
                     }
                     None => {
+                        state.range = None;
                         state.marked.clear();
                         let point = AutomationPoint {
                             tick: snap(pos.x),

@@ -118,6 +118,9 @@ pub enum Edit {
     MapTo {
         from: noodle_core::Endpoint,
         to: noodle_core::Endpoint,
+        /// Commands that go first, in the same undo step (a spare port made
+        /// real).
+        prepare: Vec<Command>,
     },
     /// Learn MIDI on a parameter: the next control moved on any open MIDI
     /// port becomes a MIDI Control node wired into it (see [`learn_midi`]).
@@ -1649,11 +1652,16 @@ impl Session {
                         }
                     }
                 }
-                Edit::MapTo { from, to } => {
+                Edit::MapTo { from, to, prepare } => {
                     self.history.end_group();
                     let remap = self.new_node_id();
                     match map_to::command(&self.project, &self.registry, &from, &to, remap) {
-                        Ok(command) => command,
+                        Ok(command) if prepare.is_empty() => command,
+                        Ok(command) => {
+                            let mut all = prepare;
+                            all.push(command);
+                            Command::Batch(all)
+                        }
                         Err(error) => {
                             self.message = Some(format!("Couldn't map: {error}"));
                             continue;
