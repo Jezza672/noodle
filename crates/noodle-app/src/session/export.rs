@@ -163,7 +163,7 @@ impl Session {
         // The tail is the same for every file, in a range export too.
         let (end, silent_tail) = match self.project.export_settings().tail {
             ExportTail::Fixed { seconds } => (end + seconds.max(0.0), None),
-            ExportTail::ToSilence { cap } => (end, Some(cap.max(0.0))),
+            ExportTail::ToSilence { cap } => (end, Some(cap.clamp(0.0, 60.0))),
         };
         if self.timeline_end(rate) == 0 && choice.range.is_none() {
             return Err("There is nothing to export yet".into());

@@ -3,8 +3,10 @@
 //! Partial. The export dialog can write each group output as its own file,
 //! named after it, at the project's rate. Choosing the folder is a native
 //! dialog that a route cannot drive, so the route ticks the group, unticks
-//! the mixdown and stops before "Export…". The stems all share one length:
-//! there is no tail length setting (#361).
+//! the mixdown and stops before "Export…". The stems all share one length, set
+//! by the dialog's Tail row (to silence up to a cap, or fixed), saved in the
+//! project; the route finds the row but leaves its dropdown alone, which a
+//! route cannot pick an entry from.
 
 use std::path::Path;
 
@@ -55,6 +57,10 @@ fn steps(h: &mut Handle, _size: usize) {
     let group = h.find("Drum Rack");
     h.click(group, Modifiers::NONE);
     h.probe().settle();
+    h.step("find the tail setting");
+    // The Tail row is one length for every file. Its dropdown cannot be
+    // reached by label, so the route only checks that the row is there.
+    h.find("Tail");
 }
 
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
