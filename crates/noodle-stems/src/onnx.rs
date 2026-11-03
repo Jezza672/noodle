@@ -16,18 +16,19 @@ use std::path::Path;
 use ort::session::Session;
 use ort::value::Tensor;
 
-use crate::{MODEL_RATE, ModelId, SeparateError, Separator, Stem, Stereo};
+use crate::{MODEL_RATE, ModelId, Quality, SeparateError, Separator, Stem, Stereo};
 
 /// Frames the model takes at once: 7.8 s at 44.1 kHz.
 const SEGMENT: usize = 343_980;
-/// How much neighbouring segments overlap, as a fraction of a segment.
-const OVERLAP: f32 = 0.25;
+/// How far apart the shifted copies of a segment are, in frames (0.25 s).
+const SHIFT_STEP: usize = MODEL_RATE as usize / 4;
 /// Where each of the model's outputs goes in [`Stem::ALL`] order.
 const OUTPUT_ORDER: [Stem; 4] = [Stem::Drums, Stem::Bass, Stem::Other, Stem::Vocals];
 
 pub struct OnnxSeparator {
     session: Session,
     model: ModelId,
+    quality: Quality,
     // Keeps the runtime loaded for as long as the session is.
     _environment: ort::environment::Environment,
 }
@@ -149,6 +150,7 @@ impl OnnxSeparator {
         Ok(Self {
             session,
             model,
+            quality: Quality::default(),
             _environment: environment,
         })
     }
@@ -187,19 +189,68 @@ impl Separator for OnnxSeparator {
         MODEL_RATE
     }
 
+    fn set_quality(&mut self, quality: Quality) {
+        self.quality = quality;
+    }
+
     fn separate(
         &mut self,
         mix: &Stereo,
         progress: &mut dyn FnMut(f32) -> bool,
     ) -> Result<[Stereo; 4], SeparateError> {
-        blend(mix, progress, |input| self.run_segment(input))
+        let quality = self.quality;
+        blend(mix, quality, progress, |input| self.run_segment(input))
     }
+}
+
+/// One segment through `model`, averaged over `shifts` copies delayed by
+/// multiples of [`SHIFT_STEP`] (zeros fill the front, and the output is
+/// brought back). The last frames of a delayed copy are pushed past the end,
+/// so they average over the copies that still hold them.
+fn shifted(
+    input: &[f32],
+    shifts: usize,
+    model: &mut impl FnMut(Vec<f32>) -> Result<Vec<f32>, SeparateError>,
+) -> Result<Vec<f32>, SeparateError> {
+    if shifts <= 1 {
+        return model(input.to_vec());
+    }
+    let mut sum = vec![0.0f32; 8 * SEGMENT];
+    let mut count = vec![0.0f32; SEGMENT];
+    for k in 0..shifts {
+        let pad = k * SHIFT_STEP;
+        let mut delayed = vec![0.0f32; 2 * SEGMENT];
+        for channel in 0..2 {
+            delayed[channel * SEGMENT + pad..(channel + 1) * SEGMENT]
+                .copy_from_slice(&input[channel * SEGMENT..(channel + 1) * SEGMENT - pad]);
+        }
+        let output = model(delayed)?;
+        for lane in 0..8 {
+            let from = &output[lane * SEGMENT + pad..(lane + 1) * SEGMENT];
+            for (to, x) in sum[lane * SEGMENT..].iter_mut().zip(from) {
+                *to += x;
+            }
+        }
+        for c in &mut count[..SEGMENT - pad] {
+            *c += 1.0;
+        }
+    }
+    for lane in 0..8 {
+        for (x, c) in sum[lane * SEGMENT..(lane + 1) * SEGMENT]
+            .iter_mut()
+            .zip(&count)
+        {
+            *x /= c.max(1.0);
+        }
+    }
+    Ok(sum)
 }
 
 /// Runs `model` over `mix` a segment at a time and blends the overlapping
 /// results. `model` takes `[2][SEGMENT]` samples and gives `[4][2][SEGMENT]`.
 fn blend(
     mix: &Stereo,
+    quality: Quality,
     progress: &mut dyn FnMut(f32) -> bool,
     mut model: impl FnMut(Vec<f32>) -> Result<Vec<f32>, SeparateError>,
 ) -> Result<[Stereo; 4], SeparateError> {
@@ -217,7 +268,7 @@ fn blend(
 
     let mut sum = Stem::ALL.map(|_| Stereo::silent(frames));
     let mut total_weight = vec![0.0f32; frames];
-    let stride = ((SEGMENT as f32 * (1.0 - OVERLAP)) as usize).max(1);
+    let stride = ((SEGMENT as f32 * (1.0 - quality.overlap())) as usize).max(1);
     // Segments every stride, the last one ending where the audio does, so the
     // model sees real audio through to the end instead of padding.
     let mut starts = Vec::new();
@@ -240,7 +291,7 @@ fn blend(
             input[i] = (mix.left[start + i] - mean) / std;
             input[SEGMENT + i] = (mix.right[start + i] - mean) / std;
         }
-        let output = model(input)?;
+        let output = shifted(&input, quality.shifts(), &mut model)?;
         for (slot, stem) in OUTPUT_ORDER.iter().enumerate() {
             let target = &mut sum[Stem::ALL.iter().position(|s| s == stem).expect("a stem")];
             for channel in 0..2 {
@@ -352,7 +403,7 @@ mod tests {
             .map(|(l, r)| 0.5 * (l + r))
             .sum::<f32>()
             / frames as f32;
-        let stems = blend(&mix, &mut |_| true, scaling).unwrap();
+        let stems = blend(&mix, Quality::Fast, &mut |_| true, scaling).unwrap();
         // Slot k holds (k + 1) times the mix about its mean, and slots 2 and 3
         // are other and vocals, which come out in the order vocals, other.
         for (stem, scale) in [(0, 1.0), (1, 2.0), (2, 4.0), (3, 3.0)] {
@@ -373,11 +424,11 @@ mod tests {
         let mix = Stereo::silent(1000);
         let failing = |_: Vec<f32>| Err(SeparateError::Failed("boom".into()));
         assert_eq!(
-            blend(&mix, &mut |_| true, failing).unwrap_err(),
+            blend(&mix, Quality::Fast, &mut |_| true, failing).unwrap_err(),
             SeparateError::Failed("boom".into())
         );
         assert_eq!(
-            blend(&mix, &mut |_| false, scaling).unwrap_err(),
+            blend(&mix, Quality::Fast, &mut |_| false, scaling).unwrap_err(),
             SeparateError::Cancelled
         );
     }
@@ -388,5 +439,64 @@ mod tests {
         assert_eq!(weight(SEGMENT - 1), 1.0);
         assert!(weight(SEGMENT / 2) >= weight(SEGMENT / 2 - 1));
         assert!(weight(SEGMENT / 2) > weight(10));
+    }
+
+    /// A mix of `frames` of a tone, for the quality tests.
+    fn tone(frames: usize) -> Stereo {
+        Stereo {
+            left: (0..frames).map(|i| (i as f32 * 0.01).sin() * 0.3).collect(),
+            right: (0..frames)
+                .map(|i| (i as f32 * 0.013).cos() * 0.2)
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn more_overlap_and_shifts_run_the_model_more_and_give_the_same_audio_from_a_pointwise_model() {
+        let mix = tone(SEGMENT * 2 + 5_000);
+        let mut results = Vec::new();
+        for quality in Quality::ALL {
+            let mut calls = 0;
+            let stems = blend(&mix, quality, &mut |_| true, |input| {
+                calls += 1;
+                scaling(input)
+            })
+            .unwrap();
+            results.push((calls, stems));
+        }
+        let [fast, better, best] = [&results[0], &results[1], &results[2]];
+        assert!(better.0 > fast.0, "{} against {}", better.0, fast.0);
+        // Best runs each of Better's segments on three shifted copies.
+        assert_eq!(best.0, better.0 * 3);
+        // A model that treats each frame alone cannot tell the difference.
+        for other in [better, best] {
+            for (a, b) in fast.1.iter().zip(&other.1) {
+                for i in (0..a.len()).step_by(499) {
+                    assert!((a.left[i] - b.left[i]).abs() < 1e-3, "frame {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shifting_averages_over_the_copies_that_still_hold_the_frame() {
+        // A model that marks which shifted copy it is by its first sample's
+        // delay: it returns its input in every lane, so the average of the
+        // shifted-back outputs is the input everywhere.
+        let input: Vec<f32> = (0..2 * SEGMENT).map(|i| (i % 977) as f32).collect();
+        let out = shifted(&input, 3, &mut |delayed: Vec<f32>| {
+            let mut out = Vec::with_capacity(8 * SEGMENT);
+            for _ in 0..4 {
+                out.extend_from_slice(&delayed);
+            }
+            Ok(out)
+        })
+        .unwrap();
+        for lane in 0..8 {
+            let want = &input[(lane % 2) * SEGMENT..][..SEGMENT];
+            for i in (0..SEGMENT).step_by(1013) {
+                assert_eq!(out[lane * SEGMENT + i], want[i], "lane {lane} frame {i}");
+            }
+        }
     }
 }

@@ -85,7 +85,8 @@ pub use cached::{CACHED_ID, CachedPlayer};
 pub use chorus::{CHORUS_ID, Chorus};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
-    StretchSource, Stretcher, TRACK_INPUT_ID, TrackInput, WarpMap, active_at,
+    StretchSource, Stretcher, TRACK_INPUT_CHANNELS, TRACK_INPUT_CHANNELS_KEY, TRACK_INPUT_ID,
+    TrackInput, WarpMap, active_at, parse_input_channels,
 };
 pub use clock::{CLOCK_ID, Clock, DIVISION_TICKS, DIVISIONS as CLOCK_DIVISIONS};
 pub use comparator::{COMPARATOR_ID, Comparator};

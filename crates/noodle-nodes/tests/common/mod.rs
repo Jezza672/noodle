@@ -37,6 +37,9 @@ pub struct Rig {
     blocking: bool,
     out: SignalBuffer,
     mute_in: SignalBuffer,
+    /// The track's monitor setting, if a test sets it (else the node's default).
+    monitor: Option<u8>,
+    monitor_in: SignalBuffer,
     midi: Vec<noodle_engine::Event>,
 }
 
@@ -114,6 +117,8 @@ impl Rig {
             blocking: false,
             out: SignalBuffer::new(Shape::STEREO, BLOCK),
             mute_in: SignalBuffer::new(Shape::MONO, BLOCK),
+            monitor: None,
+            monitor_in: SignalBuffer::new(Shape::MONO, BLOCK),
             midi: Vec::with_capacity(16),
         }
     }
@@ -211,6 +216,16 @@ impl Rig {
             .fill(f32::from(u8::from(muted)));
     }
 
+    /// Sets the track's monitor parameter (0 Off, 1 Auto, 2 In) from the next
+    /// block.
+    pub fn set_monitor(&mut self, mode: u8) {
+        self.monitor = Some(mode);
+        self.monitor_in
+            .as_out(BLOCK)
+            .lane_mut(0, 0)
+            .fill(f32::from(mode));
+    }
+
     /// Waits for the hub to hand the node the schedule from the last update.
     /// The hub is a background thread, so a loaded CI machine (macOS runners
     /// in particular) can take much longer than a quiet one.
@@ -254,11 +269,15 @@ impl Rig {
         };
         let mut outputs = [self.out.as_out(frames)];
         let mut events = [EventsOut::new(&mut self.midi)];
-        let muted = [self.mute_in.as_in(frames)];
+        let muted = [self.mute_in.as_in(frames), self.monitor_in.as_in(frames)];
         self.node.process(
             &ctx,
             Io {
-                inputs: if self.muted { &muted } else { &[] },
+                inputs: if self.muted || self.monitor.is_some() {
+                    &muted
+                } else {
+                    &[]
+                },
                 outputs: &mut outputs,
                 event_inputs: &[],
                 event_outputs: &mut events,

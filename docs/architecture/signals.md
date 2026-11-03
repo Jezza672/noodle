@@ -108,7 +108,10 @@ reference to a sample instead of signal:
     `Spectral Freeze` (holds each bin's level and keeps advancing its phase at
     the frequency it was caught at), `Spectral Blur` (smooths levels over time,
     keeping the live phases) and `Cross` (the levels of a `modulator` spectrum
-    on a `carrier`, blended with `mix`; the modulator's latest frame is used
+    on a `carrier`, blended with `mix`; `bands` (2 to 256, below 2 is off)
+    smooths both spectra into that many log-spaced bands and imposes the
+    modulator's band levels on the carrier's own fine structure, the channel
+    vocoder's character at any frame size; the modulator's latest frame is used
     for each carrier frame, so the two analysers need not have started
     together).
   - **Caching:** a node's cache key covers its spectral inputs like its event
