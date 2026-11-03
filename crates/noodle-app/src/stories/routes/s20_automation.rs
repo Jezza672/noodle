@@ -116,6 +116,7 @@ fn ride(h: &mut Handle, moves: [u8; 3]) {
     h.step("play");
     h.press_playing(Pos2::new(640.0, 300.0), Modifiers::NONE, Key::Space);
     h.step("turn the knob");
+    h.unseen("the recorded points are on the lane in the timeline, not on the node");
     for value in moves {
         // The pass needs time to pass between moves.
         h.probe().hear(std::time::Duration::from_millis(400));
