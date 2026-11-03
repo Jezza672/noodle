@@ -62,6 +62,12 @@ pub struct State {
     /// Where each lane row was drawn last frame.
     #[cfg(test)]
     rows: std::collections::BTreeMap<LaneId, Rect>,
+    /// Each lane's whole row (not clipped to the view) and its key, and
+    /// where ticks 0 and 960 were drawn, for tests to aim at a value.
+    #[cfg(test)]
+    aim: std::collections::BTreeMap<LaneId, (Rect, String)>,
+    #[cfg(test)]
+    axis: (f32, f32),
 }
 
 struct PointDrag {
@@ -187,6 +193,16 @@ impl State {
     #[cfg(test)]
     pub fn row(&self, lane: LaneId) -> Option<Rect> {
         self.rows.get(&lane).copied()
+    }
+
+    /// Where a click puts a point at `tick` (before snapping) with `value`
+    /// on `lane`, as of the last frame.
+    #[cfg(test)]
+    pub fn aim(&self, lane: LaneId, tick: i64, value: f32) -> Option<Pos2> {
+        let (row, key) = self.aim.get(&lane)?;
+        let (zero, beat) = self.axis;
+        let x = zero + (beat - zero) * tick as f32 / 960.0;
+        Some(Pos2::new(x, y_of(*row, key, value)))
     }
 
     #[cfg(test)]
@@ -514,6 +530,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
         state.points.clear();
         state.rows.clear();
         state.texts.clear();
+        state.aim.clear();
+        state.axis = (view.axis.x(Tick(0)), view.axis.x(Tick(960)));
     }
     {
         for (id, lane_top) in view.rows.placed() {
@@ -539,6 +557,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
             #[cfg(test)]
             {
                 state.rows.insert(id, visible);
+                state.aim.insert(id, (row, key.to_owned()));
                 for (i, &p) in screen.iter().enumerate() {
                     state.points.insert((id, i), p);
                 }

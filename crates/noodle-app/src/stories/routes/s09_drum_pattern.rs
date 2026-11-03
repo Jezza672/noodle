@@ -1,7 +1,11 @@
 //! S09: program a drum pattern.
 //!
-//! Partial. The Drum Rack and the piano roll cover the pattern; swing and a
-//! closed hat choking the open hat do not exist (#330). Loading the samples
+//! Partial. The Drum Rack and the piano roll cover the pattern. Swing does
+//! not exist (#330). A closed hat choking the open hat has no setting either,
+//! so the route uses the workaround: a Script node between the track and the
+//! rack passes the notes on and ends the open hat when a closed hat starts,
+//! with the open hat's Sampler set to Gate so a note-off stops it. Writing
+//! that script is scored as code (see `effort.rs`). Loading the samples
 //! into the rack's slots is not routed either: a sample reaches a slot by
 //! dragging an audio clip across from the timeline onto a Sampler inside the
 //! group, which no route reaches yet, so the fixture starts with the kit
@@ -12,11 +16,11 @@ use std::path::Path;
 use egui::{Key, Modifiers, Pos2};
 use noodle_core::{ClipId, Command, Endpoint, Node, NodeId, Position, Project, spare};
 use noodle_io::write_wav;
-use noodle_nodes::{SAMPLER_ID, TRACK_INPUT_ID};
+use noodle_nodes::{SAMPLER_ID, SCRIPT_ID, SCRIPT_KEY, TRACK_INPUT_ID};
 
 use super::super::handle::{Handle, Probe, peak};
 use super::super::{LateChange, Route, Tag};
-use super::{finished, virtual_session};
+use super::{add_node, finished, reveal, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
@@ -151,7 +155,90 @@ fn bar(h: &mut Handle, start: i64) {
     }
 }
 
+/// The choke: every note passes, and a closed hat ends the open hat first.
+const CHOKE: &str = "events in notes; events out played; \
+    if notes_on { if notes_key == 42 { note_off(played, 46) }; \
+    note_on(played, notes_key, notes_velocity) }; \
+    if notes_off { note_off(played, notes_key) }";
+
+fn node_of(p: &Project, type_id: &str) -> NodeId {
+    p.graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == type_id)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no {type_id} node"))
+}
+
+/// The Drum Rack group: the top-level group.
+fn rack_of(p: &Project) -> NodeId {
+    p.graph()
+        .nodes()
+        .find(|(_, n)| n.parent.is_none() && n.type_id == noodle_core::group::GROUP)
+        .map(|(id, _)| id)
+        .expect("the Drum Rack")
+}
+
+/// The rack's Sampler for the open hat: its fourth slot.
+fn open_hat_sampler(p: &Project) -> NodeId {
+    let rack = rack_of(p);
+    p.graph()
+        .nodes()
+        .filter(|(_, n)| n.type_id == SAMPLER_ID && n.parent == Some(rack))
+        .map(|(id, _)| id)
+        .nth(3)
+        .expect("the open hat's Sampler")
+}
+
+fn wire(h: &mut Handle, from: (NodeId, &str), to: (NodeId, &str)) {
+    let a = h.socket(from.0, true, from.1);
+    let b = h.socket(to.0, false, to.1);
+    h.drag(Modifiers::NONE, &[a, b]);
+}
+
+/// A point on a node's title bar, just above the row of its input `key`.
+/// Pans it into view first if it is off the canvas.
+fn title_of(h: &mut Handle, node: NodeId, key: &str) -> Pos2 {
+    let at = |h: &mut Handle| {
+        let row = h.probe().port_rect(node, false, key);
+        Pos2::new(row.center().x, row.top() - 8.0)
+    };
+    let first = at(h);
+    reveal(h, &[first]);
+    at(h)
+}
+
+fn choke(h: &mut Handle) {
+    let (track, rack, open) = {
+        let probe = h.probe();
+        let p = probe.project();
+        (node_of(p, TRACK_INPUT_ID), rack_of(p), open_hat_sampler(p))
+    };
+    h.step("add a Script node");
+    let script = add_node(h, Pos2::new(600.0, 320.0), "script");
+    h.step("write the choke");
+    let text = h.probe().text_box();
+    h.click(text, Modifiers::NONE);
+    h.press(text, Modifiers::COMMAND, Key::A);
+    h.type_code(text, CHOKE);
+    // Clicking away commits the script.
+    let away = h.probe().canvas().right_top() + egui::Vec2::new(-20.0, 20.0);
+    h.click(away, Modifiers::NONE);
+    h.step("put it between the track and the rack");
+    wire(h, (track, "midi"), (script, "notes"));
+    wire(h, (script, "played"), (rack, "notes"));
+    h.step("let the open hat stop when it is cut");
+    let title = title_of(h, rack, "notes");
+    h.click(title, Modifiers::NONE);
+    h.press(title, Modifiers::NONE, Key::Tab);
+    let title = title_of(h, open, "in");
+    h.click(title, Modifiers::NONE);
+    let gate = h.find("Gate");
+    h.click(gate, Modifiers::NONE);
+    h.press(away, Modifiers::NONE, Key::Tab);
+}
+
 fn steps(h: &mut Handle, _size: usize) {
+    choke(h);
     h.step("make a clip");
     h.probe().settle();
     let lane = Pos2::new(190.0, 100.0);
@@ -187,7 +274,49 @@ fn steps(h: &mut Handle, _size: usize) {
 /// The loudest sample heard while the pattern played.
 static LEVEL: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
 
+fn choked(p: &Project) -> Result<(), String> {
+    let rack = rack_of(p);
+    let source = p
+        .graph()
+        .source(&Endpoint::new(rack, "notes"))
+        .ok_or("nothing plays the rack")?;
+    let script = p
+        .graph()
+        .node(source.node)
+        .filter(|n| n.type_id == SCRIPT_ID)
+        .ok_or("the rack is not fed through a Script node")?;
+    let text = match script.config.get(SCRIPT_KEY) {
+        Some(noodle_core::Value::Text(text)) => text.clone(),
+        _ => String::new(),
+    };
+    if let Err(error) = noodle_nodes::check_script(&text) {
+        return Err(format!("the script does not compile: {error}"));
+    }
+    if !text.contains("note_off(played, 46)") {
+        return Err(format!("the script does not choke the open hat: {text:?}"));
+    }
+    let fed = p
+        .graph()
+        .source(&Endpoint::new(source.node, "notes"))
+        .and_then(|s| p.graph().node(s.node))
+        .is_some_and(|n| n.type_id == TRACK_INPUT_ID);
+    if !fed {
+        return Err("the track does not play the script".into());
+    }
+    let mode = p
+        .graph()
+        .node(open_hat_sampler(p))
+        .and_then(|n| n.params.get("mode"))
+        .copied()
+        .unwrap_or(0.0);
+    if mode < 0.5 {
+        return Err("the open hat's Sampler is not in Gate mode".into());
+    }
+    Ok(())
+}
+
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    choked(p.project())?;
     let heard = *LEVEL.lock().unwrap();
     if heard < 0.05 {
         return Err(format!("the pattern is silent (peak {heard})"));

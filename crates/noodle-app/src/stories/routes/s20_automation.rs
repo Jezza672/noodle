@@ -1,21 +1,27 @@
 //! S20: automate a mix in real time.
 //!
-//! Partial. A control surface cannot be driven from a test, so the pass is
-//! ridden with the mouse on the Automation node's own slider. Trimming a
-//! range by a relative amount (Shift-drag a span on the lane, then drag a
-//! picked point or use the lane's Trim menu) is covered by
-//! `timeline/automation_tests.rs`; the route stays in the graph view, so it
-//! is not a late change here.
+//! The gain is automated, a knob on a control surface is learned onto the
+//! Automation node (its `record` input), and the pass is ridden on the knob
+//! in Touch mode. The surface is the session's MIDI bus, fed by
+//! [`Handle::control`].
+//!
+//! The lane itself can now be trimmed over a range (Shift-drag a span, then
+//! the Trim menu, #333), but an Automation node's lane is in its 0 to 1 value,
+//! not dB, so "-2 dB" is not one typed amount there. The route still adds a
+//! trim stage: a
+//! second Gain after the fader, automated by a lane that is 0 outside the
+//! chorus and 1 inside it, with the Automation node's range set to 0 to
+//! -2 dB. The performed pass is left alone.
 
 use std::path::Path;
 
 use egui::{Key, Modifiers, Pos2};
 use noodle_core::{Command, Endpoint, Node, NodeId, Project, spare};
-use noodle_nodes::{AUTOMATION_NODE_ID, GAIN_ID};
+use noodle_nodes::{AUTOMATION_NODE_ID, AUTOMATION_RECORD, GAIN_ID, MIDI_CONTROL_ID};
 
 use super::super::handle::{Handle, Probe};
-use super::super::{LateChange, Route, Tag};
-use super::{finished, virtual_session};
+use super::super::{Keep, LateChange, Route, Tag};
+use super::{add_node_playing, finished, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
@@ -46,17 +52,28 @@ pub fn route() -> Route {
     Route {
         story: "S20",
         tag: Tag::Default,
-        name: "ride a fader (Touch, the default mode)",
+        name: "ride a knob on a control surface (Touch, the default mode)",
         fixture: sine_gain_output,
         size: None,
         steps,
         done,
-        late: &[LateChange {
-            name: "ride the fader again",
-            steps: ride_again,
-            done: rode_again,
-            keep: &[],
-        }],
+        late: &[
+            LateChange {
+                name: "ride the fader again",
+                steps: ride_again,
+                done: rode_again,
+                keep: &[],
+            },
+            LateChange {
+                name: "trim the whole chorus by -2 dB",
+                steps: trim_chorus,
+                done: chorus_trimmed,
+                keep: &[Keep {
+                    name: "the performed pass",
+                    of: lane_text,
+                }],
+            },
+        ],
     }
 }
 
@@ -67,6 +84,18 @@ fn node_of(p: &Project, type_id: &str) -> NodeId {
         .map(|(id, _)| id)
         .unwrap_or_else(|| panic!("no {type_id} node"))
 }
+
+/// The nodes of a type, in ID order.
+fn all_of(p: &Project, type_id: &str) -> Vec<NodeId> {
+    p.graph()
+        .nodes()
+        .filter(|(_, n)| n.type_id == type_id)
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The knob the pass is ridden on.
+const KNOB: u8 = 21;
 
 /// The lane as text, taken after the first pass for the late change to
 /// compare with.
@@ -85,17 +114,16 @@ fn lane_points(p: &Project) -> usize {
         .map_or(0, |(_, lane)| lane.points.len())
 }
 
-fn ride(h: &mut Handle, moves: [f32; 3]) {
+fn ride(h: &mut Handle, moves: [u8; 3]) {
     h.step("play");
     h.press_playing(Pos2::new(640.0, 300.0), Modifiers::NONE, Key::Space);
-    h.step("move the fader");
+    h.step("turn the knob");
     h.unseen("the recorded points are on the lane in the timeline, not on the node");
-    let value = h.find("Value");
-    for dx in moves {
+    for value in moves {
         // The pass needs time to pass between moves.
         h.probe().hear(std::time::Duration::from_millis(400));
         h.waited(0.4);
-        h.drag_playing(&[value, value + egui::Vec2::new(dx, 0.0)]);
+        h.control(KNOB, value);
     }
     h.probe().hear(std::time::Duration::from_millis(400));
     h.step("stop");
@@ -108,17 +136,42 @@ fn steps(h: &mut Handle, _size: usize) {
     h.right_click(gain);
     let automate = h.find("Automate");
     h.click(automate, Modifiers::NONE);
-    h.step("arm it");
     let auto = node_of(h.probe().project(), AUTOMATION_NODE_ID);
+    h.step("learn a knob on the control surface");
+    // The Value field is greyed while its lane drives it, so the knob is
+    // learned on the Record input in the properties, which is what it
+    // records from.
+    let title = h.socket(auto, true, "out") - egui::Vec2::new(40.0, 0.0);
+    h.click(title, Modifiers::NONE);
+    let record = h.find("Record");
+    h.right_click(record);
+    let learn = h.find("Learn MIDI");
+    // The app keeps polling while it listens, so this doesn't wait to settle.
+    h.drag_playing(&[learn]);
+    h.control(KNOB, 80);
+    h.step("arm it");
     let arm = h.arm_button(auto);
     h.click(arm, Modifiers::NONE);
-    ride(h, [30.0, -30.0, 10.0]);
+    ride(h, [100, 60, 90]);
 }
 
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     let n = lane_points(p.project());
     if n < 3 {
         return Err(format!("the lane has {n} points after the pass"));
+    }
+    let auto = node_of(p.project(), AUTOMATION_NODE_ID);
+    let knob = p
+        .project()
+        .graph()
+        .source(&Endpoint::new(auto, AUTOMATION_RECORD))
+        .and_then(|s| p.project().graph().node(s.node))
+        .is_some_and(|n| {
+            n.type_id == MIDI_CONTROL_ID
+                && n.params.get("control").copied() == Some(f32::from(KNOB))
+        });
+    if !knob {
+        return Err("the knob that was turned is not learned onto the Automation node".into());
     }
     // The route relies on Touch being the default mode; the transport bar's
     // dropdown is not reachable by label, so the mode is checked here.
@@ -133,13 +186,172 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
 }
 
 fn ride_again(h: &mut Handle, _size: usize) {
-    ride(h, [-40.0, 50.0, -20.0]);
+    ride(h, [40, 110, 70]);
 }
 
 fn rode_again(p: &mut Probe, _size: usize) -> Result<(), String> {
     let now = lane_text(p.project());
     if now == *FIRST_PASS.lock().unwrap() {
         return Err("the second pass left the lane as it was".into());
+    }
+    Ok(())
+}
+
+const BEAT: i64 = 960;
+/// The chorus: bars 3 and 4.
+const CHORUS: (i64, i64) = (8 * BEAT, 16 * BEAT);
+const TRIM_DB: f32 = -2.0;
+
+/// The trim's Automation node: the one that is not the performed pass's.
+fn trim_automation(p: &Project) -> Option<NodeId> {
+    all_of(p, AUTOMATION_NODE_ID).get(1).copied()
+}
+
+fn trim_chorus(h: &mut Handle, _size: usize) {
+    let (gain, out) = {
+        let probe = h.probe();
+        let p = probe.project();
+        (node_of(p, GAIN_ID), node_of(p, noodle_engine::OUTPUT_ID))
+    };
+    h.step("add a trim stage after the fader");
+    let trim = add_node_playing(h, Pos2::new(640.0, 520.0), "gain");
+    wire(h, (gain, "out"), (trim, "in"));
+    wire(h, (trim, "out"), (out, "in"));
+    h.step("automate the trim");
+    let at = h.port_row(trim, false, "gain");
+    h.right_click_playing(at);
+    let automate = h.find("Automate");
+    h.drag_playing(&[automate]);
+    let auto = trim_automation(h.probe().project()).expect("the trim's Automation node");
+    h.step("make its range 0 to -2 dB");
+    set(h, auto, noodle_nodes::AUTOMATION_MIN, "0");
+    set(h, auto, noodle_nodes::AUTOMATION_MAX, &TRIM_DB.to_string());
+    h.step("draw the trim over the chorus");
+    let lane = h
+        .probe()
+        .project()
+        .lane_for(&Endpoint::new(auto, noodle_nodes::AUTOMATION_VALUE))
+        .map(|(id, _)| id)
+        .expect("the trim's lane");
+    h.probe().settle();
+    // Zoom the arrangement out until the bar after the chorus shows.
+    for _ in 0..20 {
+        let row = h
+            .probe()
+            .lane_row(lane)
+            .expect("the trim's lane is on screen");
+        let end = h
+            .probe()
+            .lane_point(lane, CHORUS.1 + 2 * BEAT, 0.0)
+            .expect("the lane");
+        if end.x < row.right() - 20.0 {
+            break;
+        }
+        h.wheel_with(
+            row.center(),
+            egui::MouseWheelUnit::Line,
+            egui::Vec2::new(0.0, -1.0),
+            Modifiers::COMMAND,
+        );
+        h.probe().settle();
+    }
+    // Automate starts the lane at the trim's value: pull that point down to
+    // no trim.
+    let first = h
+        .probe()
+        .lane_point_drawn(lane, 0)
+        .expect("the lane's first point");
+    let off = h.probe().lane_point(lane, 0, 0.0).expect("the lane");
+    h.drag_playing(&[first, Pos2::new(first.x, off.y)]);
+    // Off up to a beat before the chorus, on through it, off a beat after.
+    for (tick, value) in [
+        (CHORUS.0 - BEAT, 0.0),
+        (CHORUS.0, 1.0),
+        (CHORUS.1, 1.0),
+        (CHORUS.1 + BEAT, 0.0),
+    ] {
+        let at = h
+            .probe()
+            .lane_point(lane, tick, value)
+            .expect("the trim's lane is on screen");
+        h.drag_playing(&[at]);
+    }
+}
+
+fn wire(h: &mut Handle, from: (NodeId, &str), to: (NodeId, &str)) {
+    let a = h.socket(from.0, true, from.1);
+    let b = h.socket(to.0, false, to.1);
+    h.drag_playing(&[a, b]);
+}
+
+/// Clicks a parameter's field on `node` and types `value` into it.
+fn set(h: &mut Handle, node: NodeId, key: &str, value: &str) {
+    let at = h.port_row(node, false, key);
+    h.drag_playing(&[at]);
+    h.press_playing(at, Modifiers::COMMAND, Key::A);
+    h.type_text_playing(at, value);
+    h.press_playing(at, Modifiers::NONE, Key::Enter);
+}
+
+/// The trim in dB at `tick`.
+fn trim_at(p: &Project, tick: i64) -> Result<f32, String> {
+    let auto = trim_automation(p).ok_or("there is no trim automation")?;
+    let node = p.graph().node(auto).ok_or("the trim automation is gone")?;
+    let get = |key: &str| node.params.get(key).copied().unwrap_or(0.0);
+    if get(noodle_nodes::AUTOMATION_TAPER) != 0.0 {
+        return Err("the trim's taper is not linear".into());
+    }
+    let (_, lane) = p
+        .lane_for(&Endpoint::new(auto, noodle_nodes::AUTOMATION_VALUE))
+        .ok_or("the trim has no lane")?;
+    let v = lane.value_at(tick as f64).ok_or("the trim lane is empty")?;
+    let (min, max) = (
+        get(noodle_nodes::AUTOMATION_MIN),
+        get(noodle_nodes::AUTOMATION_MAX),
+    );
+    Ok(min + v * (max - min))
+}
+
+fn chorus_trimmed(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let project = p.project();
+    let gain = node_of(project, GAIN_ID);
+    let trim = all_of(project, GAIN_ID)
+        .into_iter()
+        .find(|&g| g != gain)
+        .ok_or("there is no trim stage")?;
+    let fed = project
+        .graph()
+        .source(&Endpoint::new(trim, "in"))
+        .is_some_and(|s| s.node == gain);
+    if !fed {
+        return Err("the trim does not follow the fader".into());
+    }
+    let out = node_of(project, noodle_engine::OUTPUT_ID);
+    let heard = project
+        .graph()
+        .source(&Endpoint::new(out, "in"))
+        .is_some_and(|s| s.node == trim);
+    if !heard {
+        return Err("the trim does not feed the output".into());
+    }
+    let auto = trim_automation(project).ok_or("there is no trim automation")?;
+    let drives = project
+        .graph()
+        .source(&Endpoint::new(trim, "gain"))
+        .is_some_and(|s| s.node == auto);
+    if !drives {
+        return Err("the trim's gain is not automated".into());
+    }
+    let mid = (CHORUS.0 + CHORUS.1) / 2;
+    for (tick, want, part) in [
+        (CHORUS.0 / 2, 0.0, "the verse"),
+        (mid, TRIM_DB, "the chorus"),
+        (CHORUS.1 + 4 * BEAT, 0.0, "after the chorus"),
+    ] {
+        let db = trim_at(project, tick)?;
+        if (db - want).abs() > 0.1 {
+            return Err(format!("{part} is trimmed by {db} dB, wanted {want}"));
+        }
     }
     Ok(())
 }

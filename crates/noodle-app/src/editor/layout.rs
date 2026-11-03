@@ -642,6 +642,7 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
                 .map_or(0, |i| i + 1);
             ports.insert(at, port);
         }
+        noodle_nodes::RANDOM_SELECT_ID => random_select_spares(graph, id, ports, &spare),
         GROUP => {
             let input = spare::spare_group_name(graph, id, spare::Side::Input);
             let output = spare::spare_group_name(graph, id, spare::Side::Output);
@@ -652,7 +653,82 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
     }
 }
 
-/// A readable name for a node type the registry doesn't know, from the last
+/// The data ports of a Random Select that carry what it selects between: its
+/// inputs and its output.
+pub fn random_select_carries(key: &str) -> bool {
+    key == "out" || (key.starts_with("in") && key[2..].parse::<usize>().is_ok())
+}
+
+/// Whether a Random Select has a wire on the ports that carry its data. Until
+/// it does, it has no type: it takes that of the first wire (see
+/// [`noodle_nodes::RANDOM_SELECT_ID`]).
+pub fn random_select_is_wired(graph: &Graph, id: NodeId) -> bool {
+    graph.connections().any(|c| {
+        (c.to.node == id && random_select_carries(&c.to.port))
+            || (c.from.node == id && random_select_carries(&c.from.port))
+    })
+}
+
+/// A Random Select shows one input more than are wired, as a mixer does, and
+/// until something is wired it has no type, so its data ports take any wire
+/// and its type-specific parameters stay out of sight.
+fn random_select_spares(
+    graph: &Graph,
+    id: NodeId,
+    ports: &mut Vec<PortGeom>,
+    spare: &dyn Fn(Side, String) -> PortGeom,
+) {
+    let used = graph
+        .connections()
+        .filter(|c| c.to.node == id)
+        .filter_map(|c| spare::mixer_input_index(&c.to.port))
+        .max()
+        .unwrap_or(0);
+    let wired = random_select_is_wired(graph, id);
+    // The parameters that wait for a type; a wire on one keeps them shown.
+    let driven = |key: &str| {
+        graph
+            .connections()
+            .any(|c| c.to.node == id && c.to.port == key)
+    };
+    ports.retain(|p| {
+        let index = spare::mixer_input_index(&p.key).filter(|_| p.side == Side::Input);
+        // The pick of a Random Select of samples is wired by the compiler.
+        p.key != noodle_nodes::RANDOM_SELECT_CHOICE
+            && index.is_none_or(|i| i <= used)
+            && (wired
+                || !matches!(p.key.as_str(), "avoid_repeat" | "switch" | "seed")
+                || driven(&p.key))
+    });
+    let template = ports
+        .iter()
+        .find(|p| p.side == Side::Input && spare::mixer_input_index(&p.key).is_some())
+        .map(|p| p.kind.clone());
+    let kind = if wired {
+        template.unwrap_or(PortKind::Audio)
+    } else {
+        PortKind::Any
+    };
+    if (used as i64) < noodle_nodes::RANDOM_SELECT_MAX_INPUTS {
+        let mut next = spare(Side::Input, spare::mixer_input_key(used + 1));
+        next.kind = kind.clone();
+        ports.insert(
+            ports
+                .iter()
+                .rposition(|p| spare::mixer_input_index(&p.key).is_some())
+                .map_or(0, |i| i + 1),
+            next,
+        );
+    }
+    if !wired {
+        for p in ports.iter_mut().filter(|p| random_select_carries(&p.key)) {
+            p.kind = PortKind::Any;
+            p.spare = true;
+        }
+    }
+}
+
+/// A readable name for a node type the registry doesn't know/// A readable name for a node type the registry doesn't know, from the last
 /// part of its ID: `noodle.effect.low_pass` is "Low pass".
 pub fn friendly_type_name(type_id: &str) -> String {
     let last = type_id.rsplit('.').next().unwrap_or(type_id);

@@ -150,6 +150,11 @@ These are primitives; instruments and racks built from them are groups.
   rebuild the node. Each voice's place in the sample is reported through
   `Telemetry::open_positions`, for the editor's playhead, which lists the voices
   of every instance still reporting.
+  Given a **sample set** on its sample input (a Sample Set node,
+  `noodle.instrument.sample_set`) it plays a multisample: nearest root, then
+  velocity layer (`vel_curve`), then take (`rr_mode`), from tables built with
+  the node. `bend_range` (semitones) scales channel pitch bend. See
+  [sample-routing.md](../features/sample-routing.md).
   Interpolation is four-point Catmull-Rom. The `sample` option is also a sample input (see
   "Sample" in [signals.md](signals.md)): a wire from a `Sample` node
   (`noodle.instrument.sample`, which holds a hash and a window) overrides it.
@@ -167,13 +172,17 @@ These are primitives; instruments and racks built from them are groups.
 - **Random Select** (`noodle.util.randselect`, #211) routes one of `inputs`
   inputs (config, 1 to 64) to its output and picks again, uniformly, on each
   rising edge of `trigger`; the choice holds between triggers and starts on
-  input 1. `kind` (config) is 0 for signals or 1 for notes, since it changes the
-  ports. `avoid_repeat` never picks the input just chosen; `seed` is mixed into
+  input 1. `kind` (config) is 0 for signals, 1 for notes, 2 for samples or 3 for
+  spectra, since it changes the ports; the editor sets it from the first wire and shows the node untyped
+  while nothing is wired. `avoid_repeat` never picks the input just chosen; `seed` is mixed into
   the node's own seed, so renders repeat. Signals switch `Instant`ly or at the
   old input's next `Zero crossing` (per voice and channel, giving up after
   20 ms). Notes close the old input to new note-ons at the trigger and either
   let its held notes' note-offs through (`Finish held`) or end them at the
-  trigger (`Cut held`).
+  trigger (`Cut held`). Samples switch while audio runs: the Sampler loads
+  every candidate and plays the one in force at each note-on, with the same
+  `Finish held` / `Cut held` choice for notes already sounding (see
+  `signals.md`). Spectra switch at the first frame at or after the trigger.
 - **Dynamics** (`noodle.effect.dynamics`) is a compressor, limiter, gate or
   expander by `mode`, with a `detect` choice of input or sidechain, a
   gain-reduction output, and gain computed in the log domain with a soft knee.

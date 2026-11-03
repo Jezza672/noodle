@@ -19,6 +19,7 @@ mod library;
 pub mod map_to;
 pub mod record_automation;
 mod render_clip;
+pub mod sample_set;
 mod stems;
 pub use export::{ExportChoice, ExportSummary};
 pub use library::LibraryEdit;
@@ -422,6 +423,8 @@ pub struct Session {
     export_summary: Option<ExportSummary>,
     /// Split to stems: the separator and the split under way, if any.
     stems: stems::Stems,
+    /// A rescan of a Sample Set's folder, waiting for the user to look at it.
+    rescan: std::cell::RefCell<Option<sample_set::PendingRescan>>,
 }
 
 /// The settings frozen audio is rendered with when no stream is open.
@@ -708,6 +711,7 @@ impl Session {
             rendering: None,
             export_summary: None,
             stems: stems::Stems::new(),
+            rescan: Default::default(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
             auto_cache: true,
@@ -1773,16 +1777,16 @@ impl Session {
             .filter(|(_, node)| {
                 matches!(
                     node.type_id.as_str(),
-                    noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
+                    noodle_nodes::SAMPLER_ID
+                        | noodle_nodes::SAMPLE_INPUT_ID
+                        | noodle_nodes::SAMPLE_SET_ID
                 )
             })
             .filter_map(|(_, node)| match node.config.get("sample") {
-                Some(noodle_core::Value::Text(text)) => {
-                    Some(noodle_nodes::SampleRef::parse(text).hash)
-                }
+                Some(noodle_core::Value::Text(text)) => Some(noodle_nodes::sample_hashes(text)),
                 _ => None,
             })
-            .filter(|hash| !hash.is_empty())
+            .flatten()
             .collect();
         for hash in hashes {
             if let Err(error) = self.samples.save(&hash) {

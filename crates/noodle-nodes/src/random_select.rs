@@ -2,16 +2,18 @@
 
 use noodle_engine::{
     Config, ConfigInfo, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo,
-    NodeType, NoteId, ParamInfo, Setup, Shape,
+    NodeType, NoteId, ParamInfo, SampleChooser, Setup, Shape,
 };
+
+use crate::sample_set::CHOICE_CUT;
 
 /// Routes one of its inputs to its output, and picks a new one at random each
 /// time `trigger` rises through 0.5 (a clock, a key's gate, a comparator).
 /// The output holds its choice until the next trigger. It starts on input 1.
 ///
 /// **Kind.** What the inputs carry is config (`kind`), because it changes the
-/// ports: 0 is audio or control signal, 1 is note events. The editor sets it
-/// from the first wire.
+/// ports: 0 is audio or control signal, 1 is note events, 2 is samples (or
+/// sample sets), 3 is spectral frames. The editor sets it from the first wire.
 ///
 /// **Inputs.** How many (`inputs`, 1 to 64) is config too, and grows with the
 /// wires like a mixer's.
@@ -36,7 +38,8 @@ pub struct RandomSelect;
 pub const RANDOM_SELECT_ID: &str = "noodle.util.randselect";
 
 const INPUTS: ConfigInfo = ConfigInfo::int("inputs", "Inputs", 2);
-const KIND: ConfigInfo = ConfigInfo::int("kind", "Kind (0 signal, 1 notes)", 0);
+const KIND: ConfigInfo =
+    ConfigInfo::int("kind", "Kind (0 signal, 1 notes, 2 samples, 3 spectral)", 0);
 pub const MAX_INPUTS: i64 = 64;
 /// The longest a zero-crossing switch waits for a crossing.
 pub const MAX_WAIT_MS: f32 = 20.0;
@@ -58,9 +61,20 @@ const TRIGGER: usize = 0;
 const AVOID_REPEAT: usize = 1;
 const SWITCH: usize = 2;
 const SEED: usize = 3;
+/// The signal output a Random Select of samples puts its pick on.
+pub const CHOICE_PORT: &str = "choice";
+
+/// What the inputs carry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Signal,
+    Notes,
+    Samples,
+    Spectral,
+}
 
 struct Counts {
-    events: bool,
+    kind: Kind,
     inputs: usize,
 }
 
@@ -72,15 +86,35 @@ impl Counts {
                 "Random Select needs between 1 and {MAX_INPUTS} inputs, not {inputs}"
             )));
         }
+        let kind = match KIND.get_int(config) {
+            1 => Kind::Notes,
+            2 => Kind::Samples,
+            3 => Kind::Spectral,
+            _ => Kind::Signal,
+        };
         Ok(Self {
-            events: KIND.get_int(config) == 1,
+            kind,
             inputs: inputs as usize,
         })
     }
 
     /// The index of the trigger among the signal inputs.
     fn base(&self) -> usize {
-        if self.events { 0 } else { self.inputs }
+        if self.kind == Kind::Signal {
+            self.inputs
+        } else {
+            0
+        }
+    }
+
+    /// Whether there is a `switch` parameter. Spectra just switch at a frame.
+    fn has_switch(&self) -> bool {
+        self.kind != Kind::Spectral
+    }
+
+    /// Where `seed` is among the parameters after the inputs.
+    fn seed_offset(&self) -> usize {
+        if self.has_switch() { SEED } else { SEED - 1 }
     }
 }
 
@@ -97,34 +131,72 @@ impl NodeType for RandomSelect {
         let counts = Counts::of(config)?;
         let mut layout = Layout::realtime();
         for i in 1..=counts.inputs {
-            layout = if counts.events {
-                layout.event_input(format!("in{i}"), format!("In {i}"))
-            } else {
-                layout.input(format!("in{i}"), format!("In {i}"))
+            let (key, name) = (format!("in{i}"), format!("In {i}"));
+            layout = match counts.kind {
+                Kind::Signal => layout.input(key, name),
+                Kind::Notes => layout.event_input(key, name),
+                Kind::Samples => layout.sample_input(key, name),
+                Kind::Spectral => layout.spectral_input(key, name),
             };
         }
-        let switch = if counts.events {
-            ParamInfo::choice(["Finish held", "Cut held"])
-        } else {
-            ParamInfo::choice(["Instant", "Zero crossing"])
-        };
-        layout = layout
-            .input("trigger", "Trigger")
-            .param(
-                "avoid_repeat",
-                "Avoid repeat",
-                ParamInfo::choice(["Off", "On"]),
-            )
-            .param("switch", "Switch", switch)
-            .param(
-                "seed",
-                "Seed",
-                ParamInfo::new(0.0, 9999.0, 0.0).smoothing(0.0),
-            );
-        Ok(if counts.events {
-            layout.event_output("out", "Out")
-        } else {
-            layout.output("out", "Out")
+        layout = layout.input("trigger", "Trigger").param(
+            "avoid_repeat",
+            "Avoid repeat",
+            ParamInfo::choice(["Off", "On"]),
+        );
+        if counts.has_switch() {
+            let switch = if counts.kind == Kind::Signal {
+                ParamInfo::choice(["Instant", "Zero crossing"])
+            } else {
+                ParamInfo::choice(["Finish held", "Cut held"])
+            };
+            layout = layout.param("switch", "Switch", switch);
+        }
+        layout = layout.param(
+            "seed",
+            "Seed",
+            ParamInfo::new(0.0, 9999.0, 0.0).smoothing(0.0),
+        );
+        Ok(match counts.kind {
+            Kind::Signal => layout.output("out", "Out"),
+            Kind::Notes => layout.event_output("out", "Out"),
+            // The signal is the pick itself, wired to the receiver by the
+            // compiler; the editor keeps it off the node.
+            Kind::Samples => layout
+                .sample_output("out", "Out")
+                .output(CHOICE_PORT, "Choice"),
+            Kind::Spectral => layout.spectral_output("out", "Out"),
+        })
+    }
+
+    fn sample_chooser(&self, config: &Config) -> Option<SampleChooser> {
+        let counts = Counts::of(config)
+            .ok()
+            .filter(|c| c.kind == Kind::Samples)?;
+        Some(SampleChooser {
+            output: "out".into(),
+            inputs: (1..=counts.inputs).map(|i| format!("in{i}")).collect(),
+            index: CHOICE_PORT.into(),
+        })
+    }
+
+    fn output_shapes(
+        &self,
+        config: &Config,
+        layout: &Layout,
+        inputs: &[Shape],
+    ) -> Result<Vec<Shape>, NodeError> {
+        Ok(match Counts::of(config)?.kind {
+            Kind::Samples => vec![Shape::MONO],
+            Kind::Spectral => {
+                // The spectral inputs' shapes follow the signal inputs'.
+                let shape = Shape::broadcast_all(inputs[layout.inputs.len()..].iter().copied())?;
+                vec![shape]
+            }
+            _ => {
+                let shape = Shape::broadcast_all(inputs.iter().copied())?;
+                vec![shape; layout.outputs.len()]
+            }
         })
     }
 
@@ -132,9 +204,11 @@ impl NodeType for RandomSelect {
         let counts = Counts::of(setup.config)?;
         let shape = setup.output_shapes.first().copied().unwrap_or(Shape::MONO);
         Ok(Instance::realtime(RandomSelectNode {
-            events: counts.events,
+            kind: counts.kind,
             inputs: counts.inputs,
             base: counts.base(),
+            seed_port: counts.base() + counts.seed_offset(),
+            switch_port: counts.base() + SWITCH,
             base_seed: setup.seed,
             seed: 0,
             rng: Rng::new(setup.seed),
@@ -158,9 +232,11 @@ struct Lane {
 }
 
 struct RandomSelectNode {
-    events: bool,
+    kind: Kind,
     inputs: usize,
     base: usize,
+    seed_port: usize,
+    switch_port: usize,
     base_seed: u64,
     seed: u32,
     rng: Rng,
@@ -185,7 +261,7 @@ impl RandomSelectNode {
 
     /// Finds the block's triggers and picks for each.
     fn find_edges(&mut self, io: &Io<'_, '_>, frames: usize) {
-        let seed = Self::param(io, self.base + SEED).round().max(0.0) as u32;
+        let seed = Self::param(io, self.seed_port).round().max(0.0) as u32;
         if seed != self.seed {
             self.seed = seed;
             self.rng = Rng::new(mix_seed(self.base_seed, seed));
@@ -206,7 +282,7 @@ impl RandomSelectNode {
     fn process_signals(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let mut now = self.target;
         self.find_edges(&io, ctx.frames);
-        let instant = Self::param(&io, self.base + SWITCH) < 0.5;
+        let instant = Self::param(&io, self.switch_port) < 0.5;
         let shape = io.outputs[0].shape();
         let mut edge = 0;
         for i in 0..ctx.frames {
@@ -234,10 +310,66 @@ impl RandomSelectNode {
         }
     }
 
+    /// The pick, as the number of the input in force at each frame, with
+    /// [`CHOICE_CUT`] added when held notes are to be cut.
+    fn process_samples(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let mut now = self.target;
+        self.find_edges(&io, ctx.frames);
+        let cut = Self::param(&io, self.switch_port) >= 0.5;
+        let flag = if cut { CHOICE_CUT } else { 0.0 };
+        let out = io.outputs[0].lane_mut(0, 0);
+        let mut edge = 0;
+        for (i, slot) in out.iter_mut().enumerate().take(ctx.frames) {
+            while edge < self.edges.len() && self.edges[edge].0 == i {
+                now = self.edges[edge].1;
+                edge += 1;
+            }
+            *slot = now as f32 + flag;
+        }
+    }
+
+    fn process_spectral(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let mut now = self.target;
+        self.find_edges(&io, ctx.frames);
+        self.cursors.fill(0);
+        let out = &mut io.spectral_outputs[0];
+        let shape = out.shape();
+        let mut edge = 0;
+        let mut start = 0;
+        while start < ctx.frames {
+            while edge < self.edges.len() && self.edges[edge].0 == start {
+                now = self.edges[edge].1;
+                edge += 1;
+            }
+            let end = self.edges.get(edge).map_or(ctx.frames, |&(frame, _)| frame);
+            for (input, frames) in io.spectral_inputs.iter().enumerate().take(self.inputs) {
+                while self.cursors[input] < frames.frames()
+                    && (frames.time(self.cursors[input]) as usize) < end
+                {
+                    let frame = self.cursors[input];
+                    self.cursors[input] += 1;
+                    if input != now {
+                        continue;
+                    }
+                    let Some(at) = out.push(frames.time(frame)) else {
+                        continue;
+                    };
+                    for voice in 0..shape.voices {
+                        for channel in 0..shape.channels {
+                            out.frame_mut(at, voice, channel)
+                                .copy_from_slice(frames.frame(frame, voice, channel));
+                        }
+                    }
+                }
+            }
+            start = end;
+        }
+    }
+
     fn process_events(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let mut now = self.target;
         self.find_edges(&io, ctx.frames);
-        let cut = Self::param(&io, self.base + SWITCH) >= 0.5;
+        let cut = Self::param(&io, self.switch_port) >= 0.5;
         self.cursors.fill(0);
         let out = &mut io.event_outputs[0];
         let mut edge = 0;
@@ -299,10 +431,11 @@ impl RandomSelectNode {
 
 impl Node for RandomSelectNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
-        if self.events {
-            self.process_events(ctx, io);
-        } else {
-            self.process_signals(ctx, io);
+        match self.kind {
+            Kind::Signal => self.process_signals(ctx, io),
+            Kind::Notes => self.process_events(ctx, io),
+            Kind::Samples => self.process_samples(ctx, io),
+            Kind::Spectral => self.process_spectral(ctx, io),
         }
     }
 
@@ -633,5 +766,91 @@ mod tests {
         h.send_events(1, &[off(10, 2)]);
         h.run(FRAMES).unwrap();
         assert_eq!(h.events(0), [off(5, 2), on(8, 1)]);
+    }
+    /// A Random Select of samples, whose output is the number of the pick.
+    fn samples(n: i64) -> Harness {
+        let config = Config::new()
+            .with("inputs", Value::Int(n))
+            .with("kind", Value::Int(2));
+        Harness::new(
+            &RandomSelect,
+            &config,
+            &[(0, Shape::MONO)],
+            48_000.0,
+            FRAMES,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn samples_put_the_number_of_the_pick_on_the_signal_from_the_trigger() {
+        let mut h = samples(2);
+        h.set(AVOID_REPEAT, 1.0);
+        let mut trigger = h.input(0, FRAMES);
+        trigger.fill(0.0);
+        trigger.lane_mut(0, 0)[20] = 1.0;
+        h.run(FRAMES).unwrap();
+        // The out is a sample port; the signal is the only output buffer.
+        let pick = h.output(0).lane(0, 0).to_vec();
+        assert!(pick[..20].iter().all(|&x| x == 0.0), "starts on the first");
+        assert!(pick[20..].iter().all(|&x| x == 1.0), "{pick:?}");
+    }
+
+    #[test]
+    fn cutting_held_samples_adds_the_cut_flag() {
+        let mut h = samples(2);
+        h.set(SWITCH, 1.0);
+        h.input(0, FRAMES).fill(0.0);
+        h.run(FRAMES).unwrap();
+        assert!(h.output(0).lane(0, 0).iter().all(|&x| x == CHOICE_CUT));
+    }
+
+    #[test]
+    fn a_pick_of_samples_names_its_candidates_in_input_order() {
+        let config = config(3, false).with("kind", Value::Int(2));
+        let chooser = RandomSelect.sample_chooser(&config).unwrap();
+        assert_eq!(chooser.output, "out");
+        assert_eq!(chooser.inputs, ["in1", "in2", "in3"]);
+        let layout = RandomSelect.layout(&config).unwrap();
+        assert!(layout.outputs.iter().any(|p| p.key == chooser.index));
+        assert_eq!(layout.sample_inputs.len(), 3);
+        assert!(
+            RandomSelect
+                .sample_chooser(&self::config(3, false))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn spectra_switch_on_the_first_frame_after_the_trigger() {
+        use noodle_engine::Bin;
+        const BLOCK: usize = 4096;
+        let config = Config::new().with("kind", Value::Int(3));
+        let mut h = Harness::with_spectral(
+            &RandomSelect,
+            &config,
+            &[(0, Shape::MONO)],
+            &[Shape::MONO, Shape::MONO],
+            48_000.0,
+            BLOCK,
+        )
+        .unwrap();
+        h.set(1, 1.0);
+        let mut trigger = h.input(0, BLOCK);
+        trigger.fill(0.0);
+        trigger.lane_mut(0, 0)[1500] = 1.0;
+        for (port, re) in [(0, 1.0), (1, 2.0)] {
+            let mut input = h.spectral_input(port);
+            for time in [100, 2000, 3500] {
+                let at = input.push(time).unwrap();
+                input.frame_mut(at, 0, 0)[0] = Bin::new(re, 0.0);
+            }
+        }
+        h.run(BLOCK).unwrap();
+        let out = h.spectral(0);
+        let got: Vec<(u32, f32)> = (0..out.frames())
+            .map(|i| (out.time(i), out.frame(i, 0, 0)[0].re))
+            .collect();
+        assert_eq!(got, [(100, 1.0), (2000, 2.0), (3500, 2.0)]);
     }
 }
