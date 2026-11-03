@@ -73,6 +73,58 @@ for signals, and finish-or-cut for held notes. Design in
 the node's unit tests (picks, seed determinism, avoid repeat, zero crossing,
 held notes) and `realtime.rs`.
 
-Not done, in [ROADMAP.md](../ROADMAP.md): the editor does not yet set `kind`
-from the first wire (the "one universal port type until connected" behaviour)
-or grow the inputs as you wire; both are config set by hand for now.
+Random Select's editor behaviour is done, in "Multisampled instruments" below.
+
+## Multisampled instruments (#331)
+
+**Sample Set** (`noodle.instrument.sample_set`) holds a list of recordings and
+outputs the whole list on the sample wire. Each entry is a sample, the key it was
+played at, a velocity layer and a round-robin slot, as text
+`hash[:start:end]@root[/layer][#rr]` joined by `;`, so it keys the cache and
+needs no new wire kind (`resolve_samples` writes it into the Sampler's `sample`
+like any other reference). Its other config: `names` (the file names, so a
+rescan can tell what changed), `folder` (where they came from) and `middle_c`
+(C3 or C4 is MIDI 60, used when reading names).
+
+- **File names.** `parse_name` takes three things from a name, in any order and
+  with any separators: the note (`C#4`, `Db4`, `61`), the layer (`ppp` to `fff`,
+  `v1` to `v16`, `vel100`) and the take (`rr2`, `t3`). A name it can't read a
+  note from leaves the root empty, shown as `?` with a warning, never guessed.
+  Layers are ranked per note, softest first, so they stay ordinal and the ranges
+  stay derived. The table also warns where the sound's detected pitch is more
+  than a semitone from the root (the C3/C4 mistake).
+- **Sampler set mode.** Given a set, a note picks the nearest root that has any
+  recording (ties to the lower), then the velocity layer (a key's layers split
+  1 to 127 evenly; `vel_curve` bends the velocity first), then the take
+  (`rr_mode`: Cycle, Random or No repeat; random uses the node's seed, so renders
+  repeat). All of it is lookups in tables built with the node
+  (`SetTables`), so a note-on allocates nothing (`realtime.rs`). A set plays as
+  Repitch, from each recording's own root, without the gain envelope or a warp.
+- **`bend_range`** (semitones, default 2, 0 to 48) is new on the Sampler: it
+  scales channel pitch bend into the per-voice bend. A per-note pitch
+  expression stays in semitones.
+- **Filling a set.** Drop a folder or files from the desktop on the node editor
+  (on a Sample Set they are added; on the empty canvas they make one), or use
+  Load folder and Add files in its properties. A folder is remembered.
+- **Rescan folder** reads the folder and opens a dialog listing what is Added,
+  Replaced (same name, new audio), Removed and Renamed (same audio, new name:
+  nothing to do), plus names with no readable note. Apply (or Enter) is one undo
+  step; Cancel changes nothing. Rows you edited keep their edits unless their
+  file was replaced.
+- **Multisample Instrument** is a system template: Sample Set into a Sampler
+  (gate mode) into a low-pass, with `notes`, `tune`, `bend range`, `release`,
+  `gain` and `cutoff` as group inputs.
+- **Random Select takes any connector type.** Until something is wired to its
+  data ports it has no type: they take any wire, the type-specific parameters
+  are hidden and the spare input is greyed. The first wire sets `kind` in the
+  same undo step; once typed, only that type can be wired (the ports are
+  typed, so a drag is refused while it is made). Taking the last wire off
+  returns it to untyped. Inputs grow with the wires, as a mixer's do. Spectral
+  and sample wires are refused with the reason: a sample wire is resolved when
+  the project is compiled, so nothing can switch it while audio runs.
+- **S12** goes from `partial` to `full`: the route drops the folder on the
+  canvas, plays the set with one Sampler, and its late changes (replace a
+  recording, add three notes, change the naming scheme, change the bend range)
+  go through Rescan or one parameter. Tests: the name parser, tables and rescan
+  (`sample_set.rs`), the Sampler's set and bend tests, the session's folder and
+  rescan tests, the editor's Random Select tests, `realtime.rs`.

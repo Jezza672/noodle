@@ -45,7 +45,7 @@ deliberately deferred items.
 
 **What it is.** Thirty user stories for advanced DAW users (`docs/usability/stories.md`), each driven through the app by one or more scripted *routes* that use only real pointer and key events. Every route logs its actions; a scorer turns the log into a scorecard of effort, repetition, rework, the cost of late changes, findability, feedback and robustness. Routes are app tests, so CI keeps them current, and each PR shows how it moved the scorecard. The design is in `docs/architecture/usability.md`; the work is tracked in #306.
 
-**MVP:** six stories routed (S01, S07, S09, S12, S19, S20). Routes are written for S01, S09, S12, S19 and S20 (all `partial`); S07 is `blocked` on #329. Where a story is possible but awkward, the route takes the workaround so the scorecard shows its cost: S12 builds the instrument by hand (#331), S09 chokes the hat with a Script node (#330, swing still missing), S19 sends by fanning wires out to a second Mix (#332), S20 trims with a second gain stage (#333). S01 still starts from a take folder (#334). Built: the action log, the route framework and registry, the effort scorer (group A), the report in CI (#308, #309, #310, #314), and the repetition (per extra item), rework and late-change scorers (#311, #312, #313).
+**MVP:** six stories routed (S01, S07, S09, S12, S19, S20). Routes are written for S01, S09, S12, S19 and S20 (S12 is `full`, the rest `partial`); S07 is `blocked` on #329. Where a story is possible but awkward, the route takes the workaround so the scorecard shows its cost: S09 chokes the hat with a Script node (#330, swing still missing), S19 sends by fanning wires out to a second Mix (#332), S20 trims with a second gain stage (#333). S01 still starts from a take folder (#334). Built: the action log, the route framework and registry, the effort scorer (group A), the report in CI (#308, #309, #310, #314), and the repetition (per extra item), rework and late-change scorers (#311, #312, #313).
 
 **Still owed from groups B to D:** the repetition ratio and per-route batch-path notes (#311), and the premature-commitment and destructive-step tags (#313).
 
@@ -133,5 +133,5 @@ deliberately deferred items.
   arrangement, piano roll and clip editor (only the piano roll's snap is done), a
   sandbox monitor that sleeps with no tick, and one retry policy for files that
   fail to open.
-- **Random Select editor behaviour** (#211): resolve the node's `kind` (signal or notes) from the first wire and grow `inputs` as you wire, as the mixer does (`spare.rs`).
+- **Random Select with spectral and sample wires** (#331 follow-up): it takes signal and note wires; spectral needs a frame-boundary switch, and sample wires need the compiler to resolve a selector (or a sample set with one round-robin slot per input, picked by the Sampler's `rr_mode`).
 - **Flaky test** #138 stays open (no recurrence).

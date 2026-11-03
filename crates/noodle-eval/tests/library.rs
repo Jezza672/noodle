@@ -77,6 +77,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.io.input",
     "noodle.io.output",
     "noodle.instrument.sample",
+    "noodle.instrument.sample_set",
     "noodle.mod.automation",
     "noodle.noise.white",
     "noodle.offline.reverse",

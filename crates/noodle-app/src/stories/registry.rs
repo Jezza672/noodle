@@ -74,8 +74,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S12",
         title: "Build a multisampled instrument from a folder",
-        status: Status::Partial,
-        missing: "Built by hand, a Sampler and a key range per recording; the late changes are not routed: #331.",
+        status: Status::Full,
+        missing: "",
     },
     blocked("S13", "Design a modulated synth patch"),
     blocked("S14", "Share modulation sources across many parameters"),

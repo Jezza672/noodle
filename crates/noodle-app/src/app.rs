@@ -661,6 +661,12 @@ impl App {
         if let Some(dropped) = self.editor.take_dropped() {
             self.dropped_on_graph(dropped);
         }
+        if let Some(why) = self.editor.take_refusal() {
+            self.session.notify(why);
+        }
+        if let Some(dropped) = self.editor.take_dropped_files() {
+            self.files_dropped_on_graph(dropped);
+        }
 
         self.confirm_dialog(ui.ctx(), &mut actions);
         self.recovery_dialog(ui.ctx());
@@ -670,6 +676,7 @@ impl App {
         self.cache_panel.show(ui.ctx(), &mut self.session);
         self.export.show(ui.ctx(), &mut self.session);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
+        crate::sample_set_dialog::show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
@@ -1979,6 +1986,45 @@ impl App {
                 self.editor.select_only([group]);
             }
         }
+    }
+
+    /// Files or a folder dropped from the desktop on the canvas: on a Sample
+    /// Set they are added to it (a folder fills it and is remembered for
+    /// Rescan); on the empty canvas they become a new Sample Set.
+    fn files_dropped_on_graph(&mut self, dropped: editor::DroppedFiles) {
+        use noodle_core::{Command, Node};
+        let (node, new) = match dropped.on {
+            Ok(node) => (node, None),
+            Err(at) => {
+                let id = self.session.new_node_id();
+                let mut node = Node::new(noodle_nodes::SAMPLE_SET_ID).at(at.x, at.y);
+                node.parent = dropped.group;
+                (id, Some(Command::AddNode { id, node }))
+            }
+        };
+        let (folders, files): (Vec<_>, Vec<_>) =
+            dropped.paths.iter().cloned().partition(|p| p.is_dir());
+        // The set has to exist before the session can fill it.
+        if let Some(add) = new {
+            self.session.edit([crate::session::Edit::Apply(add)]);
+        }
+        let mut problem = None;
+        if let Some(folder) = folders.first() {
+            match self.session.sample_set_load_folder(node, folder) {
+                Ok(edits) => self.session.edit(edits),
+                Err(error) => problem = Some(error),
+            }
+        }
+        if !files.is_empty() && problem.is_none() {
+            match self.session.sample_set_add(node, &files) {
+                Ok(edits) => self.session.edit(edits),
+                Err(error) => problem = Some(error),
+            }
+        }
+        if let Some(error) = problem {
+            self.session.notify(error);
+        }
+        self.editor.select_only([node]);
     }
 
     fn import_audio(&mut self, target: timeline::Target) {

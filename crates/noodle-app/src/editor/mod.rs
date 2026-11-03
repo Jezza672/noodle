@@ -124,6 +124,9 @@ pub struct EditorState {
     /// Something carried out of the timeline and let go of over the canvas,
     /// until the app takes it.
     dropped: Option<Dropped>,
+    dropped_files: Option<DroppedFiles>,
+    /// Why the last wire was refused, for the app to say.
+    refused: Option<String>,
     /// Set by View → Fit Graph, done on the next frame like arranging.
     fit_requested: bool,
     /// A node whose view was asked for with a double-click, until the app
@@ -208,6 +211,8 @@ impl Default for EditorState {
             arrange_requested: false,
             clip_requested: None,
             dropped: None,
+            dropped_files: None,
+            refused: None,
             fit_requested: false,
             view_request: None,
             open_request: None,
@@ -253,6 +258,16 @@ pub struct Dropped {
     pub group: Option<NodeId>,
 }
 
+/// Files or folders let go of from the desktop over the canvas.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DroppedFiles {
+    pub paths: Vec<std::path::PathBuf>,
+    /// The Sample Set they landed on, or else where on the canvas, in graph
+    /// coordinates.
+    pub on: Result<NodeId, Pos2>,
+    pub group: Option<NodeId>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DropOn {
     /// On a Sampler node.
@@ -262,6 +277,17 @@ pub enum DropOn {
 }
 
 impl EditorState {
+    /// Why the last wire was refused, if one was since the last call.
+    pub fn take_refusal(&mut self) -> Option<String> {
+        self.refused.take()
+    }
+
+    /// The files dropped from the desktop onto the canvas since the last
+    /// call, if any.
+    pub fn take_dropped_files(&mut self) -> Option<DroppedFiles> {
+        self.dropped_files.take()
+    }
+
     /// What was dropped on the canvas since the last call, if anything.
     pub fn take_dropped(&mut self) -> Option<Dropped> {
         self.dropped.take()
@@ -722,6 +748,36 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         state.dropped = Some(Dropped {
             item: drop.item,
             on: sampler.map_or(DropOn::Canvas(f.t.to_graph(drop.at)), DropOn::Sampler),
+            group: state.group,
+        });
+    }
+
+    let files: Vec<std::path::PathBuf> = ui.input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .collect()
+    });
+    if !files.is_empty()
+        && let Some(at) = ui
+            .input(|i| i.pointer.latest_pos())
+            .filter(|p| canvas.contains(*p))
+    {
+        let on = match hit(&f, at) {
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _)
+                if project
+                    .graph()
+                    .node(id)
+                    .is_some_and(|n| n.type_id == noodle_nodes::SAMPLE_SET_ID) =>
+            {
+                Ok(id)
+            }
+            _ => Err(f.t.to_graph(at)),
+        };
+        state.dropped_files = Some(DroppedFiles {
+            paths: files,
+            on,
             group: state.group,
         });
     }
@@ -1834,18 +1890,33 @@ fn finish(
                 (None, None) => None,
             };
             // A spare port becomes real in the same step as its first wire.
-            let command = command.map(|command| {
+            let mut refused = None;
+            let command = command.and_then(|command| {
                 let mut commands = Vec::new();
-                for (endpoint, side) in [(&anchor, side), (&target_end, side.other())] {
-                    commands.extend(make_real(f, endpoint, side, inputs));
+                for (endpoint, here, there) in [
+                    (&anchor, side, &target_end),
+                    (&target_end, side.other(), &anchor),
+                ] {
+                    let other = f.scene.port(there, here.other()).map(|p| p.kind.clone());
+                    match random_select_type(f, endpoint, here, other.as_ref()) {
+                        Ok(more) => commands.extend(more),
+                        Err(why) => {
+                            refused = Some(why);
+                            return None;
+                        }
+                    }
+                    commands.extend(make_real(f, endpoint, here, inputs));
                 }
                 commands.push(command);
-                if commands.len() == 1 {
+                Some(if commands.len() == 1 {
                     commands.remove(0)
                 } else {
                     Command::Batch(commands)
-                }
+                })
             });
+            if refused.is_some() {
+                state.refused = refused;
+            }
             edits.extend(command.map(Edit::Apply));
         }
         Gesture::BoxSelect { start, mode } => {
@@ -1926,7 +1997,69 @@ fn finish(
     }
 }
 
-/// What it takes to make the spare port `endpoint` real, if it is one: more
+/// What a wire to a Random Select's data port sets: until it has one, the
+/// node has no type, and the first wire gives it that of what it carries
+/// (`kind`: 0 signal, 1 notes). Spectral and sample wires can't be selected
+/// between while audio runs, so they are refused with the reason.
+fn random_select_type(
+    f: &Frame_<'_>,
+    endpoint: &Endpoint,
+    side: Side,
+    other: Option<&PortKind>,
+) -> Result<Vec<Command>, String> {
+    let graph = f.project.graph();
+    let Some(node) = graph
+        .node(endpoint.node)
+        .filter(|n| n.type_id == noodle_nodes::RANDOM_SELECT_ID)
+        .filter(|_| layout::random_select_carries(&endpoint.port))
+    else {
+        return Ok(Vec::new());
+    };
+    let _ = side;
+    let wanted = match other {
+        Some(PortKind::Audio | PortKind::Param(_)) => 0,
+        Some(PortKind::Event) => 1,
+        Some(PortKind::Spectral) => {
+            return Err("Random Select can't switch spectral wires yet".into());
+        }
+        Some(PortKind::Sample) => {
+            return Err("Random Select can't switch sample wires: they are chosen when the project is compiled".into());
+        }
+        _ => return Ok(Vec::new()),
+    };
+    let mut commands = Vec::new();
+    if !layout::random_select_is_wired(graph, endpoint.node) {
+        let now = match node.config.get("kind") {
+            Some(noodle_core::Value::Int(n)) => *n,
+            _ => 0,
+        };
+        if now != wanted {
+            commands.push(Command::SetConfig {
+                node: endpoint.node,
+                key: "kind".into(),
+                value: Some(noodle_core::Value::Int(wanted)),
+            });
+        }
+    } else if (wanted == 1) != layout_is_events(node) {
+        return Err(format!(
+            "Random Select is carrying {}",
+            if layout_is_events(node) {
+                "notes"
+            } else {
+                "signals"
+            }
+        ));
+    }
+    Ok(commands)
+}
+
+pub use layout::random_select_is_wired;
+
+fn layout_is_events(node: &Node) -> bool {
+    matches!(node.config.get("kind"), Some(noodle_core::Value::Int(1)))
+}
+
+/// What it takes to make the spare port `endpoint` real/// What it takes to make the spare port `endpoint` real, if it is one: more
 /// inputs on a mixer, or a port on a group or the boundary node inside it.
 fn make_real(
     f: &Frame_<'_>,
@@ -1941,6 +2074,23 @@ fn make_real(
     };
     match node.type_id.as_str() {
         spare::MIXER => spare::prepare_mixer_input(graph, endpoint.node, &endpoint.port),
+        // More inputs, as for a mixer.
+        noodle_nodes::RANDOM_SELECT_ID => {
+            let index = spare::mixer_input_index(&endpoint.port).unwrap_or(0) as i64;
+            let now = match node.config.get("inputs") {
+                Some(noodle_core::Value::Int(n)) => *n,
+                _ => 2,
+            };
+            if index > now {
+                vec![Command::SetConfig {
+                    node: endpoint.node,
+                    key: "inputs".into(),
+                    value: Some(noodle_core::Value::Int(index)),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
         GROUP => {
             let side = match side {
                 Side::Input => spare::Side::Input,

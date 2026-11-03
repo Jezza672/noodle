@@ -26,6 +26,7 @@ mod plugin_browser;
 mod prefs;
 mod properties;
 mod sample_drop;
+mod sample_set_dialog;
 mod sample_view;
 mod session;
 mod snap;
