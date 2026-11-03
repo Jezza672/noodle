@@ -22,6 +22,7 @@ pub struct Harness {
     spectral_outputs: Vec<(Shape, SpectralBuf)>,
     sample_rate: f32,
     position: u64,
+    version: u32,
     frames: usize,
 }
 
@@ -196,6 +197,7 @@ impl Harness {
                 .collect(),
             sample_rate,
             position,
+            version: 0,
             frames: 0,
         })
     }
@@ -288,6 +290,7 @@ impl Harness {
                 position: self.position,
                 // 120 beats per minute, the default tempo.
                 tick: self.position as f64 * 2.0 * 960.0 / f64::from(self.sample_rate),
+                version: self.version,
                 ..Transport::default()
             },
         };
@@ -299,6 +302,11 @@ impl Harness {
         self.position += frames as u64;
         self.frames = frames;
         Ok(())
+    }
+
+    /// Chooses the mix version the transport reports from the next block.
+    pub fn set_version(&mut self, version: u32) {
+        self.version = version;
     }
 
     /// Moves the playhead to `position` and resets the node, as a seek does

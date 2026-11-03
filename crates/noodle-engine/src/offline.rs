@@ -33,6 +33,9 @@ pub struct Progress {
     /// Where in the whole the current stretch starts and how long it is, as
     /// `f32` bits. A job made of several renders gives each its stretch.
     window: [AtomicU32; 2],
+    /// The stretch of the whole that everything above (windows included)
+    /// fits into, for a job made of several jobs that each report 0 to 1.
+    outer: [AtomicU32; 2],
 }
 
 impl Default for Progress {
@@ -41,6 +44,10 @@ impl Default for Progress {
             fraction: AtomicU32::new(0),
             cancelled: AtomicBool::new(false),
             window: [
+                AtomicU32::new(0.0f32.to_bits()),
+                AtomicU32::new(1.0f32.to_bits()),
+            ],
+            outer: [
                 AtomicU32::new(0.0f32.to_bits()),
                 AtomicU32::new(1.0f32.to_bits()),
             ],
@@ -60,12 +67,23 @@ impl Progress {
         self.window[1].store(span.to_bits(), Ordering::Relaxed);
     }
 
+    /// Fits everything reported from now on, windows included, into the part
+    /// of the whole from `start` to `start + span`: one of several jobs run
+    /// in turn, each of which reports from 0 to 1 by itself.
+    pub fn set_outer(&self, start: f32, span: f32) {
+        self.outer[0].store(start.to_bits(), Ordering::Relaxed);
+        self.outer[1].store(span.to_bits(), Ordering::Relaxed);
+    }
+
     /// Records how far the render has got, from 0 to 1. Returns
     /// `Err(Cancelled)` if the render should stop.
     pub fn report(&self, fraction: f32) -> Result<(), Cancelled> {
         let start = f32::from_bits(self.window[0].load(Ordering::Relaxed));
         let span = f32::from_bits(self.window[1].load(Ordering::Relaxed));
         let whole = start + fraction.clamp(0.0, 1.0) * span;
+        let outer_start = f32::from_bits(self.outer[0].load(Ordering::Relaxed));
+        let outer_span = f32::from_bits(self.outer[1].load(Ordering::Relaxed));
+        let whole = outer_start + whole.clamp(0.0, 1.0) * outer_span;
         self.fraction
             .store(whole.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
         if self.cancelled.load(Ordering::Relaxed) {

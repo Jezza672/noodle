@@ -93,8 +93,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S10",
         title: "Program multi-articulation orchestral parts",
-        status: Status::Workaround,
-        missing: "Keyswitch notes are placed by hand; no articulation map, chasing or rename: #351.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S11",
@@ -159,8 +159,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S21",
         title: "Recall alternate mix versions",
-        status: Status::Blocked,
-        missing: "No mix snapshots, versions or batch export of versions: #358.",
+        status: Status::Partial,
+        missing: "Choosing the folder for the batch export is a native dialog, so the route ticks the versions and stops before Export.",
     },
     Story {
         id: "S22",

@@ -3,6 +3,7 @@
 
 mod adsr;
 mod arpeggiator;
+mod articulation_map;
 mod automation;
 mod background;
 mod beat_length;
@@ -63,12 +64,17 @@ mod svf;
 mod tempo;
 mod time_stretch;
 mod vca;
+mod version_value;
 mod voice_mix;
 mod voices;
 
 pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
     ARPEGGIATOR_ID, Arpeggiator, RATE_NAMES as ARP_RATE_NAMES, RATE_TICKS as ARP_RATE_TICKS,
+};
+pub use articulation_map::{
+    Action as ArticulationAction, ArticulationMap, Entry as ArticulationEntry, MAX_KEYSWITCH_MS,
+    map_from_text as articulation_map_from_text, map_to_text as articulation_map_to_text,
 };
 pub use automation::{
     AUTOMATION_LABEL, AUTOMATION_MAX, AUTOMATION_MIN, AUTOMATION_NODE_ID, AUTOMATION_RECORD,
@@ -109,7 +115,10 @@ pub use eq::{
     EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
     default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
 };
-pub use export::{ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export};
+pub use export::{
+    ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export,
+    spawn_export_all,
+};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
@@ -177,6 +186,7 @@ pub use svf::{SVF_ID, Svf, svf_response};
 pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
+pub use version_value::{MAX_VERSION_SLOTS, VERSION_MAX, VERSION_MIN, VERSION_TAPER, VersionValue};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 pub use voices::{VOICES_ID, Voices};
 
@@ -275,6 +285,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Key);
     registry.register(MonoNote);
     registry.register(NoteSplit);
+    registry.register(ArticulationMap);
+    registry.register(VersionValue);
     registry.register(RandomSelect);
     registry.register(Arpeggiator);
     registry.register(Voices);

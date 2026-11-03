@@ -166,6 +166,11 @@ before the start, keys and velocities in range).
     synth starts), which a chase skips if it is the newest. A clip's own loop
     puts every controller back to its value at the loop's start at each
     repeat, or releases it if it had none.
+  - *Articulations.* A note's `articulation` (a project ID) reaches
+    `ScheduledNote`. `start_note` sends a `ChannelControl::Articulation` event
+    just before a note-on whose articulation differs from the last sent, and
+    `chase_articulation` sends the newest before the playhead after a jump (and
+    at the start), when the track uses any.
   - *Editing.* Trimming the end drops points past it (unless the clip loops);
     trimming the start and splitting use `controls_from`, which keeps each
     held controller at the new start so a pedal stays down, and cut an

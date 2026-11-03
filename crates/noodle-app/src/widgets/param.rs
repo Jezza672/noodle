@@ -61,17 +61,22 @@ pub enum Automate {
 impl Automate {
     /// The menu entry. Returns whether it was clicked.
     fn entry(self, ui: &mut Ui) -> bool {
+        self.entry_named(ui, "Automate")
+    }
+
+    /// The menu entry under another name (Vary per version).
+    fn entry_named(self, ui: &mut Ui, label: &str) -> bool {
         match self {
             Automate::Hidden => false,
             Automate::Offered => {
-                let clicked = ui.button("Automate").clicked();
+                let clicked = ui.button(label).clicked();
                 if clicked {
                     ui.close();
                 }
                 clicked
             }
             Automate::Refused(why) => {
-                ui.add_enabled(false, egui::Button::new("Automate"))
+                ui.add_enabled(false, egui::Button::new(label))
                     .on_disabled_hover_text(why);
                 false
             }
@@ -129,6 +134,8 @@ pub struct ParamOutput {
     pub automate: bool,
     /// Learn MIDI was chosen from the menu.
     pub learn: bool,
+    /// Vary per version was chosen from the menu.
+    pub vary: bool,
 }
 
 impl ParamOutput {
@@ -146,6 +153,9 @@ impl ParamOutput {
         }
         if self.learn {
             edits.push(Edit::LearnMidi(noodle_core::Endpoint::new(node, key)));
+        }
+        if self.vary {
+            edits.push(Edit::VaryPerVersion(noodle_core::Endpoint::new(node, key)));
         }
         if let Some(edit) = self.edit {
             let command = Command::SetParam {
@@ -194,6 +204,8 @@ pub struct ParamField<'a> {
     zoom: f32,
     live: Option<Live>,
     automate: Automate,
+    /// The Vary per version entry, offered like Automate.
+    vary: Automate,
     learn: LearnMidi,
     /// Whether the wire replaces the value (the fill follows the live value)
     /// rather than offsetting it (the fill stays at the base).
@@ -215,6 +227,7 @@ impl<'a> ParamField<'a> {
             zoom: 1.0,
             live: None,
             automate: Automate::Hidden,
+            vary: Automate::Hidden,
             learn: LearnMidi::Hidden,
             replaced: false,
         }
@@ -227,6 +240,12 @@ impl<'a> ParamField<'a> {
     }
 
     /// Adds the Automate entry to the right-click menu.
+    /// Adds the Vary per version entry to the right-click menu.
+    pub fn vary_per_version(mut self, vary: Automate) -> Self {
+        self.vary = vary;
+        self
+    }
+
     pub fn automate(mut self, automate: Automate) -> Self {
         self.automate = automate;
         self
@@ -404,12 +423,14 @@ impl<'a> ParamField<'a> {
         }
         let mut automate = false;
         let mut learn = false;
+        let mut vary = false;
         response.context_menu(|ui| {
             if ui.button("Reset to default").clicked() {
                 edit = Some(ParamEdit::Reset);
                 ui.close();
             }
             automate |= self.automate.entry(ui);
+            vary |= self.vary.entry_named(ui, "Vary per version");
             learn |= self.learn.entry(ui);
         });
 
@@ -436,6 +457,7 @@ impl<'a> ParamField<'a> {
             gesture,
             automate,
             learn,
+            vary,
         }
     }
 
@@ -482,6 +504,7 @@ impl<'a> ParamField<'a> {
             gesture: Gesture::Idle,
             automate: false,
             learn: false,
+            vary: false,
         }
     }
 
@@ -653,6 +676,7 @@ impl<'a> ParamField<'a> {
         resets |= targeted && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
         let mut automate = false;
         let mut learn = false;
+        let mut vary = false;
         for button in &responses {
             button.context_menu(|ui| {
                 if ui.button("Reset to default").clicked() {
@@ -660,6 +684,7 @@ impl<'a> ParamField<'a> {
                     ui.close();
                 }
                 automate |= self.automate.entry(ui);
+                vary |= self.vary.entry_named(ui, "Vary per version");
                 learn |= self.learn.entry(ui);
             });
         }
@@ -676,6 +701,7 @@ impl<'a> ParamField<'a> {
             gesture: Gesture::Idle,
             automate,
             learn,
+            vary,
         }
     }
 

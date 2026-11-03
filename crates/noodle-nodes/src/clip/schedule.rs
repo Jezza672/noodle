@@ -650,6 +650,9 @@ pub struct ScheduledNote {
     pub end: u64,
     pub key: u8,
     pub velocity: f32,
+    /// The ID of the articulation the note is played with, 0 for none (see
+    /// [`MidiNote::articulation`](noodle_core::MidiNote::articulation)).
+    pub articulation: u16,
 }
 
 /// Note IDs of notes in clips use the low 29 bits. The top three are for notes
@@ -895,6 +898,7 @@ fn schedule_notes(
             end,
             key: note.key,
             velocity: note.velocity,
+            articulation: note.articulation.unwrap_or(0),
         });
     }
 }

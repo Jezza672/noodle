@@ -22,6 +22,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [timeline-clip-editing.md](timeline-clip-editing.md) | Timeline clip editing |
 | [scripting-and-midi2.md](scripting-and-midi2.md) | Scripting node, MIDI 2.0 and later follow-ups |
 | [sample-routing.md](sample-routing.md) | Sample routing |
+| [mix-versions-and-articulations.md](mix-versions-and-articulations.md) | Mix versions with batch export, articulation maps |
 | [code-cleanup.md](code-cleanup.md) | Code cleanup audit: idle power, derived state, file watching |
 | [playback-cache.md](playback-cache.md) | Playback cache, batch 1: reset equals fresh, memory tiers, cache-key gaps |
 | [autosave.md](autosave.md) | Autosave and crash recovery |

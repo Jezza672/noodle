@@ -14,6 +14,7 @@ pub mod library;
 mod project;
 pub mod spare;
 mod timeline;
+mod versions;
 mod warp;
 
 pub use automation::{AutomationLane, AutomationPoint, Curve, LaneId};
@@ -33,6 +34,11 @@ pub use project::{LoadError, Project, PunchRange, TransportLoop};
 pub use timeline::{
     MusicalPosition, SignatureChange, TICKS_PER_QUARTER, TempoChange, TempoMap, TempoMapError,
     Tick, TimeSignature,
+};
+pub use versions::{
+    ARTICULATION_COLOURS, ARTICULATION_MAP_ID, ARTICULATION_MAP_KEY, Articulation,
+    MAX_ARTICULATIONS, MAX_VERSIONS, VERSION_COUNT_KEY, VERSION_VALUE_ID, slots as version_slots,
+    version_slot_key,
 };
 pub use warp::{
     ClipWarp, ENGINE_MAX_SPEED, GROOVE_SLOT, GROOVE_SLOTS, Groove, LoopRegion, MAX_CLIP_BPM,

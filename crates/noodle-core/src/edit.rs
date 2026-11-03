@@ -4,9 +4,9 @@
 use std::fmt;
 
 use crate::{
-    AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint, Frame,
-    FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap, TransportLoop, Value,
-    WarpId,
+    Articulation, AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection,
+    Endpoint, Frame, FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap,
+    TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +88,14 @@ pub enum Command {
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
+    /// Replaces the mix version list and which version is active (see
+    /// [`versions`](crate::versions)).
+    SetVersions {
+        names: Vec<String>,
+        active: usize,
+    },
+    /// Replaces the articulation list.
+    SetArticulations(Vec<Articulation>),
     /// Freezes or unfreezes a node or group.
     SetFrozen {
         node: NodeId,
@@ -205,6 +213,15 @@ impl Command {
             }
             Command::SetTrackOrder(order) => {
                 return Ok(Command::SetTrackOrder(project.replace_track_order(order)));
+            }
+            Command::SetVersions { names, active } => {
+                let (names, active) = project.replace_versions(names, active)?;
+                return Ok(Command::SetVersions { names, active });
+            }
+            Command::SetArticulations(list) => {
+                return Ok(Command::SetArticulations(
+                    project.replace_articulations(list)?,
+                ));
             }
             Command::AddClip { id, clip } => {
                 project.insert_clip(id, clip)?;
@@ -362,6 +379,8 @@ impl Command {
             | Command::SetLoop(_)
             | Command::SetPunch(_)
             | Command::SetTrackOrder(_)
+            | Command::SetVersions { .. }
+            | Command::SetArticulations(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
@@ -392,6 +411,8 @@ enum Target<'a> {
     Loop,
     Punch,
     TrackOrder,
+    Versions,
+    Articulations,
     Frozen(NodeId),
 }
 
@@ -408,6 +429,8 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetLoop(_) => Some(Target::Loop),
         Command::SetPunch(_) => Some(Target::Punch),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
+        Command::SetVersions { .. } => Some(Target::Versions),
+        Command::SetArticulations(_) => Some(Target::Articulations),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
     }
@@ -475,6 +498,8 @@ pub enum EditError {
     LaneTargetTaken(Endpoint, LaneId),
     /// What's wrong with the lane.
     InvalidLane(LaneId, &'static str),
+    /// What's wrong with a list the project keeps (versions, articulations).
+    Invalid(String),
 }
 
 impl fmt::Display for EditError {
@@ -510,6 +535,7 @@ impl fmt::Display for EditError {
             Self::LaneExists(id) => write!(f, "there's already a {id}"),
             Self::LaneTargetTaken(input, id) => write!(f, "{id} already drives {input}"),
             Self::InvalidLane(id, why) => write!(f, "the {id} can't be used: {why}"),
+            Self::Invalid(why) => write!(f, "{why}"),
         }
     }
 }

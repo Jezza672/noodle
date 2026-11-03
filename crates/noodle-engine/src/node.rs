@@ -768,6 +768,10 @@ pub struct Transport {
     /// Whether a recording is counting in: the metronome clicks even if it is
     /// switched off.
     pub count_in: bool,
+    /// The mix version that plays: an index into the project's version list
+    /// (see `noodle_core::versions`). A Version Value node outputs its slot
+    /// for it.
+    pub version: u32,
 }
 
 impl Default for Transport {
@@ -782,6 +786,7 @@ impl Default for Transport {
             signature: noodle_core::TimeSignature::COMMON,
             signature_start: 0.0,
             count_in: false,
+            version: 0,
         }
     }
 }

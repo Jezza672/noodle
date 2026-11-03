@@ -4,7 +4,7 @@
 //! transport's state, which is the position.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use noodle_core::Tick;
 
@@ -23,6 +23,8 @@ pub struct TransportControl {
     looping: AtomicU64,
     /// Whether a recording is counting in (see [`TransportControl::set_count_in`]).
     count_in: AtomicBool,
+    /// The mix version that plays (see [`TransportControl::set_version`]).
+    version: AtomicU32,
     seek_tick: AtomicI64,
     /// Counts seeks, so the audio thread notices a new one.
     seek_seq: AtomicU64,
@@ -36,6 +38,7 @@ impl TransportControl {
             playing: AtomicBool::new(true),
             looping: AtomicU64::new(0),
             count_in: AtomicBool::new(false),
+            version: AtomicU32::new(0),
             seek_tick: AtomicI64::new(0),
             seek_seq: AtomicU64::new(0),
             position: AtomicU64::new(0),
@@ -62,6 +65,19 @@ impl TransportControl {
 
     pub(crate) fn counting_in(&self) -> bool {
         self.count_in.load(Ordering::Relaxed)
+    }
+
+    /// Chooses the mix version that plays, by its place in the project's
+    /// list. Nodes see it at the next block, with no rebuild of the graph.
+    pub fn set_version(&self, version: usize) {
+        self.version.store(
+            u32::try_from(version).unwrap_or(u32::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn version(&self) -> usize {
+        self.version.load(Ordering::Relaxed) as usize
     }
 
     /// Moves the playhead to `tick`. The output fades out and back in around

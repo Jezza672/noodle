@@ -115,6 +115,7 @@ pub fn added(
         key,
         velocity: velocity.clamp(0.0, 1.0),
         expressions: Vec::new(),
+        articulation: None,
     });
     Some((notes, id))
 }
