@@ -923,6 +923,16 @@ pub fn show(
                                 edits.push(Edit::SplitToStems(id));
                             }
                             if ui
+                                .button("Pin transients")
+                                .on_hover_text(
+                                    "Put a warp marker on every hit of this clip and the clips linked to it (one for a hit the mics hear a few milliseconds apart), where it plays now. Quantise and the Slices mode work from them.",
+                                )
+                                .clicked()
+                            {
+                                ui.close();
+                                edits.push(Edit::PinTransients(id, 50));
+                            }
+                            if ui
                                 .button("Slice to Sampler")
                                 .on_hover_text(
                                     "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",

@@ -32,3 +32,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [midi-out.md](midi-out.md) | MIDI Out node, sender thread, output latency, clock and start/stop out |
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |
 | [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
+| [onsets-slicing-and-midi.md](onsets-slicing-and-midi.md) | Onset sensitivity, Slice, transient quantise (regions, Slices mode), audio to MIDI, Pitch Track |

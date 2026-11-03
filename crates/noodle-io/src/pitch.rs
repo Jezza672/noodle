@@ -283,10 +283,7 @@ impl NoteSegmenter {
         self.unvoiced = 0;
         let key = frame.key.unwrap_or(0.0);
         let velocity = |db: f32| (((db + 40.0) / 34.0).clamp(0.0, 1.0) * 107.0) as u8 + 20;
-        let near = |c: &Option<(f32, u32, f32)>| match c {
-            Some((mean, _, _)) if (mean - key).abs() <= STEADY => true,
-            _ => false,
-        };
+        let near = |c: &Option<(f32, u32, f32)>| matches!(c, Some((mean, _, _)) if (mean - key).abs() <= STEADY);
         let fold = |c: Option<(f32, u32, f32)>| match c {
             Some((mean, n, peak)) => (
                 (mean * n as f32 + key) / (n + 1) as f32,

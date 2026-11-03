@@ -138,6 +138,9 @@ pub enum Edit {
     ),
     /// Slice an audio clip at its transients onto a new Sampler track.
     SliceToSampler(noodle_core::ClipId),
+    /// Pin the transients of a clip and the clips linked to it, at a
+    /// sensitivity in percent.
+    PinTransients(noodle_core::ClipId, u8),
     /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
     /// the loop's span if `in_loop`, else the whole timeline. Not an edit
     /// itself: the track arrives as one undo step when the render is done.
@@ -1627,6 +1630,10 @@ impl Session {
                 }
                 Edit::SliceToSampler(clip) => {
                     self.slice_to_sampler(clip);
+                    continue;
+                }
+                Edit::PinTransients(clip, percent) => {
+                    self.pin_transients(clip, percent);
                     continue;
                 }
                 Edit::RenderToClip { group, in_loop } => {

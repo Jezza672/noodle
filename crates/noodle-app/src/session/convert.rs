@@ -234,6 +234,68 @@ impl Session {
         Ok((Command::Batch(commands), count))
     }
 
+    /// Pins the transients of `clip` and of every clip linked to it as warp
+    /// markers, where they play now, in one undo step: the hits are found in
+    /// each clip's own file at `percent` sensitivity (the scale Slice and
+    /// Convert to MIDI use), and hits within a few milliseconds of each other
+    /// in different clips count as one, so the close mic and the overheads
+    /// get one marker per hit and stay in phase when the markers are moved.
+    pub fn pin_transients(&mut self, clip: ClipId, percent: u8) {
+        match self.pinning(clip, percent) {
+            Ok((command, pinned)) => {
+                self.edit([Edit::Apply(command)]);
+                self.message = Some(format!(
+                    "Pinned {pinned} transient{}",
+                    if pinned == 1 { "" } else { "s" }
+                ));
+            }
+            Err(why) => self.message = Some(why),
+        }
+    }
+
+    fn pinning(&self, id: ClipId, percent: u8) -> Result<(Command, usize), String> {
+        let project = &self.project;
+        let sensitivity = f32::from(percent.min(100)) / 100.0;
+        let mut moments: Vec<f64> = Vec::new();
+        for member in project.linked_with(id) {
+            let Some(audio) = project.clip(member).and_then(|c| c.as_audio()) else {
+                continue;
+            };
+            let path = match self.directory() {
+                Some(dir) => dir.join(&audio.source),
+                None => PathBuf::from(&audio.source),
+            };
+            let file =
+                decode_file(&path).map_err(|e| format!("Couldn't read {}: {e}", audio.source))?;
+            let channels = file.channels.max(1);
+            let frames = file.samples.len() / channels;
+            let from = (audio.offset as usize).min(frames);
+            let to = ((audio.offset + audio.length) as usize).min(frames);
+            let mono: Vec<f32> = (from..to)
+                .map(|f| {
+                    file.samples[f * channels..(f + 1) * channels]
+                        .iter()
+                        .sum::<f32>()
+                        / channels as f32
+                })
+                .collect();
+            let rate = f64::from(file.sample_rate);
+            moments.extend(
+                noodle_io::detect_onsets_with(&mono, file.sample_rate, sensitivity)
+                    .into_iter()
+                    .map(|frame| (from as u64 + frame) as f64 / rate),
+            );
+        }
+        let mut pinned = 0;
+        let command = project
+            .warp_edit(id, |warp| pinned = warp.pin_transients(&moments))
+            .map_err(|e| e.to_string())?;
+        if pinned == 0 {
+            return Err("No new transients to pin".into());
+        }
+        Ok((command, pinned))
+    }
+
     /// Slices the audio of `clip` at its transients onto a new track that
     /// plays the slices from the keys: a Sample node (the clip's part of the
     /// file) into a Slice node into a Sampler with keytrack off, inside a new
@@ -512,6 +574,63 @@ mod tests {
         assert_eq!(
             crate::timeline::tracks(session.project()).len(),
             tracks_before
+        );
+    }
+
+    /// Clicks at `times` seconds on a quiet bed.
+    fn hits(times: &[f32], seconds: f32) -> Vec<f32> {
+        let mut x = silence(seconds);
+        for &t in times {
+            let at = (t * RATE as f32) as usize;
+            for i in 0..2_000 {
+                let u = i as f32 / RATE as f32;
+                x[at + i] += 0.8 * (std::f32::consts::TAU * 300.0 * u).sin() * (-u * 60.0).exp();
+            }
+        }
+        x
+    }
+
+    #[test]
+    fn pinning_across_a_link_pins_each_hit_once_even_when_the_mics_hear_it_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let close = hits(&[0.5, 1.0, 1.5], 2.0);
+        // The overheads hear every hit 3 ms later, and one the close mic missed.
+        let over = hits(&[0.503, 1.003, 1.503, 1.75], 2.0);
+        let (mut session, a, input_a) = rig(dir.path(), &close);
+        noodle_io::write_wav(&dir.path().join("over.wav"), &over, 1, RATE).unwrap();
+        let (track, input_b) =
+            add_track::with_input(session.project().graph(), || session.new_node_id());
+        session.edit([Edit::Apply(track)]);
+        let b = session.project().next_clip_id();
+        session.edit([Edit::Apply(Command::AddClip {
+            id: b,
+            clip: Clip::audio(input_b, Tick(0), "over.wav", over.len() as u64),
+        })]);
+        let link = session.project().link_command(&[a, b]).unwrap();
+        session.edit([Edit::Apply(link)]);
+        let _ = input_a;
+
+        session.pin_transients(a, 50);
+        assert_eq!(session.message(), Some("Pinned 4 transients"));
+        // Both clips share the one warp, with a marker at each distinct hit.
+        let (warp_a, warp) = session.project().warp_of(a).unwrap();
+        assert_eq!(session.project().warp_of(b).unwrap().0, warp_a);
+        let seconds: Vec<f64> = warp.markers.iter().map(|m| m.seconds).collect();
+        assert_eq!(seconds.len(), 4, "{seconds:?}");
+        for (got, want) in seconds.iter().zip([0.5, 1.0, 1.5, 1.75]) {
+            assert!((got - want).abs() < 0.004, "{seconds:?}");
+        }
+        // Pinning again finds nothing new and changes nothing.
+        let before = session.project().clone();
+        session.pin_transients(a, 50);
+        assert_eq!(session.message(), Some("No new transients to pin"));
+        assert_eq!(*session.project(), before);
+        session.undo();
+        assert!(
+            session
+                .project()
+                .warp_of(a)
+                .is_none_or(|(_, w)| w.markers.is_empty())
         );
     }
 }
