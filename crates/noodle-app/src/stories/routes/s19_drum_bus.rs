@@ -281,7 +281,7 @@ fn parallel_bus(p: &Project) -> Result<(NodeId, NodeId), String> {
 }
 
 /// The parallel Mix's identity and settings, for the late change to leave
-/// alone. The send moves to a different input, which is not part of this.
+/// alone. Only the send's source changes; its input stays `in1`.
 fn parallel_mix(p: &Project) -> String {
     let Ok((_, mix)) = parallel_bus(p) else {
         return "the parallel Mix is missing".into();
