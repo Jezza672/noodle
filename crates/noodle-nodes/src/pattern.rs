@@ -375,6 +375,15 @@ impl PatternNode {
     fn new(shared: Arc<PatternShared>, salt: u32) -> Self {
         let set = shared.latest();
         let version = shared.version();
+        let mut node = Self::fresh(shared, salt);
+        node.set = set;
+        node.version = version;
+        node
+    }
+
+    /// A node with no pattern yet and nothing playing; takes no lock.
+    fn fresh(shared: Arc<PatternShared>, salt: u32) -> Self {
+        let (set, version) = (Arc::new(PatternSet::default()), 0);
         Self {
             shared,
             set,
@@ -878,7 +887,27 @@ impl Node for PatternNode {
     }
 
     fn reset(&mut self) {
-        *self = Self::new(self.shared.clone(), self.salt);
+        // Playback state goes back to a new instance's; the pattern is kept,
+        // so the audio thread takes no lock and allocates nothing here.
+        self.audition_held = [0; 2];
+        self.now = 0;
+        self.sounding = [Sounding::default(); MAX_SOUNDING];
+        self.held = [0; MAX_HELD];
+        self.held_count = 0;
+        self.latched = false;
+        self.trigger_key = 60;
+        self.active = false;
+        self.carry = 0.0;
+        self.origin = 0.0;
+        self.expected_tick = None;
+        self.was_playing = false;
+        self.step_index = 0;
+        self.repeat = 0;
+        self.adv_high = false;
+        self.rst_high = false;
+        self.signature = (0, 0, 0, 0, 0);
+        self.count = 0;
+        self.last_velocity = 0.0;
     }
 }
 
