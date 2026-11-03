@@ -332,7 +332,7 @@ scroll area around it.
   and decrement actions work too.
 - **Choices** for stepped parameters with labels: a toggle button when the
   labels are Off and On, radio-style segments when up to four short options
-  fit the row, and otherwise a drop-down. The drop-down is not egui's
+  each fit an equal share of the row, and otherwise a drop-down. The drop-down is not egui's
   `ComboBox` but a button that opens a plain area under it (closed by a pick,
   Escape or a press elsewhere), so it does not depend on how the platform
   delivers a click: the combo box would not open for a Mac user. Every

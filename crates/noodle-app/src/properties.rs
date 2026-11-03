@@ -1753,6 +1753,8 @@ mod tests {
         // half, so it used to wrap and grow down onto the range text.
         for width in [200.0, 220.0, 240.0, 260.0, 280.0, 300.0] {
             let mut harness = harness([Node::new("noodle.util.selector")]);
+            // The real app's padding decides whether the labels fit.
+            crate::theme::apply(&harness.ctx);
             harness.set_size(vec2(width, 500.0));
             harness.run();
             let range = harness
@@ -1763,6 +1765,13 @@ mod tests {
                 assert!(
                     button.bottom() <= range.top(),
                     "at {width}px the switch {button:?} overlaps its range text {range:?}"
+                );
+            } else {
+                // Narrow rows fall back to the drop-down; the choice must not
+                // simply disappear.
+                assert!(
+                    harness.query_by_value("Instant").is_some(),
+                    "at {width}px the switch is neither a segment nor a drop-down"
                 );
             }
         }
