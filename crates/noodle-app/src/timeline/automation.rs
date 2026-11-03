@@ -99,7 +99,7 @@ pub fn trimmed(
         return None;
     }
     let mut out = lane.clone();
-    let mut insert = |out: &mut AutomationLane, tick: Tick| {
+    let insert = |out: &mut AutomationLane, tick: Tick| {
         if tick < Tick::ZERO || out.points.iter().any(|p| p.tick == tick) {
             return;
         }
