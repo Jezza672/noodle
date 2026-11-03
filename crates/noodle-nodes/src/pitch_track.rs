@@ -261,6 +261,7 @@ impl Node for ToNotesNode {
         // A seek starts afresh; the sensitivity is read again next block.
         self.segmenter = NoteSegmenter::new(0.5);
         self.until = 0;
+        self.next_id = 0;
         self.sounding = None;
     }
 }
