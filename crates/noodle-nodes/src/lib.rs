@@ -57,6 +57,7 @@ mod sampler;
 mod sampler_stretch;
 mod scope;
 mod script;
+mod selector;
 mod spectral;
 mod spectrum;
 mod stage;
@@ -162,6 +163,9 @@ pub use scope::{SCOPE_ID, Scope};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
     SCRIPT_KEY, Script, ScriptPorts, check as check_script,
+};
+pub use selector::{
+    CHOICE_PORT as SELECTOR_CHOICE, MAX_INPUTS as SELECTOR_MAX_INPUTS, SELECTOR_ID, Selector,
 };
 pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
@@ -282,6 +286,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(MonoNote);
     registry.register(NoteSplit);
     registry.register(RandomSelect);
+    registry.register(Selector);
     registry.register(Arpeggiator);
     registry.register(Swing);
     registry.register(Humanise);

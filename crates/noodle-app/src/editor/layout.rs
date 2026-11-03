@@ -642,7 +642,7 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
                 .map_or(0, |i| i + 1);
             ports.insert(at, port);
         }
-        noodle_nodes::RANDOM_SELECT_ID => random_select_spares(graph, id, ports, &spare),
+        type_id if is_picker(type_id) => picker_spares(graph, id, type_id, ports, &spare),
         GROUP => {
             let input = spare::spare_group_name(graph, id, spare::Side::Input);
             let output = spare::spare_group_name(graph, id, spare::Side::Output);
@@ -653,28 +653,63 @@ fn add_spares(graph: &Graph, id: NodeId, node: &Node, ports: &mut Vec<PortGeom>)
     }
 }
 
-/// The data ports of a Random Select that carry what it selects between: its
-/// inputs and its output.
-pub fn random_select_carries(key: &str) -> bool {
+/// Whether a node type chooses one of N inputs of one kind: Random Select and
+/// Selector share their editor behaviour.
+pub fn is_picker(type_id: &str) -> bool {
+    matches!(
+        type_id,
+        noodle_nodes::RANDOM_SELECT_ID | noodle_nodes::SELECTOR_ID
+    )
+}
+
+/// The data ports of a picker that carry what it selects between: its inputs
+/// and its output.
+pub fn picker_carries(key: &str) -> bool {
     key == "out" || (key.starts_with("in") && key[2..].parse::<usize>().is_ok())
 }
 
-/// Whether a Random Select has a wire on the ports that carry its data. Until
-/// it does, it has no type: it takes that of the first wire (see
-/// [`noodle_nodes::RANDOM_SELECT_ID`]).
-pub fn random_select_is_wired(graph: &Graph, id: NodeId) -> bool {
+/// Whether a picker has a wire on the ports that carry its data. Until it
+/// does, it has no type: it takes that of the first wire.
+pub fn picker_is_wired(graph: &Graph, id: NodeId) -> bool {
     graph.connections().any(|c| {
-        (c.to.node == id && random_select_carries(&c.to.port))
-            || (c.from.node == id && random_select_carries(&c.from.port))
+        (c.to.node == id && picker_carries(&c.to.port))
+            || (c.from.node == id && picker_carries(&c.from.port))
     })
 }
 
-/// A Random Select shows one input more than are wired, as a mixer does, and
-/// until something is wired it has no type, so its data ports take any wire
-/// and its type-specific parameters stay out of sight.
-fn random_select_spares(
+/// The signal output a picker of samples wires to its receiver.
+fn picker_choice(type_id: &str) -> &'static str {
+    if type_id == noodle_nodes::SELECTOR_ID {
+        noodle_nodes::SELECTOR_CHOICE
+    } else {
+        noodle_nodes::RANDOM_SELECT_CHOICE
+    }
+}
+
+fn picker_max_inputs(type_id: &str) -> i64 {
+    if type_id == noodle_nodes::SELECTOR_ID {
+        noodle_nodes::SELECTOR_MAX_INPUTS
+    } else {
+        noodle_nodes::RANDOM_SELECT_MAX_INPUTS
+    }
+}
+
+/// The parameters that wait for a type. A wire on one keeps it shown.
+fn picker_hidden(type_id: &str) -> &'static [&'static str] {
+    if type_id == noodle_nodes::SELECTOR_ID {
+        &["switch"]
+    } else {
+        &["avoid_repeat", "switch", "seed"]
+    }
+}
+
+/// A picker shows one input more than are wired, as a mixer does, and until
+/// something is wired it has no type, so its data ports take any wire and its
+/// type-specific parameters stay out of sight.
+fn picker_spares(
     graph: &Graph,
     id: NodeId,
+    type_id: &str,
     ports: &mut Vec<PortGeom>,
     spare: &dyn Fn(Side, String) -> PortGeom,
 ) {
@@ -684,7 +719,8 @@ fn random_select_spares(
         .filter_map(|c| spare::mixer_input_index(&c.to.port))
         .max()
         .unwrap_or(0);
-    let wired = random_select_is_wired(graph, id);
+    let wired = picker_is_wired(graph, id);
+    let hidden = picker_hidden(type_id);
     // The parameters that wait for a type; a wire on one keeps them shown.
     let driven = |key: &str| {
         graph
@@ -693,12 +729,10 @@ fn random_select_spares(
     };
     ports.retain(|p| {
         let index = spare::mixer_input_index(&p.key).filter(|_| p.side == Side::Input);
-        // The pick of a Random Select of samples is wired by the compiler.
-        p.key != noodle_nodes::RANDOM_SELECT_CHOICE
+        // The pick of a picker of samples is wired by the compiler.
+        p.key != picker_choice(type_id)
             && index.is_none_or(|i| i <= used)
-            && (wired
-                || !matches!(p.key.as_str(), "avoid_repeat" | "switch" | "seed")
-                || driven(&p.key))
+            && (wired || !hidden.contains(&p.key.as_str()) || driven(&p.key))
     });
     let template = ports
         .iter()
@@ -709,7 +743,7 @@ fn random_select_spares(
     } else {
         PortKind::Any
     };
-    if (used as i64) < noodle_nodes::RANDOM_SELECT_MAX_INPUTS {
+    if (used as i64) < picker_max_inputs(type_id) {
         let mut next = spare(Side::Input, spare::mixer_input_key(used + 1));
         next.kind = kind.clone();
         ports.insert(
@@ -721,7 +755,7 @@ fn random_select_spares(
         );
     }
     if !wired {
-        for p in ports.iter_mut().filter(|p| random_select_carries(&p.key)) {
+        for p in ports.iter_mut().filter(|p| picker_carries(&p.key)) {
             p.kind = PortKind::Any;
             p.spare = true;
         }
