@@ -3,8 +3,10 @@
 //! Partial. The export dialog can write each group output as its own file,
 //! named after it, at the project's rate. Choosing the folder is a native
 //! dialog that a route cannot drive, so the route ticks the group, unticks
-//! the mixdown and stops before "Export…". The stems all share one length:
-//! there is no tail length setting (#361).
+//! the mixdown and stops before "Export…". The stems all share one length, set
+//! by the dialog's Tail row (to silence up to a cap, or fixed), saved in the
+//! project. The route leaves the default (to silence), so its cost is the
+//! same as before the setting existed.
 
 use std::path::Path;
 

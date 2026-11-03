@@ -24,6 +24,7 @@ mod s16_spectral_cross;
 mod s17_resample;
 mod s17_slice;
 mod s18_plugins;
+mod s18_replace;
 mod s19_drum_bus;
 mod s20_automation;
 mod s21_mix_versions;
@@ -61,6 +62,8 @@ pub fn all() -> Vec<Route> {
         s06_stems::route(),
         s07_sections::route(),
         s08_midi_detail::route(),
+        s08_midi_detail::humanise_route(),
+        s08_midi_detail::wire_route(),
         s09_drum_pattern::route(),
         s10_keyswitch::route(),
         s11_audio_to_midi::route(),
@@ -72,6 +75,7 @@ pub fn all() -> Vec<Route> {
         s17_resample::route(),
         s17_slice::route(),
         s18_plugins::route(),
+        s18_replace::route(),
         s19_drum_bus::route(),
         s20_automation::route(),
         s21_mix_versions::route(),

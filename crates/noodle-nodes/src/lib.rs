@@ -20,11 +20,13 @@ mod distortion;
 mod dynamics;
 mod envelope;
 mod eq;
+mod event_delay;
 mod export;
 mod follower;
 mod freeze;
 mod fundamental;
 mod gain;
+mod humanise;
 mod ladder;
 mod lag;
 mod lfo;
@@ -56,12 +58,14 @@ mod sampler;
 mod sampler_stretch;
 mod scope;
 mod script;
+mod selector;
 mod slice;
 mod spectral;
 mod spectrum;
 mod stage;
 mod surround;
 mod svf;
+mod swing;
 mod tempo;
 mod time_stretch;
 mod vca;
@@ -120,6 +124,7 @@ pub use freeze::{
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
+pub use humanise::{HUMANISE_ID, Humanise, MAX_TIMING_MS as HUMANISE_MAX_TIMING_MS};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
 pub use lfo::{LFO_ID, Lfo, lfo_wave};
@@ -162,6 +167,9 @@ pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
     SCRIPT_KEY, Script, ScriptPorts, check as check_script,
 };
+pub use selector::{
+    CHOICE_PORT as SELECTOR_CHOICE, MAX_INPUTS as SELECTOR_MAX_INPUTS, SELECTOR_ID, Selector,
+};
 pub use slice::{
     MAX_SLICES, SLICE_EDITS_KEY, SLICE_FIRST_KEY, SLICE_ID, SLICE_SENSITIVITY_KEY, Slice,
     cuts as slice_cuts, slice_set,
@@ -182,6 +190,7 @@ pub use surround::{
     SPLIT_CHANNELS_ID, SURROUND_PAN_ID, SplitChannels, SurroundPan, default_layout,
 };
 pub use svf::{SVF_ID, Svf, svf_response};
+pub use swing::{GRID_NAMES as SWING_GRID_NAMES, GRID_TICKS as SWING_GRID_TICKS, SWING_ID, Swing};
 pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use vca::{VCA_ID, Vca};
@@ -284,9 +293,12 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(MonoNote);
     registry.register(NoteSplit);
     registry.register(RandomSelect);
+    registry.register(Selector);
     registry.register(Arpeggiator);
     registry.register(PitchTrack);
     registry.register(ToNotes);
+    registry.register(Swing);
+    registry.register(Humanise);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);

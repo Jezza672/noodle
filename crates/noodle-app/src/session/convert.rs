@@ -148,6 +148,8 @@ impl Session {
             loop_len: Tick::ZERO,
             controls: Vec::new(),
             takes: None,
+            humanise_timing: Tick::ZERO,
+            humanise_velocity: 0.0,
         });
 
         if let Some(target) = replace {

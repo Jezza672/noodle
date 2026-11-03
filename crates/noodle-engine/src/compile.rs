@@ -602,7 +602,18 @@ fn resolve_nodes<'a>(
 ) -> Vec<Candidate<'a>> {
     let mut candidates = Vec::new();
     for (id, node) in graph.nodes() {
-        let Some(node_type) = overrides.get(&id).or_else(|| registry.get(&node.type_id)) else {
+        let stand_in: Option<Arc<dyn NodeType>> = if overrides.contains_key(&id)
+            || registry.get(&node.type_id).is_some()
+        {
+            None
+        } else {
+            crate::missing::placeholder(graph, id, node).map(|m| Arc::new(m) as Arc<dyn NodeType>)
+        };
+        let Some(node_type) = overrides
+            .get(&id)
+            .or_else(|| registry.get(&node.type_id))
+            .or(stand_in.as_ref())
+        else {
             diagnostics.push(Diagnostic::node(
                 id,
                 Problem::UnknownNodeType(node.type_id.clone()),

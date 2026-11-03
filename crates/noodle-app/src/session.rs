@@ -20,6 +20,7 @@ mod library;
 pub mod map_to;
 pub mod record_automation;
 mod render_clip;
+pub mod replace;
 pub mod sample_set;
 mod stems;
 mod transport_tempo;
@@ -137,6 +138,12 @@ pub enum Edit {
         node: NodeId,
         on: bool,
     },
+    /// Replace node: changes `node` to `type_id`, keeping its ID, wires,
+    /// lanes and clips where ports match (see [`replace`]). One undo step.
+    ReplaceNode {
+        node: NodeId,
+        type_id: String,
+    },
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
@@ -152,6 +159,13 @@ pub enum Edit {
     /// Pin the transients of a clip and the clips linked to it, at a
     /// sensitivity in percent.
     PinTransients(noodle_core::ClipId, u8),
+    /// Splits the clip a clip's stems came from again, at the chosen quality,
+    /// and points the stem clips at the new files (see
+    /// [`Session::resplit_stems`]). One undo step, when the job is done.
+    ResplitStems(noodle_core::ClipId),
+    /// Chooses how hard the next split works. Session state: not an undo
+    /// step, not saved.
+    SetStemsQuality(noodle_stems::Quality),
     /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
     /// the loop's span if `in_loop`, else the whole timeline. Not an edit
     /// itself: the track arrives as one undo step when the render is done.
@@ -1635,6 +1649,23 @@ impl Session {
                     self.monitor_as(node, mode, add);
                     continue;
                 }
+                Edit::ReplaceNode { node, type_id } => {
+                    self.history.end_group();
+                    match replace::plan(&self.project, &self.registry, node, &type_id) {
+                        Ok((command, report)) => {
+                            let name = self
+                                .registry
+                                .get(&type_id)
+                                .map_or(type_id.as_str(), |t| t.info().name);
+                            self.message = Some(report.summary(name));
+                            command
+                        }
+                        Err(why) => {
+                            self.message = Some(format!("Can't replace: {why}"));
+                            continue;
+                        }
+                    }
+                }
                 Edit::Monitor {
                     node,
                     command,
@@ -1657,6 +1688,14 @@ impl Session {
                 }
                 Edit::PinTransients(clip, percent) => {
                     self.pin_transients(clip, percent);
+                    continue;
+                }
+                Edit::ResplitStems(clip) => {
+                    self.resplit_stems(clip);
+                    continue;
+                }
+                Edit::SetStemsQuality(quality) => {
+                    self.set_stems_quality(quality);
                     continue;
                 }
                 Edit::RenderToClip { group, in_loop } => {
@@ -3442,6 +3481,8 @@ impl Session {
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
+        // A plugin the machine lacks stays in the project as a pass-through.
+        self.registry.provide_placeholders(self.project.graph());
         // Samplers read their samples from beside the project file.
         // An unsaved project has no folder yet: its samples stay in memory
         // until the first save writes them.
@@ -4304,7 +4345,60 @@ mod tests {
             }
             None => edits.push(wire(osc, out)),
         }
+        // The oscillator never falls silent: tests that count samples want
+        // no tail unless they ask for one.
+        edits.push(Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::Fixed { seconds: 0.0 },
+            },
+        )));
         session.edit(edits);
+    }
+
+    #[test]
+    fn the_export_tail_follows_a_range_and_is_one_length_for_every_file() {
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, None);
+        let choice = || {
+            ExportChoice::mixdown(
+                ExportFormat::WavFloat,
+                noodle_engine::ChannelLayout::Stereo,
+                Some((0.0, 0.5)),
+            )
+        };
+        let frames = |session: &mut Session, name: &str| {
+            let path = dir.path().join(name);
+            session.start_export(path.clone(), choice()).unwrap();
+            until(session, "the export finishes", |s| {
+                s.export_progress().is_none()
+            });
+            noodle_io::decode_file(&path).unwrap().samples.len() / 2
+        };
+        // Fixed: the range and the seconds.
+        session.edit([Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::Fixed { seconds: 1.0 },
+            },
+        ))]);
+        assert_eq!(frames(&mut session, "fixed.wav"), 72_000);
+        // To silence: a steady sine never falls silent, so it runs to the cap
+        // and fades out there.
+        session.edit([Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::ToSilence { cap: 2.0 },
+            },
+        ))]);
+        assert_eq!(frames(&mut session, "silence.wav"), 120_000);
+        let audio = noodle_io::decode_file(&dir.path().join("silence.wav")).unwrap();
+        assert!(
+            audio.samples[audio.samples.len() - 2..]
+                .iter()
+                .all(|s| s.abs() < 1e-3)
+        );
     }
 
     #[test]

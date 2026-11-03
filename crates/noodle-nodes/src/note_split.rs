@@ -26,6 +26,13 @@ use noodle_engine::{
 /// took it, whatever the ranges have become since. Other events (raw MIDI
 /// such as pitch bend and controllers) go to every output.
 ///
+/// **Choke.** Output *n* has a `choke` group, 0 for none or 1 to 8. When a
+/// note goes to an output in a group, the notes still sounding on the other
+/// outputs of that group are ended: each gets a note-off with a negative
+/// velocity (see [`CHOKE`]), which a Sampler obeys with a short fade
+/// whatever its mode. A closed hat and an open hat in the same group are the
+/// classic case.
+///
 /// The ranges are read when the note starts.
 pub struct NoteSplit;
 
@@ -35,6 +42,12 @@ const OUTPUTS: ConfigInfo = ConfigInfo::int("outputs", "Outputs", 2);
 /// 1 to add the `rest` output.
 const REST: ConfigInfo = ConfigInfo::int("rest", "Rest output", 0);
 pub const MAX_OUTPUTS: i64 = 16;
+/// The most choke groups.
+pub const MAX_CHOKE_GROUPS: u32 = 8;
+/// The velocity of a note-off that cuts the note short: any note-off with a
+/// velocity below zero is a choke, and a Sampler fades it out quickly even
+/// in One-shot mode.
+pub const CHOKE: f32 = -1.0;
 
 static CONFIG: [ConfigInfo; 2] = [OUTPUTS, REST];
 
@@ -45,14 +58,15 @@ static INFO: NodeInfo = NodeInfo {
     category: "Events",
 };
 
-/// The ports of output `n` (from 0), after the one event input: the five
+/// The ports of output `n` (from 0), after the one event input: the six
 /// parameters of each output in turn.
-const PARAMS_PER_OUTPUT: usize = 5;
+const PARAMS_PER_OUTPUT: usize = 6;
 const LOW: usize = 0;
 const HIGH: usize = 1;
 const VEL_LOW: usize = 2;
 const VEL_HIGH: usize = 3;
 const TRANSPOSE: usize = 4;
+const CHOKE_GROUP: usize = 5;
 
 /// The input index of a parameter of output `n`.
 pub const fn param_index(output: usize, which: usize) -> usize {
@@ -117,6 +131,11 @@ impl NodeType for NoteSplit {
                     ParamInfo::new(-48.0, 48.0, 0.0)
                         .unit(Unit::Semitones)
                         .smoothing(0.0),
+                )
+                .param(
+                    format!("choke{n}"),
+                    format!("Choke group {n}"),
+                    ParamInfo::new(0.0, MAX_CHOKE_GROUPS as f32, 0.0).smoothing(0.0),
                 );
         }
         for n in 1..=outputs {
@@ -173,6 +192,54 @@ impl NoteSplitNode {
     }
 }
 
+impl NoteSplitNode {
+    /// Ends the notes still sounding on the other outputs of the choke
+    /// groups the outputs in `mask` belong to.
+    fn choke(
+        &mut self,
+        mask: u32,
+        time: u32,
+        value: &dyn Fn(usize, usize) -> f32,
+        event_outputs: &mut [noodle_engine::EventsOut<'_>],
+    ) {
+        let group = |n: usize| {
+            value(n, CHOKE_GROUP)
+                .round()
+                .clamp(0.0, MAX_CHOKE_GROUPS as f32) as u32
+        };
+        let mut cut = 0u32;
+        for n in 0..self.outputs {
+            if mask & (1 << n) != 0 && group(n) != 0 {
+                for m in (0..self.outputs).filter(|&m| m != n && group(m) == group(n)) {
+                    cut |= 1 << m;
+                }
+            }
+        }
+        if cut == 0 {
+            return;
+        }
+        for route in self.routes.iter_mut() {
+            let hit = route.mask & cut;
+            if hit == 0 {
+                continue;
+            }
+            #[allow(clippy::needless_range_loop)]
+            for m in 0..self.outputs {
+                if hit & (1 << m) != 0 {
+                    let _ = event_outputs[m].push(Event {
+                        time,
+                        kind: EventKind::NoteOff {
+                            note: NoteId(route.note),
+                            velocity: CHOKE,
+                        },
+                    });
+                }
+            }
+            route.mask &= !hit;
+        }
+    }
+}
+
 impl Node for NoteSplitNode {
     fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         let Io {
@@ -214,6 +281,9 @@ impl Node for NoteSplitNode {
                     ((1 << self.outputs) - 1) | (u32::from(self.rest) << self.outputs)
                 }
             };
+            if let EventKind::NoteOn { .. } = event.kind {
+                self.choke(mask, event.time, &value, event_outputs);
+            }
             let mut sent = 0u32;
             #[allow(clippy::needless_range_loop)]
             for n in 0..self.outputs + usize::from(self.rest) {
@@ -393,6 +463,34 @@ mod tests {
         for port in 0..3 {
             assert_eq!(h.events(port), [bend]);
         }
+    }
+
+    #[test]
+    fn a_note_chokes_the_others_in_its_group() {
+        let mut h = harness(3, false);
+        for n in 0..3 {
+            set(&mut h, n, LOW, 40.0 + n as f32);
+            set(&mut h, n, HIGH, 40.0 + n as f32);
+        }
+        set(&mut h, 0, CHOKE_GROUP, 1.0);
+        set(&mut h, 1, CHOKE_GROUP, 1.0);
+        // Output 3 is in no group.
+        h.send_events(
+            0,
+            &[on(0, 1, 41, 1.0), on(1, 2, 42, 1.0), on(2, 3, 40, 1.0)],
+        );
+        h.run(64).unwrap();
+        let choke = |id: u32, time: u32| Event {
+            time,
+            kind: EventKind::NoteOff {
+                note: NoteId(id),
+                velocity: CHOKE,
+            },
+        };
+        // Output 1's note 3 cuts output 2's note 1; nothing cuts output 3.
+        assert_eq!(h.events(1), [on(0, 1, 41, 1.0), choke(1, 2)]);
+        assert_eq!(h.events(0), [on(2, 3, 40, 1.0)]);
+        assert_eq!(h.events(2), [on(1, 2, 42, 1.0)]);
     }
 
     #[test]

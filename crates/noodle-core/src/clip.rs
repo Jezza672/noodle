@@ -91,6 +91,15 @@ pub struct MidiClip {
     /// so everything that plays or draws the clip needs no special case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takes: Option<MidiTakes>,
+    /// The most, in ticks, that a humanised note plays early or late. Each
+    /// note's stored offset is scaled by this when the clip is scheduled, so
+    /// halving it is one change and the drawn notes never move.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub humanise_timing: Tick,
+    /// The most a humanised note's velocity moves, as a fraction of full
+    /// scale.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub humanise_velocity: f32,
 }
 
 /// The takes of a MIDI take folder and the comp that picks which plays where.
@@ -175,6 +184,10 @@ impl MidiTakes {
             self.folder.problem()
         }
     }
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
 }
 
 fn is_zero(tick: &Tick) -> bool {
@@ -365,6 +378,13 @@ pub struct MidiNote {
     /// plays while the note sounds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expressions: Vec<NoteExpression>,
+    /// The note's stored humanise offsets, each from -1 to 1: timing and
+    /// velocity. They only sound when the clip's `humanise_timing` and
+    /// `humanise_velocity` amounts are above zero (see
+    /// [`MidiClip::humanise_shift`]), so the note keeps the place it was
+    /// drawn at. `None` for a note that was never humanised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub humanise: Option<(f32, f32)>,
 }
 
 impl MidiNote {
@@ -376,6 +396,7 @@ impl MidiNote {
             key,
             velocity: 0.8,
             expressions: Vec::new(),
+            humanise: None,
         }
     }
 
@@ -445,6 +466,46 @@ impl MidiClip {
             loop_len: Tick::ZERO,
             controls: Vec::new(),
             takes: None,
+            humanise_timing: Tick::ZERO,
+            humanise_velocity: 0.0,
+        }
+    }
+
+    /// How many ticks `note` plays away from where it is drawn: its stored
+    /// timing offset times the clip's amount.
+    pub fn humanise_shift(&self, note: &MidiNote) -> i64 {
+        note.humanise.map_or(0, |(t, _)| {
+            (t * self.humanise_timing.0 as f32).round() as i64
+        })
+    }
+
+    /// The velocity `note` plays at: drawn velocity plus its stored offset
+    /// times the clip's amount, kept within 0 to 1 (and above 0 if it was).
+    pub fn humanise_velocity_of(&self, note: &MidiNote) -> f32 {
+        let Some((_, v)) = note.humanise else {
+            return note.velocity;
+        };
+        let moved = note.velocity + v * self.humanise_velocity;
+        if note.velocity > 0.0 {
+            moved.clamp(0.01, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Gives each of the notes whose `id` is in `ids` a new random pair of
+    /// offsets, drawn from `seed`. Others keep theirs.
+    pub fn roll_humanise(&mut self, ids: &[u32], seed: u64) {
+        let mut state = seed | 1;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let bits = state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
+            bits as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        };
+        for note in self.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+            note.humanise = Some((next(), next()));
         }
     }
 
