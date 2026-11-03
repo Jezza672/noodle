@@ -922,6 +922,42 @@ pub fn show(
                                 ui.close();
                                 edits.push(Edit::SplitToStems(id));
                             }
+                            if ui
+                                .button("Slice to Sampler")
+                                .on_hover_text(
+                                    "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",
+                                )
+                                .clicked()
+                            {
+                                ui.close();
+                                edits.push(Edit::SliceToSampler(id));
+                            }
+                            // A MIDI clip picked with this one is what the
+                            // conversion replaces.
+                            let replace = state
+                                .selected
+                                .iter()
+                                .copied()
+                                .find(|c| project.clip(*c).is_some_and(|c| c.as_midi().is_some()));
+                            ui.menu_button("Convert to MIDI", |ui| {
+                                ui.label(if replace.is_some() {
+                                    "Replaces the selected MIDI clip"
+                                } else {
+                                    "Notes on a new track (select a MIDI clip too to replace it)"
+                                });
+                                for detect in crate::session::convert::Detect::ALL {
+                                    if ui
+                                        .button(detect.label())
+                                        .on_hover_text(
+                                            "Follows one voice or line. The notes are plain notes to edit; convert again to try another setting.",
+                                        )
+                                        .clicked()
+                                    {
+                                        ui.close();
+                                        edits.push(Edit::ConvertToMidi(id, detect, replace));
+                                    }
+                                }
+                            });
                             ui.separator();
                         }
                         if let Some(midi) = clip.as_midi()

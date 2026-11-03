@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub mod automate;
+pub mod convert;
 mod export;
 pub mod learn_midi;
 mod library;
@@ -128,6 +129,15 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Convert an audio clip to MIDI at a sensitivity, replacing the MIDI clip
+    /// if one is given.
+    ConvertToMidi(
+        noodle_core::ClipId,
+        convert::Detect,
+        Option<noodle_core::ClipId>,
+    ),
+    /// Slice an audio clip at its transients onto a new Sampler track.
+    SliceToSampler(noodle_core::ClipId),
     /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
     /// the loop's span if `in_loop`, else the whole timeline. Not an edit
     /// itself: the track arrives as one undo step when the render is done.
@@ -1609,6 +1619,14 @@ impl Session {
                 }
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
+                    continue;
+                }
+                Edit::ConvertToMidi(clip, detect, replace) => {
+                    self.convert_to_midi(clip, detect, replace);
+                    continue;
+                }
+                Edit::SliceToSampler(clip) => {
+                    self.slice_to_sampler(clip);
                     continue;
                 }
                 Edit::RenderToClip { group, in_loop } => {

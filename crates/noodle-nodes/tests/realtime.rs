@@ -2450,3 +2450,45 @@ fn random_select_never_allocates_through_triggers_reseeds_and_resizes() {
     }
     assert!(heard, "the patch never sounded");
 }
+
+#[test]
+fn pitch_track_and_to_notes_never_allocate_while_the_voice_and_sensitivity_change() {
+    // saw (its frequency stepped) -> pitch track -> to notes -> mono note ->
+    // saw -> output; the first saw is also the voice.
+    let mut s = Session::new();
+    let voice = s.add(Node::new("noodle.osc.saw").with_param("frequency", 220.0));
+    let track = s.add(Node::new("noodle.analysis.pitch_track"));
+    let notes = s.add(Node::new("noodle.event.to_notes"));
+    let mono = s.add(Node::new("noodle.event.mono"));
+    let synth = s.add(Node::new("noodle.osc.saw"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(voice, "out", track, "in");
+    s.wire(track, "pitch", notes, "pitch");
+    s.wire(track, "confidence", notes, "confidence");
+    s.wire(track, "level", notes, "level");
+    s.wire(notes, "out", mono, "in");
+    s.wire(mono, "pitch", synth, "frequency");
+    s.wire(synth, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..16 {
+        s.controller.set_param(
+            voice,
+            "frequency",
+            110.0 * (1.0 + (round % 5) as f32 * 0.25),
+        );
+        s.controller
+            .set_param(track, "sensitivity", (round % 4) as f32 / 3.0);
+        s.controller
+            .set_param(notes, "sensitivity", (round % 3) as f32 / 2.0);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
+}

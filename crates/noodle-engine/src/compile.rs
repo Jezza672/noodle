@@ -476,6 +476,19 @@ fn resolve_samples<'a>(
             return SampleSource::Not;
         };
         let config = &graph.node(node).expect("found above").config;
+        if let Some(input) = node_type.sample_through(config, key) {
+            let text = match graph.source(&Endpoint::new(node, input)) {
+                Some(from) => match source(graph, from.node, &from.port, sample_port, chooser_of) {
+                    SampleSource::Fixed(text) => text,
+                    SampleSource::Not => None,
+                    SampleSource::Chosen { .. } | SampleSource::Nested => {
+                        return SampleSource::Nested;
+                    }
+                },
+                None => None,
+            };
+            return SampleSource::Fixed(node_type.sample_derived(config, key, text.as_deref()));
+        }
         let Some(chooser) = chooser_of(node).filter(|c| c.output == key) else {
             return SampleSource::Fixed(node_type.sample_output(config, key));
         };
