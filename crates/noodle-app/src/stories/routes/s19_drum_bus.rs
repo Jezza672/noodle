@@ -20,7 +20,7 @@ use noodle_core::{Command, Endpoint, Node, NodeId, Project, spare};
 use noodle_nodes::{DYNAMICS_ID, GAIN_ID};
 
 use super::super::handle::{Handle, Probe, peak};
-use super::super::{LateChange, Route, Tag};
+use super::super::{Keep, LateChange, Route, Tag};
 use super::{add_node, finished, reveal, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
@@ -77,7 +77,10 @@ pub fn route() -> Route {
                 name: "switch the send from pre-fader to post-fader",
                 steps: post_fader,
                 done: is_post_fader,
-                keep: &[],
+                keep: &[Keep {
+                    name: "the parallel Mix",
+                    of: parallel_mix,
+                }],
             },
         ],
     }
@@ -193,7 +196,7 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if parallel == bus || parallel == master {
         return Err("the compressor is fed by the drum bus, not a parallel bus".into());
     }
-    if !feeds_node(project, bus, parallel) {
+    if !feeds(project, bus, &Endpoint::new(parallel, "in1")) {
         return Err("the send does not come from the drum bus before its fader".into());
     }
     if feeds_node(project, fader, parallel) {
@@ -277,6 +280,18 @@ fn parallel_bus(p: &Project) -> Result<(NodeId, NodeId), String> {
     Ok((squash, source.node))
 }
 
+/// The parallel Mix's identity and settings, for the late change to leave
+/// alone. The send moves to a different input, which is not part of this.
+fn parallel_mix(p: &Project) -> String {
+    let Ok((_, mix)) = parallel_bus(p) else {
+        return "the parallel Mix is missing".into();
+    };
+    let Some(node) = p.graph().node(mix) else {
+        return format!("{mix} is missing");
+    };
+    format!("{mix} {} {:?} {:?}", node.type_id, node.config, node.params)
+}
+
 fn hard(p: &Project, squash: NodeId) -> Result<(), String> {
     let ratio = param(p, squash, "ratio");
     if ratio >= 10.0 {
@@ -351,7 +366,7 @@ fn is_post_fader(p: &mut Probe, _size: usize) -> Result<(), String> {
     if parallel == bus || parallel == master {
         return Err("the compressor is not fed by a parallel bus".into());
     }
-    if !feeds_node(project, fader, parallel) {
+    if !feeds(project, fader, &Endpoint::new(parallel, "in1")) {
         return Err("the compressor is not fed from after the drum fader".into());
     }
     if feeds_node(project, bus, parallel) {

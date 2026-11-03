@@ -46,7 +46,7 @@ pub const STORIES: [Story; 30] = [
         id: "S02",
         title: "Punch in on a live overdub",
         status: Status::Partial,
-        missing: "A headphone cue mix, which waits on sends in the Mix node (#332, #345); recording is not routed because a route has no live input (#334).",
+        missing: "A headphone cue mix is not routed (#345); recording is not routed because a route has no live input (#334).",
     },
     Story {
         id: "S03",
