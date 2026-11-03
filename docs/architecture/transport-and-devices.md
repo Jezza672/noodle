@@ -54,6 +54,12 @@ rewind only touch the transport:
   depend on the clock moving at audio speed. It is for machines with no
   device, CI, tests and `noodle play --output virtual`. Output nodes tied to
   other devices and audio input still open as usual around it.
+- **The virtual input** (`InputChoice::Virtual(path)`, `testkit::virtual_input`,
+  `noodle record`/`play --input virtual:<file.wav>`) is the input half: a
+  thread pushes the WAV into a `Capture` one 256-frame block per block's
+  duration, in real time, from when the engine opens, then silence. The
+  `Feed`, `Recorder`, loop splitting and latency alignment all run unchanged,
+  so a story route can record for real. It is not a listed device.
 
 ## Live input latency
 

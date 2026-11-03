@@ -131,7 +131,10 @@ impl DeviceArgs {
             input: match self.input.as_deref() {
                 None => InputChoice::Off,
                 Some("default") => InputChoice::Default,
-                Some(id) => InputChoice::Device(id.to_owned()),
+                Some(id) => match id.strip_prefix("virtual:") {
+                    Some(path) => InputChoice::Virtual(path.into()),
+                    None => InputChoice::Device(id.to_owned()),
+                },
             },
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,

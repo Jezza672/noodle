@@ -723,3 +723,43 @@ fn an_automate_made_node_names_its_lane_after_the_parameter() {
     let lane = project.lane(id).unwrap();
     assert_eq!(super::automation::label(project, lane), "Lead › Cutoff");
 }
+
+#[test]
+fn shift_dragging_a_range_picks_its_points_and_dragging_one_moves_them_all() {
+    let (mut h, output) = rig();
+    let id = add_lane(
+        &mut h,
+        gain(output),
+        vec![
+            point(0, -6.0, Curve::Linear),
+            point(2, -6.0, Curve::Linear),
+            point(3, -6.0, Curve::Linear),
+            point(5, -6.0, Curve::Linear),
+        ],
+    );
+    // Shift-drag over beats 1.5 to 3.5 on empty space picks points 1 and 2.
+    let from = spot(&h, id, 1.5, 0.2);
+    let to = spot(&h, id, 3.5, 0.2);
+    testkit::drag(&mut h, Modifiers::SHIFT, &[from, to]);
+    let before = lane(&h, id).unwrap();
+    // Dragging one picked point up moves both by the same amount; the others
+    // stay.
+    let grab = point_at(&h, id, 1);
+    testkit::drag(
+        &mut h,
+        Modifiers::NONE,
+        &[grab, grab - Vec2::new(0.0, 10.0)],
+    );
+    let after = lane(&h, id).unwrap();
+    let moved = |i: usize| after.points[i].value - before.points[i].value;
+    assert!(moved(1) > 0.0);
+    assert!(
+        (moved(1) - moved(2)).abs() < 1e-3,
+        "{} vs {}",
+        moved(1),
+        moved(2)
+    );
+    assert_eq!(moved(0), 0.0);
+    assert_eq!(moved(3), 0.0);
+    assert_eq!(after.points[1].tick, before.points[1].tick);
+}

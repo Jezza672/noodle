@@ -45,6 +45,15 @@ pub struct State {
     /// on all of them.
     marked: std::collections::BTreeSet<(LaneId, usize)>,
     drag: Option<PointDrag>,
+    /// A time range picked on a lane with Shift-drag: the points in it are
+    /// marked, and Trim moves them by one amount.
+    range: Option<(LaneId, Tick, Tick)>,
+    /// Set while a Shift-drag is picking the range, with the tick it began at.
+    range_from: Option<Tick>,
+    /// The lane whose Trim menu is open.
+    trim_menu: Option<LaneId>,
+    /// The amount typed in the Trim menu, in the lane's unit.
+    trim_by: f32,
     /// Where each point was drawn last frame, for tests to aim at.
     #[cfg(test)]
     points: std::collections::BTreeMap<(LaneId, usize), Pos2>,
@@ -82,6 +91,62 @@ struct Bend {
 /// How many pixels of vertical drag cover the whole tension range.
 const BEND_PIXELS: f32 = 60.0;
 
+/// `lane` with the points from `from` to `to` (inclusive) moved by `delta`,
+/// kept within `limits`. The lane's value at each edge is kept as a point of
+/// its own, and so is its value just outside each edge, so the shape outside
+/// the range is unchanged. A hold stays a hold. `None` if no point falls in
+/// the range or the amount is zero.
+pub fn trimmed(
+    lane: &AutomationLane,
+    from: Tick,
+    to: Tick,
+    delta: f32,
+    limits: (f32, f32),
+) -> Option<AutomationLane> {
+    if delta == 0.0 || !lane.points.iter().any(|p| (from..=to).contains(&p.tick)) {
+        return None;
+    }
+    let mut out = lane.clone();
+    let insert = |out: &mut AutomationLane, tick: Tick| {
+        if tick < Tick::ZERO || out.points.iter().any(|p| p.tick == tick) {
+            return;
+        }
+        let value = lane.value_at(tick.0 as f64).unwrap_or(0.0);
+        let at = out.points.partition_point(|p| p.tick < tick);
+        let curve = at
+            .checked_sub(1)
+            .map_or(Curve::Linear, |i| match out.points[i].curve {
+                Curve::Hold => Curve::Hold,
+                _ => Curve::Linear,
+            });
+        out.points
+            .insert(at, AutomationPoint { tick, value, curve });
+    };
+    // Guards first, so the edges' own points land between them.
+    insert(&mut out, Tick(from.0 - 1));
+    insert(&mut out, Tick(to.0 + 1));
+    insert(&mut out, from);
+    insert(&mut out, to);
+    for point in out
+        .points
+        .iter_mut()
+        .filter(|p| (from..=to).contains(&p.tick))
+    {
+        point.value = (point.value + delta).clamp(limits.0, limits.1);
+    }
+    Some(out)
+}
+
+/// The points of `lane` from `from` to `to`, inclusive.
+fn points_between(lane: &AutomationLane, from: Tick, to: Tick) -> Vec<usize> {
+    lane.points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| (from..=to).contains(&p.tick))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// `lane` with every segment starting at one of `segments` given `tension`.
 /// A hold segment stays a hold, and the last point has no segment.
 pub fn with_tension(lane: &AutomationLane, segments: &[usize], tension: f32) -> AutomationLane {
@@ -107,6 +172,12 @@ impl State {
             self.selected = None;
         }
         self.marked.retain(|&(lane, i)| exists(lane, i));
+        if self
+            .range
+            .is_some_and(|(lane, _, _)| project.lane(lane).is_none())
+        {
+            self.range = None;
+        }
         if self
             .drag
             .as_ref()
@@ -142,6 +213,7 @@ impl State {
     }
 
     pub fn deselect(&mut self) {
+        self.range = None;
         self.selected = None;
         self.marked.clear();
     }
@@ -522,6 +594,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
 
             let response =
                 ui.interact(visible, ui.id().with(("lane", id)), Sense::click_and_drag());
+            let shift = ui.input(|i| i.modifiers.shift);
             let near = |pos: Pos2| {
                 screen
                     .iter()
@@ -541,9 +614,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 let press = ui
                     .input(|i| i.pointer.press_origin())
                     .or(response.interact_pointer_pos());
-                if let Some(i) = press.and_then(near) {
+                if press.and_then(near).is_none()
+                    && shift
+                    && let Some(pos) = press
+                {
+                    // Shift-drag on empty space picks a range of time.
+                    let tick = snap(pos.x);
+                    state.range_from = Some(tick);
+                    state.range = Some((id, tick, tick));
+                    state.selected = None;
+                    state.marked.clear();
+                } else if let Some(i) = press.and_then(near) {
                     state.selected = Some((id, i));
                     if !state.marked.contains(&(id, i)) {
+                        state.range = None;
                         state.marked.clear();
                     }
                     state.marked.insert((id, i));
@@ -580,6 +664,24 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 }
             }
             if response.dragged()
+                && let (Some(from), Some(pos)) = (state.range_from, response.interact_pointer_pos())
+                && state.range.is_some_and(|(l, _, _)| l == id)
+            {
+                let to = snap(pos.x);
+                state.range = Some((id, from.min(to), from.max(to)));
+            }
+            if response.drag_stopped() {
+                state.range_from = None;
+            }
+            if let Some((l, from, to)) = state.range
+                && l == id
+            {
+                state.marked = points_between(lane, from, to)
+                    .into_iter()
+                    .map(|i| (id, i))
+                    .collect();
+            }
+            if response.dragged()
                 && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
                 && drag.lane == id
             {
@@ -592,6 +694,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                             &bend.segments,
                             tension.clamp(-1.0, 1.0),
                         ))
+                    }
+                    // Dragging one of several picked points moves them all
+                    // by the same amount, in the lane's unit.
+                    None if state.marked.len() > 1 && state.marked.contains(&(id, drag.index)) => {
+                        let delta =
+                            value_at(row, key, pos.y) - drag.original.points[drag.index].value;
+                        let indices: Vec<usize> = state.marked.iter().map(|&(_, i)| i).collect();
+                        Some(shifted(&drag.original, &indices, delta, range(key)))
                     }
                     None => moved_point(
                         &drag.original,
@@ -616,6 +726,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 match near(pos) {
                     Some(i) if ui.input(|i| i.modifiers.shift) => {
                         // Shift-click picks points together, or lets one go.
+                        state.range = None;
                         state.marked.retain(|&(l, _)| l == id);
                         if !state.marked.remove(&(id, i)) {
                             state.marked.insert((id, i));
@@ -624,10 +735,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                     }
                     Some(i) => {
                         state.selected = Some((id, i));
+                        state.range = None;
                         state.marked.clear();
                         state.marked.insert((id, i));
                     }
                     None => {
+                        state.range = None;
                         state.marked.clear();
                         let point = AutomationPoint {
                             tick: snap(pos.x),
@@ -642,6 +755,40 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                         state.selected = Some((id, at));
                         edits.push(Edit::Apply(Command::SetLane { id, lane }));
                     }
+                }
+            }
+            if response.secondary_clicked() {
+                let on_point = response.interact_pointer_pos().and_then(near).is_some();
+                state.trim_menu = (!on_point
+                    && !state.marked.is_empty()
+                    && state.marked.iter().all(|&(l, _)| l == id))
+                .then_some(id);
+            }
+            if state.trim_menu == Some(id) {
+                let (low, high) = range(key);
+                let unit = if control_of(key) == group::GAIN {
+                    " dB"
+                } else {
+                    ""
+                };
+                let mut apply = None;
+                egui::Popup::context_menu(&response).show(|ui| {
+                    ui.label("Trim the picked points by");
+                    ui.add(
+                        egui::DragValue::new(&mut state.trim_by)
+                            .speed(if high - low > 10.0 { 0.1 } else { 0.01 })
+                            .suffix(unit),
+                    );
+                    if ui.button("Trim").clicked() {
+                        apply = Some(state.trim_by);
+                        ui.close();
+                    }
+                });
+                if let (Some(delta), Some((l, from, to))) = (apply, state.range)
+                    && l == id
+                    && let Some(trimmed) = trimmed(lane, from, to, delta, (low, high))
+                {
+                    edits.push(Edit::Apply(Command::SetLane { id, lane: trimmed }));
                 }
             }
             let delete = if response.secondary_clicked() {
@@ -767,6 +914,22 @@ fn segment_at(lane: &AutomationLane, tick: Tick) -> Option<usize> {
     let after = lane.points.partition_point(|p| p.tick <= tick);
     let i = after.checked_sub(1)?;
     (i + 1 < lane.points.len() && lane.points[i].curve != Curve::Hold).then_some(i)
+}
+
+/// `lane` with the points at `indices` moved by `delta`, kept within `limits`.
+fn shifted(
+    lane: &AutomationLane,
+    indices: &[usize],
+    delta: f32,
+    limits: (f32, f32),
+) -> AutomationLane {
+    let mut lane = lane.clone();
+    for &i in indices {
+        if let Some(point) = lane.points.get_mut(i) {
+            point.value = (point.value + delta).clamp(limits.0, limits.1);
+        }
+    }
+    lane
 }
 
 /// `lane` with `point` in it, at its place in tick order, and that place. A
@@ -939,4 +1102,53 @@ pub fn add_menu(
         }
     });
     edits
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    fn lane(points: &[(i64, f32)]) -> AutomationLane {
+        AutomationLane::new(
+            Endpoint::new(NodeId(1), "gain"),
+            points
+                .iter()
+                .map(|&(t, v)| AutomationPoint {
+                    tick: Tick(t),
+                    value: v,
+                    curve: Curve::Linear,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn trimming_moves_the_range_and_keeps_the_outside() {
+        let lane = lane(&[
+            (0, -6.0),
+            (100, -6.0),
+            (200, -3.0),
+            (300, -6.0),
+            (400, -6.0),
+        ]);
+        let out = trimmed(&lane, Tick(100), Tick(300), -2.0, GAIN_RANGE).unwrap();
+        let at = |t| out.value_at(f64::from(t)).unwrap();
+        assert_eq!(at(0), -6.0);
+        assert_eq!(at(100), -8.0);
+        assert_eq!(at(200), -5.0);
+        assert_eq!(at(300), -8.0);
+        assert_eq!(at(400), -6.0);
+        // Just outside the edges is untouched.
+        assert_eq!(at(99), lane.value_at(99.0).unwrap());
+        assert_eq!(at(301), lane.value_at(301.0).unwrap());
+    }
+
+    #[test]
+    fn trimming_clamps_and_ignores_empty_ranges() {
+        let lane = lane(&[(0, -59.0), (100, -59.0)]);
+        let out = trimmed(&lane, Tick(0), Tick(100), -5.0, GAIN_RANGE).unwrap();
+        assert!(out.points.iter().all(|p| p.value >= GAIN_RANGE.0));
+        assert!(trimmed(&lane, Tick(500), Tick(600), 1.0, GAIN_RANGE).is_none());
+        assert!(trimmed(&lane, Tick(0), Tick(100), 0.0, GAIN_RANGE).is_none());
+    }
 }

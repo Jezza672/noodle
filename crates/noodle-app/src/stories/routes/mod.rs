@@ -115,6 +115,16 @@ pub fn finished(mut session: Session, dir: &Path) -> App {
     App::new(session)
 }
 
+/// [`finished`] on the virtual output and the virtual input, which plays
+/// `wav`.
+pub fn finished_recording(mut session: Session, dir: &Path, wav: &Path) -> App {
+    session.save();
+    let mut session =
+        Session::open(Nodes::all(), &dir.join("project.ron")).expect("the project opens");
+    session.set_audio_config(crate::testkit::virtual_input(wav));
+    App::new(session)
+}
+
 /// Shift+A at `at`, types `query`, Enter on the first result.
 pub fn add_node(h: &mut Handle, at: Pos2, query: &str) -> NodeId {
     let before = h.probe().nodes();
