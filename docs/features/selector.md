@@ -32,8 +32,10 @@ where Random Select picks at random on a trigger.
 - **Shapes.** A signal output broadcasts the inputs' shapes, so a mono input
   plays on every voice and channel another input sets. A sample selector's
   `choice` is mono; a spectral selector broadcasts the spectral inputs.
-- **Memoryless and real-time.** `Memory::None`, no allocation, with per-lane
-  state only for zero-crossing waits.
+- **Memory and real-time.** `Memory::None` for samples and spectra,
+  `Memory::Bounded(20)` for signals (a zero-crossing wait), and
+  `Memory::Unbounded` for notes (a held note outlives the block); no
+  allocation, with per-lane state only for zero-crossing waits.
 - **Editor.** The node has no type until the first data wire, which sets
   `kind` in the same undo step; the inputs take any wire until then, grow with
   the wires like a mixer's, and the type-specific `switch` stays hidden until

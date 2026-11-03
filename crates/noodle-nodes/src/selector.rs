@@ -1,8 +1,8 @@
 //! The Selector node.
 
 use noodle_engine::{
-    Config, ConfigInfo, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo,
-    NodeType, NoteId, ParamInfo, SampleChooser, Setup, Shape,
+    Config, ConfigInfo, Context, Event, EventKind, Instance, Io, Layout, Memory, Node, NodeError,
+    NodeInfo, NodeType, NoteId, ParamInfo, SampleChooser, Setup, Shape,
 };
 
 use crate::random_select::MAX_WAIT_MS;
@@ -156,6 +156,15 @@ impl NodeType for Selector {
             };
             layout = layout.param(SWITCH, "Switch", switch);
         }
+        let memory = match counts.kind {
+            // A zero-crossing wait remembers the old input for up to
+            // MAX_WAIT_MS.
+            Kind::Signal => Memory::Bounded(MAX_WAIT_MS as u32),
+            // A held note can last as long as its gate.
+            Kind::Notes => Memory::Unbounded,
+            // Samples and spectra follow the current choice and frame.
+            Kind::Samples | Kind::Spectral => Memory::None,
+        };
         Ok(match counts.kind {
             Kind::Signal => layout.output("out", "Out"),
             Kind::Notes => layout.event_output("out", "Out"),
@@ -166,7 +175,7 @@ impl NodeType for Selector {
                 .output(CHOICE_PORT, "Choice"),
             Kind::Spectral => layout.spectral_output("out", "Out"),
         }
-        .memoryless())
+        .memory(memory))
     }
 
     fn sample_chooser(&self, config: &Config) -> Option<SampleChooser> {
@@ -447,7 +456,7 @@ fn chosen_input(which: f32, inputs: usize) -> usize {
 mod tests {
     use super::*;
     use noodle_engine::testing::Harness;
-    use noodle_engine::{InputKind, Memory, ParamKind, Value};
+    use noodle_engine::{InputKind, ParamKind, Value};
 
     const FRAMES: usize = 64;
 
@@ -625,7 +634,7 @@ mod tests {
         let layout = Selector.layout(&Config::new()).unwrap();
         assert_eq!(layout.inputs.len(), 4, "in1, in2, which and switch");
         assert_eq!(layout.outputs.len(), 1);
-        assert_eq!(layout.memory, Memory::None);
+        assert_eq!(layout.memory, Memory::Bounded(MAX_WAIT_MS as u32));
         let which = layout.inputs.iter().find(|port| port.key == WHICH).unwrap();
         let InputKind::Param(info) = &which.kind else {
             panic!("which should be a parameter");
@@ -659,6 +668,7 @@ mod tests {
 
         let notes = config(2, 1);
         let layout = Selector.layout(&notes).unwrap();
+        assert_eq!(layout.memory, Memory::Unbounded, "a held note can last");
         assert!(
             Selector
                 .output_shapes(&notes, &layout, &[MONO, MONO])
@@ -669,6 +679,7 @@ mod tests {
 
         let samples = config(2, 2);
         let layout = Selector.layout(&samples).unwrap();
+        assert_eq!(layout.memory, Memory::None);
         assert_eq!(
             Selector
                 .output_shapes(&samples, &layout, &[poly, MONO])
@@ -679,6 +690,7 @@ mod tests {
 
         let spectral = config(2, 3);
         let layout = Selector.layout(&spectral).unwrap();
+        assert_eq!(layout.memory, Memory::None);
         assert_eq!(
             Selector
                 .output_shapes(&spectral, &layout, &[MONO, poly, MONO])
