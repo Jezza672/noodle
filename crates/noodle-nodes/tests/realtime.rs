@@ -2520,3 +2520,55 @@ fn random_select_never_allocates_through_triggers_reseeds_and_resizes() {
     }
     assert!(heard, "the patch never sounded");
 }
+
+#[test]
+fn selector_never_allocates_through_switches_wiring_and_resizes() {
+    // Three oscillators go through a Selector: `which` is set from the UI,
+    // then wired from an LFO so it changes per sample, and the input count is
+    // resized mid-run.
+    let mut s = Session::new();
+    let select = s.add(
+        Node::new(noodle_nodes::SELECTOR_ID)
+            .with_config(Config::new().with("inputs", Value::Int(3))),
+    );
+    for (i, hz) in [220.0, 330.0, 440.0].into_iter().enumerate() {
+        let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        s.wire(osc, "out", select, &format!("in{}", i + 1));
+    }
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(select, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        match round {
+            ..=5 => s.controller.set_param(select, "which", (round % 3) as f32),
+            6 => {
+                // A wire changes `which` per sample from here on.
+                let lfo = s.add(Node::new("noodle.mod.lfo").with_param("rate", 4.0));
+                s.wire(lfo, "out", select, "which");
+                s.update();
+            }
+            10 => {
+                s.edit(Command::SetConfig {
+                    node: select,
+                    key: "inputs".into(),
+                    value: Some(Value::Int(4)),
+                });
+                s.update();
+            }
+            _ => {}
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
+}
