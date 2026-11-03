@@ -27,7 +27,7 @@ First pass by the route author, from the routes as of #340. A person should chec
 | S07 restructure (`full`) | Not rated yet: markers and the range selection are new. To rate: do automation and tempo move with a copied section? | | | | | |
 | S09 drum pattern (`partial`) | Good: the Drum Rack shows its pads | Fair: pitch numbers stand for pads until named | Good: plays while editing | Good: pads are labelled | Fair: no swing or choke at the rack, only through nodes | Fair: piano roll and rack use different note names |
 | S12 multisample (`blocked`) | Not rated: no folder import (#331). By hand it would be a Note Split and one Sampler per file with ranges typed by hand: Poor on hard mental operations | | | | | |
-| S19 drum bus (`partial`) | Fair: sidechain wiring is on the Dynamics node but the source is a wire far away | Fair: the user places pre or post fader by choosing where to tap | Good: meters while playing | Fair: a parallel bus is an ordinary Mix node | Good: the bus is a group | Good |
+| S19 drum bus (`partial`) | Fair: sidechain wiring is on the Dynamics node but the source is a wire far away | Fair: pre or post fader is whether the send wire taps before or after the Gain | Good: meters while playing | Fair: a parallel bus is an ordinary Mix node, and the bus fader is a Gain | Good: the bus is a group | Good |
 | S20 automation (`partial`) | Fair: points land on a lane in the timeline, not on the node | Good: ride a slider | Good: Touch and Latch while playing | Good | Fair: no relative trim over a range | Good |
 
 ## Human sessions

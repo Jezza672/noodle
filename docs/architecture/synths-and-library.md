@@ -183,6 +183,22 @@ These are primitives; instruments and racks built from them are groups.
   every candidate and plays the one in force at each note-on, with the same
   `Finish held` / `Cut held` choice for notes already sounding (see
   `signals.md`). Spectra switch at the first frame at or after the trigger.
+- **Selector** (`noodle.util.selector`) is the deterministic counterpart to
+  Random Select: one of `inputs` (config, 2 to 64) of one `kind` (config:
+  signal, notes, samples or spectra) reaches its output, chosen by the stepped
+  `which` parameter (`In 1`…`In N`). The value is rounded and clamped, and it
+  is a parameter like any other, so automation or a wire can change the choice
+  per sample. Signals switch `Instant`ly or at the old input's next `Zero
+  crossing` (per voice and channel, giving up after 20 ms), and their output
+  broadcasts the inputs' shapes, so a mono input plays on every voice and
+  channel; an input with nothing wired is silent. Notes switch `Finish held`
+  or `Cut held`, tracking held notes per input; samples expose the `choice`
+  signal the compiler wires to a Sampler, with `CHOICE_CUT` added when held
+  notes are cut; spectra switch at the first frame after the change. The
+  editor sets the kind from the first wire, hides the type-specific `switch`
+  until then, and grows the inputs with the wires. It would make pre/post send
+  switching a `which` change rather than a wire move (see
+  `features/selector.md`).
 - **Dynamics** (`noodle.effect.dynamics`) is a compressor, limiter, gate or
   expander by `mode`, with a `detect` choice of input or sidechain, a
   gain-reduction output, and gain computed in the log domain with a soft knee.
@@ -202,6 +218,29 @@ These are primitives; instruments and racks built from them are groups.
   the transport's tick grid (free-running while stopped): up, down, up-down,
   down-up, as played or random (seeded by the node's seed), over 1 to 4
   octaves, with gate, swing and hold.
+- **Swing** (`noodle.event.swing`) delays the notes that fall on the odd steps
+  of a `grid` (1/8, 1/16, 1/32) by `amount` of a step (0 to 0.75, the
+  Arpeggiator's definition). It reads the transport's tick, so it works on
+  drawn, recorded and arpeggiated notes, and passes everything through while
+  the transport is stopped. Note-offs and expression follow their note-on;
+  delayed events wait in a preallocated queue (`event_delay.rs`) across
+  blocks. The Drum Rack template puts it in front of its Note Split and
+  exposes `Swing`.
+- **Humanise** (`noodle.event.humanise`) moves each note by a seeded random
+  amount: `timing` (up to 50 ms either way) and `velocity` (a fraction of full
+  scale), with a `seed` parameter. To play early as well as late it holds
+  every event back by 50 ms and reports that as its latency. Automate
+  `timing` to humanise only the notes in a stretch. The clip-level
+  alternative stores a pair of offsets on each note (`MidiNote::humanise`) and
+  scales them by the clip's `humanise_timing` (ticks) and `humanise_velocity`
+  when the clip is scheduled (`schedule_notes`), so the drawn notes never move
+  and the piano roll shows a ghost where each will sound.
+- **Choke.** Note Split output *n* has a `choke{n}` group (0 for none, 1 to 8).
+  A note sent to an output in a group ends the notes still sounding on the
+  other outputs of that group with a note-off whose velocity is negative
+  (`note_split::CHOKE`). A Sampler obeys it with a 10 ms fade whatever its
+  mode, so One-shot drums can be choked. The Drum Rack template puts the two
+  hats in group 1 and exposes a `choke` input per slot.
 
 - **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` (or,
   with `time` set to Beats, over `beats` beats at the transport's tempo, read

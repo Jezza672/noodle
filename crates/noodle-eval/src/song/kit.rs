@@ -212,6 +212,12 @@ pub struct Slot {
 #[derive(Debug, Clone)]
 pub struct Rack {
     pub slots: Vec<Slot>,
+    /// Whether the group has the library template's extra controls: a
+    /// Swing node in front of the Note Split with a `Swing` input, and a
+    /// `choke` input for each slot (the closed and open hats share group 1).
+    /// The songs' racks leave them out, so their sound and shape stay as
+    /// they were.
+    pub controls: bool,
 }
 
 /// What a track plays.
@@ -274,12 +280,22 @@ pub fn build(p: &mut Patch, instrument: &Instrument, column: f32, row: f32) -> N
 fn drum_rack(p: &mut Patch, rack: &Rack) {
     let n = rack.slots.len();
     let notes = p.input("notes", 0.0);
+    let swing = rack.controls.then(|| {
+        let swing = p.add(spec("noodle.event.swing"), 1.0, 0.0);
+        p.connect(notes, (swing, "in"));
+        let input = p.input("Swing", 0.0);
+        p.connect(input, (swing, "amount"));
+        swing
+    });
     let split = p.add(
         spec("noodle.event.note_split").config("outputs", Value::Int(n as i64)),
         2.0,
         0.0,
     );
-    p.connect(notes, (split, "in"));
+    match swing {
+        Some(swing) => p.connect((swing, "out"), (split, "in")),
+        None => p.connect(notes, (split, "in")),
+    }
     let mix = p.add(
         spec("noodle.util.mix").config("inputs", Value::Int(n as i64)),
         6.0,
@@ -300,6 +316,17 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         let level = p.input(&format!("{label} level"), row * 2.0 + 1.0);
         let tune = p.input(&format!("{label} tune"), row * 2.0 + 2.0);
         let slot_pan = p.input(&format!("{label} pan"), row * 2.0 + 3.0);
+        if rack.controls {
+            // The hats cut each other off.
+            let group = if matches!(slot.key, 42 | 46) {
+                1.0
+            } else {
+                0.0
+            };
+            set_param(p, split, &format!("choke{}", i + 1), group);
+            let choke = p.input(&format!("{label} choke"), row * 2.0 + 4.0);
+            p.connect(choke, (split, choke_key(i)));
+        }
         let sampler = p.add(
             spec("noodle.instrument.sampler")
                 .config("sample", Value::Text(sample_hash(&slot.sample)))
@@ -431,6 +458,13 @@ pub fn drum_label(drum: Drum) -> &'static str {
 fn out_key(i: usize) -> &'static str {
     const KEYS: [&str; 8] = [
         "out1", "out2", "out3", "out4", "out5", "out6", "out7", "out8",
+    ];
+    KEYS[i]
+}
+
+fn choke_key(i: usize) -> &'static str {
+    const KEYS: [&str; 8] = [
+        "choke1", "choke2", "choke3", "choke4", "choke5", "choke6", "choke7", "choke8",
     ];
     KEYS[i]
 }

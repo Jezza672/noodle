@@ -277,6 +277,10 @@ impl<'h> Handle<'h> {
         self.probe().find_first(label)
     }
 
+    pub fn field_after(&mut self, label: &str) -> Pos2 {
+        self.probe().field_after(label)
+    }
+
     pub fn arm_button(&mut self, node: NodeId) -> Pos2 {
         self.probe().arm_button(node)
     }
@@ -417,6 +421,19 @@ impl Probe<'_> {
         let app = self.h.state();
         crate::editor::port_row_on_screen(app.editor(), app.session(), node, output, key)
             .unwrap_or_else(|| panic!("the row of {key:?} is not drawn"))
+    }
+
+    /// The centre of the number field (a drag value) just to the right of
+    /// the label `label`, on the same row.
+    pub fn field_after(&self, label: &str) -> Pos2 {
+        let text = self.h.get_by_label(label).rect();
+        self.h
+            .get_all_by_role(egui::accesskit::Role::SpinButton)
+            .map(|n| n.rect())
+            .filter(|r| (r.center().y - text.center().y).abs() < 8.0 && r.left() >= text.right())
+            .min_by(|a, b| a.left().total_cmp(&b.left()))
+            .unwrap_or_else(|| panic!("no number field after {label:?}"))
+            .center()
     }
 
     /// The first of several widgets with the same label (the snap menu's
