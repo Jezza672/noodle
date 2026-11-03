@@ -313,6 +313,22 @@ fn families() -> Vec<Family> {
             })
             .collect(),
         ),
+        effect_family(
+            "multisample-instrument",
+            "Multisample Instrument",
+            [
+                ("Sustained", 0.4, 2.0),
+                ("Short Notes", 0.08, 2.0),
+                ("Wide Bend", 0.25, 12.0),
+            ]
+            .into_iter()
+            .map(|(name, release, bend)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| multisample_instrument(p, release, bend));
+                (name, build)
+            })
+            .collect(),
+        ),
         tone_family(
             "drum-rack",
             "Drum Rack",
@@ -450,6 +466,47 @@ fn tempo_tremolo(p: &mut Patch, division: f32, depth: f32, shape: f32) -> NodeId
     p.connect((gain, "out"), (vca, "level"));
     let out = p.output("out", 5.0, 0.0);
     p.connect((vca, "out"), out);
+    p.leave(group);
+    group
+}
+
+/// A multisampled instrument: a Sample Set into a Sampler that holds notes
+/// and fades them out over `release`, then a low-pass. The set is filled
+/// after adding it (load a folder in the Sample Set's properties). Its inputs
+/// are `notes`, `tune` (cents), `bend range` (semitones), `release`
+/// (seconds), `gain` (dB) and `cutoff` (hertz); its output is `out`.
+fn multisample_instrument(p: &mut Patch, release: f32, bend: f32) -> NodeId {
+    let group = p.enter("Multisample Instrument", 0.0, 0.0);
+    let notes = p.input("notes", 0.0);
+    let tune = p.input("tune", 1.0);
+    let bend_range = p.input("bend range", 2.0);
+    let fade = p.input("release", 3.0);
+    let level = p.input("gain", 4.0);
+    let cutoff = p.input("cutoff", 5.0);
+    let set = p.add(spec("noodle.instrument.sample_set"), 1.0, 2.0);
+    let sampler = p.add(
+        spec("noodle.instrument.sampler")
+            .param("mode", 1.0)
+            .param("release", release)
+            .param("bend_range", bend),
+        2.0,
+        0.0,
+    );
+    p.connect((set, "sample"), (sampler, "sample"));
+    p.connect(notes, (sampler, "in"));
+    p.connect(tune, (sampler, "tune"));
+    p.connect(bend_range, (sampler, "bend_range"));
+    p.connect(fade, (sampler, "release"));
+    p.connect(level, (sampler, "gain"));
+    let filter = p.add(
+        spec("noodle.filter.svf").param("cutoff", 20_000.0),
+        3.0,
+        0.0,
+    );
+    p.connect((sampler, "out"), (filter, "in"));
+    p.connect(cutoff, (filter, "cutoff"));
+    let out = p.output("out", 4.0, 0.0);
+    p.connect((filter, "out"), out);
     p.leave(group);
     group
 }

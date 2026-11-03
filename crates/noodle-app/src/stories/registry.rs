@@ -112,7 +112,7 @@ pub const STORIES: [Story; 30] = [
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "No swing or hat choke, and loading the samples and swapping the snare are not routed: #330.",
+        missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330.",
     },
     assessed(
         "S10",
@@ -129,8 +129,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S12",
         title: "Build a multisampled instrument from a folder",
-        status: Status::Blocked,
-        missing: "Nothing maps a folder of note-named samples to an instrument: #331.",
+        status: Status::Full,
+        missing: "",
     },
     assessed(
         "S13",
@@ -172,13 +172,13 @@ pub const STORIES: [Story; 30] = [
         id: "S19",
         title: "Build a parallel processing mix bus",
         status: Status::Partial,
-        missing: "No pre-fader sends, so no parallel bus and no send switch: #332.",
+        missing: "Sends are extra wires and pre/post is which wire; delay compensation and adding a drum track are not routed: #332.",
     },
     Story {
         id: "S20",
         title: "Automate a mix in real time",
         status: Status::Partial,
-        missing: "Control surface cannot be driven, and no relative trim over a range: #333.",
+        missing: "Trimming a range needs a second gain stage and lane; changing parameter or surface is not routed: #333.",
     },
     assessed(
         "S21",

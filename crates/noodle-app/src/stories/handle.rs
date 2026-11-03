@@ -133,6 +133,12 @@ impl<'h> Handle<'h> {
         self.watch(false);
     }
 
+    /// [`Handle::right_click`] for when the app keeps repainting.
+    pub fn right_click_playing(&mut self, at: Pos2) {
+        testkit::right_click_playing(self.h, at);
+        self.watch(false);
+    }
+
     pub fn double_click(&mut self, at: Pos2) {
         testkit::double_click(self.h, at);
         self.watch(false);
@@ -178,6 +184,18 @@ impl<'h> Handle<'h> {
         self.watch(false);
     }
 
+    /// [`Handle::wheel`] holding `modifiers` (Ctrl zooms).
+    pub fn wheel_with(
+        &mut self,
+        at: Pos2,
+        unit: MouseWheelUnit,
+        delta: Vec2,
+        modifiers: Modifiers,
+    ) {
+        testkit::wheel_with(self.h, at, unit, delta, modifiers);
+        self.watch(false);
+    }
+
     pub fn drop_files(&mut self, at: Pos2, files: &[std::path::PathBuf]) {
         testkit::drop_files(self.h, at, files);
         self.watch(false);
@@ -185,6 +203,34 @@ impl<'h> Handle<'h> {
 
     pub fn type_text(&mut self, at: Pos2, text: &str) {
         testkit::type_text(self.h, at, text);
+        self.watch(false);
+    }
+
+    /// Types a program into the focused Script text box. Scored as code:
+    /// see `effort.rs`.
+    pub fn type_code(&mut self, at: Pos2, code: &str) {
+        testkit::type_code(self.h, at, code);
+        self.watch(false);
+    }
+
+    /// [`Handle::type_text`] for when the app keeps repainting (audio
+    /// playing, or live values on the canvas).
+    pub fn type_text_playing(&mut self, at: Pos2, text: &str) {
+        testkit::type_text_playing(self.h, at, text);
+        self.watch(false);
+    }
+
+    /// Moves controller `cc` on channel 1 of a MIDI control surface to
+    /// `value`. The surface is the session's MIDI bus, which every open
+    /// input feeds, so the app hears it as it would a real one.
+    pub fn control(&mut self, cc: u8, value: u8) {
+        testkit::control_marker(self.h);
+        self.h
+            .state()
+            .session()
+            .midi_bus()
+            .send([0xB0, cc, value & 0x7F]);
+        self.h.run_steps(3);
         self.watch(false);
     }
 
@@ -229,6 +275,12 @@ impl<'h> Handle<'h> {
 
     pub fn arm_button(&mut self, node: NodeId) -> Pos2 {
         self.probe().arm_button(node)
+    }
+
+    /// The centre of the row of `node`'s port `key`, where a parameter's
+    /// slider is drawn. Tells apart two nodes with the same labels.
+    pub fn port_row(&mut self, node: NodeId, output: bool, key: &str) -> Pos2 {
+        self.probe().port_row(node, output, key)
     }
 
     /// Where the piano roll drew `key` at `tick`, scrolling to it first as a
@@ -312,6 +364,51 @@ impl Probe<'_> {
         self.h.get_by_label(label).rect().center()
     }
 
+    /// The centre of the one multi-line text box on screen (a Script node's
+    /// text in the properties).
+    pub fn text_box(&self) -> Pos2 {
+        self.h
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .rect()
+            .center()
+    }
+
+    /// The first widget showing `value` (a number field with no label).
+    pub fn find_value(&self, value: &str) -> Pos2 {
+        self.h
+            .get_all_by_value(value)
+            .next()
+            .unwrap_or_else(|| panic!("nothing shows {value:?}"))
+            .rect()
+            .center()
+    }
+
+    /// The folder the project is saved in.
+    pub fn project_dir(&self) -> std::path::PathBuf {
+        self.h
+            .state()
+            .session()
+            .directory()
+            .expect("the project is saved")
+            .to_path_buf()
+    }
+
+    /// Where the node editor's canvas is on screen.
+    pub fn canvas(&self) -> Rect {
+        self.h.state().editor().canvas
+    }
+
+    pub fn port_row(&self, node: NodeId, output: bool, key: &str) -> Pos2 {
+        self.port_rect(node, output, key).center()
+    }
+
+    /// The whole row of `node`'s port `key`.
+    pub fn port_rect(&self, node: NodeId, output: bool, key: &str) -> Rect {
+        let app = self.h.state();
+        crate::editor::port_row_on_screen(app.editor(), app.session(), node, output, key)
+            .unwrap_or_else(|| panic!("the row of {key:?} is not drawn"))
+    }
+
     /// The first of several widgets with the same label (the snap menu's
     /// button and the piano roll's label for the same step).
     pub fn find_first(&self, label: &str) -> Pos2 {
@@ -376,6 +473,26 @@ impl Probe<'_> {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Where a click in the arrangement puts a point on `lane` at `tick`
+    /// (before snapping) with `value`, if the lane's row is on screen.
+    pub fn lane_point(&self, lane: noodle_core::LaneId, tick: i64, value: f32) -> Option<Pos2> {
+        self.h
+            .state()
+            .timeline()
+            .automation()
+            .aim(lane, tick, value)
+    }
+
+    /// Where the arrangement drew `lane`'s row, if it is on screen.
+    pub fn lane_row(&self, lane: noodle_core::LaneId) -> Option<Rect> {
+        self.h.state().timeline().automation().row(lane)
+    }
+
+    /// Where the arrangement drew point `index` of `lane`.
+    pub fn lane_point_drawn(&self, lane: noodle_core::LaneId, index: usize) -> Option<Pos2> {
+        self.h.state().timeline().automation().point_at(lane, index)
     }
 
     /// Where an Automation node's arm button is.
