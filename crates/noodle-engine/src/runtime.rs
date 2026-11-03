@@ -89,7 +89,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
     let (returns, returned) = RingBuffer::new(RETURN_QUEUE);
     let (tempo_out, tempo_in) = RingBuffer::new(TEMPO_QUEUE);
     let (tempo_returns, tempo_returned) = RingBuffer::new(TEMPO_QUEUE);
-    let control = TransportControl::new();
+    let control = TransportControl::new(settings.max_frames);
     let controller = Controller {
         settings,
         plans,
@@ -104,6 +104,8 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         monitor: None,
         control: control.clone(),
         tempo_map: TempoMap::default(),
+        project_tempo: TempoMap::default(),
+        live_bpm: None,
         tempo_out,
         tempo_returned,
         tempo_pending: None,
@@ -166,7 +168,12 @@ pub struct Controller {
     /// A node being listened to, added to every plan (see [`Monitor`]).
     monitor: Option<Monitor>,
     control: Arc<TransportControl>,
+    /// The tempo map the engine plays by: the project's, or one constant
+    /// tempo while a live tempo is set.
     tempo_map: TempoMap,
+    /// The project's own tempo map, which the project is compared with.
+    project_tempo: TempoMap,
+    live_bpm: Option<f64>,
     tempo_out: Producer<Box<TempoTable>>,
     tempo_returned: Consumer<Box<TempoTable>>,
     /// A tempo table waiting for room in the queue. A newer one replaces it.
@@ -206,7 +213,10 @@ impl Controller {
         self.monitor = monitor;
     }
 
-    /// The tempo map the engine is using.
+    /// The tempo map the engine is playing by. While a live tempo is set
+    /// (see [`set_live_tempo`](Self::set_live_tempo)) it is the project's
+    /// time signatures with that one tempo, so converting the transport's
+    /// position with it gives the playhead.
     pub fn tempo_map(&self) -> &TempoMap {
         &self.tempo_map
     }
@@ -215,8 +225,50 @@ impl Controller {
     /// so its place in the music stays put and its place in time moves. If
     /// that moves it, the output fades out and back in around the change.
     pub fn set_tempo_map(&mut self, map: &TempoMap) {
-        self.tempo_map = map.clone();
-        self.tempo_pending = Some(Box::new(TempoTable::new(map, self.settings.sample_rate)));
+        self.project_tempo = map.clone();
+        self.apply_tempo();
+    }
+
+    /// Plays at one tempo, in quarter notes per minute, in place of the tempo
+    /// map until it is cleared with `None`. This is the tempo source of the
+    /// transport (tap tempo, MIDI clock): session state, not part of the
+    /// project, so it isn't a command. The playhead keeps its tick, so the
+    /// bar grid stays put and only the tempo changes. The tempo is clamped to
+    /// 20 to 400.
+    ///
+    /// Only what reads the transport's tempo follows (Tempo, Clock, the
+    /// metronome, MIDI out). Audio clips are placed in samples by the project's
+    /// map and keep their place in time.
+    pub fn set_live_tempo(&mut self, bpm: Option<f64>) {
+        let bpm = bpm.filter(|b| b.is_finite()).map(|b| b.clamp(20.0, 400.0));
+        if bpm == self.live_bpm {
+            return;
+        }
+        self.live_bpm = bpm;
+        self.apply_tempo();
+    }
+
+    /// The live tempo, if one is set.
+    pub fn live_tempo(&self) -> Option<f64> {
+        self.live_bpm
+    }
+
+    fn apply_tempo(&mut self) {
+        self.tempo_map = match self.live_bpm {
+            Some(bpm) => TempoMap::new(
+                vec![noodle_core::TempoChange {
+                    tick: noodle_core::Tick::ZERO,
+                    bpm,
+                }],
+                self.project_tempo.signatures().to_vec(),
+            )
+            .unwrap_or_else(|_| self.project_tempo.clone()),
+            None => self.project_tempo.clone(),
+        };
+        self.tempo_pending = Some(Box::new(TempoTable::new(
+            &self.tempo_map,
+            self.settings.sample_rate,
+        )));
         self.send_tempo();
     }
 
@@ -232,7 +284,7 @@ impl Controller {
     /// drive their parameters, and its tempo map is used if the engine isn't
     /// already using it.
     pub fn update_project(&mut self, project: &Project, registry: &Registry) -> Vec<Diagnostic> {
-        if self.tempo_map != *project.tempo_map() {
+        if self.project_tempo != *project.tempo_map() {
             self.set_tempo_map(project.tempo_map());
         }
         let lanes: Vec<_> = project.lanes().collect();
@@ -258,7 +310,7 @@ impl Controller {
         registry: &Registry,
         replacements: &Replacements,
     ) -> Vec<Diagnostic> {
-        if self.tempo_map != *project.tempo_map() {
+        if self.project_tempo != *project.tempo_map() {
             self.set_tempo_map(project.tempo_map());
         }
         let lanes: Vec<_> = project.lanes().collect();
@@ -279,7 +331,7 @@ impl Controller {
         replacements: &Replacements,
         taps: &[TapSpec],
     ) -> Vec<Diagnostic> {
-        if self.tempo_map != *project.tempo_map() {
+        if self.project_tempo != *project.tempo_map() {
             self.set_tempo_map(project.tempo_map());
         }
         let lanes: Vec<_> = project.lanes().collect();
@@ -569,6 +621,13 @@ impl Processor {
                 channels: input.channels,
             };
 
+            if input_chunk.channels > 0 {
+                self.control
+                    .tap()
+                    .write(input_chunk.samples, input_chunk.channels);
+            } else {
+                self.control.tap().clear();
+            }
             match &mut self.plan {
                 Some(plan) => {
                     let tick = self.table.tick_at(self.position);

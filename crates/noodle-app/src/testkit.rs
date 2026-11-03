@@ -556,6 +556,16 @@ pub fn virtual_audio() -> AudioConfig {
     }
 }
 
+/// [`virtual_audio`] with the virtual input too: it plays the WAV file at
+/// `wav` into the input in real time, from when the engine opens, so a
+/// recording takes it as a microphone would.
+pub fn virtual_input(wav: &std::path::Path) -> AudioConfig {
+    AudioConfig {
+        input: noodle_io::InputChoice::Virtual(wav.to_path_buf()),
+        ..virtual_audio()
+    }
+}
+
 /// A harness that draws one view with `ui` over `state`, at `size`, and has
 /// settled its first frames.
 pub fn harness<S>(

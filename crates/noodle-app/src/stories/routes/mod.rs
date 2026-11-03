@@ -23,6 +23,7 @@ mod s15_rhythmic_gate;
 mod s16_spectral_cross;
 mod s17_resample;
 mod s18_plugins;
+mod s18_replace;
 mod s19_drum_bus;
 mod s20_automation;
 mod s21_mix_versions;
@@ -72,6 +73,7 @@ pub fn all() -> Vec<Route> {
         s16_spectral_cross::route(),
         s17_resample::route(),
         s18_plugins::route(),
+        s18_replace::route(),
         s19_drum_bus::route(),
         s20_automation::route(),
         s21_mix_versions::route(),
@@ -114,6 +116,16 @@ pub fn finished(mut session: Session, dir: &Path) -> App {
     let mut session =
         Session::open(Nodes::all(), &dir.join("project.ron")).expect("the project opens");
     session.set_audio_config(virtual_audio());
+    App::new(session)
+}
+
+/// [`finished`] on the virtual output and the virtual input, which plays
+/// `wav`.
+pub fn finished_recording(mut session: Session, dir: &Path, wav: &Path) -> App {
+    session.save();
+    let mut session =
+        Session::open(Nodes::all(), &dir.join("project.ron")).expect("the project opens");
+    session.set_audio_config(crate::testkit::virtual_input(wav));
     App::new(session)
 }
 

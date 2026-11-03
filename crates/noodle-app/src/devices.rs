@@ -347,7 +347,7 @@ impl DevicePicker {
                     .is_some_and(|d| looks_like_bluetooth(&d.name))
             };
             let input = match &self.draft.input {
-                InputChoice::Off => false,
+                InputChoice::Off | InputChoice::Virtual(_) => false,
                 InputChoice::Default => name(&list.inputs, None),
                 InputChoice::Device(id) => name(&list.inputs, Some(id)),
             };
@@ -426,6 +426,7 @@ fn device_label(devices: &[DeviceInfo], id: Option<&str>) -> String {
 fn input_label(devices: &[DeviceInfo], host: Option<&str>, choice: &InputChoice) -> String {
     match choice {
         InputChoice::Off => "Off".into(),
+        InputChoice::Virtual(path) => format!("Virtual input ({})", path.display()),
         InputChoice::Default => device_label(devices, None),
         InputChoice::Device(id) => match host {
             Some(host)
@@ -519,7 +520,7 @@ fn selected<'a>(
     };
     let output = chosen(&list.outputs, config.output.as_deref());
     let input = match &config.input {
-        InputChoice::Off => None,
+        InputChoice::Off | InputChoice::Virtual(_) => None,
         InputChoice::Default => chosen(&list.inputs, None),
         InputChoice::Device(id) => chosen(&list.inputs, Some(id)),
     };

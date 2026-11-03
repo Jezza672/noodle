@@ -1,7 +1,8 @@
 //! S16: impose the spectral envelope of one sound on another.
 //!
-//! Partial. The spectral nodes work in one fixed frame size, so there is no
-//! band count to change (#355). A saw chord is the carrier and a noise burst
+//! Partial. The spectral nodes work in one fixed frame size, but Cross has a
+//! `bands` parameter that smooths the spectra into that many log-spaced
+//! bands (#355), which is the story's band count. A saw chord is the carrier and a noise burst
 //! stands in for the vocal modulator: both go through Analyze, then Cross
 //! and Synthesize. Swapping the carrier or the modulator is one wire.
 
@@ -62,6 +63,11 @@ const SWAP_MODULATOR: &[Op] = &[
     Op::Wire(MODULATOR2, "out", A2, "in"),
 ];
 
+const MORE_BANDS: &[Op] = &[
+    Op::Step("change the number of bands"),
+    Op::Set(CROSS, "bands", 16.0),
+];
+
 pub fn route() -> Route {
     Route {
         story: "S16",
@@ -79,6 +85,12 @@ pub fn route() -> Route {
                 name: "swap the carrier",
                 steps: |h, _| run(h, SWAP_CARRIER),
                 done: |p, _| check(p, SWAP_CARRIER),
+                keep: &[],
+            },
+            LateChange {
+                name: "change the number of bands",
+                steps: |h, _| run(h, MORE_BANDS),
+                done: |p, _| check(p, MORE_BANDS),
                 keep: &[],
             },
             LateChange {

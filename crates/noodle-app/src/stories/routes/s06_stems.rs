@@ -3,8 +3,9 @@
 //! Partial. "Split to stems" is in the clip's menu. It needs the stem model,
 //! which is downloaded after the user agrees, so the route stops at that
 //! question and declines: the separation itself, and the remix steps after
-//! it, are not routed. Separation runs one model with no quality setting
-//! (#349).
+//! it, are not routed. The clip panel has a stem Quality choice (Fast, Better,
+//! Best) and a Re-separate button on clips that have stems; both need the model
+//! too, so they are covered by session tests instead (#349).
 
 use egui::Modifiers;
 

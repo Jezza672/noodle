@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use noodle_io::{Audio, decode_file, resample, write_wav};
 
-use crate::{Part, SeparateError, Separator, Stem, Stereo};
+use crate::{Part, Quality, SeparateError, Separator, Stem, Stereo};
 
 /// What to split.
 #[derive(Clone, Debug)]
@@ -21,6 +21,8 @@ pub struct SplitRequest {
     /// What the part files are called: `<name>-drums.wav` and so on, with a
     /// number added to the name if any of them exists already.
     pub name: String,
+    /// How hard the separator works.
+    pub quality: Quality,
 }
 
 /// A part, written.
@@ -104,6 +106,7 @@ pub fn split(
     }
 
     // The model's rate, there and back.
+    separator.set_quality(request.quality);
     let model_rate = separator.sample_rate();
     let mix = to_rate(&stereo, rate, model_rate).map_err(|e| fail("can't resample", &e))?;
     let stems = {
@@ -238,6 +241,7 @@ mod tests {
 
     fn request(dir: &Path, source: PathBuf, frames: u64) -> SplitRequest {
         SplitRequest {
+            quality: crate::Quality::default(),
             source,
             frames,
             out_dir: dir.join("stems"),

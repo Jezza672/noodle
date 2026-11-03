@@ -651,10 +651,37 @@ impl Node for BlurNode {
 /// alone and 1 gives it the modulator's levels entirely; in between, the
 /// levels are blended on a decibel scale.
 ///
+/// `bands` smooths the modulator's levels into that many log-spaced bands
+/// (2 to 256) and divides out the carrier's own band levels, so the carrier
+/// keeps its fine structure and takes on only the modulator's outline: the
+/// channel vocoder's character, at any frame size. Below 2 it is off and
+/// every bin is matched on its own.
+///
 /// Paths of different latency into the two inputs are lined up by delay
 /// compensation (the earlier one's frames are held back), and the modulator's
 /// latest frame is used for each carrier frame.
 pub struct Cross;
+
+/// The most bands Cross can smooth into.
+const MAX_BANDS: usize = 256;
+
+/// Bin edges of `n` log-spaced bands over bins 1 to `BINS`, written into
+/// `edges[..=n]`: band `b` covers `edges[b]..edges[b + 1]`, and every band
+/// holds at least one bin. Bin 0 (DC) joins the first band.
+fn band_edges(n: usize, edges: &mut [usize]) {
+    let top = (BINS - 1) as f32;
+    let mut prev = 0;
+    edges[0] = 0;
+    #[allow(clippy::needless_range_loop)]
+    for b in 1..=n {
+        let edge = top.powf(b as f32 / n as f32).round() as usize;
+        // At least one bin per band, but leave room for the bands left.
+        let edge = edge.max(prev + 1).min(BINS - (n - b));
+        edges[b] = edge;
+        prev = edge;
+    }
+    edges[n] = BINS;
+}
 
 pub const CROSS_ID: &str = "noodle.spectral.cross";
 
@@ -666,6 +693,8 @@ struct CrossPorts {
     modulator: (),
     #[param("mix", "Mix", ParamInfo::new(0.0, 1.0, 1.0).offset())]
     mix: (),
+    #[param("bands", "Bands", ParamInfo::new(0.0, 256.0, 0.0))]
+    bands: (),
     #[spectral_output("out", "Out")]
     out: (),
 }
@@ -690,6 +719,10 @@ impl NodeType for Cross {
         let lanes = spectral_shape(setup, CrossPorts::OUTPUTS).lanes();
         Ok(Instance::realtime(CrossNode {
             held: vec![vec![0.0; BINS]; lanes],
+            edges: vec![0; MAX_BANDS + 1],
+            edges_for: 0,
+            modulator_bands: vec![0.0; MAX_BANDS],
+            carrier_bands: vec![0.0; MAX_BANDS],
         }))
     }
 }
@@ -697,6 +730,12 @@ impl NodeType for Cross {
 struct CrossNode {
     /// The latest modulator magnitudes, per lane.
     held: Vec<Vec<f32>>,
+    /// Band edges for `edges_for` bands (zero: none computed yet).
+    edges: Vec<usize>,
+    edges_for: usize,
+    /// Scratch: mean levels per band.
+    modulator_bands: Vec<f32>,
+    carrier_bands: Vec<f32>,
 }
 
 impl Node for CrossNode {
@@ -731,21 +770,49 @@ impl Node for CrossNode {
             let Some(at) = out.push(time) else { break };
             for voice in 0..shape.voices {
                 let mix = param(inputs, CrossPorts::MIX, voice, time).clamp(0.0, 1.0);
+                let bands = param(inputs, CrossPorts::BANDS, voice, time)
+                    .round()
+                    .clamp(0.0, MAX_BANDS as f32) as usize;
+                let bands = if bands < 2 { 0 } else { bands };
+                if bands != 0 && bands != self.edges_for {
+                    band_edges(bands, &mut self.edges);
+                    self.edges_for = bands;
+                }
                 for channel in 0..shape.channels {
                     let lane = voice * shape.channels + channel;
+                    let held = &self.held[lane];
+                    let source = carrier.frame(frame, voice, channel);
+                    if bands != 0 {
+                        for b in 0..bands {
+                            let range = self.edges[b]..self.edges[b + 1];
+                            let n = range.len() as f32;
+                            self.modulator_bands[b] = held[range.clone()].iter().sum::<f32>() / n;
+                            self.carrier_bands[b] =
+                                source[range].iter().map(|bin| bin.magnitude()).sum::<f32>() / n;
+                        }
+                    }
                     let bins = out.frame_mut(at, voice, channel);
-                    for ((out, bin), held) in bins
-                        .iter_mut()
-                        .zip(carrier.frame(frame, voice, channel))
-                        .zip(&self.held[lane])
+                    let mut band = 0;
+                    for (i, ((out, bin), held)) in bins.iter_mut().zip(source).zip(held).enumerate()
                     {
                         let magnitude = bin.magnitude();
-                        if magnitude > 1e-12 {
-                            // Geometric blend of the two levels.
-                            let target =
-                                (magnitude + 1e-12).powf(1.0 - mix) * (held + 1e-12).powf(mix);
-                            *out = bin.scaled(target / magnitude);
+                        if magnitude <= 1e-12 {
+                            continue;
                         }
+                        // The level this bin is pulled towards.
+                        let level = if bands == 0 {
+                            *held
+                        } else {
+                            while i >= self.edges[band + 1] {
+                                band += 1;
+                            }
+                            magnitude * self.modulator_bands[band]
+                                / (self.carrier_bands[band] + 1e-12)
+                        };
+                        // Geometric blend of the two levels.
+                        let target =
+                            (magnitude + 1e-12).powf(1.0 - mix) * (level + 1e-12).powf(mix);
+                        *out = bin.scaled(target / magnitude);
                     }
                 }
             }
@@ -1089,6 +1156,35 @@ mod tests {
         h.run(8 * HOP).unwrap();
         let out = h.spectral(0);
         assert!((out.frame(last, 0, 0)[90].magnitude() - 0.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn cross_bands_smooth_the_modulator_into_an_outline() {
+        // Two modulator partials of different levels in the same band: with
+        // bands on, the carrier's partials both land near the band's mean
+        // outline rather than each taking its own partial's level, and the
+        // carrier's own balance between them is kept.
+        let carrier = sine_frames(90, 0.2, 8);
+        let modulator = sine_frames(90, 0.4, 8);
+        let mut h = harness(&Cross, 2);
+        h.set(CrossPorts::MIX, 1.0);
+        h.set(CrossPorts::BANDS, 8.0);
+        feed(&mut h, 0, &carrier);
+        feed(&mut h, 1, &modulator);
+        h.run(8 * HOP).unwrap();
+        let out = h.spectral(0);
+        let last = last_frame(&out);
+        // A lone partial fills its band alone-ish: the output is the
+        // carrier scaled by modulator-band / carrier-band, which is 2.
+        let level = out.frame(last, 0, 0)[90].magnitude();
+        assert!((level - 0.4).abs() < 0.04, "level {level}");
+        // Bin edges are monotonic and cover every bin.
+        let mut edges = vec![0; MAX_BANDS + 1];
+        for n in [2, 8, 64, 256] {
+            band_edges(n, &mut edges);
+            assert_eq!((edges[0], edges[n]), (0, BINS));
+            assert!(edges[..=n].windows(2).all(|w| w[0] < w[1]), "{n} bands");
+        }
     }
 
     #[test]

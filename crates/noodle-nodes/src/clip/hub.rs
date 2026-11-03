@@ -11,7 +11,7 @@
 //! dropped.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,12 @@ pub(super) const POSITION_STEP: f64 = LOOKAHEAD / 8.0;
 pub(super) const RETRY: Duration = Duration::from_secs(2);
 /// Things sent to the node and not yet returned. The return queue is bigger,
 /// so the node can always hand a retired one back.
+/// The settings of a track input's `monitor` parameter.
+#[allow(dead_code)]
+pub const MONITOR_OFF: u8 = 0;
+pub const MONITOR_AUTO: u8 = 1;
+pub const MONITOR_IN: u8 = 2;
+
 const MAX_OUTSTANDING: usize = 24;
 const QUEUE: usize = 32;
 const STREAM_CHUNKS: usize = 8;
@@ -66,6 +72,17 @@ pub(super) struct Shared {
     pub audition: [AtomicU64; 2],
     /// Whether live MIDI is played through the track.
     pub monitoring: AtomicBool,
+    /// Whether the track is armed to record audio, which Auto monitoring
+    /// listens for.
+    pub audio_armed: AtomicBool,
+    /// The monitor setting (0 Off, 1 Auto, 2 In) as of the node's last block.
+    pub monitor_mode: AtomicU8,
+    /// Whether a take is recording, and the span of samples it keeps (the end
+    /// is `u64::MAX` when it has none): Auto monitoring hears the input inside
+    /// the span and the old take outside it.
+    pub recording: AtomicBool,
+    pub record_start: AtomicU64,
+    pub record_end: AtomicU64,
     /// Whether warped clips play as Repitch whatever their mode, because a
     /// warp is being edited and the stretch would have to start over with
     /// every change. Shared by all the nodes of one set of feeds.
@@ -89,6 +106,11 @@ impl Shared {
             underruns: AtomicU64::new(0),
             audition: [AtomicU64::new(0), AtomicU64::new(0)],
             monitoring: AtomicBool::new(false),
+            audio_armed: AtomicBool::new(false),
+            monitor_mode: AtomicU8::new(0),
+            recording: AtomicBool::new(false),
+            record_start: AtomicU64::new(0),
+            record_end: AtomicU64::new(u64::MAX),
             bells: Mutex::new(Vec::new()),
         }
     }
@@ -115,10 +137,16 @@ impl Shared {
         }
     }
 
-    /// Live MIDI is being played through the track: it is monitored, or a
-    /// key of the piano roll's keyboard is down.
+    /// Live input is being played through the track: its MIDI is monitored,
+    /// its audio input is (armed and not set to Off), or a key of the piano
+    /// roll's keyboard is down.
     pub fn is_live(&self) -> bool {
         self.monitoring.load(Ordering::Relaxed)
+            || match self.monitor_mode.load(Ordering::Relaxed) {
+                MONITOR_IN => true,
+                MONITOR_AUTO => self.audio_armed.load(Ordering::Relaxed),
+                _ => false,
+            }
             || self
                 .audition
                 .iter()
