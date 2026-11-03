@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
 use noodle_engine::{
-    Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, ParamInfo, Setup, Shape,
+    Config, ConfigInfo, Context, Event, EventKind, InputTap, Instance, Io, Layout, Node, NodeError,
+    NodeInfo, NodeType, NoteId, ParamInfo, Setup, Shape, SignalOut,
 };
 use noodle_io::pool::{Bell, Handle};
 use noodle_io::{ClipStream, MidiBus};
@@ -36,7 +36,8 @@ use rtrb::{Consumer, Producer, PushError};
 
 use ahead::{AheadLinks, Lane, MAX_LANES};
 use hub::{
-    Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, POSITION_STEP, Prepared, Retired, Shared, ToNode,
+    Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, MONITOR_AUTO, MONITOR_IN, POSITION_STEP, Prepared,
+    Retired, Shared, ToNode,
 };
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
@@ -57,6 +58,42 @@ const MIDI: usize = 0;
 /// the engine mutes the audio at the track's group output.
 const MUTE_IN: usize = 0;
 const MUTE_OUT: usize = 1;
+/// The monitor setting (Off, Auto, In): a parameter (input 1).
+const MONITOR_PARAM: usize = 1;
+
+/// The config key of the device input channels a track listens to, such as
+/// `1` (a mono source, heard in both ears) or `3 4`. Empty means channels 1
+/// and 2. Config rather than a parameter because it routes the track to the
+/// device and can't be modulated.
+pub const TRACK_INPUT_CHANNELS_KEY: &str = "input";
+pub const TRACK_INPUT_CHANNELS: ConfigInfo = ConfigInfo::text(TRACK_INPUT_CHANNELS_KEY, "Input");
+
+/// The device channels (from 0) a track input's `input` setting names: one
+/// or two, the second defaulting to the first for a single channel.
+pub fn parse_input_channels(text: &str) -> Result<[usize; 2], NodeError> {
+    let mut found = Vec::new();
+    for word in text.split(|c: char| c.is_whitespace() || c == ',') {
+        if word.is_empty() {
+            continue;
+        }
+        match word.parse::<usize>() {
+            Ok(n @ 1..=64) => found.push(n - 1),
+            _ => {
+                return Err(NodeError::config(format!(
+                    "the input channels are numbers from 1 to 64, like \"3 4\", not {word:?}"
+                )));
+            }
+        }
+    }
+    match found[..] {
+        [] => Ok([0, 1]),
+        [one] => Ok([one, one]),
+        [left, right] => Ok([left, right]),
+        _ => Err(NodeError::config(
+            "a track listens to one or two input channels",
+        )),
+    }
+}
 /// The most controllers a jump catches up; the newest are kept.
 const MAX_CHASED: usize = 64;
 
@@ -143,13 +180,28 @@ impl NodeType for TrackInput {
         true
     }
 
+    fn config(&self) -> &[ConfigInfo] {
+        static CONFIG: [ConfigInfo; 1] = [TRACK_INPUT_CHANNELS];
+        &CONFIG
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
 
-    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+    fn layout(&self, config: &Config) -> Result<Layout, NodeError> {
+        parse_input_channels(&TRACK_INPUT_CHANNELS.get_text(config))?;
         Ok(Layout::realtime()
             .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
+            // Off plays the clips. In plays the live input. Auto plays the
+            // input while the track is armed and the transport is stopped or
+            // recording inside the punch, and the clips elsewhere, as tape
+            // machines do.
+            .param(
+                "monitor",
+                "Monitor",
+                ParamInfo::choice(["Off", "Auto", "In"]).default_to(1.0),
+            )
             .output("audio", "Audio")
             .output("mute", "Mute")
             .event_output("midi", "MIDI")
@@ -305,6 +357,8 @@ impl NodeType for TrackInput {
         let ahead = ahead::spawn(shared.clone(), rate);
         let mut node =
             TrackInputNode::new(shared, links, ahead, setup.sample_rate, setup.max_frames);
+        node.tap = self.feeds.input_tap();
+        node.channels = parse_input_channels(&TRACK_INPUT_CHANNELS.get_text(setup.config))?;
         node.live = self
             .midi
             .as_ref()
@@ -380,6 +434,15 @@ struct TrackInputNode {
     audition_held: [u64; 2],
     /// Live MIDI for monitoring, if the node was given a bus.
     live: Option<LiveMidi>,
+    /// The device input to monitor, if the engine gave one.
+    tap: Option<Arc<InputTap>>,
+    /// The device channels (from 0) heard on the left and right.
+    channels: [usize; 2],
+    /// How much of the input is mixed in, from 0 (the clips) to 1 (the
+    /// input); it moves by `step` a frame.
+    monitor_level: f32,
+    /// The input for the block, left and right.
+    monitor: [Vec<f32>; 2],
 }
 
 /// A MIDI note that has started and not yet ended.
@@ -435,7 +498,66 @@ impl TrackInputNode {
             recheck: false,
             audition_held: [0; 2],
             live: None,
+            tap: None,
+            channels: [0, 1],
+            monitor_level: 0.0,
+            monitor: [vec![0.0; max_frames], vec![0.0; max_frames]],
         }
+    }
+
+    /// Whether the input should be heard in this block.
+    fn hears_input(&self, transport: &noodle_engine::Transport, mode: u8) -> bool {
+        match mode {
+            MONITOR_IN => true,
+            MONITOR_AUTO => {
+                let shared = &self.shared;
+                shared.audio_armed.load(Ordering::Relaxed)
+                    && (!transport.playing
+                        || (shared.recording.load(Ordering::Relaxed)
+                            && transport.position >= shared.record_start.load(Ordering::Relaxed)
+                            && transport.position < shared.record_end.load(Ordering::Relaxed)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Writes the block's audio: the clips, crossfaded to the live input
+    /// (over about 5 ms) while the input is heard. Without a device input
+    /// tap, as in an offline render, only the clips play.
+    fn write_audio(
+        &mut self,
+        out: &mut SignalOut<'_>,
+        n: usize,
+        transport: &noodle_engine::Transport,
+        mode: u8,
+    ) {
+        out.lane_mut(0, 0).copy_from_slice(&self.left[..n]);
+        out.lane_mut(0, 1).copy_from_slice(&self.right[..n]);
+        let Some(tap) = self.tap.clone() else {
+            return;
+        };
+        let hear = self.hears_input(transport, mode);
+        if !hear && self.monitor_level <= 0.0 {
+            return;
+        }
+        for (side, device) in self.channels.into_iter().enumerate() {
+            let input = &mut self.monitor[side][..n];
+            input.fill(0.0);
+            tap.add_channel(device, 1.0, input);
+        }
+        let target = if hear { 1.0 } else { 0.0 };
+        for i in 0..n {
+            self.monitor_level = if hear {
+                (self.monitor_level + self.step).min(target)
+            } else {
+                (self.monitor_level - self.step).max(target)
+            };
+            let level = self.monitor_level;
+            self.left[i] = self.left[i] * (1.0 - level) + self.monitor[0][i] * level;
+            self.right[i] = self.right[i] * (1.0 - level) + self.monitor[1][i] * level;
+        }
+        out.lane_mut(0, 0).copy_from_slice(&self.left[..n]);
+        out.lane_mut(0, 1).copy_from_slice(&self.right[..n]);
     }
 
     /// Sends something back to the hub to be dropped. The queue is bigger than
@@ -1473,6 +1595,11 @@ impl Node for TrackInputNode {
                 output.lane_mut(0, 0).copy_from_slice(input.lane(0, 0));
             }
         }
+        let mode = io
+            .inputs
+            .get(MONITOR_PARAM)
+            .map_or(MONITOR_AUTO, |input| input.lane(0, 0)[0].round() as u8);
+        self.shared.monitor_mode.store(mode, Ordering::Relaxed);
         let transport = ctx.transport;
         self.shared
             .position
@@ -1522,9 +1649,7 @@ impl Node for TrackInputNode {
         // line them up with the playhead ready for the next start.
         if !transport.playing && self.level <= 0.0 && !self.dipping() {
             self.park(transport.position);
-            let out = io.outputs;
-            out[AUDIO].lane_mut(0, 0).copy_from_slice(&self.left[..n]);
-            out[AUDIO].lane_mut(0, 1).copy_from_slice(&self.right[..n]);
+            self.write_audio(&mut io.outputs[AUDIO], n, &transport, mode);
             return;
         }
         let mut from = 0;
@@ -1547,9 +1672,7 @@ impl Node for TrackInputNode {
             from = to;
         }
 
-        let out = &mut io.outputs[AUDIO];
-        out.lane_mut(0, 0).copy_from_slice(&self.left[..n]);
-        out.lane_mut(0, 1).copy_from_slice(&self.right[..n]);
+        self.write_audio(&mut io.outputs[AUDIO], n, &transport, mode);
     }
 
     /// Back to a new instance's timeline state: no note sounding, none

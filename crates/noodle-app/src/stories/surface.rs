@@ -124,6 +124,7 @@ pub const CHORDS: &[Chord] = &[
         Surface::Visible,
         "the computer keyboard button",
     ),
+    chord(NONE, Key::T, Surface::Visible, "the Tap button"),
     // Shown in the Edit and View menus, handled by the view itself.
     chord(CMD, Key::X, Surface::Menu, "Edit > Cut"),
     chord(CMD, Key::C, Surface::Menu, "Edit > Copy"),
