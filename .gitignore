@@ -2,3 +2,4 @@
 .DS_Store
 /eval/cache/
 /eval/local/
+__pycache__/

@@ -50,6 +50,7 @@ mod reverse;
 mod sample;
 mod sample_hold;
 mod sample_input;
+mod sample_set;
 mod sampler;
 mod sampler_stretch;
 mod scope;
@@ -132,7 +133,10 @@ pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
-pub use random_select::{MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID, RandomSelect};
+pub use random_select::{
+    CHOICE_PORT as RANDOM_SELECT_CHOICE, MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID,
+    RandomSelect,
+};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use render_clip::{
     CLIP_SILENCE, ClipReport, ClipRequest, MAX_TAIL_SECONDS, render_clip, spawn_render_clip,
@@ -143,6 +147,11 @@ pub use reverse::Reverse;
 pub use sample::{Sample, SampleError, SampleRef, SampleStore};
 pub use sample_hold::{SAMPLE_HOLD_ID, SampleHold};
 pub use sample_input::{SAMPLE_INPUT_ID, SampleInput};
+pub use sample_set::{
+    LayerZone, NameInfo, Rescan, Row, SAMPLE_SET_ID, SET_FOLDER_KEY, SET_MIDDLE_C_KEY,
+    SET_NAMES_KEY, SampleSet, SetEntry, SetTables, folder_of, is_set, middle_c_of, parse_name,
+    parse_set, rescan, rows_from_files, rows_of, rows_to_config, sample_hashes, set_to_text,
+};
 pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
@@ -258,6 +267,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Tempo);
     registry.register(BeatLength);
     registry.register(SampleInput);
+    registry.register(SampleSet);
     registry.register(Distortion);
     registry.register(Bitcrusher);
     registry.register(Chorus);

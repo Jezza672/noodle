@@ -1,0 +1,128 @@
+[
+    Template((
+        name: "Multisample Instrument",
+        slug: "multisample-instrument",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Multisample Instrument"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:tune\n3:bend range\n4:release\n5:gain\n6:cutoff"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.instrument.sample_set",
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.instrument.sampler",
+                params: {"bend_range": 2.0, "mode": 1.0, "release": 0.4},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 20000.0},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 910.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 4, port: "bend_range"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 4, port: "gain"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 4, port: "release"),
+            ),
+            (
+                from: (node: 3, port: "sample"),
+                to: (node: 4, port: "sample"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "tune"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 5, port: "cutoff"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Sustained",
+        slug: "multisample-instrument-sustained",
+        topology: "22d06daa24b8588b",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "mode": 1.0, "release": 0.4},
+            ),
+            (),
+            (
+                params: {"cutoff": 20000.0},
+            ),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Short Notes",
+        slug: "multisample-instrument-short-notes",
+        topology: "22d06daa24b8588b",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "mode": 1.0, "release": 0.08},
+            ),
+            (),
+            (
+                params: {"cutoff": 20000.0},
+            ),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Wide Bend",
+        slug: "multisample-instrument-wide-bend",
+        topology: "22d06daa24b8588b",
+        nodes: [
+            (
+                params: {"bend_range": 12.0, "mode": 1.0, "release": 0.25},
+            ),
+            (),
+            (
+                params: {"cutoff": 20000.0},
+            ),
+            (),
+            (),
+        ],
+    )),
+]

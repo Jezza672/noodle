@@ -133,3 +133,20 @@ reference to a sample instead of signal:
   `Sample` (`noodle.instrument.sample`) holds a `SampleRef` as its `sample`
   option and outputs it; the Sampler's `sample` is its input, and a window
   plays as if it were the whole sample.
+  **Picked while audio runs.** A node can name itself a chooser
+  (`NodeType::sample_chooser`: its sample output, the sample inputs it picks
+  among, and a signal output holding the pick). Random Select of samples is the
+  one. A wire from it is not fixed at compile time, so `resolve_samples` writes
+  every candidate into the receiver's config instead, joined by `|` (an empty
+  one for an input with nothing wired), so the cache key covers them and the
+  Sampler loads them all when it is built. It also wires the chooser's `choice`
+  signal into the receiver's signal input `{key}_choice` (the Sampler's
+  `sample_choice`): per frame, the number of the candidate in force, plus 64
+  when held notes are to be cut. A note-on plays the candidate in force at its
+  own frame; notes already sounding ring out or are released at the switch. When
+  every candidate is the same sample the compile-time path is kept. A receiver
+  with no `{key}_choice` input refuses the wire (a diagnostic), and a chooser
+  fed by a chooser is refused too. Candidates play unwarped, like a set's.
+  A sample wire can also carry a **set**: several references, each
+  `hash[:start:end]@root[/layer][#rr]`, joined by `;` (`SetEntry`). A `Sample
+  Set` node outputs one; a Sampler given one plays a multisample.

@@ -27,6 +27,11 @@ jobs:
         # The repo is public, so hosted runners are free on all three.
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      # Read main's scorecard artifact, and post the diff on the PR.
+      actions: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
       # The toolchain and components come from rust-toolchain.toml.
@@ -66,6 +71,37 @@ jobs:
           name: usability-scorecard
           path: scorecard/
           if-no-files-found: warn
+      # The baseline is the scorecard artifact of the latest green run on
+      # main (an artifact, not a committed file, so PRs never conflict on
+      # it). Fork PRs get a read-only token, so they skip the comment.
+      - name: Scorecard diff tests
+        if: runner.os == 'Linux'
+        run: python3 -B -m unittest discover -s scripts
+      - name: Scorecard diff
+        # A failed comment call must not turn CI red.
+        continue-on-error: true
+        if: >-
+          runner.os == 'Linux' && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p baseline
+          run=$(gh run list --workflow ci.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          if [ -n "$run" ]; then
+            gh run download "$run" --name usability-scorecard --dir baseline || true
+          fi
+          python3 scripts/scorecard_diff.py baseline/scorecard.json scorecard/scorecard.json > diff.md
+          cat diff.md >> "$GITHUB_STEP_SUMMARY"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- noodle-scorecard-diff -->")) | .id' | head -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@diff.md
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@diff.md
+          fi
       - name: Real plugins' editors
         if: runner.os == 'Linux'
         env:

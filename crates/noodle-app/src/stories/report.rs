@@ -74,7 +74,7 @@ fn effort_json(e: &Effort) -> String {
     let o = &e.operators;
     format!(
         "{{\"actions\":{},\"clicks\":{},\"double_clicks\":{},\"drags\":{},\"keys\":{},\
-         \"wheels\":{},\"drops\":{},\"texts\":{},\"steps\":{},\"view_switches\":{},\
+         \"wheels\":{},\"drops\":{},\"texts\":{},\"controls\":{},\"code\":{},\"code_statements\":{},\"steps\":{},\"view_switches\":{},\
          \"dialogs_opened\":{},\"klm\":{{\"k\":{},\"p\":{},\"b\":{},\"h\":{},\"m\":{},\
          \"seconds\":{:.2}}},\"wait_seconds\":{:.2}}}",
         e.actions,
@@ -85,6 +85,9 @@ fn effort_json(e: &Effort) -> String {
         c.wheels,
         c.drops,
         c.texts,
+        c.controls,
+        c.code,
+        e.code_statements,
         e.steps,
         e.view_switches,
         e.dialogs_opened,
@@ -246,10 +249,10 @@ pub fn markdown(routes: &[RouteScore]) -> String {
     let mut out = String::new();
     out.push_str(
         "| Story | Status | Route | Actions | KLM s | Per extra item | Repetition | Rework \
-         | Worst change cost | Loss | Hidden entry points | Time to hear | Live editing \
+         | Code | Worst change cost | Loss | Hidden entry points | Time to hear | Live editing \
          | Unseen | Dropouts | Save and reopen | Naive success |\n",
     );
-    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut row = |id: &str, title: &str, status: &str, mine: Vec<&RouteScore>| {
         let tags: Vec<&str> = mine.iter().map(|r| r.tag.as_str()).collect();
         let pick = mine.iter().find(|r| r.tag == "default").or(mine.first());
@@ -283,6 +286,23 @@ pub fn markdown(routes: &[RouteScore]) -> String {
             }
             text
         });
+        // Code written anywhere in the story's routes or late changes.
+        let statements: usize = mine
+            .iter()
+            .map(|r| {
+                r.effort.code_statements
+                    + r.late
+                        .iter()
+                        .map(|l| l.effort.code_statements)
+                        .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0);
+        let code = if statements == 0 {
+            "-".to_string()
+        } else {
+            format!("{statements} statements")
+        };
         let lost: Vec<&str> = mine
             .iter()
             .flat_map(|r| {
@@ -342,8 +362,8 @@ pub fn markdown(routes: &[RouteScore]) -> String {
         };
         let _ = writeln!(
             out,
-            "| {id} {title} | {status} | {route} | {actions} | {klm} | {per_item} | - | {rework} | {worst} \
-             | {loss} \
+            "| {id} {title} | {status} | {route} | {actions} | {klm} | {per_item} | - | {rework} | {code} \
+             | {worst} | {loss} \
              | {hidden} | {hear} | {live} | {unseen} | {dropouts} | {reopen} | - |"
         );
     };
@@ -503,13 +523,23 @@ mod tests {
         assert!(s12.contains("2.5 act / 3.0 s"), "{s12}");
         assert!(s12.contains("2 recreate (4 act), 2 undo"), "{s12}");
         assert!(s12.contains("LOST automation"), "{s12}");
+        assert!(s12.contains("| - | 0.25 |"), "no code: {s12}");
         // Group E, F and G.
         assert!(s12.contains("| 1 of 8 (12%), 1 untagged |"), "{s12}");
         assert!(s12.contains("| 5 act / 9.5 s |"), "{s12}");
         assert!(s12.contains("| stops in wire |"), "{s12}");
         assert!(s12.contains("| 1 of 4 steps | 2 | identical |"), "{s12}");
-        let s02 = lines.iter().find(|l| l.contains("| S02 ")).unwrap();
-        assert!(s02.contains("| blocked | - | - | - |"), "{s02}");
+        let s04 = lines.iter().find(|l| l.contains("| S04 ")).unwrap();
+        assert!(s04.contains("| blocked | - | - | - |"), "{s04}");
         assert!(lines.last().unwrap().contains("S00 (framework check)"));
+    }
+
+    #[test]
+    fn code_written_in_a_late_change_shows_in_the_table() {
+        let mut route = score("S09", "default", 7);
+        route.late[0].effort.code_statements = 6;
+        let md = markdown(&[route]);
+        let s09 = md.lines().find(|l| l.contains("| S09 ")).unwrap();
+        assert!(s09.contains("| 6 statements |"), "{s09}");
     }
 }
