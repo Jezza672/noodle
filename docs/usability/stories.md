@@ -101,14 +101,14 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Change the vocal EQ in every version at once.
   - *Late change:* Add a fourth version.
   - *Late change:* Rename a version.
-- **S22** **Produce a surround or immersive mix.** As a post-production mixer, I want to set up a 5.1 or 7.1.4 bus structure, pan objects in 3D with automation, fold down to stereo for a check, and export the bed and object stems or an ADM file, so that the mix can be delivered for theatrical and streaming formats.
+- **S22** **Produce a surround or immersive mix.** As a post-production mixer, I want to set up a 5.1 or 7.1.4 bus structure, pan objects in 3D with automation, fold down to stereo for a check, and export the bed, the object stems and a stereo fold-down, so that the mix can be delivered for streaming and handed to an Atmos renderer.
   - *Late change:* Change the layout from 5.1 to 7.1.4.
   - *Late change:* Move one object's path.
   - *Late change:* Re-export the stereo fold-down.
 
 ## Mastering and delivery
 
-- **S23** **Master to loudness targets.** As a mastering engineer, I want to sequence an album of tracks with set gaps and crossfades, apply per-track and master-chain processing, monitor integrated LUFS and true peak, and export 24-bit WAV, 16-bit dithered CD files and a DDP image with ISRC codes, so that the release meets streaming and replication specs.
+- **S23** **Master to loudness targets.** As a mastering engineer, I want to sequence an album of tracks with set gaps and crossfades, apply per-track and master-chain processing, monitor integrated LUFS and true peak, and export 24-bit WAV, 16-bit dithered CD files and a CUE sheet with ISRC codes, so that the release meets streaming and replication specs.
   - *Late change:* The label wants -16 LUFS instead of -14.
   - *Late change:* Swap the order of tracks 3 and 4.
   - *Late change:* Replace track 5 with a new mix.

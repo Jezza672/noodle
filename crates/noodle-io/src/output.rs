@@ -692,7 +692,7 @@ pub(crate) const VIRTUAL_BUFFERS: (u32, u32) = (16, 8192);
 /// The channels of the virtual output unless the settings say.
 const VIRTUAL_CHANNELS: usize = 2;
 /// The most channels the virtual output takes.
-pub(crate) const VIRTUAL_MAX_CHANNELS: usize = 8;
+pub(crate) const VIRTUAL_MAX_CHANNELS: usize = noodle_engine::MAX_LAYOUT_CHANNELS;
 
 impl VirtualClock {
     fn start(
@@ -2262,7 +2262,7 @@ mod tests {
             "{} samples",
             kept.len()
         );
-        for channels in [0, 9] {
+        for channels in [0, 13] {
             let config = AudioConfig {
                 channels: Some(channels),
                 ..virtual_config()

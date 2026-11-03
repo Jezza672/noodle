@@ -117,23 +117,37 @@ The engine has always carried any number of channels per signal; surround adds
 the conventions and nodes that make them usable.
 
 - **Layouts** (`noodle-engine/src/channels.rs`, `ChannelLayout`): Mono, Stereo,
-  3.0, Quad, 5.1 and 7.1, each a list of `Speaker`s in WAV channel order (5.1
-  is L, R, C, LFE, Lb, Rb; 7.1 adds Ls, Rs). A signal's layout is implied by
-  its channel count (1, 2, 3, 4, 6, 8); other counts are plain channels with no
-  layout. A layout knows each speaker's azimuth (degrees from straight ahead,
+  3.0, Quad, 5.1, 7.1, 7.1.2 and 7.1.4, each a list of `Speaker`s in WAV channel
+  order (5.1 is L, R, C, LFE, Lb, Rb; 7.1 adds Ls, Rs; 7.1.2 adds the height
+  speakers Ltf, Rtf and 7.1.4 also Ltb, Rtb, at 45° elevation). A signal's
+  layout is implied by its channel count (1, 2, 3, 4, 6, 8, 10, 12; the first
+  layout in `ChannelLayout::ALL` with that count, so 8 is 7.1); other counts are
+  plain channels with no layout. `MAX_LAYOUT_CHANNELS` is 12. A layout knows each speaker's azimuth (degrees from straight ahead,
   positive to the right; the LFE has none), its WAV channel mask, and two
-  pure functions the nodes use: `pan_gains` (constant power between the two
+  pure functions the nodes use: `pan_gains` and `pan_gains_3d` (see Elevation
+  below; `pan_gains` is the ear-level case; constant power between the two
   speakers either side of a direction, a hard pan at the edges of a layout
   with nothing behind, `spread` blending toward all speakers equally, never
   to the LFE) and `convert_matrix` (the usual downmix recipe: shared
   speakers pass, the centre of a layout without one goes to L and R at -3 dB,
   a missing rear pair folds onto the other rear pair or onto the front on its
   side at -3 dB, stereo into mono sums at -3 dB, the LFE dropped where there
-  is none, speakers the source lacks stay silent; no normalising).
+  is none, speakers the source lacks stay silent; a height speaker folds into
+  the ear-level speaker below it at -3 dB, then as above; no normalising).
+- **Elevation.** Surround Pan has an `elevation` parameter (0 at ear level, 90
+  overhead, default 0). `pan_gains_3d` pans the source round the ear-level
+  ring and round the ring of height speakers at the azimuth, and crossfades
+  the two with constant power as it rises: all ear level at 0, all height at
+  45° (where the height speakers stand), and above that toward every height
+  speaker playing it alike. Power stays 1 throughout. A layout without height
+  speakers ignores it, so 5.1 and 7.1 projects sound as before. This is a
+  layered amplitude pan rather than full VBAP over speaker triangles; it needs
+  no triangulation, holds constant power and is exact at the speakers. An
+  x, y, z Object node is backlog #379.
 - **Nodes** (`noodle-nodes/src/surround.rs`). `Surround Pan`
   (`noodle.util.surround_pan`; config `layout`, default 5.1; parameters
   `azimuth` (wired signals move it along its range, so a full-scale LFO circles
-  the listener), `spread` and `lfe` (a send to the LFE in dB, off at its
+  the listener), `elevation`, `spread` and `lfe` (a send to the LFE in dB, off at its
   minimum)) pans the average of its input channels per voice. `Convert Layout`
   (`noodle.util.convert_layout`; config `layout`, default Stereo) converts
   from the layout the input's channel count implies; a count with no layout is
@@ -157,17 +171,18 @@ the conventions and nodes that make them usable.
   channels (the device's default, usually two, if `None`); `choose_config` takes
   it as the first preference and refuses a count no configuration has
   (`AudioError::UnsupportedChannels`) rather than guessing. The audio settings
-  have an "Output channels" drop-down (1, 2, 4, 6, 8 and the device's maximum),
-  `noodle play --channels N` the same, and the virtual output takes 1 to 8
+  have an "Output channels" drop-down (1, 2, 4, 6, 8, 10, 12 and the device's maximum),
+  `noodle play --channels N` the same, and the virtual output takes 1 to 12
   (`testkit::virtual_audio()` stays stereo unless told otherwise), so a surround
   render can be captured with no hardware. Extra devices still open at their
   default channels.
 - **Export.** The export dialog has a Channels drop-down (a layout) and
-  `ExportChoice::layout` sets the render's channel count; WAV and FLAC take up
-  to 8. `noodle render --channels N` writes the same. Hound writes the
+  `ExportChoice::layout` sets the render's channel count; WAV takes up to 12
+  (the hub plays clips of up to 12 channels too) and FLAC, whose own limit is 8,
+  refuses more with a message saying to use WAV. `noodle render --channels N` writes the same. Hound writes the
   `WAVE_FORMAT_EXTENSIBLE` mask as the first N speaker bits, so after
   finalising `set_wav_channel_mask` overwrites it (4 bytes at offset 40) with
-  the layout's own, which matters for quad and 7.1 (WAV only; FLAC has no mask
+  the layout's own, which matters for quad, 7.1 and the height layouts (the top speakers have their own mask bits; WAV only; FLAC has no mask
   here).
 - **Meters.** The Mix node's and the meters' readings average a bus's
   channels' power (peak is the loudest channel) and are not weighted by

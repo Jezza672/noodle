@@ -471,7 +471,11 @@ A Surround Pan node shows a panner (`widgets/panner.rs`): the layout's
 speakers around a ring, each dot sized by the gain `pan_gains` gives it, and
 the source at the azimuth's angle, nearer the middle as `spread` grows. In the
 properties panel the source can be dragged (angle sets the azimuth, distance
-the spread, one undo step per drag; a wired parameter isn't set).
+the spread, one undo step per drag; a wired parameter isn't set). A layout
+with height speakers (7.1.2, 7.1.4) draws them on a smaller ring, and has a
+height strip down the right edge whose dot is the `elevation`: dragging in the
+strip sets it (bottom ear level, top overhead; a tick marks where the height
+speakers stand).
 
 An Output node has a `routing` setting: for each channel of its signal, the
 device channel (from 1) it plays on, or `-` for none (`3 4 1 2` swaps the pairs

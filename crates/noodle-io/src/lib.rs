@@ -8,6 +8,7 @@ mod export;
 mod files;
 mod hash;
 mod input;
+mod limiter;
 mod loudness;
 mod midi;
 mod midi_out;
@@ -28,10 +29,14 @@ pub use devices::{
     Direction, HostInfo, InputChoice, LIVE_BUFFER, VIRTUAL_OUTPUT, buffer_request, capabilities,
     choose_config, devices, hosts, virtual_output,
 };
-pub use export::{ExportError, ExportFormat, ExportWriter};
+pub use export::{
+    ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,
+    normalize_isrc,
+};
 pub use files::{AudioFiles, FileStamp};
 pub use hash::{FileHasher, Peek};
 pub use input::{Capture, Feed, InputMeter, input_path, recordable_input_path};
+pub use limiter::TruePeakLimiter;
 pub use loudness::{Loudness, LoudnessMeter, measure as measure_loudness};
 pub use midi::{
     ALL_INPUTS, AudioClock, Heard, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage,

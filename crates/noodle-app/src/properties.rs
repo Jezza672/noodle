@@ -1374,6 +1374,7 @@ fn panner(
             value("spread"),
             (!wired("azimuth"), !wired("spread")),
         )
+        .elevation(value("elevation"), !wired("elevation"))
         .ranges(range("azimuth"), range("spread"))
         .show(ui),
     );

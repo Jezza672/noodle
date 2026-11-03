@@ -27,7 +27,10 @@ use noodle_engine::{
     Cancelled, Diagnostic, Job, Progress, Registry, StreamError, Tap, TempoTable,
     render_project_streaming_replacing, render_taps,
 };
-use noodle_io::{ExportError, ExportFormat, ExportWriter, Loudness, LoudnessMeter};
+use noodle_io::{
+    ExportError, ExportFormat, ExportMetadata, ExportWriter, Loudness, LoudnessMeter,
+    TruePeakLimiter, cue_sheet,
+};
 
 use crate::{
     CHUNK_FRAMES, ClipProblem, FileError, FreezeError, Freezer, RenderRequest,
@@ -56,6 +59,14 @@ pub struct ExportRequest {
     /// Brings the mixdown to this loudness in LUFS, by a gain on every file.
     /// `None` leaves the levels as they are.
     pub normalize: Option<f64>,
+    /// Holds the mixdown's true peak under this many dBTP, with a lookahead
+    /// limiter after the normalising gain. `None` leaves the peaks as they
+    /// are. Track files are not limited, so they still sum to the mixdown.
+    pub true_peak_ceiling: Option<f64>,
+    /// Title, artist and ISRC, written into the mixdown file.
+    pub metadata: ExportMetadata,
+    /// Writes a CUE sheet next to the mixdown file.
+    pub cue: bool,
     /// The cache offline and frozen nodes are rendered into. `None` skips
     /// that: they are not heard.
     pub freezer: Option<Freezer>,
@@ -207,7 +218,12 @@ pub fn export(
     let channels = settings.channels;
     let expected = request.end - request.start;
     // Where each pass's share of the progress bar goes.
+    // The ceiling applies to the mixdown file, so only when one is written.
+    let ceiling = request
+        .true_peak_ceiling
+        .filter(|_| request.mixdown.is_some());
     let passes = usize::from(request.normalize.is_some())
+        + usize::from(request.normalize.is_some() && ceiling.is_some())
         + usize::from(request.mixdown.is_some())
         + usize::from(!request.tracks.is_empty());
     let (first, span) = if request.freezer.is_some() {
@@ -221,22 +237,32 @@ pub fn export(
         progress.set_window(first + share * pass as f32, share);
         pass += 1;
     };
-    let new_sink = |path: &Option<PathBuf>, gain: f32| -> Result<Sink, ExportJobError> {
+    let new_sink = |path: &Option<PathBuf>,
+                    gain: f32,
+                    limit: Option<f64>,
+                    metadata: ExportMetadata|
+     -> Result<Sink, ExportJobError> {
         let writer = match path {
             Some(path) => Some(
-                ExportWriter::create(path, request.format, channels, rate, Some(expected))
-                    .map_err(ExportJobError::File)?,
+                ExportWriter::create_tagged(
+                    path,
+                    request.format,
+                    channels,
+                    rate,
+                    Some(expected),
+                    metadata,
+                )
+                .map_err(ExportJobError::File)?,
             ),
             None => None,
         };
-        Ok(Sink::new(
-            writer,
-            rate,
-            channels,
-            gain,
-            request.start as usize,
-        ))
+        let mut sink = Sink::new(writer, rate, channels, gain, request.start as usize);
+        if let Some(ceiling) = limit {
+            sink.limit(TruePeakLimiter::new(rate, channels, ceiling));
+        }
+        Ok(sink)
     };
+    let untagged = ExportMetadata::default;
     let mut frames = 0;
     let mut diagnostics = Vec::new();
 
@@ -264,17 +290,40 @@ pub fn export(
     };
     if let Some(target) = request.normalize {
         next_window(progress);
-        let (loudness, _) = mix_pass(new_sink(&None, 1.0)?, progress)?.finish()?;
+        let (loudness, _) =
+            mix_pass(new_sink(&None, 1.0, None, untagged())?, progress)?.finish()?;
         if loudness.lufs.is_finite() {
             gain_db = target - loudness.lufs;
         }
         mixdown = Some(loudness);
+        if let (Some(ceiling), true) = (ceiling, loudness.lufs.is_finite()) {
+            // The limiter takes some loudness with the peaks: measure what
+            // it leaves and make the gain up, once.
+            next_window(progress);
+            let gain = 10f32.powf(gain_db as f32 / 20.0);
+            let sink = new_sink(&None, gain, Some(ceiling), untagged())?;
+            let (limited, _) = mix_pass(sink, progress)?.finish()?;
+            if limited.lufs.is_finite() && (limited.lufs - target).abs() > 0.05 {
+                gain_db += target - limited.lufs;
+            }
+        }
     }
     let gain = 10f32.powf(gain_db as f32 / 20.0);
     if request.mixdown.is_some() {
         next_window(progress);
-        let sink = mix_pass(new_sink(&request.mixdown, gain)?, progress)?;
+        let sink = mix_pass(
+            new_sink(&request.mixdown, gain, ceiling, request.metadata.clone())?,
+            progress,
+        )?;
         let (loudness, written) = sink.finish()?;
+        if let (true, Some(path)) = (request.cue, &request.mixdown) {
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let cue = cue_sheet(&name, request.format, &request.metadata);
+            std::fs::write(path.with_extension("cue"), cue)
+                .map_err(|e| ExportJobError::File(e.into()))?;
+        }
         mixdown = Some(loudness);
         frames = written;
     } else if let Some(loudness) = &mut mixdown {
@@ -297,7 +346,12 @@ pub fn export(
                 .control_port(track.group)
                 .filter(|_| !graph.group_ports(track.group).outputs.is_empty())
                 .ok_or_else(|| ExportJobError::NoOutput(track.name.clone()))?;
-            let sink = Arc::new(Mutex::new(Some(new_sink(&Some(track.path.clone()), gain)?)));
+            let sink = Arc::new(Mutex::new(Some(new_sink(
+                &Some(track.path.clone()),
+                gain,
+                None,
+                untagged(),
+            )?)));
             let (tap_sink, tap_failure) = (Arc::clone(&sink), Arc::clone(&failure));
             let mut interleaved = Vec::new();
             taps.push(Tap {
@@ -406,6 +460,9 @@ struct Sink {
     skip: usize,
     written: u64,
     scratch: Vec<f32>,
+    /// Holds the true peak under a ceiling, when asked.
+    limiter: Option<TruePeakLimiter>,
+    limited: Vec<f32>,
 }
 
 impl Sink {
@@ -426,7 +483,14 @@ impl Sink {
             skip: skip * channels,
             written: 0,
             scratch: Vec::new(),
+            limiter: None,
+            limited: Vec::new(),
         }
+    }
+
+    /// Limits what is written (and measured) with `limiter`, after the gain.
+    fn limit(&mut self, limiter: TruePeakLimiter) {
+        self.limiter = Some(limiter);
     }
 
     fn push(&mut self, chunk: &[f32]) -> Result<(), ExportError> {
@@ -441,15 +505,35 @@ impl Sink {
             self.scratch.extend(keep.iter().map(|s| s * self.gain));
             &self.scratch
         };
-        self.meter.push(keep);
-        match &mut self.writer {
-            Some(writer) => writer.write(keep),
+        if let Some(limiter) = &mut self.limiter {
+            self.limited.clear();
+            limiter.push(keep, &mut self.limited);
+            return Self::emit(&mut self.meter, &mut self.writer, &self.limited);
+        }
+        Self::emit(&mut self.meter, &mut self.writer, keep)
+    }
+
+    fn emit(
+        meter: &mut LoudnessMeter,
+        writer: &mut Option<ExportWriter>,
+        samples: &[f32],
+    ) -> Result<(), ExportError> {
+        meter.push(samples);
+        match writer {
+            Some(writer) => writer.write(samples),
             None => Ok(()),
         }
     }
 
     /// Completes the file. Returns how loud it is and the frames in it.
-    fn finish(self) -> Result<(Loudness, u64), ExportJobError> {
+    fn finish(mut self) -> Result<(Loudness, u64), ExportJobError> {
+        if let Some(limiter) = &mut self.limiter {
+            // The frames the limiter still holds.
+            self.limited.clear();
+            limiter.finish(&mut self.limited);
+            Self::emit(&mut self.meter, &mut self.writer, &self.limited)
+                .map_err(ExportJobError::File)?;
+        }
         if let Some(writer) = self.writer {
             writer.finish().map_err(ExportJobError::File)?;
         }

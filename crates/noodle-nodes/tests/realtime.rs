@@ -1978,8 +1978,8 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
 fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     // A 5.1 engine: sine -> surround pan (azimuth swept by an LFO) -> split
     // -> merge -> output, the same pan through a downmix to stereo and an
-    // upmix back, and a second pan whose layout alternates 5.1 and 7.1 (a
-    // 6 -> 8 -> 6 channel rebuild) into a Convert Layout back to 5.1.
+    // upmix back, and a second pan whose layout alternates 5.1 and 7.1.4 (a
+    // 6 -> 12 -> 6 channel rebuild) with its elevation swept into a Convert Layout back to 5.1.
     let surround = Settings {
         channels: 6,
         ..SETTINGS
@@ -2014,6 +2014,8 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
         .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(3))));
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(sine, "out", swept, "in");
+    // Elevation moves too: in 7.1.4 (12 channels) it pans into the heights.
+    s.wire(lfo, "out", swept, "elevation");
     s.wire(swept, "out", to_51, "in");
     s.wire(to_51, "out", mix, "in3");
     s.wire(sine, "out", pan, "in");
@@ -2033,12 +2035,12 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     let mut channels_heard = [false; 6];
     for round in 0..8 {
         // Between blocks, on this thread: the second pan changes shape,
-        // 6 channels then 8 then 6 again.
+        // 6 channels then 12 then 6 again.
         s.edit(Command::SetConfig {
             node: swept,
             key: "layout".to_owned(),
             value: Some(Value::Text(
-                if round % 2 == 1 { "7.1" } else { "5.1" }.to_owned(),
+                if round % 2 == 1 { "7.1.4" } else { "5.1" }.to_owned(),
             )),
         });
         s.update();

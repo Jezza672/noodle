@@ -29,6 +29,16 @@ pub struct ExportChoice {
     /// Brings the mixdown to this loudness in LUFS, by one gain on every
     /// file.
     pub normalize: Option<f64>,
+    /// Holds the mixdown's true peak under this many dBTP, after the
+    /// normalising gain.
+    pub true_peak_ceiling: Option<f64>,
+    /// Title, artist and ISRC for the mixdown file; the ISRC may have dashes
+    /// and is checked when the export starts.
+    pub title: String,
+    pub artist: String,
+    pub isrc: String,
+    /// Write a CUE sheet next to the mixdown file.
+    pub cue: bool,
 }
 
 #[cfg(test)]
@@ -46,6 +56,11 @@ impl ExportChoice {
             mixdown: true,
             groups: Vec::new(),
             normalize: None,
+            true_peak_ceiling: None,
+            title: String::new(),
+            artist: String::new(),
+            isrc: String::new(),
+            cue: false,
         }
     }
 }
@@ -59,6 +74,8 @@ pub struct ExportSummary {
     pub files: Vec<(String, Loudness)>,
     /// The gain normalising applied, in dB.
     pub gain_db: f64,
+    /// The CUE sheet written next to the mixdown, if one was asked for.
+    pub cue: Option<PathBuf>,
 }
 
 /// An export under way.
@@ -68,6 +85,7 @@ pub(super) struct Run {
     seconds: f64,
     /// More than one file: `path` is the folder they are in.
     folder: bool,
+    cue: Option<PathBuf>,
 }
 
 impl Session {
@@ -120,6 +138,30 @@ impl Session {
         if !choice.mixdown && choice.groups.is_empty() {
             return Err("Choose the mixdown or a track to export".into());
         }
+        let isrc = if choice.isrc.trim().is_empty() {
+            String::new()
+        } else {
+            noodle_io::normalize_isrc(&choice.isrc).ok_or(
+                "The ISRC isn't valid: it is two letters, three letters or digits, then seven digits",
+            )?
+        };
+        let metadata = noodle_io::ExportMetadata {
+            title: choice.title.trim().to_owned(),
+            artist: choice.artist.trim().to_owned(),
+            isrc,
+        };
+        if choice.layout.channels() > noodle_io::FLAC_MAX_CHANNELS
+            && matches!(choice.format, ExportFormat::Flac24 | ExportFormat::Flac16)
+        {
+            return Err(format!(
+                "FLAC holds at most {} channels; choose WAV for {}",
+                noodle_io::FLAC_MAX_CHANNELS,
+                choice.layout.name()
+            ));
+        }
+        if choice.cue && !choice.mixdown {
+            return Err("A CUE sheet goes with the mixdown: tick Mixdown".into());
+        }
         let folder = !choice.groups.is_empty();
         let (mixdown, tracks) = if folder {
             let names: std::collections::BTreeMap<NodeId, String> =
@@ -150,6 +192,10 @@ impl Session {
         } else {
             (Some(path.clone()), Vec::new())
         };
+        let cue = choice
+            .cue
+            .then(|| mixdown.as_ref().map(|m| m.with_extension("cue")))
+            .flatten();
         let rate = self.export_rate();
         let settings = Settings {
             sample_rate: rate,
@@ -190,6 +236,9 @@ impl Session {
             tracks,
             format: choice.format,
             normalize: choice.normalize,
+            true_peak_ceiling: choice.true_peak_ceiling,
+            metadata,
+            cue: choice.cue,
             freezer,
         };
         self.exporting = Some(Run {
@@ -197,6 +246,7 @@ impl Session {
             path,
             seconds: (end - start) as f64 / f64::from(rate),
             folder,
+            cue,
         });
         Ok(())
     }
@@ -225,6 +275,7 @@ impl Session {
             path,
             seconds,
             folder,
+            cue,
             ..
         } = self.exporting.take().expect("just polled");
         let name = path
@@ -239,6 +290,7 @@ impl Session {
                     location: path.clone(),
                     files,
                     gain_db: report.gain_db,
+                    cue,
                 });
                 let mut text = if folder {
                     let count = report.tracks.len() + usize::from(report.mixdown.is_some());

@@ -113,6 +113,9 @@ impl Rig {
             tracks: Vec::new(),
             format,
             normalize: None,
+            true_peak_ceiling: None,
+            metadata: Default::default(),
+            cue: false,
             freezer: Some(self.freezer.clone()),
         }
     }
@@ -647,4 +650,78 @@ fn a_silent_track_makes_no_clip_and_leaves_no_file() {
     let mut partial = request.path.as_os_str().to_owned();
     partial.push(".partial");
     assert!(!std::path::Path::new(&partial).exists());
+}
+
+#[test]
+fn a_true_peak_ceiling_limits_the_mixdown_after_the_loudness_gain() {
+    let mut rig = setup("ceiling");
+    rig.chain(&[]);
+    let mut request = rig.request("ceiling", ExportFormat::WavFloat, (0, FRAMES as u64));
+    request.normalize = Some(-5.0);
+    let plain = export(&request, &Progress::new()).unwrap();
+    let before = plain.mixdown.unwrap();
+    // Loud enough that the normalised peak is over the ceiling.
+    assert!(before.true_peak_db > -1.0, "{before:?}");
+
+    request.true_peak_ceiling = Some(-1.0);
+    let report = export(&request, &Progress::new()).unwrap();
+    let mix = report.mixdown.unwrap();
+    assert!(mix.true_peak_db <= -0.9, "{mix:?}");
+    // The report is of the file as written.
+    let file = noodle_io::measure_loudness(&read(request.mixdown.as_ref().unwrap()), 2, RATE);
+    assert!((file.true_peak_db - mix.true_peak_db).abs() < 1e-6);
+    assert!((file.lufs - mix.lufs).abs() < 1e-6);
+    // The limiter takes loudness with the peaks, and the gain makes up some
+    // of it: the file lands near the target, never above it, and the gain is
+    // more than the plain pass's.
+    assert!(mix.lufs <= -5.0 + 0.1 && mix.lufs > -9.0, "{mix:?}");
+    assert!(report.gain_db > plain.gain_db, "{report:?} {plain:?}");
+
+    // With no loudness target the ceiling still holds the peaks.
+    request.normalize = None;
+    request.true_peak_ceiling = Some(-20.0);
+    let report = export(&request, &Progress::new()).unwrap();
+    assert!(report.mixdown.unwrap().true_peak_db <= -19.9);
+    assert_eq!(report.frames, FRAMES as u64);
+}
+
+#[test]
+fn track_files_are_not_limited_so_they_still_sum_to_the_mixdown() {
+    let mut rig = setup("ceiling-tracks");
+    let (groups, _, _) = two_tracks(&mut rig);
+    let mut request = rig.track_request(groups, "ceil");
+    request.true_peak_ceiling = Some(-30.0);
+    export(&request, &Progress::new()).unwrap();
+    let (a, b) = (read(&request.tracks[0].path), read(&request.tracks[1].path));
+    let limited = read(request.mixdown.as_ref().unwrap());
+    // The mixdown is held far under the tracks.
+    assert!(peak(&limited) < 0.05, "{}", peak(&limited));
+    assert!(peak(&a).max(peak(&b)) > 0.05);
+}
+
+#[test]
+fn the_mixdown_carries_its_isrc_and_a_cue_sheet_is_written_beside_it() {
+    let mut rig = setup("isrc");
+    rig.chain(&[]);
+    let mut request = rig.request("album", ExportFormat::Wav16, (0, FRAMES as u64));
+    request.metadata = noodle_io::ExportMetadata {
+        title: "Night Drive".into(),
+        artist: "The Noodles".into(),
+        isrc: "USRC17607839".into(),
+    };
+    request.cue = true;
+    export(&request, &Progress::new()).unwrap();
+    let wav = request.mixdown.clone().unwrap();
+    let bytes = std::fs::read(&wav).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("USRC17607839"));
+    assert_eq!(decode_file(&wav).unwrap().channels, 2);
+    let cue = std::fs::read_to_string(wav.with_extension("cue")).unwrap();
+    assert!(cue.contains("FILE \"album.wav\" WAVE"), "{cue}");
+    assert!(cue.contains("ISRC USRC17607839") && cue.contains("TITLE \"Night Drive\""));
+
+    // Without the box, no sheet.
+    request.cue = false;
+    std::fs::remove_file(wav.with_extension("cue")).unwrap();
+    export(&request, &Progress::new()).unwrap();
+    assert!(!wav.with_extension("cue").exists());
 }

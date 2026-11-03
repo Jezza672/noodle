@@ -50,7 +50,7 @@ pub use cache::{
     Analysis, CacheEnv, DEFAULT_MIN_COST, EntrySpec, InputOrigin, LoopKind, NodeAnalysis, Pass,
     Target, TargetKind, Uncacheable, analyze, output_key, pass_key,
 };
-pub use channels::{ChannelLayout, MAX_LAYOUT_CHANNELS, Speaker};
+pub use channels::{ChannelLayout, MAX_LAYOUT_CHANNELS, Speaker, TOP_ELEVATION};
 pub use compile::{
     BufferId, Diagnostic, EventBufferId, InputSource, Location, Phase, Problem, Schedule,
     ScheduledNode, SpectralBufferId, compile, compile_replacing, compile_with_lanes,
