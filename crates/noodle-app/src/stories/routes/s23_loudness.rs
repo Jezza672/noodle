@@ -1,0 +1,79 @@
+//! S23: master to loudness targets.
+//!
+//! Partial. A master chain is a Dynamics node as the limiter and a Normalize
+//! node, and the export dialog normalises the mixdown to a loudness target
+//! and dithers to 16 bits. Choosing the file is a native dialog that a route
+//! cannot drive, so the route sets the options and stops before "Export…".
+//! There is no album sequence with gaps and crossfades, no true-peak
+//! limiter after normalising, and no DDP or ISRC (#360).
+
+use std::path::Path;
+
+use egui::Modifiers;
+
+use super::super::handle::{Handle, Probe};
+use super::super::{Route, Tag};
+use super::patch::{Op, Ref, check, run, seeded};
+use crate::app::App;
+
+const SRC: Ref = Ref("osc.saw", 0);
+const LIMIT: Ref = Ref("effect.dynamics", 0);
+const NORM: Ref = Ref("offline.normalize", 0);
+const OUT: Ref = Ref("io.output", 0);
+
+fn fixture(dir: &Path) -> App {
+    seeded(
+        dir,
+        &[
+            ("osc.saw", 60.0, 300.0, &[("frequency", 110.0)]),
+            ("io.output", 1000.0, 300.0, &[]),
+        ],
+        &[],
+    )
+}
+
+const CHAIN: &[Op] = &[
+    Op::Step("limit the master"),
+    Op::Add(LIMIT, 300.0, 300.0),
+    Op::Wire(SRC, "out", LIMIT, "in"),
+    Op::Set(LIMIT, "ratio", 20.0),
+    Op::Step("normalise it"),
+    Op::Add(NORM, 600.0, 300.0),
+    Op::Wire(LIMIT, "out", NORM, "in"),
+    Op::Wire(NORM, "out", OUT, "in"),
+];
+
+fn steps(h: &mut Handle, _size: usize) {
+    // The nodes show live values, so the canvas never stops repainting.
+    let _busy = crate::testkit::playing_mode();
+    run(h, CHAIN);
+    h.step("open the export dialog");
+    let file = h.find("File");
+    h.click(file, Modifiers::NONE);
+    h.probe().settle();
+    let export = h.find("Export Audio…");
+    h.click(export, Modifiers::NONE);
+    h.probe().settle();
+    h.step("normalise the mixdown to a loudness target");
+    // The label is the checkbox's: the step cannot go on without it.
+    let normalise = h.find("Normalise mixdown to");
+    h.click(normalise, Modifiers::NONE);
+    h.probe().settle();
+}
+
+fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    check(p, CHAIN)
+}
+
+pub fn route() -> Route {
+    Route {
+        story: "S23",
+        tag: Tag::Default,
+        name: "a limited, normalised master and its export options",
+        fixture,
+        size: None,
+        steps,
+        done,
+        late: &[],
+    }
+}

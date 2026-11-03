@@ -35,30 +35,6 @@ pub struct Story {
     pub missing: &'static str,
 }
 
-const fn blocked(id: &'static str, title: &'static str) -> Story {
-    Story {
-        id,
-        title,
-        status: Status::Blocked,
-        missing: "No route written yet.",
-    }
-}
-
-/// A story assessed from the docs and the code, with no route driving it yet.
-const fn assessed(
-    id: &'static str,
-    title: &'static str,
-    status: Status,
-    missing: &'static str,
-) -> Story {
-    Story {
-        id,
-        title,
-        status,
-        missing,
-    }
-}
-
 pub const STORIES: [Story; 30] = [
     Story {
         id: "S01",
@@ -66,108 +42,108 @@ pub const STORIES: [Story; 30] = [
         status: Status::Partial,
         missing: "Recording the takes (the route starts from a take folder), a ninth take and sliding the comp: #334.",
     },
-    assessed(
-        "S02",
-        "Punch in on a live overdub",
-        Status::Partial,
-        "Input monitoring with a headphone cue mix. Punch, count-in and pre-roll exist. Not routed.",
-    ),
-    assessed(
-        "S03",
-        "Drive external hardware like an internal instrument",
-        Status::Partial,
-        "The MIDI Out port is typed text, with no picker; aligning the recorded audio to the round-trip latency is not routed.",
-    ),
-    assessed(
-        "S04",
-        "Tighten a multitrack drum recording",
-        Status::Blocked,
-        "Quantising detected audio transients across linked clips at a strength.",
-    ),
-    assessed(
-        "S05",
-        "Conform audio to a new tempo and key",
-        Status::Partial,
-        "Tempo conform works; no pitch shift to a project key and no formant preservation.",
-    ),
-    assessed(
-        "S06",
-        "Separate a song into stems and remix it",
-        Status::Partial,
-        "Stems split and linked; no quality setting to rerun at. Not routed.",
-    ),
+    Story {
+        id: "S02",
+        title: "Punch in on a live overdub",
+        status: Status::Partial,
+        missing: "Input monitoring and a headphone cue mix (#345); recording is not routed because a route has no live input (#334).",
+    },
+    Story {
+        id: "S03",
+        title: "Drive external hardware like an internal instrument",
+        status: Status::Partial,
+        missing: "The MIDI Out port is typed text (#346); recording the synth's audio back is not routed (#334).",
+    },
+    Story {
+        id: "S04",
+        title: "Tighten a multitrack drum recording",
+        status: Status::Blocked,
+        missing: "No group transient quantize with a strength and crossfades: #347.",
+    },
+    Story {
+        id: "S05",
+        title: "Conform audio to a new tempo and key",
+        status: Status::Partial,
+        missing: "No clip pitch shift, project key or formant preservation: #348.",
+    },
+    Story {
+        id: "S06",
+        title: "Separate a song into stems and remix it",
+        status: Status::Partial,
+        missing: "The route stops at the model download question, so separation and the remix are not routed; no quality setting: #349.",
+    },
     Story {
         id: "S07",
         title: "Restructure an arrangement by section",
         status: Status::Blocked,
         missing: "No named arrangement sections: #329.",
     },
-    assessed(
-        "S08",
-        "Edit MIDI performance detail",
-        Status::Partial,
-        "No humanise. CC lanes and quantise exist. Not routed.",
-    ),
+    Story {
+        id: "S08",
+        title: "Edit MIDI performance detail",
+        status: Status::Partial,
+        missing: "No humanise: #350; recording the part and redrawing the sustain lane are not routed.",
+    },
     Story {
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
         missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330.",
     },
-    assessed(
-        "S10",
-        "Program multi-articulation orchestral parts",
-        Status::Blocked,
-        "No articulations or keyswitch maps, and no chase of the switch when starting mid-cue.",
-    ),
-    assessed(
-        "S11",
-        "Turn an audio phrase into MIDI",
-        Status::Blocked,
-        "No audio-to-MIDI conversion.",
-    ),
+    Story {
+        id: "S10",
+        title: "Program multi-articulation orchestral parts",
+        status: Status::Workaround,
+        missing: "Keyswitch notes are placed by hand; no articulation map, chasing or rename: #351.",
+    },
+    Story {
+        id: "S11",
+        title: "Turn an audio phrase into MIDI",
+        status: Status::Blocked,
+        missing: "No audio-to-MIDI conversion: #352.",
+    },
     Story {
         id: "S12",
         title: "Build a multisampled instrument from a folder",
         status: Status::Full,
         missing: "",
     },
-    assessed(
-        "S13",
-        "Design a modulated synth patch",
-        Status::Partial,
-        "No macro knob mapping one control to many targets with range and curve each; it can be built by hand from group inputs and Remap. Not routed.",
-    ),
-    assessed(
-        "S14",
-        "Share modulation sources across many parameters",
-        Status::Partial,
-        "Fan-out and shared sources work; there is no step sequencer node to swap in. Not routed.",
-    ),
-    assessed(
-        "S15",
-        "Make a tempo-synced rhythmic gate",
-        Status::Partial,
-        "No step-editable gate node; it can be built from Clock, Comparator and Math. Not routed.",
-    ),
-    assessed(
-        "S16",
-        "Make a vocoder or spectral effect",
-        Status::Partial,
-        "Spectral Cross, Freeze and Blur exist; the frame size is fixed, so there is no band count. Not routed.",
-    ),
-    assessed(
-        "S17",
-        "Resample and mangle audio",
-        Status::Partial,
-        "Render to clip and Reverse exist; no slicing a clip to a sampler by transient. Not routed.",
-    ),
-    assessed(
-        "S18",
-        "Use third-party plugins",
-        Status::Partial,
-        "Plugins load and save state; replacing one keeping automation, and opening with one missing, are untested. Not routed.",
-    ),
+    Story {
+        id: "S13",
+        title: "Design a modulated synth patch",
+        status: Status::Partial,
+        missing: "The macro is built by hand from Remap nodes; no macro control with ranges and curves: #353. Saving and updating the preset are not routed.",
+    },
+    Story {
+        id: "S14",
+        title: "Share modulation sources across many parameters",
+        status: Status::Partial,
+        missing: "No step sequencer to replace the LFO with, keeping its targets: #354.",
+    },
+    Story {
+        id: "S15",
+        title: "Make a tempo-synced rhythmic gate",
+        status: Status::Partial,
+        missing: "No step-editable gate pattern, so no triplet change by pattern: #354.",
+    },
+    Story {
+        id: "S16",
+        title: "Make a vocoder or spectral effect",
+        status: Status::Partial,
+        missing: "The spectral frame size is fixed, so there is no band count to change: #355.",
+    },
+    Story {
+        id: "S17",
+        title: "Resample and mangle audio",
+        status: Status::Partial,
+        missing: "No slicing of a clip by transient onto a sampler: #356; rendering to a clip is not routed.",
+    },
+    Story {
+        id: "S18",
+        title: "Use third-party plugins",
+        status: Status::Partial,
+        missing: "Only CLAP is hosted, and the test machine has no plugin to add, automate or save; swapping a plugin and opening a project without one are untested: #357.",
+    },
     Story {
         id: "S19",
         title: "Build a parallel processing mix bus",
@@ -180,66 +156,66 @@ pub const STORIES: [Story; 30] = [
         status: Status::Partial,
         missing: "Trimming a range needs a second gain stage and lane; changing parameter or surface is not routed: #333.",
     },
-    assessed(
-        "S21",
-        "Recall alternate mix versions",
-        Status::Blocked,
-        "No mix snapshots or versions, A/B, or batch export of versions.",
-    ),
-    assessed(
-        "S22",
-        "Produce a surround or immersive mix",
-        Status::Partial,
-        "Surround beds and fold-down exist; no 3D object panning, no 7.1.4 and no ADM export.",
-    ),
-    assessed(
-        "S23",
-        "Master to loudness targets",
-        Status::Partial,
-        "Loudness, targets and dither exist; no album sequence, true-peak limiter, DDP or ISRC.",
-    ),
-    assessed(
-        "S24",
-        "Deliver stems to a collaborator",
-        Status::Partial,
-        "Track export aligns every stem; no tail length setting. Not routed.",
-    ),
-    assessed(
-        "S25",
-        "Exchange a session via interchange formats",
-        Status::Blocked,
-        "No AAF or OMF import or export.",
-    ),
-    assessed(
-        "S26",
-        "Score and mix to picture",
-        Status::Blocked,
-        "No video, timecode offset or SMPTE hit points.",
-    ),
-    assessed(
-        "S27",
-        "Perform a set live with clips and scenes",
-        Status::Blocked,
-        "No clip launching or scenes, and no transport tap tempo, MIDI clock in or Link.",
-    ),
-    assessed(
-        "S28",
-        "Run backing tracks reliably on stage",
-        Status::Blocked,
-        "No setlist, per-song cues or footswitch advance.",
-    ),
-    assessed(
-        "S29",
-        "Organise a large session with templates",
-        Status::Partial,
-        "Groups and templates exist; no track colours, folders, hiding or key-command macros. Not routed.",
-    ),
-    assessed(
-        "S30",
-        "Keep a large project responsive",
-        Status::Partial,
-        "Freeze, render to clip and `noodle profile` exist. Not routed.",
-    ),
+    Story {
+        id: "S21",
+        title: "Recall alternate mix versions",
+        status: Status::Blocked,
+        missing: "No mix snapshots, versions or batch export of versions: #358.",
+    },
+    Story {
+        id: "S22",
+        title: "Produce a surround or immersive mix",
+        status: Status::Partial,
+        missing: "No 3D object panning, 7.1.4 layout or ADM export: #359.",
+    },
+    Story {
+        id: "S23",
+        title: "Master to loudness targets",
+        status: Status::Partial,
+        missing: "No album sequence, true-peak limiter after normalising, DDP or ISRC: #360; the native file dialog stops the export.",
+    },
+    Story {
+        id: "S24",
+        title: "Deliver stems to a collaborator",
+        status: Status::Partial,
+        missing: "No tail length setting: #361; the native folder dialog stops the export.",
+    },
+    Story {
+        id: "S25",
+        title: "Exchange a session via interchange formats",
+        status: Status::Blocked,
+        missing: "No AAF or OMF import or export: #362.",
+    },
+    Story {
+        id: "S26",
+        title: "Score and mix to picture",
+        status: Status::Blocked,
+        missing: "No video, timecode or hit points: #363.",
+    },
+    Story {
+        id: "S27",
+        title: "Perform a set live with clips and scenes",
+        status: Status::Blocked,
+        missing: "No clip launching or scenes (#364) and no tap tempo, MIDI clock in or Link (#365).",
+    },
+    Story {
+        id: "S28",
+        title: "Run backing tracks reliably on stage",
+        status: Status::Blocked,
+        missing: "No setlist: #366.",
+    },
+    Story {
+        id: "S29",
+        title: "Organise a large session with templates",
+        status: Status::Partial,
+        missing: "No track colours, folders, hiding or macros: #367; saving a template is not routed.",
+    },
+    Story {
+        id: "S30",
+        title: "Keep a large project responsive",
+        status: Status::Partial,
+        missing: "The CPU view and the 60-track size are not routed: #369.",
+    },
 ];
 
 #[cfg(test)]
