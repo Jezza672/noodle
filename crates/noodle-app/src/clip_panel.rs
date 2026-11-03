@@ -596,7 +596,7 @@ pub fn show(
         }
     }
     gain(ui, project, id, &mut edits);
-    section(ui, project, id, &mut edits);
+    section(ui, session, id, &mut edits);
     edits
 }
 
@@ -847,7 +847,8 @@ pub fn warp_controls(
 }
 
 /// Mute, and Split to stems.
-fn section(ui: &mut Ui, project: &Project, id: ClipId, edits: &mut Vec<Edit>) {
+fn section(ui: &mut Ui, session: &Session, id: ClipId, edits: &mut Vec<Edit>) {
+    let project = session.project();
     let Some(clip) = project.clip(id) else { return };
     let Some(audio) = clip.as_audio() else { return };
     let mut muted = audio.muted;
@@ -867,6 +868,36 @@ fn section(ui: &mut Ui, project: &Project, id: ClipId, edits: &mut Vec<Edit>) {
         .clicked()
     {
         edits.push(Edit::SplitToStems(id));
+    }
+    ui.horizontal(|ui| {
+        ui.label("Stem quality");
+        let quality = session.stems_quality();
+        crate::widgets::Dropdown::from_id_salt("stems quality")
+            .selected_text(quality.label())
+            .show_ui(ui, |ui| {
+                for choice in noodle_stems::Quality::ALL {
+                    let text = format!("{} (about {:.1}x the time)", choice.label(), choice.cost());
+                    if ui.selectable_label(quality == choice, text).clicked() {
+                        edits.push(Edit::SetStemsQuality(choice));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Better and Best run the same model with more overlap, and Best on shifted \
+                 copies too: slower, with fewer seams and less bleed",
+            );
+    });
+    if session.stems_source(id).is_some()
+        && ui
+            .button("Re-separate")
+            .on_hover_text(
+                "Separate the source again at this quality and swap the stem files under \
+                 the stem clips, keeping their cuts, fades, warps and effects",
+            )
+            .clicked()
+    {
+        edits.push(Edit::ResplitStems(id));
     }
 }
 

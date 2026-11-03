@@ -289,23 +289,20 @@ mod tests {
         (frame / 10_000.0) as f32
     }
 
-    /// Three takes of one ramp at different levels, in a file. The file is
-    /// written once per test run, in a folder of this process's own: tests
-    /// run in parallel, and one rewriting the file while another renders from
-    /// it made the render read a half-written file (#378).
+    /// Three takes of one ramp at different levels, in a file.
     fn dir() -> std::path::PathBuf {
-        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        DIR.get_or_init(|| {
-            let dir =
-                std::env::temp_dir().join(format!("noodle-comp-flatten-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let samples: Vec<f32> = (0..3 * N)
-                .flat_map(|i| [ramp((i % N) as f64) * (1 + i / N) as f32, 0.0])
-                .collect();
-            noodle_io::write_wav(&dir.join("takes.wav"), &samples, 2, RATE).unwrap();
-            dir
-        })
-        .clone()
+        // One folder per call: tests run in parallel, and writing the same
+        // file while another test reads it gave "unexpected end of file".
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("noodle-comp-flatten-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples: Vec<f32> = (0..3 * N)
+            .flat_map(|i| [ramp((i % N) as f64) * (1 + i / N) as f32, 0.0])
+            .collect();
+        noodle_io::write_wav(&dir.join("takes.wav"), &samples, 2, RATE).unwrap();
+        dir
     }
 
     /// Two tracks, each with a take folder comped take 0, take 1 from frame

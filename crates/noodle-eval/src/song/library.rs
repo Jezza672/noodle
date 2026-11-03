@@ -106,7 +106,10 @@ fn racked(mut song: Song) -> Song {
         first.min(rest.len()),
         Part {
             name: "Drums",
-            instrument: Instrument::Rack(Rack { slots }),
+            instrument: Instrument::Rack(Rack {
+                slots,
+                controls: false,
+            }),
             db: 0.0,
             pan: 0.0,
             plays,

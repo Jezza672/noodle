@@ -39,9 +39,9 @@ pub use input::{Capture, Feed, InputMeter, input_path, recordable_input_path};
 pub use limiter::TruePeakLimiter;
 pub use loudness::{Loudness, LoudnessMeter, measure as measure_loudness};
 pub use midi::{
-    ALL_INPUTS, AudioClock, Heard, MidiBus, MidiConnection, MidiError, MidiLister, MidiMessage,
-    MidiReceiver, MidiTap, TimedMessage, TimedPacket, connect_midi, is_all_inputs, midi_inputs,
-    now_micros, parse_message, same_port,
+    ALL_INPUTS, AudioClock, ClockEvent, ClockHeard, ClockTap, Heard, MidiBus, MidiConnection,
+    MidiError, MidiLister, MidiMessage, MidiReceiver, MidiTap, TimedMessage, TimedPacket,
+    connect_midi, is_all_inputs, midi_inputs, now_micros, parse_clock, parse_message, same_port,
 };
 pub use midi_out::{
     MidiOutHub, MidiOutSender, MidiSink, OpenSink, OutMessage, midi_outputs, open_midi_output,

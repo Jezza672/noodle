@@ -611,6 +611,25 @@ fn config(
             .on_hover_text("Choose the device in View → Outputs.");
             continue;
         }
+        // Chosen in the MIDI ports view, which knows what ports there are.
+        if matches!(
+            node_type.info().id,
+            noodle_nodes::MIDI_IN_ID | noodle_nodes::MIDI_CONTROL_ID | noodle_nodes::MIDI_OUT_ID
+        ) && info.key == noodle_nodes::MIDI_PORT_KEY
+        {
+            let port = info.get_text(&node.config);
+            ui.label(if port.is_empty() || port == "*" {
+                if node_type.info().id == noodle_nodes::MIDI_OUT_ID {
+                    "No port chosen".to_owned()
+                } else {
+                    "Listens to every port".to_owned()
+                }
+            } else {
+                format!("Port: {port}")
+            })
+            .on_hover_text("Choose the port in View → MIDI ports.");
+            continue;
+        }
         if node_type.info().id == noodle_nodes::REMAP_ID
             && info.key == noodle_nodes::REMAP_CURVE_KEY
         {
@@ -680,8 +699,12 @@ fn config(
             continue;
         }
         // Set by the first wire, not typed in.
-        if node_type.info().id == noodle_nodes::RANDOM_SELECT_ID && info.key == "kind" {
-            let wired = crate::editor::random_select_is_wired(session.project().graph(), id);
+        if matches!(
+            node_type.info().id,
+            noodle_nodes::RANDOM_SELECT_ID | noodle_nodes::SELECTOR_ID
+        ) && info.key == "kind"
+        {
+            let wired = crate::editor::picker_is_wired(session.project().graph(), id);
             let carries = match (wired, node.config.get("kind")) {
                 (false, _) => "nothing yet: it takes the type of the first wire",
                 (true, Some(noodle_core::Value::Int(1))) => "notes",

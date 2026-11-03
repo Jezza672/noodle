@@ -128,7 +128,7 @@ Under each story are its **late changes**: edits to an early decision, made afte
 - **S27** **Perform a set live with clips and scenes.** As a live performer, I want to trigger audio and MIDI clips and scenes quantized to the bar, follow a tempo that I can tap or sync to external MIDI clock or Ableton Link, and map controller pads to clips and effects, so that I can improvise a set without stopping the transport.
   - *Late change:* Add a new clip to a scene during the set.
   - *Late change:* Remap a pad.
-  - *Late change:* Switch the tempo source from tap to Link.
+  - *Late change:* Switch the tempo source from tap to external MIDI clock.
 - **S28** **Run backing tracks reliably on stage.** As a touring musical director, I want a setlist of songs, each with its own tempo, click, cues and backing stems on separate hardware outputs, plus MIDI program changes sent to the band's gear, all advancing by footswitch, so that the show runs the same every night with no hands on the computer.
   - *Late change:* Reorder the setlist.
   - *Late change:* Change one song's backing stems.

@@ -7,7 +7,7 @@
 //! on the session, which runs it in the background. The dialog stays up with
 //! a progress bar until it ends.
 
-use noodle_core::NodeId;
+use noodle_core::{Command, ExportSettings, ExportTail, NodeId};
 use noodle_engine::ChannelLayout;
 use noodle_io::{ExportFormat, Loudness};
 
@@ -50,6 +50,8 @@ pub struct ExportDialog {
     artist: String,
     isrc: String,
     cue: bool,
+    /// The tail, as the project has it; changing it is one undo step.
+    tail: ExportTail,
     /// How the export that ended went, shown in place of the fields.
     done: Option<ExportSummary>,
 }
@@ -76,6 +78,7 @@ impl Default for ExportDialog {
             artist: String::new(),
             isrc: String::new(),
             cue: false,
+            tail: ExportTail::default(),
             done: None,
         }
     }
@@ -114,6 +117,7 @@ impl ExportDialog {
                 (id, name, ticked)
             })
             .collect();
+        self.tail = session.project().export_settings().tail;
         self.length = session.project_seconds();
         self.from = 0.0;
         self.to = self.length;
@@ -170,6 +174,11 @@ impl ExportDialog {
                 return;
             }
             ui.add_enabled_ui(running.is_none(), |ui| self.fields(ui));
+            if self.tail != session.project().export_settings().tail {
+                session.edit([crate::session::Edit::Apply(Command::SetExportSettings(
+                    ExportSettings { tail: self.tail },
+                ))]);
+            }
             ui.add_space(8.0);
             if let Some(fraction) = running {
                 ui.add(egui::ProgressBar::new(fraction).show_percentage());
@@ -354,6 +363,9 @@ impl ExportDialog {
                     ui.radio_value(&mut self.part, Part::Range, "Range");
                 });
                 ui.end_row();
+                ui.label("Tail");
+                ui.horizontal(|ui| tail_row(ui, &mut self.tail));
+                ui.end_row();
                 if self.part == Part::Range {
                     ui.label("From");
                     ui.add(
@@ -445,4 +457,36 @@ fn true_peak(loudness: &Loudness) -> String {
     } else {
         "silent".to_owned()
     }
+}
+
+/// The Tail row: to silence (up to a cap) or a fixed length. One length for
+/// every file, so the stems stay the same length.
+fn tail_row(ui: &mut egui::Ui, tail: &mut ExportTail) {
+    let silence = matches!(tail, ExportTail::ToSilence { .. });
+    let label = if silence {
+        "To silence, up to"
+    } else {
+        "Fixed"
+    };
+    crate::widgets::Dropdown::from_id_salt("export tail")
+        .selected_text(label)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(silence, "To silence, up to").clicked() && !silence {
+                *tail = ExportTail::ToSilence { cap: 10.0 };
+            }
+            if ui.selectable_label(!silence, "Fixed").clicked() && silence {
+                *tail = ExportTail::Fixed { seconds: 4.0 };
+            }
+        });
+    let value = match tail {
+        ExportTail::ToSilence { cap } => cap,
+        ExportTail::Fixed { seconds } => seconds,
+    };
+    ui.add(
+        egui::DragValue::new(value)
+            .range(0.0..=60.0)
+            .speed(0.1)
+            .suffix(" s"),
+    )
+    .on_hover_text("Every file gets the same tail, so the stems line up at bar 1");
 }

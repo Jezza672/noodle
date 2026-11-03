@@ -29,3 +29,13 @@ A track's header menu has **Render to clip** (the whole timeline) and **Render l
 - **One undo step.** A `Command::Batch` adds a track named `<name> (render)` right under the original, puts the clip on it at the range's start, and mutes the original (kept). The track is an ordinary audio track, so the clip can be cut and warped. `Session::render_to_clip`, `session/render_clip.rs`.
 - **Refused.** An unsaved project (no folder to write to), a group with no output, and a silent render (nothing is written). Cancelling leaves no file.
 - **Tests.** `noodle-nodes/tests/export.rs`: the clip equals the track export's samples, the tail stops at silence or at the cap, a silent track makes no file. `session/render_clip.rs`: the new track, the clip, the muted original, one undo and redo, a range.
+
+## Export tail
+
+Delivered. Closes #361.
+
+The export dialog has a **Tail** row: **To silence, up to N s** (default, 10 s) or **Fixed N s**. It is one length for every file of the export, whole project or range, and it is saved with the project (`ExportSettings` in `noodle-core`, set by `Command::SetExportSettings`, so changing it is one undo step and it is not written while it is the default).
+
+- **Fixed** extends `end` by the seconds, as the old fixed four seconds did, and now also for a range export (which had no tail).
+- **To silence** sets `ExportRequest::silent_tail` to the cap in frames. The render runs `cap` frames past `end`; each file writes the body straight through and holds the tail in memory (at most the cap, per file). When the pass is done the tail is cut at the latest frame any file (the mixdown and every stem) is still above -80 dB (`CLIP_SILENCE`), so all files stay the same length and line up at the start. A tail still sounding at the cap fades out over 2048 frames in every file. The loudness figures are measured on what is written. The body is always kept whole, as in render to clip.
+- Tests: `noodle-nodes/tests/export.rs` (equal lengths across mixdown and stems, cut at the last sounding frame, capped tail fades), `noodle-core` (saved and undone).

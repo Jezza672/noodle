@@ -1,6 +1,7 @@
 //! Exporting the project to an audio file, on a background thread.
 
 use super::*;
+use noodle_core::ExportTail;
 use noodle_engine::{Job, JobPanicked};
 use noodle_io::ExportFormat;
 use noodle_io::Loudness;
@@ -8,8 +9,6 @@ use noodle_nodes::{
     ExportJobError, ExportReport, ExportRequest, RenderRequest, TrackExport, spawn_export,
 };
 
-/// Seconds a whole-project export runs past the last clip, for tails.
-const EXPORT_TAIL: f64 = 4.0;
 /// What the user chose in the export dialog.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExportChoice {
@@ -18,7 +17,8 @@ pub struct ExportChoice {
     /// channels the Output nodes' signals fill in WAV order.
     pub layout: noodle_engine::ChannelLayout,
     /// The part to write, from and to in seconds; `None` is the whole
-    /// project, to the end of the last clip and a tail.
+    /// project, to the end of the last clip. Either way the project's export
+    /// tail (see [`noodle_core::ExportSettings`]) follows.
     pub range: Option<(f64, f64)>,
     /// Whether to write the mixdown: the project as it plays, master
     /// processing included.
@@ -82,7 +82,7 @@ pub struct ExportSummary {
 pub(super) struct Run {
     job: Job<Result<ExportReport, ExportJobError>>,
     path: PathBuf,
-    seconds: f64,
+    rate: f32,
     /// More than one file: `path` is the folder they are in.
     folder: bool,
     cue: Option<PathBuf>,
@@ -204,16 +204,19 @@ impl Session {
         };
         let (start, end) = match choice.range {
             Some((from, to)) => (from.max(0.0), to),
-            None => (
-                0.0,
-                self.timeline_end(rate) as f64 / f64::from(rate) + EXPORT_TAIL,
-            ),
+            None => (0.0, self.timeline_end(rate) as f64 / f64::from(rate)),
+        };
+        // The tail is the same for every file, in a range export too.
+        let (end, silent_tail) = match self.project.export_settings().tail {
+            ExportTail::Fixed { seconds } => (end + seconds.max(0.0), None),
+            ExportTail::ToSilence { cap } => (end, Some(cap.clamp(0.0, 60.0))),
         };
         if self.timeline_end(rate) == 0 && choice.range.is_none() {
             return Err("There is nothing to export yet".into());
         }
         let frame = |seconds: f64| (seconds * f64::from(rate)).round() as u64;
         let (start, end) = (frame(start), frame(end));
+        let silent_tail = silent_tail.map(frame).filter(|&cap| cap > 0);
         if end <= start {
             return Err("The range to export is empty".into());
         }
@@ -240,11 +243,12 @@ impl Session {
             metadata,
             cue: choice.cue,
             freezer,
+            silent_tail,
         };
         self.exporting = Some(Run {
             job: spawn_export(request),
             path,
-            seconds: (end - start) as f64 / f64::from(rate),
+            rate,
             folder,
             cue,
         });
@@ -273,7 +277,7 @@ impl Session {
         };
         let Run {
             path,
-            seconds,
+            rate,
             folder,
             cue,
             ..
@@ -283,6 +287,7 @@ impl Session {
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         self.message = Some(match done {
             Ok(Ok(report)) => {
+                let seconds = report.frames as f64 / f64::from(rate);
                 let mut files = Vec::new();
                 files.extend(report.mixdown.map(|l| ("Mixdown".to_owned(), l)));
                 files.extend(report.tracks.iter().cloned());

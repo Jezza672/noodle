@@ -3180,7 +3180,16 @@ fn the_scene_is_built_again_only_when_the_project_changes() {
     );
 }
 
-// --- Random Select takes the type of its first wire ---
+// --- Pickers (Random Select and Selector) take the type of their first wire ---
+
+/// The picker node types, and the parameters that wait for a type.
+const PICKERS: [(&str, &[&str]); 2] = [
+    (
+        noodle_nodes::RANDOM_SELECT_ID,
+        &["avoid_repeat", "switch", "seed"],
+    ),
+    (noodle_nodes::SELECTOR_ID, &["switch"]),
+];
 
 fn port_of(h: &H, node: NodeId, side: Side, key: &str) -> Option<crate::editor::layout::PortGeom> {
     scene(h).node(node).unwrap().port(side, key).cloned()
@@ -3199,200 +3208,269 @@ fn kind_config(h: &H, node: NodeId) -> noodle_core::Value {
         .unwrap_or(noodle_core::Value::Int(0))
 }
 
-#[test]
-fn a_random_select_has_no_type_until_something_is_wired() {
-    let mut h = rig();
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    let input = port_of(&h, rs, Side::Input, "in1").unwrap();
-    assert!(input.spare, "the input waits for a wire");
-    assert_eq!(input.kind, crate::editor::layout::PortKind::Any);
-    assert_eq!(
-        port_of(&h, rs, Side::Output, "out").unwrap().kind,
-        crate::editor::layout::PortKind::Any
-    );
-    // The parameters that depend on the type are not shown yet.
-    for key in ["avoid_repeat", "switch", "seed"] {
-        assert!(port_of(&h, rs, Side::Input, key).is_none(), "{key}");
+/// The type-specific input Random Select has and Selector doesn't.
+fn always_port(type_id: &str) -> &'static str {
+    if type_id == noodle_nodes::RANDOM_SELECT_ID {
+        "trigger"
+    } else {
+        "which"
     }
-    assert!(port_of(&h, rs, Side::Input, "trigger").is_some());
+}
+
+#[test]
+fn a_picker_has_no_type_until_something_is_wired() {
+    for (type_id, hidden) in PICKERS {
+        let mut h = rig();
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        let input = port_of(&h, node, Side::Input, "in1").unwrap();
+        assert!(input.spare, "{type_id}: the input waits for a wire");
+        assert_eq!(input.kind, crate::editor::layout::PortKind::Any);
+        assert_eq!(
+            port_of(&h, node, Side::Output, "out").unwrap().kind,
+            crate::editor::layout::PortKind::Any
+        );
+        // The parameters that depend on the type are not shown yet.
+        for key in hidden {
+            assert!(
+                port_of(&h, node, Side::Input, key).is_none(),
+                "{type_id}: {key}"
+            );
+        }
+        assert!(
+            port_of(&h, node, Side::Input, always_port(type_id)).is_some(),
+            "{type_id}: {}",
+            always_port(type_id)
+        );
+    }
 }
 
 #[test]
 fn the_first_wire_sets_the_type_in_the_same_undo_step_and_shows_its_parameters() {
-    let mut h = rig();
-    let key = add(&mut h, Node::new(noodle_nodes::KEY_ID).at(0.0, 0.0));
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    let before = h.state().session.project().clone();
-    let from = socket(&h, key, Side::Output, "out");
-    let to = socket(&h, rs, Side::Input, "in1");
-    link(&mut h, from, to);
-    assert_eq!(source(&h, rs, "in1"), Some(Endpoint::new(key, "out")));
-    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(1), "notes");
-    let input = port_of(&h, rs, Side::Input, "in1").unwrap();
-    assert_eq!(input.kind, crate::editor::layout::PortKind::Event);
-    assert!(!input.spare);
-    for key in ["avoid_repeat", "switch", "seed"] {
-        assert!(port_of(&h, rs, Side::Input, key).is_some(), "{key}");
+    for (type_id, hidden) in PICKERS {
+        let mut h = rig();
+        let key = add(&mut h, Node::new(noodle_nodes::KEY_ID).at(0.0, 0.0));
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        let before = h.state().session.project().clone();
+        let from = socket(&h, key, Side::Output, "out");
+        let to = socket(&h, node, Side::Input, "in1");
+        link(&mut h, from, to);
+        assert_eq!(source(&h, node, "in1"), Some(Endpoint::new(key, "out")));
+        assert_eq!(
+            kind_config(&h, node),
+            noodle_core::Value::Int(1),
+            "{type_id}"
+        );
+        let input = port_of(&h, node, Side::Input, "in1").unwrap();
+        assert_eq!(input.kind, crate::editor::layout::PortKind::Event);
+        assert!(!input.spare);
+        for key in hidden {
+            assert!(
+                port_of(&h, node, Side::Input, key).is_some(),
+                "{type_id}: {key}"
+            );
+        }
+        assert!(
+            port_of(&h, node, Side::Input, always_port(type_id)).is_some(),
+            "{type_id}: {}",
+            always_port(type_id)
+        );
+        assert_eq!(
+            port_of(&h, node, Side::Output, "out").unwrap().kind,
+            crate::editor::layout::PortKind::Event
+        );
+        h.state_mut().session.undo();
+        assert_eq!(
+            h.state().session.project(),
+            &before,
+            "{type_id}: one undo takes both"
+        );
     }
-    assert_eq!(
-        port_of(&h, rs, Side::Output, "out").unwrap().kind,
-        crate::editor::layout::PortKind::Event
-    );
-    h.state_mut().session.undo();
-    assert_eq!(h.state().session.project(), &before, "one undo takes both");
 }
 
 #[test]
-fn a_signal_first_makes_it_a_signal_selector() {
-    let mut h = rig();
-    let saw = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 0.0));
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    let from = socket(&h, saw, Side::Output, "out");
-    let to = socket(&h, rs, Side::Input, "in1");
-    link(&mut h, from, to);
-    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(0));
-    assert_eq!(
-        port_of(&h, rs, Side::Output, "out").unwrap().kind,
-        crate::editor::layout::PortKind::Audio
-    );
+fn a_signal_first_makes_it_a_signal_picker() {
+    for (type_id, _) in PICKERS {
+        let mut h = rig();
+        let saw = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 0.0));
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        let from = socket(&h, saw, Side::Output, "out");
+        let to = socket(&h, node, Side::Input, "in1");
+        link(&mut h, from, to);
+        assert_eq!(
+            kind_config(&h, node),
+            noodle_core::Value::Int(0),
+            "{type_id}"
+        );
+        assert_eq!(
+            port_of(&h, node, Side::Output, "out").unwrap().kind,
+            crate::editor::layout::PortKind::Audio
+        );
+    }
 }
 
 #[test]
 fn another_type_is_refused_once_one_is_wired() {
-    let mut h = rig();
-    let key = add(&mut h, Node::new(noodle_nodes::KEY_ID).at(0.0, 0.0));
-    let saw = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 200.0));
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    let from = socket(&h, key, Side::Output, "out");
-    let to = socket(&h, rs, Side::Input, "in1");
-    link(&mut h, from, to);
-    let from = socket(&h, saw, Side::Output, "out");
-    let to = socket(&h, rs, Side::Input, "in2");
-    link(&mut h, from, to);
-    assert_eq!(source(&h, rs, "in2"), None, "signals can't join notes");
-    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(1));
+    for (type_id, _) in PICKERS {
+        let mut h = rig();
+        let key = add(&mut h, Node::new(noodle_nodes::KEY_ID).at(0.0, 0.0));
+        let saw = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 200.0));
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        let from = socket(&h, key, Side::Output, "out");
+        let to = socket(&h, node, Side::Input, "in1");
+        link(&mut h, from, to);
+        let from = socket(&h, saw, Side::Output, "out");
+        let to = socket(&h, node, Side::Input, "in2");
+        link(&mut h, from, to);
+        assert_eq!(
+            source(&h, node, "in2"),
+            None,
+            "{type_id}: signals can't join notes"
+        );
+        assert_eq!(
+            kind_config(&h, node),
+            noodle_core::Value::Int(1),
+            "{type_id}"
+        );
+    }
 }
 
 #[test]
-fn a_spectral_wire_makes_it_a_spectral_selector() {
-    let mut h = rig();
-    let analyze = add(&mut h, Node::new(noodle_nodes::ANALYZE_ID).at(0.0, 0.0));
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    let from = socket(&h, analyze, Side::Output, "spectrum");
-    let to = socket(&h, rs, Side::Input, "in1");
-    link(&mut h, from, to);
-    assert_eq!(
-        source(&h, rs, "in1"),
-        Some(Endpoint::new(analyze, "spectrum"))
-    );
-    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(3));
-    assert_eq!(
-        port_of(&h, rs, Side::Output, "out").unwrap().kind,
-        crate::editor::layout::PortKind::Spectral
-    );
-    // Spectra have no held notes to finish or cut.
-    assert!(port_of(&h, rs, Side::Input, "switch").is_none());
+fn a_spectral_wire_makes_it_a_spectral_picker() {
+    for (type_id, _) in PICKERS {
+        let mut h = rig();
+        let analyze = add(&mut h, Node::new(noodle_nodes::ANALYZE_ID).at(0.0, 0.0));
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        let from = socket(&h, analyze, Side::Output, "spectrum");
+        let to = socket(&h, node, Side::Input, "in1");
+        link(&mut h, from, to);
+        assert_eq!(
+            source(&h, node, "in1"),
+            Some(Endpoint::new(analyze, "spectrum"))
+        );
+        assert_eq!(
+            kind_config(&h, node),
+            noodle_core::Value::Int(3),
+            "{type_id}"
+        );
+        assert_eq!(
+            port_of(&h, node, Side::Output, "out").unwrap().kind,
+            crate::editor::layout::PortKind::Spectral
+        );
+        // Spectra have no held notes to finish or cut.
+        assert!(
+            port_of(&h, node, Side::Input, "switch").is_none(),
+            "{type_id}"
+        );
+    }
 }
 
 #[test]
-fn a_sample_wire_makes_it_a_sample_selector_and_hides_the_pick() {
-    let mut h = rig();
-    let sample = add(
-        &mut h,
-        Node::new(noodle_nodes::SAMPLE_INPUT_ID).at(0.0, 0.0),
-    );
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    let from = socket(&h, sample, Side::Output, "sample");
-    let to = socket(&h, rs, Side::Input, "in1");
-    link(&mut h, from, to);
-    assert_eq!(source(&h, rs, "in1"), Some(Endpoint::new(sample, "sample")));
-    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(2));
-    assert_eq!(
-        port_of(&h, rs, Side::Output, "out").unwrap().kind,
-        crate::editor::layout::PortKind::Sample
-    );
-    // The signal the compiler wires to the Sampler isn't drawn.
-    assert!(port_of(&h, rs, Side::Output, noodle_nodes::RANDOM_SELECT_CHOICE).is_none());
+fn a_sample_wire_makes_it_a_sample_picker_and_hides_the_pick() {
+    for (type_id, _) in PICKERS {
+        let mut h = rig();
+        let sample = add(
+            &mut h,
+            Node::new(noodle_nodes::SAMPLE_INPUT_ID).at(0.0, 0.0),
+        );
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        let from = socket(&h, sample, Side::Output, "sample");
+        let to = socket(&h, node, Side::Input, "in1");
+        link(&mut h, from, to);
+        assert_eq!(
+            source(&h, node, "in1"),
+            Some(Endpoint::new(sample, "sample"))
+        );
+        assert_eq!(
+            kind_config(&h, node),
+            noodle_core::Value::Int(2),
+            "{type_id}"
+        );
+        assert_eq!(
+            port_of(&h, node, Side::Output, "out").unwrap().kind,
+            crate::editor::layout::PortKind::Sample
+        );
+        // The signal the compiler wires to the Sampler isn't drawn.
+        assert!(
+            port_of(&h, node, Side::Output, "choice").is_none(),
+            "{type_id}"
+        );
+    }
 }
 
 #[test]
 fn the_inputs_grow_with_the_wires_and_the_type_goes_when_the_last_wire_does() {
-    let mut h = rig();
-    let a = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 0.0));
-    let b = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 200.0));
-    let rs = add(
-        &mut h,
-        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
-    );
-    h.run();
-    for (n, src) in [(1, a), (2, b)] {
-        let from = socket(&h, src, Side::Output, "out");
-        let to = socket(&h, rs, Side::Input, &format!("in{n}"));
-        link(&mut h, from, to);
-    }
-    let node = h
-        .state()
-        .session
-        .project()
-        .graph()
-        .node(rs)
-        .unwrap()
-        .clone();
-    assert_eq!(node.config.get("inputs"), None, "two is the default");
-    assert!(
-        port_of(&h, rs, Side::Input, "in3").unwrap().spare,
-        "a spare after the last"
-    );
-    // A third wire raises the count.
-    let c = add(&mut h, Node::new("noodle.osc.square").at(0.0, 400.0));
-    h.run();
-    let from = socket(&h, c, Side::Output, "out");
-    let to = socket(&h, rs, Side::Input, "in3");
-    link(&mut h, from, to);
-    let node = h
-        .state()
-        .session
-        .project()
-        .graph()
-        .node(rs)
-        .unwrap()
-        .clone();
-    assert_eq!(node.config.get("inputs"), Some(&noodle_core::Value::Int(3)));
-
-    // Take every wire off: it is untyped again.
-    for n in 1..=3 {
-        h.state_mut()
+    for (type_id, _) in PICKERS {
+        let mut h = rig();
+        let a = add(&mut h, Node::new("noodle.osc.saw").at(0.0, 0.0));
+        let b = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 200.0));
+        let node = add(&mut h, Node::new(type_id).at(300.0, 0.0));
+        h.run();
+        for (n, src) in [(1, a), (2, b)] {
+            let from = socket(&h, src, Side::Output, "out");
+            let to = socket(&h, node, Side::Input, &format!("in{n}"));
+            link(&mut h, from, to);
+        }
+        let node_config = h
+            .state()
             .session
-            .edit([Edit::Apply(Command::Disconnect {
-                input: Endpoint::new(rs, format!("in{n}")),
-            })]);
+            .project()
+            .graph()
+            .node(node)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            node_config.config.get("inputs"),
+            None,
+            "{type_id}: two is the default"
+        );
+        assert!(
+            port_of(&h, node, Side::Input, "in3").unwrap().spare,
+            "{type_id}: a spare after the last"
+        );
+        // A third wire raises the count.
+        let c = add(&mut h, Node::new("noodle.osc.square").at(0.0, 400.0));
+        h.run();
+        let from = socket(&h, c, Side::Output, "out");
+        let to = socket(&h, node, Side::Input, "in3");
+        link(&mut h, from, to);
+        let node_config = h
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(node)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            node_config.config.get("inputs"),
+            Some(&noodle_core::Value::Int(3)),
+            "{type_id}"
+        );
+
+        // Take every wire off: it is untyped again.
+        for n in 1..=3 {
+            h.state_mut()
+                .session
+                .edit([Edit::Apply(Command::Disconnect {
+                    input: Endpoint::new(node, format!("in{n}")),
+                })]);
+        }
+        h.run();
+        let input = port_of(&h, node, Side::Input, "in1").unwrap();
+        assert_eq!(
+            input.kind,
+            crate::editor::layout::PortKind::Any,
+            "{type_id}"
+        );
+        assert!(
+            port_of(&h, node, Side::Input, "switch").is_none(),
+            "{type_id}"
+        );
     }
-    h.run();
-    let input = port_of(&h, rs, Side::Input, "in1").unwrap();
-    assert_eq!(input.kind, crate::editor::layout::PortKind::Any);
-    assert!(port_of(&h, rs, Side::Input, "seed").is_none());
 }

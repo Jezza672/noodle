@@ -32,10 +32,15 @@ use noodle_io::{
     TruePeakLimiter, cue_sheet,
 };
 
+use crate::render_clip::CLIP_SILENCE;
 use crate::{
     CHUNK_FRAMES, ClipProblem, FileError, FreezeError, Freezer, RenderRequest,
     freeze::freeze_within, register_library_blocking,
 };
+
+/// How long the fade is, in frames, when a silent tail is cut while it still
+/// sounds.
+const CAP_FADE: usize = 2048;
 
 /// What to write, and where.
 #[derive(Clone)]
@@ -70,6 +75,12 @@ pub struct ExportRequest {
     /// The cache offline and frozen nodes are rendered into. `None` skips
     /// that: they are not heard.
     pub freezer: Option<Freezer>,
+    /// `None`: the files end at `end`. `Some(cap)`: `end` is where the
+    /// project proper stops, and the render runs on for up to `cap` frames
+    /// until every file is silent, then all files are cut to the same
+    /// length, the latest any of them is still sounding. A tail still
+    /// sounding at the cap fades out.
+    pub silent_tail: Option<u64>,
 }
 
 /// A group to write to its own file.
@@ -173,8 +184,11 @@ pub fn export(
         return Err(ExportJobError::NothingChosen);
     }
     let settings = request.render.settings;
-    let end = usize::try_from(request.end)
-        .map_err(|_| ExportJobError::Render("the range is too long to render".into()))?;
+    let end = request
+        .end
+        .checked_add(request.silent_tail.unwrap_or(0))
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| ExportJobError::Render("the range is too long to render".into()))?;
     // Renders of offline and frozen nodes must reach the end of the file, or
     // they would play zeros from where they stop.
     let mut render = request.render.clone();
@@ -216,7 +230,9 @@ pub fn export(
     };
 
     let channels = settings.channels;
-    let expected = request.end - request.start;
+    // What the files hold before any silent tail is cut.
+    let expected = end as u64 - request.start;
+    let body = request.end - request.start;
     // Where each pass's share of the progress bar goes.
     // The ceiling applies to the mixdown file, so only when one is written.
     let ceiling = request
@@ -257,6 +273,9 @@ pub fn export(
             None => None,
         };
         let mut sink = Sink::new(writer, rate, channels, gain, request.start as usize);
+        if path.is_some() && request.silent_tail.is_some() {
+            sink.body_left = body;
+        }
         if let Some(ceiling) = limit {
             sink.limit(TruePeakLimiter::new(rate, channels, ceiling));
         }
@@ -269,6 +288,7 @@ pub fn export(
     // The mixdown: the whole project through the Outputs.
     let mut gain_db = 0.0;
     let mut mixdown = None;
+    let mut mix_sink: Option<Sink> = None;
     let mut mix_pass = |mut sink: Sink, progress: &Progress| -> Result<Sink, ExportJobError> {
         let found = render_project_streaming_replacing(
             &request.render.project,
@@ -291,7 +311,7 @@ pub fn export(
     if let Some(target) = request.normalize {
         next_window(progress);
         let (loudness, _) =
-            mix_pass(new_sink(&None, 1.0, None, untagged())?, progress)?.finish()?;
+            mix_pass(new_sink(&None, 1.0, None, untagged())?, progress)?.finish(0, false)?;
         if loudness.lufs.is_finite() {
             gain_db = target - loudness.lufs;
         }
@@ -302,7 +322,7 @@ pub fn export(
             next_window(progress);
             let gain = 10f32.powf(gain_db as f32 / 20.0);
             let sink = new_sink(&None, gain, Some(ceiling), untagged())?;
-            let (limited, _) = mix_pass(sink, progress)?.finish()?;
+            let (limited, _) = mix_pass(sink, progress)?.finish(0, false)?;
             if limited.lufs.is_finite() && (limited.lufs - target).abs() > 0.05 {
                 gain_db += target - limited.lufs;
             }
@@ -311,21 +331,10 @@ pub fn export(
     let gain = 10f32.powf(gain_db as f32 / 20.0);
     if request.mixdown.is_some() {
         next_window(progress);
-        let sink = mix_pass(
+        mix_sink = Some(mix_pass(
             new_sink(&request.mixdown, gain, ceiling, request.metadata.clone())?,
             progress,
-        )?;
-        let (loudness, written) = sink.finish()?;
-        if let (true, Some(path)) = (request.cue, &request.mixdown) {
-            let name = path
-                .file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-            let cue = cue_sheet(&name, request.format, &request.metadata);
-            std::fs::write(path.with_extension("cue"), cue)
-                .map_err(|e| ExportJobError::File(e.into()))?;
-        }
-        mixdown = Some(loudness);
-        frames = written;
+        )?);
     } else if let Some(loudness) = &mut mixdown {
         // Only measured: say what it would have been with the gain.
         loudness.lufs += gain_db;
@@ -335,6 +344,7 @@ pub fn export(
 
     // The track files: one pass, one tap per group.
     let mut tracks = Vec::new();
+    let mut track_sinks: Vec<(String, Sink)> = Vec::new();
     if !request.tracks.is_empty() {
         next_window(progress);
         let graph = render.project.graph();
@@ -396,17 +406,47 @@ pub fn export(
         for (name, sink) in outs {
             let sink = sink.lock().expect("track lock").take();
             let Some(sink) = sink else { continue };
-            let (loudness, written) = sink.finish()?;
             // A tap that never ran writes a short file.
-            if written != expected {
+            if sink.received() != expected {
                 return Err(ExportJobError::Render(match diagnostics.first() {
                     Some(d) => format!("{name} produced no audio: {}", d.problem),
                     None => format!("{name} produced no audio"),
                 }));
             }
-            frames = written;
-            tracks.push((name, loudness));
+            track_sinks.push((name, sink));
         }
+    }
+    // One tail for every file: as long as the latest sounding one.
+    let held = expected - body;
+    let sounding = mix_sink
+        .iter()
+        .chain(track_sinks.iter().map(|(_, sink)| sink))
+        .map(Sink::audible_tail)
+        .max()
+        .unwrap_or(0) as u64;
+    let capped = request.silent_tail.is_some() && sounding == held && held > 0;
+    let keep = if request.silent_tail.is_some() {
+        sounding as usize
+    } else {
+        0
+    };
+    if let Some(sink) = mix_sink {
+        let (loudness, written) = sink.finish(keep, capped)?;
+        mixdown = Some(loudness);
+        frames = written;
+        if let (true, Some(path)) = (request.cue, &request.mixdown) {
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let cue = cue_sheet(&name, request.format, &request.metadata);
+            std::fs::write(path.with_extension("cue"), cue)
+                .map_err(|e| ExportJobError::File(e.into()))?;
+        }
+    }
+    for (name, sink) in track_sinks {
+        let (loudness, written) = sink.finish(keep, capped)?;
+        frames = written;
+        tracks.push((name, loudness));
     }
     progress.set_window(0.0, 1.0);
     // Offline nodes that couldn't be rendered were silent in the files.
@@ -459,6 +499,12 @@ struct Sink {
     /// Samples (not frames) still to drop from the front.
     skip: usize,
     written: u64,
+    /// Frames received, written or held.
+    received: u64,
+    /// Frames still to write straight through; what comes after is held (it
+    /// is the tail, whose length is not known until every file is done).
+    body_left: u64,
+    held: Vec<f32>,
     scratch: Vec<f32>,
     /// Holds the true peak under a ceiling, when asked.
     limiter: Option<TruePeakLimiter>,
@@ -482,6 +528,9 @@ impl Sink {
             gain,
             skip: skip * channels,
             written: 0,
+            received: 0,
+            body_left: u64::MAX,
+            held: Vec::new(),
             scratch: Vec::new(),
             limiter: None,
             limited: Vec::new(),
@@ -497,42 +546,79 @@ impl Sink {
         let drop = self.skip.min(chunk.len());
         self.skip -= drop;
         let keep = &chunk[drop..];
-        self.written += (keep.len() / self.channels) as u64;
-        let keep = if self.gain == 1.0 {
-            keep
+        let frames = (keep.len() / self.channels) as u64;
+        self.received += frames;
+        let now = frames.min(self.body_left);
+        self.body_left -= now;
+        let (body, tail) = keep.split_at(now as usize * self.channels);
+        self.held.extend_from_slice(tail);
+        self.emit(body)
+    }
+
+    /// Frames received after the skip, written or held.
+    fn received(&self) -> u64 {
+        self.received
+    }
+
+    /// Frames of the held tail up to the last sample that isn't silence.
+    fn audible_tail(&self) -> usize {
+        self.held
+            .chunks(self.channels)
+            .rposition(|frame| frame.iter().any(|s| s.abs() > CLIP_SILENCE))
+            .map_or(0, |last| last + 1)
+    }
+
+    /// Gains, measures and writes samples.
+    fn emit(&mut self, samples: &[f32]) -> Result<(), ExportError> {
+        self.written += (samples.len() / self.channels) as u64;
+        let samples = if self.gain == 1.0 {
+            samples
         } else {
             self.scratch.clear();
-            self.scratch.extend(keep.iter().map(|s| s * self.gain));
+            self.scratch.extend(samples.iter().map(|s| s * self.gain));
             &self.scratch
         };
         if let Some(limiter) = &mut self.limiter {
             self.limited.clear();
-            limiter.push(keep, &mut self.limited);
-            return Self::emit(&mut self.meter, &mut self.writer, &self.limited);
+            limiter.push(samples, &mut self.limited);
+            self.meter.push(&self.limited);
+            return match &mut self.writer {
+                Some(writer) => writer.write(&self.limited),
+                None => Ok(()),
+            };
         }
-        Self::emit(&mut self.meter, &mut self.writer, keep)
-    }
-
-    fn emit(
-        meter: &mut LoudnessMeter,
-        writer: &mut Option<ExportWriter>,
-        samples: &[f32],
-    ) -> Result<(), ExportError> {
-        meter.push(samples);
-        match writer {
+        self.meter.push(samples);
+        match &mut self.writer {
             Some(writer) => writer.write(samples),
             None => Ok(()),
         }
     }
 
-    /// Completes the file. Returns how loud it is and the frames in it.
-    fn finish(mut self) -> Result<(Loudness, u64), ExportJobError> {
-        if let Some(limiter) = &mut self.limiter {
+    /// Completes the file with the first `tail` frames of what was held,
+    /// faded out if `fade` (the tail was cut while sounding). Returns how
+    /// loud it is and the frames in it.
+    fn finish(mut self, tail: usize, fade: bool) -> Result<(Loudness, u64), ExportJobError> {
+        let mut held = std::mem::take(&mut self.held);
+        held.truncate(tail * self.channels);
+        if fade {
+            let length = CAP_FADE.min(tail);
+            for i in 0..length {
+                let gain = 1.0 - (i + 1) as f32 / length as f32;
+                let frame = (tail - length + i) * self.channels;
+                for sample in &mut held[frame..frame + self.channels] {
+                    *sample *= gain;
+                }
+            }
+        }
+        self.emit(&held).map_err(ExportJobError::File)?;
+        if let Some(mut limiter) = self.limiter.take() {
             // The frames the limiter still holds.
             self.limited.clear();
             limiter.finish(&mut self.limited);
-            Self::emit(&mut self.meter, &mut self.writer, &self.limited)
-                .map_err(ExportJobError::File)?;
+            self.meter.push(&self.limited);
+            if let Some(writer) = &mut self.writer {
+                writer.write(&self.limited).map_err(ExportJobError::File)?;
+            }
         }
         if let Some(writer) = self.writer {
             writer.finish().map_err(ExportJobError::File)?;

@@ -1,51 +1,50 @@
 //! S01: comp a vocal from multiple takes.
 //!
-//! Recording the takes is not part of the route: there is no way to feed a
-//! live input in a test (see the registry), so the fixture starts from the
-//! folder a loop recording of eight passes makes. Everything from there on is
-//! the user's: open the takes, swipe the best phrases, change their mind.
+//! The takes are recorded for real: the fixture is an empty project with a short loop,
+//! and the virtual input plays eight different tones, one per pass, into the
+//! recorder (see `testkit::virtual_input`). The loop is a bar long, so
+//! the recording takes about seventeen seconds. From there on everything is the
+//! user's: open the takes, swipe the best phrases, change their mind.
 
 use egui::Pos2;
-use noodle_core::{Clip, ClipId, Command, Node, Project, Take, TakeFolder, Tick};
+use noodle_core::{Clip, ClipId, Command, Project, Tick};
 use noodle_io::write_wav;
-use noodle_nodes::TRACK_INPUT_ID;
 use std::path::Path;
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Keep, LateChange, Route, Tag};
-use super::{finished, virtual_session};
+use super::{finished_recording, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
-/// One loop cycle: four beats at 120 bpm.
+/// One loop cycle: a bar of four beats at 120 bpm.
 const CYCLE: u64 = 96_000;
 const TAKES: u64 = 8;
 
-/// A track holding the folder of eight takes a loop recording makes, each
-/// pass a different tone so a comp can be told apart by ear.
+/// An empty project with a loop over its first bar, with the virtual
+/// input set to play a different tone on each pass.
 fn eight_takes(dir: &Path) -> App {
     let tone = |take: u64| {
         let hz = 220.0 * 2f32.powf(take as f32 / 12.0);
         (0..CYCLE).map(move |i| 0.4 * (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin())
     };
-    let samples: Vec<f32> = (0..TAKES).flat_map(tone).collect();
-    write_wav(&dir.join("vocal.wav"), &samples, 1, 48_000).expect("the takes are written");
+    // Two passes more than the takes, since the input starts a moment before
+    // the recording does.
+    let samples: Vec<f32> = (0..TAKES + 2).flat_map(tone).collect();
+    let wav = dir.join("input.wav");
+    write_wav(&wav, &samples, 1, 48_000).expect("the input is written");
     let mut session = virtual_session(dir);
-    let track = session.new_node_id();
-    session.edit([Edit::Apply(Command::AddNode {
-        id: track,
-        node: Node::new(TRACK_INPUT_ID),
-    })]);
-    let id = session.project().next_clip_id();
-    let mut clip = Clip::audio(track, Tick(0), "vocal.wav", CYCLE);
-    if let noodle_core::ClipContent::Audio(audio) = &mut clip.content {
-        audio.takes = Some(TakeFolder::new(
-            (0..TAKES).map(|k| Take { delta: k * CYCLE }).collect(),
-            0,
-        ));
-    }
-    session.edit([Edit::Apply(Command::AddClip { id, clip })]);
-    finished(session, dir)
+    session.edit([Edit::Apply(Command::SetLoop(noodle_core::TransportLoop {
+        on: true,
+        start: Tick(0),
+        end: Tick(3840),
+    }))]);
+    finished_recording(session, dir, &wav)
+}
+
+/// Audio clips on the project: the recorded folder, and a later recording.
+fn audio_clips(p: &Project) -> usize {
+    p.clips().filter(|(_, c)| c.as_audio().is_some()).count()
 }
 
 pub fn route() -> Route {
@@ -57,15 +56,26 @@ pub fn route() -> Route {
         size: None,
         steps,
         done,
-        late: &[LateChange {
-            name: "re-pick the verse 2 phrase",
-            steps: repick,
-            done: repicked,
-            keep: &[Keep {
-                name: "the first phrase",
-                of: first_phrase,
-            }],
-        }],
+        late: &[
+            LateChange {
+                name: "record a ninth take",
+                steps: ninth,
+                done: ninth_done,
+                keep: &[Keep {
+                    name: "the first phrase",
+                    of: first_phrase,
+                }],
+            },
+            LateChange {
+                name: "re-pick the verse 2 phrase",
+                steps: repick,
+                done: repicked,
+                keep: &[Keep {
+                    name: "the first phrase",
+                    of: first_phrase,
+                }],
+            },
+        ],
     }
 }
 
@@ -129,6 +139,28 @@ fn folder_id(h: &mut Handle) -> ClipId {
 }
 
 fn steps(h: &mut Handle, _size: usize) {
+    h.step("add a track");
+    let add = h.find("+ Track");
+    h.drag_playing(&[add]);
+    h.step("arm the track");
+    let arm = h.find("RA");
+    h.drag_playing(&[arm]);
+    h.step("record eight passes of the loop");
+    let record = h.find("⏺");
+    h.drag_playing(&[record]);
+    // The input plays in real time, so the passes take as long as they take.
+    h.probe().hear(std::time::Duration::from_millis(17600));
+    h.waited(17.6);
+    h.step("stop");
+    h.press_playing(
+        Pos2::new(640.0, 300.0),
+        egui::Modifiers::NONE,
+        egui::Key::Space,
+    );
+    h.step("turn the audio engine off");
+    let engine = h.find("Audio");
+    h.drag_playing(&[engine]);
+    h.probe().settle();
     let id = folder_id(h);
     h.step("open the takes");
     h.probe().settle();
@@ -164,6 +196,36 @@ fn repicked(p: &mut Probe, _size: usize) -> Result<(), String> {
     let takes: Vec<usize> = comp(p.project()).iter().map(|s| s.0).collect();
     if takes != [3, 1] {
         return Err(format!("the comp plays takes {takes:?}, wanted [3, 1]"));
+    }
+    Ok(())
+}
+
+/// Records again over the loop, the way the first eight passes were. The
+/// virtual input starts its file again when the engine opens.
+fn ninth(h: &mut Handle, _size: usize) {
+    h.step("record another take");
+    let record = h.find("⏺");
+    h.drag_playing(&[record]);
+    h.probe().hear(std::time::Duration::from_millis(2600));
+    h.waited(2.6);
+    h.step("stop");
+    h.press_playing(
+        Pos2::new(640.0, 300.0),
+        egui::Modifiers::NONE,
+        egui::Key::Space,
+    );
+    h.step("turn the audio engine off");
+    let engine = h.find("Audio");
+    h.drag_playing(&[engine]);
+    h.probe().settle();
+}
+
+fn ninth_done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    // The app does not yet add a recording to the folder it records over
+    // (a new clip holds it), so the take is counted as a second clip.
+    let n = audio_clips(p.project());
+    if n < 2 {
+        return Err(format!("{n} audio clip after recording again"));
     }
     Ok(())
 }
