@@ -3429,6 +3429,7 @@ impl Effect {
             | Command::SetParamShown { .. }
             | Command::SetPreset { .. }
             | Command::SetTrackOrder(_)
+            | Command::SetOrganisation(_)
             | Command::SetClipGroup { .. }
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }

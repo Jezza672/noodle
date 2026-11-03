@@ -33,7 +33,8 @@ use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
 use noodle_core::{
-    Clip, ClipId, ClipWarp, Command, Endpoint, LaneId, NodeId, Project, TempoMap, Tick, WarpId,
+    Clip, ClipId, ClipWarp, Command, Endpoint, FolderId, LaneId, NodeId, Project, TempoMap, Tick,
+    WarpId,
 };
 
 use crate::session::{ArmKind, Edit, Session};
@@ -100,6 +101,8 @@ pub struct TimelineState {
     sources: Sources,
     /// A track name being typed.
     renaming: Option<header::Rename>,
+    /// A folder name being typed.
+    renaming_folder: Option<(FolderId, String)>,
     waveforms: waveform::Cache,
     /// Sections' waveforms as they play, once warped.
     warped_waves: warped_waves::WarpedWaves,
@@ -151,6 +154,7 @@ impl Default for TimelineState {
             last_seek: None,
             sources: Sources::default(),
             renaming: None,
+            renaming_folder: None,
             waveforms: waveform::Cache::default(),
             warped_waves: warped_waves::WarpedWaves::default(),
             automation: automation::State::default(),
@@ -185,7 +189,7 @@ impl TimelineState {
         match &self.tracks_cache {
             Some((revision, tracks)) if *revision == project.revision() => tracks.clone(),
             _ => {
-                let tracks: std::rc::Rc<[NodeId]> = tracks(project).into();
+                let tracks: std::rc::Rc<[NodeId]> = visible_tracks(project).into();
                 self.tracks_cache = Some((project.revision(), tracks.clone()));
                 tracks
             }
@@ -213,6 +217,22 @@ impl TimelineState {
         let own = self.lane_height(track) + dy;
         self.lane_heights
             .insert(track, (own / self.v_zoom).clamp(MIN_LANE, MAX_LANE));
+    }
+
+    /// Whether `track`'s lane is down to just its name.
+    fn name_only(&self, track: NodeId) -> bool {
+        self.lane_heights
+            .get(&track)
+            .is_some_and(|&h| h <= MIN_LANE)
+    }
+
+    /// Shrinks `track`'s lane to its name, or gives it its usual height back.
+    fn toggle_name_only(&mut self, track: NodeId) {
+        if self.name_only(track) {
+            self.lane_heights.remove(&track);
+        } else {
+            self.lane_heights.insert(track, MIN_LANE);
+        }
     }
 
     /// Forgets clips that no longer exist, e.g. after an undo.
@@ -445,15 +465,120 @@ pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
     // Track order is the order of the groups the inputs sit in; an input
     // with no group (or clips on another node) sorts by its own ID.
     tracks.sort_by_key(|&id| {
-        let group = project
-            .graph()
-            .node(id)
-            .and_then(|n| n.parent)
-            .unwrap_or(id);
+        let group = group_of(project, id);
         let rank = project.track_order().iter().position(|&g| g == group);
         (rank.unwrap_or(usize::MAX), id)
     });
+    // A folder's tracks sit together, where its first one is.
+    let org = project.organisation();
+    if org.folders.is_empty() {
+        return tracks;
+    }
+    let mut together = Vec::with_capacity(tracks.len());
+    let mut placed = BTreeSet::new();
+    for &track in &tracks {
+        match org.folder_of(group_of(project, track)) {
+            Some(folder) if org.folders.contains_key(&folder) => {
+                if placed.insert(folder) {
+                    together.extend(tracks.iter().copied().filter(|&t| {
+                        org.folder_of(group_of(project, t)) == Some(folder)
+                    }));
+                }
+            }
+            _ => together.push(track),
+        }
+    }
+    together
+}
+
+/// The group a track is ordered, coloured and foldered by: the one its input
+/// sits in, or the node itself if it has none.
+pub(crate) fn group_of(project: &Project, track: NodeId) -> NodeId {
+    project
+        .graph()
+        .node(track)
+        .and_then(|n| n.parent)
+        .unwrap_or(track)
+}
+
+/// The folder a track is in, if it has one.
+pub(crate) fn folder_of(project: &Project, track: NodeId) -> Option<FolderId> {
+    let org = project.organisation();
+    org.folder_of(group_of(project, track))
+        .filter(|f| org.folders.contains_key(f))
+}
+
+/// [`tracks`] without the ones in folded folders: the lanes on screen.
+pub(crate) fn visible_tracks(project: &Project) -> Vec<NodeId> {
+    let org = project.organisation();
+    let mut tracks = tracks(project);
+    tracks.retain(|&t| folder_of(project, t).is_none_or(|f| !org.folders[&f].folded));
     tracks
+}
+
+/// A folder's header strip in the track list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Strip {
+    pub folder: FolderId,
+    /// How many of the visible tracks come before it.
+    pub before: usize,
+}
+
+/// The folder strips for the visible lanes, top to bottom: one for each
+/// folder, above its first visible track (or, folded, where it would have
+/// been).
+pub(crate) fn strips(project: &Project, all: &[NodeId], visible: &[NodeId]) -> Vec<Strip> {
+    let mut strips: Vec<Strip> = Vec::new();
+    let mut seen = 0;
+    for &track in all {
+        if let Some(folder) = folder_of(project, track)
+            && !strips.iter().any(|s| s.folder == folder)
+        {
+            strips.push(Strip {
+                folder,
+                before: seen,
+            });
+        }
+        if visible.contains(&track) {
+            seen += 1;
+        }
+    }
+    strips
+}
+
+/// How many strips come right before each visible track, and one more entry
+/// for after the last, as [`automation::Rows::new`] takes them.
+pub(crate) fn strip_counts(strips: &[Strip], tracks: usize) -> Vec<usize> {
+    let mut counts = vec![0; tracks + 1];
+    for strip in strips {
+        counts[strip.before] += 1;
+    }
+    counts
+}
+
+/// The colour each of `shown` is drawn in: the palette slot it was given, or
+/// its folder's, or else one by when it was made, so reordering never
+/// recolours a track.
+pub(crate) fn track_colours(project: &Project, shown: &[NodeId]) -> Vec<Color32> {
+    let mut made: Vec<NodeId> = tracks(project);
+    made.sort();
+    let org = project.organisation();
+    shown
+        .iter()
+        .map(|&track| {
+            let slot = org
+                .shown_colour(group_of(project, track))
+                .map(usize::from)
+                .or_else(|| made.iter().position(|&t| t == track))
+                .unwrap_or(0);
+            colors::track_colour(slot)
+        })
+        .collect()
+}
+
+/// One track's colour (see [`track_colours`]).
+pub(crate) fn colour_of(project: &Project, track: NodeId) -> Color32 {
+    track_colours(project, &[track])[0]
 }
 
 /// Where the screen's x axis is in time.
@@ -528,7 +653,16 @@ pub fn show(
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
     state.takes.retain(project);
     let take_lanes = state.takes.lanes(project, &tracks);
-    let rows = automation::Rows::new(project, &tracks, &heights, &take_lanes);
+    let all_tracks = self::tracks(project);
+    let strips = strips(project, &all_tracks, &tracks);
+    let rows = automation::Rows::new(
+        project,
+        &tracks,
+        &heights,
+        &take_lanes,
+        &strip_counts(&strips, tracks.len()),
+    );
+    let colours = track_colours(project, &tracks);
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -613,6 +747,17 @@ pub fn show(
             let painter = ui.painter_at(content);
             painter.rect_filled(rect, 0.0, colors::BACKGROUND);
             let lane_top = |i: usize| content.top() - scroll_y + rows.top(i);
+            for k in 0..strips.len() {
+                let top = content.top() - scroll_y + rows.strip_top(k);
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        Pos2::new(content.left(), top),
+                        vec2(content.width(), automation::STRIP),
+                    ),
+                    0.0,
+                    colors::HEADER,
+                );
+            }
             for i in 0..tracks.len() {
                 let top = lane_top(i);
                 let fill = if i % 2 == 0 {
@@ -666,7 +811,7 @@ pub fn show(
                 if top > content.bottom() || top + lane_height < content.top() {
                     continue;
                 }
-                let colour = colors::track_colour(index);
+                let colour = colours[index];
                 if let Some(take) = &take {
                     let drawn = take::draw(&painter, axis, top, lane_height, take, track, |n| {
                         let mut cached = take_wave.borrow_mut();
@@ -1169,7 +1314,7 @@ pub fn show(
                     axis,
                     content,
                     directory: directory.as_deref(),
-                    colour: colors::track_colour(index),
+                    colour: colours[index],
                     lane_top: top,
                     lane_height,
                     audition: session.take_audition(),
@@ -1490,7 +1635,21 @@ pub fn show(
             }
 
             let (header_edits, header_arm) =
-                draw_headers(ui, rect, content, &tracks, &rows, session, state, scroll_y);
+                draw_headers(
+                    ui,
+                    rect,
+                    content,
+                    Lanes {
+                        tracks: &tracks,
+                        all: &all_tracks,
+                        strips: &strips,
+                        colours: &colours,
+                    },
+                    &rows,
+                    session,
+                    state,
+                    scroll_y,
+                );
             edits.extend(header_edits);
             arm.extend(header_arm);
         });
@@ -2051,7 +2210,8 @@ const HANDLE: f32 = 10.0;
 /// How tall the strip on a track header's bottom edge is that drags to resize.
 const GRIP: f32 = 6.0;
 /// The range of a track's own lane height, before vertical zoom.
-const MIN_LANE: f32 = 32.0;
+/// The least is a lane of just the track's name, with no controls.
+const MIN_LANE: f32 = 20.0;
 const MAX_LANE: f32 = 400.0;
 /// The range of the vertical zoom (Alt+scroll).
 const MIN_V_ZOOM: f32 = 0.5;
@@ -2499,25 +2659,69 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
     }
 }
 
-/// Moving `moved` to position `slot` among `tracks` (counted before it was
-/// taken out), as a new track order. `None` when that leaves the order as it
-/// was.
+/// Moving `moved` to position `slot` among the visible `tracks` (counted
+/// before it was taken out), as a new track order, and the folder it lands
+/// in. `None` when that leaves both as they were.
+///
+/// It joins the folder both of its new neighbours are in, and keeps its own
+/// while either is in it, so reordering inside a folder, even to its ends,
+/// does not take a track out. Anything else leaves it in no folder; the
+/// header's menu takes a track out of a folder as well.
 fn reorder(project: &Project, tracks: &[NodeId], moved: NodeId, slot: usize) -> Option<Edit> {
     // A track is ordered by its group, or by itself if it has none (see
-    // `tracks`).
-    let key = |input: NodeId| {
-        project
-            .graph()
-            .node(input)
-            .and_then(|n| n.parent)
-            .unwrap_or(input)
-    };
+    // `tracks`). The order covers every track, folded away or not.
+    let all = self::tracks(project);
+    let key = |input: NodeId| group_of(project, input);
     let from = tracks.iter().position(|&t| t == moved)?;
-    let before: Vec<NodeId> = tracks.iter().map(|&t| key(t)).collect();
+    let slot = slot.saturating_sub(usize::from(slot > from));
+    let others: Vec<NodeId> = tracks.iter().copied().filter(|&t| t != moved).collect();
+    // The neighbours it lands between, among the visible ones.
+    let above = slot.checked_sub(1).and_then(|i| others.get(i)).copied();
+    let below = others.get(slot).copied();
+    let before: Vec<NodeId> = all.iter().map(|&t| key(t)).collect();
     let mut order = before.clone();
-    let moved = order.remove(from);
-    order.insert(slot.saturating_sub(usize::from(slot > from)), moved);
-    (order != before).then_some(Edit::Apply(Command::SetTrackOrder(order)))
+    let at = order.iter().position(|&g| g == key(moved))?;
+    let group = order.remove(at);
+    // Just before the track now below it, or after the one above it.
+    let place = match (below, above) {
+        (Some(below), _) => order.iter().position(|&g| g == key(below)),
+        (None, Some(above)) => order.iter().position(|&g| g == key(above)).map(|i| i + 1),
+        (None, None) => Some(0),
+    }
+    .unwrap_or(order.len());
+    order.insert(place, group);
+    let org = project.organisation();
+    let folder = |t: Option<NodeId>| t.and_then(|t| folder_of(project, t));
+    let own = folder_of(project, moved);
+    let landing = match (folder(above), folder(below)) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        (a, b) if own.is_some() && (a == own || b == own) => own,
+        _ => None,
+    };
+    let new_org = org.clone().with_folder(&[group], landing);
+    let mut commands = Vec::new();
+    if order != before {
+        commands.push(Command::SetTrackOrder(order));
+    }
+    if &new_org != org {
+        commands.push(Command::SetOrganisation(new_org));
+    }
+    match commands.len() {
+        0 => None,
+        1 => commands.pop().map(Edit::Apply),
+        _ => Some(Edit::Apply(Command::Batch(commands))),
+    }
+}
+
+/// The lanes on screen, for the header column.
+#[derive(Clone, Copy)]
+struct Lanes<'a> {
+    /// The visible tracks, top to bottom.
+    tracks: &'a [NodeId],
+    /// Every track, folded away or not.
+    all: &'a [NodeId],
+    strips: &'a [Strip],
+    colours: &'a [Color32],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2525,12 +2729,18 @@ fn draw_headers(
     ui: &mut egui::Ui,
     rect: Rect,
     content: Rect,
-    tracks: &[NodeId],
+    lanes: Lanes<'_>,
     rows: &automation::Rows,
     session: &Session,
     state: &mut TimelineState,
     scroll_y: f32,
 ) -> (Vec<Edit>, Vec<(NodeId, ArmKind, bool)>) {
+    let Lanes {
+        tracks,
+        all,
+        strips,
+        colours,
+    } = lanes;
     let graph = session.project().graph();
     let column = Rect::from_min_max(
         Pos2::new(rect.left(), content.top()),
@@ -2591,13 +2801,15 @@ fn draw_headers(
             graph,
             header::Lane {
                 rect: lane,
-                index,
+                index: all.iter().position(|&t| t == input).unwrap_or(index),
                 input,
                 selected: state.selected_track == Some(input),
+                colour: colours[index],
             },
             controls.clone(),
             automated,
             &mut state.renaming,
+            session.project().organisation(),
         );
         // The lane's bottom edge drags to resize the track. Inside the lane, since
         // the next header is drawn over anything below it.
@@ -2605,12 +2817,22 @@ fn draw_headers(
             Pos2::new(lane.left(), lane.bottom() - GRIP),
             vec2(lane.width(), GRIP),
         );
-        let resize = ui.interact(grip, ui.id().with(("resize", input)), Sense::drag());
+        let resize = ui.interact(
+            grip,
+            ui.id().with(("resize", input)),
+            Sense::click_and_drag(),
+        );
         if resize.hovered() || resize.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
         if resize.dragged() {
             state.resize_track(input, resize.drag_delta().y);
+        }
+        if resize
+            .on_hover_text("Drag to resize. Double-click to shrink to just the name.")
+            .double_clicked()
+        {
+            state.toggle_name_only(input);
         }
         edits.extend(changes.edits);
         arm.extend(changes.arm_audio.map(|on| (input, ArmKind::Audio, on)));
@@ -2623,7 +2845,7 @@ fn draw_headers(
             state.selected.clear();
             state.automation.deselect();
         }
-        if let Some(controls) = &controls {
+        if let Some(controls) = controls.as_ref().filter(|_| lane.height() >= header::CONTROLS_MIN) {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
                 vec2(26.0, 18.0),
@@ -2636,6 +2858,17 @@ fn draw_headers(
                 controls.controls,
             ));
         }
+    }
+    for (k, strip) in strips.iter().enumerate() {
+        let top = content.top() - scroll_y + rows.strip_top(k);
+        let row = Rect::from_min_size(
+            Pos2::new(column.left(), top),
+            vec2(colors::HEADER_WIDTH, automation::STRIP),
+        );
+        if row.bottom() < column.top() || row.top() > column.bottom() {
+            continue;
+        }
+        edits.extend(folder_strip(ui, session.project(), *strip, row, state));
     }
     let project = session.project();
     let mut lane_rows: Vec<(LaneId, f32)> = Vec::new();
@@ -2753,6 +2986,117 @@ fn draw_headers(
     }
     ui.set_clip_rect(clip);
     (edits, arm)
+}
+
+/// Draws a folder's header strip: its fold arrow, colour and name.
+fn folder_strip(
+    ui: &mut egui::Ui,
+    project: &Project,
+    strip: Strip,
+    row: Rect,
+    state: &mut TimelineState,
+) -> Vec<Edit> {
+    let organisation = project.organisation();
+    let Some(folder) = organisation.folders.get(&strip.folder) else {
+        return Vec::new();
+    };
+    let id = strip.folder;
+    let mut edits = Vec::new();
+    let apply = |organisation: noodle_core::Organisation| {
+        Edit::Apply(Command::SetOrganisation(organisation))
+    };
+    let colour = folder
+        .colour
+        .map_or(colors::TEXT_WEAK, |slot| colors::track_colour(usize::from(slot)));
+    let painter = ui.painter_at(row);
+    painter.rect_filled(row, 0.0, colors::AUTOMATION_HEADER);
+    painter.rect_filled(
+        Rect::from_min_size(row.min, vec2(4.0, row.height())),
+        0.0,
+        colour,
+    );
+    painter.hline(
+        row.x_range(),
+        row.bottom() - 0.5,
+        Stroke::new(1.0, colors::LANE_EVEN),
+    );
+    let background = ui.interact(row, ui.id().with(("folder", id)), Sense::click());
+    background.context_menu(|ui| {
+        if ui.button("Rename").clicked() {
+            ui.close();
+            state.renaming_folder = Some((id, folder.name.clone()));
+        }
+        ui.menu_button("Colour", |ui| {
+            if let Some(slot) = header::colour_menu(ui, folder.colour) {
+                edits.push(apply(organisation.clone().with_folder_colour(id, slot)));
+            }
+        });
+        let all_folded = organisation.folders.values().all(|f| f.folded);
+        let label = if all_folded {
+            "Unfold all folders"
+        } else {
+            "Fold all folders"
+        };
+        if ui.button(label).clicked() {
+            ui.close();
+            edits.push(apply(organisation.clone().with_all_folded(!all_folded)));
+        }
+        if ui.button("Ungroup").clicked() {
+            ui.close();
+            edits.push(apply(organisation.clone().without_folder(id)));
+        }
+    });
+    let arrow = if folder.folded { "▸" } else { "▾" };
+    let arrow_rect = Rect::from_min_size(row.min + vec2(6.0, 0.0), vec2(18.0, row.height()));
+    let toggle = ui.interact(arrow_rect, ui.id().with(("fold", id)), Sense::click());
+    painter.text(
+        arrow_rect.center(),
+        Align2::CENTER_CENTER,
+        arrow,
+        FontId::proportional(13.0),
+        colors::TEXT,
+    );
+    if toggle
+        .on_hover_text(if folder.folded { "Unfold" } else { "Fold" })
+        .clicked()
+        || background.clicked() && !matches!(&state.renaming_folder, Some((f, _)) if *f == id)
+    {
+        edits.push(apply(organisation.clone().with_folded(id, !folder.folded)));
+    }
+    let name_rect = Rect::from_min_max(
+        Pos2::new(row.left() + 26.0, row.top()),
+        Pos2::new(row.right() - 4.0, row.bottom()),
+    );
+    if let Some((f, text)) = &mut state.renaming_folder
+        && *f == id
+    {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(name_rect));
+        let field = child.add(
+            egui::TextEdit::singleline(text)
+                .desired_width(name_rect.width())
+                .id(child.id().with(("rename folder", id))),
+        );
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        if field.lost_focus() {
+            let cancelled = child.input(|i| i.key_pressed(Key::Escape));
+            let name = text.trim().to_owned();
+            state.renaming_folder = None;
+            if !cancelled && !name.is_empty() && name != folder.name {
+                edits.push(apply(organisation.clone().with_folder_name(id, &name)));
+            }
+        }
+    } else {
+        painter.text(
+            name_rect.left_center(),
+            Align2::LEFT_CENTER,
+            &folder.name,
+            FontId::proportional(12.0),
+            colors::TEXT,
+        );
+    }
+    edits
 }
 
 /// Draws the ruler, and returns the time signature markers it drew.

@@ -24,6 +24,8 @@ use crate::theme::timeline as colors;
 
 /// A lane row's height.
 pub const HEIGHT: f32 = 44.0;
+/// The height of a folder's header strip in the track list.
+pub const STRIP: f32 = 22.0;
 /// Space above and below the curve's extremes.
 const PAD: f32 = 8.0;
 /// How near a press has to be to grab a point.
@@ -197,12 +199,24 @@ pub struct Rows {
     free: Vec<LaneId>,
     free_top: f32,
     total: f32,
+    /// Where each folder strip begins, in the order they were given.
+    strip_tops: Vec<f32>,
 }
 
 impl Rows {
     /// `heights` is each track's own lane height, parallel to `tracks`, and
     /// `takes` how many take lanes each shows under it.
-    pub fn new(project: &Project, tracks: &[NodeId], heights: &[f32], takes: &[usize]) -> Self {
+    ///
+    /// `strips` is how many folder header strips come right before each
+    /// track, and one more entry for those after the last (see
+    /// [`STRIP`]).
+    pub fn new(
+        project: &Project,
+        tracks: &[NodeId],
+        heights: &[f32],
+        takes: &[usize],
+        strips: &[usize],
+    ) -> Self {
         let takes: Vec<f32> = takes
             .iter()
             .map(|&n| n as f32 * super::takes::LANE)
@@ -210,12 +224,21 @@ impl Rows {
         let mut tops = Vec::with_capacity(tracks.len());
         let mut lanes = Vec::with_capacity(tracks.len());
         let mut at = 0.0;
+        let mut strip_tops = Vec::new();
+        let mut strip = |at: &mut f32, count: usize| {
+            for _ in 0..count {
+                strip_tops.push(*at);
+                *at += STRIP;
+            }
+        };
         for (index, (&track, &height)) in tracks.iter().zip(heights).enumerate() {
             let own = lanes_for(project, track);
+            strip(&mut at, strips.get(index).copied().unwrap_or(0));
             tops.push(at);
             at += height + takes[index] + own.len() as f32 * HEIGHT;
             lanes.push(own);
         }
+        strip(&mut at, strips.get(tracks.len()).copied().unwrap_or(0));
         let claimed: std::collections::BTreeSet<LaneId> = lanes.iter().flatten().copied().collect();
         let free: Vec<LaneId> = project
             .lanes()
@@ -234,7 +257,13 @@ impl Rows {
             free,
             free_top,
             total: at,
+            strip_tops,
         }
+    }
+
+    /// Where the `k`th folder strip begins.
+    pub fn strip_top(&self, k: usize) -> f32 {
+        self.strip_tops[k]
     }
 
     /// The free automation lanes, top to bottom.
