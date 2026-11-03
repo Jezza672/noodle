@@ -420,6 +420,163 @@ fn sample_picker(
     }
 }
 
+/// The Sample Set's recordings: one row each with the key it was played at,
+/// its velocity layer and its take, and a warning where the name or the
+/// sound doesn't agree with the key. Files and folders are added here, and
+/// the folder can be rescanned (which shows what would change first).
+fn sample_set_table(
+    ui: &mut Ui,
+    session: &Session,
+    id: NodeId,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_nodes::{folder_of, rows_of, rows_to_config};
+    let rows = rows_of(&node.config);
+    let folder = folder_of(&node.config);
+    ui.label("Recordings");
+    ui.label(
+        RichText::new(if folder.is_empty() {
+            format!("{} recordings", rows.len())
+        } else {
+            format!("{} recordings from {folder}", rows.len())
+        })
+        .weak(),
+    );
+    let error_id = egui::Id::new((id, "set_error"));
+    let mut result = None;
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Load folder…").clicked()
+            && let Some(path) = rfd::FileDialog::new().pick_folder()
+        {
+            result = Some(session.sample_set_load_folder(id, &path));
+        }
+        if ui.button("Add files…").clicked()
+            && let Some(paths) = rfd::FileDialog::new()
+                .add_filter(
+                    "Audio",
+                    &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
+                )
+                .pick_files()
+        {
+            result = Some(session.sample_set_add(id, &paths));
+        }
+        if !folder.is_empty() && ui.button("Rescan folder").clicked() {
+            result = Some(match session.sample_set_rescan(id) {
+                Ok(true) => Ok(Vec::new()),
+                Ok(false) => Err("Nothing has changed in the folder.".to_owned()),
+                Err(e) => Err(e),
+            });
+        }
+    });
+    match result {
+        Some(Ok(more)) => {
+            ui.data_mut(|d| d.remove_temp::<String>(error_id));
+            edits.extend(more);
+        }
+        Some(Err(error)) => {
+            ui.data_mut(|d| d.insert_temp(error_id, error));
+        }
+        None => {}
+    }
+    if let Some(error) = ui.data(|d| d.get_temp::<String>(error_id)) {
+        ui.colored_label(crate::theme::MUTE, error);
+    }
+    if rows.is_empty() {
+        ui.label(
+            RichText::new("Name files after their note, e.g. C#4, Db4 or 61, with ppp to fff, v1 to v16 or rr2 for layers and takes.")
+                .weak()
+                .small(),
+        );
+        return;
+    }
+    let mut changed = None;
+    egui::Grid::new((id, "set_rows"))
+        .striped(true)
+        .show(ui, |ui| {
+            for h in ["File", "Key", "Layer", "Take", ""] {
+                ui.label(RichText::new(h).strong().small());
+            }
+            ui.end_row();
+            for (i, row) in rows.iter().enumerate() {
+                ui.label(&row.name);
+                let mut edited = row.clone();
+                let mut root = row.entry.root.map_or(-1, i32::from);
+                let key = ui.add(
+                    egui::DragValue::new(&mut root)
+                        .range(-1..=127)
+                        .custom_formatter(|n, _| {
+                            if n < 0.0 {
+                                "?".to_owned()
+                            } else {
+                                crate::widgets::format::note_name(n as i32)
+                            }
+                        }),
+                );
+                let mut layer = i32::from(row.entry.layer);
+                let l = ui.add(egui::DragValue::new(&mut layer).range(1..=16));
+                let mut rr = i32::from(row.entry.rr);
+                let t = ui.add(egui::DragValue::new(&mut rr).range(1..=64));
+                edited.entry.root = u8::try_from(root).ok();
+                edited.entry.layer = layer as u8;
+                edited.entry.rr = rr as u8;
+                let touched = key.changed() || l.changed() || t.changed();
+                let done = key.drag_stopped()
+                    || l.drag_stopped()
+                    || t.drag_stopped()
+                    || key.lost_focus()
+                    || l.lost_focus()
+                    || t.lost_focus();
+                if touched || done {
+                    changed = Some((i, edited, touched, done));
+                }
+                // The name and the sound should agree about the key.
+                let warning = match row.entry.root {
+                    None => Some("The note couldn't be read from the name".to_owned()),
+                    Some(root) => session
+                        .samples()
+                        .pitch(&row.entry.reference)
+                        .filter(|heard| (heard - f32::from(root)).abs() > 1.0)
+                        .map(|heard| {
+                            format!(
+                                "Sounds like {}, not {}",
+                                crate::widgets::format::note_name(heard.round() as i32),
+                                crate::widgets::format::note_name(i32::from(root))
+                            )
+                        }),
+                };
+                if let Some(warning) = warning {
+                    ui.colored_label(crate::theme::MUTE, "⚠")
+                        .on_hover_text(warning);
+                }
+                ui.end_row();
+            }
+        });
+    if let Some((i, edited, touched, done)) = changed {
+        let mut rows = rows;
+        rows[i] = edited;
+        let (sample, names) = rows_to_config(&rows);
+        if touched {
+            edits.push(Edit::Drag(Command::Batch(
+                [
+                    (noodle_nodes::SAMPLE_KEY, sample),
+                    (noodle_nodes::SET_NAMES_KEY, names),
+                ]
+                .into_iter()
+                .map(|(key, text)| Command::SetConfig {
+                    node: id,
+                    key: key.to_owned(),
+                    value: Some(noodle_core::Value::Text(text)),
+                })
+                .collect(),
+            )));
+        }
+        if done {
+            edits.push(Edit::EndDrag);
+        }
+    }
+}
+
 fn config(
     ui: &mut Ui,
     session: &Session,
@@ -521,6 +678,28 @@ fn config(
         if node_type.info().id == noodle_nodes::SCRIPT_ID && info.key == noodle_nodes::SCRIPT_KEY {
             script_editor(ui, id, info, node, edits);
             continue;
+        }
+        // Set by the first wire, not typed in.
+        if node_type.info().id == noodle_nodes::RANDOM_SELECT_ID && info.key == "kind" {
+            let wired = crate::editor::random_select_is_wired(session.project().graph(), id);
+            let carries = match (wired, node.config.get("kind")) {
+                (false, _) => "nothing yet: it takes the type of the first wire",
+                (true, Some(noodle_core::Value::Int(1))) => "notes",
+                (true, _) => "audio or control signals",
+            };
+            ui.label(RichText::new(format!("Chooses between: {carries}")).weak());
+            continue;
+        }
+        if node_type.info().id == noodle_nodes::SAMPLE_SET_ID {
+            match info.key {
+                noodle_nodes::SAMPLE_KEY => {
+                    sample_set_table(ui, session, id, node, edits);
+                    continue;
+                }
+                // Shown in the table above.
+                noodle_nodes::SET_NAMES_KEY | noodle_nodes::SET_FOLDER_KEY => continue,
+                _ => {}
+            }
         }
         if matches!(
             node_type.info().id,

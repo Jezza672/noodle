@@ -133,3 +133,6 @@ reference to a sample instead of signal:
   `Sample` (`noodle.instrument.sample`) holds a `SampleRef` as its `sample`
   option and outputs it; the Sampler's `sample` is its input, and a window
   plays as if it were the whole sample.
+  A sample wire can also carry a **set**: several references, each
+  `hash[:start:end]@root[/layer][#rr]`, joined by `;` (`SetEntry`). A `Sample
+  Set` node outputs one; a Sampler given one plays a multisample.

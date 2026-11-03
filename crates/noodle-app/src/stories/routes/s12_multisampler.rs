@@ -1,25 +1,24 @@
 //! S12: build a multisampled instrument from a folder of note-named
 //! recordings.
 //!
-//! Done by hand, which is the point of routing it: nothing turns the folder
-//! into an instrument (#331). The recordings are dropped on the timeline,
-//! then for each one: a Sampler is added and the recording's clip is dragged
-//! onto it (which sets its root from the recording's pitch), a Note Split
-//! output gets the key range nearest to that note, and the Sampler is wired
-//! in and out. Keytrack, on by default, pitch-shifts the other keys. The cost
-//! grows with every recording, which the scorecard's per-item number shows.
+//! The folder is dropped on the node editor, which makes a Sample Set that
+//! reads each file's note from its name. One Sampler plays the set, so any
+//! key plays the nearest recording, repitched, and the cost does not grow
+//! with the number of recordings. The late changes are a Rescan of the same
+//! folder, which shows what changed before it applies it, and a parameter on
+//! the Sampler.
 //!
 //! The route is sized: it uses the first `size` recordings of the folder.
 
 use std::path::{Path, PathBuf};
 
-use egui::{Key, Modifiers, Pos2, Vec2};
-use noodle_core::{ClipId, Command, Endpoint, Node, NodeId, Project, spare};
+use egui::{Key, Modifiers, Pos2};
+use noodle_core::{Command, Endpoint, Node, NodeId, Project};
 use noodle_io::write_wav;
-use noodle_nodes::{NOTE_SPLIT_ID, SAMPLER_ID, TRACK_INPUT_ID};
+use noodle_nodes::{SAMPLE_SET_ID, SAMPLER_ID, TRACK_INPUT_ID};
 
 use super::super::handle::{Handle, Probe};
-use super::super::{Route, Tag};
+use super::super::{LateChange, Route, Tag};
 use super::{add_node, finished, in_view, reveal, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
@@ -34,6 +33,21 @@ fn note_name(note: u8) -> String {
     format!("{}{}", NAMES[note as usize % 12], note as i32 / 12 - 1)
 }
 
+fn hz(note: u8) -> f32 {
+    440.0 * 2f32.powf((f32::from(note) - 69.0) / 12.0)
+}
+
+/// A half-second tone that dies away, written to `path`.
+fn tone(path: &Path, hz: f32) {
+    let samples: Vec<f32> = (0..24_000)
+        .map(|i| {
+            let t = i as f32 / 48_000.0;
+            0.5 * (-t * 3.0).exp() * (std::f32::consts::TAU * hz * t).sin()
+        })
+        .collect();
+    write_wav(path, &samples, 1, 48_000).expect("the recording is written");
+}
+
 fn recording(dir: &Path, note: u8) -> PathBuf {
     dir.join("recordings")
         .join(format!("{}.wav", note_name(note)))
@@ -44,14 +58,7 @@ fn recording(dir: &Path, note: u8) -> PathBuf {
 fn folder(dir: &Path) -> App {
     std::fs::create_dir_all(dir.join("recordings")).expect("the folder is made");
     for note in NOTES {
-        let hz = 440.0 * 2f32.powf((f32::from(note) - 69.0) / 12.0);
-        let samples: Vec<f32> = (0..24_000)
-            .map(|i| {
-                let t = i as f32 / 48_000.0;
-                0.5 * (-t * 3.0).exp() * (std::f32::consts::TAU * hz * t).sin()
-            })
-            .collect();
-        write_wav(&recording(dir, note), &samples, 1, 48_000).expect("the recording is written");
+        tone(&recording(dir, note), hz(note));
     }
     let mut session = virtual_session(dir);
     for (type_id, x) in [(TRACK_INPUT_ID, 0.0), (noodle_engine::OUTPUT_ID, 900.0)] {
@@ -68,12 +75,37 @@ pub fn route() -> Route {
     Route {
         story: "S12",
         tag: Tag::Default,
-        name: "a Note Split and a Sampler per recording, by hand",
+        name: "drop the folder on a Sample Set and play it with a Sampler",
         fixture: folder,
         size: Some(4),
         steps,
         done,
-        late: &[],
+        late: &[
+            LateChange {
+                name: "replace one recording",
+                steps: replace_one,
+                done: one_replaced,
+                keep: &[],
+            },
+            LateChange {
+                name: "add three notes to the folder",
+                steps: add_three,
+                done: three_added,
+                keep: &[],
+            },
+            LateChange {
+                name: "change the naming scheme to MIDI numbers",
+                steps: rename_to_numbers,
+                done: renamed,
+                keep: &[],
+            },
+            LateChange {
+                name: "change the bend range",
+                steps: wider_bend,
+                done: bend_is_wide,
+                keep: &[],
+            },
+        ],
     }
 }
 
@@ -83,31 +115,6 @@ fn node_of(p: &Project, type_id: &str) -> NodeId {
         .find(|(_, n)| n.type_id == type_id && n.parent.is_none())
         .map(|(id, _)| id)
         .unwrap_or_else(|| panic!("no {type_id} node"))
-}
-
-/// The MIDI track the fixture made (the drop adds an audio track after it).
-fn midi_track(p: &Project) -> NodeId {
-    node_of(p, TRACK_INPUT_ID)
-}
-
-/// The range of keys each recording plays: from halfway to the one below to
-/// halfway to the one above, so every key plays the nearest recording.
-fn ranges(notes: &[u8]) -> Vec<(u8, u8)> {
-    (0..notes.len())
-        .map(|i| {
-            let low = if i == 0 {
-                0
-            } else {
-                (notes[i - 1] + notes[i]) / 2 + 1
-            };
-            let high = if i + 1 == notes.len() {
-                127
-            } else {
-                (notes[i] + notes[i + 1]) / 2
-            };
-            (low, high)
-        })
-        .collect()
 }
 
 fn wire(h: &mut Handle, from: (NodeId, &str), to: (NodeId, &str)) {
@@ -127,143 +134,232 @@ fn set(h: &mut Handle, node: NodeId, key: &str, value: &str) {
     h.press(at, Modifiers::NONE, Key::Enter);
 }
 
-/// The audio clips, in timeline order.
-fn clips(p: &Project) -> Vec<ClipId> {
-    let mut clips: Vec<_> = p
-        .clips()
-        .filter(|(_, c)| c.as_audio().is_some())
-        .map(|(id, c)| (c.start, id))
-        .collect();
-    clips.sort();
-    clips.into_iter().map(|(_, id)| id).collect()
-}
-
-/// Pans the canvas a node's width to the left, so the next node lands on
-/// empty canvas, as a user scrolls to make room.
-fn make_room(h: &mut Handle) {
-    let canvas = h.probe().canvas();
-    h.wheel(
-        canvas.center(),
-        egui::MouseWheelUnit::Point,
-        Vec2::new(-260.0, 0.0),
-    );
+fn folder_of(h: &mut Handle) -> PathBuf {
+    h.probe().project_dir().join("recordings")
 }
 
 fn steps(h: &mut Handle, size: usize) {
-    let notes = &NOTES[..size];
-    let files: Vec<PathBuf> = {
-        // The fixture's folder is next to the project; the clips name it.
-        let dir = h.probe().project_dir();
-        notes.iter().map(|&n| recording(&dir, n)).collect()
-    };
-    h.step("drop the recordings on the timeline");
-    h.drop_files(Pos2::new(400.0, 230.0), &files);
+    let project = h.probe().project_dir();
+    let dir = folder_of(h);
+    // The folder holds `size` recordings: the others are set aside, not part
+    // of the route.
+    let spare = project.join("unused");
+    std::fs::create_dir_all(&spare).expect("a place to set them aside");
+    for &note in &NOTES[size..] {
+        let from = recording(&project, note);
+        std::fs::rename(&from, spare.join(from.file_name().expect("a file")))
+            .expect("the recording is set aside");
+    }
+    h.step("drop the folder on the canvas");
+    let spot = h.probe().canvas().center() + egui::vec2(0.0, 160.0);
+    h.drop_files(spot, &[dir]);
+    let set = node_of(h.probe().project(), SAMPLE_SET_ID);
     let (track, out) = {
         let probe = h.probe();
         let p = probe.project();
-        (midi_track(p), node_of(p, noodle_engine::OUTPUT_ID))
+        (
+            node_of(p, TRACK_INPUT_ID),
+            node_of(p, noodle_engine::OUTPUT_ID),
+        )
     };
-    let spot = Pos2::new(700.0, 340.0);
-    h.step("add a Note Split with an output per recording");
-    let split = add_node(h, Pos2::new(300.0, 340.0), "note split");
-    let outputs = h.probe().find_value("2");
-    h.click(outputs, Modifiers::NONE);
-    h.press(outputs, Modifiers::COMMAND, Key::A);
-    h.type_text(outputs, &size.to_string());
-    h.press(outputs, Modifiers::NONE, Key::Enter);
-    wire(h, (track, "midi"), (split, "in"));
-    h.step("add a Mix for the Samplers");
-    let mix = add_node(h, spot, "util.mix");
-    wire(h, (mix, "out"), (out, "in"));
-    let clip_ids = clips(h.probe().project());
-    for (i, (&note, (low, high))) in notes.iter().zip(ranges(notes)).enumerate() {
-        let n = i + 1;
-        h.step(&format!("make the Sampler for {}", note_name(note)));
-        make_room(h);
-        let sampler = add_node(h, spot, "sampler");
-        let rect = h.clip_rect(clip_ids[i]);
-        let onto = h.port_row(sampler, false, "tune");
-        h.drag_between(Modifiers::NONE, rect.center(), onto);
-        h.step(&format!("give it the keys nearest {}", note_name(note)));
-        set(h, split, &format!("low{n}"), &low.to_string());
-        set(h, split, &format!("high{n}"), &high.to_string());
-        h.step("wire it in and out");
-        wire(h, (split, &format!("out{n}")), (sampler, "in"));
-        wire(h, (sampler, "out"), (mix, &spare::mixer_input_key(n)));
+    h.step("add a Sampler");
+    let sampler = add_node(h, Pos2::new(700.0, 340.0), "sampler");
+    h.step("play the set with it");
+    wire(h, (set, "sample"), (sampler, "sample"));
+    wire(h, (track, "midi"), (sampler, "in"));
+    wire(h, (sampler, "out"), (out, "in"));
+}
+
+/// The Sample Set's recordings, as `(file name, root, hash)`.
+fn rows(p: &Project) -> Vec<(String, Option<u8>, String)> {
+    let node = node_of(p, SAMPLE_SET_ID);
+    noodle_nodes::rows_of(&p.graph().node(node).expect("the set").config)
+        .into_iter()
+        .map(|r| (r.name, r.entry.root, r.entry.reference.hash))
+        .collect()
+}
+
+/// The hash the store gives a file's audio.
+fn hash_of(path: &Path) -> String {
+    noodle_nodes::SampleStore::new()
+        .import(path)
+        .expect("the recording decodes")
+}
+
+/// Every key reaches the recording whose root is nearest, from a Sampler fed
+/// by the MIDI track and the set, that plays to the output.
+fn plays_nearest(p: &Project, roots: &[u8]) -> Result<(), String> {
+    let graph = p.graph();
+    let set = node_of(p, SAMPLE_SET_ID);
+    let sampler = node_of(p, SAMPLER_ID);
+    if graph
+        .source(&Endpoint::new(sampler, "sample"))
+        .is_none_or(|s| s.node != set)
+    {
+        return Err("the Sampler does not play the Sample Set".into());
     }
+    if graph
+        .source(&Endpoint::new(sampler, "in"))
+        .is_none_or(|s| s.node != node_of(p, TRACK_INPUT_ID))
+    {
+        return Err("the MIDI track does not play the Sampler".into());
+    }
+    if graph
+        .source(&Endpoint::new(node_of(p, noodle_engine::OUTPUT_ID), "in"))
+        .is_none_or(|s| s.node != sampler)
+    {
+        return Err("the Sampler does not reach the output".into());
+    }
+    let mut sorted = roots.to_vec();
+    sorted.sort_unstable();
+    let have: Vec<u8> = {
+        let mut have: Vec<u8> = rows(p).iter().filter_map(|r| r.1).collect();
+        have.sort_unstable();
+        have
+    };
+    if have != sorted {
+        return Err(format!("the set has the keys {have:?}, wanted {sorted:?}"));
+    }
+    let entries: Vec<noodle_nodes::SetEntry> =
+        noodle_nodes::rows_of(&graph.node(set).expect("the set").config)
+            .into_iter()
+            .map(|r| r.entry)
+            .collect();
+    let tables = noodle_nodes::SetTables::build(&entries);
+    for key in 0..=127u8 {
+        let zone = tables
+            .layer(key, 1.0)
+            .ok_or(format!("key {key} plays nothing"))?;
+        let root = entries[zone.entries[0]].root.expect("placed");
+        let nearest = sorted
+            .iter()
+            .min_by_key(|&&r| ((i32::from(r) - i32::from(key)).abs(), r))
+            .copied()
+            .expect("some roots");
+        if root != nearest {
+            return Err(format!(
+                "key {key} plays the recording at {root}, wanted {nearest}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn done(p: &mut Probe, size: usize) -> Result<(), String> {
-    let project = p.project();
-    let notes = &NOTES[..size];
-    let graph = project.graph();
-    let split = graph
-        .nodes()
-        .find(|(_, n)| n.type_id == NOTE_SPLIT_ID)
-        .map(|(id, _)| id)
-        .ok_or("there is no Note Split")?;
-    let fed = graph
-        .source(&Endpoint::new(split, "in"))
-        .is_some_and(|s| s.node == midi_track(project));
-    if !fed {
-        return Err("the MIDI track does not play the Note Split".into());
-    }
-    let node = graph.node(split).ok_or("the Note Split is gone")?;
-    let outputs = match node.config.get("outputs") {
-        Some(noodle_core::Value::Int(n)) => *n as usize,
-        _ => 2,
+    plays_nearest(p.project(), &NOTES[..size])
+}
+
+/// Selects the Sample Set and rescans its folder, applying what the dialog
+/// shows.
+fn rescan(h: &mut Handle) {
+    h.step("select the Sample Set");
+    let set = node_of(h.probe().project(), SAMPLE_SET_ID);
+    // A point on the node's title bar, above its one port.
+    let title = |h: &mut Handle| {
+        let row = h.probe().port_rect(set, true, "sample");
+        Pos2::new(row.left() + 4.0, row.center().y)
     };
-    let param = |n: &Node, key: &str, default: f32| n.params.get(key).copied().unwrap_or(default);
-    let out = node_of(project, noodle_engine::OUTPUT_ID);
-    let mix = graph
-        .source(&Endpoint::new(out, "in"))
-        .map(|s| s.node)
-        .filter(|&m| graph.node(m).is_some_and(|n| n.type_id == spare::MIXER))
-        .ok_or("no Mix feeds the output")?;
-    // Every key reaches exactly one Sampler, and it is the nearest
-    // recording's, rooted at its note.
-    for key in 0..=127u8 {
-        let hits: Vec<usize> = (1..=outputs)
-            .filter(|n| {
-                param(node, &format!("low{n}"), 0.0) <= f32::from(key)
-                    && f32::from(key) <= param(node, &format!("high{n}"), 127.0)
-            })
-            .collect();
-        let [n] = hits[..] else {
-            return Err(format!("key {key} goes to outputs {hits:?}"));
-        };
-        let nearest = notes
-            .iter()
-            .min_by_key(|&&note| (i32::from(note) - i32::from(key)).abs())
-            .copied()
-            .unwrap_or(0);
-        let sampler = graph
-            .connections()
-            .find(|c| c.from == Endpoint::new(split, format!("out{n}")))
-            .map(|c| c.to.node)
-            .filter(|&s| graph.node(s).is_some_and(|n| n.type_id == SAMPLER_ID))
-            .ok_or(format!("Note Split output {n} plays no Sampler"))?;
-        let sampler_node = graph.node(sampler).ok_or("the Sampler is gone")?;
-        if !sampler_node.config.get(noodle_nodes::SAMPLE_KEY).is_some() {
-            return Err(format!("the Sampler for {nearest} has no recording"));
+    let first = title(h);
+    reveal(h, &[first]);
+    let at = title(h);
+    h.click(at, Modifiers::NONE);
+    h.step("rescan the folder");
+    let rescan = h.find("Rescan folder");
+    h.click(rescan, Modifiers::NONE);
+    // Enter takes the diff.
+    let at = h.probe().canvas().center();
+    h.press(at, Modifiers::NONE, Key::Enter);
+}
+
+fn replace_one(h: &mut Handle, size: usize) {
+    let note = NOTES[size.min(NOTES.len()) / 2];
+    let path = recording(&h.probe().project_dir(), note);
+    h.step("replace a recording in the folder");
+    tone(&path, hz(note) * 1.02);
+    rescan(h);
+}
+
+fn one_replaced(p: &mut Probe, size: usize) -> Result<(), String> {
+    let note = NOTES[size.min(NOTES.len()) / 2];
+    let dir = p.project_dir();
+    let want = hash_of(&recording(&dir, note));
+    let name = format!("{}.wav", note_name(note));
+    let row = rows(p.project())
+        .into_iter()
+        .find(|r| r.0 == name)
+        .ok_or("the recording is gone from the set")?;
+    if row.2 != want {
+        return Err("the set still has the old audio".into());
+    }
+    plays_nearest(p.project(), &NOTES[..size])
+}
+
+/// Three notes the folder did not have.
+const EXTRA: [u8; 3] = [50, 55, 60];
+
+fn add_three(h: &mut Handle, _size: usize) {
+    let dir = h.probe().project_dir();
+    h.step("add three recordings to the folder");
+    for note in EXTRA {
+        tone(&recording(&dir, note), hz(note));
+    }
+    rescan(h);
+}
+
+fn three_added(p: &mut Probe, size: usize) -> Result<(), String> {
+    let mut roots = NOTES[..size].to_vec();
+    roots.extend(EXTRA);
+    plays_nearest(p.project(), &roots)
+}
+
+fn rename_to_numbers(h: &mut Handle, _size: usize) {
+    let dir = folder_of(h);
+    h.step("rename the recordings to MIDI numbers");
+    for entry in std::fs::read_dir(&dir).expect("the folder") {
+        let path = entry.expect("an entry").path();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let info = noodle_nodes::parse_name(stem, 4);
+        if let Some(note) = info.note {
+            std::fs::rename(&path, dir.join(format!("{note}.wav"))).expect("renamed");
         }
-        let root = param(sampler_node, "root", f32::NAN);
-        if (root - f32::from(nearest)).abs() > 0.5 {
-            return Err(format!(
-                "key {key} plays a Sampler rooted at {root}, wanted {nearest}"
-            ));
-        }
-        if param(sampler_node, "keytrack", 1.0) < 0.5 {
-            return Err(format!(
-                "the Sampler for {nearest} does not follow the keys"
-            ));
-        }
-        let mixed = graph
-            .connections()
-            .any(|c| c.from.node == sampler && c.to.node == mix);
-        if !mixed {
-            return Err(format!("the Sampler for {nearest} is not mixed"));
-        }
+    }
+    rescan(h);
+}
+
+fn renamed(p: &mut Probe, size: usize) -> Result<(), String> {
+    let mut roots = NOTES[..size].to_vec();
+    roots.extend(EXTRA);
+    let names = rows(p.project());
+    if names
+        .iter()
+        .any(|r| r.0.contains('#') || !r.0.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    {
+        return Err(format!(
+            "the set still has the old names: {:?}",
+            names.iter().map(|r| &r.0).collect::<Vec<_>>()
+        ));
+    }
+    plays_nearest(p.project(), &roots)
+}
+
+fn wider_bend(h: &mut Handle, _size: usize) {
+    let sampler = node_of(h.probe().project(), SAMPLER_ID);
+    h.step("change the Sampler's bend range");
+    set(h, sampler, "bend_range", "12");
+}
+
+fn bend_is_wide(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let project = p.project();
+    let sampler = project
+        .graph()
+        .node(node_of(project, SAMPLER_ID))
+        .ok_or("the Sampler is gone")?;
+    let bend = sampler.params.get("bend_range").copied().unwrap_or(2.0);
+    if (bend - 12.0).abs() > 0.01 {
+        return Err(format!("the bend range is {bend}, wanted 12"));
     }
     Ok(())
 }
