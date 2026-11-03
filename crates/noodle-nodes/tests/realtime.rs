@@ -1543,12 +1543,27 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
             .with_param("rate", 5.0)
             .with_param("pattern", 5.0),
     );
+    // Swing and Humanise between the arpeggiator and the split, and the
+    // split's outputs in one choke group so each cuts the other.
+    let swing = s.add(
+        Node::new("noodle.event.swing")
+            .with_param("amount", 0.4)
+            .with_param("grid", 2.0),
+    );
+    let humanise = s.add(
+        Node::new("noodle.event.humanise")
+            .with_param("timing", 10.0)
+            .with_param("velocity", 0.3),
+    );
     let split = s.add(
-        Node::new("noodle.event.note_split").with_config(
-            Config::new()
-                .with("outputs", Value::Int(2))
-                .with("rest", Value::Int(1)),
-        ),
+        Node::new("noodle.event.note_split")
+            .with_config(
+                Config::new()
+                    .with("outputs", Value::Int(2))
+                    .with("rest", Value::Int(1)),
+            )
+            .with_param("choke1", 1.0)
+            .with_param("choke2", 1.0),
     );
     let (low, high) = (sampler(&mut s), sampler(&mut s));
     let mix = s.add(Node::new("noodle.util.mix"));
@@ -1563,7 +1578,9 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(button, "out", key, "gate");
     s.wire(key, "out", arp, "in");
-    s.wire(arp, "out", split, "in");
+    s.wire(arp, "out", swing, "in");
+    s.wire(swing, "out", humanise, "in");
+    s.wire(humanise, "out", split, "in");
     s.wire(split, "out1", low, "in");
     s.wire(split, "out2", high, "in");
     s.wire(low, "out", mix, "in1");
