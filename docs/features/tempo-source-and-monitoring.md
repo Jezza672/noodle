@@ -20,4 +20,4 @@ The track input has a `monitor` parameter (Off, Auto, In; Auto by default) and a
 
 The audio thread writes each block of device input into the transport's `InputTap` (atomics, no lock) and the track input reads it; `ClipFeeds::set_input_tap` hands it the engine's tap when a stream opens. Offline renders have no tap, so they play clips only. A track that is monitoring is live (`ClipFeeds::is_live`), so the cache leaves it and what is downstream of it alone.
 
-Not done: the cue mix (a send to a second Mix on the headphone channels) waits on sends in the Mix node (#332), and the recorder still writes the device input as one file for every armed track rather than each track's chosen channels.
+Not done: the cue mix (a send to a second Mix on the headphone channels) is not routed, and the recorder still writes the device input as one file for every armed track rather than each track's chosen channels.
