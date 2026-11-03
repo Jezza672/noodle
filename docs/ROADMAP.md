@@ -116,6 +116,23 @@ deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
+- **Deterministic selector (N-way, not a send node).** A general primitive: one
+  output routed from one of at least two inputs by a `which` parameter, so an
+  input is chosen on purpose rather than by moving a wire. The input count is
+  config, because it changes the ports; `which` is a parameter, so it can be
+  automated and modulated. Signals (audio and control) come first; notes,
+  samples and spectra can follow as they did for Random Select. An input with
+  nothing wired plays silence rather than refusing the wire, so a half-patched
+  selector still passes what it has; a signal switch is instant by default and
+  may need Random Select's zero-crossing option to avoid a click when the two
+  inputs are not phase-aligned. It is separate from Random Select
+  (`noodle.util.randselect`, #211), which muxes N inputs but picks randomly on
+  a trigger and so cannot choose an input deterministically, and from the S19
+  route (#332), which fixes how a send is found and built without it. With it,
+  a send stays one wire: a Gain's input is the pre-fader tap and its output the
+  post-fader tap, so pre/post switching is a `which` change rather than moving
+  the wire. S19 does not depend on this. Deferred until a project needs a
+  deterministic switch. Not started.
 - **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
   can be re-quantised afterwards (quantise on record and several MIDI
   ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;
