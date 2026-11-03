@@ -19,6 +19,9 @@ pub struct Search {
     /// Whether the editor is inside a group, which is where group inputs and
     /// outputs make sense.
     in_group: bool,
+    /// The node being replaced, if the search is for a replacement rather
+    /// than a new node.
+    pub replacing: Option<noodle_core::NodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,6 +133,7 @@ impl Search {
             highlighted: 0,
             focused: false,
             in_group,
+            replacing: None,
         }
     }
 
@@ -141,7 +145,11 @@ impl Search {
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_width(220.0);
-                    ui.strong("Add");
+                    ui.strong(if self.replacing.is_some() {
+                        "Replace with"
+                    } else {
+                        "Add"
+                    });
                     let (up, down, enter, escape) = ui.input_mut(|i| {
                         (
                             i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),

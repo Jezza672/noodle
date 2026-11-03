@@ -82,7 +82,12 @@ pub const STORIES: [Story; 30] = [
     blocked("S15", "Make a tempo-synced rhythmic gate"),
     blocked("S16", "Make a vocoder or spectral effect"),
     blocked("S17", "Resample and mangle audio"),
-    blocked("S18", "Use third-party plugins"),
+    Story {
+        id: "S18",
+        title: "Use third-party plugins",
+        status: Status::Partial,
+        missing: "The route swaps scanned descriptors, not real plugin binaries; hosting and state are tested in noodle-plugins.",
+    },
     Story {
         id: "S19",
         title: "Build a parallel processing mix bus",

@@ -18,6 +18,7 @@ mod event;
 mod flatten;
 mod job;
 mod lane;
+mod missing;
 mod monitor;
 mod node;
 mod offline;
@@ -60,6 +61,7 @@ pub use event::{ChannelControl, Event, EventKind, EventsOut, Expression, NoteId}
 pub use flatten::flatten;
 pub use job::{Job, JobPanicked};
 pub use lane::{Lane, LaneInputs, LaneKernel, LaneOutputs, PerLane, Skip};
+pub use missing::{MissingPlugin, is_plugin_type};
 pub use monitor::{MONITOR_KEY, Monitor};
 pub use node::{
     ConfigInfo, Context, GraphKind, InputKind, InputPort, Instance, Io, Layout, MAX_LATENCY,

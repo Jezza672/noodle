@@ -4,6 +4,7 @@
 mod framework_smoke;
 mod s01_comp;
 mod s09_drum_pattern;
+mod s18_plugins;
 mod s19_drum_bus;
 mod s20_automation;
 
@@ -24,6 +25,7 @@ pub fn all() -> Vec<Route> {
         framework_smoke::route(),
         s01_comp::route(),
         s09_drum_pattern::route(),
+        s18_plugins::route(),
         s19_drum_bus::route(),
         s20_automation::route(),
     ]
