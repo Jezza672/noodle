@@ -270,7 +270,7 @@ should be heard: always for In; for Auto while the track is audio-armed and the
 transport is stopped, or recording inside the take's span, so the player hears
 the old take in the pre-roll and themselves from the punch-in. Offline renders
 have no tap and play clips only. The cue mix on the headphone channels is a send
-to a second Mix and waits on sends in the Mix node (#332).
+to a second Mix and is not routed.
 
 ## Tempo source
 
