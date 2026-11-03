@@ -45,6 +45,8 @@ where Random Select picks at random on a trigger.
   output the post-fader tap, so a Selector on those two taps makes pre/post
   switching a `which` change rather than moving a wire. S19 does not depend on
   it; its route still wires the taps out to a second Mix (#332).
+- **Presets.** `Instant A/B`, `Zero-crossing A/B` and `Notes, Cut Held` in the
+  node library.
 
 Tests: `selector.rs` (selection, rounding and clamping, a wired `which`,
 zero-crossing waits and giving up, broadcasting, unconnected inputs, the
