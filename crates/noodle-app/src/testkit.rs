@@ -138,8 +138,10 @@ impl Drop for PlayingMode {
 fn settle<S>(h: &mut Harness<'_, S>) {
     if PLAYING.with(|p| p.get()) {
         h.run_steps(3);
-    } else {
-        h.run();
+    } else if h.try_run().is_err() {
+        // A background render (a freeze, an offline node) keeps the app
+        // repainting until it is done, which depends on the machine's speed.
+        h.run_steps(3);
     }
 }
 
