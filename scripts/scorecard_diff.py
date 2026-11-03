@@ -36,6 +36,15 @@ def load(path):
         return None
 
 
+def safe(get, r):
+    """A metric the baseline predates (an older scorecard layout) reads as
+    missing, not as a crash."""
+    try:
+        return get(r)
+    except (KeyError, TypeError):
+        return None
+
+
 def key(r):
     return (r["story"], r["tag"], r["name"])
 
@@ -65,19 +74,20 @@ def late_map(r):
 
 def route_changes(old, new):
     out = []
-    if old["passed"] != new["passed"]:
+    if old.get("passed") != new.get("passed"):
         out.append(("passes", "yes" if old["passed"] else "NO", "yes" if new["passed"] else "NO"))
     for label, get, tol, unit in METRICS:
-        a, b = get(old), get(new)
+        a, b = safe(get, old), safe(get, new)
         if changed(a, b, tol):
             out.append((label, fmt(a) + (unit if a is not None else ""), fmt(b) + (unit if b is not None else "")))
-    a, b = per_item(old), per_item(new)
+    a, b = safe(per_item, old), safe(per_item, new)
     if changed(a, b, 0.05):
         out.append(("actions per extra item", fmt(a), fmt(b)))
-    if old["rework"]["round_trip"] != new["rework"]["round_trip"]:
-        ok = new["rework"]["round_trip"]
-        out.append(("undo round trip", "-", "ok" if ok["restores_start"] and ok["restores_end"] else "FAILS"))
-    lo, ln = late_map(old), late_map(new)
+    a = safe(lambda r: r["rework"]["round_trip"], old)
+    b = safe(lambda r: r["rework"]["round_trip"], new)
+    if a is not None and b is not None and a != b:
+        out.append(("undo round trip", "-", "ok" if b["restores_start"] and b["restores_end"] else "FAILS"))
+    lo, ln = safe(late_map, old) or {}, safe(late_map, new) or {}
     for name in sorted(set(lo) | set(ln)):
         if name not in lo:
             out.append((f"late change '{name}'", "-", "new"))

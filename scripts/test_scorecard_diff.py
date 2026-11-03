@@ -46,6 +46,12 @@ class Diff(unittest.TestCase):
         other["story"] = "S13"
         self.assertIn("| S13 default: route | route | - | new |", sd.render([SAMPLE], [SAMPLE, other]))
 
+    def test_an_older_baseline_layout_does_not_crash(self):
+        old = {"story": "S12", "tag": "default", "name": "route", "passed": True,
+               "effort": {"actions": 10}}
+        out = sd.render([old], [SAMPLE])
+        self.assertTrue(out.startswith(sd.MARKER))
+
     def test_real_scorecard_against_itself(self):
         path = os.environ.get("SCORECARD")
         if path:
