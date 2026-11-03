@@ -123,6 +123,9 @@ The app already has what this needs. `crates/noodle-app/src/testkit.rs` drives t
 - **Feedback** (`feedback.rs`, group F). *Time to hear:* `Probe::hear` logs what it caught; the first listen with sound sets the actions and KLM seconds before it (a route that never listens is reported so). *Live editing:* the route is run again with the transport already playing; its own Space presses are skipped, the transport is stopped before the done check, each step that stops the transport is named, and a failing step or done check is reported (not asserted). A route whose playhead has run past its material can read as silent live. *State visibility:* `Handle::unseen` tags a step whose result needs another view.
 - **Robustness** (`robustness.rs`, group G). Output underruns counted by the engine across the route and its late changes (reported, not asserted, since a loaded CI machine can drop a block). After each route the project is saved and opened again; it must read back identically and the done check must pass on it, which fails the route.
 
+- **Human rubric** ([usability/rubric.md](../usability/rubric.md)). Six Cognitive Dimensions rated by hand per story (filled in for the MVP stories), and the protocol for human sessions: Single Ease Question after each story, SUS at the end, NASA-TLX optionally, results in `docs/usability/sessions/`.
+- **Registry statuses.** Every story has a status. The 24 not yet routed were assessed from the docs and the code, so their statuses are a first reading, and a route may move them either way.
+
 ### Keeping it current
 
 - **New features:** the route file is the record. A feature that makes a story easier should come with a new or shorter route, and the scorecard diff shows the gain.

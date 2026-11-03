@@ -53,7 +53,9 @@ deliberately deferred items.
 
 **Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs (#319).
 
-**Then:** remaining stories, naive-agent runs, PR scorecard diff, grades, the human rubric.
+**Built since (#324):** the Cognitive Dimensions rubric and the human-session protocol (`docs/usability/rubric.md`), and a status for every story in the registry, assessed from the docs and code.
+
+**Then:** routes for the 24 stories that have a status but no route (U10, #316), the naive-agent runs (#319), grades and thresholds once there is data for every story (#323), and the cross-DAW baseline (#325, optional).
 
 
 ## Owed: needs a person on real hardware

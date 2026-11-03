@@ -551,10 +551,29 @@ impl Harness {
             max_frames: 512,
             channels: 2,
         };
-        let mut registry = Registry::with_builtins();
-        let rendered =
-            render_project_with_clips(&project, &mut registry, self.dir.path(), settings, frames)
-                .map_err(|e| e.to_string())?;
+        // The clip is read from disk by a streaming thread, which a loaded
+        // machine starves into underruns. So renders take turns across threads
+        // (scoring, the slow part, still runs in parallel), and a render that
+        // still underran is run again, as the offline result is deterministic
+        // when the stream keeps up.
+        let _turn = WARP_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rendered;
+        let mut attempt = 0;
+        loop {
+            let mut registry = Registry::with_builtins();
+            rendered = render_project_with_clips(
+                &project,
+                &mut registry,
+                self.dir.path(),
+                settings,
+                frames,
+            )
+            .map_err(|e| e.to_string())?;
+            attempt += 1;
+            if rendered.underruns == 0 || attempt == WARP_ATTEMPTS {
+                break;
+            }
+        }
         if !rendered.render.diagnostics.is_empty() {
             return Err(format!("{:?}", rendered.render.diagnostics));
         }
@@ -567,6 +586,12 @@ impl Harness {
         Ok(rendered.render.samples)
     }
 }
+
+/// Held while a clip renders, so threads do not starve each other's streams.
+static WARP_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How many times a render that underran is tried before it is an error.
+const WARP_ATTEMPTS: usize = 3;
 
 /// The clip tempo and mode the app gives a freshly warped clip
 /// (`clip_panel::start_warp`): the detected tempo, or when there is none the
