@@ -48,7 +48,13 @@ impl EventDelay {
     /// more samples.
     pub fn push(&mut self, time: u32, delay: u64, event: EventKind) {
         if self.len == CAPACITY {
-            return;
+            // A note-off is worth more than the newest waiting event: a
+            // dropped one leaves a note stuck.
+            if !matches!(event, EventKind::NoteOff { .. }) {
+                return;
+            }
+            self.len -= 1;
+            self.queue[self.len] = None;
         }
         let due = self.now + u64::from(time) + delay;
         // After every event due at or before it.
@@ -106,11 +112,13 @@ impl EventDelay {
         self.next_note = (self.next_note + 1) % NOTES;
     }
 
-    /// The delay a note was given, or none if it is forgotten.
-    pub fn delay_of(&self, note: NoteId) -> u64 {
+    /// The delay a note was given, or `forgotten` if it has been pushed out
+    /// of the memory (the delay every event gets, for a node that holds all
+    /// of them back).
+    pub fn delay_of(&self, note: NoteId, forgotten: u64) -> u64 {
         (0..NOTES)
             .map(|k| &self.notes[(self.next_note + NOTES - 1 - k) % NOTES])
             .find(|r| r.live && r.note == note.0)
-            .map_or(0, |r| r.delay)
+            .map_or(forgotten, |r| r.delay)
     }
 }

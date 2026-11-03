@@ -153,7 +153,7 @@ impl Node for HumaniseNode {
                     delay
                 }
                 EventKind::NoteOff { note, .. } | EventKind::Expression { note, .. } => {
-                    self.delay.delay_of(note)
+                    self.delay.delay_of(note, self.hold)
                 }
                 _ => self.hold,
             };

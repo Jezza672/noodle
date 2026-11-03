@@ -100,7 +100,7 @@ impl Node for SwingNode {
                     delay
                 }
                 EventKind::NoteOff { note, .. } | EventKind::Expression { note, .. } => {
-                    self.delay.delay_of(note)
+                    self.delay.delay_of(note, 0)
                 }
                 _ => 0,
             };
