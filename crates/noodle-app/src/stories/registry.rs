@@ -207,8 +207,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S29",
         title: "Organise a large session with templates",
-        status: Status::Partial,
-        missing: "No track colours, folders, hiding or macros: #367; saving a template is not routed.",
+        status: Status::Full,
+        missing: "No macros (dropped): key commands are the palette and the keymap.",
     },
     Story {
         id: "S30",

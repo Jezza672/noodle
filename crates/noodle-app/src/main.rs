@@ -80,6 +80,7 @@ fn main() -> ExitCode {
     if let Some(dir) = prefs::library_dir() {
         session.set_library(noodle_core::library::Library::open(Some(dir)));
     }
+    session.set_templates_dir(prefs::templates_dir());
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
         session.set_audio_config(prefs.audio);

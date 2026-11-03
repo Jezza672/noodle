@@ -157,6 +157,7 @@ pub fn colour_menu(ui: &mut egui::Ui, current: Option<u8>) -> Option<Option<u8>>
                     egui::StrokeKind::Outside,
                 );
             }
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *name));
             if response.on_hover_text(*name).clicked() {
                 picked = Some(Some(slot as u8));
             }
