@@ -1385,6 +1385,35 @@
         ),
     )),
     NodePreset((
+        name: "Instant A/B",
+        slug: "selector-instant-a-b",
+        node_type: "noodle.util.selector",
+        values: (),
+    )),
+    NodePreset((
+        name: "Zero-crossing A/B",
+        slug: "selector-zero-crossing-a-b",
+        node_type: "noodle.util.selector",
+        values: (
+            params: {
+                "switch": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Notes, Cut Held",
+        slug: "selector-notes-cut-held",
+        node_type: "noodle.util.selector",
+        values: (
+            params: {
+                "switch": 1.0,
+            },
+            config: {
+                "kind": 1,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Middle C",
         slug: "key-middle-c",
         node_type: "noodle.event.key",

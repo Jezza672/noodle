@@ -705,8 +705,12 @@ fn config(
             continue;
         }
         // Set by the first wire, not typed in.
-        if node_type.info().id == noodle_nodes::RANDOM_SELECT_ID && info.key == "kind" {
-            let wired = crate::editor::random_select_is_wired(session.project().graph(), id);
+        if matches!(
+            node_type.info().id,
+            noodle_nodes::RANDOM_SELECT_ID | noodle_nodes::SELECTOR_ID
+        ) && info.key == "kind"
+        {
+            let wired = crate::editor::picker_is_wired(session.project().graph(), id);
             let carries = match (wired, node.config.get("kind")) {
                 (false, _) => "nothing yet: it takes the type of the first wire",
                 (true, Some(noodle_core::Value::Int(1))) => "notes",
