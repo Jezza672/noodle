@@ -97,4 +97,4 @@ pub use telemetry::{
 };
 pub use tempo::TempoTable;
 pub mod wake;
-pub use transport::TransportControl;
+pub use transport::{InputTap, TAP_CHANNELS, TransportControl};

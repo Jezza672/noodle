@@ -1275,6 +1275,59 @@ fn live_monitoring_never_allocates_while_notes_come_and_go() {
     }
 }
 
+#[test]
+fn audio_monitoring_never_allocates_while_the_input_comes_and_goes() {
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    library
+        .clips
+        .set_input_tap(Some(controller.transport().input_tap()));
+    let mut project = Project::new();
+    let track = project.new_node_id();
+    let output = project.new_node_id();
+    for (id, node) in [
+        (track, Node::new(noodle_nodes::TRACK_INPUT_ID)),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    Command::Connect(Connection {
+        from: Endpoint::new(track, "audio"),
+        to: Endpoint::new(output, "in"),
+    })
+    .apply(&mut project)
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let frames = 128;
+    let input = vec![0.25; frames * 2];
+    let mut out = vec![0.0; frames * SETTINGS.channels];
+    for round in 0..16u64 {
+        // Armed and disarmed, recording inside a span and not, with the
+        // transport starting and stopping.
+        library.clips.set_audio_armed(track, round % 3 != 2);
+        library.clips.set_recording(
+            track,
+            (round % 4 < 2).then_some((round * 64, Some(round * 64 + 512))),
+        );
+        if round % 2 == 0 {
+            transport.stop();
+        } else {
+            transport.play();
+        }
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process_with_input(&input, 2, &mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}
+
 /// Passes its input through 100 samples late and says so, so the engine has
 /// something to compensate for.
 struct Latent;

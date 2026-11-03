@@ -36,6 +36,7 @@ mod stems_dialog;
 #[allow(dead_code)]
 mod stories;
 mod tempo;
+mod tempo_source;
 #[cfg(test)]
 mod testkit;
 mod theme;

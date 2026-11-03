@@ -40,13 +40,13 @@ pub const STORIES: [Story; 30] = [
         id: "S01",
         title: "Comp a vocal from multiple takes",
         status: Status::Partial,
-        missing: "Recording the takes (the route starts from a take folder), a ninth take and sliding the comp: #334.",
+        missing: "A new recording lands as its own clip instead of joining the take folder it was recorded over, and sliding the comp. The takes are recorded for real through the virtual input (#334).",
     },
     Story {
         id: "S02",
         title: "Punch in on a live overdub",
         status: Status::Partial,
-        missing: "Input monitoring and a headphone cue mix (#345); recording is not routed because a route has no live input (#334).",
+        missing: "A headphone cue mix, which waits on sends in the Mix node (#332, #345); recording is not routed because a route has no live input (#334).",
     },
     Story {
         id: "S03",
@@ -130,7 +130,7 @@ pub const STORIES: [Story; 30] = [
         id: "S16",
         title: "Make a vocoder or spectral effect",
         status: Status::Partial,
-        missing: "The spectral frame size is fixed, so there is no band count to change: #355.",
+        missing: "The spectral frame size is fixed (a roadmap item); the band count is Cross's `bands` parameter (#355).",
     },
     Story {
         id: "S17",
@@ -154,7 +154,7 @@ pub const STORIES: [Story; 30] = [
         id: "S20",
         title: "Automate a mix in real time",
         status: Status::Partial,
-        missing: "Trimming a range needs a second gain stage and lane; changing parameter or surface is not routed: #333.",
+        missing: "Trimming a range by a dB amount is not routed: an Automation lane trims in its 0 to 1 value (#333 built the range trim); changing parameter or surface is not routed.",
     },
     Story {
         id: "S21",
@@ -196,7 +196,7 @@ pub const STORIES: [Story; 30] = [
         id: "S27",
         title: "Perform a set live with clips and scenes",
         status: Status::Blocked,
-        missing: "No clip launching or scenes (#364) and no tap tempo, MIDI clock in or Link (#365).",
+        missing: "No clip launching or scenes (#364) and no Ableton Link (#365; tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source).",
     },
     Story {
         id: "S28",

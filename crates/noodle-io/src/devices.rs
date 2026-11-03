@@ -70,6 +70,11 @@ pub enum InputChoice {
     Default,
     /// A device, by [`DeviceInfo::id`].
     Device(String),
+    /// The virtual input: it plays this WAV file into the input, in real
+    /// time and in step with the output, then goes silent. Recording,
+    /// loop-splitting and latency alignment all run as for a real device, so
+    /// tests and the command line can record without a microphone.
+    Virtual(std::path::PathBuf),
 }
 
 /// An audio API the platform offers.

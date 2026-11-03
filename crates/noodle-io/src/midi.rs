@@ -160,12 +160,60 @@ pub fn parse_message(bytes: &[u8]) -> Option<MidiMessage> {
     Some([status, data(1), if wanted == 3 { data(2) } else { 0 }])
 }
 
+/// A MIDI timing message: the clock a sequencer or drum machine sends to be
+/// followed. These don't go to the MIDI In nodes, which would drown in 24 a
+/// beat; they go to [`ClockTap`]s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockEvent {
+    /// One of the 24 pulses to a quarter note.
+    Tick,
+    /// Play from the start.
+    Start,
+    /// Play on from where it stopped.
+    Continue,
+    Stop,
+    /// A position, in sixteenth notes from the start.
+    SongPosition(u16),
+}
+
+/// A clock message, the port it came from, and when it arrived in
+/// microseconds on a clock of the driver's. Only differences between times
+/// mean anything.
+pub type ClockHeard = (String, u64, ClockEvent);
+
+/// Turns the bytes a driver delivered into a [`ClockEvent`], or `None` for
+/// anything else.
+pub fn parse_clock(bytes: &[u8]) -> Option<ClockEvent> {
+    match *bytes.first()? {
+        0xF8 => Some(ClockEvent::Tick),
+        0xFA => Some(ClockEvent::Start),
+        0xFB => Some(ClockEvent::Continue),
+        0xFC => Some(ClockEvent::Stop),
+        0xF2 if bytes.len() >= 3 => Some(ClockEvent::SongPosition(
+            u16::from(bytes[1] & 0x7F) | u16::from(bytes[2] & 0x7F) << 7,
+        )),
+        _ => None,
+    }
+}
+
+/// A listener for MIDI clock, from [`MidiBus::clock_tap`]. Dropping it stops
+/// listening.
+pub struct ClockTap(mpsc::Receiver<ClockHeard>);
+
+impl ClockTap {
+    /// The oldest message not yet taken.
+    pub fn next(&self) -> Option<ClockHeard> {
+        self.0.try_recv().ok()
+    }
+}
+
 /// Carries MIDI messages from whatever produces them to the MIDI In nodes.
 /// Clones share the same subscribers.
 #[derive(Clone, Default)]
 pub struct MidiBus {
     subscribers: Arc<Mutex<Vec<Subscriber>>>,
     taps: Arc<Mutex<Vec<mpsc::Sender<Heard>>>>,
+    clock_taps: Arc<Mutex<Vec<mpsc::Sender<ClockHeard>>>>,
     clock: Arc<AudioClock>,
 }
 
@@ -245,6 +293,20 @@ impl MidiBus {
         let (sender, receiver) = mpsc::channel();
         self.taps.lock().expect("taps lock").push(sender);
         MidiTap(receiver)
+    }
+
+    /// A listener for MIDI clock, hearing every timing message sent from now
+    /// on.
+    pub fn clock_tap(&self) -> ClockTap {
+        let (sender, receiver) = mpsc::channel();
+        self.clock_taps.lock().expect("clock lock").push(sender);
+        ClockTap(receiver)
+    }
+
+    /// Hands a timing message that arrived on `port` to the clock taps.
+    pub fn send_clock_from(&self, port: &str, micros: u64, event: ClockEvent) {
+        let mut taps = self.clock_taps.lock().expect("clock lock");
+        taps.retain(|tap| tap.send((port.to_string(), micros, event)).is_ok());
     }
 
     /// When the audio thread's blocks run. The device callback fills it in.
@@ -466,9 +528,11 @@ pub fn connect_midi(name: &str, bus: &MidiBus) -> Result<MidiConnection, MidiErr
         .connect(
             &port,
             "noodle",
-            move |_, bytes, _| {
+            move |stamp, bytes, _| {
                 if let Some(message) = parse_message(bytes) {
                     bus.send_from(&port_name, message);
+                } else if let Some(event) = parse_clock(bytes) {
+                    bus.send_clock_from(&port_name, stamp, event);
                 }
             },
             (),
@@ -483,7 +547,9 @@ pub fn connect_midi(name: &str, bus: &MidiBus) -> Result<MidiConnection, MidiErr
 fn new_input() -> Result<MidiInput, MidiError> {
     let mut input =
         MidiInput::new("noodle").map_err(|e| MidiError(format!("no MIDI available: {e}")))?;
-    input.ignore(Ignore::All);
+    // Timing is wanted (MIDI clock); system exclusive and active sensing
+    // are not.
+    input.ignore(Ignore::SysexAndActiveSense);
     Ok(input)
 }
 
@@ -506,6 +572,30 @@ mod tests {
         assert_eq!(parse_message(&[]), None);
         // Data bytes are seven bits.
         assert_eq!(parse_message(&[0x90, 0xFF, 0x80]), Some([0x90, 0x7F, 0]));
+    }
+
+    #[test]
+    fn timing_messages_are_parsed_and_reach_clock_taps_only() {
+        assert_eq!(parse_clock(&[0xF8]), Some(ClockEvent::Tick));
+        assert_eq!(parse_clock(&[0xFA]), Some(ClockEvent::Start));
+        assert_eq!(parse_clock(&[0xFB]), Some(ClockEvent::Continue));
+        assert_eq!(parse_clock(&[0xFC]), Some(ClockEvent::Stop));
+        assert_eq!(
+            parse_clock(&[0xF2, 0x01, 0x02]),
+            Some(ClockEvent::SongPosition(1 + (2 << 7)))
+        );
+        assert_eq!(parse_clock(&[0xF2, 1]), None);
+        assert_eq!(parse_clock(&[0x90, 60, 1]), None);
+        let bus = MidiBus::new();
+        let mut notes = bus.subscribe();
+        let tap = bus.clock_tap();
+        bus.send_clock_from("Drums", 100, ClockEvent::Tick);
+        assert_eq!(notes.pop(), None);
+        assert_eq!(
+            tap.next(),
+            Some(("Drums".to_string(), 100, ClockEvent::Tick))
+        );
+        assert_eq!(tap.next(), None);
     }
 
     #[test]
