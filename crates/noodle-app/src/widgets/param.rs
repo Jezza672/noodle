@@ -603,7 +603,8 @@ impl<'a> ParamField<'a> {
                         current == on_index,
                         egui::RichText::new(text).font(font.clone()),
                     )
-                    .min_size(vec2(0.0, 0.0)),
+                    .min_size(vec2(0.0, 0.0))
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
                 if button.clicked() {
                     picked = Some(1 - current.min(1));
@@ -624,7 +625,8 @@ impl<'a> ParamField<'a> {
                             index == current,
                             egui::RichText::new(label.as_ref()).font(font.clone()),
                         )
-                        .min_size(vec2(0.0, 0.0)),
+                        .min_size(vec2(0.0, 0.0))
+                        .wrap_mode(egui::TextWrapMode::Truncate),
                     );
                     if button.clicked() {
                         picked = Some(index);
@@ -739,19 +741,21 @@ impl ChoiceStyle {
         if labels.len() > Self::MAX_SEGMENTS {
             return Self::List;
         }
-        // Each option needs its text and the button's padding.
+        // Each option gets an equal share of the row, so every label has to
+        // fit its own segment, not just the row in total. A long option in a
+        // set that fits overall would otherwise wrap and spill into the line
+        // below (the Selector's "Instant" / "Zero crossing" did).
         let pad = 2.0 * ui.spacing().button_padding.x;
-        let needed: f32 = labels
-            .iter()
-            .map(|label| {
-                ui.painter()
-                    .layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
-                    + pad
-            })
-            .sum();
-        if needed <= width {
+        let segment = width / labels.len() as f32;
+        let every_label_fits = labels.iter().all(|label| {
+            ui.painter()
+                .layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+                + pad
+                <= segment
+        });
+        if every_label_fits {
             Self::Segments
         } else {
             Self::List

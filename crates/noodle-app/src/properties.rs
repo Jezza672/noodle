@@ -1747,6 +1747,28 @@ mod tests {
     }
 
     #[test]
+    fn the_selector_switch_never_overlaps_its_range_text() {
+        // The Switch choice is "Instant" / "Zero crossing". At some widths the
+        // pair fits the row in total but the longer label does not fit its
+        // half, so it used to wrap and grow down onto the range text.
+        for width in [200.0, 220.0, 240.0, 260.0, 280.0, 300.0] {
+            let mut harness = harness([Node::new("noodle.util.selector")]);
+            harness.set_size(vec2(width, 500.0));
+            harness.run();
+            let range = harness
+                .get_by_label("Range Instant to Zero crossing, default Instant")
+                .rect();
+            if let Some(switch) = harness.query_by_label("Zero crossing") {
+                let button = switch.rect();
+                assert!(
+                    button.bottom() <= range.top(),
+                    "at {width}px the switch {button:?} overlaps its range text {range:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn each_parameter_shows_the_range_it_accepts() {
         let harness = harness([Node::new("noodle.osc.sine")]);
         harness.get_all_by_label_contains("Range ").next().unwrap();
