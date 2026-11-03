@@ -42,6 +42,11 @@ fn eight_takes(dir: &Path) -> App {
     finished_recording(session, dir, &wav)
 }
 
+/// Audio clips on the project: the recorded folder, and a later recording.
+fn audio_clips(p: &Project) -> usize {
+    p.clips().filter(|(_, c)| c.as_audio().is_some()).count()
+}
+
 pub fn route() -> Route {
     Route {
         story: "S01",
@@ -51,15 +56,26 @@ pub fn route() -> Route {
         size: None,
         steps,
         done,
-        late: &[LateChange {
-            name: "re-pick the verse 2 phrase",
-            steps: repick,
-            done: repicked,
-            keep: &[Keep {
-                name: "the first phrase",
-                of: first_phrase,
-            }],
-        }],
+        late: &[
+            LateChange {
+                name: "record a ninth take",
+                steps: ninth,
+                done: ninth_done,
+                keep: &[Keep {
+                    name: "the first phrase",
+                    of: first_phrase,
+                }],
+            },
+            LateChange {
+                name: "re-pick the verse 2 phrase",
+                steps: repick,
+                done: repicked,
+                keep: &[Keep {
+                    name: "the first phrase",
+                    of: first_phrase,
+                }],
+            },
+        ],
     }
 }
 
@@ -180,6 +196,36 @@ fn repicked(p: &mut Probe, _size: usize) -> Result<(), String> {
     let takes: Vec<usize> = comp(p.project()).iter().map(|s| s.0).collect();
     if takes != [3, 1] {
         return Err(format!("the comp plays takes {takes:?}, wanted [3, 1]"));
+    }
+    Ok(())
+}
+
+/// Records again over the loop, the way the first eight passes were. The
+/// virtual input starts its file again when the engine opens.
+fn ninth(h: &mut Handle, _size: usize) {
+    h.step("record another take");
+    let record = h.find("⏺");
+    h.drag_playing(&[record]);
+    h.probe().hear(std::time::Duration::from_millis(2600));
+    h.waited(2.6);
+    h.step("stop");
+    h.press_playing(
+        Pos2::new(640.0, 300.0),
+        egui::Modifiers::NONE,
+        egui::Key::Space,
+    );
+    h.step("turn the audio engine off");
+    let engine = h.find("Audio");
+    h.drag_playing(&[engine]);
+    h.probe().settle();
+}
+
+fn ninth_done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    // The app does not yet add a recording to the folder it records over
+    // (a new clip holds it), so the take is counted as a second clip.
+    let n = audio_clips(p.project());
+    if n < 2 {
+        return Err(format!("{n} audio clip after recording again"));
     }
     Ok(())
 }
