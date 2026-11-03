@@ -202,6 +202,29 @@ These are primitives; instruments and racks built from them are groups.
   the transport's tick grid (free-running while stopped): up, down, up-down,
   down-up, as played or random (seeded by the node's seed), over 1 to 4
   octaves, with gate, swing and hold.
+- **Swing** (`noodle.event.swing`) delays the notes that fall on the odd steps
+  of a `grid` (1/8, 1/16, 1/32) by `amount` of a step (0 to 0.75, the
+  Arpeggiator's definition). It reads the transport's tick, so it works on
+  drawn, recorded and arpeggiated notes, and passes everything through while
+  the transport is stopped. Note-offs and expression follow their note-on;
+  delayed events wait in a preallocated queue (`event_delay.rs`) across
+  blocks. The Drum Rack template puts it in front of its Note Split and
+  exposes `Swing`.
+- **Humanise** (`noodle.event.humanise`) moves each note by a seeded random
+  amount: `timing` (up to 50 ms either way) and `velocity` (a fraction of full
+  scale), with a `seed` parameter. To play early as well as late it holds
+  every event back by 50 ms and reports that as its latency. Automate
+  `timing` to humanise only the notes in a stretch. The clip-level
+  alternative stores a pair of offsets on each note (`MidiNote::humanise`) and
+  scales them by the clip's `humanise_timing` (ticks) and `humanise_velocity`
+  when the clip is scheduled (`schedule_notes`), so the drawn notes never move
+  and the piano roll shows a ghost where each will sound.
+- **Choke.** Note Split output *n* has a `choke{n}` group (0 for none, 1 to 8).
+  A note sent to an output in a group ends the notes still sounding on the
+  other outputs of that group with a note-off whose velocity is negative
+  (`note_split::CHOKE`). A Sampler obeys it with a 10 ms fade whatever its
+  mode, so One-shot drums can be choked. The Drum Rack template puts the two
+  hats in group 1 and exposes a `choke` input per slot.
 
 - **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` (or,
   with `time` set to Beats, over `beats` beats at the transport's tempo, read

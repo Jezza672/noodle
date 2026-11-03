@@ -12,6 +12,7 @@ use crate::clip_panel::{self, ClipPanel};
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::export_dialog::ExportDialog;
+use crate::midi_ports::MidiPortsView;
 use crate::outputs::OutputsView;
 use crate::piano_roll::{self, PianoRoll};
 use crate::plugin_browser::PluginBrowser;
@@ -113,6 +114,9 @@ pub struct App {
     plugin_browser: PluginBrowser,
     cache_panel: CachePanel,
     outputs: OutputsView,
+    /// Whether the MIDI ports view is showing.
+    midi_ports_open: bool,
+    midi_ports: MidiPortsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
     /// Writes the unsaved project out now and then. `None` in tests and when
@@ -180,6 +184,7 @@ enum Action {
     BindButton(usize),
     ToggleScope,
     ToggleOutputs,
+    ToggleMidiPorts,
     TogglePlugins,
     ToggleCache,
     ToggleCpu,
@@ -258,6 +263,8 @@ impl App {
             plugin_browser: PluginBrowser::default(),
             cache_panel: CachePanel::default(),
             outputs: OutputsView::default(),
+            midi_ports_open: false,
+            midi_ports: MidiPortsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
             autosave: None,
             recovery: None,
@@ -426,6 +433,19 @@ impl App {
                     #[cfg(test)]
                     crate::testkit::mark_view(ui, "outputs");
                     let edits = self.outputs.show(ui, &self.session);
+                    self.session.edit(edits);
+                });
+        }
+
+        if self.midi_ports_open {
+            egui::Panel::bottom("midi ports")
+                .resizable(false)
+                .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "midi ports");
+                    let edits = self
+                        .midi_ports
+                        .show(ui, self.session.project(), || self.session.new_node_id());
                     self.session.edit(edits);
                 });
         }
@@ -924,6 +944,13 @@ impl App {
                 .clicked()
             {
                 actions.push(Action::ToggleOutputs);
+            }
+            if ui
+                .selectable_label(self.midi_ports_open, "MIDI ports")
+                .on_hover_text("Which port each MIDI In, MIDI Control and MIDI Out node uses")
+                .clicked()
+            {
+                actions.push(Action::ToggleMidiPorts);
             }
             if ui
                 .selectable_label(self.plugin_browser.is_open(), "Plugins")
@@ -1754,6 +1781,12 @@ impl App {
                 if self.outputs_open {
                     self.outputs
                         .refresh(self.session.audio_config().host.as_deref());
+                }
+            }
+            Action::ToggleMidiPorts => {
+                self.midi_ports_open = !self.midi_ports_open;
+                if self.midi_ports_open {
+                    self.midi_ports.refresh();
                 }
             }
             Action::ImportAudio => {

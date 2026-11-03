@@ -52,7 +52,7 @@ pub const STORIES: [Story; 30] = [
         id: "S03",
         title: "Drive external hardware like an internal instrument",
         status: Status::Partial,
-        missing: "The MIDI Out port is typed text (#346); recording the synth's audio back is not routed (#334).",
+        missing: "Recording the synth's audio back is not routed (#334).",
     },
     Story {
         id: "S04",
@@ -82,13 +82,13 @@ pub const STORIES: [Story; 30] = [
         id: "S08",
         title: "Edit MIDI performance detail",
         status: Status::Partial,
-        missing: "No humanise: #350; recording the part and redrawing the sustain lane are not routed.",
+        missing: "Recording the part and redrawing the sustain lane are not routed; humanising only some notes with the Humanise node (automating its amount) is not routed.",
     },
     Story {
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330.",
+        missing: "Loading the samples into the rack and swapping the snare are not routed.",
     },
     Story {
         id: "S10",

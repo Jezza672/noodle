@@ -223,6 +223,9 @@ static INFO: NodeInfo = NodeInfo {
 
 const VOICES: usize = 16;
 
+/// How long, in seconds, a choked voice takes to fade out.
+const CHOKE_FADE: f32 = 0.01;
+
 /// How many frames a voice takes to fade from the sample to its stretched
 /// copy or back, so that the change doesn't click.
 const XFADE: u32 = 256;
@@ -823,6 +826,21 @@ impl SamplerNode {
         };
     }
 
+    /// Cuts the note short with a quick fade, whatever the mode: a note-off
+    /// with a negative velocity (see `note_split::CHOKE`).
+    fn choke(&mut self, id: NoteId) {
+        let step = 1.0 / (CHOKE_FADE * self.sample_rate).max(1.0);
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.active && v.note == id.0)
+        {
+            v.held = false;
+            v.releasing = true;
+            v.fade_step = v.fade_step.max(step);
+        }
+    }
+
     fn note_off(&mut self, s: &Settings, id: NoteId) {
         for v in self.voices.iter_mut().filter(|v| v.active && v.held) {
             if v.note == id.0 {
@@ -852,6 +870,7 @@ impl SamplerNode {
                 self.bend_norm[usize::from(channel & 15)] =
                     (centred / f64::from(0x8000_0000u32)).clamp(-1.0, 1.0) as f32;
             }
+            EventKind::NoteOff { note, velocity } if velocity < 0.0 => self.choke(note),
             EventKind::NoteOff { note, .. } => self.note_off(s, note),
             EventKind::Expression {
                 note,

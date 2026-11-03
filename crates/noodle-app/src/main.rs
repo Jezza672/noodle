@@ -17,6 +17,7 @@ mod export_dialog;
 mod freezing;
 mod keyboard;
 mod metronome;
+mod midi_ports;
 mod midi_take;
 mod mixer;
 mod outputs;
