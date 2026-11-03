@@ -1059,6 +1059,13 @@ fn hit(f: &Frame_<'_>, p: Pos2) -> Hit {
     Hit::Nothing
 }
 
+/// Whether `end` is a parameter port on the canvas.
+fn is_param(f: &Frame_<'_>, end: &Endpoint) -> bool {
+    f.scene
+        .port(end, Side::Input)
+        .is_some_and(|p| matches!(p.kind, PortKind::Param(_)))
+}
+
 /// Where a wire being dragged from `anchor` would connect if dropped at `p`:
 /// a compatible port on another node, on the other side. Dropping anywhere on
 /// a node picks its first free compatible port.
@@ -1879,6 +1886,24 @@ fn finish(
                     },
                 })
             };
+            // Alt on the drop of an output onto a parameter maps it: the wire
+            // goes through a new Remap (see `session::map_to`).
+            if alt
+                && side == Side::Output
+                && detached.is_none()
+                && let Some(to) = target.clone().filter(|to| is_param(f, to))
+            {
+                let mut commands = Vec::new();
+                for (endpoint, side) in [(&anchor, side), (&to, side.other())] {
+                    commands.extend(make_real(f, endpoint, side, inputs));
+                }
+                edits.push(Edit::MapTo {
+                    from: anchor,
+                    to,
+                    prepare: commands,
+                });
+                return;
+            }
             let command = match (target, detached) {
                 (Some(target), Some(detached)) if target == detached => None,
                 (Some(target), Some(detached)) => Some(Command::Batch(vec![

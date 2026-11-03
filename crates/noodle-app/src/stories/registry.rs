@@ -154,7 +154,7 @@ pub const STORIES: [Story; 30] = [
         id: "S20",
         title: "Automate a mix in real time",
         status: Status::Partial,
-        missing: "Trimming a range needs a second gain stage and lane; changing parameter or surface is not routed: #333.",
+        missing: "Trimming a range by a dB amount is not routed: an Automation lane trims in its 0 to 1 value (#333 built the range trim); changing parameter or surface is not routed.",
     },
     Story {
         id: "S21",

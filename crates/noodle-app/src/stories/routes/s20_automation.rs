@@ -5,8 +5,10 @@
 //! in Touch mode. The surface is the session's MIDI bus, fed by
 //! [`Handle::control`].
 //!
-//! Trimming the chorus by -2 dB cannot be done to the lane itself: its points
-//! cannot be moved together (#333). The route adds a trim stage instead: a
+//! The lane itself can now be trimmed over a range (Shift-drag a span, then
+//! the Trim menu, #333), but an Automation node's lane is in its 0 to 1 value,
+//! not dB, so "-2 dB" is not one typed amount there. The route still adds a
+//! trim stage: a
 //! second Gain after the fader, automated by a lane that is 0 outside the
 //! chorus and 1 inside it, with the Automation node's range set to 0 to
 //! -2 dB. The performed pass is left alone.
