@@ -1033,7 +1033,11 @@ impl Project {
             tempo_map: file.tempo_map,
             transport_loop: file.transport_loop,
             punch: file.punch,
-            markers: file.markers,
+            markers: {
+                let mut markers = file.markers;
+                markers.sort_by_key(|marker| marker.at);
+                markers
+            },
             clips,
             next_clip_id,
             clip_groups: file.clip_groups,

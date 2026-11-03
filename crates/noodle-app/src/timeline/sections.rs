@@ -396,11 +396,15 @@ fn signatures_moved(
         .iter()
         .filter_map(|change| {
             let start = map.bar_start(change.bar);
-            if change.bar == 0 || start < from {
+            if change.bar == 0 {
                 return Some(*change);
             }
-            if start < drop_before {
+            // Changes inside a deleted range go with it.
+            if start >= drop_before && start < from {
                 return None;
+            }
+            if start < from {
+                return Some(*change);
             }
             Some(SignatureChange {
                 bar: (i64::from(change.bar) + bars).max(1) as u32,
@@ -516,7 +520,7 @@ pub fn insert_time(
             }
         })
         .collect();
-    let signatures = signatures_moved(map, at, len, Tick::ZERO);
+    let signatures = signatures_moved(map, at, len, at);
     if let Some(new) = shifted_map(tempos, signatures).filter(|new| new != map) {
         commands.push(Command::SetTempoMap(new));
     }
