@@ -133,7 +133,10 @@ pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
-pub use random_select::{MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID, RandomSelect};
+pub use random_select::{
+    CHOICE_PORT as RANDOM_SELECT_CHOICE, MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID,
+    RandomSelect,
+};
 pub use remap::{REMAP_CURVE_KEY, REMAP_ID, Remap};
 pub use render_clip::{
     CLIP_SILENCE, ClipReport, ClipRequest, MAX_TAIL_SECONDS, render_clip, spawn_render_clip,

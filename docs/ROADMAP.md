@@ -133,5 +133,4 @@ deliberately deferred items.
   arrangement, piano roll and clip editor (only the piano roll's snap is done), a
   sandbox monitor that sleeps with no tick, and one retry policy for files that
   fail to open.
-- **Random Select with spectral and sample wires** (#331 follow-up): it takes signal and note wires; spectral needs a frame-boundary switch, and sample wires need the compiler to resolve a selector (or a sample set with one round-robin slot per input, picked by the Sampler's `rr_mode`).
 - **Flaky test** #138 stays open (no recurrence).

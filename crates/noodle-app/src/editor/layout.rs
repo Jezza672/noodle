@@ -693,7 +693,9 @@ fn random_select_spares(
     };
     ports.retain(|p| {
         let index = spare::mixer_input_index(&p.key).filter(|_| p.side == Side::Input);
-        index.is_none_or(|i| i <= used)
+        // The pick of a Random Select of samples is wired by the compiler.
+        p.key != noodle_nodes::RANDOM_SELECT_CHOICE
+            && index.is_none_or(|i| i <= used)
             && (wired
                 || !matches!(p.key.as_str(), "avoid_repeat" | "switch" | "seed")
                 || driven(&p.key))

@@ -11,7 +11,9 @@ use noodle_engine::{
 };
 
 use crate::sample::{Sample, SampleRef, SampleStore};
-use crate::sample_set::{SetEntry, SetTables, is_set, parse_set};
+use crate::sample_set::{
+    CHOICE_CUT, CHOICE_SEPARATOR, SetEntry, SetTables, is_choice, is_set, parse_set,
+};
 use crate::sampler_stretch::{Msg, NodeLinks, Service, Stretched, render, tempo_key, warp_key};
 
 /// Plays one sample when a note arrives, at the pitch of the note relative to
@@ -202,6 +204,12 @@ struct SamplerPorts {
         ParamInfo::choice(["Cycle", "Random", "No repeat"])
     )]
     rr_mode: (),
+    #[param(
+        "sample_choice",
+        "Sample choice",
+        ParamInfo::new(0.0, 127.0, 0.0).smoothing(0.0)
+    )]
+    sample_choice: (),
     #[output("out", "Out")]
     out: (),
 }
@@ -280,9 +288,11 @@ impl NodeType for Sampler {
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let text = CONFIG[0].get_text(setup.config);
-        let set = is_set(&text).then(|| SetPlay::load(&self.store, &parse_set(&text)));
+        let choices = is_choice(&text).then(|| Choices::load(&self.store, &text, setup.max_frames));
+        let set = (choices.is_none() && is_set(&text))
+            .then(|| SetPlay::load(&self.store, &parse_set(&text)));
         let reference = SampleRef::parse(&text);
-        let sample = if set.is_some() {
+        let sample = if set.is_some() || choices.is_some() {
             None
         } else {
             self.store
@@ -306,6 +316,7 @@ impl NodeType for Sampler {
         Ok(Instance::realtime(SamplerNode {
             sample,
             set,
+            choices,
             rng: setup.seed | 1,
             bend_norm: [0.0; 16],
             bend_range: 2.0,
@@ -351,6 +362,9 @@ struct Voice {
     age: u64,
     /// The recording of a sample set the voice plays, if it plays one.
     entry: Option<u32>,
+    /// Which candidate the voice was started on, when the sample is picked
+    /// while audio runs.
+    choice: u32,
     /// The MIDI channel, for its pitch bend.
     channel: u8,
     /// Frames left of the crossfade from where the voice was before the
@@ -540,11 +554,114 @@ impl SetPlay {
     }
 }
 
+impl SetPlay {
+    /// The recording a note plays: the sample, the key it sounds at its own
+    /// pitch, and the entry.
+    fn pick(
+        &mut self,
+        rng: &mut u64,
+        s: &Settings,
+        key: u8,
+        velocity: f32,
+    ) -> Option<(Arc<Sample>, f32, Option<u32>)> {
+        let bent = velocity.clamp(0.0, 1.0).powf(2f32.powf(s.vel_curve));
+        let zone = self.tables.layer(key, bent)?;
+        let (n, slot) = (zone.entries.len(), zone.slot);
+        let take = match s.rr_mode {
+            0 => {
+                let i = self.counters[slot] as usize % n;
+                self.counters[slot] = self.counters[slot].wrapping_add(1);
+                i
+            }
+            mode => {
+                // xorshift64*
+                let mut next = || {
+                    *rng ^= *rng >> 12;
+                    *rng ^= *rng << 25;
+                    *rng ^= *rng >> 27;
+                    (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize
+                };
+                let last = self.last[slot] as usize;
+                let mut i = next() % n;
+                if mode == 2 && n > 1 && i == last {
+                    i = (i + 1 + next() % (n - 1)) % n;
+                }
+                i
+            }
+        };
+        self.last[slot] = take as u32;
+        let entry = zone.entries[take];
+        let sample = self.samples[entry].clone()?;
+        Some((sample, self.roots[entry], Some(entry as u32)))
+    }
+}
+
+/// One thing a pick between samples can land on.
+enum Candidate {
+    /// Nothing: an input with no sample wired.
+    Empty,
+    /// One sample, played at the Sampler's `root`. It is played unwarped, as
+    /// a set's recordings are.
+    One(Option<Arc<Sample>>),
+    Set(Box<SetPlay>),
+}
+
+/// A sample picked while audio runs (see [`NodeType::sample_chooser`]): every
+/// candidate is loaded when the node is built, so a switch never waits.
+struct Choices {
+    candidates: Vec<Candidate>,
+    /// The candidate in force.
+    current: usize,
+    /// Whether the picker says to cut the notes on the others at a switch.
+    cut: bool,
+    /// The changes of pick in this block: frame, candidate, cut. Made room for
+    /// every frame to change, so it never grows on the audio thread.
+    switches: Vec<(u32, u32, bool)>,
+}
+
+impl Choices {
+    fn load(store: &SampleStore, text: &str, max_frames: usize) -> Self {
+        let candidates = text
+            .split(CHOICE_SEPARATOR)
+            .map(|part| {
+                if part.is_empty() {
+                    Candidate::Empty
+                } else if is_set(part) {
+                    Candidate::Set(Box::new(SetPlay::load(store, &parse_set(part))))
+                } else {
+                    let reference = SampleRef::parse(part);
+                    Candidate::One(
+                        store
+                            .get(&reference.hash)
+                            .map(|x| x.window(reference.start, reference.end)),
+                    )
+                }
+            })
+            .collect();
+        Self {
+            candidates,
+            current: 0,
+            cut: false,
+            switches: Vec::with_capacity(max_frames),
+        }
+    }
+
+    /// The recording of candidate `choice` that entry `entry` is.
+    fn recording(&self, choice: u32, entry: u32) -> Option<&Arc<Sample>> {
+        match self.candidates.get(choice as usize)? {
+            Candidate::One(x) => x.as_ref(),
+            Candidate::Set(play) => play.samples.get(entry as usize)?.as_ref(),
+            Candidate::Empty => None,
+        }
+    }
+}
+
 static NO_PLAY: Option<Play> = None;
 
 struct SamplerNode {
     sample: Option<Arc<Sample>>,
     set: Option<SetPlay>,
+    choices: Option<Choices>,
     rng: u64,
     /// Channel pitch bend, -1 to 1, per channel.
     bend_norm: [f32; 16],
@@ -624,38 +741,17 @@ impl SamplerNode {
         key: u8,
         velocity: f32,
     ) -> Option<(Arc<Sample>, f32, Option<u32>)> {
+        if let Some(choices) = &mut self.choices {
+            return match choices.candidates.get_mut(choices.current)? {
+                Candidate::Empty => None,
+                Candidate::One(x) => x.clone().map(|x| (x, s.root, Some(0))),
+                Candidate::Set(play) => play.pick(&mut self.rng, s, key, velocity),
+            };
+        }
         let Some(set) = &mut self.set else {
             return self.sample.clone().map(|x| (x, s.root, None));
         };
-        let bent = velocity.clamp(0.0, 1.0).powf(2f32.powf(s.vel_curve));
-        let zone = set.tables.layer(key, bent)?;
-        let (n, slot) = (zone.entries.len(), zone.slot);
-        let take = match s.rr_mode {
-            0 => {
-                let i = set.counters[slot] as usize % n;
-                set.counters[slot] = set.counters[slot].wrapping_add(1);
-                i
-            }
-            mode => {
-                // xorshift64*
-                let mut next = || {
-                    self.rng ^= self.rng >> 12;
-                    self.rng ^= self.rng << 25;
-                    self.rng ^= self.rng >> 27;
-                    (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize
-                };
-                let last = set.last[slot] as usize;
-                let mut i = next() % n;
-                if mode == 2 && n > 1 && i == last {
-                    i = (i + 1 + next() % (n - 1)) % n;
-                }
-                i
-            }
-        };
-        set.last[slot] = take as u32;
-        let entry = zone.entries[take];
-        let sample = set.samples[entry].clone()?;
-        Some((sample, set.roots[entry], Some(entry as u32)))
+        set.pick(&mut self.rng, s, key, velocity)
     }
 
     fn note_on(&mut self, s: &Settings, id: NoteId, channel: u8, key: u8, velocity: f32) {
@@ -701,6 +797,7 @@ impl SamplerNode {
                     .map_or(0, |(i, _)| i)
             });
         self.clock += 1;
+        let choice = self.choices.as_ref().map_or(0, |c| c.current as u32);
         self.voices[slot] = Voice {
             active: true,
             note: id.0,
@@ -718,6 +815,7 @@ impl SamplerNode {
             one_shot: s.one_shot,
             age: self.clock,
             entry,
+            choice,
             channel: channel & 15,
             xfade: 0,
             old_pos: 0.0,
@@ -772,6 +870,61 @@ impl SamplerNode {
         }
     }
 
+    /// Finds where the block's pick between samples changes, from the
+    /// picker's signal: the number of the candidate, plus [`CHOICE_CUT`] to
+    /// cut the notes on the others.
+    fn find_switches(&mut self, io: &Io<'_, '_>, frames: usize) {
+        let Some(choices) = &mut self.choices else {
+            return;
+        };
+        choices.switches.clear();
+        let last = choices.candidates.len().saturating_sub(1) as i64;
+        let (mut index, mut cut) = (choices.current as u32, choices.cut);
+        let signal = io.inputs[SamplerPorts::SAMPLE_CHOICE].lane(0, 0);
+        for (i, &x) in signal.iter().enumerate().take(frames) {
+            let x = if x.is_finite() { x.round() as i64 } else { 0 };
+            let now_cut = x >= CHOICE_CUT as i64;
+            let now = (x - if now_cut { CHOICE_CUT as i64 } else { 0 }).clamp(0, last) as u32;
+            if (now, now_cut) != (index, cut) {
+                (index, cut) = (now, now_cut);
+                choices.switches.push((i as u32, now, now_cut));
+            }
+        }
+    }
+
+    fn switch_count(&self) -> usize {
+        self.choices.as_ref().map_or(0, |c| c.switches.len())
+    }
+
+    fn switch_frame(&self, i: usize) -> usize {
+        self.choices
+            .as_ref()
+            .map_or(0, |c| c.switches[i].0 as usize)
+    }
+
+    /// Takes the `i`th change of pick in the block. Notes sounding on
+    /// another candidate ring out, unless the picker says to cut them.
+    fn switch(&mut self, s: &Settings, i: usize) {
+        let Some(choices) = &mut self.choices else {
+            return;
+        };
+        let (_, index, cut) = choices.switches[i];
+        choices.current = index as usize;
+        choices.cut = cut;
+        if cut {
+            let step = 1.0 / (s.release * self.sample_rate).max(1.0);
+            for v in self
+                .voices
+                .iter_mut()
+                .filter(|v| v.active && v.held && v.choice != index)
+            {
+                v.held = false;
+                v.releasing = true;
+                v.fade_step = step;
+            }
+        }
+    }
+
     /// Tells the telemetry hub where each voice is.
     fn report(&self) {
         let len = self.sample.as_ref().map_or(0, |s| s.frames()) as f64;
@@ -784,7 +937,7 @@ impl SamplerNode {
 
     /// Adds every voice's output for frames `from..to` of the block.
     fn render(&mut self, from: usize, to: usize) {
-        if self.sample.is_none() && self.set.is_none() {
+        if self.sample.is_none() && self.set.is_none() && self.choices.is_none() {
             return;
         }
         let tempo = self.beats_per_second;
@@ -792,9 +945,10 @@ impl SamplerNode {
         for v in self.voices.iter_mut().filter(|v| v.active) {
             // What this voice plays: a recording of the set, or the sample
             // (or its stretched copy).
-            let set_sample = v
-                .entry
-                .and_then(|i| self.set.as_ref()?.samples[i as usize].as_ref());
+            let set_sample = v.entry.and_then(|i| match &self.choices {
+                Some(choices) => choices.recording(v.choice, i),
+                None => self.set.as_ref()?.samples[i as usize].as_ref(),
+            });
             let (sample, domain, play, env_on) = match (v.entry, set_sample, &self.sample) {
                 (Some(_), Some(x), _) => (x, None, &NO_PLAY, false),
                 (None, _, Some(x)) => (x, self.domain.as_deref(), &self.tune.play, true),
@@ -997,8 +1151,12 @@ impl Node for SamplerNode {
         self.bend_range = settings.bend_range;
         self.beats_per_second = ctx.transport.bpm / 60.0;
         self.sync(ctx.transport.bpm);
+        self.find_switches(&io, frames);
         let idle = self.voices.iter().all(|v| !v.active);
         if idle && io.event_inputs[SamplerPorts::NOTES].is_empty() {
+            for i in 0..self.switch_count() {
+                self.switch(&settings, i);
+            }
             for channel in 0..2 {
                 io.outputs[SamplerPorts::OUT].silence(0, channel);
             }
@@ -1007,12 +1165,29 @@ impl Node for SamplerNode {
         }
         self.left[..frames].fill(0.0);
         self.right[..frames].fill(0.0);
-        let mut at = 0;
-        for event in io.event_inputs[SamplerPorts::NOTES] {
-            let time = (event.time as usize).min(frames);
-            self.render(at, time);
-            at = time;
-            self.apply(&settings, event);
+        let events = io.event_inputs[SamplerPorts::NOTES];
+        let switches = self.switch_count();
+        let (mut at, mut e, mut sw) = (0, 0, 0);
+        // Changes of pick and notes in the order they happen, a change first
+        // when it falls on a note's frame.
+        loop {
+            let change = (sw < switches).then(|| self.switch_frame(sw));
+            let note = events.get(e).map(|event| (event.time as usize).min(frames));
+            match (change, note) {
+                (Some(c), n) if n.is_none_or(|n| c <= n) => {
+                    self.render(at, c);
+                    at = c;
+                    self.switch(&settings, sw);
+                    sw += 1;
+                }
+                (_, Some(n)) => {
+                    self.render(at, n);
+                    at = n;
+                    self.apply(&settings, &events[e]);
+                    e += 1;
+                }
+                _ => break,
+            }
         }
         self.render(at, frames);
         let out = &mut io.outputs[SamplerPorts::OUT];
@@ -1669,5 +1844,100 @@ mod tests {
         h.run(256).unwrap();
         let want = 10.0 * (2.0f32 / 12.0).exp2() * 0.001;
         assert!((left(&h)[10] - want).abs() < 2e-4, "{}", left(&h)[10]);
+    }
+    // --- samples picked while audio runs ---
+
+    /// A store with a constant sample per value, and a config that lists
+    /// them as candidates to pick from.
+    fn candidates(values: &[f32]) -> (SampleStore, Config) {
+        let store = SampleStore::new();
+        let parts: Vec<String> = values
+            .iter()
+            .map(|&value| {
+                store.insert(&Audio {
+                    samples: vec![value; 4_000],
+                    channels: 1,
+                    sample_rate: RATE as u32,
+                })
+            })
+            .collect();
+        let mut config = Config::new();
+        config.set(SAMPLE_KEY, Value::Text(parts.join("|")));
+        (store, config)
+    }
+
+    /// A Sampler whose pick is wired in as a signal.
+    fn picked(store: &SampleStore, config: &Config) -> Harness {
+        Harness::new(
+            &Sampler::new(store, &Telemetry::new()),
+            config,
+            &[(SamplerPorts::SAMPLE_CHOICE, noodle_engine::Shape::MONO)],
+            RATE,
+            256,
+        )
+        .unwrap()
+    }
+
+    /// The pick: `first` until `at`, then `then`.
+    fn pick(h: &mut Harness, first: f32, at: usize, then: f32) {
+        let mut input = h.input(SamplerPorts::SAMPLE_CHOICE, 256);
+        let lane = input.lane_mut(0, 0);
+        lane[..at].fill(first);
+        lane[at..].fill(then);
+    }
+
+    #[test]
+    fn a_note_plays_the_candidate_in_force_at_its_own_frame() {
+        let (store, config) = candidates(&[0.25, 0.75]);
+        let mut h = picked(&store, &config);
+        pick(&mut h, 0.0, 100, 1.0);
+        h.send_events(
+            SamplerPorts::NOTES,
+            &[on(50, 1, 60, 1.0), on(150, 2, 60, 1.0)],
+        );
+        h.run(256).unwrap();
+        let out = left(&h);
+        assert!((out[49]).abs() < 1e-6);
+        assert!((out[60] - 0.25).abs() < 1e-4, "{}", out[60]);
+        // The first note rings on in the old sample (Finish held); the second
+        // is the new one.
+        assert!((out[120] - 0.25).abs() < 1e-4, "{}", out[120]);
+        assert!((out[200] - 1.0).abs() < 1e-4, "{}", out[200]);
+    }
+
+    #[test]
+    fn cutting_held_notes_releases_the_other_candidates_at_the_switch() {
+        let (store, config) = candidates(&[0.25, 0.75]);
+        let mut h = picked(&store, &config);
+        h.set(SamplerPorts::RELEASE, 0.001);
+        pick(&mut h, 0.0, 100, 1.0 + CHOICE_CUT);
+        h.send_events(SamplerPorts::NOTES, &[on(50, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        let out = left(&h);
+        assert!((out[90] - 0.25).abs() < 1e-4);
+        assert!(out[200].abs() < 1e-6, "cut: {}", out[200]);
+        // And a note on the new candidate is not cut by the one that follows.
+        let mut h = picked(&store, &config);
+        pick(&mut h, 1.0 + CHOICE_CUT, 100, 1.0 + CHOICE_CUT);
+        h.send_events(SamplerPorts::NOTES, &[on(50, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        assert!((left(&h)[200] - 0.75).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_pick_carries_over_blocks_and_an_empty_candidate_is_silence() {
+        let (store, mut config) = candidates(&[0.25]);
+        let text = format!("{}|", CONFIG[0].get_text(&config));
+        config.set(SAMPLE_KEY, Value::Text(text));
+        let mut h = picked(&store, &config);
+        pick(&mut h, 1.0, 0, 1.0);
+        h.run(256).unwrap();
+        h.send_events(SamplerPorts::NOTES, &[on(0, 1, 60, 1.0)]);
+        h.run(256).unwrap();
+        assert!(left(&h)[20].abs() < 1e-6, "still on the empty one");
+        pick(&mut h, 0.0, 0, 0.0);
+        h.send_events(SamplerPorts::NOTES, &[on(0, 2, 60, 1.0)]);
+        h.run(256).unwrap();
+        assert!((left(&h)[20] - 0.25).abs() < 1e-4);
     }
 }

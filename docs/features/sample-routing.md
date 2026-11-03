@@ -119,12 +119,39 @@ rescan can tell what changed), `folder` (where they came from) and `middle_c`
   are hidden and the spare input is greyed. The first wire sets `kind` in the
   same undo step; once typed, only that type can be wired (the ports are
   typed, so a drag is refused while it is made). Taking the last wire off
-  returns it to untyped. Inputs grow with the wires, as a mixer's do. Spectral
-  and sample wires are refused with the reason: a sample wire is resolved when
-  the project is compiled, so nothing can switch it while audio runs.
+  returns it to untyped. Inputs grow with the wires, as a mixer's do.
 - **S12** goes from `partial` to `full`: the route drops the folder on the
   canvas, plays the set with one Sampler, and its late changes (replace a
   recording, add three notes, change the naming scheme, change the bend range)
   go through Rescan or one parameter. Tests: the name parser, tables and rescan
   (`sample_set.rs`), the Sampler's set and bend tests, the session's folder and
   rescan tests, the editor's Random Select tests, `realtime.rs`.
+
+## Random Select switches samples and spectra (#344)
+
+Random Select now takes sample and spectral wires (`kind` 2 and 3), switching
+them on its trigger.
+
+- **Samples.** Compile-time resolution is kept as the fast path for a source
+  fixed when the project is compiled. A wire from a chooser (a new
+  `NodeType::sample_chooser`) is resolved to the list of every candidate, written
+  into the Sampler's `sample` config joined by `|`, so the cache key covers them
+  and all of them are loaded when the Sampler is built. The compiler also wires
+  the chooser's `choice` signal into the receiver's `sample_choice` input (a
+  new Sampler parameter): the candidate in force per frame, plus 64 for
+  `Cut held`. A note-on plays the candidate in force at its own frame (a set
+  candidate still picks by key, layer and take); notes sounding on another
+  candidate ring out (`Finish held`) or are released at the switch (`Cut held`).
+  If every candidate is the same sample there is no pick and it resolves as
+  before. A receiver without `{key}_choice`, or a chooser fed by a chooser, is
+  reported as a diagnostic and plays silence. Candidates play unwarped (Repitch
+  only, no gain envelope), like a set's recordings.
+- **Spectra.** The old input's frames are dropped at the trigger, and the new
+  input's pass from the first frame at or after it. There is no `switch`
+  parameter.
+- **Editor.** A sample or spectral wire sets the type like any other; the
+  `choice` output is not drawn.
+- Tests: the Sampler's pick tests (frame-accurate, cut, carry across blocks,
+  empty candidate), Random Select's unit tests, `tests/sample_routing.rs`
+  (candidates in config, the fast path, nesting refused, the trigger picks what
+  plays) and two `realtime.rs` cases.

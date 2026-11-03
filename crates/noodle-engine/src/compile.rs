@@ -155,6 +155,8 @@ pub enum Problem {
     /// Another Output node already plays on this device, and at most one may.
     /// This one plays nothing.
     DeviceTaken(String),
+    /// A sample wire that is picked while audio runs can't be used here.
+    SampleChoice(&'static str),
 }
 
 impl fmt::Display for Problem {
@@ -193,6 +195,7 @@ impl fmt::Display for Problem {
                     "output device `{device}` isn't available, so this plays nothing"
                 )
             }
+            Self::SampleChoice(why) => f.write_str(why),
             Self::DeviceTaken(device) => write!(
                 f,
                 "another output already plays on `{device}`, and there can be only one"
@@ -357,7 +360,7 @@ pub(crate) fn compile_with(
         options.replacements.unwrap_or(&no_replacements),
         options.taps,
     );
-    let sampled = resolve_samples(&rewritten.graph, registry);
+    let sampled = resolve_samples(&rewritten.graph, registry, &mut diagnostics);
     let graph = &*sampled;
     let overrides = &rewritten.overrides;
     let mut candidates = resolve_nodes(graph, registry, overrides, options, &mut diagnostics);
@@ -404,6 +407,27 @@ pub(crate) fn compile_with(
     (schedule, diagnostics)
 }
 
+type SamplePort<'a> = dyn Fn(NodeId, &str, bool) -> Option<Arc<dyn NodeType>> + 'a;
+
+/// What a sample wire comes from.
+enum SampleSource {
+    /// The source isn't a sample output (the wire is for [`resolve_wires`]
+    /// to report).
+    Not,
+    /// One sample, fixed when the project is compiled: its text, or `None`
+    /// for no sample.
+    Fixed(Option<String>),
+    /// A pick among samples made while audio runs.
+    Chosen {
+        chooser: NodeId,
+        index: String,
+        /// The text of each candidate, empty for none.
+        candidates: Vec<String>,
+    },
+    /// A pick among picks, which has no single candidate number.
+    Nested,
+}
+
 /// Resolves the sample wires, which carry a reference to a sample, not
 /// signal: each node with a wire into a sample input gets the sample the wire
 /// comes from in its config, under the input's key, and the wires are dropped.
@@ -411,7 +435,18 @@ pub(crate) fn compile_with(
 /// leaves the receiver with an empty one, which is silence. A sample wire that
 /// doesn't join a sample output to a sample input is left for
 /// [`resolve_wires`] to report.
-fn resolve_samples<'a>(graph: &'a Graph, registry: &Registry) -> Cow<'a, Graph> {
+///
+/// That is the fast path, for a source fixed at compile time. A wire from a
+/// node that picks while audio runs (see [`NodeType::sample_chooser`]) is
+/// resolved to the list of everything it might carry, so that all of it loads
+/// when the receiver is built, and the picker's number of the candidate in
+/// force is wired in as a signal. If every candidate is the same sample there
+/// is nothing to pick, and it is the fast path again.
+fn resolve_samples<'a>(
+    graph: &'a Graph,
+    registry: &Registry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Cow<'a, Graph> {
     let sample_port = |node: NodeId, key: &str, output: bool| -> Option<Arc<dyn NodeType>> {
         let node = graph.node(node)?;
         let node_type = registry.get(&node.type_id)?;
@@ -426,33 +461,119 @@ fn resolve_samples<'a>(graph: &'a Graph, registry: &Registry) -> Cow<'a, Graph> 
             .any(|p| p.key == key)
             .then(|| Arc::clone(node_type))
     };
+    let chooser_of = |node: NodeId| {
+        let node = graph.node(node)?;
+        registry.get(&node.type_id)?.sample_chooser(&node.config)
+    };
+    fn source(
+        graph: &Graph,
+        node: NodeId,
+        key: &str,
+        sample_port: &SamplePort<'_>,
+        chooser_of: &dyn Fn(NodeId) -> Option<crate::SampleChooser>,
+    ) -> SampleSource {
+        let Some(node_type) = sample_port(node, key, true) else {
+            return SampleSource::Not;
+        };
+        let config = &graph.node(node).expect("found above").config;
+        let Some(chooser) = chooser_of(node).filter(|c| c.output == key) else {
+            return SampleSource::Fixed(node_type.sample_output(config, key));
+        };
+        let mut candidates = Vec::new();
+        for input in &chooser.inputs {
+            let from = graph.source(&Endpoint::new(node, input.clone()));
+            let text = match from {
+                Some(from) => match source(graph, from.node, &from.port, sample_port, chooser_of) {
+                    SampleSource::Fixed(text) => text.unwrap_or_default(),
+                    SampleSource::Not => String::new(),
+                    SampleSource::Chosen { .. } | SampleSource::Nested => {
+                        return SampleSource::Nested;
+                    }
+                },
+                None => String::new(),
+            };
+            candidates.push(text);
+        }
+        SampleSource::Chosen {
+            chooser: node,
+            index: chooser.index,
+            candidates,
+        }
+    }
+    // What each resolved wire does to its receiver.
     let mut resolved = Vec::new();
+    let mut added = Vec::new();
     for c in graph.connections() {
         if sample_port(c.to.node, &c.to.port, false).is_none() {
             continue;
         }
-        if let Some(source) = sample_port(c.from.node, &c.from.port, true) {
-            let config = &graph.node(c.from.node).expect("found above").config;
-            let sample = source.sample_output(config, &c.from.port);
-            resolved.push((c, sample));
+        let found = source(graph, c.from.node, &c.from.port, &sample_port, &chooser_of);
+        // What a picker's own inputs are given is read through its output.
+        if chooser_of(c.to.node).is_some_and(|ch| ch.inputs.contains(&c.to.port)) {
+            if !matches!(found, SampleSource::Not) {
+                resolved.push((c, None));
+            }
+            continue;
         }
+        let text = match found {
+            SampleSource::Not => continue,
+            SampleSource::Fixed(text) => text.unwrap_or_default(),
+            SampleSource::Nested => {
+                diagnostics.push(Diagnostic::wire(
+                    &c.to,
+                    Problem::SampleChoice("a pick between samples can't be picked from again"),
+                ));
+                String::new()
+            }
+            SampleSource::Chosen {
+                chooser,
+                index,
+                candidates,
+            } => {
+                let choice = format!("{}_choice", c.to.port);
+                let takes = graph
+                    .node(c.to.node)
+                    .and_then(|n| registry.get(&n.type_id)?.layout(&n.config).ok())
+                    .is_some_and(|l| l.inputs.iter().any(|i| i.key == choice.as_str()));
+                if candidates.windows(2).all(|w| w[0] == w[1]) {
+                    candidates.into_iter().next().unwrap_or_default()
+                } else if takes {
+                    added.push(noodle_core::Connection {
+                        from: Endpoint::new(chooser, index),
+                        to: Endpoint::new(c.to.node, choice),
+                    });
+                    candidates.join("|")
+                } else {
+                    diagnostics.push(Diagnostic::wire(
+                        &c.to,
+                        Problem::SampleChoice(
+                            "this node can't take a sample that is picked while audio runs",
+                        ),
+                    ));
+                    String::new()
+                }
+            }
+        };
+        resolved.push((c, Some(text)));
     }
     if resolved.is_empty() {
         return Cow::Borrowed(graph);
     }
     let mut nodes: Vec<(NodeId, noodle_core::Node)> =
         graph.nodes().map(|(id, n)| (id, n.clone())).collect();
-    for (c, sample) in &resolved {
+    for (c, text) in &resolved {
+        let Some(text) = text else { continue };
         if let Some((_, node)) = nodes.iter_mut().find(|(id, _)| *id == c.to.node) {
-            node.config.set(
-                c.to.port.clone(),
-                noodle_core::Value::Text(sample.clone().unwrap_or_default()),
-            );
+            node.config
+                .set(c.to.port.clone(), noodle_core::Value::Text(text.clone()));
         }
     }
     let connections: Vec<_> = graph
         .connections()
         .filter(|c| !resolved.iter().any(|(r, _)| r == c))
+        // The picker's number replaces whatever else was wired to the input.
+        .filter(|c| !added.iter().any(|a| a.to == c.to))
+        .chain(added.iter().cloned())
         .collect();
     Cow::Owned(
         Graph::from_parts(nodes, connections).expect("a graph stays valid with wires removed"),
