@@ -20,3 +20,11 @@ spectral nodes), and the spectrum display. The design is the docs/architecture/ 
    denoiser) and a choice of frame size (a config on Analyze that every
    spectral node on the wire adopts). Delay compensation across spectral wires
    is done (a `SpectralDelay` in front of an early spectral input).
+
+## Afterwards: Cross bands (#355)
+
+`Cross` gained a `bands` parameter (0 or 1 is off, 2 to 256 log-spaced bands).
+It averages the modulator's and the carrier's levels over each band and
+scales the carrier's bins by the ratio, so the carrier keeps its fine
+structure and takes the modulator's outline. It is a parameter, so it can be
+modulated. The frame size is still fixed and stays on the roadmap.

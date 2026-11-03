@@ -223,8 +223,9 @@ before the start, keys and velocities in range).
 A track is armed in the session, which is app state and not saved with the
 project. It has two arm buttons, RA for audio and RM for MIDI, each
 independent: audio clips go on the audio-armed tracks, MIDI clips on the
-MIDI-armed ones, and only RM also monitors live (audio has no live monitoring
-yet). A take with no audio-armed track starts no file. Record needs an armed track and a saved project,
+MIDI-armed ones, and RM also plays live MIDI through the track's synth. An audio-armed track
+monitors the input by its `monitor` setting (see "Live monitoring" in
+[transport-and-devices.md](transport-and-devices.md)). A take with no audio-armed track starts no file. Record needs an armed track and a saved project,
 since takes are stored next to it, in a `<project name> recordings` folder as
 `take-001.wav`, `take-002.wav` and so on, and a clip's source is a path
 relative to the project file like any other. Record starts the engine and the

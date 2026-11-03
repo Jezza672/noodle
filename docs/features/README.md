@@ -33,3 +33,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |
 | [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
 | [replace-node.md](replace-node.md) | Replace node and missing plugins |
+| [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |

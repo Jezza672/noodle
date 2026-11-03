@@ -295,6 +295,71 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
 }
 
 #[test]
+fn a_tap_or_a_midi_clock_sets_the_live_tempo_without_touching_the_map() {
+    use noodle_core::TempoMap;
+    use noodle_io::ClockEvent;
+
+    use crate::tempo_source::TempoSource;
+
+    let dir = tempfile::tempdir().unwrap();
+    crate::prefs::init(dir.path().join("prefs.ron"));
+    let nodes = Nodes::all();
+    let midi = nodes.midi.clone();
+    let mut session = Session::new(nodes);
+    session.set_audio_config(virtual_audio());
+    let mut h = harness(App::new(session));
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    let engine_bpm = |h: &H| {
+        h.state()
+            .session()
+            .tempo_in_engine()
+            .map(|map| map.tempos()[0].bpm)
+    };
+    assert_eq!(engine_bpm(&h), Some(120.0));
+    let history = h.state().session().history_position();
+
+    // Three taps half a second apart are 120; a quarter second is 240.
+    let start = std::time::Instant::now();
+    {
+        let session = h.state_mut().session_mut();
+        for i in 0..4 {
+            session.tap_tempo(start + Duration::from_millis(250 * i));
+        }
+    }
+    assert_eq!(h.state().session().tempo_source(), TempoSource::Tap);
+    play_for(&mut h, Duration::from_millis(100));
+    assert_eq!(engine_bpm(&h), Some(240.0));
+    // The project is as it was, and nothing was added to the undo history.
+    assert_eq!(
+        h.state().session().project().tempo_map(),
+        &TempoMap::default()
+    );
+    assert_eq!(h.state().session().history_position(), history);
+
+    // A MIDI clock at 90 bpm.
+    h.state_mut()
+        .session_mut()
+        .set_tempo_source(TempoSource::MidiClock);
+    let period = (60e6_f64 / 90.0 / 24.0) as u64;
+    for i in 0..60 {
+        midi.send_clock_from("Drums", 1_000 + i * period, ClockEvent::Tick);
+    }
+    play_for(&mut h, Duration::from_millis(100));
+    let bpm = engine_bpm(&h).unwrap();
+    assert!((bpm - 90.0).abs() < 0.5, "followed the clock to {bpm}");
+
+    // Write to map keeps it as a tempo change and goes back to the map.
+    h.state_mut().session_mut().write_tempo_to_map();
+    play_for(&mut h, Duration::from_millis(100));
+    let session = h.state().session();
+    assert_eq!(session.tempo_source(), TempoSource::Map);
+    assert_eq!(session.live_tempo(), None);
+    assert!((session.project().tempo_map().tempos().last().unwrap().bpm - 90.0).abs() < 0.5);
+    assert_ne!(session.history_position(), history);
+}
+
+#[test]
 fn a_clip_on_a_track_plays_and_follows_edits() {
     use noodle_core::{Clip, Command, Connection, Node, Tick};
     use noodle_engine::OUTPUT_ID;
