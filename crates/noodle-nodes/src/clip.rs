@@ -533,9 +533,9 @@ impl TrackInputNode {
     ) {
         out.lane_mut(0, 0).copy_from_slice(&self.left[..n]);
         out.lane_mut(0, 1).copy_from_slice(&self.right[..n]);
-        let Some(tap) = self.tap.clone() else {
+        if self.tap.is_none() {
             return;
-        };
+        }
         let hear = self.hears_input(transport, mode);
         if !hear && self.monitor_level <= 0.0 {
             return;
@@ -543,7 +543,9 @@ impl TrackInputNode {
         for (side, device) in self.channels.into_iter().enumerate() {
             let input = &mut self.monitor[side][..n];
             input.fill(0.0);
-            tap.add_channel(device, 1.0, input);
+            if let Some(tap) = &self.tap {
+                tap.add_channel(device, 1.0, input);
+            }
         }
         let target = if hear { 1.0 } else { 0.0 };
         for i in 0..n {

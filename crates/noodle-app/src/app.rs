@@ -1027,6 +1027,7 @@ impl App {
         self.metronome_button(ui, actions);
         self.tempo_fields(ui, actions);
         self.extra_buttons(ui, actions);
+        self.tempo_source_controls(ui, actions);
         let at = self
             .session
             .project()
@@ -1040,35 +1041,38 @@ impl App {
     /// clock is in charge.
     fn tempo_source_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let source = self.session.tempo_source();
-        crate::widgets::Dropdown::from_id_salt("tempo_source")
-            .width(80.0)
-            .selected_text(source.label())
-            .show_ui(ui, |ui| {
-                for choice in crate::tempo_source::TempoSource::ALL {
-                    if ui
-                        .selectable_label(choice == source, choice.label())
-                        .clicked()
-                    {
-                        actions.push(Action::SetTempoSource(choice));
-                    }
+        ui.menu_button(format!("♪ {}", source.label()), |ui| {
+            for choice in crate::tempo_source::TempoSource::ALL {
+                if ui
+                    .selectable_label(choice == source, choice.label())
+                    .clicked()
+                {
+                    actions.push(Action::SetTempoSource(choice));
+                    ui.close();
                 }
-            })
-            .response
-            .on_hover_text("Where the tempo comes from: the tempo map, taps, or a MIDI clock");
+            }
+            if self.session.live_tempo().is_some() {
+                ui.separator();
+                if ui
+                    .button("Write to map")
+                    .on_hover_text(
+                        "Keep the live tempo as a tempo change in the map at the playhead",
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::WriteTempoToMap);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Where the tempo comes from: the tempo map, taps, or a MIDI clock");
         if ui
             .button("Tap")
             .on_hover_text("Tap the tempo (T). Three taps make a tempo")
             .clicked()
         {
             actions.push(Action::TapTempo);
-        }
-        if self.session.live_tempo().is_some()
-            && ui
-                .button("Write to map")
-                .on_hover_text("Keep the live tempo as a tempo change in the map at the playhead")
-                .clicked()
-        {
-            actions.push(Action::WriteTempoToMap);
         }
     }
 
@@ -1106,7 +1110,6 @@ impl App {
         if response.drag_stopped() {
             actions.push(Action::EndTempoDrag);
         }
-        self.tempo_source_controls(ui, actions);
         let current = map.signatures()[0].signature;
         crate::widgets::Dropdown::from_id_salt("time_signature")
             .width(44.0)
